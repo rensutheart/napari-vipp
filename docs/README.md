@@ -13,6 +13,9 @@ reviewing VIPP itself.
 - [Durable GPU execution](durable-gpu-execution.md): batch/config migration,
   generated Python and CLI overrides, exact provenance, OOM fallback,
   two-level progress, cancellation, and publication safety.
+- [Full collection-batch cancellation verification](full-batch-cancellation-verification.md):
+  implementation status, Apple Silicon evidence, Windows/GPU evidence, and the
+  shared manual smoke procedure.
 - [Cache and memory](cache-and-memory.md): cache modes, memory guard, and
   large-data tradeoffs.
 - [Operator tips](operator-tips.md): background work, cancellation, previews,
