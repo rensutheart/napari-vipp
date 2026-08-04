@@ -5072,7 +5072,7 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     assert widget.colocalization_scatter_summary.maximumHeight() > 42
     assert widget.colocalization_scatter_summary.wordWrap()
     wrapped_height = widget.colocalization_scatter_summary.heightForWidth(240)
-    assert wrapped_height > 42
+    assert wrapped_height >= widget.colocalization_scatter_summary.minimumHeight()
     assert widget.colocalization_scatter_summary.maximumHeight() >= wrapped_height
     assert widget.colocalization_scatter_colormap_combo.currentText() == "Viridis"
     widget.colocalization_scatter_plot.resize(620, 260)

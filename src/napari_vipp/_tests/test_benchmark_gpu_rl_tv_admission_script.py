@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,14 @@ from scripts import benchmark_gpu_rl_tv_admission as evidence
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ARTIFACT = (
     PROJECT_ROOT / "docs" / "benchmarks" / "rl-tv-cupy-admission-windows-rtx5090.json"
+)
+IS_AMD64 = platform.machine().lower() in {"amd64", "x86_64"}
+amd64_evidence_validation = pytest.mark.skipif(
+    not IS_AMD64,
+    reason=(
+        "The committed admission artifact contains reviewed Windows/AMD64 "
+        "raw-byte fixture digests."
+    ),
 )
 
 
@@ -221,6 +230,7 @@ def test_privacy_validator_rejects_private_paths() -> None:
         evidence._validate_privacy({"source": r"C:\Users\example\sample.nd2"})
 
 
+@amd64_evidence_validation
 def test_committed_evidence_is_current_and_renders() -> None:
     document = json.loads(ARTIFACT.read_text(encoding="utf-8"))
 
@@ -239,6 +249,7 @@ def test_committed_evidence_is_current_and_renders() -> None:
     assert conclusion["released_package_promotion_justified"] is False
 
 
+@amd64_evidence_validation
 def test_validation_requires_unambiguous_publication_scope() -> None:
     document = json.loads(ARTIFACT.read_text(encoding="utf-8"))
     conclusion = document["conclusion"]
@@ -252,6 +263,7 @@ def test_validation_requires_unambiguous_publication_scope() -> None:
         evidence.validate_evidence_document(document, require_current_sources=False)
 
 
+@amd64_evidence_validation
 def test_validate_existing_subprocess_does_not_require_cupy() -> None:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.pathsep.join(

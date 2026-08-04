@@ -621,6 +621,18 @@ def test_execution_plan_shell_and_actual_fallback_preserve_typed_identity():
 
 
 def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatch):
+    real_environment = ComputeEnvironment
+    monkeypatch.setattr(
+        planning_module,
+        "ComputeEnvironment",
+        lambda: real_environment(
+            os_name="Windows",
+            execution_mode="native",
+            python_implementation="CPython",
+            python_version="3.12",
+            python_abi="cpython-312",
+        ),
+    )
     registry = ComputeRegistry()
     scientific_stack = {
         "numpy": "2.5.1",

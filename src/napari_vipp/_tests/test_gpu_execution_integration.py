@@ -12,6 +12,7 @@ from types import MappingProxyType
 import numpy as np
 import pytest
 
+import napari_vipp.core.compute_planning as planning_module
 import napari_vipp.core.execution as execution_module
 from napari_vipp._tests.test_device_execution import (
     _device_copy,
@@ -61,6 +62,25 @@ from napari_vipp.core.operations import otsu_threshold as cpu_otsu_threshold
 from napari_vipp.core.pipeline import EXECUTION_READY, PrototypePipeline, SourcePayload
 from napari_vipp.core.tables import TableData, TableState
 from napari_vipp.core.workflow import serialize_workflow
+
+
+@pytest.fixture
+def validated_windows_compute_host(monkeypatch):
+    """Keep fake-CUDA tests independent of the host running pytest."""
+
+    base = ComputeEnvironment(
+        os_name="Windows",
+        execution_mode="native",
+        python_implementation="CPython",
+        python_version="3.12",
+        python_abi="cpython-312",
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
+    )
+    monkeypatch.setattr(planning_module, "ComputeEnvironment", lambda: base)
 
 
 def _assert_private_cuda_scope_clean(runtime, device_id: str) -> None:
@@ -1165,7 +1185,10 @@ def test_headless_multi_input_rl_projects_resident_metadata_and_history():
     registry.close()
 
 
-def test_cpu_extract_channel_projects_shape_through_requested_mixed_chain():
+def test_cpu_extract_channel_projects_shape_through_requested_mixed_chain(
+    validated_windows_compute_host,
+):
+    del validated_windows_compute_host
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     extract = pipeline.add_node("extract_channel")
@@ -1268,7 +1291,9 @@ def test_extreme_float_background_facts_fail_closed_for_downstream_gpu(
     downstream_operation,
     parameter_name,
     parameter_value,
+    validated_windows_compute_host,
 ):
+    del validated_windows_compute_host
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     background = pipeline.add_node("rolling_ball_background")

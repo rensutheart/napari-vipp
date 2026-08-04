@@ -27,6 +27,19 @@ def _load_setup_module():
 
 setup_gpu_dev = _load_setup_module()
 
+GPU_SETUP_INTEGRATION_SUPPORTED = (
+    sys.platform != "darwin"
+    and sys.implementation.name == "cpython"
+    and sys.version_info[:2] == (3, 12)
+)
+gpu_setup_integration = pytest.mark.skipif(
+    not GPU_SETUP_INTEGRATION_SUPPORTED,
+    reason=(
+        "The CUDA setup integration uses the real base interpreter and supports "
+        "only native Windows/Linux 64-bit CPython 3.12."
+    ),
+)
+
 
 def _constraint_entries(name: str) -> set[str]:
     path = PROJECT_ROOT / "constraints" / name
@@ -104,10 +117,7 @@ def test_release_metadata_bounds_cpu_python_support_to_ci_matrix():
     assert "Programming Language :: Python :: 3.13" in metadata["classifiers"]
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="CUDA setup intentionally refuses macOS before planning.",
-)
+@gpu_setup_integration
 @pytest.mark.parametrize("track_name", ("cuda12", "cuda13"))
 def test_each_setup_plan_selects_constraints_with_the_validated_scientific_stack(
     tmp_path,
@@ -126,10 +136,7 @@ def test_each_setup_plan_selects_constraints_with_the_validated_scientific_stack
     } <= _constraint_entries(plan.constraint_path.name)
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="CUDA setup intentionally refuses macOS before planning.",
-)
+@gpu_setup_integration
 def test_plan_only_prints_exact_cuda13_plan_without_writing(tmp_path, capsys):
     target = tmp_path / "dedicated-gpu-env"
 
@@ -355,10 +362,7 @@ def test_cucim_wheel_requires_cuda13_cp312_and_exact_checksum(tmp_path):
         )
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="CUDA setup intentionally refuses macOS before planning.",
-)
+@gpu_setup_integration
 def test_cucim_plan_installs_only_the_checksum_verified_local_wheel(tmp_path):
     wheel = tmp_path / "cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl"
     wheel.write_bytes(b"local experimental wheel fixture")
@@ -453,10 +457,7 @@ def test_environment_record_path_cannot_escape_venv(tmp_path, monkeypatch):
         )
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="CUDA setup intentionally refuses macOS before planning.",
-)
+@gpu_setup_integration
 def test_all_install_and_probe_actions_target_only_the_dedicated_venv(tmp_path):
     target = tmp_path / "gpu-venv"
     plan = setup_gpu_dev.create_setup_plan(
@@ -480,10 +481,7 @@ def test_all_install_and_probe_actions_target_only_the_dedicated_venv(tmp_path):
         assert action.argv[0] != str(plan.base_python)
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="CUDA setup intentionally refuses macOS before planning.",
-)
+@gpu_setup_integration
 def test_successful_setup_writes_record_only_after_probes_and_pip_check(
     tmp_path,
     monkeypatch,
@@ -540,6 +538,34 @@ def test_successful_setup_writes_record_only_after_probes_and_pip_check(
         "cupy_distribution": "cupy-cuda13x",
         "cucim": None,
     }
+
+
+@pytest.mark.parametrize(
+    "environment",
+    (
+        {
+            "implementation": "CPython",
+            "version": [3, 13, 0],
+            "pointer_bits": 64,
+        },
+        {
+            "implementation": "PyPy",
+            "version": [3, 12, 0],
+            "pointer_bits": 64,
+        },
+        {
+            "implementation": "CPython",
+            "version": [3, 12, 0],
+            "pointer_bits": 32,
+        },
+    ),
+)
+def test_gpu_setup_rejects_an_unsupported_base_interpreter(environment):
+    with pytest.raises(setup_gpu_dev.SetupError, match="CPython 3.12"):
+        setup_gpu_dev._validate_python_environment(
+            environment,
+            role="base interpreter",
+        )
 
 
 def test_environment_record_replacement_is_atomic_on_failure(tmp_path, monkeypatch):
