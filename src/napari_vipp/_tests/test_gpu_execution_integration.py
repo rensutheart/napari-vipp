@@ -55,6 +55,7 @@ from napari_vipp.core.compute_specs import OperationComputeSpec, compute_specs_f
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
 from napari_vipp.core.operations import canny_edges as cpu_canny_edges
 from napari_vipp.core.operations import gaussian_blur as cpu_gaussian_blur
+from napari_vipp.core.operations import median_filter as cpu_median_filter
 from napari_vipp.core.operations import otsu_threshold as cpu_otsu_threshold
 from napari_vipp.core.pipeline import EXECUTION_READY, PrototypePipeline, SourcePayload
 from napari_vipp.core.tables import TableData, TableState
@@ -553,7 +554,8 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         inputs.mkdir()
         rng = np.random.default_rng(20260804)
         arrays = tuple(
-            rng.normal(size=(256, 320)).astype(np.float32) for _ in range(2)
+            rng.random((256, 320), dtype=np.float32) * np.float32(100.0)
+            for _ in range(2)
         )
         for index, array in enumerate(arrays, start=1):
             np.save(inputs / f"{index:02d}.npy", array)
@@ -561,16 +563,20 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         pipeline = PrototypePipeline()
         pipeline.reset_empty_graph()
         gaussian = pipeline.add_node("gaussian_blur")
+        median = pipeline.add_node("median_filter")
         output = pipeline.add_node("batch_output")
         pipeline.set_param(gaussian.id, "sigma", 1.25)
+        pipeline.set_param(median.id, "size", 3)
         pipeline.set_param(output.id, "tag", "result")
         pipeline.set_param(output.id, "format", "npy")
-        assert pipeline.connect("input", gaussian.id).success
+        assert pipeline.connect("input", median.id).success
+        assert pipeline.connect(median.id, gaussian.id).success
         assert pipeline.connect(gaussian.id, output.id).success
         request = ComputeRequest(
             mode=ComputeMode.SELECTIVE,
             node_preferences={
                 gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+                median.id: "implementation:cupyx-median-filter-v1",
                 output.id: "cpu",
             },
             runtime_id="cuda-cupy",
@@ -613,21 +619,29 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         assert document["summary"]["failed"] == 0
         assert document["compute"]["runtime_cleanup_succeeded"] is True
         assert {progress.item_index for progress in nested_progress} == {1, 2}
-        assert any(
-            progress.node_id == gaussian.id and progress.message == "Node started."
+        assert {
+            progress.node_id
             for progress in nested_progress
-        )
+            if progress.message == "Node started."
+        }.issuperset({gaussian.id, median.id})
         for item, source in zip(document["items"], arrays, strict=True):
-            gaussian_record = next(
-                node
-                for node in item["execution"]["nodes"]
-                if node["node_id"] == gaussian.id
-            )
-            identity = gaussian_record["actual_implementation"]
-            assert gaussian_record["decision_kind"] == "selected"
-            assert identity["runtime_id"] == "cuda-cupy"
-            assert identity["implementation_library_id"] == "cupyx"
-            assert identity["implementation_id"] == "cupyx-gaussian-blur-v1"
+            by_node = {
+                node["node_id"]: node for node in item["execution"]["nodes"]
+            }
+            for node_id, implementation_id in (
+                (gaussian.id, "cupyx-gaussian-blur-v1"),
+                (median.id, "cupyx-median-filter-v1"),
+            ):
+                node = by_node[node_id]
+                identity = node["actual_implementation"]
+                assert node["decision_kind"] == "selected"
+                assert identity["runtime_id"] == "cuda-cupy"
+                assert identity["implementation_library_id"] == "cupyx"
+                assert identity["implementation_id"] == implementation_id
+                assert identity["implementation_version"]
+            segments = item["execution"]["plan"]["segments"]
+            assert len(segments) == 1
+            assert segments[0]["node_ids"] == [median.id, gaussian.id]
             assert item["execution"]["fallback_records"] == []
             assert item["execution"]["cleanup_succeeded"] is True
             output_record = item["outputs"][0]
@@ -637,7 +651,10 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
             actual = np.load(output_record["path"])
             parity = operation_parity(
                 "gaussian_blur",
-                cpu_gaussian_blur(source, sigma=1.25),
+                cpu_gaussian_blur(
+                    cpu_median_filter(source, size=3),
+                    sigma=1.25,
+                ),
                 actual,
                 input_dtypes=(source.dtype,),
             )
