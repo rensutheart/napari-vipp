@@ -1003,6 +1003,79 @@ def test_optimizer_groups_branch_transfer_and_accounts_host_materialization():
     assert result.total_seconds == pytest.approx(5.5)
 
 
+def test_host_only_gpu_output_forces_d2h_then_h2d_for_gpu_successor():
+    problem = GraphOptimizationProblem(
+        nodes=(
+            GraphCostNode(
+                "measurement",
+                (
+                    GraphImplementationCost(
+                        "measurement-gpu",
+                        "cuda-cupy",
+                        1.0,
+                        host_materialization_seconds=0.5,
+                        host_output_only=True,
+                    ),
+                ),
+                output_bytes=20,
+                host_input_bytes=100,
+            ),
+            GraphCostNode(
+                "gpu-successor",
+                (
+                    GraphImplementationCost(
+                        "successor-gpu",
+                        "cuda-cupy",
+                        1.0,
+                    ),
+                ),
+                output_bytes=10,
+            ),
+        ),
+        edges=(GraphCostEdge("measurement", "gpu-successor"),),
+        transitions=_transition_pair(seconds=1.0),
+    )
+
+    result = optimize_graph_assignment(problem)
+
+    assert result.assignments == (
+        ("measurement", "measurement-gpu"),
+        ("gpu-successor", "successor-gpu"),
+    )
+    assert result.compute_seconds == pytest.approx(2.0)
+    assert result.transfer_seconds == pytest.approx(3.0)
+    assert result.host_materialization_seconds == pytest.approx(0.5)
+    assert result.total_seconds == pytest.approx(5.5)
+    assert [
+        (
+            transfer.source_node_id,
+            transfer.from_runtime_id,
+            transfer.target_runtime_id,
+            transfer.kind,
+        )
+        for transfer in result.transfers
+    ] == [
+        (
+            "measurement:host-input",
+            "cpu-numpy",
+            "cuda-cupy",
+            "host-input",
+        ),
+        (
+            "measurement",
+            "cuda-cupy",
+            "cpu-numpy",
+            "host-materialization",
+        ),
+        (
+            "measurement",
+            "cpu-numpy",
+            "cuda-cupy",
+            "runtime-transition",
+        ),
+    ]
+
+
 def test_optimizer_rejects_fast_assignment_that_exceeds_runtime_memory():
     problem = GraphOptimizationProblem(
         nodes=(

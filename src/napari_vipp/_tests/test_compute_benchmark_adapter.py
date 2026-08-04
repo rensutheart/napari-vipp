@@ -6,6 +6,7 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -44,13 +45,16 @@ from napari_vipp.core.compute_registry import (
     RuntimeProbeResult,
 )
 from napari_vipp.core.compute_specs import accelerator_compute_specs
+from napari_vipp.core.measurements import basic_measurement_layout
 from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.operations import (
     gaussian_blur,
+    measure_objects,
     median_filter,
     richardson_lucy_deconvolution,
     subtract_background,
 )
+from napari_vipp.core.tables import TableData
 
 
 def _identity_cpu(value, **_kwargs):
@@ -492,6 +496,140 @@ def test_registered_adapter_is_transactional_synchronized_and_memory_observed(
     assert set(runtime.release_counts.values()) == {1}
     np.testing.assert_array_equal(live, before)
     assert not live.flags.writeable
+
+
+def test_measurement_finalizer_runs_after_cleanup_and_reports_its_timing(
+    monkeypatch,
+):
+    clock = ManualClock()
+    runtime = _FakeRuntime(clock)
+    registry = ComputeRegistry()
+    spec = _spec("measure_objects")
+    labels = np.zeros((7, 9), dtype=np.int32)
+    labels[1:4, 2:6] = 17
+    labels[5:7, 7:9] = 9001
+    kwargs = {
+        "spatial_mode": "2D YX",
+        "resolved_spatial_ndim": 2,
+        "axis_names": ("y", "x"),
+        "axis_types": ("space", "space"),
+        "axis_scales": (0.25, 0.5),
+        "axis_units": ("um", "um"),
+        "measurement_set": "Basic morphology",
+        "source_name": "benchmark labels",
+        "progress": None,
+    }
+    expected = measure_objects(labels, **kwargs)
+    layout = basic_measurement_layout(
+        labels.shape,
+        spatial_mode="2D YX",
+        resolved_spatial_ndim=2,
+        axis_names=("y", "x"),
+        axis_types=("space", "space"),
+        axis_scales=(0.25, 0.5),
+        axis_units=("um", "um"),
+    )
+    indexes = {name: index for index, name in enumerate(expected.columns)}
+    packed = np.asarray(
+        [
+            [float(row[indexes[column]]) for column in layout.packed_columns]
+            for row in expected.rows
+        ],
+        dtype=np.float64,
+    ).reshape(expected.row_count, layout.packed_width)
+
+    def cpu(data, **parameters):
+        clock.advance(0.100)
+        return measure_objects(data, **parameters)
+
+    def gpu(device, **_parameters):
+        assert runtime.active
+        assert device.array.dtype == np.dtype(np.int32)
+        clock.advance(0.040)
+        return runtime.allocate(packed)
+
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        registry,
+        "implementation_spec",
+        lambda *_args, **_kwargs: spec,
+    )
+    monkeypatch.setattr(
+        registry,
+        "implementation_callable",
+        lambda *_args, **_kwargs: gpu,
+    )
+    call = PreparedNodeCall(
+        "measurement-node",
+        "measure_objects",
+        cpu,
+        (labels,),
+        input_states=(SimpleNamespace(shape=labels.shape),),
+        kwargs=kwargs,
+    )
+    original_apply = adapter_module.apply_host_finalizer
+    finalizer_events: list[tuple[bool, int, tuple[object, ...]]] = []
+
+    def observed_finalizer(reference, host_outputs, finalized_call):
+        # The mixed-type public table must be constructed only after the
+        # provider scope has released every runtime-owned allocation.
+        finalizer_events.append(
+            (runtime.active, len(runtime.live), finalized_call.inputs)
+        )
+        assert not runtime.active
+        assert runtime.live == {}
+        assert finalized_call.inputs == (None,)
+        assert isinstance(host_outputs[0], np.ndarray)
+        clock.advance(0.007)
+        result = original_apply(reference, host_outputs, finalized_call)
+        assert len(result) == 1
+        assert isinstance(result[0], TableData)
+        assert result[0] == expected
+        return result
+
+    monkeypatch.setattr(
+        adapter_module,
+        "apply_host_finalizer",
+        observed_finalizer,
+    )
+    built = build_registered_node_benchmark(
+        call,
+        admitted_specs=(spec,),
+        registry=registry,
+        environment_fingerprint="fake-measurement-environment",
+        allow_experimental=True,
+        clock=clock,
+        warm_rounds=3,
+        max_warm_rounds=3,
+        paired_bootstrap_samples=200,
+    )
+
+    record = NodeBenchmarkService(clock=clock).benchmark(built.request)
+
+    candidate = next(
+        result
+        for result in record.candidates
+        if result.implementation_id == spec.implementation_id
+    )
+    assert candidate.parity_passed, candidate.error
+    assert record.accepted_implementation_id == spec.implementation_id
+    assert candidate.timing_scope == "synchronized-end-to-end-host-finalized-v1"
+    assert candidate.cold_seconds == pytest.approx(0.051)
+    assert candidate.warm_seconds == pytest.approx((0.051,) * 3)
+    assert candidate.cold_transfer_seconds == pytest.approx(0.004)
+    assert candidate.warm_transfer_seconds == pytest.approx((0.004,) * 3)
+    assert candidate.cold_resident_seconds == pytest.approx(0.040)
+    assert candidate.warm_resident_seconds == pytest.approx((0.040,) * 3)
+    assert candidate.cold_host_materialization_seconds == pytest.approx(0.007)
+    assert candidate.warm_host_materialization_seconds == pytest.approx((0.007,) * 3)
+    assert len(finalizer_events) == runtime.scope_count
+    assert set(finalizer_events) == {(False, 0, (None,))}
+    assert all(
+        observation.cleanup_succeeded
+        and observation.terminal_snapshot.runtime_live_bytes == 0
+        and observation.terminal_snapshot.runtime_reserved_bytes == 0
+        for observation in built.observations.runs(spec.implementation_id)
+    )
 
 
 def test_multi_input_benchmark_detaches_hashes_invokes_and_observes_every_port(

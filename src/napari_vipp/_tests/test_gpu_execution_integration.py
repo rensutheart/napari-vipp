@@ -984,6 +984,153 @@ def test_cpu_request_does_not_construct_or_call_accelerator_services():
     np.testing.assert_array_equal(result.pipeline.outputs[gaussian.id], data)
 
 
+def test_real_headless_measurements_pipeline_finalizes_public_table_and_cleans(
+    monkeypatch,
+):
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+    if importlib.util.find_spec("cucim") is None:
+        pytest.skip("The optional cuCIM wheel is not installed.")
+
+    registry = ComputeRegistry()
+    try:
+        runtime_probe = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not runtime_probe.available or not runtime_probe.selected_device_id:
+            pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
+        library_probe = registry.probe_library("cucim", refresh=True)
+        if not library_probe.available:
+            pytest.skip(library_probe.message or "cuCIM is unavailable.")
+
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        otsu = pipeline.add_node("otsu_threshold")
+        components = pipeline.add_node("label_connected_components")
+        measurement = pipeline.add_node("measure_objects")
+        for name, value in (
+            ("spatial_mode", "2D YX"),
+            ("include_shape_descriptors", False),
+            ("include_axis_descriptors", False),
+            ("include_2d_boundary_descriptors", False),
+            ("include_derived_shape_ratios", False),
+            ("include_2d_shape_moments", False),
+        ):
+            pipeline.set_param(measurement.id, name, value)
+        assert pipeline.connect("input", otsu.id).success
+        assert pipeline.connect(otsu.id, components.id).success
+        assert pipeline.connect(components.id, measurement.id).success
+
+        image = np.zeros((2, 48, 64), dtype=np.uint16)
+        image[0, 3:19, 5:27] = 1_000
+        image[0, 9:13, 11:16] = 0
+        image[0, 29:45, 41:60] = 2_000
+        image[1, 4:21, 7:30] = 1_500
+        image[1, 25:43, 33:58] = 2_500
+
+        def run_request(run_id: int, compute_request: ComputeRequest, *, registry=None):
+            return execute_pipeline_request(
+                replace(
+                    _accelerated_request(
+                        pipeline,
+                        image,
+                        compute_request,
+                        retain_node_ids=frozenset({measurement.id}),
+                        prune_unretained=True,
+                        manual_node_ids=frozenset({measurement.id}),
+                    ),
+                    run_id=run_id,
+                    input_metadata={"axes": "TYX"},
+                    input_name="sparse label stack",
+                ),
+                compute_registry=registry,
+            )
+
+        cpu_result = run_request(371, ComputeRequest(mode=ComputeMode.CPU))
+        assert cpu_result.error == ""
+        assert cpu_result.pipeline is not None
+        expected = cpu_result.pipeline.outputs[measurement.id]
+        assert isinstance(expected, TableData)
+
+        runtime = registry.runtime("cuda-cupy")
+        transfers = {"host_to_device": 0, "device_to_host": 0}
+        original_to_device = runtime.to_device
+        original_to_host = runtime.to_host
+
+        def counted_to_device(value, *, device_id=""):
+            transfers["host_to_device"] += 1
+            return original_to_device(value, device_id=device_id)
+
+        def counted_to_host(value):
+            transfers["device_to_host"] += 1
+            return original_to_host(value)
+
+        monkeypatch.setattr(runtime, "to_device", counted_to_device)
+        monkeypatch.setattr(runtime, "to_host", counted_to_host)
+        gpu_result = run_request(
+            372,
+            ComputeRequest(
+                mode=ComputeMode.SELECTIVE,
+                node_preferences={
+                    otsu.id: "cpu",
+                    components.id: "cpu",
+                    measurement.id: "implementation:cucim-measure-objects-basic-v1",
+                },
+                runtime_id="cuda-cupy",
+                device_id=runtime_probe.selected_device_id,
+                fallback_policy=FallbackPolicy.STRICT,
+            ),
+            registry=registry,
+        )
+
+        assert gpu_result.error == ""
+        assert gpu_result.pipeline is not None
+        assert gpu_result.execution_report is not None
+        assert gpu_result.execution_report.cleanup_succeeded
+        actual = gpu_result.pipeline.outputs[measurement.id]
+        assert isinstance(actual, TableData)
+        parity = operation_parity(
+            "measure_objects",
+            expected,
+            actual,
+            input_dtypes=(np.dtype(np.int32),),
+        )
+        assert parity.passed, parity.detail
+        assert actual == expected
+
+        decision = next(
+            item
+            for item in gpu_result.execution_report.actual_decisions
+            if item.node_id == measurement.id
+        )
+        assert decision.decision_kind is DecisionKind.SELECTED
+        assert decision.runtime_id == "cuda-cupy"
+        assert decision.implementation_library_id == "cucim"
+        assert decision.implementation_id == "cucim-measure-objects-basic-v1"
+        assert len(gpu_result.execution_report.plan.segments) == 1
+        assert gpu_result.execution_report.plan.segments[0].node_ids == (
+            measurement.id,
+        )
+        assert transfers == {"host_to_device": 1, "device_to_host": 1}
+
+        state = gpu_result.pipeline.output_states[measurement.id]
+        assert isinstance(state, TableState)
+        assert state.row_count == 4
+        assert state.columns == actual.columns
+        assert state.source_name == "sparse label stack"
+        provenance = gpu_result.pipeline.node_compute_provenance[
+            measurement.id
+        ].actual_implementation
+        assert provenance.runtime_id == "cuda-cupy"
+        assert provenance.implementation_library_id == "cucim"
+        assert provenance.implementation_id == "cucim-measure-objects-basic-v1"
+
+        _assert_private_cuda_scope_clean(
+            runtime,
+            runtime_probe.selected_device_id,
+        )
+    finally:
+        registry.close()
+
+
 def test_real_headless_background_gaussian_median_forms_one_device_segment():
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
