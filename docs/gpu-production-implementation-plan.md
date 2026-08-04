@@ -1,7 +1,7 @@
 # Production GPU implementation plan
 
-Date: 2026-08-02
-Product-direction revision: 2026-08-02
+Date: 2026-08-04
+Product-direction revision: 2026-08-04
 Status: Phase 1 is implemented headlessly on
 `codex/gpu-cross-platform-support`; the Pass 4 application slice now
 includes workflow-v4 compute intent, setup/memory diagnostics, selected-node
@@ -24,6 +24,12 @@ source-current record passed 16/16 exact native-`int32` admission cases,
 deterministic leading-block resets, synchronized block-boundary cancellation,
 cleanup, and conservative memory coverage. The strict v5 packaged policy
 artifact appends this public candidate without changing historical v1-v4 bytes.
+Phase 6 adds public cuCIM candidates for the basic schemas of Measure Objects
+and Measure Objects + Intensity. Its source-current RTX 5090 record passed all
+11 admission cases, 11 matched rejections, two lifecycle cases, and zero
+transaction-pool residue; the public typed table is finalized only after the
+mandatory host boundary. The strict v6 policy artifact appends these candidates
+without changing historical v1-v5 bytes.
 `developer_hidden` is reserved for unfinished or
 unvalidated work, while named release/platform gates remain region-specific.
 Cross-platform review: 2026-07-15
@@ -75,8 +81,10 @@ The following constraints and approved product directions are non-negotiable:
 - GPU work is introduced behind contracts and promotion gates. The first
   headless vertical slice covers Subtract Background/Rolling-Ball Background,
   median, and 2D/3D Gaussian. Subsequent completed slices add ordinary RL,
-  RL-TV, Otsu, Canny, Sigma Filter, and Connected Components. The Measurements
-  slice is next; other reasonable nodes follow in evidence-driven families.
+  RL-TV, Otsu, Canny, Sigma Filter, Connected Components, and the basic schemas
+  of Measure Objects and Measure Objects + Intensity. Convert Dtype and
+  inexpensive residency bridges are next; other reasonable nodes follow in
+  evidence-driven families.
 - Admission and visibility are region-specific. Once a provider region has
   passed its scientific-parity and required memory, progress, cancellation,
   cleanup, and runtime gates, it is visible as a normal `Selective` candidate;
@@ -522,6 +530,45 @@ the region `public_auto_candidate`; v5 is a strict v4 extension and historical
 v1-v4 resource hashes are unchanged. See the
 [Phase 5 implementation record](gpu-phase5-connected-components-implementation-report.md)
 and [canonical evidence](benchmarks/connected-components-cupyx-windows-rtx5090.md).
+
+### Phase 6 basic Measurements status (2026-08-04)
+
+Phase 6 promotes the basic schemas of `measure_objects` and
+`measure_objects_intensity` through cuCIM implementations. The exact public
+region is native non-negative `int32` labels, resolved 2D/3D spatial blocks,
+arbitrary sparse positive IDs, and—in the intensity-aware node—a same-shape
+native `bool`, `uint8`, `uint16`, or finite `float32` intensity image. Leading
+blocks and explicitly resolved spatial axes retain CPU row order, calibration,
+units, and independent block semantics.
+
+Extended shape, axis, 2D boundary, derived-ratio, and 2D moment columns remain
+on CPU. Other label/intensity dtypes, negative labels, incomplete non-negative
+or finite facts, invalid/mismatched layouts, empty spatial blocks, and blocks at
+or above the compact-label `int32` bound receive an explicit CPU reason. The
+provider never changes a dtype, drops requested columns, or substitutes a
+different table schema to gain GPU eligibility.
+
+The resident provider emits a private C-contiguous packed `float64` matrix. A
+mandatory D2H transfer and operation-owned host finalizer reconstruct the exact
+typed `TableData` only after CUDA cleanup and scope exit. This boundary is part
+of scientific identity, parity, memory, timing, and graph optimization. The
+result is host-only: the graph solver must charge a later H2D transfer if a
+future accelerator operation consumes data derived from the table.
+
+The source-current RTX 5090 profile passed 11 admission, 11 rejection, and two
+lifecycle cases with zero per-call pool residue. Full-public results ranged
+from CPU wins for small planes and one float32 intensity stack to 1.87x at
+1024² morphology, 16.37x at 2048² morphology plus `uint16` intensity, 7.28x on
+a 32×256×256 intensity volume, and 23.90x on a 64×512×512 confocal-like volume.
+The specs are therefore public Auto candidates, but selection remains exact-
+workload and graph-context specific rather than a hard-coded size rule.
+
+cuCIM's tiny lazy 2D/3D region-properties and Euler lookup allocations are
+primed in a dedicated process-lifetime module pool before transactional pools
+open. They are not result caches; every private execution pool still drains to
+zero used and reserved bytes. See the
+[Phase 6 implementation record](gpu-phase6-measurements-implementation-report.md)
+and [canonical evidence](benchmarks/measurements-cucim-windows-rtx5090.md).
 
 Immediate hardening before this optimizer can support broader operation and
 platform claims:
@@ -2269,14 +2316,18 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
 
 #### Measurements — `measurements-*-v1`
 
-- A GPU implementation may terminate a device segment at a typed host-table
-  finalizer. It must reproduce exact `TableData` column names/order, public
-  scalar/storage types, row ordering, calibration/units, selected intensity and
-  extended-property modes, missing-value policy, and label/count overflow
-  behavior.
-- Value parity for a small `regionprops_table` subset is feasibility evidence
-  only. Production promotion covers every advertised schema and downstream
-  table contract.
+- Implemented for the basic morphology and basic morphology-plus-intensity
+  schemas as `cucim-measure-objects-basic-v1` and
+  `cucim-measure-objects-intensity-basic-v1`. The promoted region preserves
+  exact `TableData` column names/order, public scalar/storage types, row order,
+  calibration/units, empty tables, sparse IDs, and label/count overflow checks.
+- The provider terminates its device segment at a mandatory typed host-table
+  finalizer. The packed result crosses to the host and the private CUDA scope is
+  cleaned before public `TableData` construction; finalizer timing and staging
+  memory are included in the optimizer cost.
+- Extended-property schemas remain authoritative CPU regions. Value parity for
+  a convenient `regionprops_table` subset is not sufficient to promote them;
+  every advertised column and downstream table contract requires evidence.
 
 #### Ordinary Richardson–Lucy — `rl-cupy-f32-v1`
 
@@ -2433,8 +2484,8 @@ permission to rewrite adjacent code.
   a small explicitly scoped wave of inexpensive residency-bridge nodes in
   parallel where file ownership is disjoint.
 - **Phase 3 — segmentation/measurement wave and cuCIM completeness review:**
-  Otsu, Canny, and Connected Components are implemented; the production-schema
-  Measurements slice is next. Time-box the full cuCIM/Clara
+  Otsu, Canny, Connected Components, and the basic production-schema
+  Measurements slice are implemented. Time-box the full cuCIM/Clara
   Windows investigation and Apple M1 Max provider
   feasibility.
 - **Phase 4 — remaining durable execution surfaces:** Passes 5 and 8 add batch,
@@ -2989,8 +3040,8 @@ declaration, memory/workload/parity policy, tests, benchmark artifacts, and docs
 **Public contracts:** no new generic contract unless an operation proves the
 existing one insufficient. A small Phase 2 bridge wave covers only inexpensive
 pointwise/arithmetic/mask operations needed to preserve useful residency. The
-Phase 3 scientific wave has completed Otsu, Canny, and Connected Components;
-the production-schema Measurements slice is next. The later broad-coverage
+Phase 3 scientific wave has completed Otsu, Canny, Connected Components, and
+the basic production-schema Measurements slice. The later broad-coverage
 phase adds remaining filters, morphology,
 segmentation, label cleanup, colocalization, and other reasonable nodes. For
 each node, benchmark all scientifically admitted CuPyX, cuCIM, and future
@@ -3175,9 +3226,9 @@ not reasons to redesign Phase 1.
 
 ## Ordered next suggested steps (maintained 2026-08-04)
 
-This is the implementation queue after the Connected Components vertical slice. Update this
-section when a wave lands so the branch and handoff report retain one explicit
-order. The completed public Canny/Otsu contracts and their separate evidence
+This is the implementation queue after the basic Measurements vertical slice.
+Update this section when a wave lands so the branch and handoff report retain
+one explicit order. The completed public Canny/Otsu contracts and their separate evidence
 protocol are recorded in
 the [Phase 3A report](gpu-phase3-canny-otsu-implementation-report.md); Sigma's
 contract, external Fiji evidence, fused public CuPy provider, and canonical
@@ -3186,29 +3237,25 @@ timing crossovers are recorded in the
 Components' exact IDs, resident CuPyX path, lifecycle/memory limits, and
 machine-local screening are recorded in the
 [Phase 5 report](gpu-phase5-connected-components-implementation-report.md).
+Measurements' typed host boundary, exact basic schemas, public regions, and
+workload-dependent timings are recorded in the
+[Phase 6 report](gpu-phase6-measurements-implementation-report.md).
 
-1. **Measurements:** the operation-owned RL provenance prerequisite is complete.
-   RL/RL-TV CPU behavior, parity, and compute contracts now have narrow owners,
-   and all four committed RL admission/performance artifacts fingerprint those
-   owners instead of broad shared registries. Continue with typed
-   labels-plus-intensity inputs and the host-table finalizer while preserving
-   schema, row/column order, units, calibration, missing values, and public
-   scalar types.
-2. **Convert Dtype and inexpensive residency bridges:** support only explicit
+1. **Convert Dtype and inexpensive residency bridges:** support only explicit
    authored conversions and scientifically faithful low-cost operations that can
    keep useful segments resident. Never insert a cast or bridge merely to improve
    a benchmark.
-3. **Native platform evidence:** validate supported native Linux targets and the
+2. **Native platform evidence:** validate supported native Linux targets and the
    available Windows RTX 40-series laptops, including clean setup, real kernels,
    parity, memory, cancellation, cleanup, and end-to-end selection. WSL2 is
    secondary evidence, not a substitute for native Windows/Linux claims.
-4. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
+3. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
    with unified-memory accounting. Keep the CPU path as the honest fallback
    unless an operation family passes scientific and performance gates.
-5. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
+4. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
    time-boxed packaging/upstream review. Prefer a maintainable feature-complete
    cuCIM route; do not normalize a permanently hobbled skimage-only fork.
-6. **Durable execution surfaces:** add batch, generated Python/CLI, and export
+5. **Durable execution surfaces:** add batch, generated Python/CLI, and export
    GPU execution and provenance after the core interactive operation coverage
    and lifecycle contracts are stable.
 
@@ -3238,9 +3285,10 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
    implemented. RL-TV, exact-mask Canny/Otsu, and the Sigma Filter vertical
    slice are now implemented too. Connected Components is also complete with
    exact native-`int32` IDs, resident CuPyX execution, block-boundary lifecycle,
-   and packaged policy artifact v5.
-   Continue in the maintained order above: Measurements; explicit Convert
-   Dtype/residency bridges;
+   and packaged policy artifact v5. Basic morphology and intensity Measurements
+   are complete with a cuCIM resident provider, mandatory typed host-table
+   finalizer, visible exact-region fallback, and RTX workload evidence.
+   Continue in the maintained order above: explicit Convert Dtype/residency bridges;
    platform/provider evidence; then durable batch/generated/CLI/export surfaces.
 5. **Admission rule:** scientific validity, memory, progress, cancellation,
    cleanup, and runtime evidence make a region a normal public Selective

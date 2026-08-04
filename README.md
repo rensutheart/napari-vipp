@@ -165,7 +165,9 @@ the public CPU Sigma Filter node and a clean-room CuPy RawKernel provider.
 Phase 5 adds exact CuPyX Connected Components for boolean 2D/3D masks, including
 SciPy-identical `int32` label IDs and independent leading-block resets. Their
 validated regions are normal public `Auto`/`Selective` candidates on this
-branch; unsupported regions visibly use CPU.
+branch; unsupported regions visibly use CPU. Phase 6 adds cuCIM candidates for
+the basic schemas of **Measure Objects** and **Measure Objects + Intensity**,
+with an exact typed-table finalizer after the mandatory GPU-to-host boundary.
 Both deconvolution paths use exact ordered-multi-input benchmarking. The branch
 includes
 CPU/Auto/Selective execution contracts, visible or strict fallback,
@@ -312,6 +314,37 @@ respectively. Schema v3 binds the evidence to source fingerprints and strictly
 limits private-source metadata; these remain short machine-local screens, not
 portable performance guarantees or saved optimizer choices.
 
+Basic GPU **Measurements** accepts native non-negative `int32` labels in
+resolved 2D/3D spatial layouts, including leading blocks and sparse positive
+IDs. The intensity-aware node additionally accepts a same-shape native `bool`,
+`uint8`, `uint16`, or finite `float32` image. The first promoted region covers
+the existing basic morphology and basic morphology-plus-intensity schemas;
+extended shape, axis, boundary, ratio, and moment columns visibly remain on CPU.
+Other label/intensity dtypes, negative labels, non-finite float32 intensity,
+invalid ranks/shapes, an unqualified cuCIM runtime, or insufficient VRAM also
+produce a specific CPU decision or fallback rather than an implicit cast or a
+changed table.
+
+The cuCIM provider returns a private resident packed `float64` matrix. VIPP
+copies it to the host, cleans up the CUDA scope, and only then runs the mandatory
+finalizer that reconstructs the exact `TableData` schema, column/row order,
+units, calibration, and public scalar types. Finalizer time and staging memory
+are included in optimization, and the public table always ends device
+residency. Tiny cuCIM region-properties/Euler lookup caches are primed once in
+a separate module-owned pool; every transactional execution pool must still
+return to zero.
+
+The source-current RTX 5090 record passed all 11 admission cases, all 11 matched
+rejections, both lifecycle cases, and clean private-pool teardown. Full-public
+speedups were 1.87x for 1024² morphology, 16.37x for 2048² morphology plus
+`uint16` intensity, 7.28x for a 32×256×256 intensity volume, and 23.90x for a
+64×512×512 confocal-like intensity volume. CPU was correctly faster for small
+256²/512² images and for the measured 6×512² float32 intensity stack. These are
+machine-local screens: `Auto` and `Find fastest pipeline…` compare the exact
+workload and pipeline residency context instead of assuming GPU always wins.
+See the [Phase 6 Measurements implementation record](docs/gpu-phase6-measurements-implementation-report.md)
+and [canonical evidence](docs/benchmarks/measurements-cucim-windows-rtx5090.md).
+
 Explicit **Convert
 Dtype** nodes can unlock these GPU candidates and may improve
 acceleration across a longer GPU-resident segment. Choose
@@ -425,6 +458,10 @@ crossovers. The
 [Connected Components implementation record](docs/gpu-phase5-connected-components-implementation-report.md)
 records exact SciPy `int32` IDs, the resident CuPyX path, block-boundary
 lifecycle, memory model, CPU fallbacks, and machine-local timing interpretation.
+The
+[basic Measurements implementation record](docs/gpu-phase6-measurements-implementation-report.md)
+records the typed-table boundary, exact promoted schema, visible CPU regions,
+cuCIM lifecycle design, and workload-dependent CPU/GPU timing evidence.
 The machine-local
 [large-stack Richardson-Lucy timing summary](docs/benchmarks/rl-cupy-performance-windows-rtx5090.md)
 compares synchronized CPU and transfer-inclusive CuPy execution on the private
