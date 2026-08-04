@@ -277,6 +277,7 @@ class PipelineOptimizationCandidate:
     runtime_id: str
     available: bool = True
     minimum_workspace_bytes: int = 0
+    host_output_only: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -296,6 +297,8 @@ class PipelineOptimizationCandidate:
             or self.minimum_workspace_bytes < 0
         ):
             raise ValueError("minimum_workspace_bytes must be non-negative")
+        if not isinstance(self.host_output_only, bool):
+            raise TypeError("host_output_only must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -797,6 +800,14 @@ class PipelineOptimizationCoordinator:
                         candidate.runtime_id,
                         cost,
                         workspace_bytes=workspace,
+                        host_materialization_seconds=(
+                            _candidate_host_materialization_cost(
+                                candidate,
+                                result,
+                                host_runtime_id=transfer_profile.host_runtime_id,
+                            )
+                        ),
+                        host_output_only=candidate.host_output_only,
                         available=candidate.available,
                     )
                 )
@@ -1149,7 +1160,34 @@ def _candidate_cost(
             f"{candidate.implementation_id!r} lacks synchronized resident timings.",
             node.node_id,
         )
+    if candidate.host_output_only and (
+        not result.warm_host_materialization_seconds
+        or len(result.warm_host_materialization_seconds)
+        != len(result.warm_seconds)
+    ):
+        return 0.0, EvidenceRefusal(
+            "gpu_host_finalization_timing_incomplete",
+            f"{candidate.implementation_id!r} lacks typed host-finalization "
+            "timings.",
+            node.node_id,
+        )
     return float(statistics.median(result.warm_resident_seconds)), None
+
+
+def _candidate_host_materialization_cost(
+    candidate: PipelineOptimizationCandidate,
+    result: BenchmarkCandidateResult | None,
+    *,
+    host_runtime_id: str,
+) -> float:
+    if (
+        result is None
+        or candidate.runtime_id == host_runtime_id
+        or not candidate.host_output_only
+        or not result.warm_host_materialization_seconds
+    ):
+        return 0.0
+    return float(statistics.median(result.warm_host_materialization_seconds))
 
 
 def _proposed_preference(

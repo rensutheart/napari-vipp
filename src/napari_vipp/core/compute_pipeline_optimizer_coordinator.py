@@ -77,11 +77,13 @@ from napari_vipp.core.execution import (
     PipelineRunResult,
     execute_pipeline_request,
 )
+from napari_vipp.core.measurements import basic_measurement_layout
 from napari_vipp.core.pipeline import (
     MANUAL_RUN_SKIP,
     PrototypePipeline,
     SourcePayload,
 )
+from napari_vipp.core.tables import TableData
 from napari_vipp.core.workflow import deserialize_workflow
 
 ProgressCallback = Callable[["PipelineOptimizerProgress"], None]
@@ -301,6 +303,15 @@ class ApplicationPipelineOptimizerCoordinator:
             restored.get("output_tunnels", ()),
         )
         safe_ids, unsafe_ids = _writer_free_node_ids(pipeline)
+        # "Find fastest pipeline" is an explicit request to execute the
+        # complete writer-free scientific graph.  Manual/cached operations are
+        # therefore selected for these private runs instead of becoming silent
+        # barriers.  This is required for accelerator-capable terminal tables
+        # (for example object measurements) to be benchmarked and included in
+        # end-to-end parity/timing without changing the user's live cache.
+        private_manual_node_ids = frozenset(
+            pipeline.manual_node_ids() & set(safe_ids)
+        )
         raw_locks = tuple(str(node_id).strip() for node_id in optimizer_locked_node_ids)
         if any(not node_id for node_id in raw_locks) or len(set(raw_locks)) != len(
             raw_locks
@@ -368,6 +379,7 @@ class ApplicationPipelineOptimizerCoordinator:
             retain_node_ids=frozenset(safe_ids),
             prune_unretained=False,
             cancel_callback=is_cancelled_or_expired,
+            manual_node_ids=private_manual_node_ids,
         )
         check_abort()
         baseline_pipeline = _successful_pipeline(baseline, "baseline")
@@ -786,6 +798,7 @@ class ApplicationPipelineOptimizerCoordinator:
                 safe_ids,
                 retained,
                 validation_request,
+                manual_node_ids=private_manual_node_ids,
                 deadline=deadline,
                 cancelled=cancelled,
                 progress=forward_validation,
@@ -870,6 +883,7 @@ class ApplicationPipelineOptimizerCoordinator:
         retain_node_ids: frozenset[str],
         prune_unretained: bool,
         cancel_callback: Callable[[], bool],
+        manual_node_ids: frozenset[str] = frozenset(),
     ) -> PipelineRunResult:
         first = next(iter(source_payloads.values()))
 
@@ -895,6 +909,7 @@ class ApplicationPipelineOptimizerCoordinator:
             target_node_ids=target_node_ids,
             retain_node_ids=retain_node_ids,
             prune_unretained=prune_unretained,
+            manual_node_ids=manual_node_ids,
             cancel_event=_CallbackCancelEvent(cancel_callback),
         )
         return self.executor(
@@ -914,6 +929,7 @@ class ApplicationPipelineOptimizerCoordinator:
         retained: frozenset[str],
         validation: PipelineValidationRequest,
         *,
+        manual_node_ids: frozenset[str] = frozenset(),
         deadline: float,
         cancelled: CancelCallback | None,
         progress: Callable[[int, int, str], None] | None = None,
@@ -932,6 +948,7 @@ class ApplicationPipelineOptimizerCoordinator:
         validation_node_ids = _optimizer_validation_node_ids(
             baseline_pipeline,
             safe_ids,
+            manual_node_ids=manual_node_ids,
         )
         changed = tuple(
             node_id
@@ -973,6 +990,7 @@ class ApplicationPipelineOptimizerCoordinator:
             retain_node_ids=parity_retain,
             prune_unretained=True,
             cancel_callback=cancel_or_expired,
+            manual_node_ids=manual_node_ids,
         )
         check_abort()
         if progress is not None:
@@ -986,6 +1004,7 @@ class ApplicationPipelineOptimizerCoordinator:
             retain_node_ids=parity_retain,
             prune_unretained=True,
             cancel_callback=cancel_or_expired,
+            manual_node_ids=manual_node_ids,
         )
         check_abort()
         if progress is not None:
@@ -1078,6 +1097,7 @@ class ApplicationPipelineOptimizerCoordinator:
                     retain_node_ids=timing_retain,
                     prune_unretained=True,
                     cancel_callback=cancel_or_expired,
+                    manual_node_ids=manual_node_ids,
                 )
                 check_abort()
                 _successful_exact_pipeline(
@@ -1162,19 +1182,22 @@ class ApplicationPipelineOptimizerCoordinator:
 def _optimizer_validation_node_ids(
     pipeline: PrototypePipeline,
     safe_ids: frozenset[str],
+    *,
+    manual_node_ids: frozenset[str] = frozenset(),
 ) -> frozenset[str]:
     """Return nodes that a private run can execute without crossing manual barriers.
 
-    Optimizer runs deliberately use the ordinary ``MANUAL_RUN_SKIP`` contract.
-    A skipped manual node has no execution decision, so exact validation must
-    stop at its executable predecessors instead of demanding provenance for an
-    operation that did not run.  Terminals in this induced subgraph become the
-    observable parity boundaries.
+    Optimizer runs use the ordinary ``MANUAL_RUN_SKIP`` contract plus an
+    explicit set of manual nodes authorized for the detached private analysis.
+    Any other manual node remains a barrier, so exact validation stops at its
+    executable predecessors instead of claiming provenance for work that did
+    not run.  Terminals in this induced subgraph become observable boundaries.
     """
 
     plan = pipeline.plan_execution(
         safe_ids,
         manual_mode=MANUAL_RUN_SKIP,
+        manual_node_ids=manual_node_ids,
         target_node_ids=safe_ids,
     )
     return frozenset(set(plan.runnable_node_ids) & set(safe_ids))
@@ -1688,6 +1711,11 @@ def _build_optimizer_graph(
                     current_spec.implementation_library_id,
                     current_spec.runtime_id,
                     minimum_workspace_bytes=locked_workspace,
+                    host_output_only=bool(
+                        str(
+                            getattr(current_spec, "host_finalizer_ref", "")
+                        ).strip()
+                    ),
                 ),
             )
         else:
@@ -1710,6 +1738,9 @@ def _build_optimizer_graph(
                         spec.implementation_id,
                         spec.implementation_library_id,
                         spec.runtime_id,
+                        host_output_only=bool(
+                            str(getattr(spec, "host_finalizer_ref", "")).strip()
+                        ),
                     )
                 )
             candidates = tuple(candidates_list)
@@ -1768,6 +1799,42 @@ def _build_optimizer_graph(
 
 def _output_byte_count(pipeline: PrototypePipeline, node_id: str) -> int:
     values = tuple(pipeline.node_outputs.get(node_id, ()))
+    node = pipeline.nodes[node_id]
+    if (
+        node.operation_id in {"measure_objects", "measure_objects_intensity"}
+        and values
+        and isinstance(values[0], TableData)
+    ):
+        try:
+            call = pipeline.prepare_node_call(node_id)
+            if call is not None:
+                parameters = call.keyword_arguments()
+                layout = basic_measurement_layout(
+                    np.asarray(call.inputs[0]).shape,
+                    spatial_mode=parameters.get(
+                        "spatial_mode",
+                        "Auto from axes",
+                    ),
+                    resolved_spatial_ndim=parameters.get(
+                        "resolved_spatial_ndim"
+                    ),
+                    axis_names=parameters.get("axis_names"),
+                    axis_types=parameters.get("axis_types"),
+                    axis_scales=parameters.get("axis_scales"),
+                    axis_units=parameters.get("axis_units"),
+                    include_intensity=(
+                        node.operation_id == "measure_objects_intensity"
+                    ),
+                )
+                return (
+                    values[0].row_count
+                    * layout.packed_width
+                    * np.dtype(np.float64).itemsize
+                )
+        except (TypeError, ValueError):
+            # Unsupported extended/invalid authored regions have no GPU
+            # candidate; retain the generic conservative fallback below.
+            pass
     total = 0
     seen: set[int] = set()
     for value in values:

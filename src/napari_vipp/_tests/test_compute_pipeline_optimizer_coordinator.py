@@ -42,6 +42,7 @@ from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
     ApplicationPipelineOptimizerCoordinator,
     PipelineOptimizerPhase,
     _build_optimizer_graph,
+    _optimizer_validation_node_ids,
     _pipeline_output_parity,
     fingerprint_pipeline_optimizer_sources,
     probe_pipeline_optimizer_environment,
@@ -1004,6 +1005,29 @@ def test_pipeline_validation_stops_at_skipped_manual_barrier(tmp_path):
     assert all(metrics.id not in node_ids for node_ids in decision_sets)
     assert all(metrics.id not in node_ids for node_ids in retained_sets)
     assert all(median.id in node_ids for node_ids in retained_sets)
+
+
+def test_optimizer_private_runs_can_explicitly_include_manual_measurements():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    source_id = next(iter(pipeline.nodes))
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    assert pipeline.connect(source_id, threshold.id).success
+    assert pipeline.connect(threshold.id, labels.id).success
+    assert pipeline.connect(labels.id, measurements.id).success
+    safe_ids = frozenset(pipeline.nodes)
+
+    skipped = _optimizer_validation_node_ids(pipeline, safe_ids)
+    selected = _optimizer_validation_node_ids(
+        pipeline,
+        safe_ids,
+        manual_node_ids=frozenset({measurements.id}),
+    )
+
+    assert measurements.id not in skipped
+    assert {source_id, threshold.id, labels.id, measurements.id} <= selected
 
 
 @pytest.mark.parametrize(

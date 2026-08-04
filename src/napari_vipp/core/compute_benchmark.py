@@ -225,6 +225,7 @@ class BenchmarkInvocationObservation:
     transfers_included: bool = False
     transfer_seconds: float | None = None
     resident_seconds: float | None = None
+    host_materialization_seconds: float | None = None
     runtime_live_bytes: int = 0
     runtime_reserved_bytes: int = 0
     out_of_pool_bytes: int = 0
@@ -236,7 +237,11 @@ class BenchmarkInvocationObservation:
         for name in ("synchronized", "transfers_included"):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be a boolean.")
-        for name in ("transfer_seconds", "resident_seconds"):
+        for name in (
+            "transfer_seconds",
+            "resident_seconds",
+            "host_materialization_seconds",
+        ):
             value = getattr(self, name)
             if value is not None and (
                 isinstance(value, bool)
@@ -779,6 +784,7 @@ def _benchmark_record_from_dict(payload: object) -> BenchmarkRecord:
             "warm_seconds",
             "warm_transfer_seconds",
             "warm_resident_seconds",
+            "warm_host_materialization_seconds",
         ):
             if name in candidate:
                 candidate[name] = tuple(candidate[name])
@@ -888,6 +894,10 @@ class _CandidateState:
     warm_transfer_seconds: list[float | None] = field(default_factory=list)
     cold_resident_seconds: float | None = None
     warm_resident_seconds: list[float | None] = field(default_factory=list)
+    cold_host_materialization_seconds: float | None = None
+    warm_host_materialization_seconds: list[float | None] = field(
+        default_factory=list
+    )
     peak_memory_bytes: int = 0
     peak_runtime_live_bytes: int = 0
     peak_runtime_reserved_bytes: int = 0
@@ -1643,6 +1653,10 @@ class NodeBenchmarkService:
             state.warm_resident_seconds,
             len(state.warm_seconds),
         )
+        warm_host_materialization = _complete_measurement_series(
+            state.warm_host_materialization_seconds,
+            len(state.warm_seconds),
+        )
         return BenchmarkCandidateResult(
             implementation_id=state.implementation.implementation_id,
             parity_passed=state.parity_passed,
@@ -1663,6 +1677,10 @@ class NodeBenchmarkService:
             warm_transfer_seconds=warm_transfer,
             cold_resident_seconds=state.cold_resident_seconds,
             warm_resident_seconds=warm_resident,
+            cold_host_materialization_seconds=(
+                state.cold_host_materialization_seconds
+            ),
+            warm_host_materialization_seconds=warm_host_materialization,
             peak_runtime_live_bytes=state.peak_runtime_live_bytes,
             peak_runtime_reserved_bytes=state.peak_runtime_reserved_bytes,
             peak_out_of_pool_bytes=state.peak_out_of_pool_bytes,
@@ -1926,9 +1944,15 @@ class NodeBenchmarkService:
         if phase == "cold":
             state.cold_transfer_seconds = observation.transfer_seconds
             state.cold_resident_seconds = resident_seconds
+            state.cold_host_materialization_seconds = (
+                observation.host_materialization_seconds
+            )
         elif phase == "warm":
             state.warm_transfer_seconds.append(observation.transfer_seconds)
             state.warm_resident_seconds.append(resident_seconds)
+            state.warm_host_materialization_seconds.append(
+                observation.host_materialization_seconds
+            )
 
     def _quarantine_state(
         self,
@@ -2041,6 +2065,7 @@ class GraphImplementationCost:
     compute_seconds: float
     workspace_bytes: int = 0
     host_materialization_seconds: float = 0.0
+    host_output_only: bool = False
     available: bool = True
 
     def __post_init__(self) -> None:
@@ -2055,6 +2080,8 @@ class GraphImplementationCost:
             "host_materialization_seconds",
         )
         _validate_nonnegative_int(self.workspace_bytes, "workspace_bytes")
+        if not isinstance(self.host_output_only, bool):
+            raise TypeError("host_output_only must be a boolean.")
         if not isinstance(self.available, bool):
             raise TypeError("available must be a boolean.")
         object.__setattr__(self, "compute_seconds", float(self.compute_seconds))
@@ -2373,18 +2400,44 @@ def _score_assignment(
                 )
             )
 
-        target_runtimes = {
+        successor_runtimes = {
             selected_by_node[edge.target_node_id].runtime_id
             for edge in outgoing[node.node_id]
         }
-        if node.requires_host_output:
-            target_runtimes.add(problem.host_runtime_id)
+        host_materialized = False
+        if candidate.host_output_only:
+            if candidate.runtime_id != problem.host_runtime_id:
+                seconds = _transition_seconds(
+                    transitions,
+                    candidate.runtime_id,
+                    problem.host_runtime_id,
+                    node.output_bytes,
+                )
+                transfer_seconds += seconds
+                transfer_events.append(
+                    GraphTransfer(
+                        source_node_id=node.node_id,
+                        target_runtime_id=problem.host_runtime_id,
+                        from_runtime_id=candidate.runtime_id,
+                        byte_count=node.output_bytes,
+                        seconds=seconds,
+                        kind="host-materialization",
+                    )
+                )
+                host_materialized = True
+            output_runtime = problem.host_runtime_id
+            target_runtimes = successor_runtimes
+        else:
+            output_runtime = candidate.runtime_id
+            target_runtimes = set(successor_runtimes)
+            if node.requires_host_output:
+                target_runtimes.add(problem.host_runtime_id)
         for target_runtime in sorted(target_runtimes):
-            if target_runtime == candidate.runtime_id:
+            if target_runtime == output_runtime:
                 continue
             seconds = _transition_seconds(
                 transitions,
-                candidate.runtime_id,
+                output_runtime,
                 target_runtime,
                 node.output_bytes,
             )
@@ -2398,16 +2451,15 @@ def _score_assignment(
                 GraphTransfer(
                     source_node_id=node.node_id,
                     target_runtime_id=target_runtime,
-                    from_runtime_id=candidate.runtime_id,
+                    from_runtime_id=output_runtime,
                     byte_count=node.output_bytes,
                     seconds=seconds,
                     kind=kind,
                 )
             )
-        if (
-            problem.host_runtime_id in target_runtimes
-            and candidate.runtime_id != problem.host_runtime_id
-        ):
+            if target_runtime == problem.host_runtime_id:
+                host_materialized = True
+        if host_materialized:
             host_materialization_seconds += candidate.host_materialization_seconds
 
     memory_peaks = _assignment_memory_peaks(
@@ -2464,7 +2516,12 @@ def _assignment_memory_peaks(
             if edge.source_node_id in seen_sources:
                 continue
             seen_sources.add(edge.source_node_id)
-            source_runtime = selected_by_node[edge.source_node_id].runtime_id
+            source_candidate = selected_by_node[edge.source_node_id]
+            source_runtime = (
+                problem.host_runtime_id
+                if source_candidate.host_output_only
+                else source_candidate.runtime_id
+            )
             if source_runtime != runtime_id:
                 transferred_input_bytes += node_by_id[edge.source_node_id].output_bytes
         computation_peak = (
@@ -2475,8 +2532,13 @@ def _assignment_memory_peaks(
         )
         peaks[runtime_id] = max(peaks[runtime_id], computation_peak)
 
-        live_bytes[runtime_id] += node.output_bytes
-        live_outputs[node.node_id] = (runtime_id, node.output_bytes)
+        output_runtime = (
+            problem.host_runtime_id
+            if candidate.host_output_only
+            else runtime_id
+        )
+        live_bytes[output_runtime] += node.output_bytes
+        live_outputs[node.node_id] = (output_runtime, node.output_bytes)
         for edge in incoming.get(node.node_id, ()):
             source_id = edge.source_node_id
             remaining_consumers[source_id] -= 1

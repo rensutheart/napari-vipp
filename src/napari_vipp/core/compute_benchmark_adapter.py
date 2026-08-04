@@ -16,7 +16,7 @@ import math
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from hashlib import sha256
 
 import numpy as np
@@ -46,6 +46,12 @@ from napari_vipp.core.compute_registry import (
     RuntimeProtocol,
 )
 from napari_vipp.core.compute_specs import AdmissionTier, OperationComputeSpec
+from napari_vipp.core.host_finalization import apply_host_finalizer
+from napari_vipp.core.measurements import (
+    MEASUREMENT_TABLE_PARITY_OPERATION_IDS,
+    MEASUREMENT_TABLE_PARITY_POLICY_ID,
+    measurement_table_parity,
+)
 from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.progress import ProgressContext, ProgressUpdate
 from napari_vipp.core.richardson_lucy_parity import (
@@ -282,6 +288,7 @@ def build_registered_node_benchmark(
             expected,
             actual,
             input_peak=_finite_input_peak(detached.inputs[0]),
+            input_dtypes=tuple(np.asarray(value).dtype for value in detached.inputs),
             parameters=detached.kwargs,
         ),
         benchmark_policy_id=_benchmark_policy_id(
@@ -410,6 +417,7 @@ def operation_parity(
     candidate: object,
     *,
     input_peak: float | None = None,
+    input_dtypes: Sequence[object] = (),
     parameters: Mapping[str, object] | None = None,
 ) -> ParityResult:
     """Apply the registered operation's production scientific parity gate."""
@@ -442,6 +450,13 @@ def operation_parity(
         if lambda_zero:
             return richardson_lucy_float32_parity(reference, candidate)
         return richardson_lucy_tv_float32_parity(reference, candidate)
+    if operation in MEASUREMENT_TABLE_PARITY_OPERATION_IDS:
+        intensity_dtype = input_dtypes[1] if len(input_dtypes) > 1 else None
+        return measurement_table_parity(
+            reference,
+            candidate,
+            intensity_dtype=intensity_dtype,
+        )
     raise ValueError(f"No production benchmark parity policy for {operation!r}.")
 
 
@@ -588,6 +603,8 @@ def _validate_admitted_spec(
         expected_parity = "rl-tv-float32-tolerance-v1"
     elif call.operation_id in SIGMA_FILTER_PARITY_OPERATION_IDS:
         expected_parity = "sigma-dtype-parity-v1"
+    elif call.operation_id in MEASUREMENT_TABLE_PARITY_OPERATION_IDS:
+        expected_parity = MEASUREMENT_TABLE_PARITY_POLICY_ID
     if expected_parity is None or spec.parity_policy_id != expected_parity:
         raise ValueError(
             f"Implementation {spec.implementation_id!r} has unsupported parity "
@@ -688,7 +705,9 @@ class _RegisteredCandidateRunner:
         snapshots: list[tuple[str, RuntimeMemorySnapshot]] = []
         transfer_seconds = 0.0
         resident_seconds = 0.0
+        host_materialization_seconds = 0.0
         host_result: object | None = None
+        host_payloads: tuple[object, ...] = ()
         raw: object | None = None
         outputs: tuple[object, ...] = ()
         device_inputs: tuple[object, ...] = ()
@@ -785,18 +804,13 @@ class _RegisteredCandidateRunner:
                         snapshots.append(("post_kernel", self._snapshot(runtime)))
 
                         transfer_started = _read_clock(self.clock)
-                        host_outputs = tuple(
+                        host_payloads = tuple(
                             runtime.to_host(output) for output in outputs
                         )
                         runtime.synchronize(device_id=self.device_id)
                         transfer_seconds += _elapsed(self.clock, transfer_started)
                         snapshots.append(("post_d2h", self._snapshot(runtime)))
-                        host_result = (
-                            host_outputs[0]
-                            if private_call.output_port_count == 1
-                            else host_outputs
-                        )
-                        _ensure_host_only(host_result, runtime)
+                        _ensure_host_only(host_payloads, runtime)
                     except (
                         BenchmarkCancelled,
                         BenchmarkBudgetExceeded,
@@ -830,7 +844,6 @@ class _RegisteredCandidateRunner:
                     device_value = None
                     transferred = []
                     invalid = ()
-                    host_outputs = ()
                     try:
                         runtime.synchronize(device_id=self.device_id)
                         snapshots.append(("post_release", self._snapshot(runtime)))
@@ -889,13 +902,60 @@ class _RegisteredCandidateRunner:
                 raise _DetachedBenchmarkCandidateFailure(final_failure) from None
             failure_type, failure_message = control_failure
             raise failure_type(failure_message) from None
+        if final_failure is None:
+            abort = _benchmark_abort_callback(private_call)
+            if abort is not None and abort():
+                raise BenchmarkCancelled(
+                    "Benchmark cancelled before host output finalization."
+                )
+            finalizer_ref = str(
+                getattr(self.spec, "host_finalizer_ref", "")
+            ).strip()
+            boundary_started = _read_clock(self.clock)
+            if finalizer_ref:
+                finalized = apply_host_finalizer(
+                    finalizer_ref,
+                    host_payloads,
+                    replace(
+                        private_call,
+                        inputs=(None,) * len(private_call.inputs),
+                    ),
+                )
+                host_result = (
+                    finalized[0]
+                    if private_call.output_port_count == 1
+                    else finalized
+                )
+            else:
+                host_result = (
+                    host_payloads[0]
+                    if private_call.output_port_count == 1
+                    else host_payloads
+                )
+            _ensure_host_only(host_result, runtime)
+            if finalizer_ref:
+                # The typed host conversion is a mandatory output-boundary
+                # cost, never resident compute or a directional transfer.
+                host_materialization_seconds = _elapsed(
+                    self.clock,
+                    boundary_started,
+                )
+            if abort is not None and abort():
+                raise BenchmarkCancelled(
+                    "Benchmark cancelled after host output finalization."
+                )
         observed = tuple(snapshot for _stage, snapshot in snapshots) + (terminal,)
         measurement = BenchmarkInvocationObservation(
-            timing_scope="synchronized-end-to-end-v1",
+            timing_scope=(
+                "synchronized-end-to-end-host-finalized-v1"
+                if str(getattr(self.spec, "host_finalizer_ref", "")).strip()
+                else "synchronized-end-to-end-v1"
+            ),
             synchronized=True,
             transfers_included=True,
             transfer_seconds=transfer_seconds,
             resident_seconds=resident_seconds,
+            host_materialization_seconds=host_materialization_seconds,
             runtime_live_bytes=max(
                 (snapshot.runtime_live_bytes for snapshot in observed),
                 default=0,
@@ -1101,6 +1161,9 @@ def _ensure_host_only(value: object, runtime: RuntimeProtocol) -> None:
     elif isinstance(value, (tuple, list)):
         for item in value:
             _ensure_host_only(item, runtime)
+    elif is_dataclass(value) and not isinstance(value, type):
+        for descriptor in fields(value):
+            _ensure_host_only(getattr(value, descriptor.name), runtime)
 
 
 def workload_from_prepared_node_call(

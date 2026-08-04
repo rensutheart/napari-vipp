@@ -607,6 +607,8 @@ class BenchmarkCandidateResult:
     warm_transfer_seconds: tuple[float, ...] = ()
     cold_resident_seconds: float | None = None
     warm_resident_seconds: tuple[float, ...] = ()
+    cold_host_materialization_seconds: float | None = None
+    warm_host_materialization_seconds: tuple[float, ...] = ()
     peak_runtime_live_bytes: int = 0
     peak_runtime_reserved_bytes: int = 0
     peak_out_of_pool_bytes: int = 0
@@ -637,6 +639,12 @@ class BenchmarkCandidateResult:
                 else (self.cold_resident_seconds,)
             )
             + tuple(self.warm_resident_seconds)
+            + (
+                ()
+                if self.cold_host_materialization_seconds is None
+                else (self.cold_host_materialization_seconds,)
+            )
+            + tuple(self.warm_host_materialization_seconds)
         )
         if any(
             isinstance(value, bool)
@@ -696,7 +704,11 @@ class BenchmarkCandidateResult:
             raise TypeError("synchronized must be a boolean.")
         if not isinstance(self.transfers_included, bool):
             raise TypeError("transfers_included must be a boolean.")
-        for name in ("warm_transfer_seconds", "warm_resident_seconds"):
+        for name in (
+            "warm_transfer_seconds",
+            "warm_resident_seconds",
+            "warm_host_materialization_seconds",
+        ):
             values = tuple(getattr(self, name))
             if values and len(values) != len(self.warm_seconds):
                 raise ValueError(f"{name} must be empty or describe every warm round.")
@@ -709,7 +721,11 @@ class BenchmarkCandidateResult:
         )
         if self.cold_seconds is not None:
             object.__setattr__(self, "cold_seconds", float(self.cold_seconds))
-        for name in ("cold_transfer_seconds", "cold_resident_seconds"):
+        for name in (
+            "cold_transfer_seconds",
+            "cold_resident_seconds",
+            "cold_host_materialization_seconds",
+        ):
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, float(value))

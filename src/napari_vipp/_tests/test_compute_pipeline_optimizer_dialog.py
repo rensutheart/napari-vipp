@@ -30,9 +30,10 @@ def test_find_fastest_dialog_has_one_unambiguous_search_scope(qtbot):
     assert not hasattr(dialog, "override_authored_checkbox")
     assert "every scientifically eligible" in dialog.summary_label.text()
     assert dialog.summary_label.textFormat() == Qt.RichText
-    assert dialog.summary_label.text().count("<li>") == 4
-    for heading in ("Search:", "Locks:", "Control:", "Timing:"):
+    assert dialog.summary_label.text().count("<li>") == 5
+    for heading in ("Search:", "Locks:", "Manual nodes:", "Control:", "Timing:"):
         assert f"<b>{heading}</b>" in dialog.summary_label.text()
+    assert "live cached results are not changed" in dialog.summary_label.text()
     assert "2 explicitly locked nodes" in dialog.progress_label.text()
 
     singular_dialog = PipelineOptimizerDialog(locked_node_count=1)
