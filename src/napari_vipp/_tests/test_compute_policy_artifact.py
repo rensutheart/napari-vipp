@@ -44,7 +44,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     policy = load_phase1_compute_policy()
 
     assert policy.policy_id == PHASE1_POLICY_ID
-    assert policy.policy_version == 5
+    assert policy.policy_version == 6
     assert policy.content_sha256 == PHASE1_POLICY_SHA256
     assert policy.phase == "phase1"
     assert policy.status == "public-validated"
@@ -53,7 +53,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     assert not policy.exposure.developer_enablement_required
 
     with pytest.raises(FrozenInstanceError):
-        policy.policy_version = 5  # type: ignore[misc]
+        policy.policy_version = 6  # type: ignore[misc]
 
 
 def test_phase1_operation_ids_and_conservative_settings_are_exact():
@@ -66,6 +66,8 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
         "gaussian_blur_3d": "cupyx-gaussian-blur-3d-v1",
         "sigma_filter": "cupy-sigma-filter-v1",
         "label_connected_components": "cupyx-connected-components-v1",
+        "measure_objects": "cucim-measure-objects-basic-v1",
+        "measure_objects_intensity": "cucim-measure-objects-intensity-basic-v1",
     }
 
     assert {
@@ -159,6 +161,7 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
         assert operation.memory_model_id == spec.memory_model_id
         assert operation.supported_spatial_ndims == spec.supported_spatial_ndims
         assert operation.supports_device_residency == spec.supports_device_residency
+        assert operation.host_finalizer_ref == spec.host_finalizer_ref
         assert (
             operation.support_summary.public_dtypes == spec.input_ports[0].public_dtypes
         )
@@ -201,9 +204,7 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
     assert "float32-abs-at-most-f32-sqrt-f32max-v1" in (
         sigma.support_summary.required_facts
     )
-    assert "native-endian-dtype-descriptor-v1" in (
-        sigma.support_summary.required_facts
-    )
+    assert "native-endian-dtype-descriptor-v1" in (sigma.support_summary.required_facts)
     assert "non-native-endian-v1" in sigma.support_summary.explicit_cpu_regions
     assert {
         bound.parameter: (bound.minimum, bound.maximum)
@@ -259,8 +260,62 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
         "axis-metadata-or-explicit-mode-v1",
     )
 
+    measurements = policy.operation("measure_objects")
+    measurements_intensity = policy.operation("measure_objects_intensity")
+    for operation in (measurements, measurements_intensity):
+        assert operation.admission_tier == "public_auto_candidate"
+        assert operation.implementation_version == "1"
+        assert operation.runtime_id == "cuda-cupy"
+        assert operation.implementation_library_id == "cucim"
+        assert operation.environment_policy_id == (
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
+        )
+        assert operation.parameter_policy_id == "basic-measurements-parameters-v1"
+        assert operation.parity_policy_id == "basic-measurement-table-v1"
+        assert operation.memory_model_id == "cucim-basic-measurements-memory-v1"
+        assert operation.supported_spatial_ndims == (2, 3)
+        assert operation.supports_device_residency
+        assert operation.host_finalizer_ref == (
+            "napari_vipp.core.measurements:finalize_basic_measurement_outputs"
+        )
+        assert operation.support_summary.public_dtypes == ("int32",)
+        assert operation.support_summary.spatial_semantics_id == (
+            "measurement-independent-leading-blocks-typed-table-v1"
+        )
+        assert "native-int32-nonnegative-labels-v1" in (
+            operation.support_summary.required_facts
+        )
+        assert "typed-host-table-finalizer-v1" in (
+            operation.support_summary.required_facts
+        )
+        assert "extended-measurement-columns-v1" in (
+            operation.support_summary.explicit_cpu_regions
+        )
+        assert {
+            bound.parameter: (bound.minimum, bound.maximum)
+            for bound in operation.support_summary.parameter_bounds
+        } == {
+            "resolved_spatial_ndim": (2.0, 3.0),
+            "include_shape_descriptors": (0.0, 0.0),
+            "include_axis_descriptors": (0.0, 0.0),
+            "include_2d_boundary_descriptors": (0.0, 0.0),
+            "include_derived_shape_ratios": (0.0, 0.0),
+            "include_2d_shape_moments": (0.0, 0.0),
+        }
 
-def test_v5_is_a_strict_extension_of_v4_and_legacy_resources_are_byte_stable():
+    assert measurements.workload_policy_id == "measurements-int32-basic-2d-3d-v1"
+    assert measurements_intensity.workload_policy_id == (
+        "measurements-int32-bool-u8-u16-finite-f32-basic-2d-3d-v1"
+    )
+    assert "finite-bool-u8-u16-f32-intensity-v1" in (
+        measurements_intensity.support_summary.required_facts
+    )
+    assert "nonfinite-float32-intensity-v1" in (
+        measurements_intensity.support_summary.explicit_cpu_regions
+    )
+
+
+def test_v6_is_a_strict_extension_of_v5_and_legacy_resources_are_byte_stable():
     package = resources.files("napari_vipp.compute_policies")
     historical_sha256 = {
         "phase1-gpu-developer-v1.json": (
@@ -275,6 +330,9 @@ def test_v5_is_a_strict_extension_of_v4_and_legacy_resources_are_byte_stable():
         "phase1-gpu-public-v4.json": (
             "37198cf8f22950ab824ccbcd3fd91a10bfd07ac1d31f1da5ac142a8a031ea333"
         ),
+        "phase1-gpu-public-v5.json": (
+            "d4bbd6728b3fe7028942d83efe4c2e6a64b052b1e6276eae6fdeaefeaa985070"
+        ),
     }
     for name, expected_digest in historical_sha256.items():
         resource = package.joinpath(name)
@@ -283,15 +341,35 @@ def test_v5_is_a_strict_extension_of_v4_and_legacy_resources_are_byte_stable():
 
     v3 = json.loads(package.joinpath("phase1-gpu-public-v3.json").read_bytes())
     v4 = json.loads(package.joinpath("phase1-gpu-public-v4.json").read_bytes())
-    v5 = _resource_document()
+    v5 = json.loads(package.joinpath("phase1-gpu-public-v5.json").read_bytes())
+    v6 = _resource_document()
     assert v4["policy"]["operations"][:-1] == v3["policy"]["operations"]
     sigma = v4["policy"]["operations"][-1]
     assert sigma["operation_id"] == "sigma_filter"
     assert sigma["implementation_id"] == "cupy-sigma-filter-v1"
-    assert v5["policy"]["operations"][:-1] == v4["policy"]["operations"]  # type: ignore[index]
+    assert v5["policy"]["operations"][:-1] == v4["policy"]["operations"]
     connected = v5["policy"]["operations"][-1]  # type: ignore[index]
     assert connected["operation_id"] == "label_connected_components"
     assert connected["implementation_id"] == "cupyx-connected-components-v1"
+
+    assert v6["policy"]["operations"][:-2] == v5["policy"]["operations"]  # type: ignore[index]
+    assert all(
+        "host_finalizer_ref" not in operation
+        for operation in v6["policy"]["operations"][:-2]  # type: ignore[index]
+    )
+    measurements = v6["policy"]["operations"][-2:]  # type: ignore[index]
+    assert [operation["operation_id"] for operation in measurements] == [
+        "measure_objects",
+        "measure_objects_intensity",
+    ]
+    assert all(operation["host_finalizer_ref"] for operation in measurements)
+
+    v6_as_v5 = copy.deepcopy(v6)
+    v6_as_v5["policy_id"] = v5["policy_id"]
+    v6_as_v5["policy_version"] = v5["policy_version"]
+    v6_as_v5["content_sha256"] = v5["content_sha256"]
+    del v6_as_v5["policy"]["operations"][-2:]  # type: ignore[index]
+    assert v6_as_v5 == v5
 
     v5_as_v4 = copy.deepcopy(v5)
     v5_as_v4["policy_id"] = v4["policy_id"]
@@ -331,28 +409,50 @@ def test_strict_schema_rejects_invalid_resigned_content():
         parse_compute_policy_artifact(_encoded(invalid))
 
 
-def test_loader_accepts_only_the_pinned_v5_identity_and_version():
+def test_loader_accepts_only_the_pinned_v6_identity_and_version():
     package = resources.files("napari_vipp.compute_policies")
-    signed_v4 = package.joinpath("phase1-gpu-public-v4.json").read_bytes()
+    signed_v5 = package.joinpath("phase1-gpu-public-v5.json").read_bytes()
     with pytest.raises(ComputePolicyArtifactError, match="Unsupported Phase 1 policy"):
-        parse_compute_policy_artifact(signed_v4)
+        parse_compute_policy_artifact(signed_v5)
 
     wrong_version = copy.deepcopy(_resource_document())
-    wrong_version["policy_version"] = 6
+    wrong_version["policy_version"] = 7
     _resign(wrong_version)
     with pytest.raises(
         ComputePolicyArtifactError,
-        match="Unsupported Phase 1 policy version 6",
+        match="Unsupported Phase 1 policy version 7",
     ):
         parse_compute_policy_artifact(_encoded(wrong_version))
 
 
-def test_valid_but_changed_v5_record_cannot_be_resigned_in_place():
+def test_valid_but_changed_v6_record_cannot_be_resigned_in_place():
     changed = copy.deepcopy(_resource_document())
     changed["policy"]["auto_selection"]["non_local_minimum_saving_ms"] = 21.0  # type: ignore[index]
     _resign(changed)
 
     with pytest.raises(ComputePolicyDigestError, match="immutable Phase 1 record"):
+        parse_compute_policy_artifact(_encoded(changed))
+
+
+@pytest.mark.parametrize(
+    "invalid_reference",
+    ("", "missing_separator", ":attribute", "module:", "module:a:b"),
+)
+def test_host_finalizer_reference_is_nonempty_and_well_formed(invalid_reference):
+    changed = copy.deepcopy(_resource_document())
+    changed["policy"]["operations"][-1]["host_finalizer_ref"] = invalid_reference  # type: ignore[index]
+    _resign(changed)
+
+    with pytest.raises(ComputePolicyArtifactError, match="host_finalizer_ref"):
+        parse_compute_policy_artifact(_encoded(changed))
+
+
+def test_host_finalizer_requires_a_resident_device_runtime():
+    changed = copy.deepcopy(_resource_document())
+    changed["policy"]["operations"][-1]["supports_device_residency"] = False  # type: ignore[index]
+    _resign(changed)
+
+    with pytest.raises(ComputePolicyArtifactError, match="resident device runtime"):
         parse_compute_policy_artifact(_encoded(changed))
 
 

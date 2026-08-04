@@ -18,10 +18,10 @@ from importlib import resources
 from typing import Any
 
 POLICY_SCHEMA_ID = "napari-vipp-compute-policy-artifact-v1"
-PHASE1_POLICY_ID = "phase1-gpu-public-v5"
-PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v5.json"
+PHASE1_POLICY_ID = "phase1-gpu-public-v6"
+PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v6.json"
 PHASE1_POLICY_SHA256 = (
-    "061fa1d02b89c1dbed47e1d5061836a9d92edb9221cff821eb30a4afe5e3d756"
+    "7aa497a41607e43e3d87677466ca7fb2a6d440dea027be2e5aabe6064b151057"
 )
 _POLICY_PACKAGE = "napari_vipp.compute_policies"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -131,6 +131,7 @@ class PackagedOperationPolicy:
     supported_spatial_ndims: tuple[int, ...]
     supports_device_residency: bool
     support_summary: OperationSupportSummary
+    host_finalizer_ref: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,7 +234,7 @@ def parse_compute_policy_artifact(
     if policy_id != PHASE1_POLICY_ID:
         raise ComputePolicyArtifactError(f"Unsupported Phase 1 policy {policy_id!r}.")
     policy_version = _integer(root["policy_version"], "$.policy_version", minimum=1)
-    if policy_version != 5:
+    if policy_version != 6:
         raise ComputePolicyArtifactError(
             f"Unsupported Phase 1 policy version {policy_version}."
         )
@@ -585,26 +586,45 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
 
 
 def _parse_operation(value: object, path: str) -> PackagedOperationPolicy:
+    required_fields = {
+        "operation_id",
+        "implementation_id",
+        "implementation_version",
+        "runtime_id",
+        "implementation_library_id",
+        "admission_tier",
+        "environment_policy_id",
+        "parameter_policy_id",
+        "workload_policy_id",
+        "parity_policy_id",
+        "memory_model_id",
+        "supported_spatial_ndims",
+        "supports_device_residency",
+        "support_summary",
+    }
+    if not isinstance(value, dict):
+        raise ComputePolicyArtifactError(f"{path} must be an object.")
+    fields = required_fields | (
+        {"host_finalizer_ref"} if "host_finalizer_ref" in value else set()
+    )
     record = _object(
         value,
         path,
-        {
-            "operation_id",
-            "implementation_id",
-            "implementation_version",
-            "runtime_id",
-            "implementation_library_id",
-            "admission_tier",
-            "environment_policy_id",
-            "parameter_policy_id",
-            "workload_policy_id",
-            "parity_policy_id",
-            "memory_model_id",
-            "supported_spatial_ndims",
-            "supports_device_residency",
-            "support_summary",
-        },
+        fields,
     )
+    runtime_id = _identifier(record["runtime_id"], f"{path}.runtime_id")
+    supports_device_residency = _boolean(
+        record["supports_device_residency"], f"{path}.supports_device_residency"
+    )
+    host_finalizer_ref = ""
+    if "host_finalizer_ref" in record:
+        host_finalizer_ref = _import_reference(
+            record["host_finalizer_ref"], f"{path}.host_finalizer_ref"
+        )
+        if not supports_device_residency or runtime_id == "cpu-numpy":
+            raise ComputePolicyArtifactError(
+                f"{path}.host_finalizer_ref requires a resident device runtime."
+            )
     return PackagedOperationPolicy(
         operation_id=_identifier(record["operation_id"], f"{path}.operation_id"),
         implementation_id=_identifier(
@@ -613,7 +633,7 @@ def _parse_operation(value: object, path: str) -> PackagedOperationPolicy:
         implementation_version=_string(
             record["implementation_version"], f"{path}.implementation_version"
         ),
-        runtime_id=_identifier(record["runtime_id"], f"{path}.runtime_id"),
+        runtime_id=runtime_id,
         implementation_library_id=_identifier(
             record["implementation_library_id"], f"{path}.implementation_library_id"
         ),
@@ -646,10 +666,9 @@ def _parse_operation(value: object, path: str) -> PackagedOperationPolicy:
             f"{path}.supported_spatial_ndims",
             minimum=1,
         ),
-        supports_device_residency=_boolean(
-            record["supports_device_residency"], f"{path}.supports_device_residency"
-        ),
+        supports_device_residency=supports_device_residency,
         support_summary=_parse_support_summary(record["support_summary"], path),
+        host_finalizer_ref=host_finalizer_ref,
     )
 
 
@@ -772,6 +791,25 @@ def _identifier(value: object, path: str) -> str:
     if not _IDENTIFIER_RE.fullmatch(result):
         raise ComputePolicyArtifactError(
             f"{path} must be a lowercase policy identifier."
+        )
+    return result
+
+
+def _import_reference(value: object, path: str) -> str:
+    result = _string(value, path)
+    module_name, separator, attribute_name = result.partition(":")
+    if (
+        not separator
+        or not module_name
+        or not attribute_name
+        or ":" in attribute_name
+        or any(
+            not segment.isidentifier()
+            for segment in (*module_name.split("."), *attribute_name.split("."))
+        )
+    ):
+        raise ComputePolicyArtifactError(
+            f"{path} must use a valid 'module:attribute' import reference."
         )
     return result
 

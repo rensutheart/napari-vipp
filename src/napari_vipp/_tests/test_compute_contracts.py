@@ -297,6 +297,8 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         "richardson_lucy_tv_deconvolution",
         "sigma_filter",
         "label_connected_components",
+        "measure_objects",
+        "measure_objects_intensity",
     }
     assert all(
         spec.admission_tier is AdmissionTier.PUBLIC_AUTO_CANDIDATE
@@ -324,6 +326,23 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
     )
     assert "iterations-at-most-25-v1" in richardson_lucy.limitations
     assert "positive-tv-iterations-10-or-25-v1" in richardson_lucy_tv.limitations
+    measurements = tuple(
+        spec
+        for spec in accelerator_specs
+        if spec.operation_id in {"measure_objects", "measure_objects_intensity"}
+    )
+    assert len(measurements) == 2
+    assert all(
+        spec.host_finalizer_ref
+        == "napari_vipp.core.measurements:finalize_basic_measurement_outputs"
+        for spec in measurements
+    )
+    assert all(
+        spec.output_ports[0].value_kind is ValueKind.TABLE for spec in measurements
+    )
+    assert all(
+        spec.output_ports[0].internal_dtypes == ("float64",) for spec in measurements
+    )
     assert (
         len(
             compute_specs_for(
