@@ -1,0 +1,3680 @@
+{
+  "admission": {
+    "case_count": 11,
+    "cases": [
+      {
+        "canonical_shape": [
+          61,
+          67
+        ],
+        "case_id": "morph-2d-sparse",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 11,
+        "column_units": [
+          [
+            "area_pixels",
+            "pixels"
+          ],
+          [
+            "equivalent_diameter_pixels",
+            "pixels"
+          ]
+        ],
+        "columns": [
+          "label_id",
+          "area_pixels",
+          "centroid_y",
+          "centroid_x",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_pixels",
+          "extent",
+          "euler_number"
+        ],
+        "coverage": [
+          "dimension:2d",
+          "labels:sparse-ids",
+          "operation:morphology",
+          "repeat:deterministic",
+          "table:typed-schema-order-units"
+        ],
+        "gpu_repeat_table_sha256": [
+          "20a93c3e078cb75c2dc0199254de448b840c50a056171dcb41bdcbb6f98735f8",
+          "20a93c3e078cb75c2dc0199254de448b840c50a056171dcb41bdcbb6f98735f8",
+          "20a93c3e078cb75c2dc0199254de448b840c50a056171dcb41bdcbb6f98735f8"
+        ],
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label_ids": [
+          1,
+          18,
+          35,
+          52,
+          69,
+          86,
+          103,
+          120,
+          137,
+          154
+        ],
+        "label_input_sha256": "338bf1916e6a26e74ef9be3b7e6fed7a552204e064163ae05c514ed0d629569d",
+        "operation_id": "measure_objects",
+        "packed_shapes": [
+          [
+            10,
+            9
+          ],
+          [
+            10,
+            9
+          ],
+          [
+            10,
+            9
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            null,
+            null
+          ],
+          "axis_types": [
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            null,
+            null
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "2D YX"
+        },
+        "parity": {
+          "cpu_table_sha256": "20a93c3e078cb75c2dc0199254de448b840c50a056171dcb41bdcbb6f98735f8",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0"
+          ],
+          "gpu_table_sha256": "20a93c3e078cb75c2dc0199254de448b840c50a056171dcb41bdcbb6f98735f8",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "sparse",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 10,
+        "seed": 26060101,
+        "shape": [
+          61,
+          67
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "canonical_shape": [
+          15,
+          29,
+          31
+        ],
+        "case_id": "morph-3d-repeated",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 14,
+        "column_units": [
+          [
+            "volume_voxels",
+            "voxels"
+          ],
+          [
+            "equivalent_diameter_voxels",
+            "voxels"
+          ]
+        ],
+        "columns": [
+          "label_id",
+          "volume_voxels",
+          "centroid_z",
+          "centroid_y",
+          "centroid_x",
+          "bbox_z_min",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_z_max",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_voxels",
+          "extent",
+          "euler_number"
+        ],
+        "coverage": [
+          "dimension:3d",
+          "labels:repeated-disconnected-id",
+          "operation:morphology",
+          "repeat:deterministic",
+          "table:typed-schema-order-units"
+        ],
+        "gpu_repeat_table_sha256": [
+          "6aa9e585b21d7e168ac2256e4f5744dacfb57e87d5ddec1db4e97ab367e4fad8",
+          "6aa9e585b21d7e168ac2256e4f5744dacfb57e87d5ddec1db4e97ab367e4fad8",
+          "6aa9e585b21d7e168ac2256e4f5744dacfb57e87d5ddec1db4e97ab367e4fad8"
+        ],
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label_ids": [
+          1,
+          18,
+          35,
+          52,
+          69,
+          86,
+          103,
+          120,
+          137,
+          154,
+          171,
+          188,
+          700001
+        ],
+        "label_input_sha256": "1c96f79876d63dd24292ed2b363bf2bdfa0399a080196e1f6149029850a3d2a5",
+        "operation_id": "measure_objects",
+        "packed_shapes": [
+          [
+            13,
+            12
+          ],
+          [
+            13,
+            12
+          ],
+          [
+            13,
+            12
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "z",
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            null,
+            null,
+            null
+          ],
+          "axis_types": [
+            "space",
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            null,
+            null,
+            null
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "3D ZYX"
+        },
+        "parity": {
+          "cpu_table_sha256": "6aa9e585b21d7e168ac2256e4f5744dacfb57e87d5ddec1db4e97ab367e4fad8",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0"
+          ],
+          "gpu_table_sha256": "6aa9e585b21d7e168ac2256e4f5744dacfb57e87d5ddec1db4e97ab367e4fad8",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "repeated",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 13,
+        "seed": 26060102,
+        "shape": [
+          15,
+          29,
+          31
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "canonical_shape": [
+          3,
+          43,
+          47
+        ],
+        "case_id": "morph-leading-2d",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 12,
+        "column_units": [
+          [
+            "area_pixels",
+            "pixels"
+          ],
+          [
+            "equivalent_diameter_pixels",
+            "pixels"
+          ]
+        ],
+        "columns": [
+          "series_0_index",
+          "label_id",
+          "area_pixels",
+          "centroid_y",
+          "centroid_x",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_pixels",
+          "extent",
+          "euler_number"
+        ],
+        "coverage": [
+          "axes:leading-blocks",
+          "dimension:2d",
+          "labels:sparse-ids",
+          "operation:morphology",
+          "repeat:deterministic"
+        ],
+        "gpu_repeat_table_sha256": [
+          "31381667fe02bf082f143a756801bad3ef57b6d268ee01987b6f579d20e2e720",
+          "31381667fe02bf082f143a756801bad3ef57b6d268ee01987b6f579d20e2e720",
+          "31381667fe02bf082f143a756801bad3ef57b6d268ee01987b6f579d20e2e720"
+        ],
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label_ids": [
+          1,
+          18,
+          35,
+          52,
+          69,
+          100004,
+          100021,
+          100038,
+          100055,
+          100072,
+          200007,
+          200024,
+          200041,
+          200058,
+          200075
+        ],
+        "label_input_sha256": "e01502c373c598bfdd25f0678cf86dfcfdf07582cceeb7f035e84fbc1e7ce6c3",
+        "operation_id": "measure_objects",
+        "packed_shapes": [
+          [
+            15,
+            10
+          ],
+          [
+            15,
+            10
+          ],
+          [
+            15,
+            10
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "series_0",
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            null,
+            null,
+            null
+          ],
+          "axis_types": [
+            "unknown",
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            null,
+            null,
+            null
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "2D YX"
+        },
+        "parity": {
+          "cpu_table_sha256": "31381667fe02bf082f143a756801bad3ef57b6d268ee01987b6f579d20e2e720",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0"
+          ],
+          "gpu_table_sha256": "31381667fe02bf082f143a756801bad3ef57b6d268ee01987b6f579d20e2e720",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "sparse",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 15,
+        "seed": 26060103,
+        "shape": [
+          3,
+          43,
+          47
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "canonical_shape": [
+          2,
+          11,
+          23,
+          25
+        ],
+        "case_id": "morph-leading-3d",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 15,
+        "column_units": [
+          [
+            "volume_voxels",
+            "voxels"
+          ],
+          [
+            "equivalent_diameter_voxels",
+            "voxels"
+          ]
+        ],
+        "columns": [
+          "series_0_index",
+          "label_id",
+          "volume_voxels",
+          "centroid_z",
+          "centroid_y",
+          "centroid_x",
+          "bbox_z_min",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_z_max",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_voxels",
+          "extent",
+          "euler_number"
+        ],
+        "coverage": [
+          "axes:leading-blocks",
+          "dimension:3d",
+          "labels:sparse-ids",
+          "operation:morphology",
+          "repeat:deterministic"
+        ],
+        "gpu_repeat_table_sha256": [
+          "f5c2a861fe609ef50350c7fbcb91ffacdf44f62d87ece772a0283a88ee434a90",
+          "f5c2a861fe609ef50350c7fbcb91ffacdf44f62d87ece772a0283a88ee434a90",
+          "f5c2a861fe609ef50350c7fbcb91ffacdf44f62d87ece772a0283a88ee434a90"
+        ],
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label_ids": [
+          1,
+          18,
+          35,
+          52,
+          69,
+          86,
+          103,
+          120,
+          137,
+          154,
+          171,
+          188,
+          100004,
+          100021,
+          100038,
+          100055,
+          100072,
+          100089,
+          100106,
+          100123,
+          100140,
+          100157,
+          100174,
+          100191
+        ],
+        "label_input_sha256": "c31ecf31d996bbd8e8cd83be1584893753f48ccdb49306c66dd66a98c00d49d7",
+        "operation_id": "measure_objects",
+        "packed_shapes": [
+          [
+            24,
+            13
+          ],
+          [
+            24,
+            13
+          ],
+          [
+            24,
+            13
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "series_0",
+            "z",
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "axis_types": [
+            "unknown",
+            "space",
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "3D ZYX"
+        },
+        "parity": {
+          "cpu_table_sha256": "f5c2a861fe609ef50350c7fbcb91ffacdf44f62d87ece772a0283a88ee434a90",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0"
+          ],
+          "gpu_table_sha256": "f5c2a861fe609ef50350c7fbcb91ffacdf44f62d87ece772a0283a88ee434a90",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "sparse",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 24,
+        "seed": 26060104,
+        "shape": [
+          2,
+          11,
+          23,
+          25
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "canonical_shape": [
+          31,
+          37
+        ],
+        "case_id": "morph-empty-2d",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 11,
+        "column_units": [
+          [
+            "area_pixels",
+            "pixels"
+          ],
+          [
+            "equivalent_diameter_pixels",
+            "pixels"
+          ]
+        ],
+        "columns": [
+          "label_id",
+          "area_pixels",
+          "centroid_y",
+          "centroid_x",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_pixels",
+          "extent",
+          "euler_number"
+        ],
+        "coverage": [
+          "dimension:2d",
+          "labels:empty",
+          "operation:morphology",
+          "repeat:deterministic",
+          "table:typed-schema-order-units"
+        ],
+        "gpu_repeat_table_sha256": [
+          "ab537f24255668237a8ac104df788095a4bced6fa78de0d71f7d974c37aacde8",
+          "ab537f24255668237a8ac104df788095a4bced6fa78de0d71f7d974c37aacde8",
+          "ab537f24255668237a8ac104df788095a4bced6fa78de0d71f7d974c37aacde8"
+        ],
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label_ids": [],
+        "label_input_sha256": "15d1d554870bde98cfea59a9f217f240d5d435c80b8010a32bb740d9ae43eff9",
+        "operation_id": "measure_objects",
+        "packed_shapes": [
+          [
+            0,
+            9
+          ],
+          [
+            0,
+            9
+          ],
+          [
+            0,
+            9
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            null,
+            null
+          ],
+          "axis_types": [
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            null,
+            null
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "2D YX"
+        },
+        "parity": {
+          "cpu_table_sha256": "ab537f24255668237a8ac104df788095a4bced6fa78de0d71f7d974c37aacde8",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0"
+          ],
+          "gpu_table_sha256": "ab537f24255668237a8ac104df788095a4bced6fa78de0d71f7d974c37aacde8",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "empty",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 0,
+        "seed": 26060105,
+        "shape": [
+          31,
+          37
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "canonical_shape": [
+          2,
+          41,
+          43
+        ],
+        "case_id": "morph-reordered-calibrated",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 21,
+        "column_units": [
+          [
+            "area_pixels",
+            "pixels"
+          ],
+          [
+            "equivalent_diameter_pixels",
+            "pixels"
+          ],
+          [
+            "area_physical",
+            "um^2"
+          ],
+          [
+            "physical_unit",
+            "text"
+          ],
+          [
+            "equivalent_diameter_physical",
+            "um"
+          ],
+          [
+            "centroid_y_physical",
+            "um"
+          ],
+          [
+            "bbox_y_min_physical",
+            "um"
+          ],
+          [
+            "bbox_y_max_physical",
+            "um"
+          ],
+          [
+            "centroid_x_physical",
+            "um"
+          ],
+          [
+            "bbox_x_min_physical",
+            "um"
+          ],
+          [
+            "bbox_x_max_physical",
+            "um"
+          ]
+        ],
+        "columns": [
+          "series_0_index",
+          "label_id",
+          "area_pixels",
+          "area_physical",
+          "physical_unit",
+          "centroid_y",
+          "centroid_x",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_pixels",
+          "equivalent_diameter_physical",
+          "centroid_y_physical",
+          "bbox_y_min_physical",
+          "bbox_y_max_physical",
+          "centroid_x_physical",
+          "bbox_x_min_physical",
+          "bbox_x_max_physical",
+          "extent",
+          "euler_number"
+        ],
+        "coverage": [
+          "axes:leading-blocks",
+          "axes:reordered-spatial",
+          "calibration:physical",
+          "dimension:2d",
+          "labels:repeated-disconnected-id",
+          "operation:morphology",
+          "repeat:deterministic",
+          "table:typed-schema-order-units"
+        ],
+        "gpu_repeat_table_sha256": [
+          "374486bf80ac496e761b552dbbde0f997002162956d2d9195e5b90d2f870b846",
+          "374486bf80ac496e761b552dbbde0f997002162956d2d9195e5b90d2f870b846",
+          "374486bf80ac496e761b552dbbde0f997002162956d2d9195e5b90d2f870b846"
+        ],
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label_ids": [
+          1,
+          18,
+          35,
+          52,
+          100004,
+          100021,
+          100038,
+          100055,
+          700001,
+          700003
+        ],
+        "label_input_sha256": "27a06bd4a2817355a160b19df1882c08324e9dd8505a13dc40ff514e9e735eaa",
+        "operation_id": "measure_objects",
+        "packed_shapes": [
+          [
+            10,
+            10
+          ],
+          [
+            10,
+            10
+          ],
+          [
+            10,
+            10
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "y",
+            "series_0",
+            "x"
+          ],
+          "axis_scales": [
+            0.31,
+            null,
+            0.19
+          ],
+          "axis_types": [
+            "space",
+            "unknown",
+            "space"
+          ],
+          "axis_units": [
+            "um",
+            null,
+            "um"
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "2D YX"
+        },
+        "parity": {
+          "cpu_table_sha256": "724111a13663fa944081dd95e4fbd97f8776960ed57c7f417e641dde85635aa6",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=1.77635684e-15; max_float_rel=2.12229013e-16",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=1.77635684e-15; max_float_rel=2.12229013e-16",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=1.77635684e-15; max_float_rel=2.12229013e-16"
+          ],
+          "gpu_table_sha256": "374486bf80ac496e761b552dbbde0f997002162956d2d9195e5b90d2f870b846",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "repeated",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 10,
+        "seed": 26060106,
+        "shape": [
+          41,
+          2,
+          43
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "canonical_shape": [
+          59,
+          63
+        ],
+        "case_id": "intensity-bool-2d",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 16,
+        "column_units": [
+          [
+            "area_pixels",
+            "pixels"
+          ],
+          [
+            "equivalent_diameter_pixels",
+            "pixels"
+          ],
+          [
+            "intensity_mean",
+            "intensity"
+          ],
+          [
+            "intensity_min",
+            "intensity"
+          ],
+          [
+            "intensity_max",
+            "intensity"
+          ],
+          [
+            "intensity_sum",
+            "intensity"
+          ],
+          [
+            "intensity_std",
+            "intensity"
+          ]
+        ],
+        "columns": [
+          "label_id",
+          "area_pixels",
+          "centroid_y",
+          "centroid_x",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_pixels",
+          "extent",
+          "euler_number",
+          "intensity_mean",
+          "intensity_min",
+          "intensity_max",
+          "intensity_sum",
+          "intensity_std"
+        ],
+        "coverage": [
+          "dimension:2d",
+          "dtype:intensity-bool",
+          "labels:repeated-disconnected-id",
+          "operation:intensity",
+          "repeat:deterministic",
+          "table:typed-schema-order-units"
+        ],
+        "gpu_repeat_table_sha256": [
+          "51b053037867924d71ce3a9ea3ad7d36abde70fa3275a1babeff987592f7e7d3",
+          "51b053037867924d71ce3a9ea3ad7d36abde70fa3275a1babeff987592f7e7d3",
+          "51b053037867924d71ce3a9ea3ad7d36abde70fa3275a1babeff987592f7e7d3"
+        ],
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": "bool",
+        "intensity_input_sha256": "93e4a00490eacf2d23584c1675bc67b8263043f22af61a99a431adc6000e6db3",
+        "label_ids": [
+          1,
+          18,
+          35,
+          52,
+          69,
+          86,
+          103,
+          120,
+          137,
+          700001
+        ],
+        "label_input_sha256": "7d46ac057332b347bd2127d097e6d8fb93fa90640e0a8a738940a199380a9617",
+        "operation_id": "measure_objects_intensity",
+        "packed_shapes": [
+          [
+            10,
+            14
+          ],
+          [
+            10,
+            14
+          ],
+          [
+            10,
+            14
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            null,
+            null
+          ],
+          "axis_types": [
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            null,
+            null
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology + intensity",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "2D YX"
+        },
+        "parity": {
+          "cpu_table_sha256": "3a403ff278dd99d85d68411db554bb3fdb16a4b1b22a1733d49f7f601d439576",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=3.33066907e-16; max_float_rel=6.69489674e-16",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=3.33066907e-16; max_float_rel=6.69489674e-16",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=3.33066907e-16; max_float_rel=6.69489674e-16"
+          ],
+          "gpu_table_sha256": "51b053037867924d71ce3a9ea3ad7d36abde70fa3275a1babeff987592f7e7d3",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "repeated",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 10,
+        "seed": 26060201,
+        "shape": [
+          59,
+          63
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "canonical_shape": [
+          13,
+          27,
+          29
+        ],
+        "case_id": "intensity-uint8-3d",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 19,
+        "column_units": [
+          [
+            "volume_voxels",
+            "voxels"
+          ],
+          [
+            "equivalent_diameter_voxels",
+            "voxels"
+          ],
+          [
+            "intensity_mean",
+            "intensity"
+          ],
+          [
+            "intensity_min",
+            "intensity"
+          ],
+          [
+            "intensity_max",
+            "intensity"
+          ],
+          [
+            "intensity_sum",
+            "intensity"
+          ],
+          [
+            "intensity_std",
+            "intensity"
+          ]
+        ],
+        "columns": [
+          "label_id",
+          "volume_voxels",
+          "centroid_z",
+          "centroid_y",
+          "centroid_x",
+          "bbox_z_min",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_z_max",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_voxels",
+          "extent",
+          "euler_number",
+          "intensity_mean",
+          "intensity_min",
+          "intensity_max",
+          "intensity_sum",
+          "intensity_std"
+        ],
+        "coverage": [
+          "dimension:3d",
+          "dtype:intensity-uint8",
+          "labels:sparse-ids",
+          "operation:intensity",
+          "repeat:deterministic"
+        ],
+        "gpu_repeat_table_sha256": [
+          "a480d73f1119c7d51cc78aef4812915de4462a82702e8cb80e2287a1d69800cb",
+          "a480d73f1119c7d51cc78aef4812915de4462a82702e8cb80e2287a1d69800cb",
+          "a480d73f1119c7d51cc78aef4812915de4462a82702e8cb80e2287a1d69800cb"
+        ],
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": "uint8",
+        "intensity_input_sha256": "08678de84f0da60f39dee3f04fde2e6f656934ba5dec633d2b1bb420f14d90ce",
+        "label_ids": [
+          1,
+          18,
+          35,
+          52,
+          69,
+          86,
+          103,
+          120,
+          137,
+          154,
+          171,
+          188
+        ],
+        "label_input_sha256": "0778bf759cf602b5408a5c942136c306d5c48bf74551b621055f7108f618aa99",
+        "operation_id": "measure_objects_intensity",
+        "packed_shapes": [
+          [
+            12,
+            17
+          ],
+          [
+            12,
+            17
+          ],
+          [
+            12,
+            17
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "z",
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            null,
+            null,
+            null
+          ],
+          "axis_types": [
+            "space",
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            null,
+            null,
+            null
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology + intensity",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "3D ZYX"
+        },
+        "parity": {
+          "cpu_table_sha256": "a480d73f1119c7d51cc78aef4812915de4462a82702e8cb80e2287a1d69800cb",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0"
+          ],
+          "gpu_table_sha256": "a480d73f1119c7d51cc78aef4812915de4462a82702e8cb80e2287a1d69800cb",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "sparse",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 12,
+        "seed": 26060202,
+        "shape": [
+          13,
+          27,
+          29
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "canonical_shape": [
+          3,
+          45,
+          49
+        ],
+        "case_id": "intensity-uint16-leading-2d",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 17,
+        "column_units": [
+          [
+            "area_pixels",
+            "pixels"
+          ],
+          [
+            "equivalent_diameter_pixels",
+            "pixels"
+          ],
+          [
+            "intensity_mean",
+            "intensity"
+          ],
+          [
+            "intensity_min",
+            "intensity"
+          ],
+          [
+            "intensity_max",
+            "intensity"
+          ],
+          [
+            "intensity_sum",
+            "intensity"
+          ],
+          [
+            "intensity_std",
+            "intensity"
+          ]
+        ],
+        "columns": [
+          "series_0_index",
+          "label_id",
+          "area_pixels",
+          "centroid_y",
+          "centroid_x",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_pixels",
+          "extent",
+          "euler_number",
+          "intensity_mean",
+          "intensity_min",
+          "intensity_max",
+          "intensity_sum",
+          "intensity_std"
+        ],
+        "coverage": [
+          "axes:leading-blocks",
+          "dimension:2d",
+          "dtype:intensity-uint16",
+          "operation:intensity",
+          "repeat:deterministic"
+        ],
+        "gpu_repeat_table_sha256": [
+          "55755222156585f3554f2b9bd2077659170f17ceef433e0a1ccf2a9d53992f39",
+          "55755222156585f3554f2b9bd2077659170f17ceef433e0a1ccf2a9d53992f39",
+          "55755222156585f3554f2b9bd2077659170f17ceef433e0a1ccf2a9d53992f39"
+        ],
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": "uint16",
+        "intensity_input_sha256": "0c91528e307b006eda0cdf13f93d8c60c49eaba309e441381d718579d089f0af",
+        "label_ids": [
+          1,
+          18,
+          35,
+          52,
+          69,
+          100004,
+          100021,
+          100038,
+          100055,
+          100072,
+          200007,
+          200024,
+          200041,
+          200058,
+          200075
+        ],
+        "label_input_sha256": "5ab84790585a1af69668412f673896350dfacfcc0c6eadfe2bbd4176b4b15b53",
+        "operation_id": "measure_objects_intensity",
+        "packed_shapes": [
+          [
+            15,
+            15
+          ],
+          [
+            15,
+            15
+          ],
+          [
+            15,
+            15
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "series_0",
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            null,
+            null,
+            null
+          ],
+          "axis_types": [
+            "unknown",
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            null,
+            null,
+            null
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology + intensity",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "2D YX"
+        },
+        "parity": {
+          "cpu_table_sha256": "0b31cde9bf147ee0932df0937b118c001a5e29fc4eaa4368ae6a6879977afcfd",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=9.09494702e-12; max_float_rel=6.24734819e-16",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=9.09494702e-12; max_float_rel=6.24734819e-16",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=9.09494702e-12; max_float_rel=6.24734819e-16"
+          ],
+          "gpu_table_sha256": "55755222156585f3554f2b9bd2077659170f17ceef433e0a1ccf2a9d53992f39",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "sparse",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 15,
+        "seed": 26060203,
+        "shape": [
+          3,
+          45,
+          49
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "canonical_shape": [
+          2,
+          12,
+          31,
+          33
+        ],
+        "case_id": "intensity-float32-reordered-calibrated",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 32,
+        "column_units": [
+          [
+            "volume_voxels",
+            "voxels"
+          ],
+          [
+            "equivalent_diameter_voxels",
+            "voxels"
+          ],
+          [
+            "intensity_mean",
+            "intensity"
+          ],
+          [
+            "intensity_min",
+            "intensity"
+          ],
+          [
+            "intensity_max",
+            "intensity"
+          ],
+          [
+            "intensity_sum",
+            "intensity"
+          ],
+          [
+            "intensity_std",
+            "intensity"
+          ],
+          [
+            "volume_physical",
+            "um^3"
+          ],
+          [
+            "physical_unit",
+            "text"
+          ],
+          [
+            "equivalent_diameter_physical",
+            "um"
+          ],
+          [
+            "centroid_z_physical",
+            "um"
+          ],
+          [
+            "bbox_z_min_physical",
+            "um"
+          ],
+          [
+            "bbox_z_max_physical",
+            "um"
+          ],
+          [
+            "centroid_y_physical",
+            "um"
+          ],
+          [
+            "bbox_y_min_physical",
+            "um"
+          ],
+          [
+            "bbox_y_max_physical",
+            "um"
+          ],
+          [
+            "centroid_x_physical",
+            "um"
+          ],
+          [
+            "bbox_x_min_physical",
+            "um"
+          ],
+          [
+            "bbox_x_max_physical",
+            "um"
+          ]
+        ],
+        "columns": [
+          "series_0_index",
+          "label_id",
+          "volume_voxels",
+          "volume_physical",
+          "physical_unit",
+          "centroid_z",
+          "centroid_y",
+          "centroid_x",
+          "bbox_z_min",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_z_max",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_voxels",
+          "equivalent_diameter_physical",
+          "centroid_z_physical",
+          "bbox_z_min_physical",
+          "bbox_z_max_physical",
+          "centroid_y_physical",
+          "bbox_y_min_physical",
+          "bbox_y_max_physical",
+          "centroid_x_physical",
+          "bbox_x_min_physical",
+          "bbox_x_max_physical",
+          "extent",
+          "euler_number",
+          "intensity_mean",
+          "intensity_min",
+          "intensity_max",
+          "intensity_sum",
+          "intensity_std"
+        ],
+        "coverage": [
+          "axes:leading-blocks",
+          "axes:reordered-spatial",
+          "calibration:physical",
+          "dimension:3d",
+          "dtype:intensity-float32-finite",
+          "labels:repeated-disconnected-id",
+          "operation:intensity",
+          "repeat:deterministic",
+          "table:typed-schema-order-units"
+        ],
+        "gpu_repeat_table_sha256": [
+          "8dfa30b57904b704d9ff9ea07b0aa0fa9a08be86d43f88f69621457576544100",
+          "8dfa30b57904b704d9ff9ea07b0aa0fa9a08be86d43f88f69621457576544100",
+          "8dfa30b57904b704d9ff9ea07b0aa0fa9a08be86d43f88f69621457576544100"
+        ],
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": "float32",
+        "intensity_input_sha256": "39baf5a373a4c619b18972b70784a6266b42d08c57e77462ae8b2298cc0c21a7",
+        "label_ids": [
+          1,
+          18,
+          35,
+          52,
+          69,
+          86,
+          103,
+          120,
+          137,
+          154,
+          171,
+          188,
+          100004,
+          100021,
+          100038,
+          100055,
+          100072,
+          100089,
+          100106,
+          100123,
+          100140,
+          100157,
+          100174,
+          100191,
+          700001,
+          700003
+        ],
+        "label_input_sha256": "fe1f38165a57d0fa4d8f20099bdec506a33410eb984a7f549b16747246594464",
+        "operation_id": "measure_objects_intensity",
+        "packed_shapes": [
+          [
+            26,
+            18
+          ],
+          [
+            26,
+            18
+          ],
+          [
+            26,
+            18
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "z",
+            "series_0",
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            1.25,
+            null,
+            0.31,
+            0.19
+          ],
+          "axis_types": [
+            "space",
+            "unknown",
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            "um",
+            null,
+            "um",
+            "um"
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology + intensity",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "3D ZYX"
+        },
+        "parity": {
+          "cpu_table_sha256": "49dc45455af40a90c7400ead71c9a87baad6ef6bca9f12aeeff024f9bf6e653a",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=8.8817842e-16; max_float_rel=2.20391667e-16",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=8.8817842e-16; max_float_rel=2.20391667e-16",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=8.8817842e-16; max_float_rel=2.20391667e-16"
+          ],
+          "gpu_table_sha256": "8dfa30b57904b704d9ff9ea07b0aa0fa9a08be86d43f88f69621457576544100",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "repeated",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 26,
+        "seed": 26060204,
+        "shape": [
+          12,
+          2,
+          31,
+          33
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "canonical_shape": [
+          33,
+          35
+        ],
+        "case_id": "intensity-empty-2d",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "column_count": 16,
+        "column_units": [
+          [
+            "area_pixels",
+            "pixels"
+          ],
+          [
+            "equivalent_diameter_pixels",
+            "pixels"
+          ],
+          [
+            "intensity_mean",
+            "intensity"
+          ],
+          [
+            "intensity_min",
+            "intensity"
+          ],
+          [
+            "intensity_max",
+            "intensity"
+          ],
+          [
+            "intensity_sum",
+            "intensity"
+          ],
+          [
+            "intensity_std",
+            "intensity"
+          ]
+        ],
+        "columns": [
+          "label_id",
+          "area_pixels",
+          "centroid_y",
+          "centroid_x",
+          "bbox_y_min",
+          "bbox_x_min",
+          "bbox_y_max",
+          "bbox_x_max",
+          "equivalent_diameter_pixels",
+          "extent",
+          "euler_number",
+          "intensity_mean",
+          "intensity_min",
+          "intensity_max",
+          "intensity_sum",
+          "intensity_std"
+        ],
+        "coverage": [
+          "dimension:2d",
+          "dtype:intensity-uint8",
+          "labels:empty",
+          "operation:intensity",
+          "repeat:deterministic",
+          "table:typed-schema-order-units"
+        ],
+        "gpu_repeat_table_sha256": [
+          "f6fd6d6b43055d5e6ab9601ef9690baf903cc172a679ab60cce384924d4f2bf6",
+          "f6fd6d6b43055d5e6ab9601ef9690baf903cc172a679ab60cce384924d4f2bf6",
+          "f6fd6d6b43055d5e6ab9601ef9690baf903cc172a679ab60cce384924d4f2bf6"
+        ],
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_immutable": true,
+        "intensity_dtype": "uint8",
+        "intensity_input_sha256": "4172348229ac97b48bdd5046eef923bea5f652abcbf87261f22a0c910cc9bf75",
+        "label_ids": [],
+        "label_input_sha256": "c2216de1b096567cf0d042af325227ac1c89cb18b42915309dd7fa1dbf532749",
+        "operation_id": "measure_objects_intensity",
+        "packed_shapes": [
+          [
+            0,
+            14
+          ],
+          [
+            0,
+            14
+          ],
+          [
+            0,
+            14
+          ]
+        ],
+        "parameters": {
+          "axis_names": [
+            "y",
+            "x"
+          ],
+          "axis_scales": [
+            null,
+            null
+          ],
+          "axis_types": [
+            "space",
+            "space"
+          ],
+          "axis_units": [
+            null,
+            null
+          ],
+          "include_2d_boundary_descriptors": false,
+          "include_2d_shape_moments": false,
+          "include_axis_descriptors": false,
+          "include_derived_shape_ratios": false,
+          "include_shape_descriptors": false,
+          "measurement_set": "Basic morphology + intensity",
+          "source_name": "deterministic GPU measurements evidence",
+          "spatial_mode": "2D YX"
+        },
+        "parity": {
+          "cpu_table_sha256": "f6fd6d6b43055d5e6ab9601ef9690baf903cc172a679ab60cce384924d4f2bf6",
+          "details": [
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+            "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0"
+          ],
+          "gpu_table_sha256": "f6fd6d6b43055d5e6ab9601ef9690baf903cc172a679ab60cce384924d4f2bf6",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "pattern": "empty",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "resident_output_contiguous": true,
+        "resident_output_dtype": "float64",
+        "row_count": 0,
+        "seed": 26060205,
+        "shape": [
+          33,
+          35
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      }
+    ],
+    "coverage": [
+      "axes:leading-blocks",
+      "axes:reordered-spatial",
+      "calibration:physical",
+      "dimension:2d",
+      "dimension:3d",
+      "dtype:intensity-bool",
+      "dtype:intensity-float32-finite",
+      "dtype:intensity-uint16",
+      "dtype:intensity-uint8",
+      "labels:empty",
+      "labels:repeated-disconnected-id",
+      "labels:sparse-ids",
+      "operation:intensity",
+      "operation:morphology",
+      "repeat:deterministic",
+      "table:typed-schema-order-units"
+    ],
+    "parity_policy_id": "basic-measurement-table-v1",
+    "repeat_count": 3,
+    "status": "pass"
+  },
+  "created_utc": "2026-08-04T13:43:52.902003+00:00",
+  "durable_optimizer_record": false,
+  "environment": {
+    "compute_capability": "12.0",
+    "cuda_driver_version": 13030,
+    "cuda_runtime_version": 13020,
+    "device_count": 1,
+    "device_index": 0,
+    "device_name": "NVIDIA GeForce RTX 5090",
+    "device_total_memory_bytes": 34190458880,
+    "machine": "AMD64",
+    "python": "3.12.9",
+    "python_executable": "C:\\Users\\rensu\\Documents\\VIPP\\napari-vipp\\.venv-gpu-cu13\\Scripts\\python.exe",
+    "release": "10",
+    "system": "Windows",
+    "version": "10.0.19045"
+  },
+  "kind": "scientific-admission-and-machine-local-performance-evidence",
+  "lifecycle": {
+    "boundary": "synchronized-measurement-block-stage-v1",
+    "case_count": 2,
+    "cases": [
+      {
+        "cancel_after_completed_stage": 1,
+        "cancel_updates": [
+          {
+            "current": 0,
+            "message": "Object measurements: preparing",
+            "total": 13
+          },
+          {
+            "current": 1,
+            "message": "Object measurements: compacting labels (block 1/3)",
+            "total": 13
+          }
+        ],
+        "cancellation_observed": true,
+        "cancellation_requested": true,
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "complete_updates": [
+          {
+            "current": 0,
+            "message": "Object measurements: preparing",
+            "total": 13
+          },
+          {
+            "current": 1,
+            "message": "Object measurements: compacting labels (block 1/3)",
+            "total": 13
+          },
+          {
+            "current": 2,
+            "message": "Object measurements: measuring morphology (block 1/3)",
+            "total": 13
+          },
+          {
+            "current": 3,
+            "message": "Object measurements: measuring topology (block 1/3)",
+            "total": 13
+          },
+          {
+            "current": 4,
+            "message": "Object measurements: packing rows (block 1/3)",
+            "total": 13
+          },
+          {
+            "current": 5,
+            "message": "Object measurements: compacting labels (block 2/3)",
+            "total": 13
+          },
+          {
+            "current": 6,
+            "message": "Object measurements: measuring morphology (block 2/3)",
+            "total": 13
+          },
+          {
+            "current": 7,
+            "message": "Object measurements: measuring topology (block 2/3)",
+            "total": 13
+          },
+          {
+            "current": 8,
+            "message": "Object measurements: packing rows (block 2/3)",
+            "total": 13
+          },
+          {
+            "current": 9,
+            "message": "Object measurements: compacting labels (block 3/3)",
+            "total": 13
+          },
+          {
+            "current": 10,
+            "message": "Object measurements: measuring morphology (block 3/3)",
+            "total": 13
+          },
+          {
+            "current": 11,
+            "message": "Object measurements: measuring topology (block 3/3)",
+            "total": 13
+          },
+          {
+            "current": 12,
+            "message": "Object measurements: packing rows (block 3/3)",
+            "total": 13
+          },
+          {
+            "current": 13,
+            "message": "Object measurements: assembling packed table",
+            "total": 13
+          }
+        ],
+        "expected_total": 13,
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "operation_id": "measure_objects",
+        "parity_detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+        "post_cancellation_reuse_parity": true
+      },
+      {
+        "cancel_after_completed_stage": 1,
+        "cancel_updates": [
+          {
+            "current": 0,
+            "message": "Object measurements: preparing",
+            "total": 19
+          },
+          {
+            "current": 1,
+            "message": "Object measurements: compacting labels (block 1/3)",
+            "total": 19
+          }
+        ],
+        "cancellation_observed": true,
+        "cancellation_requested": true,
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "complete_updates": [
+          {
+            "current": 0,
+            "message": "Object measurements: preparing",
+            "total": 19
+          },
+          {
+            "current": 1,
+            "message": "Object measurements: compacting labels (block 1/3)",
+            "total": 19
+          },
+          {
+            "current": 2,
+            "message": "Object measurements: measuring morphology (block 1/3)",
+            "total": 19
+          },
+          {
+            "current": 3,
+            "message": "Object measurements: measuring topology (block 1/3)",
+            "total": 19
+          },
+          {
+            "current": 4,
+            "message": "Object measurements: measuring intensity ranges and means (block 1/3)",
+            "total": 19
+          },
+          {
+            "current": 5,
+            "message": "Object measurements: measuring intensity variation (block 1/3)",
+            "total": 19
+          },
+          {
+            "current": 6,
+            "message": "Object measurements: packing rows (block 1/3)",
+            "total": 19
+          },
+          {
+            "current": 7,
+            "message": "Object measurements: compacting labels (block 2/3)",
+            "total": 19
+          },
+          {
+            "current": 8,
+            "message": "Object measurements: measuring morphology (block 2/3)",
+            "total": 19
+          },
+          {
+            "current": 9,
+            "message": "Object measurements: measuring topology (block 2/3)",
+            "total": 19
+          },
+          {
+            "current": 10,
+            "message": "Object measurements: measuring intensity ranges and means (block 2/3)",
+            "total": 19
+          },
+          {
+            "current": 11,
+            "message": "Object measurements: measuring intensity variation (block 2/3)",
+            "total": 19
+          },
+          {
+            "current": 12,
+            "message": "Object measurements: packing rows (block 2/3)",
+            "total": 19
+          },
+          {
+            "current": 13,
+            "message": "Object measurements: compacting labels (block 3/3)",
+            "total": 19
+          },
+          {
+            "current": 14,
+            "message": "Object measurements: measuring morphology (block 3/3)",
+            "total": 19
+          },
+          {
+            "current": 15,
+            "message": "Object measurements: measuring topology (block 3/3)",
+            "total": 19
+          },
+          {
+            "current": 16,
+            "message": "Object measurements: measuring intensity ranges and means (block 3/3)",
+            "total": 19
+          },
+          {
+            "current": 17,
+            "message": "Object measurements: measuring intensity variation (block 3/3)",
+            "total": 19
+          },
+          {
+            "current": 18,
+            "message": "Object measurements: packing rows (block 3/3)",
+            "total": 19
+          },
+          {
+            "current": 19,
+            "message": "Object measurements: assembling packed table",
+            "total": 19
+          }
+        ],
+        "expected_total": 19,
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "operation_id": "measure_objects_intensity",
+        "parity_detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=7.27595761e-12; max_float_rel=4.29992422e-16",
+        "post_cancellation_reuse_parity": true
+      }
+    ],
+    "status": "pass"
+  },
+  "method": {
+    "admission_repeats": 3,
+    "benchmark_rounds": 5,
+    "cancellation": "synchronized-measurement-block-stage-v1",
+    "cpu_timing_scope": "case-cold-and-warm-complete-host-table-v1",
+    "generator": "numpy-pcg64-sparse-object-measurements-v1",
+    "gpu_resident_compute_scope": "synchronized-resident-packed-compute-v1",
+    "gpu_resident_public_scope": "resident-compute-plus-d2h-plus-typed-host-finalizer-v1",
+    "gpu_transfer_inclusive_scope": "h2d-plus-compute-plus-d2h-plus-typed-host-finalizer-v1",
+    "memory_model_id": "cucim-basic-measurements-memory-v1",
+    "memory_observation_scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+    "parity_policy_id": "basic-measurement-table-v1",
+    "profile": "full",
+    "provider_cache_scope": "process-lifetime-cucim-lookups-excluded-from-per-call-private-pool-v1",
+    "provider_cache_warmup": "2d-and-3d-morphology-and-intensity-before-private-pools-v1",
+    "timing_note": "The typed host table is mandatory. Resident packed compute is diagnostic; selection compares the complete public output boundary."
+  },
+  "operation_contracts": {
+    "contracts": [
+      {
+        "sha256": "a8a0454eace9e7532d0a8a3f0a3f2798d070d4a8760d771ffcc9e75d8be63da6",
+        "snapshot": {
+          "extended_measurement_options": "all-disabled",
+          "host_finalizer_ref": "napari_vipp.core.measurements:finalize_basic_measurement_outputs",
+          "implementation_id": "cucim-measure-objects-basic-v1",
+          "implementation_library_id": "cucim",
+          "intensity_region": [],
+          "label_region": "native-nonnegative-int32",
+          "leading_block_order": "c-order",
+          "memory_model_id": "cucim-basic-measurements-memory-v1",
+          "object_order": "ascending-positive-label-id-per-block",
+          "operation_id": "measure_objects",
+          "parameter_policy_id": "basic-measurements-parameters-v1",
+          "parity_policy_id": "basic-measurement-table-v1",
+          "provider_version": "26.06.00",
+          "resident_payload": "c-contiguous-float64-packed-rows-v1",
+          "runtime_id": "cuda-cupy",
+          "spatial_ndims": [
+            2,
+            3
+          ],
+          "table_boundary": "mandatory-typed-host-finalizer"
+        }
+      },
+      {
+        "sha256": "92eb56d2c43133432ae8d19136e16cde349b34e0e5cce428a533a9b33dd8b532",
+        "snapshot": {
+          "extended_measurement_options": "all-disabled",
+          "host_finalizer_ref": "napari_vipp.core.measurements:finalize_basic_measurement_outputs",
+          "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+          "implementation_library_id": "cucim",
+          "intensity_region": [
+            "bool",
+            "uint8",
+            "uint16",
+            "finite-float32"
+          ],
+          "label_region": "native-nonnegative-int32",
+          "leading_block_order": "c-order",
+          "memory_model_id": "cucim-basic-measurements-memory-v1",
+          "object_order": "ascending-positive-label-id-per-block",
+          "operation_id": "measure_objects_intensity",
+          "parameter_policy_id": "basic-measurements-parameters-v1",
+          "parity_policy_id": "basic-measurement-table-v1",
+          "provider_version": "26.06.00",
+          "resident_payload": "c-contiguous-float64-packed-rows-v1",
+          "runtime_id": "cuda-cupy",
+          "spatial_ndims": [
+            2,
+            3
+          ],
+          "table_boundary": "mandatory-typed-host-finalizer"
+        }
+      }
+    ],
+    "sha256": "0e45dc27321e265489b71d074c8fe5a66ee1765c94251cd15c8786e4432aadf6"
+  },
+  "packages": {
+    "cucim": "not-installed-as-distribution",
+    "cupy": "14.1.1",
+    "cupy-cuda13x": "14.1.1",
+    "napari-vipp": "0.12.0a3",
+    "numpy": "2.5.1",
+    "scikit-image": "0.26.0",
+    "scipy": "1.18.0"
+  },
+  "performance": {
+    "all_memory_estimates_cover_observed": true,
+    "case_count": 14,
+    "results": [
+      {
+        "case_id": "plane-256-morphology",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 65536,
+        "family": "plane-morphology",
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_bytes": 262144,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label": "256² morphology",
+        "label_input_sha256": "15140eacb67369b3b5e37ca2ec02d5beb93998a36020ecfa1ffd49f769550e65",
+        "memory": {
+          "active_block_workspace_bytes": 8388608,
+          "actual_packed_output_bytes": 288,
+          "device_peak_with_uncertainty_bytes": 80740352,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 23592960,
+          "input_bytes": 262144,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 2182144,
+          "observed_to_estimated_ratio": 0.027026684253246752,
+          "observed_used_bytes_with_inputs": 262144,
+          "observed_used_bytes_with_output": 262656,
+          "packed_output_upper_bound_bytes": 4718592,
+          "runtime_managed_peak_bytes": 13631488,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 67108864,
+          "working_copy_bytes": 262144
+        },
+        "object_row_count": 4,
+        "operation_id": "measure_objects",
+        "parity": {
+          "cpu_table_sha256": "f51afcabc9a5b9a5222621d733964c708fe85953314d9610d548478e68492746",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+          "gpu_table_sha256": "f51afcabc9a5b9a5222621d733964c708fe85953314d9610d548478e68492746",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.0012102999999115127,
+          "cpu_seconds": [
+            0.0010385000005044276,
+            0.0010254999997414416,
+            0.0010306000003765803,
+            0.001078300000699528,
+            0.0010501000006115646
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0058871999999610125,
+          "gpu_resident_compute_seconds": [
+            0.004048699999657401,
+            0.004211599999507598,
+            0.00523700000030658,
+            0.0045111999997971,
+            0.004362599999694794
+          ],
+          "gpu_resident_public_seconds": [
+            0.004631900000276801,
+            0.0057521999997334206,
+            0.004783800000041083,
+            0.0045939999999973224,
+            0.007538199999544304
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.006850099999610393,
+            0.02511439999943832,
+            0.006970800000090094,
+            0.005732000000534754,
+            0.005760600000030536
+          ]
+        },
+        "seed": 51156,
+        "shape": [
+          256,
+          256
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.0012102999999115127,
+          "cpu_median_seconds": 0.0010385000005044276,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0058871999999610125,
+          "gpu_resident_compute_median_seconds": 0.004362599999694794,
+          "gpu_resident_compute_speedup": 0.238046119418943,
+          "gpu_resident_public_median_seconds": 0.004783800000041083,
+          "gpu_resident_public_speedup": 0.21708683483747418,
+          "gpu_transfer_inclusive_median_seconds": 0.006850099999610393,
+          "gpu_transfer_inclusive_speedup": 0.1516036263066953,
+          "input_transfer_and_allocation_seconds": 0.00206629999956931,
+          "mandatory_table_boundary_seconds": 0.000421200000346289,
+          "screening_choice": "CPU"
+        }
+      },
+      {
+        "case_id": "plane-256-intensity-uint16",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 65536,
+        "family": "plane-intensity-uint16",
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_bytes": 393216,
+        "intensity_dtype": "uint16",
+        "intensity_input_sha256": "818c95cfb2ddb11d7f5e0f1690c26d43e7c11dcf038d7d219c62c16cdea0ddbd",
+        "label": "256² morphology + uint16 intensity",
+        "label_input_sha256": "051581f92329e1cecbc92dc1b1c199f34693dfe38a20c3e638645722a7059e0f",
+        "memory": {
+          "active_block_workspace_bytes": 14680064,
+          "actual_packed_output_bytes": 448,
+          "device_peak_with_uncertainty_bytes": 89915392,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 36700160,
+          "input_bytes": 393216,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 2313216,
+          "observed_to_estimated_ratio": 0.02572658527696793,
+          "observed_used_bytes_with_inputs": 393216,
+          "observed_used_bytes_with_output": 393728,
+          "packed_output_upper_bound_bytes": 7340032,
+          "runtime_managed_peak_bytes": 22806528,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 67108864,
+          "working_copy_bytes": 393216
+        },
+        "object_row_count": 4,
+        "operation_id": "measure_objects_intensity",
+        "parity": {
+          "cpu_table_sha256": "b7a8641c4acbde34cf2c0326eff3eb4b34cc2a096b180a2cd7a93e138e4ac6e8",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+          "gpu_table_sha256": "b7a8641c4acbde34cf2c0326eff3eb4b34cc2a096b180a2cd7a93e138e4ac6e8",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.0017263999998249346,
+          "cpu_seconds": [
+            0.0013431000006676186,
+            0.0012888999999631778,
+            0.0012484999997468549,
+            0.001250600000275881,
+            0.001240499999767053
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.011964199999965786,
+          "gpu_resident_compute_seconds": [
+            0.012544200000775163,
+            0.009187700000438781,
+            0.009514200000012352,
+            0.012661300000218034,
+            0.009830799999690498
+          ],
+          "gpu_resident_public_seconds": [
+            0.011427500000536384,
+            0.011110300000837015,
+            0.011171600000125181,
+            0.010140299999875424,
+            0.021372799999880954
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.01087569999981497,
+            0.011367199999767763,
+            0.009639699999752338,
+            0.011504099999910977,
+            0.010827799999788112
+          ]
+        },
+        "seed": 52156,
+        "shape": [
+          256,
+          256
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.0017263999998249346,
+          "cpu_median_seconds": 0.001250600000275881,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.011964199999965786,
+          "gpu_resident_compute_median_seconds": 0.009830799999690498,
+          "gpu_resident_compute_speedup": 0.12721243442194466,
+          "gpu_resident_public_median_seconds": 0.011171600000125181,
+          "gpu_resident_public_speedup": 0.11194457376399689,
+          "gpu_transfer_inclusive_median_seconds": 0.01087569999981497,
+          "gpu_transfer_inclusive_speedup": 0.11499029950229941,
+          "input_transfer_and_allocation_seconds": 0.0,
+          "mandatory_table_boundary_seconds": 0.0013408000004346832,
+          "screening_choice": "CPU"
+        }
+      },
+      {
+        "case_id": "plane-512-morphology",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 262144,
+        "family": "plane-morphology",
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_bytes": 1048576,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label": "512² morphology",
+        "label_input_sha256": "853e3da075c653228ef2276affd321243a98a1ae46aebb5e1065628b9cbe8314",
+        "memory": {
+          "active_block_workspace_bytes": 33554432,
+          "actual_packed_output_bytes": 1152,
+          "device_peak_with_uncertainty_bytes": 121634816,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 94371840,
+          "input_bytes": 1048576,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 8700928,
+          "observed_to_estimated_ratio": 0.071533203125,
+          "observed_used_bytes_with_inputs": 1048576,
+          "observed_used_bytes_with_output": 1050112,
+          "packed_output_upper_bound_bytes": 18874368,
+          "runtime_managed_peak_bytes": 54525952,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 67108864,
+          "working_copy_bytes": 1048576
+        },
+        "object_row_count": 16,
+        "operation_id": "measure_objects",
+        "parity": {
+          "cpu_table_sha256": "6b4d11028452dcb390d8e1b5bfb299c66f83f1f8d3c8901f60460d444997ce08",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+          "gpu_table_sha256": "6b4d11028452dcb390d8e1b5bfb299c66f83f1f8d3c8901f60460d444997ce08",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.003327599999465747,
+          "cpu_seconds": [
+            0.0032587000005150912,
+            0.002977600000122038,
+            0.0031570999999530613,
+            0.0028706000002785004,
+            0.0028531999996630475
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0068542999997589504,
+          "gpu_resident_compute_seconds": [
+            0.004365099999631639,
+            0.004710299999715062,
+            0.004591500000060478,
+            0.003973599999881117,
+            0.004459900000256312
+          ],
+          "gpu_resident_public_seconds": [
+            0.005245100000138336,
+            0.0054724999999962165,
+            0.00467800000023999,
+            0.005230800000390445,
+            0.0054049999998824205
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.005427400000371563,
+            0.005885600000510749,
+            0.0067475999994712765,
+            0.005839699999341974,
+            0.005182500000046275
+          ]
+        },
+        "seed": 51412,
+        "shape": [
+          512,
+          512
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.003327599999465747,
+          "cpu_median_seconds": 0.002977600000122038,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0068542999997589504,
+          "gpu_resident_compute_median_seconds": 0.004459900000256312,
+          "gpu_resident_compute_speedup": 0.6676382878429818,
+          "gpu_resident_public_median_seconds": 0.005245100000138336,
+          "gpu_resident_public_speedup": 0.5676917504039019,
+          "gpu_transfer_inclusive_median_seconds": 0.005839699999341974,
+          "gpu_transfer_inclusive_speedup": 0.5098892067156804,
+          "input_transfer_and_allocation_seconds": 0.0005945999992036377,
+          "mandatory_table_boundary_seconds": 0.0007851999998820247,
+          "screening_choice": "CPU"
+        }
+      },
+      {
+        "case_id": "plane-512-intensity-uint16",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 262144,
+        "family": "plane-intensity-uint16",
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_bytes": 1572864,
+        "intensity_dtype": "uint16",
+        "intensity_input_sha256": "9ade6288ea1158af9cb5df8e34673e6b4be16c738cf60c87b1d770cde35eaf68",
+        "label": "512² morphology + uint16 intensity",
+        "label_input_sha256": "043a219a3d4d0f3f30b7dfb73e8fe283368c63d8652bd8ce97e73913c2de45cf",
+        "memory": {
+          "active_block_workspace_bytes": 58720256,
+          "actual_packed_output_bytes": 1792,
+          "device_peak_with_uncertainty_bytes": 158334976,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 146800640,
+          "input_bytes": 1572864,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 9225216,
+          "observed_to_estimated_ratio": 0.058263917632450334,
+          "observed_used_bytes_with_inputs": 1572864,
+          "observed_used_bytes_with_output": 1574912,
+          "packed_output_upper_bound_bytes": 29360128,
+          "runtime_managed_peak_bytes": 91226112,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 67108864,
+          "working_copy_bytes": 1572864
+        },
+        "object_row_count": 16,
+        "operation_id": "measure_objects_intensity",
+        "parity": {
+          "cpu_table_sha256": "de478c3af6bd89c959f9c57c4331fcd776f8cdfab9f633c7cbfe21b7c9e032c9",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=2.54658516e-11; max_float_rel=1.46167607e-15",
+          "gpu_table_sha256": "f7b6e4e3f02fd626746a49ac7c152a570f1af81169386f94959dd429c7b8ad18",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.005023100000471459,
+          "cpu_seconds": [
+            0.005688499999450869,
+            0.00483780000013212,
+            0.004538399999546527,
+            0.004421699999511475,
+            0.005172800000764255
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.04074270000000979,
+          "gpu_resident_compute_seconds": [
+            0.015470399999685469,
+            0.034727700000075856,
+            0.015688200000113284,
+            0.01555590000043594,
+            0.0160464000000502
+          ],
+          "gpu_resident_public_seconds": [
+            0.01651990000027581,
+            0.016183799999453186,
+            0.023683499999606283,
+            0.016271600000436592,
+            0.015814100000170583
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.016588699999374512,
+            0.01659049999943818,
+            0.01745610000034503,
+            0.022165400000631053,
+            0.018384400000286405
+          ]
+        },
+        "seed": 52412,
+        "shape": [
+          512,
+          512
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.005023100000471459,
+          "cpu_median_seconds": 0.00483780000013212,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.04074270000000979,
+          "gpu_resident_compute_median_seconds": 0.015688200000113284,
+          "gpu_resident_compute_speedup": 0.3083718973557952,
+          "gpu_resident_public_median_seconds": 0.016271600000436592,
+          "gpu_resident_public_speedup": 0.2973155682294497,
+          "gpu_transfer_inclusive_median_seconds": 0.01745610000034503,
+          "gpu_transfer_inclusive_speedup": 0.2771409421369319,
+          "input_transfer_and_allocation_seconds": 0.0011844999999084393,
+          "mandatory_table_boundary_seconds": 0.0005834000003233086,
+          "screening_choice": "CPU"
+        }
+      },
+      {
+        "case_id": "plane-1024-morphology",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 1048576,
+        "family": "plane-morphology",
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_bytes": 4194304,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label": "1024² morphology",
+        "label_input_sha256": "91a70db2a47ba5c2485cf2929208169bb320fb07fe53e0341dd81a8a752d2d19",
+        "memory": {
+          "active_block_workspace_bytes": 134217728,
+          "actual_packed_output_bytes": 4608,
+          "device_peak_with_uncertainty_bytes": 285212672,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 377487360,
+          "input_bytes": 4194304,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 34776064,
+          "observed_to_estimated_ratio": 0.12193029067095588,
+          "observed_used_bytes_with_inputs": 4194304,
+          "observed_used_bytes_with_output": 4198912,
+          "packed_output_upper_bound_bytes": 75497472,
+          "runtime_managed_peak_bytes": 218103808,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 67108864,
+          "working_copy_bytes": 4194304
+        },
+        "object_row_count": 64,
+        "operation_id": "measure_objects",
+        "parity": {
+          "cpu_table_sha256": "9ab14e0af1561377a0dd80b6c937f73fbd07489fce13f18c47792820ade83d4f",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+          "gpu_table_sha256": "9ab14e0af1561377a0dd80b6c937f73fbd07489fce13f18c47792820ade83d4f",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.01105329999973037,
+          "cpu_seconds": [
+            0.010736500000348315,
+            0.012932499999806168,
+            0.011118500000520726,
+            0.01021619999937684,
+            0.01064940000014758
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.010734999999840511,
+          "gpu_resident_compute_seconds": [
+            0.004403700000693789,
+            0.004637900000489026,
+            0.004345900000771508,
+            0.0040195999999923515,
+            0.004651600000215694
+          ],
+          "gpu_resident_public_seconds": [
+            0.005242300000645628,
+            0.004835800000364543,
+            0.005156100000021979,
+            0.005290600000080303,
+            0.004916400000183785
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.0060969999994995305,
+            0.005702999999812164,
+            0.005477499999869906,
+            0.006315399999948568,
+            0.005730700000640354
+          ]
+        },
+        "seed": 51924,
+        "shape": [
+          1024,
+          1024
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.01105329999973037,
+          "cpu_median_seconds": 0.010736500000348315,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.010734999999840511,
+          "gpu_resident_compute_median_seconds": 0.004403700000693789,
+          "gpu_resident_compute_speedup": 2.4380634463421247,
+          "gpu_resident_public_median_seconds": 0.005156100000021979,
+          "gpu_resident_public_speedup": 2.0822908788236356,
+          "gpu_transfer_inclusive_median_seconds": 0.005730700000640354,
+          "gpu_transfer_inclusive_speedup": 1.873505854284574,
+          "input_transfer_and_allocation_seconds": 0.0005746000006183749,
+          "mandatory_table_boundary_seconds": 0.0007523999993281905,
+          "screening_choice": "GPU-cuCIM"
+        }
+      },
+      {
+        "case_id": "plane-1024-intensity-uint16",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 1048576,
+        "family": "plane-intensity-uint16",
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_bytes": 6291456,
+        "intensity_dtype": "uint16",
+        "intensity_input_sha256": "41b79c95aee6a8c99b96db8f02154157934c5921d8f40ed84323533c6a3866ef",
+        "label": "1024² morphology + uint16 intensity",
+        "label_input_sha256": "50ec92d5013bd1c8424971d62ce091de53c835c68b9973465a583e3b33eaebd8",
+        "memory": {
+          "active_block_workspace_bytes": 234881024,
+          "actual_packed_output_bytes": 7168,
+          "device_peak_with_uncertainty_bytes": 456130560,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 587202560,
+          "input_bytes": 6291456,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 36873216,
+          "observed_to_estimated_ratio": 0.0808391702586207,
+          "observed_used_bytes_with_inputs": 6291456,
+          "observed_used_bytes_with_output": 6298624,
+          "packed_output_upper_bound_bytes": 117440512,
+          "runtime_managed_peak_bytes": 364904448,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 91226112,
+          "working_copy_bytes": 6291456
+        },
+        "object_row_count": 64,
+        "operation_id": "measure_objects_intensity",
+        "parity": {
+          "cpu_table_sha256": "7e0a51aba301c612d50481bd51a02b145271d958dace3b4a78f283bafcb9203f",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=7.63975549e-11; max_float_rel=4.31001343e-15",
+          "gpu_table_sha256": "03ffdea5c782f1a1db550eb24f7e42068d13433f0190632e74b6c66ad3923355",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.04789749999963533,
+          "cpu_seconds": [
+            0.067383499999778,
+            0.053175399999418005,
+            0.04906789999949979,
+            0.053092900000592635,
+            0.05420959999992192
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.09046089999992546,
+          "gpu_resident_compute_seconds": [
+            0.009958900000128779,
+            0.009680799999841838,
+            0.02438510000047245,
+            0.013492699999915203,
+            0.010890600000493578
+          ],
+          "gpu_resident_public_seconds": [
+            0.010803500000292843,
+            0.011830400000690133,
+            0.012802999999621534,
+            0.012026999999761756,
+            0.010334299999158247
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.02149569999983214,
+            0.011932100000194623,
+            0.012948900000083086,
+            0.012509099999988393,
+            0.011568099999749393
+          ]
+        },
+        "seed": 52924,
+        "shape": [
+          1024,
+          1024
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.04789749999963533,
+          "cpu_median_seconds": 0.053175399999418005,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.09046089999992546,
+          "gpu_resident_compute_median_seconds": 0.010890600000493578,
+          "gpu_resident_compute_speedup": 4.882687822251118,
+          "gpu_resident_public_median_seconds": 0.011830400000690133,
+          "gpu_resident_public_speedup": 4.494809980754327,
+          "gpu_transfer_inclusive_median_seconds": 0.012509099999988393,
+          "gpu_transfer_inclusive_speedup": 4.250937317590182,
+          "input_transfer_and_allocation_seconds": 0.0006786999992982601,
+          "mandatory_table_boundary_seconds": 0.0009398000001965556,
+          "screening_choice": "GPU-cuCIM"
+        }
+      },
+      {
+        "case_id": "plane-2048-morphology",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 4194304,
+        "family": "plane-morphology",
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_bytes": 16777216,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label": "2048² morphology",
+        "label_input_sha256": "866584648dda084c28102ea4597b8d551136050efa4e406ec47a880304c8edd0",
+        "memory": {
+          "active_block_workspace_bytes": 536870912,
+          "actual_packed_output_bytes": 6912,
+          "device_peak_with_uncertainty_bytes": 1090519040,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 1509949440,
+          "input_bytes": 16777216,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 139075584,
+          "observed_to_estimated_ratio": 0.12753155048076922,
+          "observed_used_bytes_with_inputs": 16777216,
+          "observed_used_bytes_with_output": 16784384,
+          "packed_output_upper_bound_bytes": 301989888,
+          "runtime_managed_peak_bytes": 872415232,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 218103808,
+          "working_copy_bytes": 16777216
+        },
+        "object_row_count": 96,
+        "operation_id": "measure_objects",
+        "parity": {
+          "cpu_table_sha256": "e2e0bd6af9cbf574aa768cffb3d138a8a45696b30433fbecff6048b6a27f104e",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+          "gpu_table_sha256": "e2e0bd6af9cbf574aa768cffb3d138a8a45696b30433fbecff6048b6a27f104e",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.0243014999996376,
+          "cpu_seconds": [
+            0.022241099999519065,
+            0.02044670000032056,
+            0.02042760000040289,
+            0.02152490000025864,
+            0.020445099999960803
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.014757800000552379,
+          "gpu_resident_compute_seconds": [
+            0.005596799999693758,
+            0.004691499999353255,
+            0.004583200000524812,
+            0.005241999999270774,
+            0.004542399999991176
+          ],
+          "gpu_resident_public_seconds": [
+            0.005635000000438595,
+            0.005673999999999069,
+            0.006173700000545068,
+            0.005714300000363437,
+            0.006642700000156765
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.009113999999499356,
+            0.008840300000883872,
+            0.008055999999669439,
+            0.009025199999996403,
+            0.008005299999240378
+          ]
+        },
+        "seed": 52948,
+        "shape": [
+          2048,
+          2048
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.0243014999996376,
+          "cpu_median_seconds": 0.02044670000032056,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.014757800000552379,
+          "gpu_resident_compute_median_seconds": 0.004691499999353255,
+          "gpu_resident_compute_speedup": 4.35824363276974,
+          "gpu_resident_public_median_seconds": 0.005714300000363437,
+          "gpu_resident_public_speedup": 3.5781635544196355,
+          "gpu_transfer_inclusive_median_seconds": 0.008840300000883872,
+          "gpu_transfer_inclusive_speedup": 2.312896620960404,
+          "input_transfer_and_allocation_seconds": 0.0031260000005204347,
+          "mandatory_table_boundary_seconds": 0.0010228000010101823,
+          "screening_choice": "GPU-cuCIM"
+        }
+      },
+      {
+        "case_id": "plane-2048-intensity-uint16",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 4194304,
+        "family": "plane-intensity-uint16",
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_bytes": 25165824,
+        "intensity_dtype": "uint16",
+        "intensity_input_sha256": "0aee71a7274247d239db9532ffe90b755d0c24d46ee7e7dc817434b253b08c97",
+        "label": "2048² morphology + uint16 intensity",
+        "label_input_sha256": "8e292fd9f0fad5fccca65da26af199a86db14e74e6272a92ea1dd31631cffef8",
+        "memory": {
+          "active_block_workspace_bytes": 939524096,
+          "actual_packed_output_bytes": 10752,
+          "device_peak_with_uncertainty_bytes": 1824522240,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 2348810240,
+          "input_bytes": 25165824,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 147464192,
+          "observed_to_estimated_ratio": 0.08082345545977011,
+          "observed_used_bytes_with_inputs": 25165824,
+          "observed_used_bytes_with_output": 25176576,
+          "packed_output_upper_bound_bytes": 469762048,
+          "runtime_managed_peak_bytes": 1459617792,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 364904448,
+          "working_copy_bytes": 25165824
+        },
+        "object_row_count": 96,
+        "operation_id": "measure_objects_intensity",
+        "parity": {
+          "cpu_table_sha256": "a0b0565c051806efcada47db436fedbde2a95aaf0b545990a06f3067f6d9905f",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=1.85536919e-10; max_float_rel=1.15427781e-14",
+          "gpu_table_sha256": "12ecfcaf1db1fb1bd42a691a7717da9483a6de692064b3cc7de08f290963ca1a",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.31504020000011224,
+          "cpu_seconds": [
+            0.31547839999984717,
+            0.30631069999981264,
+            0.31529150000005757,
+            0.3083755999996356,
+            0.29197500000009313
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.021317000000635744,
+          "gpu_resident_compute_seconds": [
+            0.012404300000525836,
+            0.012199300000247604,
+            0.013884699999834993,
+            0.01301439999951981,
+            0.012105399999200017
+          ],
+          "gpu_resident_public_seconds": [
+            0.014095699999415956,
+            0.014391100000466395,
+            0.013959199999590055,
+            0.013880800000151794,
+            0.014284300000326766
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.03552430000036111,
+            0.018523300000197196,
+            0.018689399999857415,
+            0.020255700000234356,
+            0.018842700000277546
+          ]
+        },
+        "seed": 53948,
+        "shape": [
+          2048,
+          2048
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.31504020000011224,
+          "cpu_median_seconds": 0.3083755999996356,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.021317000000635744,
+          "gpu_resident_compute_median_seconds": 0.012404300000525836,
+          "gpu_resident_compute_speedup": 24.86037906101619,
+          "gpu_resident_public_median_seconds": 0.014095699999415956,
+          "gpu_resident_public_speedup": 21.877281725094385,
+          "gpu_transfer_inclusive_median_seconds": 0.018842700000277546,
+          "gpu_transfer_inclusive_speedup": 16.365786219336577,
+          "input_transfer_and_allocation_seconds": 0.00474700000086159,
+          "mandatory_table_boundary_seconds": 0.0016913999988901196,
+          "screening_choice": "GPU-cuCIM"
+        }
+      },
+      {
+        "case_id": "volume-32x256x256-morphology",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 2097152,
+        "family": "volume-morphology",
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_bytes": 8388608,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label": "32×256×256 morphology",
+        "label_input_sha256": "e7b075e35b9de77d3957e64a488779487c552b7bfa479bbfee028663c6428589",
+        "memory": {
+          "active_block_workspace_bytes": 268435456,
+          "actual_packed_output_bytes": 9216,
+          "device_peak_with_uncertainty_bytes": 608174080,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 1006632960,
+          "input_bytes": 8388608,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 69542912,
+          "observed_to_estimated_ratio": 0.11434705010775863,
+          "observed_used_bytes_with_inputs": 8388608,
+          "observed_used_bytes_with_output": 8397824,
+          "packed_output_upper_bound_bytes": 201326592,
+          "runtime_managed_peak_bytes": 486539264,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 121634816,
+          "working_copy_bytes": 8388608
+        },
+        "object_row_count": 96,
+        "operation_id": "measure_objects",
+        "parity": {
+          "cpu_table_sha256": "509797f9c909823c652b5526a7a8bfa11515c15f8c98d8e5817840c2321e0133",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+          "gpu_table_sha256": "509797f9c909823c652b5526a7a8bfa11515c15f8c98d8e5817840c2321e0133",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.020522300000266114,
+          "cpu_seconds": [
+            0.022406399999454152,
+            0.02722520000043005,
+            0.02486849999968399,
+            0.021569099999396713,
+            0.02643019999959506
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.04033019999951648,
+          "gpu_resident_compute_seconds": [
+            0.009883200000331271,
+            0.011732599999959348,
+            0.011217200000828598,
+            0.007982599999195372,
+            0.009591199999704259
+          ],
+          "gpu_resident_public_seconds": [
+            0.009109400000852474,
+            0.009696099999928265,
+            0.0105029000005743,
+            0.011420699999689532,
+            0.010897099999965576
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.012658399999963876,
+            0.012323399999331741,
+            0.011650600000393752,
+            0.01141749999987951,
+            0.011151900000186288
+          ]
+        },
+        "seed": 52001,
+        "shape": [
+          32,
+          256,
+          256
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3,
+        "summary": {
+          "cpu_case_cold_seconds": 0.020522300000266114,
+          "cpu_median_seconds": 0.02486849999968399,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.04033019999951648,
+          "gpu_resident_compute_median_seconds": 0.009883200000331271,
+          "gpu_resident_compute_speedup": 2.5162396793397312,
+          "gpu_resident_public_median_seconds": 0.0105029000005743,
+          "gpu_resident_public_speedup": 2.367774614470687,
+          "gpu_transfer_inclusive_median_seconds": 0.011650600000393752,
+          "gpu_transfer_inclusive_speedup": 2.1345252604023415,
+          "input_transfer_and_allocation_seconds": 0.0011476999998194515,
+          "mandatory_table_boundary_seconds": 0.0006197000002430286,
+          "screening_choice": "GPU-cuCIM"
+        }
+      },
+      {
+        "case_id": "volume-32x256x256-intensity-uint16",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 2097152,
+        "family": "volume-intensity-uint16",
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_bytes": 12582912,
+        "intensity_dtype": "uint16",
+        "intensity_input_sha256": "933efb9ef031f42f9cb22fe1bfc2a619c0c945cafd36915e4b790dac1341f3c7",
+        "label": "32×256×256 morphology + uint16 intensity",
+        "label_input_sha256": "84b5b6859513d7c054cd7296a5bb1f3ba4ffda67197fb9c3e7d7a9197f6c0270",
+        "memory": {
+          "active_block_workspace_bytes": 469762048,
+          "actual_packed_output_bytes": 13056,
+          "device_peak_with_uncertainty_bytes": 975175680,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 1426063360,
+          "input_bytes": 12582912,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 73737216,
+          "observed_to_estimated_ratio": 0.07561428931451612,
+          "observed_used_bytes_with_inputs": 12582912,
+          "observed_used_bytes_with_output": 12596224,
+          "packed_output_upper_bound_bytes": 285212672,
+          "runtime_managed_peak_bytes": 780140544,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 195035136,
+          "working_copy_bytes": 12582912
+        },
+        "object_row_count": 96,
+        "operation_id": "measure_objects_intensity",
+        "parity": {
+          "cpu_table_sha256": "66312279958d9053b74a669aef0a382f0b050778042c42ed4b8db0355c254559",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=1.89174898e-10; max_float_rel=1.06454187e-14",
+          "gpu_table_sha256": "f2d6028c09a360bc32f9ae0cd76120dbcf73650e40d429a3865b347ed62d4e89",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.18617670000003272,
+          "cpu_seconds": [
+            0.1733763000002,
+            0.16052849999960017,
+            0.17078289999972185,
+            0.1832019000003129,
+            0.16645800000060262
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0246023999998215,
+          "gpu_resident_compute_seconds": [
+            0.019293600000310107,
+            0.017941000000064378,
+            0.02053780000005645,
+            0.020094500000595872,
+            0.019695199999659962
+          ],
+          "gpu_resident_public_seconds": [
+            0.020185000000310538,
+            0.0212506999996549,
+            0.020719000000099186,
+            0.023317199999837612,
+            0.024086200000056124
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.023455200000171317,
+            0.023639099999854807,
+            0.022363699999914388,
+            0.025987099999838392,
+            0.02323400000022957
+          ]
+        },
+        "seed": 52002,
+        "shape": [
+          32,
+          256,
+          256
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3,
+        "summary": {
+          "cpu_case_cold_seconds": 0.18617670000003272,
+          "cpu_median_seconds": 0.17078289999972185,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0246023999998215,
+          "gpu_resident_compute_median_seconds": 0.019695199999659962,
+          "gpu_resident_compute_speedup": 8.671295544227549,
+          "gpu_resident_public_median_seconds": 0.0212506999996549,
+          "gpu_resident_public_speedup": 8.036577618737043,
+          "gpu_transfer_inclusive_median_seconds": 0.023455200000171317,
+          "gpu_transfer_inclusive_speedup": 7.281238275455952,
+          "input_transfer_and_allocation_seconds": 0.0022045000005164184,
+          "mandatory_table_boundary_seconds": 0.001555499999994936,
+          "screening_choice": "GPU-cuCIM"
+        }
+      },
+      {
+        "case_id": "stack-8x512x512-morphology",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 2097152,
+        "family": "stack-morphology",
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_bytes": 8388608,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label": "8×512² plane-wise morphology",
+        "label_input_sha256": "9272e9adcede4f025a23961d64e5e2d5a019a9f930c5ea8eeaec754e46a914c6",
+        "memory": {
+          "active_block_workspace_bytes": 33554432,
+          "actual_packed_output_bytes": 10240,
+          "device_peak_with_uncertainty_bytes": 285212672,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 838860800,
+          "input_bytes": 8388608,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 15807488,
+          "observed_to_estimated_ratio": 0.05542351217830882,
+          "observed_used_bytes_with_inputs": 8388608,
+          "observed_used_bytes_with_output": 8398848,
+          "packed_output_upper_bound_bytes": 167772160,
+          "runtime_managed_peak_bytes": 218103808,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 67108864,
+          "working_copy_bytes": 8388608
+        },
+        "object_row_count": 128,
+        "operation_id": "measure_objects",
+        "parity": {
+          "cpu_table_sha256": "4b9e6336221e1397a90bf34e9670ef98a69158cf27df2da49b7564050b129a96",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+          "gpu_table_sha256": "4b9e6336221e1397a90bf34e9670ef98a69158cf27df2da49b7564050b129a96",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.17790409999997792,
+          "cpu_seconds": [
+            0.1782549999998082,
+            0.17434419999972306,
+            0.15293300000030285,
+            0.15055860000029497,
+            0.15456059999996796
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.04631610000069486,
+          "gpu_resident_compute_seconds": [
+            0.03133530000013707,
+            0.052708199999869976,
+            0.031279900000299676,
+            0.03128709999964485,
+            0.031006199999865203
+          ],
+          "gpu_resident_public_seconds": [
+            0.03238139999939449,
+            0.033129899999948975,
+            0.056078799999340845,
+            0.03346519999922748,
+            0.04713900000024296
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.03379730000051495,
+            0.06333100000028935,
+            0.03730020000057266,
+            0.04487359999984619,
+            0.03493220000018482
+          ]
+        },
+        "seed": 52003,
+        "shape": [
+          8,
+          512,
+          512
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.17790409999997792,
+          "cpu_median_seconds": 0.15456059999996796,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.04631610000069486,
+          "gpu_resident_compute_median_seconds": 0.03128709999964485,
+          "gpu_resident_compute_speedup": 4.940074343794165,
+          "gpu_resident_public_median_seconds": 0.03346519999922748,
+          "gpu_resident_public_speedup": 4.618547028063059,
+          "gpu_transfer_inclusive_median_seconds": 0.03730020000057266,
+          "gpu_transfer_inclusive_speedup": 4.14369359943365,
+          "input_transfer_and_allocation_seconds": 0.003835000001345179,
+          "mandatory_table_boundary_seconds": 0.002178099999582628,
+          "screening_choice": "GPU-cuCIM"
+        }
+      },
+      {
+        "case_id": "stack-6x512x512-intensity-float32",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 1572864,
+        "family": "stack-intensity-float32",
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_bytes": 12582912,
+        "intensity_dtype": "float32",
+        "intensity_input_sha256": "c83826c134b05f4a8315f7c7c358004e4df5efeb2b1b913d62772070c4534c73",
+        "label": "6×512² plane-wise morphology + float32 intensity",
+        "label_input_sha256": "1bb1c97363424fe72bad84de0911f80a33de9d79441998d77930cdca1a5db9a6",
+        "memory": {
+          "active_block_workspace_bytes": 58720256,
+          "actual_packed_output_bytes": 11520,
+          "device_peak_with_uncertainty_bytes": 340787200,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 943718400,
+          "input_bytes": 12582912,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 20517888,
+          "observed_to_estimated_ratio": 0.06020733173076923,
+          "observed_used_bytes_with_inputs": 12582912,
+          "observed_used_bytes_with_output": 12594688,
+          "packed_output_upper_bound_bytes": 188743680,
+          "runtime_managed_peak_bytes": 272629760,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 68157440,
+          "working_copy_bytes": 12582912
+        },
+        "object_row_count": 96,
+        "operation_id": "measure_objects_intensity",
+        "parity": {
+          "cpu_table_sha256": "80fbbbf16fe3bad2e61b0952fbc0f3e9c9cb87e5456c39fe33959f7b73de830d",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=6.39488462e-14; max_float_rel=2.12004668e-15",
+          "gpu_table_sha256": "3b468e5fbac3e6a868788f3168ef3d49c1b7bfa9717277e845ac7871fa9ba6a7",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.13467380000020057,
+          "cpu_seconds": [
+            0.11656159999984084,
+            0.10228279999955703,
+            0.09573100000034174,
+            0.09519509999972797,
+            0.10150739999971847
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.11456180000004679,
+          "gpu_resident_compute_seconds": [
+            0.10564520000025368,
+            0.10057580000011512,
+            0.11683369999991555,
+            0.09817329999987123,
+            0.11095210000075895
+          ],
+          "gpu_resident_public_seconds": [
+            0.0927334999996674,
+            0.10398679999980232,
+            0.0966219000001729,
+            0.10193439999966358,
+            0.12889439999980823
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.12337879999995494,
+            0.12501650000012887,
+            0.10456320000048436,
+            0.10308749999967404,
+            0.11500799999976152
+          ]
+        },
+        "seed": 52004,
+        "shape": [
+          6,
+          512,
+          512
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.13467380000020057,
+          "cpu_median_seconds": 0.10150739999971847,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.11456180000004679,
+          "gpu_resident_compute_median_seconds": 0.10564520000025368,
+          "gpu_resident_compute_speedup": 0.9608330525142148,
+          "gpu_resident_public_median_seconds": 0.10193439999966358,
+          "gpu_resident_public_speedup": 0.9958110314089599,
+          "gpu_transfer_inclusive_median_seconds": 0.11500799999976152,
+          "gpu_transfer_inclusive_speedup": 0.8826116444067278,
+          "input_transfer_and_allocation_seconds": 0.01307360000009794,
+          "mandatory_table_boundary_seconds": 0.0,
+          "screening_choice": "CPU"
+        }
+      },
+      {
+        "case_id": "confocal-volume-64x512x512-intensity-uint16",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 16777216,
+        "family": "confocal-volume-intensity-uint16",
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "input_bytes": 100663296,
+        "intensity_dtype": "uint16",
+        "intensity_input_sha256": "984bf394ffb7d578b33bb8700b2d23815be94a0bcd4addd17d605052ef1b3a73",
+        "label": "64×512×512 confocal-like volume + uint16 intensity",
+        "label_input_sha256": "33b7a6db365d7ad55e4641cd480a314f07f82933f1a827974a1d822b6ffeaeb0",
+        "memory": {
+          "active_block_workspace_bytes": 3758096384,
+          "actual_packed_output_bytes": 13056,
+          "device_peak_with_uncertainty_bytes": 7801405440,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 11408506880,
+          "input_bytes": 100663296,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 589829120,
+          "observed_to_estimated_ratio": 0.07560549500168011,
+          "observed_used_bytes_with_inputs": 100663296,
+          "observed_used_bytes_with_output": 100676608,
+          "packed_output_upper_bound_bytes": 2281701376,
+          "runtime_managed_peak_bytes": 6241124352,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 1560281088,
+          "working_copy_bytes": 100663296
+        },
+        "object_row_count": 96,
+        "operation_id": "measure_objects_intensity",
+        "parity": {
+          "cpu_table_sha256": "15c6d9c404fcb2026b4366990f12837083e48c846232c20632dc31f14ed8d386",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=1.49157131e-10; max_float_rel=8.36694735e-15",
+          "gpu_table_sha256": "d5a4edaa73bcaad60778509578b7213f58bfcfb93f05405b01c5a365e73274f1",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 1.1353446000002805,
+          "cpu_seconds": [
+            1.135551000000305,
+            1.193195700000615,
+            1.1115041000002748,
+            1.0958769999997457,
+            1.1333567000001494
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.44974769999953423,
+          "gpu_resident_compute_seconds": [
+            0.023962700000083714,
+            0.024479599999722268,
+            0.024486900000738387,
+            0.03224039999986417,
+            0.02172950000021956
+          ],
+          "gpu_resident_public_seconds": [
+            0.02652490000036778,
+            0.023604599999998754,
+            0.02500789999976405,
+            0.02615739999964717,
+            0.026023300000815652
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.05454290000034234,
+            0.041930699999284116,
+            0.05885370000032708,
+            0.039183300000331656,
+            0.04741660000036063
+          ]
+        },
+        "seed": 52005,
+        "shape": [
+          64,
+          512,
+          512
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3,
+        "summary": {
+          "cpu_case_cold_seconds": 1.1353446000002805,
+          "cpu_median_seconds": 1.1333567000001494,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.44974769999953423,
+          "gpu_resident_compute_median_seconds": 0.024479599999722268,
+          "gpu_resident_compute_speedup": 46.298007320912426,
+          "gpu_resident_public_median_seconds": 0.026023300000815652,
+          "gpu_resident_public_speedup": 43.55161336051256,
+          "gpu_transfer_inclusive_median_seconds": 0.04741660000036063,
+          "gpu_transfer_inclusive_speedup": 23.90210812229324,
+          "input_transfer_and_allocation_seconds": 0.02139329999954498,
+          "mandatory_table_boundary_seconds": 0.0015437000010933843,
+          "screening_choice": "GPU-cuCIM"
+        }
+      },
+      {
+        "case_id": "confocal-stack-16x1024x1024-morphology",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "element_count": 16777216,
+        "family": "confocal-stack-morphology",
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "input_bytes": 67108864,
+        "intensity_dtype": null,
+        "intensity_input_sha256": null,
+        "label": "16×1024² confocal-like plane-wise morphology",
+        "label_input_sha256": "adf86ab56fd07054e8919815c79e1130bfb368ac7c7e61542f05e7fe693a3d26",
+        "memory": {
+          "active_block_workspace_bytes": 134217728,
+          "actual_packed_output_bytes": 81920,
+          "device_peak_with_uncertainty_bytes": 2013265920,
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_with_uncertainty_covers_observed": true,
+          "host_materialization_peak_bytes": 6710886400,
+          "input_bytes": 67108864,
+          "model_id": "cucim-basic-measurements-memory-v1",
+          "observed_reserved_bytes": 96731648,
+          "observed_to_estimated_ratio": 0.04804712931315104,
+          "observed_used_bytes_with_inputs": 67108864,
+          "observed_used_bytes_with_output": 67190784,
+          "packed_output_upper_bound_bytes": 1342177280,
+          "runtime_managed_peak_bytes": 1610612736,
+          "scope": "isolated-cupy-private-pool-reserved-high-water-v1",
+          "uncertainty_bytes": 402653184,
+          "working_copy_bytes": 67108864
+        },
+        "object_row_count": 1024,
+        "operation_id": "measure_objects",
+        "parity": {
+          "cpu_table_sha256": "a54d9f9469a5ddc68775776f7a1799d6edd94c53fbc657088b249bf6632a61ba",
+          "detail": "exact table schema/order/units/scalar types and exact integer/text columns; max_float_abs=0; max_float_rel=0",
+          "gpu_table_sha256": "a54d9f9469a5ddc68775776f7a1799d6edd94c53fbc657088b249bf6632a61ba",
+          "passed": true,
+          "policy_id": "basic-measurement-table-v1"
+        },
+        "samples": {
+          "cpu_case_cold_seconds": 0.7414750000007189,
+          "cpu_seconds": [
+            0.7447219999994559,
+            0.7072986000002857,
+            0.7173672999997507,
+            0.713705299999674,
+            0.707653699999355
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.12353689999963535,
+          "gpu_resident_compute_seconds": [
+            0.0972671999998056,
+            0.10535389999949984,
+            0.10025210000003426,
+            0.1118172999995295,
+            0.09668630000032863
+          ],
+          "gpu_resident_public_seconds": [
+            0.12140809999982594,
+            0.11784590000024764,
+            0.11792059999970661,
+            0.1075938000003589,
+            0.10320139999930689
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.11074829999961366,
+            0.11710750000020198,
+            0.12248309999995399,
+            0.15296149999994668,
+            0.1400820000008025
+          ]
+        },
+        "seed": 52006,
+        "shape": [
+          16,
+          1024,
+          1024
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.7414750000007189,
+          "cpu_median_seconds": 0.713705299999674,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.12353689999963535,
+          "gpu_resident_compute_median_seconds": 0.10025210000003426,
+          "gpu_resident_compute_speedup": 7.119105734437784,
+          "gpu_resident_public_median_seconds": 0.11784590000024764,
+          "gpu_resident_public_speedup": 6.056259063727921,
+          "gpu_transfer_inclusive_median_seconds": 0.12248309999995399,
+          "gpu_transfer_inclusive_speedup": 5.826969598254307,
+          "input_transfer_and_allocation_seconds": 0.004637199999706354,
+          "mandatory_table_boundary_seconds": 0.017593800000213378,
+          "screening_choice": "GPU-cuCIM"
+        }
+      }
+    ],
+    "rounds": 5,
+    "status": "pass"
+  },
+  "portable_performance_claim": false,
+  "profile": "full",
+  "rejections": {
+    "case_count": 11,
+    "cases": [
+      {
+        "case_id": "reject-label-uint16",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:label-dtype"
+        ],
+        "expected_pattern": "native int32 labels",
+        "message": "GPU measurements require native int32 labels; received uint16.",
+        "operation_id": "measure_objects",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-label-negative",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:label-negative"
+        ],
+        "expected_pattern": "non-negative label IDs",
+        "message": "GPU measurements require non-negative label IDs.",
+        "operation_id": "measure_objects",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-label-byte-order",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:label-byte-order"
+        ],
+        "expected_pattern": "native int32 labels",
+        "message": "GPU measurements require native int32 labels; received >i4.",
+        "operation_id": "measure_objects",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-intensity-float64",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:intensity-dtype"
+        ],
+        "expected_pattern": "native bool, uint8, uint16, and finite float32",
+        "message": "GPU intensity measurements support native bool, uint8, uint16, and finite float32 input; received float64.",
+        "operation_id": "measure_objects_intensity",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-intensity-nonfinite",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:intensity-nonfinite"
+        ],
+        "expected_pattern": "finite data",
+        "message": "GPU float32 intensity measurements require finite data.",
+        "operation_id": "measure_objects_intensity",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-intensity-shape",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:intensity-shape"
+        ],
+        "expected_pattern": "same shape",
+        "message": "Intensity-aware measurements require labels and intensity image with the same shape.",
+        "operation_id": "measure_objects_intensity",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-extended-shape",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:extended-shape"
+        ],
+        "expected_pattern": "extended measurement options",
+        "message": "The basic GPU measurement provider requires all extended measurement options to be disabled; enabled: include_shape_descriptors.",
+        "operation_id": "measure_objects",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-extended-axes",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:extended-axes"
+        ],
+        "expected_pattern": "extended measurement options",
+        "message": "The basic GPU measurement provider requires all extended measurement options to be disabled; enabled: include_axis_descriptors.",
+        "operation_id": "measure_objects",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-extended-boundary",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:extended-boundary"
+        ],
+        "expected_pattern": "extended measurement options",
+        "message": "The basic GPU measurement provider requires all extended measurement options to be disabled; enabled: include_2d_boundary_descriptors.",
+        "operation_id": "measure_objects",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-extended-ratios",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:extended-ratios"
+        ],
+        "expected_pattern": "extended measurement options",
+        "message": "The basic GPU measurement provider requires all extended measurement options to be disabled; enabled: include_derived_shape_ratios.",
+        "operation_id": "measure_objects",
+        "rejected": true
+      },
+      {
+        "case_id": "reject-extended-moments",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "reject:extended-moments"
+        ],
+        "expected_pattern": "extended measurement options",
+        "message": "The basic GPU measurement provider requires all extended measurement options to be disabled; enabled: include_2d_shape_moments.",
+        "operation_id": "measure_objects",
+        "rejected": true
+      }
+    ],
+    "coverage": [
+      "reject:extended-axes",
+      "reject:extended-boundary",
+      "reject:extended-moments",
+      "reject:extended-ratios",
+      "reject:extended-shape",
+      "reject:intensity-dtype",
+      "reject:intensity-nonfinite",
+      "reject:intensity-shape",
+      "reject:label-byte-order",
+      "reject:label-dtype",
+      "reject:label-negative"
+    ],
+    "status": "pass"
+  },
+  "schema": "napari-vipp-cucim-basic-measurements-evidence",
+  "schema_version": 1,
+  "source_provenance": [
+    {
+      "path": "src/napari_vipp/core/measurements.py",
+      "sha256": "1045f57a35cb1ebb7c4038738ab890becabfc8f028284723973e4e122ca9258c"
+    },
+    {
+      "path": "src/napari_vipp/core/gpu/cucim_measurements.py",
+      "sha256": "73baa35d39015e7993995929416fc2a628f025723baf8bf538f624e18fcdd64f"
+    },
+    {
+      "path": "scripts/benchmark_gpu_measurements.py",
+      "sha256": "373bcf2079a47719a7a24f75410cccde63b8361a26dd9a51f05f198e2845d2b0"
+    }
+  ]
+}
