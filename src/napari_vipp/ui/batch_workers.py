@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from qtpy.QtCore import QObject, QRunnable, Signal
 
 from napari_vipp.core.batch import (
     BatchConfig,
+    BatchExecutionProgress,
     BatchPlan,
     BatchRunResult,
     run_batch,
@@ -41,6 +43,14 @@ class CollectionBatchProgress:
 
 
 @dataclass(frozen=True, slots=True)
+class CollectionBatchOperationProgress:
+    """Nested execution progress tagged with the worker job that emitted it."""
+
+    job_id: int
+    progress: BatchExecutionProgress
+
+
+@dataclass(frozen=True, slots=True)
 class CollectionBatchWorkerOutcome:
     """Terminal result tagged with its originating tab and job."""
 
@@ -52,6 +62,7 @@ class CollectionBatchWorkerOutcome:
 
 class _CollectionBatchWorkerSignals(QObject):
     progress = Signal(object)
+    operation_progress = Signal(object)
     finished = Signal(object)
 
 
@@ -62,6 +73,16 @@ class CollectionBatchWorker(QRunnable):
         super().__init__()
         self.prepared = prepared
         self.signals = _CollectionBatchWorkerSignals()
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        """Request cooperative cancellation at the next safe checkpoint."""
+
+        self._cancel_event.set()
+
+    @property
+    def cancellation_requested(self) -> bool:
+        return self._cancel_event.is_set()
 
     def run(self) -> None:
         prepared = self.prepared
@@ -82,6 +103,14 @@ class CollectionBatchWorker(QRunnable):
                 )
             )
 
+        def emit_operation_progress(progress: BatchExecutionProgress) -> None:
+            self.signals.operation_progress.emit(
+                CollectionBatchOperationProgress(
+                    job_id=prepared.job_id,
+                    progress=progress,
+                )
+            )
+
         try:
             result = run_batch(
                 prepared.workflow,
@@ -89,7 +118,9 @@ class CollectionBatchWorker(QRunnable):
                 workflow_path=prepared.workflow_path,
                 config_path=prepared.config_path,
                 plan=prepared.plan,
+                cancel_event=self._cancel_event,
                 progress_callback=emit_progress,
+                execution_progress_callback=emit_operation_progress,
             )
             outcome = CollectionBatchWorkerOutcome(
                 job_id=prepared.job_id,
@@ -110,6 +141,7 @@ class CollectionBatchWorker(QRunnable):
 
 __all__ = [
     "CollectionBatchProgress",
+    "CollectionBatchOperationProgress",
     "CollectionBatchWorker",
     "CollectionBatchWorkerOutcome",
     "PreparedCollectionBatchRun",

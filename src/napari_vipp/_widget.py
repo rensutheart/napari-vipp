@@ -91,6 +91,7 @@ from napari_vipp.core.batch import (
     BATCH_SCRIPT_FILENAME,
     BATCH_WORKFLOW_FILENAME,
     BatchConfig,
+    BatchExecutionProgress,
     BatchItemPlan,
     BatchRunResult,
     ExistingFilePolicy,
@@ -319,6 +320,7 @@ from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
 from napari_vipp.ui.batch_controller import CollectionBatchController
 from napari_vipp.ui.batch_navigator import BatchNavigator
 from napari_vipp.ui.batch_workers import (
+    CollectionBatchOperationProgress,
     CollectionBatchProgress,
     CollectionBatchWorker,
     CollectionBatchWorkerOutcome,
@@ -1800,6 +1802,7 @@ class VippWidget(QWidget):
         self._collection_batch_controller = CollectionBatchController(
             workflow_document_provider=self._batch_workflow_document,
             pipeline_provider=lambda: self.pipeline,
+            compute_request_provider=self._current_compute_request,
         )
         self._select_node(self._selected_node_id)
         self.run_pipeline()
@@ -6593,10 +6596,15 @@ class VippWidget(QWidget):
         dialog = self._active_collection_batch_dialog
         if dialog is None:
             raise RuntimeError("No active Batch workspace is available to include.")
-        workflow = self._batch_workflow_document(positions)
+        compute_request = self._compute_request_for_batch_dialog(dialog)
+        workflow = self._batch_workflow_document(
+            positions,
+            compute_request=compute_request,
+        )
         config = self._collection_batch_controller.build_config(
             **dialog.values(),
             workflow=workflow,
+            compute_request=compute_request,
         )
         config = replace(
             config,
@@ -7123,6 +7131,9 @@ class VippWidget(QWidget):
                 active, values
             )
         )
+        dialog.cancelRequested.connect(
+            lambda active=dialog: self._cancel_collection_batch_worker(active)
+        )
         dialog.previewInvalidated.connect(
             lambda active=dialog: self._engage_collection_batch_workspace(active)
         )
@@ -7148,6 +7159,10 @@ class VippWidget(QWidget):
                 return None
         elif config is not None:
             try:
+                dialog._loaded_compute_request = config.compute_request
+                dialog._compute_toolbar_fingerprint_at_load = (
+                    self._current_compute_request().fingerprint
+                )
                 dialog._apply_config(config)
                 if preview_config:
                     dialog._preview_batch()
@@ -7402,6 +7417,7 @@ class VippWidget(QWidget):
             job_id=job_id,
             origin_session_id=session.session_id,
             expected_items=expected_items,
+            compute_request=self._compute_request_for_batch_dialog(dialog),
             **values,
         )
         context = _CollectionBatchJobContext(
@@ -7413,6 +7429,9 @@ class VippWidget(QWidget):
         )
         worker = CollectionBatchWorker(prepared)
         worker.signals.progress.connect(self._on_collection_batch_worker_progress)
+        worker.signals.operation_progress.connect(
+            self._on_collection_batch_worker_operation_progress
+        )
         worker.signals.finished.connect(self._on_collection_batch_worker_finished)
 
         self._active_collection_batch_job = context
@@ -7439,6 +7458,7 @@ class VippWidget(QWidget):
                 progress.total,
                 progress.batch_id,
                 progress.status,
+                dialog=context.dialog,
             )
         else:
             context.dialog.update_run_progress(
@@ -7446,6 +7466,54 @@ class VippWidget(QWidget):
                 progress.total,
                 progress.batch_id,
                 progress.status,
+            )
+
+    def _on_collection_batch_worker_operation_progress(
+        self,
+        update: CollectionBatchOperationProgress,
+    ) -> None:
+        context = self._active_collection_batch_job
+        if context is None or update.job_id != context.job_id:
+            return
+        progress = update.progress
+        if self._workflow_tab_is_active(context.origin_session_id):
+            self._collection_batch_operation_progress(
+                progress,
+                dialog=context.dialog,
+            )
+        else:
+            context.dialog.update_operation_progress(
+                progress.item_index,
+                progress.item_total,
+                progress.batch_id,
+                progress.node_id,
+                progress.operation_id,
+                progress.current,
+                progress.total,
+                progress.message,
+            )
+
+    def _cancel_collection_batch_worker(
+        self,
+        dialog: CollectionBatchDialog,
+    ) -> None:
+        """Route a dialog request to only its currently active worker."""
+
+        context = self._active_collection_batch_job
+        if context is None or context.dialog is not dialog:
+            return
+        worker = self._collection_batch_workers.get(context.job_id)
+        if worker is None or worker.cancellation_requested:
+            return
+        worker.cancel()
+        if self._workflow_tab_is_active(context.origin_session_id):
+            self.pipeline_busy_label.setText(
+                "Cancelling batch at the next safe checkpoint..."
+            )
+            self._set_status(
+                "Batch cancellation requested; the active operation will stop "
+                "at its next safe checkpoint.",
+                severity=MessageSeverity.INFO,
             )
 
     def _on_collection_batch_worker_finished(
@@ -7483,15 +7551,25 @@ class VippWidget(QWidget):
             return
 
         result = outcome.result
-        validation_text = self._validate_collection_batch_demo_result(
-            context.validation_config_path,
-            result,
+        validation_text = (
+            "Synthetic ground-truth validation was not run because the batch "
+            "was cancelled."
+            if result.cancelled
+            else self._validate_collection_batch_demo_result(
+                context.validation_config_path,
+                result,
+            )
         )
         summary = result.summary
+        cancelled = int(summary.get("cancelled", 0))
+        finished_prefix = (
+            "Batch cancelled safely" if result.cancelled else "Batch finished"
+        )
         summary_text = (
-            f"Batch finished: {summary['completed']} completed, "
+            f"{finished_prefix}: {summary['completed']} completed, "
             f"{summary['partial']} partial, {summary['skipped']} skipped, "
-            f"{summary['failed']} failed; {len(result.saved_paths)} output(s) "
+            f"{cancelled} cancelled, {summary['failed']} failed; "
+            f"{len(result.saved_paths)} output(s) "
             f"saved. Manifest: {result.manifest_path}."
         )
         context.dialog.finish_run(
@@ -7506,9 +7584,9 @@ class VippWidget(QWidget):
                 summary_text + (f" {validation_text}" if validation_text else "")
             )
             self.batch_navigator.finish_batch_progress(
-                f"Batch finished: {summary['completed']} completed, "
+                f"{finished_prefix}: {summary['completed']} completed, "
                 f"{summary['partial']} partial, {summary['skipped']} skipped, "
-                f"{summary['failed']} failed.",
+                f"{cancelled} cancelled, {summary['failed']} failed.",
             )
             if (
                 self._interactive_collection_batch_items
@@ -8092,6 +8170,7 @@ class VippWidget(QWidget):
         validation_text: str = "",
     ) -> None:
         summary = result.summary
+        cancelled = int(summary.get("cancelled", 0))
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Collection batch summary")
         validation_failed = "validation failed" in validation_text.lower()
@@ -8102,7 +8181,8 @@ class VippWidget(QWidget):
         )
         dialog.setText(
             f"{summary['completed']} completed, {summary['partial']} partial, "
-            f"{summary['skipped']} skipped, and {summary['failed']} failed."
+            f"{summary['skipped']} skipped, {cancelled} cancelled, and "
+            f"{summary['failed']} failed."
         )
         dialog.setInformativeText(
             f"{len(result.saved_paths)} output(s) saved.\n"
@@ -8112,7 +8192,7 @@ class VippWidget(QWidget):
         exceptional = [
             item
             for item in result.manifest.items
-            if item.status.value in {"partial", "failed", "skipped"}
+            if item.status.value in {"partial", "failed", "skipped", "cancelled"}
         ]
         if exceptional:
             details = []
@@ -8149,11 +8229,17 @@ class VippWidget(QWidget):
         *,
         job_id: int,
         origin_session_id: str,
+        compute_request: ComputeRequest | None = None,
     ) -> PreparedCollectionBatchRun:
         """Create and persist immutable inputs before any worker starts."""
         del save_workflow_snapshot
+        if compute_request is None:
+            compute_request = self._current_compute_request()
         positions = self.graph_view.node_positions()
-        workflow = self._batch_workflow_document(positions)
+        workflow = self._batch_workflow_document(
+            positions,
+            compute_request=compute_request,
+        )
         config = self._collection_batch_config(
             input_dir=input_dir,
             output_dir=output_dir,
@@ -8165,6 +8251,7 @@ class VippWidget(QWidget):
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
             workflow=workflow,
+            compute_request=compute_request,
         )
         output_path = config.resolve_path(config.output_dir)
         config_path = output_path / BATCH_CONFIG_FILENAME
@@ -8250,6 +8337,8 @@ class VippWidget(QWidget):
         total: int,
         batch_id: str,
         status: str,
+        *,
+        dialog: CollectionBatchDialog | None = None,
     ) -> None:
         normalized_status = str(status).strip().casefold()
         completed = index - 1 if normalized_status == "running" else index
@@ -8267,22 +8356,70 @@ class VippWidget(QWidget):
                 batch_id,
                 status,
             )
-        dialog = self._active_collection_batch_dialog
+        if dialog is None:
+            dialog = self._active_collection_batch_dialog
         if dialog is not None:
             dialog.update_run_progress(index, total, batch_id, status)
         self.status_label.setText(f"Batch {index}/{total}: {batch_id} ({status}).")
         QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
+    def _collection_batch_operation_progress(
+        self,
+        progress: BatchExecutionProgress,
+        *,
+        dialog: CollectionBatchDialog | None = None,
+    ) -> None:
+        """Present one nested CPU/GPU/source/output stage for the active item."""
+
+        current = max(int(progress.current), 0)
+        total = max(int(progress.total), 0)
+        if total:
+            current = min(current, total)
+            self.pipeline_busy_bar.setRange(0, total)
+            self.pipeline_busy_bar.setValue(current)
+            self.pipeline_busy_bar.setFormat("%v/%m")
+        else:
+            self.pipeline_busy_bar.setRange(0, 0)
+            self.pipeline_busy_bar.setFormat("Working")
+        operation = (
+            str(progress.operation_id).strip()
+            or str(progress.node_id).strip()
+            or "operation"
+        )
+        detail = str(progress.message).strip()
+        suffix = f": {detail}" if detail else ""
+        self.pipeline_busy_label.setText(
+            f"Batch {progress.item_index}/{progress.item_total}: "
+            f"{operation}{suffix}"
+        )
+        if dialog is None:
+            dialog = self._active_collection_batch_dialog
+        if dialog is not None:
+            dialog.update_operation_progress(
+                progress.item_index,
+                progress.item_total,
+                progress.batch_id,
+                progress.node_id,
+                progress.operation_id,
+                current,
+                total,
+                progress.message,
+            )
+
     def _batch_workflow_document(
         self,
         positions: dict[str, tuple[float, float]] | None = None,
+        *,
+        compute_request: ComputeRequest | None = None,
     ) -> dict:
+        if compute_request is None:
+            compute_request = self._current_compute_request()
         workflow = serialize_workflow(
             self.pipeline,
             positions or self.graph_view.node_positions(),
             self._graph_note_documents(),
             self._workflow_metadata(),
-            self._current_compute_request(),
+            compute_request,
         )
         for node in workflow.get("nodes", ()):
             if node.get("operation_id") != "input":
@@ -8307,6 +8444,7 @@ class VippWidget(QWidget):
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
         workflow: dict | None = None,
+        compute_request: ComputeRequest | None = None,
     ) -> BatchConfig:
         return self._collection_batch_controller.build_config(
             input_dir=input_dir,
@@ -8319,6 +8457,7 @@ class VippWidget(QWidget):
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
             workflow=workflow,
+            compute_request=compute_request,
         )
 
     def _save_collection_batch_config(
@@ -8326,10 +8465,47 @@ class VippWidget(QWidget):
         path: str | Path,
         **values,
     ) -> tuple[Path, Path]:
-        return self._collection_batch_controller.save_config(path, **values)
+        return self._collection_batch_controller.save_config(
+            path,
+            compute_request=self._compute_request_for_batch_dialog(
+                self._active_collection_batch_dialog
+            ),
+            **values,
+        )
 
     def _load_collection_batch_config(self, path: str | Path) -> BatchConfig:
-        return self._collection_batch_controller.load_config(path)
+        config = self._collection_batch_controller.load_config(path)
+        dialog = self._active_collection_batch_dialog
+        if dialog is not None:
+            dialog._loaded_compute_request = config.compute_request
+            dialog._compute_toolbar_fingerprint_at_load = (
+                self._current_compute_request().fingerprint
+            )
+        return config
+
+    def _compute_request_for_batch_dialog(
+        self,
+        dialog: CollectionBatchDialog | None,
+    ) -> ComputeRequest:
+        """Use saved batch execution settings until toolbar intent changes."""
+
+        current = self._current_compute_request()
+        if dialog is None:
+            return current
+        loaded = getattr(dialog, "_loaded_compute_request", None)
+        toolbar_at_load = str(
+            getattr(dialog, "_compute_toolbar_fingerprint_at_load", "")
+        )
+        if (
+            isinstance(loaded, ComputeRequest)
+            and toolbar_at_load
+            and current.fingerprint == toolbar_at_load
+        ):
+            return loaded
+        if isinstance(loaded, ComputeRequest):
+            dialog._loaded_compute_request = None
+            dialog._compute_toolbar_fingerprint_at_load = ""
+        return current
 
     def _preview_collection_batch(
         self,
@@ -8355,6 +8531,9 @@ class VippWidget(QWidget):
             preview_limit=preview_limit,
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
+            compute_request=self._compute_request_for_batch_dialog(
+                self._active_collection_batch_dialog
+            ),
         )
         config_path = None
         if self._active_collection_batch_dialog is not None:

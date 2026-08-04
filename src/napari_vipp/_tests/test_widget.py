@@ -86,6 +86,7 @@ from napari_vipp.core.batch import (
     BATCH_SCRIPT_FILENAME,
     BATCH_WORKFLOW_FILENAME,
     BatchConfig,
+    BatchExecutionProgress,
     BatchStatus,
     ExistingFilePolicy,
     load_batch_config,
@@ -153,6 +154,7 @@ from napari_vipp.core.workflow import (
     serialize_workflow,
 )
 from napari_vipp.ui import recent_paths
+from napari_vipp.ui.batch_workers import CollectionBatchOperationProgress
 
 
 class _Event:
@@ -13791,6 +13793,118 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
     assert "3 completed" in dialog.run_progress_label.text()
 
 
+def test_batch_worker_nested_progress_and_safe_cancel_reach_retained_dialog(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    started = threading.Event()
+    from napari_vipp.ui import batch_workers
+
+    original_run_batch = batch_workers.run_batch
+
+    def wait_for_cancel(*args, **kwargs):
+        kwargs["execution_progress_callback"](
+            BatchExecutionProgress(
+                item_index=1,
+                item_total=3,
+                batch_id="sample",
+                node_id="gaussian-1",
+                operation_id="gaussian_blur",
+                current=2,
+                total=5,
+                message="GPU tile 2 of 5",
+            )
+        )
+        started.set()
+        assert kwargs["cancel_event"].wait(timeout=5)
+        return original_run_batch(*args, **kwargs)
+
+    monkeypatch.setattr(batch_workers, "run_batch", wait_for_cancel)
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    qtbot.waitUntil(
+        lambda: "GPU tile 2 of 5" in dialog.operation_progress_label.text(),
+        timeout=5_000,
+    )
+    assert dialog.operation_progress_bar.maximum() == 5
+    assert dialog.operation_progress_bar.value() == 2
+    context = widget._active_collection_batch_job
+    assert context is not None
+    worker = widget._collection_batch_workers[context.job_id]
+
+    stale_dialog = CollectionBatchDialog(widget)
+    widget._cancel_collection_batch_worker(stale_dialog)
+    assert not worker.cancellation_requested
+    prior_text = dialog.operation_progress_label.text()
+    widget._on_collection_batch_worker_operation_progress(
+        CollectionBatchOperationProgress(
+            job_id=context.job_id + 100,
+            progress=BatchExecutionProgress(
+                1,
+                3,
+                "stale",
+                "stale-node",
+                "stale-operation",
+                9,
+                10,
+                "must be ignored",
+            ),
+        )
+    )
+    assert dialog.operation_progress_label.text() == prior_text
+
+    qtbot.mouseClick(dialog.cancel_run_button, Qt.LeftButton)
+    assert worker.cancellation_requested
+    assert not dialog.cancel_run_button.isEnabled()
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+
+    assert "Batch cancelled" in dialog.run_progress_label.text()
+    assert "safe cancellation checkpoint" in dialog.operation_progress_label.text()
+    assert not dialog.cancel_run_button.isVisible()
+    manifest = json.loads(
+        (demo.root / "results" / BATCH_MANIFEST_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["summary"]["cancelled"] == 1
+    assert manifest["compute"]["runtime_cleanup_succeeded"] is True
+
+
+def test_loaded_batch_compute_request_wins_until_toolbar_changes(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    config = load_batch_config(demo.config_path)
+    saved_request = ComputeRequest(
+        mode=ComputeMode.AUTO,
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
+        accelerator_memory_cap_bytes=3_000_000_000,
+        accelerator_safety_reserve_bytes=300_000_000,
+        allow_experimental=True,
+    )
+    config = replace(config, compute_request=saved_request)
+
+    widget._batch_collection_dialog(config=config, preview_config=False)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+
+    assert widget._compute_request_for_batch_dialog(dialog) == saved_request
+
+    widget._compute_mode = ComputeMode.SELECTIVE
+    current = widget._current_compute_request()
+    assert widget._compute_request_for_batch_dialog(dialog) == current
+    assert dialog._loaded_compute_request is None
+
+
 def test_edited_batch_settings_run_on_first_click_without_repreview(
     qtbot,
     monkeypatch,
@@ -14314,6 +14428,7 @@ def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
         "completed": 3,
         "partial": 0,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 0,
     }
     assert {path.name for path in result.artifact_paths} == {
@@ -14564,18 +14679,24 @@ def test_run_collection_batch_uses_low_memory_retention(
     widget.pipeline.set_param(batch_output.id, "format", "npy")
 
     calls = []
-    original_run = PrototypePipeline.run
+    from napari_vipp.core import batch as batch_module
 
-    def captured_run(pipeline, *args, **kwargs):
+    original_execute = batch_module.execute_pipeline_request
+
+    def captured_execute(request, *args, **kwargs):
         calls.append(
             {
-                "prune_unretained": kwargs.get("prune_unretained"),
-                "retain_node_ids": tuple(kwargs.get("retain_node_ids") or ()),
+                "prune_unretained": request.prune_unretained,
+                "retain_node_ids": tuple(request.retain_node_ids),
             }
         )
-        return original_run(pipeline, *args, **kwargs)
+        return original_execute(request, *args, **kwargs)
 
-    monkeypatch.setattr(PrototypePipeline, "run", captured_run)
+    monkeypatch.setattr(
+        batch_module,
+        "execute_pipeline_request",
+        captured_execute,
+    )
 
     saved = widget._run_collection_batch(
         input_dir,
@@ -14980,7 +15101,8 @@ def test_run_collection_batch_writes_reproducibility_artifacts_and_manifest(
         BATCH_WORKFLOW_FILENAME,
     }
     runner = runner_path.read_text(encoding="utf-8")
-    assert "from napari_vipp.core.batch import run_batch_from_files" in runner
+    assert "from napari_vipp.core.batch import (" in runner
+    assert "    run_batch," in runner
     assert "PrototypePipeline" not in runner
 
     config_document = json.loads(config_path.read_text(encoding="utf-8"))
@@ -14992,6 +15114,7 @@ def test_run_collection_batch_writes_reproducibility_artifacts_and_manifest(
         "completed": 1,
         "partial": 0,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 0,
     }
     item = manifest["items"][0]
@@ -15036,6 +15159,7 @@ def test_run_collection_batch_continues_after_middle_read_failure(qtbot, tmp_pat
         "completed": 2,
         "partial": 0,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 1,
     }
     assert [item.status for item in result.manifest.items] == [

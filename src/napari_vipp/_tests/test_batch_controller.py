@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from napari_vipp.core.batch import BATCH_WORKFLOW_FILENAME
+from napari_vipp.core.compute import ComputeMode, ComputeRequest
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
 from napari_vipp.ui.batch_controller import CollectionBatchController
@@ -131,3 +132,37 @@ def test_controller_rejects_reserved_companion_filename(tmp_path):
             input_dir=tmp_path,
             output_dir=tmp_path / "outputs",
         )
+
+
+def test_controller_preserves_full_machine_execution_request(tmp_path):
+    pipeline, _output_id = _explicit_batch_pipeline()
+    # Workflow serialization intentionally keeps only portable authored intent;
+    # the controller must separately capture machine-local batch execution caps.
+    request = ComputeRequest(
+        mode=ComputeMode.AUTO,
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
+        accelerator_memory_cap_bytes=4_000_000_000,
+        accelerator_safety_reserve_bytes=500_000_000,
+        allow_experimental=True,
+    )
+    workflow = serialize_workflow(pipeline, compute_request=request)
+    controller = CollectionBatchController(
+        workflow_document_provider=lambda: workflow,
+        pipeline_provider=lambda: pipeline,
+        compute_request_provider=lambda: request,
+    )
+
+    config = controller.build_config(
+        input_dir=tmp_path,
+        output_dir=tmp_path / "outputs",
+        pattern="*.npy",
+        image_format="npy",
+    )
+
+    assert config.compute_request == request
+    assert config.compute_request.runtime_id == "cuda-cupy"
+    assert config.compute_request.device_id == "cuda:0"
+    assert config.compute_request.accelerator_memory_cap_bytes == 4_000_000_000
+    assert config.compute_request.accelerator_safety_reserve_bytes == 500_000_000
+    assert config.compute_request.allow_experimental is True

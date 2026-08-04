@@ -21,11 +21,13 @@ from napari_vipp.core.batch_setup import (
     batch_source_rows,
     build_collection_batch_config,
 )
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.ui.batch import BatchPreviewResult, BatchPreviewRow
 
 WorkflowDocumentProvider = Callable[[], dict]
 PipelineProvider = Callable[[], PrototypePipeline]
+ComputeRequestProvider = Callable[[], ComputeRequest]
 
 
 class CollectionBatchController:
@@ -36,9 +38,11 @@ class CollectionBatchController:
         *,
         workflow_document_provider: WorkflowDocumentProvider,
         pipeline_provider: PipelineProvider,
+        compute_request_provider: ComputeRequestProvider | None = None,
     ) -> None:
         self._workflow_document_provider = workflow_document_provider
         self._pipeline_provider = pipeline_provider
+        self._compute_request_provider = compute_request_provider
 
     def build_config(
         self,
@@ -52,11 +56,14 @@ class CollectionBatchController:
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
         workflow: dict | None = None,
+        compute_request: ComputeRequest | None = None,
     ) -> BatchConfig:
         """Build a validated config from one stable workflow snapshot."""
         del save_workflow_snapshot
         if workflow is None:
             workflow = self._workflow_document_provider()
+        if compute_request is None and self._compute_request_provider is not None:
+            compute_request = self._compute_request_provider()
         return build_collection_batch_config(
             workflow,
             input_dir=input_dir,
@@ -67,6 +74,7 @@ class CollectionBatchController:
             source_bindings=source_bindings,
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
+            compute_request=compute_request,
         )
 
     def save_config(
@@ -124,6 +132,7 @@ class CollectionBatchController:
         preview_limit: int = 25,
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
+        compute_request: ComputeRequest | None = None,
     ) -> BatchPreviewResult:
         """Map the core preflight plan into the dialog preview contract."""
         workflow = self._workflow_document_provider()
@@ -138,6 +147,7 @@ class CollectionBatchController:
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
             workflow=workflow,
+            compute_request=compute_request,
         )
         plan = plan_batch(
             workflow,

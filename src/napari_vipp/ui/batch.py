@@ -39,6 +39,7 @@ from napari_vipp.core.batch import (
     ExistingFilePolicy,
 )
 from napari_vipp.core.batch_demo import SyntheticBatchDemo
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.ui import recent_paths
 
 
@@ -123,6 +124,8 @@ class CollectionBatchDialog(QDialog):
         self._actions = actions
         self._source_rows: list[dict[str, object]] = []
         self._loaded_config_path: Path | None = None
+        self._loaded_compute_request: ComputeRequest | None = None
+        self._compute_toolbar_fingerprint_at_load = ""
         self._demo: SyntheticBatchDemo | None = None
         self._preview_result: BatchPreviewResult | None = None
         self._preview_table_rows: dict[int, int] = {}
@@ -1287,7 +1290,10 @@ class CollectionBatchDialog(QDialog):
             self.preview_status.setText(f"Could not load batch config: {exc}")
             return
         self._loaded_config_path = Path(path)
-        self.preview_status.setText(f"Loaded {Path(path).name}.")
+        self.preview_status.setText(
+            f"Loaded {Path(path).name}. Its saved compute settings will be "
+            "used unless you change the compute toolbar."
+        )
 
     def _save_config(self) -> None:
         if self._actions is None:
@@ -1321,6 +1327,7 @@ class CollectionBatchDialog(QDialog):
         self.preview_status.setText(f"Saved {names}.")
 
     def _apply_config(self, config: BatchConfig) -> None:
+        self._loaded_compute_request = config.compute_request
         rows = {str(row["node_id"]): row for row in self._source_rows}
         missing = [
             source.node_id for source in config.sources if source.node_id not in rows
