@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import gc
+import hashlib
 import json
+import threading
+import weakref
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -27,6 +31,7 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     SourcePayload,
 )
+from napari_vipp.core.workflow import serialize_workflow
 
 
 def _starter_pipeline() -> PrototypePipeline:
@@ -39,6 +44,35 @@ def _assert_embedded_operation(code: str, operation_id: str) -> None:
     assert f'"operation_id":"{operation_id}"' in code
 
 
+def _install_generated_batch_inputs(
+    monkeypatch,
+    tmp_path,
+    *,
+    workflow_path=None,
+    compute_request=None,
+):
+    workflow_path = workflow_path or (tmp_path / "vipp_pipeline.json")
+    workflow_path.write_text(
+        json.dumps(
+            serialize_workflow(
+                _starter_pipeline(),
+                compute_request=compute_request,
+            )
+        ),
+        encoding="utf-8",
+    )
+    config = SimpleNamespace(
+        workflow_file=workflow_path.name,
+        compute_request=compute_request or ComputeRequest(),
+        resolve_path=lambda _path: workflow_path,
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.batch.load_batch_config",
+        lambda _path: config,
+    )
+    return config, workflow_path
+
+
 def test_exported_batch_runner_uses_sibling_defaults_and_prints_summary(
     monkeypatch,
     tmp_path,
@@ -46,26 +80,32 @@ def test_exported_batch_runner_uses_sibling_defaults_and_prints_summary(
 ):
     script_path = tmp_path / "vipp_batch_runner.py"
     manifest_path = tmp_path / "vipp_batch_manifest.json"
-    calls: list[tuple[str, str]] = []
+    config, workflow_path = _install_generated_batch_inputs(
+        monkeypatch,
+        tmp_path,
+    )
+    calls: list[tuple[object, object, dict[str, object]]] = []
     result = SimpleNamespace(
         summary={
             "completed": 3,
             "partial": 0,
             "skipped": 2,
+            "cancelled": 0,
             "failed": 0,
         },
         saved_paths=[tmp_path / "first.tif", tmp_path / "second.tif"],
         manifest_path=manifest_path,
         has_failures=False,
+        cancelled=False,
     )
 
-    def fake_run_batch_from_files(workflow, config):
-        calls.append((workflow, config))
+    def fake_run_batch(workflow, config, **kwargs):
+        calls.append((workflow, config, kwargs))
         return result
 
     monkeypatch.setattr(
-        "napari_vipp.core.batch.run_batch_from_files",
-        fake_run_batch_from_files,
+        "napari_vipp.core.batch.run_batch",
+        fake_run_batch,
     )
     code = export_batch_runner_to_python()
     compiled = compile(code, "<exported-batch-runner>", "exec")
@@ -76,14 +116,19 @@ def test_exported_batch_runner_uses_sibling_defaults_and_prints_summary(
     exec(compiled, namespace)
 
     assert namespace["main"]([]) == 0
-    assert calls == [
-        (
-            None,
-            str(tmp_path / "vipp_batch_config.json"),
-        )
-    ]
+    assert len(calls) == 1
+    assert calls[0][0] == json.loads(workflow_path.read_text(encoding="utf-8"))
+    assert calls[0][1] is config
+    assert calls[0][2]["workflow_path"] == workflow_path.resolve()
+    assert calls[0][2]["config_path"] == (
+        tmp_path / "vipp_batch_config.json"
+    ).resolve()
+    assert calls[0][2]["compute_request"] is None
+    assert isinstance(calls[0][2]["cancel_event"], threading.Event)
+    assert calls[0][2]["progress_callback"] is None
+    assert calls[0][2]["execution_progress_callback"] is None
     assert capsys.readouterr().out == (
-        "3 completed, 0 partial, 2 skipped, 0 failed; "
+        "3 completed, 0 partial, 2 skipped, 0 cancelled, 0 failed; "
         f"2 outputs saved; manifest: {manifest_path}\n"
     )
 
@@ -95,26 +140,33 @@ def test_exported_batch_runner_passes_cli_overrides_and_reports_failure(
 ):
     workflow_path = tmp_path / "custom-workflow.json"
     config_path = tmp_path / "custom-config.json"
-    calls: list[tuple[str, str]] = []
+    config, _workflow_path = _install_generated_batch_inputs(
+        monkeypatch,
+        tmp_path,
+        workflow_path=workflow_path,
+    )
+    calls: list[tuple[object, object, dict[str, object]]] = []
     result = SimpleNamespace(
         summary={
             "completed": 1,
             "partial": 0,
             "skipped": 0,
+            "cancelled": 0,
             "failed": 1,
         },
         saved_paths=[tmp_path / "successful-output.tif"],
         manifest_path=tmp_path / "manifest.json",
         has_failures=True,
+        cancelled=False,
     )
 
-    def fake_run_batch_from_files(workflow, config):
-        calls.append((workflow, config))
+    def fake_run_batch(workflow, config, **kwargs):
+        calls.append((workflow, config, kwargs))
         return result
 
     monkeypatch.setattr(
-        "napari_vipp.core.batch.run_batch_from_files",
-        fake_run_batch_from_files,
+        "napari_vipp.core.batch.run_batch",
+        fake_run_batch,
     )
     code = export_batch_runner_to_python()
     namespace: dict[str, object] = {
@@ -134,9 +186,17 @@ def test_exported_batch_runner_passes_cli_overrides_and_reports_failure(
         )
         == 1
     )
-    assert calls == [(str(workflow_path), str(config_path))]
+    assert len(calls) == 1
+    assert calls[0][0] == json.loads(workflow_path.read_text(encoding="utf-8"))
+    assert calls[0][1] is config
+    assert calls[0][2]["workflow_path"] == workflow_path.resolve()
+    assert calls[0][2]["config_path"] == config_path.resolve()
+    assert calls[0][2]["compute_request"] is None
+    assert isinstance(calls[0][2]["cancel_event"], threading.Event)
+    assert calls[0][2]["progress_callback"] is None
+    assert calls[0][2]["execution_progress_callback"] is None
     assert capsys.readouterr().out == (
-        "1 completed, 0 partial, 0 skipped, 1 failed; "
+        "1 completed, 0 partial, 0 skipped, 0 cancelled, 1 failed; "
         f"1 outputs saved; manifest: {result.manifest_path}\n"
     )
 
@@ -146,11 +206,13 @@ def test_exported_batch_runner_reports_preflight_exception(
     tmp_path,
     capsys,
 ):
-    def failing_run(_workflow, _config):
+    _install_generated_batch_inputs(monkeypatch, tmp_path)
+
+    def failing_run(_workflow, _config, **_kwargs):
         raise ValueError("workflow/config mismatch")
 
     monkeypatch.setattr(
-        "napari_vipp.core.batch.run_batch_from_files",
+        "napari_vipp.core.batch.run_batch",
         failing_run,
     )
     namespace: dict[str, object] = {
@@ -170,6 +232,154 @@ def test_exported_batch_runner_reports_preflight_exception(
     assert "workflow/config mismatch" in capsys.readouterr().err
 
 
+def test_exported_batch_runner_reports_cancelled_count_and_exit_code(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    _install_generated_batch_inputs(monkeypatch, tmp_path)
+    result = SimpleNamespace(
+        summary={
+            "completed": 1,
+            "partial": 0,
+            "skipped": 0,
+            "cancelled": 2,
+            "failed": 0,
+        },
+        saved_paths=(),
+        manifest_path=tmp_path / "manifest.json",
+        has_failures=False,
+        cancelled=True,
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.batch.run_batch",
+        lambda *_args, **_kwargs: result,
+    )
+    namespace: dict[str, object] = {
+        "__name__": "exported_batch_runner",
+        "__file__": str(tmp_path / "vipp_batch_runner.py"),
+    }
+    exec(
+        compile(
+            export_batch_runner_to_python(),
+            "<exported-batch-runner>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    assert namespace["main"]([]) == 130
+    assert "2 cancelled" in capsys.readouterr().out
+
+
+def test_exported_batch_runner_overlays_compute_flags_and_nested_progress(
+    monkeypatch,
+    tmp_path,
+):
+    workflow_path = tmp_path / "workflow.json"
+    workflow_path.write_text(
+        json.dumps(
+            serialize_workflow(
+                _starter_pipeline(),
+                compute_request=ComputeRequest(
+                    mode="auto",
+                    node_preferences={"gaussian": "cpu"},
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+    authored_workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+
+    class Config:
+        workflow_file = "workflow.json"
+        compute_request = ComputeRequest(
+            mode="auto",
+            node_preferences={"gaussian": "cpu"},
+        )
+
+        def resolve_path(self, _path):
+            return workflow_path
+
+    config = Config()
+    monkeypatch.setattr(
+        "napari_vipp.core.batch.load_batch_config",
+        lambda _path: config,
+    )
+    captured: dict[str, object] = {}
+    result = SimpleNamespace(
+        summary={
+            "completed": 1,
+            "partial": 0,
+            "skipped": 0,
+            "cancelled": 0,
+            "failed": 0,
+        },
+        saved_paths=(),
+        manifest_path=tmp_path / "manifest.json",
+        has_failures=False,
+        cancelled=False,
+    )
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        changed = json.loads(json.dumps(authored_workflow))
+        gaussian = next(
+            node for node in changed["nodes"] if node["id"] == "gaussian"
+        )
+        gaussian["params"]["sigma"] = 9.0
+        workflow_path.write_text(json.dumps(changed), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(
+        "napari_vipp.core.batch.run_batch",
+        fake_run,
+    )
+    namespace: dict[str, object] = {
+        "__name__": "exported_batch_runner",
+        "__file__": str(tmp_path / "vipp_batch_runner.py"),
+    }
+    exec(
+        compile(
+            export_batch_runner_to_python(),
+            "<exported-batch-runner>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    assert (
+        namespace["main"](
+            [
+                "--workflow",
+                str(workflow_path),
+                "--config",
+                str(tmp_path / "config.json"),
+                "--compute-mode",
+                "selective",
+                "--fallback-policy",
+                "strict",
+                "--node-preference",
+                "threshold=cpu",
+                "--progress",
+            ]
+        )
+        == 0
+    )
+
+    override = captured["kwargs"]["compute_request"]
+    assert captured["args"][0] == authored_workflow
+    assert override.mode.value == "selective"
+    assert override.fallback_policy.value == "strict"
+    assert override.preference_for("gaussian").kind.value == "cpu"
+    assert override.preference_for("threshold").kind.value == "cpu"
+    assert config.compute_request.mode.value == "auto"
+    assert "threshold" not in config.compute_request.node_preferences
+    assert callable(captured["kwargs"]["progress_callback"])
+    assert callable(captured["kwargs"]["execution_progress_callback"])
+
+
 def test_export_produces_valid_python():
     pipeline = _starter_pipeline()
     code = export_pipeline_to_python(pipeline)
@@ -182,7 +392,8 @@ def test_export_produces_valid_python():
     _assert_embedded_operation(code, "gaussian_blur")
     _assert_embedded_operation(code, "otsu_threshold")
     assert '"sigma":1.2' in code
-    assert "pipeline_from_workflow(json.loads(_WORKFLOW_JSON))" in code
+    assert "execute_pipeline_request(" in code
+    assert "pipeline_from_workflow(document)" in code
     assert "ImageDataset, read_image, write_image" in code
     assert "skimage" not in code
 
@@ -202,6 +413,291 @@ def test_exported_run_pipeline_executes():
     assert results["threshold"].shape == image.shape
     assert results["threshold"].dtype == bool
     assert namespace["OUTPUT_NODES"] == ("threshold",)
+
+
+def test_exported_run_reports_generic_node_start_and_finish_progress():
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    updates = []
+
+    namespace["run_pipeline"](
+        np.ones((8, 9), dtype=np.float32),
+        input_metadata={"axes": "YX"},
+        progress_callback=lambda *update: updates.append(update),
+    )
+
+    starts = {
+        node_id
+        for node_id, current, total, message in updates
+        if current == 0 and total == 0 and message.startswith("Node started")
+    }
+    finishes = {
+        node_id
+        for node_id, current, total, message in updates
+        if current == 1 and total == 1 and message.startswith("Node completed")
+    }
+    assert {"gaussian", "threshold"}.issubset(starts)
+    assert {"gaussian", "threshold"}.issubset(finishes)
+    assert all(node_id in {"input", "gaussian", "threshold"} for node_id in starts)
+
+
+def test_exported_progress_callback_errors_do_not_invalidate_execution():
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    def presentation_failure(*_args):
+        raise RuntimeError("presentation callback failed")
+
+    results = namespace["run_pipeline"](
+        np.ones((8, 9), dtype=np.float32),
+        input_metadata={"axes": "YX"},
+        progress_callback=presentation_failure,
+    )
+
+    assert results["threshold"].dtype == bool
+    assert results.execution_report.cleanup_succeeded
+
+
+def test_exported_results_report_exact_cpu_provenance_and_stable_hashes():
+    pipeline = _starter_pipeline()
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(export_pipeline_to_python(pipeline), "<exported>", "exec"),
+        namespace,
+    )
+    embedded = namespace["_WORKFLOW_JSON"]
+    image = np.ones((8, 9), dtype=np.float32)
+
+    first = namespace["run_pipeline"](
+        image,
+        input_metadata={"axes": "YX"},
+    )
+    second = namespace["run_pipeline"](
+        image,
+        input_metadata={"axes": "YX"},
+        compute_request=ComputeRequest(
+            mode="cpu",
+            fallback_policy="strict",
+            node_preferences={"gaussian": "cpu"},
+        ),
+    )
+
+    assert first.execution_report is not None
+    assert first.execution_report.cleanup_succeeded
+    assert first.effective_compute_request == ComputeRequest(mode="cpu")
+    assert set(first.node_compute_provenance) == {
+        "input",
+        "gaussian",
+        "threshold",
+    }
+    source_identity = first.node_compute_provenance[
+        "input"
+    ].actual_implementation
+    assert source_identity.runtime_id == "source-boundary"
+    assert source_identity.implementation_id == "source-input-v1"
+    actual = {
+        item["node_id"]: item["actual_implementation"]
+        for item in first.execution_provenance["nodes"]
+    }
+    assert actual["gaussian"] == {
+        "identity_complete": True,
+        "runtime_id": "cpu-numpy",
+        "array_domain": "host-numpy",
+        "implementation_library_id": "cpu",
+        "implementation_id": "cpu-gaussian_blur-v1",
+        "implementation_version": "1",
+        "parity_policy_id": "authoritative-cpu-v1",
+        "cache_equivalence_group": "",
+    }
+    assert first.workflow_sha256 == second.workflow_sha256
+    assert first.generated_template_fingerprint == (
+        second.generated_template_fingerprint
+    )
+    assert first.effective_execution_fingerprint != (
+        second.effective_execution_fingerprint
+    )
+    assert namespace["_WORKFLOW_JSON"] == embedded
+
+
+def test_exported_results_bind_provenance_to_each_terminal_output():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    pipeline.connect("input", gaussian.id)
+    pipeline.connect("input", median.id)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(export_pipeline_to_python(pipeline), "<exported>", "exec"),
+        namespace,
+    )
+
+    results = namespace["run_pipeline"](
+        np.ones((8, 9), dtype=np.float32),
+        input_metadata={"axes": "YX"},
+    )
+
+    gaussian_record = results.output_provenance[gaussian.id]
+    median_record = results.output_provenance[median.id]
+    assert gaussian_record["output"]["node_id"] == gaussian.id
+    assert median_record["output"]["node_id"] == median.id
+    assert gaussian_record["output"]["output_port_index"] == 0
+    assert gaussian_record["output"]["result_context_fingerprint"]
+    assert median_record["output"]["result_context_fingerprint"]
+    assert gaussian_record["output"]["execution_provenance_sha256"] == (
+        median_record["output"]["execution_provenance_sha256"]
+    )
+    assert gaussian_record["provenance_sha256"] != median_record[
+        "provenance_sha256"
+    ]
+
+
+def test_exported_output_provenance_preserves_supplied_exact_source_identity(
+    tmp_path,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    identity = {
+        "kind": "file",
+        "sha256": "a" * 64,
+        "regular_file_count": 1,
+        "size_bytes": 1234,
+    }
+    payload = SourcePayload(
+        np.ones((8, 9), dtype=np.float32),
+        {
+            "axes": "YX",
+            "vipp_source_path": "C:/data/source.ome.tif",
+            "vipp_source_identity": identity,
+            "vipp_source_provenance": {"reader": "tifffile"},
+        },
+        "source.ome.tif",
+    )
+
+    results = namespace["run_pipeline"](payload)
+
+    assert results.provenance["sources"] == [
+        {
+            "node_id": "input",
+            "name": "source.ome.tif",
+            "path": "C:/data/source.ome.tif",
+            "identity_complete": True,
+            "identity": identity,
+            "reader_provenance": {"reader": "tifffile"},
+            "binding_sha256": results.provenance["sources"][0][
+                "binding_sha256"
+            ],
+        }
+    ]
+    namespace["write_image"] = lambda _data, path, **_kwargs: path
+    output_path = tmp_path / "output.tif"
+    namespace["save_image"](
+        results["threshold"],
+        output_path,
+        image_state=results.image_states["threshold"],
+        provenance=results,
+        output_node_id="threshold",
+    )
+    sidecar = json.loads(
+        (tmp_path / "output.tif.vipp-provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sidecar["sources"][0]["identity"]["sha256"] == "a" * 64
+    assert sidecar["sources"][0]["binding_sha256"]
+
+
+def test_generated_artifact_sha256_hashes_saved_script_bytes(tmp_path):
+    script = tmp_path / "pipeline.py"
+    script.write_text(
+        export_pipeline_to_python(_starter_pipeline()),
+        encoding="utf-8",
+        newline="\n",
+    )
+    namespace: dict[str, object] = {
+        "__name__": "exported_pipeline",
+        "__file__": str(script),
+    }
+    exec(compile(script.read_text(encoding="utf-8"), str(script), "exec"), namespace)
+
+    results = namespace["run_pipeline"](
+        np.ones((4, 5), dtype=np.float32),
+        input_metadata={"axes": "YX"},
+    )
+
+    expected = hashlib.sha256(script.read_bytes()).hexdigest()
+    assert results.generated_artifact_sha256 == expected
+    assert results.provenance["generated_artifact"]["source_sha256"] == expected
+
+
+def test_generated_artifact_sha256_is_immutable_for_loaded_module(tmp_path):
+    script = tmp_path / "pipeline.py"
+    script.write_text(
+        export_pipeline_to_python(_starter_pipeline()),
+        encoding="utf-8",
+        newline="\n",
+    )
+    loaded_sha256 = hashlib.sha256(script.read_bytes()).hexdigest()
+    namespace: dict[str, object] = {
+        "__name__": "exported_pipeline",
+        "__file__": str(script),
+    }
+    exec(compile(script.read_text(encoding="utf-8"), str(script), "exec"), namespace)
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# edited after import\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    results = namespace["run_pipeline"](
+        np.ones((4, 5), dtype=np.float32),
+        input_metadata={"axes": "YX"},
+    )
+
+    assert results.generated_artifact_sha256 == loaded_sha256
+    assert results.generated_artifact_sha256 != hashlib.sha256(
+        script.read_bytes()
+    ).hexdigest()
+
+
+def test_exported_compute_override_validates_nodes_without_mutating_snapshot():
+    code = export_pipeline_to_python(_starter_pipeline())
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    embedded = namespace["_WORKFLOW_JSON"]
+
+    with pytest.raises(ValueError, match="unknown exported nodes"):
+        namespace["run_pipeline"](
+            np.ones((4, 5), dtype=np.float32),
+            input_metadata={"axes": "YX"},
+            compute_request={
+                "mode": "cpu",
+                "node_preferences": {"missing": "cpu"},
+            },
+        )
+
+    assert namespace["_WORKFLOW_JSON"] == embedded
 
 
 def test_export_preserves_scalar_channel_contract_with_pipeline_parity():
@@ -284,6 +780,24 @@ def test_export_keeps_incomplete_multi_input_node_uncomputed():
         "load_image",
         "read_image",
         "save_image",
+        "ComputeRequest",
+        "Mapping",
+        "OperationCancelled",
+        "PipelineRunRequest",
+        "atomic_write_json",
+        "canonical_digest",
+        "count",
+        "deserialize_workflow",
+        "dict",
+        "execute_pipeline_request",
+        "hashlib",
+        "main",
+        "next",
+        "serialize_execution_provenance",
+        "signal",
+        "sys",
+        "threading",
+        "warnings",
     ],
 )
 def test_export_rejects_invalid_function_name(name):
@@ -321,8 +835,428 @@ def test_custom_export_function_name_is_used_by_generated_harness():
     image = np.ones((3, 4), dtype=np.float32)
 
     assert "def analyze_image(" in code
-    assert "results = analyze_image(load_image(source_path))" in code
+    assert "results = analyze_image(" in code
+    assert "load_image(source_path)," in code
     assert namespace["analyze_image"](image)["threshold"].dtype == bool
+
+
+def test_generated_cli_overlays_only_explicit_compute_fields():
+    authored = ComputeRequest(
+        mode="selective",
+        fallback_policy="visible",
+        node_preferences={"gaussian": "cpu"},
+    )
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(
+                _starter_pipeline(),
+                compute_request=authored,
+            ),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    embedded = namespace["_WORKFLOW_JSON"]
+
+    request = namespace["_cli_compute_request"](
+        fallback_policy="strict",
+        node_preferences=["threshold=cpu"],
+    )
+
+    assert request.mode.value == "selective"
+    assert request.fallback_policy.value == "strict"
+    assert request.preference_for("gaussian").kind.value == "cpu"
+    assert request.preference_for("threshold").kind.value == "cpu"
+    assert namespace["_WORKFLOW_JSON"] == embedded
+    with pytest.raises(ValueError, match="unknown exported nodes"):
+        namespace["_cli_compute_request"](
+            node_preferences=["missing=cpu"],
+        )
+    with pytest.raises(ValueError, match="Duplicate node preference"):
+        namespace["_cli_compute_request"](
+            node_preferences=["gaussian=cpu", "gaussian=auto"],
+        )
+
+
+@pytest.mark.parametrize("write_provenance", [True, False])
+def test_generated_cli_passes_run_override_and_provenance_choice(
+    tmp_path,
+    write_provenance,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    calls: dict[str, object] = {}
+
+    class Results(dict):
+        image_states = {}
+        provenance = {"type": "test"}
+
+    results = Results(threshold=np.ones((2, 3), dtype=np.float32))
+
+    def fake_run(*_args, **kwargs):
+        calls["request"] = kwargs["compute_request"]
+        return results
+
+    def fake_save(data, path, **kwargs):
+        calls["saved"] = (data, path, kwargs)
+
+    namespace["load_image"] = lambda _path: np.ones((2, 3), dtype=np.float32)
+    namespace["run_pipeline"] = fake_run
+    namespace["save_image"] = fake_save
+    args = [str(tmp_path / "input.tif"), str(tmp_path / "output.tif")]
+    if not write_provenance:
+        args.append("--no-provenance")
+
+    assert namespace["main"](args) == 0
+
+    assert calls["request"].mode.value == "cpu"
+    assert calls["saved"][2]["provenance"] is (
+        results if write_provenance else None
+    )
+
+
+def test_generated_cli_distinguishes_cancellation_and_writes_failure_sidecar(
+    tmp_path,
+    capsys,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    failure = namespace["OperationCancelled"]("cancelled at checkpoint")
+    failure.provenance = {
+        "type": "napari-vipp-generated-execution-provenance",
+        "version": 1,
+        "execution": {
+            "failure": {"kind": "cancelled"},
+            "cleanup_succeeded": True,
+        },
+    }
+    namespace["load_image"] = lambda _path: np.ones((2, 3), dtype=np.float32)
+
+    def cancel(*_args, **_kwargs):
+        raise failure
+
+    namespace["run_pipeline"] = cancel
+    output_path = tmp_path / "output.tif"
+
+    assert (
+        namespace["main"](
+            [str(tmp_path / "input.tif"), str(output_path)]
+        )
+        == 130
+    )
+
+    assert "Pipeline cancelled" in capsys.readouterr().err
+    sidecar = tmp_path / "output.tif.vipp-provenance.json"
+    assert json.loads(sidecar.read_text(encoding="utf-8"))[
+        "execution"
+    ]["failure"]["kind"] == "cancelled"
+
+
+def test_generated_cli_reports_publication_failure_with_no_fallback(
+    tmp_path,
+    capsys,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    namespace["load_image"] = lambda _path: np.ones((4, 5), dtype=np.float32)
+
+    def disk_full(*_args, **_kwargs):
+        raise OSError("simulated disk full")
+
+    namespace["write_image"] = disk_full
+    output_path = tmp_path / "output.tif"
+
+    assert namespace["main"]([str(tmp_path / "input.tif"), str(output_path)]) == 2
+
+    assert "simulated disk full" in capsys.readouterr().err
+    sidecar = tmp_path / "output.tif.vipp-provenance.json"
+    document = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert document["execution"]["outcome"] == "completed"
+    assert document["publication"]["outcome"] == "failed"
+    assert document["publication"]["node_id"] == "threshold"
+    assert document["publication"]["fallback_used"] is False
+
+
+def test_generated_cli_defers_publication_cancellation_until_writer_returns(
+    tmp_path,
+    capsys,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    namespace["load_image"] = lambda _path: np.ones((4, 5), dtype=np.float32)
+    real_run = namespace["run_pipeline"]
+    captured: dict[str, object] = {}
+
+    def capture_event(*args, **kwargs):
+        captured["cancel_event"] = kwargs["cancel_event"]
+        return real_run(*args, **kwargs)
+
+    def finish_writer_then_cancel(_data, path, **_kwargs):
+        captured["cancel_event"].set()
+        return path
+
+    namespace["run_pipeline"] = capture_event
+    namespace["write_image"] = finish_writer_then_cancel
+    output_path = tmp_path / "output.tif"
+
+    assert (
+        namespace["main"]([str(tmp_path / "input.tif"), str(output_path)])
+        == 130
+    )
+
+    assert "Pipeline cancelled" in capsys.readouterr().err
+    document = json.loads(
+        (tmp_path / "output.tif.vipp-provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert document["execution"]["outcome"] == "completed"
+    assert document["publication"]["outcome"] == "cancelled"
+
+
+def test_convenience_folder_loop_returns_only_lightweight_records(tmp_path):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    for name in ("first.tif", "second.tif"):
+        (input_dir / name).write_bytes(b"placeholder")
+    namespace["load_image"] = lambda _path: np.ones((4, 5), dtype=np.float32)
+    namespace["save_image"] = lambda _data, path, **_kwargs: path
+
+    with pytest.warns(FutureWarning, match="not VIPP durable"):
+        records = namespace["batch_process"](input_dir, output_dir)
+
+    assert records == [
+        {
+            "source_path": str(input_dir / "first.tif"),
+            "saved_paths": (
+                str(output_dir / "first__threshold.ome.tif"),
+            ),
+            "workflow_sha256": namespace["WORKFLOW_SHA256"],
+        },
+        {
+            "source_path": str(input_dir / "second.tif"),
+            "saved_paths": (
+                str(output_dir / "second__threshold.ome.tif"),
+            ),
+            "workflow_sha256": namespace["WORKFLOW_SHA256"],
+        },
+    ]
+    assert all(
+        not isinstance(record, namespace["PipelineResults"])
+        for record in records
+    )
+
+
+def test_convenience_folder_loop_releases_prior_outputs_before_next_run(
+    tmp_path,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    for name in ("first.tif", "second.tif"):
+        (input_dir / name).write_bytes(b"placeholder")
+    namespace["load_image"] = lambda path: path
+    prior_refs = []
+    prior_alive_during_next_run = []
+
+    class Results(dict):
+        image_states = {}
+        workflow_sha256 = namespace["WORKFLOW_SHA256"]
+
+    def run_one(*_args, **_kwargs):
+        if prior_refs:
+            gc.collect()
+            prior_alive_during_next_run.append(prior_refs[-1]() is not None)
+        output = np.ones((256, 256), dtype=np.float32)
+        prior_refs.append(weakref.ref(output))
+        return Results(threshold=output)
+
+    namespace["run_pipeline"] = run_one
+    namespace["save_image"] = lambda _data, path, **_kwargs: path
+
+    with pytest.warns(FutureWarning):
+        namespace["batch_process"](input_dir, output_dir)
+
+    assert prior_alive_during_next_run == [False]
+
+
+def test_exported_run_preserves_native_cancellation_and_cleanup_provenance():
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(namespace["OperationCancelled"]) as caught:
+        namespace["run_pipeline"](
+            np.ones((4, 5), dtype=np.float32),
+            input_metadata={"axes": "YX"},
+            cancel_event=cancel_event,
+        )
+
+    execution = caught.value.provenance["execution"]
+    assert execution["outcome"] == "cancelled"
+    assert execution["failure"]["kind"] == "cancelled"
+    assert execution["cleanup_succeeded"] is True
+
+
+def test_exported_run_withholds_outputs_when_cleanup_cannot_be_proven():
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    real_execute = namespace["execute_pipeline_request"]
+
+    def unsafe_cleanup(*args, **kwargs):
+        result = real_execute(*args, **kwargs)
+        return replace(
+            result,
+            execution_report=replace(
+                result.execution_report,
+                cleanup_succeeded=False,
+            ),
+        )
+
+    namespace["execute_pipeline_request"] = unsafe_cleanup
+
+    with pytest.raises(
+        namespace["PipelineExecutionError"],
+        match="cleanup could not be proven",
+    ) as caught:
+        namespace["run_pipeline"](
+            np.ones((8, 9), dtype=np.float32),
+            input_metadata={"axes": "YX"},
+        )
+
+    execution = caught.value.provenance["execution"]
+    assert execution["outcome"] == "failed"
+    assert execution["failure"]["kind"] == "cleanup_failure"
+    assert execution["cleanup_succeeded"] is False
+    assert caught.value.execution_report.cleanup_succeeded is False
+
+
+def test_generated_failure_provenance_preserves_structured_fallback_records():
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    fallback = {
+        "segment_id": "segment-0",
+        "runtime_id": "cuda-cupy",
+        "node_ids": ["gaussian"],
+        "reason": "out_of_memory",
+        "reason_code": "device_out_of_memory",
+        "cpu_retry_succeeded": False,
+        "cleanup_succeeded": True,
+    }
+
+    provenance = namespace["_build_failure_provenance"](
+        ComputeRequest(mode="auto"),
+        {
+            "kind": "execution_error",
+            "error_type": "MemoryError",
+            "message": "CPU retry failed.",
+            "cleanup_succeeded": True,
+            "fallback_records": [fallback],
+        },
+    )
+
+    execution = provenance["execution"]
+    assert execution["outcome"] == "failed"
+    assert execution["cleanup_succeeded"] is True
+    assert execution["fallback_records"] == [fallback]
+    assert execution["failure"]["fallback_records"] == [fallback]
+
+
+def test_exported_run_classifies_unstructured_executor_errors():
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    def fail(*_args, **_kwargs):
+        raise ValueError("unstructured failure")
+
+    namespace["execute_pipeline_request"] = fail
+    with pytest.raises(ValueError, match="unstructured failure") as caught:
+        namespace["run_pipeline"](
+            np.ones((4, 5), dtype=np.float32),
+            input_metadata={"axes": "YX"},
+        )
+
+    execution = caught.value.provenance["execution"]
+    assert execution["outcome"] == "failed"
+    assert execution["failure"]["error_type"] == "ValueError"
 
 
 def test_export_uses_unique_variables_for_colliding_node_identifiers():
@@ -680,7 +1614,7 @@ def test_exported_measure_objects_pipeline_executes_and_saves_table(tmp_path):
     table = results[measurements.id]
     output_path = tmp_path / "measurements.ome.tif"
 
-    namespace["save_image"](table, output_path)
+    namespace["save_image"](table, output_path, provenance=results)
 
     _assert_embedded_operation(code, "measure_objects")
     assert '"include_axis_descriptors":true' in code
@@ -692,6 +1626,66 @@ def test_exported_measure_objects_pipeline_executes_and_saves_table(tmp_path):
     assert csv_path.exists()
     assert csv_path.read_text(encoding="utf-8").startswith(
         "label_id,volume_voxels"
+    )
+    sidecar = tmp_path / "measurements.ome.csv.vipp-provenance.json"
+    assert sidecar.exists()
+    provenance = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert provenance["workflow"]["sha256"] == results.workflow_sha256
+    assert provenance["execution"]["cleanup_succeeded"]
+
+
+def test_exported_full_run_explicitly_includes_authored_manual_nodes(monkeypatch):
+    from napari_vipp.core import execution
+
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+    captured = []
+    captured_kwargs = []
+    real_execute = execution.execute_pipeline_request
+
+    def capture_request(request, **kwargs):
+        captured.append(request)
+        captured_kwargs.append(kwargs)
+        return real_execute(request, **kwargs)
+
+    monkeypatch.setattr(execution, "execute_pipeline_request", capture_request)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(export_pipeline_to_python(pipeline), "<exported>", "exec"),
+        namespace,
+    )
+    image = np.zeros((9, 9), dtype=np.float32)
+    image[2:6, 2:6] = 1
+    cancel_event = threading.Event()
+    progress_events = []
+
+    def progress(*args):
+        progress_events.append(args)
+
+    results = namespace["run_pipeline"](
+        image,
+        input_metadata={"axes": "YX"},
+        progress_callback=progress,
+        cancel_event=cancel_event,
+    )
+
+    assert results[measurements.id].row_count == 1
+    assert len(captured) == 1
+    assert captured[0].manual_node_ids == frozenset({measurements.id})
+    assert captured[0].cancel_event is cancel_event
+    assert callable(captured_kwargs[0]["node_started_callback"])
+    assert callable(captured_kwargs[0]["node_finished_callback"])
+    assert callable(captured_kwargs[0]["progress_callback"])
+    assert captured_kwargs[0]["progress_callback"] is not progress
+    assert captured_kwargs[0]["raise_errors"] is True
+    assert any(
+        node_id == measurements.id and current == total == 1
+        for node_id, current, total, _message in progress_events
     )
 
 
@@ -1024,7 +2018,31 @@ def test_exported_workflow_snapshot_is_revalidated_and_fresh_per_run():
     assert second.nodes["gaussian"].params["sigma"] == 1.2
 
 
-def test_export_preserves_v4_compute_intent_but_executes_cpu_compatibility_path():
+def test_exported_workflow_fails_closed_when_embedded_json_is_tampered():
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    document = json.loads(namespace["_WORKFLOW_JSON"])
+    gaussian = next(node for node in document["nodes"] if node["id"] == "gaussian")
+    gaussian["params"]["sigma"] = 9.0
+    namespace["_WORKFLOW_JSON"] = json.dumps(document)
+
+    with pytest.raises(RuntimeError, match="scientific integrity check"):
+        namespace["run_pipeline"](
+            np.ones((4, 5), dtype=np.float32),
+            input_metadata={"axes": "YX"},
+        )
+
+
+def test_export_executes_embedded_strict_intent_and_accepts_visible_override():
+    from napari_vipp.core.compute_planning import ComputePreflightError
+
     pipeline = _starter_pipeline()
     request = ComputeRequest(
         mode="selective",
@@ -1048,12 +2066,40 @@ def test_export_preserves_v4_compute_intent_but_executes_cpu_compatibility_path(
         "precision_policy": "scientific-default-v1",
         "workload_policy": "vipp-best-available-v1",
     }
+    image = np.ones((8, 9), dtype=np.float32)
+    with pytest.raises(
+        ComputePreflightError,
+        match="Exact implementation .* is unavailable",
+    ):
+        namespace["run_pipeline"](
+            image,
+            input_metadata={"axes": "YX"},
+        )
+
     result = namespace["run_pipeline"](
-        np.ones((8, 9), dtype=np.float32),
+        image,
         input_metadata={"axes": "YX"},
+        compute_request=ComputeRequest(
+            mode="selective",
+            node_preferences={
+                "gaussian": "implementation:unavailable.future.gaussian-v1"
+            },
+            fallback_policy="visible",
+        ),
     )
 
     assert result["gaussian"].shape == (8, 9)
+    gaussian = next(
+        item
+        for item in result.execution_provenance["nodes"]
+        if item["node_id"] == "gaussian"
+    )
+    assert gaussian["actual_implementation"]["implementation_id"] == (
+        "cpu-gaussian_blur-v1"
+    )
+    assert gaussian["fallback_used"]
+    assert gaussian["fallback_reason"] == "dependency_unavailable"
+    assert json.loads(namespace["_WORKFLOW_JSON"]) == embedded
 
 
 def test_exported_load_helper_keeps_the_complete_dataset():
@@ -1085,6 +2131,7 @@ def test_exported_save_helper_passes_carried_output_state(tmp_path):
 
     def fake_write_image(data, path, **kwargs):
         captured.update(data=data, path=path, **kwargs)
+        return path
 
     namespace["write_image"] = fake_write_image
     output_path = tmp_path / "calibrated.ome.tif"
@@ -1092,9 +2139,45 @@ def test_exported_save_helper_passes_carried_output_state(tmp_path):
         results[calibrated.id],
         output_path,
         image_state=results.image_states[calibrated.id],
+        provenance=results,
+        output_node_id=calibrated.id,
     )
 
     assert captured["image_state"] is results.image_states[calibrated.id]
     assert captured["image_state"].axes[-1].scale == 0.2
     assert captured["image_state"].axes[-2].scale == 0.3
     assert "image_state=results.image_states.get" in code
+    sidecar = tmp_path / "calibrated.ome.tif.vipp-provenance.json"
+    document = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert document["workflow"]["sha256"] == results.workflow_sha256
+    assert document["output"]["node_id"] == calibrated.id
+    assert document["output"]["output_port_index"] == 0
+    assert document["output"]["result_context_fingerprint"]
+    assert document["provenance_sha256"]
+    assert document["execution"]["nodes"][0]["actual_implementation"][
+        "implementation_version"
+    ] == "1"
+
+
+def test_exported_save_helper_uses_the_writer_normalized_path(tmp_path):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    normalized = tmp_path / "normalized.npy"
+    namespace["write_image"] = lambda *_args, **_kwargs: normalized
+
+    saved = namespace["save_image"](
+        np.ones((2, 3), dtype=np.float32),
+        tmp_path / "requested",
+        provenance={"type": "test-output-provenance"},
+    )
+
+    assert saved == normalized
+    assert (tmp_path / "normalized.npy.vipp-provenance.json").exists()
+    assert not (tmp_path / "requested.vipp-provenance.json").exists()
