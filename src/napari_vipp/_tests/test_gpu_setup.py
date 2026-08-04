@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+import tomllib
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -36,6 +37,11 @@ def _constraint_entries(name: str) -> set[str]:
     }
 
 
+def _project_metadata() -> dict[str, object]:
+    with (PROJECT_ROOT / "pyproject.toml").open("rb") as stream:
+        return tomllib.load(stream)["project"]
+
+
 def test_cuda_constraint_files_pin_the_verified_runtime_components():
     cuda13 = _constraint_entries("gpu-cuda13-py312.txt")
     cuda12 = _constraint_entries("gpu-cuda12-py312.txt")
@@ -64,6 +70,38 @@ def test_cuda_constraint_files_pin_the_verified_runtime_components():
     } <= cuda12
     assert not any("cuda12" in entry for entry in cuda13)
     assert not any("cuda13" in entry for entry in cuda12)
+
+
+def test_published_gpu_extras_pin_the_admitted_scientific_stack():
+    extras = _project_metadata()["optional-dependencies"]
+
+    for track in ("gpu-cuda12", "gpu-cuda13"):
+        requirements = tuple(extras[track])
+        for pin in ("numpy==2.5.1", "scipy==1.18.0", "scikit-image==0.26.0"):
+            assert any(
+                requirement.startswith(f"{pin};") for requirement in requirements
+            )
+        assert all(
+            "python_version == '3.12'" in requirement
+            for requirement in requirements
+        )
+        assert all(
+            "platform_system == 'Windows'" in requirement
+            for requirement in requirements
+        )
+        assert all(
+            "platform_system == 'Linux'" in requirement
+            for requirement in requirements
+        )
+
+
+def test_release_metadata_bounds_cpu_python_support_to_ci_matrix():
+    metadata = _project_metadata()
+
+    assert metadata["version"] == "0.13.0a1"
+    assert metadata["requires-python"] == ">=3.12,<3.14"
+    assert "Programming Language :: Python :: 3.12" in metadata["classifiers"]
+    assert "Programming Language :: Python :: 3.13" in metadata["classifiers"]
 
 
 @pytest.mark.skipif(

@@ -168,14 +168,16 @@ scikit-image method. If two peaks cannot be found within the declared limit,
 the node reports the failure; it does not silently substitute another
 threshold.
 
-`ImageJ Auto Threshold (8-bit)` is a separate compatibility node for workflows
-that must reproduce ImageJ 1.x. It always processes each trailing YX plane
-independently, applies ImageJ's dtype-specific 8-bit ScaleConversions behavior,
-and then runs ImageJ's `Default` or `Triangle` AutoThresholder. It does not
-change the scientific contract of VIPP's generic Triangle or Isodata nodes.
-Compatibility is exact for finite bool, uint8, uint16, and floating inputs.
-NaNs become zero during the plane conversion; infinite float values are
-rejected explicitly rather than reproducing ImageJ's collapsed all-zero plane.
+`ImageJ Auto Threshold (8-bit)` is a separate, experimental source-aligned node
+targeting ImageJ 1.54p for scalar uint8, uint16, and float32 inputs. It processes
+each trailing YX plane independently, applies source-derived 8-bit
+ScaleConversions behavior, and then runs a source-derived `Default` or
+`Triangle` AutoThresholder. Independent ImageJ-generated golden parity is
+pending. Bool handling, other floating dtypes, and RGB/RGBA luma reduction are
+VIPP extensions and are not claimed as ImageJ-exact. NaNs become zero during
+plane conversion; infinite float values are rejected explicitly instead of
+preserving ImageJ's collapsed all-zero plane. The node does not change the
+scientific contract of VIPP's generic Triangle or Isodata nodes.
 
 For the generic global threshold nodes, NaN, positive infinity, and negative
 infinity are excluded from cutoff fitting and become background in the
@@ -1134,6 +1136,12 @@ Colocalization nodes live under `Colocalization & Spatial Analysis`. Connect
 two same-shaped channel images, usually from `Split Channels`, into the named
 `Channel 1 image` and `Channel 2 image` ports.
 
+The Fiji-related calculations in this alpha are an experimental, source-aligned
+target for Fiji Coloc 2 3.1.0; independent Fiji-generated golden parity is
+pending. Pixel and object tables keep `coloc_semantics=fiji_coloc2_3.1` as the
+target contract identity and separately report
+`coloc_validation_status=experimental_source_aligned_golden_parity_pending`.
+
 Manual thresholds use the input images' native intensity units. VIPP does not
 rescale or clip channel values before calculating metrics. `Costes auto` stores
 its calculated native thresholds and shows them as scatter guides/status; the
@@ -1150,11 +1158,11 @@ fractions or correlations of binary masks:
 | `pearson_any_channel_above_threshold` | Channel 1 is above T1 **or** Channel 2 is above T2. |
 | `pearson_both_channels_at_or_above_threshold` | Channel 1 is at/above T1 **and** Channel 2 is at/above T2. |
 
-The two `any_channel` fields reproduce Fiji Coloc 2's OR populations and can
-overlap for a voxel that is high in one channel and low in the other. Use the
-`both_channels` field when you specifically mean the threshold-positive
-intersection. Older shorter field names remain in exported tables only as
-compatibility aliases; the method notes list the exact mapping.
+The two `any_channel` fields implement the OR populations identified in the
+Coloc2 3.1.0 source and can overlap for a voxel that is high in one channel and
+low in the other. Use the `both_channels` field when you specifically mean the
+threshold-positive intersection. Older shorter field names remain in exported
+tables only as compatibility aliases; the method notes list the exact mapping.
 
 When a colocalization threshold node is selected, the inspector shows a scatter
 density panel with threshold guide lines. Dragging a guide switches the node to

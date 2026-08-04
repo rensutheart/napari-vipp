@@ -11,6 +11,7 @@ from napari_vipp.core.compute_diagnostics import (
     ComputeDoctorReport,
     DoctorStatus,
     PackageRecord,
+    _repair_command,
     collect_compute_diagnostics,
     installed_gpu_packages,
     main,
@@ -144,6 +145,42 @@ def test_unavailable_runtime_is_a_structured_non_crashing_result():
     assert report.reason_code == "cupy_missing"
     assert "setup_gpu_dev.ps1" in report.repair_command
     assert report.runtime_probe is not None
+
+
+def test_installed_windows_repair_command_builds_launchable_exact_environment(
+    monkeypatch,
+):
+    monkeypatch.setattr(Path, "is_file", lambda _path: False)
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_diagnostics.importlib.metadata.version",
+        lambda name: "0.13.0a1" if name == "napari-vipp" else "",
+    )
+
+    command = _repair_command("win32", "cuda13")
+
+    assert "py -3.12 -m venv" in command
+    assert "pip install --upgrade pip" in command
+    assert 'pip install --pre "napari[pyqt6]>=0.6"' in command
+    assert '"napari-vipp[gpu-cuda13]==0.13.0a1"' in command
+    assert "compute_diagnostics --track cuda13" in command
+
+
+def test_installed_linux_repair_command_builds_launchable_exact_environment(
+    monkeypatch,
+):
+    monkeypatch.setattr(Path, "is_file", lambda _path: False)
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_diagnostics.importlib.metadata.version",
+        lambda name: "0.13.0a1" if name == "napari-vipp" else "",
+    )
+
+    command = _repair_command("linux", "cuda13")
+
+    assert "python3.12 -m venv" in command
+    assert "pip install --upgrade pip" in command
+    assert 'pip install --pre "napari[pyqt6]>=0.6"' in command
+    assert '"napari-vipp[gpu-cuda13]==0.13.0a1"' in command
+    assert "compute_diagnostics --track cuda13" in command
 
 
 def test_owned_runtime_cleanup_failure_is_not_reported_as_available(monkeypatch):

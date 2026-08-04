@@ -72,6 +72,8 @@ BORN_WOLF_PSF_MANUAL_DEFAULTS = {
 _GLOBAL_THRESHOLD_HISTOGRAM_BINS = 256
 _THRESHOLD_CHUNK_SIZE = 1_048_576
 _COLOCALIZATION_SCATTER_CHUNK_SIZE = 1_048_576
+_COLOC_TARGET_CONTRACT = "fiji_coloc2_3.1"
+_COLOC_VALIDATION_STATUS = "experimental_source_aligned_golden_parity_pending"
 _MAX_NATIVE_INTEGER_HISTOGRAM_BINS = 65_536
 _FLOAT64_EXACT_INTEGER_LIMIT = 2**53
 
@@ -1090,16 +1092,16 @@ def imagej_auto_threshold(
     channel_axis: int | None = None,
     progress=None,
 ) -> np.ndarray:
-    """Reproduce ImageJ 1.x 8-bit, slice-wise Default or Triangle thresholding.
+    """Apply source-aligned ImageJ 1.x-style 8-bit thresholding per YX plane.
 
-    Each trailing YX plane is converted as ImageJ's ``run("8-bit")`` would
-    after ``resetMinAndMax`` with ScaleConversions enabled. Byte input is kept
-    unchanged; unsigned-short and floating input use ImageJ's dtype-specific
-    conversion rules. The resulting 256-bin histogram is passed to the ImageJ
-    1.x AutoThresholder implementation and foreground is strictly greater than
-    the returned threshold.
+    Scalar uint8, uint16, and float32 inputs target ImageJ 1.54p's
+    ``run("8-bit")`` behavior after ``resetMinAndMax`` with ScaleConversions
+    enabled. The resulting 256-bin histogram is passed to a source-derived
+    Default or Triangle implementation, and foreground is strictly greater than
+    the returned threshold. Independent ImageJ golden parity is pending.
 
-    This explicit compatibility operation is intentionally separate from
+    Bool handling and RGB/RGBA luma reduction are VIPP extensions and are not
+    claimed as ImageJ-exact. This operation is intentionally separate from
     VIPP's generic scikit-image Triangle and Isodata operations.
     """
     arr = _to_explicit_grayscale(
@@ -4121,7 +4123,7 @@ def colocalization_metrics(
     channel_2_threshold: float = 25.0,
     intensity_max: float = 255.0,
 ) -> TableData:
-    """Measure Fiji Coloc 2-compatible two-channel colocalization."""
+    """Measure two-channel colocalization against an experimental Coloc2 target."""
     ch1, ch2, roi_mask, warnings = _coloc_normalized_inputs_and_mask(
         inputs,
         intensity_max=intensity_max,
@@ -4154,7 +4156,8 @@ def colocalization_metrics(
         "channel_1_threshold": [float(threshold_1)],
         "channel_2_threshold": [float(threshold_2)],
         "threshold_units": ["native_intensity"],
-        "coloc_semantics": ["fiji_coloc2_3.1"],
+        "coloc_semantics": [_COLOC_TARGET_CONTRACT],
+        "coloc_validation_status": [_COLOC_VALIDATION_STATUS],
         "mask_restricted": [mask_supplied],
         **{name: [value] for name, value in metrics.items()},
         "costes_slope": [float("nan") if costes is None else costes["slope"]],
@@ -5894,7 +5897,7 @@ def _threshold_mask(arr: np.ndarray, threshold: int | float) -> np.ndarray:
 
 
 def _imagej_8bit_plane(plane: np.ndarray) -> np.ndarray:
-    """Convert one plane using ImageJ 1.x ScaleConversions semantics."""
+    """Convert one plane with source-derived ImageJ 1.54p-style rules."""
     plane = np.asarray(plane)
     if plane.ndim != 2:
         raise ValueError("ImageJ auto threshold requires trailing YX planes.")
@@ -5938,7 +5941,7 @@ def _imagej_8bit_plane(plane: np.ndarray) -> np.ndarray:
 
 
 def _imagej_auto_threshold_value(histogram: np.ndarray, method: str) -> int:
-    """Return the ImageJ 1.x AutoThresholder cutoff for a byte histogram."""
+    """Return a source-derived ImageJ 1.54p-style byte-histogram cutoff."""
     data = np.asarray(histogram, dtype=np.int64)
     if data.shape != (256,) or np.any(data < 0):
         raise ValueError("ImageJ auto threshold requires a 256-bin histogram.")
@@ -5966,7 +5969,7 @@ def _imagej_auto_threshold_value(histogram: np.ndarray, method: str) -> int:
 
 
 def _imagej_default_threshold(histogram: np.ndarray) -> int:
-    """Port ImageJ 1.x's modified Default/IJIsoData threshold."""
+    """Implement the source-derived ImageJ 1.54p Default/IJIsoData target."""
     data = np.asarray(histogram, dtype=np.int64).copy()
     mode = int(np.argmax(data))
     maximum_count = int(data[mode])
@@ -6010,7 +6013,7 @@ def _imagej_ij_isodata_threshold(histogram: np.ndarray) -> int:
 
 
 def _imagej_triangle_threshold(histogram: np.ndarray) -> int:
-    """Port ImageJ 1.x Triangle, including reversal and split decrement."""
+    """Implement the source-derived ImageJ 1.54p Triangle target."""
     data = np.asarray(histogram, dtype=np.int64).copy()
     occupied = np.flatnonzero(data > 0)
     if occupied.size == 0:
@@ -11999,7 +12002,7 @@ def _coloc_metric_values(
     pearson_all_name: str = "pearson_all",
     overlap_all_name: str = "overlap_coefficient_all",
 ) -> dict[str, object]:
-    """Calculate Fiji Coloc 2 metrics and retained VIPP overlap quantities."""
+    """Calculate source-aligned Coloc2 metrics and VIPP overlap quantities."""
     ch1 = np.asarray(ch1, dtype=np.float64)
     ch2 = np.asarray(ch2, dtype=np.float64)
     analysis_mask = np.asarray(analysis_mask, dtype=bool)
@@ -12059,8 +12062,9 @@ def _coloc_metric_values(
         "pearson_above_threshold": pearson_any_above,
         "pearson_both_above_threshold": pearson_both_above,
         "pearson_colocalized": pearson_both_above,
-        # Existing workflows consume manders_m1/m2.  They now carry the Fiji
-        # thresholded Manders values; explicit tM columns remove ambiguity.
+        # Existing workflows consume manders_m1/m2. They now carry the
+        # source-aligned thresholded Manders values; explicit tM columns remove
+        # ambiguity.
         "manders_m1": manders_tm1,
         "manders_m2": manders_tm2,
         "manders_m1_no_threshold": manders_m1_no_threshold,
@@ -12098,6 +12102,7 @@ def _object_colocalization_columns(
             "channel_2_threshold": [],
             "threshold_units": [],
             "coloc_semantics": [],
+            "coloc_validation_status": [],
             "object_voxels": [],
             "channel_1_positive_voxels": [],
             "channel_2_positive_voxels": [],
@@ -12170,7 +12175,8 @@ def _append_object_colocalization_rows(
         columns["channel_1_threshold"].append(float(threshold_1))
         columns["channel_2_threshold"].append(float(threshold_2))
         columns["threshold_units"].append("native_intensity")
-        columns["coloc_semantics"].append("fiji_coloc2_3.1")
+        columns["coloc_semantics"].append(_COLOC_TARGET_CONTRACT)
+        columns["coloc_validation_status"].append(_COLOC_VALIDATION_STATUS)
         for name, value in metrics.items():
             columns[name].append(value)
         columns["costes_slope"].append(
@@ -12405,11 +12411,11 @@ def _costes_thresholds(
     channel_1: np.ndarray,
     channel_2: np.ndarray,
 ) -> dict[str, float]:
-    """Return Fiji Coloc 2's classic Costes/SimpleStepper thresholds.
+    """Return source-aligned Coloc2 3.1.0 Costes/SimpleStepper thresholds.
 
-    This follows Colocalisation_Analysis 3.1.0: thresholds are walked in native
-    intensity units, mapped through the orthogonal regression, rounded with
-    Java ``Math.round`` semantics, and tested with the OR-defined below set.
+    The source-aligned Colocalisation_Analysis 3.1.0 target walks thresholds in
+    native intensity units, maps through the orthogonal regression, rounds with
+    Java ``Math.round`` semantics, and tests with the OR-defined below set.
     """
     channel_1 = np.asarray(channel_1)
     channel_2 = np.asarray(channel_2)
@@ -12498,13 +12504,13 @@ def _channel_moments(
     channel_1: np.ndarray,
     channel_2: np.ndarray,
 ) -> tuple[float, float, float, float, float]:
-    """Reproduce Coloc 2 3.1.0's cursor-offset regression moments.
+    """Model Coloc2 3.1.0's cursor-offset regression moments.
 
     Coloc 2 obtains the full-population means before calling ``getFirst()`` on
     its twin cursor. That call advances the cursor, so the subsequent variance
     loop starts at the second ROI sample. The combined-channel variance is then
-    used to derive covariance. This compatibility quirk is required for exact
-    Fiji regression output.
+    used to derive covariance. This source-derived quirk is part of the target
+    contract; independent golden parity validation is pending.
     """
     x = np.asarray(channel_1, dtype=np.float64).ravel()
     y = np.asarray(channel_2, dtype=np.float64).ravel()
@@ -12531,7 +12537,7 @@ def _fiji_sequential_variance(
     mean: float,
     denominator: float,
 ) -> float:
-    """Match the left-to-right double accumulation used by Coloc 2."""
+    """Model Coloc2's left-to-right double-accumulation target."""
     deviations = np.asarray(values, dtype=np.float64) - float(mean)
     squared = deviations * deviations
     total = float(np.cumsum(squared, dtype=np.float64)[-1])

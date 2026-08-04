@@ -47,7 +47,7 @@
   },
   "verification": {
     "build_script": "scripts/build_cucim_windows.ps1",
-    "build_command": ".\\scripts\\build_cucim_windows.ps1 -Python C:\\Users\\rensu\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+    "build_command": ".\\scripts\\build_cucim_windows.ps1 -Python <python-3.12-executable>",
     "isolated_build_environment": {
       "real_gpu_probe": "passed: Gaussian, rolling ball, and connected-component labeling",
       "pip_check": "passed: No broken requirements found",

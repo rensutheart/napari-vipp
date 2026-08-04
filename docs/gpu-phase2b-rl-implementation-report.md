@@ -153,9 +153,9 @@ Disk I/O and input generation are excluded.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 24.853 s | 0.445 s | 0.388 s | 0.036 s | 55.88x |
-| Medium 3D shape stress | 16,777,216 | 35.779 s | 0.465 s | 0.401 s | 0.032 s | 77.96x |
-| Large 3D shape stress | 67,108,864 | 134.306 s | 1.478 s | 1.195 s | 0.170 s | 90.81x |
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 24.907 s | 0.397 s | 0.360 s | 0.018 s | 62.79x |
+| Medium 3D shape stress | 16,777,216 | 35.261 s | 0.463 s | 0.379 s | 0.033 s | 76.22x |
+| Large 3D shape stress | 67,108,864 | 136.628 s | 1.548 s | 1.214 s | 0.199 s | 88.26x |
 
 All three exact workloads passed production parity, synchronized execution,
 and terminal-zero private allocator cleanup. Observed device peaks were 0.697,

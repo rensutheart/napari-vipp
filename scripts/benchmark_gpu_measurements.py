@@ -1715,7 +1715,7 @@ def _environment_record(cp, device_index: int) -> dict[str, object]:
         "version": platform.version(),
         "machine": platform.machine(),
         "python": platform.python_version(),
-        "python_executable": sys.executable,
+        "python_executable": _executable_name(sys.executable),
         "device_index": device_index,
         "device_name": str(name),
         "compute_capability": (
@@ -1726,6 +1726,13 @@ def _environment_record(cp, device_index: int) -> dict[str, object]:
         "cuda_runtime_version": int(cp.cuda.runtime.runtimeGetVersion()),
         "device_count": int(cp.cuda.runtime.getDeviceCount()),
     }
+
+
+def _executable_name(executable: str) -> str:
+    """Return a privacy-safe interpreter label for machine-local evidence."""
+
+    normalized = str(executable).strip().replace("\\", "/").rstrip("/")
+    return normalized.rsplit("/", 1)[-1] or "python"
 
 
 def _package_record(cp, np) -> dict[str, str]:

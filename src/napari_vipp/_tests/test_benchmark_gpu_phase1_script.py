@@ -11,6 +11,12 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK_SCRIPT = PROJECT_ROOT / "scripts" / "benchmark_gpu_phase1.py"
+EVIDENCE_PATH = (
+    PROJECT_ROOT
+    / "docs"
+    / "benchmarks"
+    / "phase1-production-node-benchmark-windows-rtx5090.json"
+)
 
 
 def _load_benchmark_module():
@@ -24,6 +30,31 @@ def _load_benchmark_module():
 
 
 benchmark_gpu_phase1 = _load_benchmark_module()
+
+
+def test_platform_provenance_uses_only_a_privacy_safe_executable_name(monkeypatch):
+    monkeypatch.setattr(
+        benchmark_gpu_phase1.sys,
+        "executable",
+        r"C:\Users\researcher\private-worktree\.venv\Scripts\python.exe",
+    )
+    environment = SimpleNamespace(
+        python_abi="cpython-312",
+        execution_mode="native",
+    )
+
+    provenance = benchmark_gpu_phase1._platform_provenance(environment)
+
+    assert provenance["executable"] == "python.exe"
+
+
+def test_canonical_evidence_binds_the_privacy_safe_current_generator():
+    document = json.loads(EVIDENCE_PATH.read_text(encoding="utf-8"))
+
+    assert document["platform"]["executable"] == "python.exe"
+    assert document["source_provenance"]["files"][
+        "scripts/benchmark_gpu_phase1.py"
+    ] == hashlib.sha256(BENCHMARK_SCRIPT.read_bytes()).hexdigest()
 
 
 def test_help_does_not_start_a_gpu_benchmark(monkeypatch, capsys):

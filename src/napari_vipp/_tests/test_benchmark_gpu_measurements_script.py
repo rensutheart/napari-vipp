@@ -8,6 +8,7 @@ import sys
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,6 +38,33 @@ def _cleanup() -> dict[str, int]:
         "device_pool_used_bytes_after_cleanup": 0,
         "device_pool_reserved_bytes_after_cleanup": 0,
     }
+
+
+def test_environment_record_uses_only_a_privacy_safe_executable_name(
+    monkeypatch,
+    evidence_script,
+) -> None:
+    runtime = SimpleNamespace(
+        getDeviceProperties=lambda _index: {
+            "name": b"Synthetic GPU",
+            "major": 12,
+            "minor": 0,
+            "totalGlobalMem": 1024,
+        },
+        driverGetVersion=lambda: 13030,
+        runtimeGetVersion=lambda: 13020,
+        getDeviceCount=lambda: 1,
+    )
+    cp = SimpleNamespace(cuda=SimpleNamespace(runtime=runtime))
+    monkeypatch.setattr(
+        evidence_script.sys,
+        "executable",
+        "/home/researcher/private-worktree/.venv/bin/python",
+    )
+
+    environment = evidence_script._environment_record(cp, 0)
+
+    assert environment["python_executable"] == "python"
 
 
 def _synthetic_document(evidence_script, *, profile: str = "quick"):

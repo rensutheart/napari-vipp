@@ -612,8 +612,19 @@ def _platform_provenance(environment: Any) -> dict[str, object]:
         "python_implementation": platform.python_implementation(),
         "python_abi": environment.python_abi,
         "execution_mode": environment.execution_mode,
-        "executable": str(Path(sys.executable).resolve()),
+        # The interpreter version and ABI above carry the reproducibility
+        # signal.  Persisting its absolute path would only disclose a local
+        # account/worktree layout and make otherwise equivalent evidence
+        # machine-path-dependent.
+        "executable": _executable_name(sys.executable),
     }
+
+
+def _executable_name(executable: str) -> str:
+    """Return a platform-neutral interpreter label without its host path."""
+
+    normalized = str(executable).strip().replace("\\", "/").rstrip("/")
+    return normalized.rsplit("/", 1)[-1] or "python"
 
 
 def _package_provenance() -> dict[str, str | None]:

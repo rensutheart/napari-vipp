@@ -2326,8 +2326,9 @@ def _automatic_threshold_history(
     if operation_id == "imagej_auto_threshold":
         method = str(params.get("method", "Default"))
         return (
-            f"{operation_title}: ImageJ 1.x {method}; per-YX-plane 8-bit "
-            f"ScaleConversions and 256-bin AutoThresholder{luma}"
+            f"{operation_title}: experimental source-aligned ImageJ 1.54p "
+            f"{method} target; per-YX-plane 8-bit ScaleConversions and "
+            f"256-bin AutoThresholder; independent golden parity pending{luma}"
         )
     if dtype == np.dtype(bool):
         return (

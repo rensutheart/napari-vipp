@@ -1134,7 +1134,7 @@ def test_colocalization_metrics_overlay_scatter_and_racc_outputs():
     assert masked_index[3, 4] == 0.0
 
 
-def test_colocalization_metrics_match_fiji_threshold_domains_and_manders():
+def test_colocalization_metrics_use_source_aligned_domains_and_manders():
     channel_1 = np.asarray([[0, 2, 4], [6, 8, 10]], dtype=np.float32)
     channel_2 = np.asarray([[1, 0, 5], [2, 9, 3]], dtype=np.float32)
     roi = np.asarray([[1, 1, 1], [1, 1, 0]], dtype=bool)
@@ -1154,6 +1154,10 @@ def test_colocalization_metrics_match_fiji_threshold_domains_and_manders():
 
     assert record["threshold_units"] == "native_intensity"
     assert record["coloc_semantics"] == "fiji_coloc2_3.1"
+    assert (
+        record["coloc_validation_status"]
+        == "experimental_source_aligned_golden_parity_pending"
+    )
     assert record["mask_restricted"] is True
     assert np.isclose(record["pearson_all"], np.corrcoef(roi_1, roi_2)[0, 1])
     expected_any_below = np.corrcoef(roi_1[below], roi_2[below])[0, 1]
@@ -1206,6 +1210,11 @@ def test_colocalization_metrics_match_fiji_threshold_domains_and_manders():
         channel_2_threshold=3,
         spatial_mode="2D YX",
     ).records()[0]
+    assert object_record["coloc_semantics"] == "fiji_coloc2_3.1"
+    assert (
+        object_record["coloc_validation_status"]
+        == "experimental_source_aligned_golden_parity_pending"
+    )
     for column in (
         "pearson_any_channel_below_threshold",
         "pearson_any_channel_above_threshold",
@@ -1223,7 +1232,7 @@ def test_colocalization_metrics_match_fiji_threshold_domains_and_manders():
         assert np.isclose(object_record[column], record[column])
 
 
-def test_costes_auto_matches_fiji_simple_stepper_oracle():
+def test_costes_auto_matches_source_derived_simple_stepper_regression_case():
     channel_1 = np.asarray([[0, 1, 2], [3, 4, 5], [6, 7, 8]], dtype=np.float32)
     channel_2 = np.asarray([[0, 1, 1], [2, 3, 5], [4, 7, 6]], dtype=np.float32)
 
@@ -1232,10 +1241,10 @@ def test_costes_auto_matches_fiji_simple_stepper_oracle():
         threshold_mode="Costes auto",
     ).records()[0]
 
-    # Values are frozen from Fiji Coloc 2's Costes SimpleStepper semantics,
-    # including its regression cursor skipping the first sample: start at max
-    # channel 1, Java-round the mapped pair, and retain the last tested pair
-    # when below-threshold Pearson increases.
+    # Source-derived regression values exercise Coloc2's SimpleStepper target,
+    # including its cursor skipping the first sample: start at max channel 1,
+    # Java-round the mapped pair, and retain the last tested pair when
+    # below-threshold Pearson increases. These are not independent Fiji goldens.
     assert record["channel_1_threshold"] == 5.0
     assert record["channel_2_threshold"] == 4.0
     assert record["costes_iterations"] == 4
@@ -1286,6 +1295,8 @@ def test_object_costes_colocalization_returns_empty_table_for_empty_labels():
     assert table.table_kind == "per-object colocalization metrics"
     assert table.records() == []
     assert {
+        "coloc_semantics",
+        "coloc_validation_status",
         "pearson_any_channel_below_threshold",
         "pearson_any_channel_above_threshold",
         "pearson_both_channels_at_or_above_threshold",
@@ -5765,7 +5776,7 @@ def test_global_threshold_scope_can_use_stack_or_slice_histogram():
     assert not np.array_equal(stack_mask, slice_mask)
 
 
-def test_imagej_8bit_conversion_matches_dtype_specific_reference_rules():
+def test_imagej_8bit_conversion_follows_source_derived_dtype_rules():
     float_plane = np.asarray([[0, 1], [255, 510]], dtype=np.float32)
     # 1 maps to exactly 0.5 before rounding. ImageJ's half-up cast produces 1;
     # NumPy's bankers' rounding would incorrectly produce 0.
@@ -5793,7 +5804,9 @@ def test_imagej_8bit_conversion_matches_dtype_specific_reference_rules():
     )
 
 
-def test_imagej_auto_thresholder_matches_imagej_1_54p_histogram_oracles():
+def test_imagej_auto_thresholder_uses_source_derived_histogram_regressions():
+    # These cases guard the source-derived port; they are not independent
+    # ImageJ-generated golden fixtures.
     cases = (
         (
             "Triangle",

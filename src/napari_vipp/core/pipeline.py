@@ -2677,9 +2677,10 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 choices=("Default", "Triangle"),
                 tooltip=(
-                    "ImageJ 1.x compatibility: each YX plane is converted to "
-                    "8-bit with ScaleConversions, then thresholded with the "
-                    "selected ImageJ AutoThresholder method."
+                    "Experimental source-aligned ImageJ 1.54p target for "
+                    "scalar uint8, uint16, and float32 YX planes. Independent "
+                    "golden parity is pending; bool handling and RGB/RGBA "
+                    "luma reduction are VIPP extensions, not ImageJ-exact."
                 ),
             ),
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,

@@ -8,6 +8,13 @@ from urllib.parse import unquote
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MARKDOWN_LINK = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
+ABSOLUTE_HOME_PATHS = (
+    re.compile(r"(?i)\b[A-Z]:[\\/]+Users[\\/]+"),
+    re.compile(r"/(?:Users|home)/[^/\s`\"']+"),
+)
+RELEASE_TEXT_SUFFIXES = frozenset(
+    {".csv", ".json", ".md", ".svg", ".txt", ".yaml", ".yml"}
+)
 
 
 def test_local_markdown_links_resolve():
@@ -43,6 +50,30 @@ def test_documentation_index_has_no_orphaned_pages():
     ]
 
     assert not missing, f"Pages missing from docs/README.md: {missing}"
+
+
+def test_release_bound_documentation_contains_no_absolute_home_paths():
+    documents = [
+        REPO_ROOT / "README.md",
+        *sorted(
+            path
+            for path in (REPO_ROOT / "docs").rglob("*")
+            if path.is_file() and path.suffix.lower() in RELEASE_TEXT_SUFFIXES
+        ),
+    ]
+    leaked: list[str] = []
+
+    for document in documents:
+        for line_number, line in enumerate(
+            document.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            if any(pattern.search(line) for pattern in ABSOLUTE_HOME_PATHS):
+                leaked.append(f"{document.relative_to(REPO_ROOT)}:{line_number}")
+
+    assert not leaked, "Absolute home paths in release documentation:\n" + "\n".join(
+        leaked
+    )
 
 
 def test_all_example_workflows_are_documented():

@@ -31,8 +31,8 @@ and the contributor [scientific behavior requirements](CONTRIBUTING.md#scientifi
 
 ## Install And Open
 
-VIPP requires Python 3.12 or newer. If napari is not already installed, install
-it with a Qt backend at the same time:
+VIPP 0.13.0a1 supports CPython 3.12 and 3.13. If napari is not already
+installed, install it with a Qt backend at the same time:
 
 ```bash
 python -m pip install "napari[pyqt6]"
@@ -43,6 +43,28 @@ vipp
 The `--pre` flag is required while VIPP is published as an alpha release. It is
 kept on the VIPP command so napari itself can continue to resolve to a stable
 release.
+
+The optional CUDA providers are currently qualified on CPython 3.12 only. On a
+native Windows machine with a compatible NVIDIA driver, the self-contained
+CUDA 13 route is:
+
+```powershell
+py -3.12 -m venv ".venv-vipp-gpu-cu13"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --pre "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a1"
+& ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
+& ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
+```
+
+This installs the exact NumPy, SciPy, scikit-image, CuPy, and CUDA package
+versions used by the public admission policy. Public GPU admission in this
+alpha is intentionally narrower than package installation: the reviewed
+native-Windows evidence is for the recorded CUDA 13 / RTX 5090 environment.
+Other hardware, Linux, unsupported dtypes or parameters, and missing optional
+providers remain on the scientifically authoritative CPU path with a visible
+reason. macOS is CPU-only in this alpha. See
+[GPU scope and setup](#gpu-execution-and-development-environment) before using
+accelerated results.
 
 In napari, open:
 
@@ -134,7 +156,7 @@ current limitations.
 ## Documentation
 
 - [Published VIPP documentation](https://rensutheart.github.io/vipp-mkdocs/)
-- [Categorized 0.12 release notes](CHANGELOG.md#0120a3---2026-07-20)
+- [Categorized 0.13.0a1 release notes](CHANGELOG.md#0130a1---2026-08-04)
 - [Documentation index](docs/README.md)
 - [User guide](docs/user-guide.md)
 - [Image import and export](docs/io-user-guide.md)
@@ -154,12 +176,12 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-### GPU Development Branch Environment
+### GPU Execution And Development Environment
 
-GPU execution is currently design/development work on
-[`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support),
-not a supported feature in the released plugin. Phase 1 is implemented as a
-headless vertical slice for Rolling-Ball/Subtract Background, median, and
+VIPP 0.13.0a1 is the first alpha to package evidence-gated GPU execution. GPU
+coverage is deliberately incomplete and every accelerated region retains a
+visible, scientifically authoritative CPU path. Phase 1 provides
+Rolling-Ball/Subtract Background, median, and
 2D/3D Gaussian. Phase 2B adds ordinary CuPy/CuPyX
 Richardson-Lucy, Phase 2C adds Richardson-Lucy TV for 2D/3D spatial data and
 leading blocks while preserving the existing CPU formula and defaults, and
@@ -168,10 +190,10 @@ the public CPU Sigma Filter node and a clean-room CuPy RawKernel provider.
 Phase 5 adds exact CuPyX Connected Components for boolean 2D/3D masks, including
 SciPy-identical `int32` label IDs and independent leading-block resets. Their
 validated regions are normal public `Auto`/`Selective` candidates on this
-branch; unsupported regions visibly use CPU. Phase 6 adds cuCIM candidates for
+alpha; unsupported regions visibly use CPU. Phase 6 adds cuCIM candidates for
 the basic schemas of **Measure Objects** and **Measure Objects + Intensity**,
 with an exact typed-table finalizer after the mandatory GPU-to-host boundary.
-Both deconvolution paths use exact ordered-multi-input benchmarking. The branch
+Both deconvolution paths use exact ordered-multi-input benchmarking. The alpha
 includes
 CPU/Auto/Selective execution contracts, visible or strict fallback,
 transactional device execution, scientific cache identity, and per-node/
@@ -203,10 +225,10 @@ one or more ordered inputs offer `Benchmark node…`: VIPP detaches and hashes
 every input, includes every transfer and input in memory accounting, compares
 the exact captured workload, requires scientific parity, saves evidence
 locally, previews warm timing/parity/memory results, and changes the portable
-node preference only after explicit acceptance. The coordinator can revalidate
-the exact inputs, but wiring that source-byte check into the final UI Apply
-boundary remains a tracked promotion requirement. Writers and multi-output
-nodes remain excluded.
+node preference only after explicit acceptance. The final UI Apply boundary
+revalidates the exact input bytes and metadata, graph, compute intent, locks,
+candidate assignment, and accelerator environment before making one undoable
+change. Writers and multi-output nodes remain excluded.
 GPU eligibility is dtype-sensitive. For example, the currently reviewed CuPyX
 Gaussian implementation accepts finite `float32`; native `uint16` Gaussian is
 intentionally CPU-only until its integer result semantics pass a separate
@@ -240,15 +262,15 @@ floor diagnostics. This is an operation-specific public candidate region backed
 by fixed and holdout matrices—not permission to change an authored parameter,
 and not a blanket biological-restoration or cross-platform equivalence claim.
 
-GPU provider visibility on this branch follows the evidence. An implementation
+GPU provider visibility in this alpha follows the evidence. An implementation
 whose declared region has passed scientific parity and the required memory,
 progress, cancellation, cleanup, and runtime checks is a normal public
 `Selective` candidate and may participate in `Auto` where applicable performance
 evidence exists. `developer_hidden` is reserved for incomplete or unvalidated
 work. Promotion is region-specific: data types, parameters, shapes, or platforms
 outside a provider's reviewed region remain on CPU with a visible CPU decision
-or fallback. Public visibility on the development branch does not imply that
-every GPU, operating system, or released VIPP package has been qualified.
+or fallback. Public visibility does not imply that every GPU, operating system,
+dtype, parameter region, or workload has been qualified.
 
 **Sigma Filter** is an edge-preserving Lee filter compatible with the documented
 behavior of Fiji's
@@ -436,9 +458,9 @@ cancellation and the one absolute analysis deadline also apply while waiting
 for the lease. Different runtime/device keys remain independent.
 
 Validated GPU candidates are normally visible in the core admission model and
-the development UI; only unfinished or unvalidated providers remain
-`developer_hidden`. This is still branch-scoped operation support rather than a
-blanket released-package or cross-platform GPU claim. The current optimizer is deliberately limited
+the normal UI; only unfinished or unvalidated providers remain
+`developer_hidden`. This remains release- and operation-scoped support rather
+than a blanket cross-platform GPU claim. The current optimizer is deliberately limited
 to a calculated, writer-free scientific subgraph, one accelerator runtime, and
 single-output nodes supported by exact node benchmarking. Ordered multi-input
 nodes such as Richardson-Lucy and Richardson-Lucy TV are supported;
@@ -476,9 +498,9 @@ The machine-local
 [large-stack Richardson-Lucy timing summary](docs/benchmarks/rl-cupy-performance-windows-rtx5090.md)
 compares synchronized CPU and transfer-inclusive CuPy execution on the private
 representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses, with
-paired median speedups of 55.88x, 77.96x, and 90.81x, respectively. The
+paired median speedups of 62.79x, 76.22x, and 88.26x, respectively. The
 [Richardson-Lucy TV timing summary](docs/benchmarks/rl-tv-cupy-performance-windows-rtx5090.md)
-records 66.15x and 108.63x paired median speedups for the same private
+records 59.79x and 99.80x paired median speedups for the same private
 8.51-million-voxel volume and a 16.78-million-voxel shape stress at the exact
 positive shipped profile. The
 [Canny/Otsu timing summary](docs/benchmarks/canny-otsu-cupy-windows-rtx5090.md)
@@ -519,11 +541,11 @@ native-Windows matrix. Linux preparation is available for the pending clean-host
 validation, but GPU execution intentionally fails closed there until that
 evidence is reviewed.
 
-The base package accepts Python 3.12 and newer, but the initial GPU development
-and validation matrix is deliberately CPython 3.12 only. A newer interpreter
-resolving the base package or CuPy is not yet a VIPP GPU support claim; each
-Python minor must pass the clean-install, real-kernel, scientific-parity, memory,
-and cleanup gates first.
+The base package supports CPython 3.12 and 3.13, but the initial GPU validation
+matrix is deliberately CPython 3.12 only. Installing the base package or CuPy
+on a newer interpreter is not a VIPP GPU support claim; each Python minor must
+pass the clean-install, real-kernel, scientific-parity, memory, and cleanup
+gates first.
 
 Exact GPU parity is also defined against the authoritative CPU scientific stack.
 The current public Windows region requires NumPy 2.5.1, SciPy 1.18.0, and
@@ -542,9 +564,10 @@ qualification can still run directly outside this public gate.
 The machine still needs a compatible NVIDIA driver. Select `--track cuda12` for
 the separate `.venv-gpu-cu12` qualification-only environment; CUDA 12 is
 outside the current public admission region. The project also
-publishes platform-marked `gpu-cuda12` and `gpu-cuda13` extras, but the setup
-helper is the reproducible development route because it applies the matching
-constraint file and verifies the installation. Never install the CUDA 12 and
+publishes platform-marked `gpu-cuda12` and `gpu-cuda13` extras. Those extras pin
+the scientific stack used by admission; the checked-in setup helper additionally
+produces a detailed development provenance record and verifies real kernels.
+Never install the CUDA 12 and
 CUDA 13 CuPy distributions into the same environment. If diagnostics report an
 unavailable runtime, they print a copyable setup command; VIPP's CPU path remains
 usable.
@@ -566,7 +589,7 @@ continues to use VIPP's CPU path
 while an M1 Max Metal/MPS/MLX provider is investigated; Apple unified memory
 must be reported as one shared budget, not RAM plus VRAM.
 
-For production collection replay on this branch, let `Batch workspace...`
+For production collection replay in this alpha, let `Batch workspace...`
 write `vipp_batch_pipeline.py` and its config/workflow companions, then run:
 
 ```powershell
@@ -599,49 +622,39 @@ guidance, and report suspected vulnerabilities privately through
 [SECURITY.md](SECURITY.md). All project interactions follow the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
-## 0.12 Alpha Highlights
+## 0.13 Alpha Highlights
 
-`0.12.0a3` is the current alpha. It builds on the 0.12 architecture and
-reproducibility baseline with:
+`0.13.0a1` is the current alpha. It is VIPP's first usable, evidence-gated GPU
+release while retaining CPU as the portable scientific reference path:
 
-- direct batch execution with a fresh plan-only preflight while representative
-  preview remains optional;
-- an amber, user-confirmed `output` destination suggestion for new collection
-  bindings;
-- fast no-read/no-calculation handling when every resolved `Skip` output exists,
-  plus more resilient atomic artifact handling on Windows and synced folders;
-- optional workflow JSON attachment of the validated Batch workspace settings,
-  restored without scanning or calculating a representative; and
-- one clearly separated main-toolbar Batch workspace entry, with Load before
-  Save consistently across workflow and batch controls.
+- toolbar `CPU`/`Auto`/`Selective` policy, per-node CPU/CuPy/cuCIM choices and
+  actual-run badges, setup diagnostics, RAM/VRAM reporting, node benchmarking,
+  and a review-before-apply whole-pipeline optimizer;
+- public-candidate GPU regions for background subtraction, median, Gaussian,
+  Richardson-Lucy, Richardson-Lucy TV, Canny, Otsu, Sigma Filter, connected
+  components, and basic measurement profiles;
+- one execution contract across interactive calculation, durable collection
+  batch, generated Python/CLI, and export, including exact implementation
+  provenance, nested progress, cooperative cancellation, memory admission,
+  structured OOM fallback, cleanup, and atomic publication;
+- workflow schema 4 and batch-config/manifest schema 2 for portable compute
+  intent, with schema-3 workflows and version-1 batch configs migrating to
+  explicit CPU;
+- independent workflow tabs, high-resolution colocalization scatter tools,
+  live source subtitles, draggable tunnel rerouting, and retained napari
+  camera/slice/display state during node tuning; and
+- ND2 ordered-axis metadata correction, Crop Stack type preservation, new
+  Sigma Filter and ImageJ Auto Threshold nodes, plus substantial cache,
+  optimizer, progress, cancellation, and publication hardening.
 
-The 0.12 foundation also provides:
-
-- workflow schema version 4 retains version 3's explicit axis, channel, grid,
-  and operation choices and adds portable compute intent, while loading version
-  3 with an explicit CPU policy;
-- verified file and live-layer revisions, physical-grid checks, detached viewer
-  layers, and atomic artifacts reject stale or silently repaired inputs;
-- generated Python and collection batching now use the same validated headless
-  executor as the interactive graph;
-- the retained batch workspace adds reviewed plans, representative navigation,
-  explicit outputs, per-item provenance, collision policies, progress, final
-  statuses, manifests, and deterministic validation;
-- exact diagnostics, background workers, and platform-specific memory reporting
-  improve responsiveness without changing the population being measured;
-- Richardson-Lucy TV controls now explain parameter effects and provide
-  practical linear or geometric slider windows without limiting exact spinner
-  entry; and
-- the former monolithic widget has been decomposed into focused Qt-free core and
-  UI service modules with dependency-direction tests.
-
-Breaking alpha changes are intentional where preserving an older implicit
-behavior would weaken scientific validity. See the categorized
-[0.12 release notes](CHANGELOG.md#0120a3---2026-07-20), the
+GPU support is not complete or generally cross-platform in this alpha. Linux
+and RTX 40-series qualification, Apple acceleration, general cuCIM packaging,
+and additional node providers remain planned. Colocalization and ImageJ
+compatibility work also changes some numerical results; review the scientific
+compatibility notes before comparing old and new analyses. See the categorized
+[0.13.0a1 release notes](CHANGELOG.md#0130a1---2026-08-04), the
 [upgrade and workflow contract](docs/user-guide.md#save-workflow-json), and
-[planning.md](docs/planning.md) for later milestones. Semantic-axis collection
-iteration, HCS traversal, scalable OME-Zarr previews, and broader scientific
-validation remain future work.
+[planning.md](docs/planning.md) for the remaining milestones.
 
 ## Citation, Acknowledgement, And License
 

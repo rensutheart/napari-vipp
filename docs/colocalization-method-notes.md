@@ -1,10 +1,16 @@
 # Colocalization Method Documentation
 
-Last reviewed: 2026-07-30
+Validation status updated: 2026-08-04
 
 This document describes the colocalization and object-association calculations
 implemented in VIPP. It is intended as methods-text source material for a
 manuscript, validation report, or public technical documentation.
+
+The Fiji-related calculations in this alpha are an **experimental,
+source-aligned compatibility target** for Fiji Coloc 2 3.1.0. Independent
+Fiji-generated golden parity validation is pending. Internal regression tests
+verify VIPP's current implementation, but do not certify numerical equivalence
+to an independently executed Fiji installation.
 
 Implemented reference workflows:
 
@@ -34,10 +40,10 @@ Quantitative calculations use the finite native intensity values supplied by
 the upstream nodes. VIPP does not jointly rescale, clip, or replace values for
 colocalization. Manual thresholds, Costes thresholds, regression parameters,
 and intensity sums therefore use the same units as the two inputs. Inputs that
-contain `NaN` or infinite values are rejected. Negative values are retained,
-matching Fiji Coloc 2, and produce text in the backward-compatible
-`normalization_warnings` column because negative photon-count-like values can
-make threshold and Manders results difficult to interpret.
+contain `NaN` or infinite values are rejected. Negative values are retained, in
+line with the source-aligned Coloc2 target, and produce text in the backward-
+compatible `normalization_warnings` column because negative photon-count-like
+values can make threshold and Manders results difficult to interpret.
 
 Masked colocalization nodes accept a third ROI input. Voxels with ROI values
 greater than zero are included; all other voxels are excluded. When no ROI mask
@@ -98,7 +104,8 @@ that Boolean domain explicitly:
 with one channel strictly above and the other below belongs to both Fiji OR
 populations. They are overlapping populations, not complementary partitions.
 A voxel exactly equal to both thresholds belongs to the intersection field but
-to neither strict OR field. These comparisons match Fiji Coloc 2 3.1.0.
+to neither strict OR field. These comparisons implement the Boolean regions
+identified in the Coloc2 3.1.0 source; independent golden parity is pending.
 
 The ambiguous older names remain as compatibility aliases only:
 
@@ -122,7 +129,8 @@ are also reported.
 
 ## Manders Coefficients
 
-VIPP follows Fiji Coloc 2's Manders definitions. Unthresholded M1/M2 use an
+VIPP targets the Manders definitions identified in Fiji Coloc 2's source.
+Unthresholded M1/M2 use an
 above-zero test in the opposite channel and the total intensity of the measured
 channel as denominator:
 
@@ -168,17 +176,19 @@ thresholded voxel counts and Manders coefficients.
 
 ## Costes Automatic Thresholding
 
-When `Costes auto` is selected, VIPP implements Fiji Coloc 2 3.1.0's classic
-Costes `SimpleStepper` on native intensities. This is the implementation named
-`Costes` in Fiji; Fiji's separate `Bisection` implementation is not selected by
-VIPP's existing `Costes auto` workflow value.
+When `Costes auto` is selected, VIPP uses an experimental source-aligned
+implementation targeting Fiji Coloc 2 3.1.0's classic Costes `SimpleStepper` on
+native intensities. This is the source path named `Costes`; Fiji's separate
+`Bisection` implementation is not targeted by VIPP's existing `Costes auto`
+workflow value.
 
-For the selected threshold population, VIPP computes channel means,
-variances, and covariance. Exact 3.1.0 compatibility includes a Fiji cursor
-quirk: the means use the full ROI, but the regression variance loop begins at
-the second ROI voxel because Coloc 2 advances its cursor while obtaining the
-first sample's numeric type. VIPP also retains Fiji's combined-variance
-covariance calculation and left-to-right double accumulation. It fits a line:
+For the selected threshold population, VIPP computes channel means, variances,
+and covariance. Source alignment includes a cursor quirk observed in the 3.1.0
+implementation: the means use the full ROI, but the regression variance loop
+begins at the second ROI voxel because Coloc2 advances its cursor while
+obtaining the first sample's numeric type. VIPP also models the source's
+combined-variance covariance calculation and double accumulation. It fits a
+line:
 
 ```text
 I2 = slope * I1 + intercept
@@ -202,10 +212,11 @@ B = {i | I1(i) < T1 or I2(i) < T2}
 ```
 
 After every test, the working threshold is decremented by one native intensity
-unit. As in Fiji 3.1.0, the search stops when the decremented working threshold
-is below one, the tested correlation is below `0.0001`, or the correlation has
-increased relative to the previous test. The returned thresholds are the last
-pair actually tested. There is no arbitrary 100-iteration cap.
+unit. Following the 3.1.0 source target, the search stops when the decremented
+working threshold is below one, the tested correlation is below `0.0001`, or
+the correlation has increased relative to the previous test. The returned
+thresholds are the last pair actually tested. There is no arbitrary
+100-iteration cap.
 
 The output table records:
 
@@ -219,8 +230,11 @@ The output table records:
 `costes_pearson_below` is retained as a compatibility alias for the canonical
 OR-domain field above.
 
-`threshold_units` is `native_intensity`, and `coloc_semantics` records
-`fiji_coloc2_3.1` for explicit provenance.
+`threshold_units` is `native_intensity`. `coloc_semantics` records
+`fiji_coloc2_3.1` as the target contract identity; it is not a validation
+certificate. The separate `coloc_validation_status` field records
+`experimental_source_aligned_golden_parity_pending` in both pixel and object
+tables.
 
 For object-restricted colocalization, Costes thresholds are calculated once
 over all foreground voxels in the supplied label image and then reused for each
@@ -229,10 +243,11 @@ threshold estimates for small objects.
 
 ### Fiji Coloc 2 output scope
 
-For the metrics that both applications emit, VIPP is intended to reproduce
-Fiji Coloc 2's deterministic threshold, regression, Pearson, and Manders
-semantics. This is numerical-method parity, not a claim that the two
-applications produce the same complete report bundle.
+For metrics that both applications emit, VIPP's implementation is derived from
+the Coloc2 3.1.0 source and targets its deterministic threshold, regression,
+Pearson, and Manders semantics. Independent execution parity has not yet been
+established, and the target is not a claim that the two applications produce
+the same complete report bundle.
 
 VIPP does not currently emit Coloc 2's zero-zero and saturation percentages,
 per-channel min/max/mean/full-sum rows, intercept-to-mean warning text, Li ICQ,
@@ -462,7 +477,9 @@ When reporting VIPP colocalization results, include:
 The implementation is covered by automated tests for whole-image/ROI metrics,
 Costes threshold write-back, inspector scatter interaction, RACC outputs,
 object-level metrics, label-overlap association, nearest-object distances,
-event localization, and the bundled example workflows.
+event localization, and the bundled example workflows. Those tests are
+internal regression coverage. They do not use independently generated Fiji
+golden fixtures, so this alpha must not be cited as verified Fiji equivalence.
 
 The bundled synthetic samples are deterministic and intended for software
 regression and workflow demonstration. They do not replace biological

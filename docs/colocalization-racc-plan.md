@@ -66,9 +66,8 @@ Example workflow:
 
 ## RACC Relationship
 
-The existing RACC napari plugin at
-`/Users/rensu/Dropbox/Research/SYSTEMS/RACC/RACC_Napari` has a good
-separation between:
+The existing local `RACC_Napari` reference implementation has a good separation
+between:
 
 - UI-independent numerical core (`_racc.py`);
 - scatter rendering (`_scatter.py`);

@@ -1,6 +1,6 @@
 # VIPP Alpha Release Runbook
 
-Last reviewed: 2026-07-20
+Last reviewed: 2026-08-04
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 publishing the companion documentation site, and confirming discovery on
@@ -10,7 +10,7 @@ napari hub.
 
 - Target package version: set `<version>` from the release milestone before
   starting; do not reuse the current package version by accident.
-- Current prepared target: `0.12.0a3`.
+- Current prepared target: `0.13.0a1`.
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -28,7 +28,7 @@ into the process environment without echoing it and clear it after upload.
 
 Recommended local tools:
 
-- Python 3.12+
+- Python 3.12 or 3.13 for the CPU package; CPython 3.12 for CUDA qualification
 - `python -m pip install -U build twine`
 
 ## 2. Verify Metadata
@@ -48,10 +48,11 @@ Confirm these are set:
 
 Required checks:
 
-- `python -m npe2 validate src/napari_vipp/napari.yaml`
+- `python -X utf8 -m npe2 validate src/napari_vipp/napari.yaml`
 - `python -m ruff check .`
 - `python -m pytest`
-- the final GitHub Actions run is green on every configured platform
+- the release-candidate branch and final `main` commit are green on every
+  configured operating system and Python version
 
 For a batch/provenance release, also use `Batch workspace...` -> `Open batch
 demo...`. Move through all three representatives with the slider and confirm
@@ -83,15 +84,34 @@ and that macOS cache status reports RAM without launching a subprocess. The
 automated suite must exercise Windows, macOS, and POSIX dispatch without
 assuming `os.sysconf` exists on Windows.
 
-## 3. Build Artifacts
+## 3. Freeze And Tag The Exact Release Commit
 
-From repository root, remove artifacts for the target version that were built
-from an earlier commit, then build into an empty version-specific directory:
+Only tag after the versioned candidate is reviewed, pushed, clean, and green in
+GitHub Actions. Confirm that it contains the current `origin/main` and record
+the immutable commit id:
+
+```powershell
+git fetch origin --tags
+git status --short
+git merge-base --is-ancestor origin/main HEAD
+git rev-parse HEAD
+git tag -a "v<version>" -m "napari-vipp <version> alpha"
+git rev-parse "v<version>^{}"
+```
+
+The two commit ids must match. Never move or recreate a published release tag;
+prepare a new version if the tagged candidate needs code changes.
+
+## 4. Build And Qualify Tagged Artifacts
+
+With `HEAD` still at the clean tagged commit, build into an empty
+version-specific directory. Do not use a broad root-level `dist/*` upload glob:
 
 ```powershell
 python -m pip install -U build twine
 python -m build --outdir "dist/<version>"
 python -m twine check "dist/<version>/*"
+Get-FileHash -Algorithm SHA256 "dist/<version>/*"
 ```
 
 Expected output artifacts:
@@ -101,9 +121,11 @@ Expected output artifacts:
 
 Using a version-specific directory prevents an upload command from including
 artifacts from an older release. It does not make an existing same-version
-artifact safe: confirm both files were produced after the final release commit.
+artifact safe: confirm both files were produced from the tagged commit, record
+their SHA-256 hashes, and repeat the clean-wheel CPU and CUDA acceptance smokes
+against these files rather than an editable checkout.
 
-## 4. Build And Publish Documentation
+## 5. Build And Publish Documentation
 
 In the companion `vipp-mkdocs` repository:
 
@@ -112,12 +134,21 @@ python -m pip install -r requirements.txt
 python -m mkdocs build --strict
 ```
 
-Review the rendered `0.12.0a3` release page, workflow-schema upgrade guidance,
+Review the rendered `0.13.0a1` release page, workflow-schema upgrade guidance,
 batch workspace instructions, architecture boundaries, and known limitations.
 Commit and push the docs release before or alongside the package release, then
 confirm the hosted documentation resolves from the `Documentation` project URL.
 
-## 5. Publish To PyPI
+## 6. Publish Tag, Package, And GitHub Prerelease
+
+Push the already-qualified immutable tag first:
+
+```powershell
+git push origin "v<version>"
+```
+
+Then publish exactly the two hash-recorded artifacts. PyPI uploads cannot be
+replaced, so recheck the directory and version before entering credentials:
 
 Set token in the shell (PowerShell):
 
@@ -133,15 +164,7 @@ Post-upload validation:
 - Confirm the target version is visible
 - Confirm README renders alpha disclaimer
 - Confirm license metadata shows BSD-3-Clause terms
-
-## 6. Create Git Tag And GitHub Release
-
-Create and push tag:
-
-```powershell
-git tag -a v<version> -m "napari-vipp <version> alpha"
-git push origin v<version>
-```
+- Confirm `Requires-Python` and optional GPU extras match the tagged metadata
 
 Prepare the release notes body below in a temporary file, then create the
 release with GitHub CLI (or use the equivalent GitHub UI fields):
@@ -205,6 +228,9 @@ If not updated after indexing delay:
 
 ## Operator Checklist
 
+- [ ] Versioned release-candidate branch CI passes on Python 3.12 and 3.13 for
+      Windows, Linux, and macOS
+- [ ] Final `main` release commit CI passes and exact commit id is recorded
 - [ ] Tests pass locally
 - [ ] Manual UI smoke pass completed for graph search, tunnel manager, graph
       notes, insert-on-wire mapping, workflow save/load, cache modes, and
@@ -215,9 +241,10 @@ If not updated after indexing delay:
       identities, output digest links, both progress levels, cancellation 130,
       structured OOM policy, and cleanup-gated publication
 - [ ] CPU-only import/generated/batch replay passed without optional GPU imports
-- [ ] Build and twine checks pass
+- [ ] Clean tagged wheel/sdist build, Twine, content, `pip check`, manifest,
+      compute-policy-resource, and entry-point checks pass; SHA-256 hashes saved
 - [ ] Companion documentation strict build passes and release page is published
-- [ ] Uploaded to PyPI
 - [ ] Git tag pushed
+- [ ] Uploaded to PyPI
 - [ ] GitHub pre-release published with wheel and sdist attached
 - [ ] napari hub page shows latest version

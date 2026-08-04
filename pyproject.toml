@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-vipp"
-version = "0.12.0a3"
+version = "0.13.0a1"
 description = "Visual workflows for reproducible bioimage analysis"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 authors = [
     {name = "Rensu P. Theart"},
 ]
@@ -27,6 +27,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Topic :: Scientific/Engineering :: Image Processing",
@@ -60,6 +61,9 @@ Discussions = "https://github.com/rensutheart/napari-vipp/discussions"
 
 [project.optional-dependencies]
 gpu-cuda12 = [
+    "numpy==2.5.1; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
+    "scipy==1.18.0; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
+    "scikit-image==0.26.0; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
     "cupy-cuda12x[ctk]==14.1.1; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
     "cuda-pathfinder==1.6.0; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
     "cuda-toolkit==12.9.2.0; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
@@ -73,6 +77,9 @@ gpu-cuda12 = [
     "nvidia-nvjitlink-cu12==12.9.86; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
 ]
 gpu-cuda13 = [
+    "numpy==2.5.1; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
+    "scipy==1.18.0; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
+    "scikit-image==0.26.0; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
     "cupy-cuda13x[ctk]==14.1.1; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
     "cuda-pathfinder==1.6.0; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",
     "cuda-toolkit==13.2.2; python_version == '3.12' and (platform_system == 'Windows' or platform_system == 'Linux')",

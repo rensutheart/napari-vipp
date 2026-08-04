@@ -27,12 +27,12 @@ The core workflow families are:
 
 PSF generation, deconvolution foundations, and optional microscope-reader
 routing are part of the 0.11 baseline; explicit batch configuration and
-provenance are part of 0.12. Near-term work is validation on real data,
-scalable OME-Zarr previews, safe graph/parameter copy and paste, and a separate
-GPU-development track, whose first CPU/Auto/Selective execution slice,
-experimental interactive controls, background/median/Gaussian adapters, and
-ordinary Richardson-Lucy backend are now implemented on the separate GPU
-branch.
+provenance are part of 0.12. Version 0.13.0a1 brings the first usable,
+evidence-gated GPU regions into the ordinary product and carries compute intent
+and exact implementation provenance through interactive, batch, generated
+Python/CLI, and export execution. Near-term work is broader GPU/platform
+qualification, validation on real data, scalable OME-Zarr previews, and safe
+graph/parameter copy and paste.
 Registration, model-backed segmentation, stitching, and AI-assisted graph
 authoring remain later milestones.
 
@@ -51,9 +51,10 @@ authoring remain later milestones.
 - [gpu-production-implementation-plan.md](gpu-production-implementation-plan.md):
   CPU/Auto/Selective architecture, per-node and whole-pipeline benchmarking,
   implementation-library selection, fallbacks, memory/provenance, packaging,
-  validation gates, and delivery order. The implemented development slices
-  cover Rolling-Ball/Subtract Background, median, 2D/3D Gaussian, and ordinary
-  Richardson-Lucy. VIPP remains CPU-capable on Windows, macOS, and Linux. The
+  validation gates, and delivery order. Implemented public-candidate regions
+  cover background subtraction, median, Gaussian, RL/RL-TV, Canny, Otsu,
+  Sigma Filter, connected components, and basic measurement profiles. VIPP
+  remains CPU-capable on Windows, macOS, and Linux. The
   executable CUDA policy currently admits native Windows; native-Linux evidence
   is the next platform gate, while an M1 Max Metal/MPS/MLX provider is
   investigated.
@@ -75,21 +76,18 @@ authoring remain later milestones.
   publication-facing evidence.
 - [mitomorph-feature-parity.md](mitomorph-feature-parity.md): MitoMorph-inspired
   feature parity tracking.
-- GPU implementation work is kept off main on the
-  [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
-  branch. It has absorbed the current main commits so development starts from
-  the 0.12 baseline, while main remains the CPU production branch until GPU work
-  passes its scientific-parity, packaging, memory, usability, and cross-platform
-  promotion gates.
+- [durable-gpu-execution.md](durable-gpu-execution.md): the shared interactive,
+  batch, generated-Python/CLI, and export compute contract, including request
+  precedence, provenance, progress, cancellation, OOM fallback, and cleanup.
 
 ## Current Public Baseline
 
-Current alpha release: `0.12.0a3`.
+Current alpha release: `0.13.0a1`.
 
-The 0.12 alpha adds deterministic batch configuration/provenance, explicit
-scientific source/grid/axis contracts, shared-executor Python export, workflow
-schema version 3, and modular core/UI boundaries on top of the 0.11 exact
-large-image, PSF/restoration, and microscope-import foundation.
+The 0.13 alpha adds evidence-gated GPU execution, portable compute intent,
+durable implementation provenance, workflow schema 4, batch schema 2,
+independent workflow tabs, and new scientific/UI capabilities on top of the
+0.12 deterministic batch and reproducibility foundation.
 Implemented and documented work includes:
 
 - searchable categorized palette and searchable graph canvas;
@@ -99,12 +97,13 @@ Implemented and documented work includes:
   notes;
 - ambiguous insert-on-wire port mapping, dynamic multi-output port handling,
   `Split Channels`, and explicit `Split Axis`;
-- workflow JSON with canvas positions, named tunnels, graph notes, selected
+- workflow JSON schema 4 with canvas positions, named tunnels, graph notes, selected
   inspector state, optional per-node thumbnail visibility, strict loading, and
-  compatibility when optional VIPP UI metadata is absent;
-- Python export, retained collection batch workspace, explicit `Batch Output`
-  nodes, deterministic plan review, representative navigation, multi-source
-  bindings, and saved workflow/config/manifest artifacts;
+  portable compute intent; schema 3 migrates to explicit CPU;
+- Python/CLI export and retained collection batch schema 2 share the interactive
+  executor, with explicit outputs, deterministic plan review, representative
+  navigation, multi-source bindings, nested progress, cancellation, exact
+  implementation provenance, OOM fallback records, and saved artifacts;
 - background execution, stale-result rejection, cooperative cancellation where
   supported, manual/cached measurement nodes, branch-local dirty reruns, cache
   modes, auto memory guard, and per-node `Keep output cached`;
@@ -125,12 +124,18 @@ Implemented and documented work includes:
   used by PSF generation and provenance checks;
 - slice/stack thumbnail contrast range controls, cached stack contrast limits,
   and a linked/unlinked napari/VIPP slider setting for large data review;
+- CPU/Auto/Selective compute policy, per-node implementation choices and actual
+  backend badges, exact-workload node benchmarking, review-first pipeline
+  optimization, setup diagnostics, and RAM/VRAM accounting;
+- public-candidate accelerated regions for background subtraction, median,
+  Gaussian, RL, RL-TV, Canny, Otsu, Sigma Filter, connected components, and
+  basic measurement profiles in their exact reviewed regions; and
 - automated tests plus calibrated analytical morphology phantom validation.
 
 Known constraints:
 
-- progress/cancellation coverage depends on third-party operations and remains
-  uneven;
+- GPU coverage and platform qualification remain intentionally incomplete;
+  CPU is the portable reference and fallback path;
 - most processing remains eager, so very large OME-Zarr workflows still need a
   more deliberate lazy and pyramid-aware preview strategy;
 - broad proprietary microscope import is active development rather than a
@@ -140,16 +145,15 @@ Known constraints:
   colocalization, watershed, skeleton/network, batch/provenance, and OME-Zarr
   round-tripping.
 
-## Active TODOs After 0.12
+## Active TODOs After 0.13.0a1
 
 These are the items that should guide near-term work. Items not listed here are
 either already implemented enough to build on or intentionally deferred.
 
-### Parallel GPU Development Track
+### GPU Completion And Platform Qualification
 
-Keep implementation on `codex/gpu-cross-platform-support`, synchronized with
-main but separate until promotion gates pass. Phase 1 is now implemented
-headlessly and interactively: CPU/Auto/Selective and per-node/benchmark contracts, unified
+Phase 1 is implemented headlessly and interactively: CPU/Auto/Selective and
+per-node/benchmark contracts, unified
 execution, the dedicated CUDA development/doctor path, and production-parity
 Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian adapters. Phase 2B
 also has a public-candidate ordinary CuPy Richardson-Lucy backend, ordered
@@ -177,18 +181,22 @@ environments visibly remain on CPU. A single plane or volume is currently one
 atomic CuPyX call, so finer mid-volume progress/cancellation remains explicit
 future work. Both phases are normal public candidates only inside their pinned
 validated regions.
+Phase 6 adds cuCIM candidates for the exact basic schemas of `Measure Objects`
+and `Measure Objects + Intensity`, followed by an exact typed host-table
+finalizer that preserves schema, order, units, missing-value behavior, and
+deterministic provenance. Other measurement profiles remain visibly on CPU.
 Normal public admission currently fails closed to the exact recorded
 native-Windows CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and
 RTX 5090 (compute capability 12.0) region. CUDA 12 is qualification-only and
 outside public admission; other driver/runtime versions and secondary NVIDIA
 hardware likewise require reviewed provider-qualification evidence.
-Machine-local large-stack timing now records 55.88x, 77.96x, and 90.81x paired
+Machine-local large-stack timing now records 62.79x, 76.22x, and 88.26x paired
 median speedups on the RTX 5090 for one real 8.51-million-voxel ND2 volume and
 16.78/67.11-million-voxel 3D shape stresses, respectively. Those short
 descriptive results are not a reusable optimizer record or cross-platform claim;
 see the
 [raw and readable timing evidence](benchmarks/rl-cupy-performance-windows-rtx5090.md).
-The matching positive-TV screen records 66.15x and 108.63x paired median
+The matching positive-TV screen records 59.79x and 99.80x paired median
 speedups for the private 8.51-million-voxel volume and a 16.78-million-voxel
 shape stress; see the
 [RL-TV timing evidence](benchmarks/rl-tv-cupy-performance-windows-rtx5090.md).
@@ -204,10 +212,12 @@ The toolbar now has the CPU/Auto/Selective policy slice,
 Selective node choices, actual backend badges, and a single message-strip
 component with major/actionable paths severity-classified. Optimizer UI
 lifecycle/snapshot hardening continues alongside the maintained next order.
-RL/RL-TV evidence ownership is now isolated from broad shared-file hashes; next
-implement Measurements, explicit Convert Dtype/residency bridges, native
-platform evidence, the Apple provider study, cuCIM/Clara completeness, and
-durable batch/generated/export execution. See the
+RL/RL-TV evidence ownership is isolated from broad shared-file hashes;
+Measurements and durable batch/generated/export execution are implemented.
+The maintained next order is native-Linux and RTX 40-series evidence, M1 Max
+CPU qualification followed by an Apple-provider study, general cuCIM/Clara
+packaging, explicit Convert Dtype/residency bridges, and additional reasonable
+GPU node regions. See the
 [GPU production plan](gpu-production-implementation-plan.md) and
 [Phase 5 record](gpu-phase5-connected-components-implementation-report.md).
 
@@ -627,7 +637,7 @@ Delivered:
 Workflow schema remains version 3 and batch-config schema remains version 1.
 The optional attached config is excluded from the scientific workflow hash.
 
-### 0.13.0a1 - OME-Zarr Scale And Preview Strategy
+### Next Alpha - OME-Zarr Scale And Preview Strategy
 
 Goal: make large, multidimensional OME datasets feel deliberate rather than
 accidental, while making graph fragments and proven parameter settings easy to

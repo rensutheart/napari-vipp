@@ -305,9 +305,9 @@ tolerances changed.
 
 Large-stack timing on the same development host passed exact parity for a
 private 8.51-million-voxel ND2 `ZYX` volume and deterministic 16.78/67.11-million
-voxel 3D shape stresses. Transfer-inclusive CuPy medians were 0.445, 0.465, and
-1.478 seconds versus CPU medians of 24.853, 35.779, and 134.306 seconds: paired
-median speedups of 55.88x, 77.96x, and 90.81x. This was a three-pair descriptive
+voxel 3D shape stresses. Transfer-inclusive CuPy medians were 0.397, 0.463, and
+1.548 seconds versus CPU medians of 24.907, 35.261, and 136.628 seconds: paired
+median speedups of 62.79x, 76.22x, and 88.26x. This was a three-pair descriptive
 screen. Observed device peaks of 0.697, 1.098, and 4.500 GiB stayed within
 admitted bounds of 1.361, 2.111, and 7.720 GiB, respectively. This is not a
 durable optimizer record or portable hardware promise. The
@@ -353,9 +353,9 @@ release, or platform claims.
 
 Machine-local positive-TV timing at 25 iterations passed exact parity for the
 private 8.51-million-voxel ND2 `ZYX` volume and a deterministic
-16.78-million-voxel 3D shape stress. Transfer-inclusive CuPy medians were 0.529
-and 0.511 seconds versus CPU medians of 34.830 and 55.527 seconds: paired median
-speedups of 66.15x and 108.63x. Observed device peaks of 0.934 and 1.873 GiB
+16.78-million-voxel 3D shape stress. Transfer-inclusive CuPy medians were 0.593
+and 0.570 seconds versus CPU medians of 35.747 and 56.885 seconds: paired median
+speedups of 59.79x and 99.80x. Observed device peaks of 0.934 and 1.873 GiB
 were bounded by final admitted limits of 1.876 and 3.127 GiB, respectively
 (1.501 and 2.502 GiB before uncertainty).
 These are short descriptive RTX 5090 measurements, not portable performance or

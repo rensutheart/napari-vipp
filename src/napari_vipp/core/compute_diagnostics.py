@@ -423,6 +423,7 @@ def _repair_command(platform_name: str, track: str) -> str:
     project_root = Path(__file__).resolve().parents[3]
     track_suffix = track.removeprefix("cuda")
     repair_venv = project_root / f".venv-gpu-cu{track_suffix}-repair"
+    package_requirement = _installed_vipp_requirement(track)
     if platform_name == "win32":
         script = project_root / "scripts" / "setup_gpu_dev.ps1"
         if script.is_file():
@@ -434,7 +435,9 @@ def _repair_command(platform_name: str, track: str) -> str:
         python = f".\\{venv}\\Scripts\\python.exe"
         return (
             f'py -3.12 -m venv "{venv}"; '
-            f'& "{python}" -m pip install "napari-vipp[gpu-{track}]"; '
+            f'& "{python}" -m pip install --upgrade pip; '
+            f'& "{python}" -m pip install --pre "napari[pyqt6]>=0.6" '
+            f'"{package_requirement}"; '
             f'& "{python}" -m napari_vipp.core.compute_diagnostics '
             f"--track {track}"
         )
@@ -448,12 +451,26 @@ def _repair_command(platform_name: str, track: str) -> str:
         venv = f".venv-vipp-gpu-cu{track_suffix}"
         return (
             f'python3.12 -m venv "{venv}" && '
+            f'"./{venv}/bin/python" -m pip install --upgrade pip && '
             f'"./{venv}/bin/python" -m pip install '
-            f'"napari-vipp[gpu-{track}]" && '
+            f'--pre "napari[pyqt6]>=0.6" "{package_requirement}" && '
             f'"./{venv}/bin/python" -m '
             f"napari_vipp.core.compute_diagnostics --track {track}"
         )
     return ""
+
+
+def _installed_vipp_requirement(track: str) -> str:
+    """Return an exact self requirement when diagnostics runs from a wheel."""
+
+    requirement = f"napari-vipp[gpu-{track}]"
+    try:
+        installed_version = importlib.metadata.version("napari-vipp").strip()
+    except importlib.metadata.PackageNotFoundError:
+        return requirement
+    if not installed_version or installed_version == "0.0.0":
+        return requirement
+    return f"{requirement}=={installed_version}"
 
 
 def _execution_mode(platform_name: str) -> str:

@@ -93,7 +93,7 @@
     "scipy": "1.18.0"
   },
   "platform": {
-    "executable": "C:\\Users\\rensu\\Documents\\VIPP\\napari-vipp\\.venv-gpu-cu13\\Scripts\\python.exe",
+    "executable": "python.exe",
     "execution_mode": "native",
     "machine": "AMD64",
     "python": "3.12.9",
@@ -1416,7 +1416,7 @@
   "schema_version": 1,
   "source_provenance": {
     "files": {
-      "scripts/benchmark_gpu_phase1.py": "fe2a871581813e676f4de1d46129dc12dec4e18fcc5af1c4ff0e6b96b2ed0179",
+      "scripts/benchmark_gpu_phase1.py": "b9e0111a45dafec19ab5e17896158b6d07b27d212b28ef704bf2d807bdca1ddf",
       "src/napari_vipp/compute_policies/phase1-gpu-developer-v2.json": "d708845da3adda7ebb1da36c5345bb092574617770808ff8241380ea9fca71d5",
       "src/napari_vipp/core/compute.py": "0865e1d7407b0d60697293fe7e7207ae8e19aa22c8824c74d1045d272fcfd303",
       "src/napari_vipp/core/compute_benchmark.py": "b7a399fc9c31d65b7819e8081e19e94b448da57f0cb2f2e5cac4561d082e9926",

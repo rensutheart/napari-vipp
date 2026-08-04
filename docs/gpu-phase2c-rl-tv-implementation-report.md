@@ -191,8 +191,8 @@ pixels, content hash, and content-derived workload identity are not published.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 34.830 s | 0.529 s | 0.461 s | 0.024 s | 66.15x |
-| Medium 3D shape stress | 16,777,216 | 55.527 s | 0.511 s | 0.446 s | 0.028 s | 108.63x |
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 35.747 s | 0.593 s | 0.544 s | 0.026 s | 59.79x |
+| Medium 3D shape stress | 16,777,216 | 56.885 s | 0.570 s | 0.505 s | 0.031 s | 99.80x |
 
 Both cases passed exact production parity and terminal-zero private allocator
 cleanup. Observed device peaks were 0.934 GiB and 1.873 GiB. The memory model

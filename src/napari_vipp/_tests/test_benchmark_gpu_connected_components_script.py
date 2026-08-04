@@ -7,6 +7,7 @@ import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -33,6 +34,33 @@ def evidence_script():
         yield module
     finally:
         sys.modules.pop(module_name, None)
+
+
+def test_environment_record_uses_only_a_privacy_safe_executable_name(
+    monkeypatch,
+    evidence_script,
+) -> None:
+    runtime = SimpleNamespace(
+        getDeviceProperties=lambda _index: {
+            "name": b"Synthetic GPU",
+            "major": 12,
+            "minor": 0,
+            "totalGlobalMem": 1024,
+        },
+        driverGetVersion=lambda: 13030,
+        runtimeGetVersion=lambda: 13020,
+        getDeviceCount=lambda: 1,
+    )
+    cp = SimpleNamespace(cuda=SimpleNamespace(runtime=runtime))
+    monkeypatch.setattr(
+        evidence_script.sys,
+        "executable",
+        r"C:\Users\researcher\private-worktree\.venv\Scripts\python.exe",
+    )
+
+    environment = evidence_script._environment_record(cp, 0)
+
+    assert environment["python_executable"] == "python.exe"
 
 
 def test_help_is_cuda_safe_in_a_fresh_process() -> None:

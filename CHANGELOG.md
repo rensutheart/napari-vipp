@@ -2,17 +2,122 @@
 
 ## Unreleased
 
+## 0.13.0a1 - 2026-08-04
+
+### Release Overview
+
+This first 0.13 alpha packages VIPP's progress-to-date GPU work as a usable,
+evidence-gated feature without claiming complete GPU coverage. CPU remains the
+portable scientific reference implementation. Supported nodes may use reviewed
+CuPy, CuPyX, or cuCIM regions through `Auto` or explicit `Selective` choices;
+unsupported hardware, dependencies, dtypes, parameters, shapes, and workloads
+remain on CPU with a visible reason.
+
+The release also unifies interactive, batch, generated-Python/CLI, and exported
+execution; adds independent workflow tabs and new colocalization tools; fixes
+ordered ND2 axis metadata and napari viewport resets; and includes extensive
+cache, optimizer, progress, cancellation, memory, provenance, and atomic-output
+hardening accumulated since 0.12.0a3.
+
+### Compute Policy And GPU Execution
+
+- Added the main-toolbar `CPU`/`Auto`/`Selective` compute policy, a Settings
+  mirror, per-node CPU/CuPy/cuCIM choices, actual-run badges, and visible CPU
+  fallback reasons. New sessions default to `Auto`; an authored node choice is
+  not an optimizer lock unless the user explicitly locks it.
+- Added worker-based compute setup diagnostics, copyable environment repair,
+  system RAM plus discrete VRAM reporting, and unified-memory presentation for
+  platforms such as Apple silicon. macOS remains CPU-only in this alpha.
+- Added exact-workload node benchmarking and a review-before-apply whole-
+  pipeline optimizer. It compares every scientifically eligible implementation
+  for unlocked nodes, reuses complete exact evidence, models transfers across
+  the graph, reports nested progress and deadline exhaustion, and changes
+  nothing until the measured assignment is revalidated and accepted.
+- Added a versioned evidence policy, exact implementation/environment identity,
+  device-resident execution, memory admission, a fair process-wide accelerator
+  lease, structured OOM fallback, cooperative cancellation, and cleanup-gated
+  cache/publication behavior.
+- Added public-candidate accelerated regions for Rolling-Ball/Subtract
+  Background, median, 2D/3D Gaussian, ordinary Richardson-Lucy,
+  Richardson-Lucy TV, Canny, Otsu, Sigma Filter, connected components, basic
+  object measurements, and basic object-plus-intensity measurements. Each
+  provider is admitted only for its documented scientific region.
+- CUDA extras now pin the exact NumPy, SciPy, scikit-image, CuPy, and CUDA stack
+  used by admission. Public GPU evidence in this alpha remains limited to the
+  recorded native-Windows CPython 3.12 / CUDA 13 / RTX 5090 environment;
+  installation on another system is not an acceleration claim.
+
+### Durable Workflows, Batch, CLI, And Export
+
+- Advanced workflow persistence to schema 4. It stores portable compute mode,
+  fallback policy, per-node preferences, precision policy, and workload policy,
+  while excluding machine-local devices, memory limits, runtime state, and
+  benchmark evidence. Schema-3 workflows load with explicit CPU intent.
+- Advanced collection batch configs and manifests to schema 2. Version-1
+  configs migrate to CPU because they carried no accelerator intent.
+- Routed interactive calculation, saved batch runners, generated Python/CLI,
+  and standalone export through the same execution service. All paths now carry
+  the configured and effective request, exact per-node implementation
+  provenance, structured fallback/OOM records, nested operation progress,
+  cooperative cancellation, and cleanup state.
+- Added durable saved-runner overrides for compute mode, fallback policy, and
+  per-node preference. Cancellation finalizes manifests/checkpoints, returns
+  exit code 130 from the CLI, and blocks unpublished output from escaping.
+- Strengthened private staging and atomic publication. An interruption during a
+  multi-output item's final promotions can still leave a manifest-recorded
+  `partial` item; automatic checkpoint resume and semantic T/C/Z/HCS or
+  container-series iteration remain outside this alpha.
+
+### Image I/O, Execution, And Interface Fixes
+
+- Corrected ND2 metadata normalization to follow the reader's actual ordered
+  dimensions, restoring the proper T/Z/C sliders and slice updates for affected
+  files.
+- Preserved napari camera, zoom, translation, displayed dimensions, and slice
+  positions when recalculating and replacing an inspected layer during isolated
+  node tuning.
+- Added independent workflow tabs with retained graph, cache, history,
+  inspection, and batch-origin state; live source-binding subtitles; draggable
+  tunnel rerouting; and per-output persisted display styles.
+- Added responsive high-resolution and pop-out colocalization scatter views,
+  cached threshold-independent densities, exact full-ROI recounting, memory-
+  bounded histogram construction, and export at the selected display size.
+- Hardened structural cache identity, stale-source rejection, optimizer/manual
+  barriers, memory accounting, cancellation cleanup, measurement assembly,
+  and generated-output provenance/publication.
+
+### Compatibility And Known Alpha Limits
+
+- Colocalization results may change materially. Intensities, thresholds, and
+  sums now remain in native units; the Costes search and Pearson/Manders domains
+  are an experimental source-aligned Fiji Coloc 2 3.1.0 target with independent
+  golden parity still pending; and existing
+  `manders_m1`/`manders_m2` names now alias thresholded tM1/tM2. Do not combine
+  0.12 and 0.13 numerical results without review.
+- `ImageJ Auto Threshold (8-bit)` is a separate explicit conversion/threshold
+  node; generic scikit-image threshold nodes are unchanged.
+- Generated Python is exact-version locked and should be regenerated for
+  0.13.0a1. The generated `batch_process()` folder loop remains a warned,
+  non-durable convenience; use the saved batch runner for production work.
+- CPython 3.12 and 3.13 are the supported CPU interpreters. GPU extras and the
+  reviewed CUDA environment remain CPython 3.12-only.
+- Linux GPU qualification, RTX 40-series evidence, Apple GPU acceleration,
+  general cuCIM/Clara packaging, remaining GPU nodes, semantic collection
+  iteration, HCS traversal, and scalable OME-Zarr previews remain post-alpha
+  work.
+
 ### Colocalization Correctness
 
 - Corrected pixel and object colocalization to retain finite native
   intensities instead of jointly rescaling and clipping the two channels to
   0..255. Thresholds and intensity sums now report native units.
-- Replaced the approximate automatic-threshold search with Fiji Coloc 2
-  3.1.0's classic Costes `SimpleStepper`, including Java rounding, one-unit
-  native threshold steps, any-channel-below-threshold (OR) Pearson populations,
-  and last-tested threshold retention. The regression also reproduces Coloc 2's
-  cursor-offset quirk and sequential variance accumulation for exact parity.
-- Added Fiji-compatible Pearson no-threshold and threshold-domain outputs. New
+- Replaced the approximate automatic-threshold search with an experimental,
+  source-aligned implementation targeting Fiji Coloc 2 3.1.0's classic Costes
+  `SimpleStepper`, including Java rounding, one-unit native threshold steps,
+  any-channel-below-threshold (OR) Pearson populations, last-tested threshold
+  retention, the cursor-offset quirk, and sequential variance accumulation.
+  Independent Fiji-generated golden parity validation remains pending.
+- Added source-aligned Pearson no-threshold and threshold-domain outputs. New
   canonical column names explicitly distinguish `any_channel` OR populations
   from the `both_channels` intersection; the shorter ambiguous names remain
   compatibility aliases for existing table consumers.
@@ -20,17 +125,22 @@
   `manders_m1`/`manders_m2` columns now alias tM1/tM2 for workflow
   compatibility, while the previous above-threshold intersection fractions
   remain available under descriptive non-Manders column names.
+- Pixel and object tables retain `coloc_semantics=fiji_coloc2_3.1` as the target
+  contract identity and now separately record
+  `coloc_validation_status=experimental_source_aligned_golden_parity_pending`.
 
 ### Workflow Compatibility
 
 - Crop Stack now preserves image, mask, and label graph-port types so cropped
   ROI masks restore correctly when connected to masked analysis nodes.
-- Added an explicit ImageJ Auto Threshold (8-bit) node with ImageJ 1.x
-  per-plane ScaleConversions and exact finite-input `Default`/`Triangle`
-  AutoThresholder semantics. Infinite float inputs are rejected deliberately
-  instead of reproducing ImageJ's non-informative all-zero conversion. This
-  supports Fiji-mask parity without changing VIPP's generic scikit-image
-  threshold nodes.
+- Added an explicit ImageJ Auto Threshold (8-bit) node with an experimental,
+  source-aligned ImageJ 1.54p target for scalar uint8, uint16, and float32
+  per-plane ScaleConversions plus `Default`/`Triangle` AutoThresholder behavior.
+  Independent ImageJ-generated golden parity validation remains pending. Bool
+  handling and RGB/RGBA luma reduction are VIPP extensions and are not claimed
+  as ImageJ-exact. Infinite float inputs are rejected deliberately instead of
+  preserving ImageJ's non-informative all-zero conversion. VIPP's generic
+  scikit-image threshold nodes remain unchanged.
 
 ### Connected Components CPU/GPU Vertical Slice
 
@@ -112,15 +222,15 @@
 - A collection batch now runs in a single background worker tagged to its
   originating workflow. Other tabs remain editable while it runs, progress and
   completion return only to the origin, and closing the origin, launching a
-  second batch, or closing VIPP is blocked until the uncancellable run finishes.
+  second batch, or closing VIPP is blocked until the run finishes or cooperative
+  cancellation completes and final state is persisted.
 
-### Experimental GPU Development UI
+### Compute Policy Interface
 
 - Added a main-toolbar `CPU`/`Auto`/`Selective` compute policy with an actual-run
-  summary, a Settings-menu mirror, and experimental per-node choices for nodes
-  that declare GPU implementations. Workflow-v3 files deliberately reopen in
-  CPU mode until the user opts in; durable workflow-v4 compute intent remains
-  future work.
+  summary, a Settings-menu mirror, and per-node choices for nodes that declare
+  GPU implementations. Workflow-v3 files deliberately reopen in CPU mode;
+  workflow-v4 files persist portable compute intent.
 - Simplified Selective node choices to `Follow pipeline policy`, `CPU`, and one
   entry per declared GPU library. `Best GPU` appears only when multiple
   libraries compete, while loaded exact pins remain honestly visible as an

@@ -399,12 +399,15 @@ this control. Global automatic threshold nodes also show the selected input
 histogram with a marker at the computed cutoff.
 
 ImageJ Auto Threshold (8-bit) is an explicit exception to the generic histogram
-contract below. It is fixed to per-YX-plane ImageJ 1.x 8-bit conversion and the
-ImageJ `Default` or `Triangle` AutoThresholder for reproducibility with legacy
-macros. Its generic raw-stack histogram inspector is hidden because it would
-not represent the plane-local converted histogram or cutoff actually used.
-Finite supported inputs match ImageJ; infinite float inputs are rejected as a
-deliberate safety divergence instead of preserving ImageJ's collapsed plane.
+contract below. It is an experimental source-aligned ImageJ 1.54p target for
+scalar uint8, uint16, and float32 inputs, fixed to per-YX-plane 8-bit conversion
+and a source-derived `Default` or `Triangle` AutoThresholder. Independent
+ImageJ-generated golden parity validation is pending. Bool handling, other
+floating dtypes, and RGB/RGBA luma reduction are VIPP extensions and are not
+ImageJ-exact. Its generic raw-stack histogram inspector is hidden because it
+would not represent the plane-local converted histogram or cutoff actually
+used. Infinite float inputs are rejected as a deliberate safety divergence
+instead of preserving ImageJ's collapsed plane.
 
 Otsu, Triangle, Yen, Isodata, and Minimum count every finite input value, with
 no data-size-dependent sampling or silent rebinning. Their bin contract is
@@ -1047,6 +1050,13 @@ conversion are capped at 1024 bins per axis, while the graph operation retains
 its independent 4096-bin limit. There is no sampled source population. These
 exact computational helpers still reside in `ui/plots.py`, rather than the
 Qt-free diagnostics module, and remain a known boundary seam.
+
+Fiji-related metric arithmetic in this alpha is an experimental,
+source-aligned target for Coloc2 3.1.0; independent Fiji-generated golden
+parity is pending. Pixel and object tables use
+`coloc_semantics=fiji_coloc2_3.1` to identify that target contract, not to claim
+certification, and carry the evidence state separately as
+`coloc_validation_status=experimental_source_aligned_golden_parity_pending`.
 
 The separate `colocalization_scatter_plot` graph operation produces a durable
 RGB render. It derives independent native populated ranges for X and Y,

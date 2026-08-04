@@ -685,7 +685,7 @@ def test_boolean_threshold_history_records_passthrough_instead_of_algorithm():
     )
 
 
-def test_imagej_threshold_history_records_explicit_compatibility_contract():
+def test_imagej_threshold_history_records_experimental_target_status():
     data = np.zeros((2, 3, 4), dtype=np.float32)
     input_state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
 
@@ -698,8 +698,9 @@ def test_imagej_threshold_history_records_explicit_compatibility_contract():
     )
 
     assert output_state.history[-1] == (
-        "ImageJ Auto Threshold (8-bit): ImageJ 1.x Triangle; per-YX-plane "
-        "8-bit ScaleConversions and 256-bin AutoThresholder"
+        "ImageJ Auto Threshold (8-bit): experimental source-aligned ImageJ "
+        "1.54p Triangle target; per-YX-plane 8-bit ScaleConversions and "
+        "256-bin AutoThresholder; independent golden parity pending"
     )
 
 

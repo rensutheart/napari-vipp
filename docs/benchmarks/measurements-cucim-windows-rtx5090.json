@@ -1789,7 +1789,7 @@
     "device_total_memory_bytes": 34190458880,
     "machine": "AMD64",
     "python": "3.12.9",
-    "python_executable": "C:\\Users\\rensu\\Documents\\VIPP\\napari-vipp\\.venv-gpu-cu13\\Scripts\\python.exe",
+    "python_executable": "python.exe",
     "release": "10",
     "system": "Windows",
     "version": "10.0.19045"
@@ -3674,7 +3674,7 @@
     },
     {
       "path": "scripts/benchmark_gpu_measurements.py",
-      "sha256": "373bcf2079a47719a7a24f75410cccde63b8361a26dd9a51f05f198e2845d2b0"
+      "sha256": "c6b4e8713b1690acb4bf0e06c445fc35593338827b62a12dcd0b88e75032c17e"
     }
   ]
 }
