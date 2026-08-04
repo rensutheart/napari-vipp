@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
@@ -46,6 +46,7 @@ from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_requ
 from napari_vipp.core.operations import canny_edges as cpu_canny_edges
 from napari_vipp.core.operations import otsu_threshold as cpu_otsu_threshold
 from napari_vipp.core.pipeline import EXECUTION_READY, PrototypePipeline, SourcePayload
+from napari_vipp.core.tables import TableData, TableState
 from napari_vipp.core.workflow import serialize_workflow
 
 
@@ -107,6 +108,35 @@ class _ShapeAwareRuntime(_FakeRuntime):
                 ("driver_version", "13030"),
             ),
         )
+
+
+def _device_measurement_payload(
+    value: _ShapeAwareDeviceArray,
+    **_kwargs,
+) -> _ShapeAwareDeviceArray:
+    assert not value.released
+    value.runtime.operation_count += 1
+    return value.runtime.allocate(
+        np.asarray([[1.0, float(value.payload.size)]], dtype=np.float64)
+    )
+
+
+def _measurement_table_finalizer(
+    host_outputs: tuple[object, ...],
+    *,
+    call,
+) -> TableData:
+    assert call.inputs == (None,)
+    assert len(host_outputs) == 1
+    payload = np.asarray(host_outputs[0], dtype=np.float64)
+    return TableData(
+        columns=("label_id", "pixel_count"),
+        rows=tuple((int(row[0]), int(row[1])) for row in payload),
+        name="Object measurements",
+        table_kind="object measurements: basic morphology",
+        source_name=str(call.kwargs.get("source_name", "")),
+        column_units=(("pixel_count", "px^2"),),
+    )
 
 
 @dataclass(frozen=True)
@@ -180,6 +210,8 @@ def _shape_preserving_spec(spec: OperationComputeSpec) -> OperationComputeSpec:
 def _test_registry(
     runtime: _FakeRuntime,
     implementations: tuple[tuple[str, Callable], ...],
+    *,
+    host_finalizer_refs: Mapping[str, str] | None = None,
 ) -> tuple[ComputeRegistry, dict[str, OperationComputeSpec]]:
     shaped: dict[str, OperationComputeSpec] = {}
     for operation_id, function in implementations:
@@ -192,12 +224,14 @@ def _test_registry(
                 _implementation_spec(operation_id, function),
                 runtime_id="cuda-cupy",
                 array_domain="cuda-cupy",
+                callable_ref=f"{function.__module__}:{function.__name__}",
                 implementation_library_id=("cucim" if uses_cucim else "cupyx"),
                 validated_environment_policy_id=(
                     "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
                     if uses_cucim
                     else "cuda-cupy-14.1.1-cpython312-windows-native-v3"
                 ),
+                host_finalizer_ref=((host_finalizer_refs or {}).get(operation_id, "")),
             )
         )
     library_ids = {spec.implementation_library_id for spec in shaped.values()}
@@ -424,6 +458,82 @@ def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
         "median_filter",
     ]
     assert planner.workloads[-1].input_shapes == (data.shape,)
+    registry.close()
+
+
+def test_headless_host_finalizer_commits_public_table_and_table_state(monkeypatch):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    otsu = pipeline.add_node("otsu_threshold")
+    components = pipeline.add_node("label_connected_components")
+    measurement = pipeline.add_node("measure_objects")
+    assert pipeline.connect("input", otsu.id).success
+    assert pipeline.connect(otsu.id, components.id).success
+    assert pipeline.connect(components.id, measurement.id).success
+
+    runtime = _ShapeAwareRuntime()
+    registry, specs = _test_registry(
+        runtime,
+        (("measure_objects", _device_measurement_payload),),
+        host_finalizer_refs={
+            "measure_objects": f"{__name__}:_measurement_table_finalizer"
+        },
+    )
+    compute_request = ComputeRequest(
+        mode=ComputeMode.AUTO,
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
+    )
+    planner = _StaticPlanner(
+        compute_request,
+        (_decision(measurement.id, specs[measurement.operation_id]),),
+    )
+
+    def forbidden_resident_projection(*_args, **_kwargs):
+        raise AssertionError(
+            "A host-finalized table must use authoritative host metadata."
+        )
+
+    monkeypatch.setattr(
+        execution_module,
+        "_predict_device_node_states",
+        forbidden_resident_projection,
+    )
+    labels = np.zeros((5, 7), dtype=np.int32)
+    labels[1:3, 2:5] = 1
+
+    result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            labels,
+            compute_request,
+            retain_node_ids=frozenset({measurement.id}),
+            prune_unretained=True,
+            manual_node_ids=frozenset({measurement.id}),
+        ),
+        compute_registry=registry,
+        compute_planner=planner,
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    table = result.pipeline.outputs[measurement.id]
+    assert isinstance(table, TableData)
+    assert table.columns == ("label_id", "pixel_count")
+    assert table.rows == ((1, 35),)
+    assert table.source_name == "source"
+    state = result.pipeline.output_states[measurement.id]
+    assert isinstance(state, TableState)
+    assert state.row_count == 1
+    assert state.column_count == 2
+    assert state.columns == table.columns
+    assert state.source_name == "source"
+    assert state.column_units == (("pixel_count", "px^2"),)
+    assert state.history[-1] == "Measure Objects: measured 1 object"
+    assert runtime.host_to_device_count == 1
+    assert runtime.device_to_host_count == 1
+    assert runtime.operation_count == 1
+    assert runtime.live == {}
     registry.close()
 
 

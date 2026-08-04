@@ -116,6 +116,7 @@ class OperationComputeSpec:
     supports_device_residency: bool = False
     limitations: tuple[str, ...] = ()
     cache_equivalence_group: str = ""
+    host_finalizer_ref: str = ""
 
     def __post_init__(self) -> None:
         tier = (
@@ -153,6 +154,25 @@ class OperationComputeSpec:
             raise ValueError("non-boundary implementations require callable_ref.")
         if callable_ref and ":" not in callable_ref:
             raise ValueError("callable_ref must use 'module:attribute' syntax.")
+        host_finalizer_ref = str(self.host_finalizer_ref).strip()
+        if host_finalizer_ref:
+            finalizer_module, separator, finalizer_attribute = (
+                host_finalizer_ref.partition(":")
+            )
+            if (
+                not separator
+                or not finalizer_module.strip()
+                or not finalizer_attribute.strip()
+            ):
+                raise ValueError(
+                    "host_finalizer_ref must use 'module:attribute' syntax."
+                )
+        if host_finalizer_ref and (
+            self.host_boundary or not self.supports_device_residency
+        ):
+            raise ValueError(
+                "host finalizers require a resident, non-boundary implementation."
+            )
         if not self.output_ports:
             raise ValueError("an implementation must declare at least one output port.")
         _validate_port_indexes(self.input_ports, "input")
@@ -166,6 +186,7 @@ class OperationComputeSpec:
         ):
             raise ValueError("supported_spatial_ndims may contain only 1, 2, and 3.")
         object.__setattr__(self, "callable_ref", callable_ref)
+        object.__setattr__(self, "host_finalizer_ref", host_finalizer_ref)
         object.__setattr__(self, "supported_spatial_ndims", spatial_dims)
         object.__setattr__(
             self,

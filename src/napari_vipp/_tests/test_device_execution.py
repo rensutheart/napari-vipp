@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 
@@ -49,6 +49,7 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
 )
 from napari_vipp.core.progress import OperationCancelled
+from napari_vipp.core.tables import TableData
 
 
 class _FakeOOM(RuntimeError):
@@ -318,6 +319,37 @@ def _device_oom_once_with_traceback_scratch(
     return value.runtime.allocate(value.payload)
 
 
+_HOST_FINALIZER_RUNTIME: _FakeRuntime | None = None
+_HOST_FINALIZER_CALLS: list[tuple[object, ...]] = []
+
+
+def _host_array_finalizer(
+    host_outputs: tuple[object, ...],
+    *,
+    call: PreparedNodeCall,
+) -> np.ndarray:
+    runtime = _HOST_FINALIZER_RUNTIME
+    assert runtime is not None
+    assert not runtime.scope_active
+    assert runtime.live == {}
+    assert call.inputs == (None,) * len(call.inputs)
+    _HOST_FINALIZER_CALLS.append(host_outputs)
+    assert len(host_outputs) == 1
+    return np.asarray(host_outputs[0]) + 10
+
+
+def _escaping_table_finalizer(
+    _host_outputs: tuple[object, ...],
+    *,
+    call: PreparedNodeCall,
+) -> TableData:
+    del call
+    runtime = _HOST_FINALIZER_RUNTIME
+    assert runtime is not None
+    hidden_device_value = _FakeDeviceArray(runtime, np.asarray([1]))
+    return TableData(("value",), ((hidden_device_value,),))
+
+
 def _cupy_kernel_oom_or_copy(value, *, sigma=0.0, **_kwargs):
     """Create traceback-local private allocations before a real CuPy OOM."""
 
@@ -388,11 +420,18 @@ def _implementation_spec(
 def _registry(
     runtime: _FakeRuntime,
     implementations: Iterable[tuple[str, Callable]],
+    *,
+    host_finalizer_refs: Mapping[str, str] | None = None,
 ) -> tuple[ComputeRegistry, dict[str, OperationComputeSpec]]:
     specs = {
         operation_id: _implementation_spec(operation_id, function)
         for operation_id, function in implementations
     }
+    for operation_id, reference in (host_finalizer_refs or {}).items():
+        specs[operation_id] = replace(
+            specs[operation_id],
+            host_finalizer_ref=reference,
+        )
     return (
         ComputeRegistry(
             runtime_descriptors=(_runtime_descriptor(),),
@@ -712,6 +751,239 @@ def test_branch_join_multi_output_liveness_and_retained_ports():
     assert runtime.host_to_device_count == 1
     assert runtime.device_to_host_count == 2
     assert runtime.live == {}
+    registry.close()
+
+
+def test_host_finalizer_terminates_even_an_alternate_branch_join_path():
+    global _HOST_FINALIZER_RUNTIME
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    upstream = pipeline.add_node("median_filter")
+    terminal = pipeline.add_node("gaussian_blur")
+    join = pipeline.add_node("add_images")
+    pipeline.set_param(upstream.id, "size", 1)
+    pipeline.set_param(terminal.id, "sigma", 0.0)
+    assert pipeline.connect("input", upstream.id).success
+    assert pipeline.connect(upstream.id, terminal.id).success
+    assert pipeline.connect(upstream.id, join.id, target_port=0).success
+    assert pipeline.connect(terminal.id, join.id, target_port=1).success
+
+    runtime = _FakeRuntime()
+    registry, specs = _registry(
+        runtime,
+        (
+            ("median_filter", _device_copy),
+            ("gaussian_blur", _device_copy),
+            ("add_images", _device_add),
+        ),
+        host_finalizer_refs={"gaussian_blur": f"{__name__}:_host_array_finalizer"},
+    )
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    assert tuple(segment.node_ids for segment in plan.segments) == (
+        (upstream.id, terminal.id),
+        (join.id,),
+    )
+    data = np.arange(16, dtype=np.float32).reshape(4, 4)
+    observed: list[tuple[str, tuple[object, ...], str]] = []
+
+    def observe(node_id, call, outputs, runtime_id):
+        if node_id == terminal.id:
+            assert not runtime.scope_active
+            assert runtime.live == {}
+            assert call.inputs == (None,)
+            np.testing.assert_array_equal(outputs[0], data + 10)
+        observed.append((node_id, outputs, runtime_id))
+
+    _HOST_FINALIZER_CALLS.clear()
+    _HOST_FINALIZER_RUNTIME = runtime
+    try:
+        result = execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={OutputPortKey("input", 0): data},
+            prepare_call=_prepare_call(pipeline),
+            node_outputs_callback=observe,
+        )
+    finally:
+        _HOST_FINALIZER_RUNTIME = None
+
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(join.id, 0)],
+        data * 2 + 10,
+    )
+    assert len(_HOST_FINALIZER_CALLS) == 1
+    assert [node_id for node_id, _outputs, _runtime_id in observed] == [
+        upstream.id,
+        terminal.id,
+        join.id,
+    ]
+    assert runtime.host_to_device_count == 3
+    assert runtime.device_to_host_count == 3
+    assert runtime.operation_count == 3
+    assert runtime.live == {}
+    registry.close()
+
+
+def test_cancellation_after_payload_transfer_skips_finalizer_and_cleans_up():
+    global _HOST_FINALIZER_RUNTIME
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(
+        runtime,
+        (("gaussian_blur", _device_copy),),
+        host_finalizer_refs={"gaussian_blur": f"{__name__}:_host_array_finalizer"},
+    )
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    callbacks: list[str] = []
+    _HOST_FINALIZER_CALLS.clear()
+    _HOST_FINALIZER_RUNTIME = runtime
+    try:
+        with pytest.raises(OperationCancelled):
+            execute_device_plan(
+                plan,
+                pipeline,
+                registry,
+                request,
+                host_values={
+                    OutputPortKey("input", 0): np.ones((4, 4), dtype=np.float32)
+                },
+                prepare_call=_prepare_call(pipeline),
+                cancel_callback=lambda: runtime.device_to_host_count >= 1,
+                node_outputs_callback=(
+                    lambda node_id, _call, _outputs, _runtime_id: callbacks.append(
+                        node_id
+                    )
+                ),
+            )
+    finally:
+        _HOST_FINALIZER_RUNTIME = None
+
+    assert runtime.device_to_host_count == 1
+    assert runtime.live == {}
+    assert _HOST_FINALIZER_CALLS == []
+    assert callbacks == []
+    registry.close()
+
+
+def test_visible_cpu_fallback_bypasses_device_host_finalizer():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    runtime.oom_remaining = 1
+    registry, specs = _registry(
+        runtime,
+        (("gaussian_blur", _device_oom_once),),
+        host_finalizer_refs={
+            "gaussian_blur": "missing.host_finalizer.module:finalize"
+        },
+    )
+    request = _request(FallbackPolicy.VISIBLE)
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    observed_runtimes: list[str] = []
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+        node_outputs_callback=(
+            lambda _node_id, _call, _outputs, runtime_id: observed_runtimes.append(
+                runtime_id
+            )
+        ),
+    )
+
+    assert result.fallback_segment_ids == (plan.segments[0].segment_id,)
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(gaussian.id, 0)],
+        data,
+    )
+    assert observed_runtimes == ["cpu-numpy"]
+    assert runtime.device_to_host_count == 0
+    assert runtime.live == {}
+    registry.close()
+
+
+def test_host_finalizer_cannot_hide_a_device_value_inside_table_data():
+    global _HOST_FINALIZER_RUNTIME
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(
+        runtime,
+        (("gaussian_blur", _device_copy),),
+        host_finalizer_refs={"gaussian_blur": f"{__name__}:_escaping_table_finalizer"},
+    )
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    callbacks: list[str] = []
+    _HOST_FINALIZER_RUNTIME = runtime
+    try:
+        with pytest.raises(DeviceExecutionError) as error:
+            execute_device_plan(
+                plan,
+                pipeline,
+                registry,
+                request,
+                host_values={
+                    OutputPortKey("input", 0): np.ones((4, 4), dtype=np.float32)
+                },
+                prepare_call=_prepare_call(pipeline),
+                node_outputs_callback=(
+                    lambda node_id, _call, _outputs, _runtime_id: callbacks.append(
+                        node_id
+                    )
+                ),
+            )
+    finally:
+        _HOST_FINALIZER_RUNTIME = None
+
+    assert error.value.failure.reason_code == "fake_unknown"
+    assert runtime.classified_inside_scope[-1] is False
+    assert runtime.device_to_host_count == 1
+    assert runtime.live == {}
+    assert callbacks == []
     registry.close()
 
 

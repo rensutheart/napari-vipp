@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from types import MappingProxyType
 from typing import Protocol
 
@@ -38,6 +38,10 @@ from napari_vipp.core.compute_registry import (
     RuntimeProtocol,
 )
 from napari_vipp.core.compute_specs import OperationComputeSpec, compute_specs_for
+from napari_vipp.core.host_finalization import (
+    apply_host_finalizer,
+    normalize_operation_outputs,
+)
 from napari_vipp.core.node_execution import (
     DEFAULT_CPU_NODE_EXECUTOR,
     PreparedNodeCall,
@@ -226,6 +230,16 @@ class _DeviceValue:
 @dataclass(slots=True)
 class _CleanupStatus:
     succeeded: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingHostFinalization:
+    """Host-neutral metadata retained until runtime cleanup has completed."""
+
+    node_id: str
+    finalizer_ref: str
+    call: PreparedNodeCall
+    output_ports: tuple[OutputPortKey, ...]
 
 
 class _SegmentStore:
@@ -870,9 +884,24 @@ def _execute_device_segment_under_lease(
 ) -> dict[OutputPortKey, object]:
     segment = unit.segment
     counts = dict(segment.remaining_consumers)
-    persistent = set(segment.exit_ports) | set(segment.retained_ports)
+    finalizer_output_ports = tuple(
+        OutputPortKey(node_id, port_index)
+        for node_id, implementation in zip(
+            segment.node_ids,
+            unit.implementation_specs,
+            strict=True,
+        )
+        if _host_finalizer_ref(implementation)
+        for port_index in range(len(pipeline.output_ports(node_id)))
+    )
+    persistent = (
+        set(segment.exit_ports)
+        | set(segment.retained_ports)
+        | set(finalizer_output_ports)
+    )
     store = _SegmentStore(runtime, request.device_id)
-    provisional: dict[OutputPortKey, object] = {}
+    materialized: dict[OutputPortKey, object] = {}
+    pending_finalizations: list[_PendingHostFinalization] = []
     detached_failure: RuntimeExceptionInfo | None = None
     with runtime.execution_scope(
         device_id=request.device_id,
@@ -972,7 +1001,26 @@ def _execute_device_segment_under_lease(
                         # block owns cleanup of every successfully registered one.
                         _release_orphan_outputs(runtime, outputs, store)
                         raise
-                    if node_outputs_callback is not None:
+                    host_finalizer_ref = _host_finalizer_ref(implementation)
+                    if host_finalizer_ref:
+                        # The prepared call's inputs are opaque runtime values.
+                        # Preserve only host metadata for the post-cleanup
+                        # finalizer/callback phase.
+                        pending_finalizations.append(
+                            _PendingHostFinalization(
+                                node_id,
+                                host_finalizer_ref,
+                                replace(
+                                    call,
+                                    inputs=(None,) * len(call.inputs),
+                                ),
+                                tuple(
+                                    OutputPortKey(node_id, index)
+                                    for index in range(len(outputs))
+                                ),
+                            )
+                        )
+                    elif node_outputs_callback is not None:
                         node_outputs_callback(
                             node_id,
                             call,
@@ -985,10 +1033,14 @@ def _execute_device_segment_under_lease(
                         store.release_if_dead(OutputPortKey(node_id, index))
 
                 for port in _unique_ports(
-                    (*segment.exit_ports, *segment.retained_ports)
+                    (
+                        *segment.exit_ports,
+                        *segment.retained_ports,
+                        *finalizer_output_ports,
+                    )
                 ):
                     _check_cancelled(cancel_callback)
-                    provisional[port] = runtime.to_host(store.value(port))
+                    materialized[port] = runtime.to_host(store.value(port))
                 _check_cancelled(cancel_callback)
                 runtime.synchronize(device_id=request.device_id)
             except OperationCancelled:
@@ -1022,6 +1074,49 @@ def _execute_device_segment_under_lease(
 
     if detached_failure is not None:
         raise _DetachedRuntimeFailure(detached_failure) from None
+    # Finalizers are deliberately outside the runtime scope: every payload has
+    # completed D2H, all private device values have been released, and provider
+    # cleanup has succeeded before host table/scalar construction can begin.
+    finalized_by_port: dict[OutputPortKey, object] = {}
+    finalized_callbacks: list[tuple[_PendingHostFinalization, tuple[object, ...]]] = []
+    for pending in pending_finalizations:
+        _check_cancelled(cancel_callback)
+        payloads = tuple(materialized[port] for port in pending.output_ports)
+        finalized = apply_host_finalizer(
+            pending.finalizer_ref,
+            payloads,
+            pending.call,
+        )
+        public_values = {
+            port: value
+            for port, value in zip(
+                pending.output_ports,
+                finalized,
+                strict=True,
+            )
+        }
+        _ensure_host_only(public_values, (runtime,))
+        finalized_by_port.update(public_values)
+        finalized_callbacks.append((pending, finalized))
+        _check_cancelled(cancel_callback)
+
+    # Do not publish callback-visible table/scalar metadata until every
+    # finalizer in this segment has succeeded.  A later failure therefore
+    # cannot expose a partially finalized segment.
+    if node_outputs_callback is not None:
+        for pending, outputs in finalized_callbacks:
+            _check_cancelled(cancel_callback)
+            node_outputs_callback(
+                pending.node_id,
+                pending.call,
+                outputs,
+                segment.runtime_id,
+            )
+    _check_cancelled(cancel_callback)
+    provisional = {
+        port: finalized_by_port.get(port, materialized[port])
+        for port in _unique_ports((*segment.exit_ports, *segment.retained_ports))
+    }
     return provisional
 
 
@@ -1080,6 +1175,10 @@ def _execute_cpu_segment_fallback(
     }
 
 
+def _host_finalizer_ref(implementation: OperationComputeSpec) -> str:
+    return str(getattr(implementation, "host_finalizer_ref", "")).strip()
+
+
 def _device_components(
     order: Sequence[str],
     connections: Sequence[GraphConnection],
@@ -1093,22 +1192,57 @@ def _device_components(
     ],
     registry: ComputeRegistry,
 ) -> tuple[tuple[str, ...], ...]:
+    def compatible(source: str, target: str) -> bool:
+        source_key = eligible[source][2]
+        target_key = eligible[target][2]
+        if source_key[:3] != target_key[:3]:
+            return False
+        source_library = source_key[3]
+        target_library = target_key[3]
+        return source_library == target_library or bool(
+            registry.interoperability_contract(
+                source_key[0],
+                (source_library, target_library),
+            )
+        )
+
+    # A direct host-finalizer edge advances the downstream residency epoch.  An
+    # alternate compatible path must not accidentally reunite both sides of the
+    # boundary in the same undirected component (for example, a branch/join
+    # where the join consumes both an upstream image and a finalized table).
+    residency_epoch = {node_id: 0 for node_id in eligible}
+    incoming: dict[str, list[str]] = {node_id: [] for node_id in eligible}
+    for connection in connections:
+        if (
+            connection.source_id in eligible
+            and connection.target_id in eligible
+            and compatible(connection.source_id, connection.target_id)
+        ):
+            incoming[connection.target_id].append(connection.source_id)
+    for node_id in order:
+        if node_id not in eligible:
+            continue
+        predecessors = incoming[node_id]
+        if predecessors:
+            residency_epoch[node_id] = max(
+                residency_epoch[source] + bool(_host_finalizer_ref(eligible[source][1]))
+                for source in predecessors
+            )
+
     adjacency: dict[str, set[str]] = {node_id: set() for node_id in eligible}
     for connection in connections:
         source = connection.source_id
         target = connection.target_id
         if source not in eligible or target not in eligible:
             continue
-        source_key = eligible[source][2]
-        target_key = eligible[target][2]
-        if source_key[:3] != target_key[:3]:
+        # A finalizer converts the source node's transferred private payload to
+        # a public host scalar/table.  Upstream device nodes may share its
+        # segment, but no downstream node may observe the private payload.
+        if _host_finalizer_ref(eligible[source][1]):
             continue
-        source_library = source_key[3]
-        target_library = target_key[3]
-        if source_library != target_library and not registry.interoperability_contract(
-            source_key[0],
-            (source_library, target_library),
-        ):
+        if residency_epoch[source] != residency_epoch[target]:
+            continue
+        if not compatible(source, target):
             continue
         adjacency[source].add(target)
         adjacency[target].add(source)
@@ -1257,19 +1391,7 @@ def _validate_prepared_call(
 
 
 def _normalized_outputs(raw: object, output_count: int) -> tuple[object, ...]:
-    if output_count == 1:
-        return (raw,)
-    if not isinstance(raw, (tuple, list)):
-        raise TypeError(
-            f"An operation with {output_count} outputs must return a tuple or list."
-        )
-    outputs = tuple(raw)
-    if len(outputs) != output_count:
-        raise ValueError(
-            f"An operation declared {output_count} outputs but returned "
-            f"{len(outputs)}."
-        )
-    return outputs
+    return normalize_operation_outputs(raw, output_count)
 
 
 def _release_orphan_outputs(
@@ -1359,6 +1481,11 @@ def _contains_device_value(
         )
     if isinstance(value, (tuple, list, set, frozenset)):
         return any(_contains_device_value(item, runtimes, seen) for item in value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return any(
+            _contains_device_value(getattr(value, item.name), runtimes, seen)
+            for item in fields(value)
+        )
     return False
 
 

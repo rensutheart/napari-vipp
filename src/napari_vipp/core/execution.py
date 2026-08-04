@@ -589,13 +589,8 @@ def _execute_accelerated_pipeline(
             outputs: tuple[object, ...],
             runtime_id: str,
         ) -> None:
-            if runtime_id == CPU_RUNTIME_ID:
-                raw_output: object = (
-                    outputs[0] if call.output_port_count == 1 else outputs
-                )
-                results = pipeline.finalize_node_call(call, raw_output)
-                states = tuple(state for _value, state in results)
-            else:
+            implementation = None
+            if runtime_id != CPU_RUNTIME_ID:
                 decision = decisions_by_node.get(node_id)
                 if decision is None:
                     raise RuntimeError(
@@ -605,6 +600,21 @@ def _execute_accelerated_pipeline(
                     decision.implementation_id,
                     allow_experimental=request.compute_request.allow_experimental,
                 )
+            if runtime_id == CPU_RUNTIME_ID or (
+                implementation is not None
+                and str(getattr(implementation, "host_finalizer_ref", "")).strip()
+            ):
+                # Device host-finalizer callbacks arrive only after D2H and
+                # complete runtime cleanup, and already carry the public host
+                # value (for example TableData).  Use the same authoritative
+                # metadata finalization path as CPU output.
+                raw_output: object = (
+                    outputs[0] if call.output_port_count == 1 else outputs
+                )
+                results = pipeline.finalize_node_call(call, raw_output)
+                states = tuple(state for _value, state in results)
+            else:
+                assert implementation is not None
                 states = _predict_device_node_states(
                     pipeline,
                     call,

@@ -355,6 +355,29 @@ def test_compute_spec_validation_can_cross_check_a_lightweight_catalog():
         )
 
 
+def test_host_finalizer_contract_is_optional_lazy_and_device_resident_only():
+    assert _candidate_spec().host_finalizer_ref == ""
+    spec = _candidate_spec(
+        supports_device_residency=True,
+        host_finalizer_ref="tests.fake:finalize_table",
+    )
+    assert spec.host_finalizer_ref == "tests.fake:finalize_table"
+
+    with pytest.raises(ValueError, match="module:attribute"):
+        _candidate_spec(
+            supports_device_residency=True,
+            host_finalizer_ref="not-an-import-reference",
+        )
+    with pytest.raises(ValueError, match="resident, non-boundary"):
+        _candidate_spec(host_finalizer_ref="tests.fake:finalize_table")
+    with pytest.raises(ValueError, match="resident, non-boundary"):
+        _candidate_spec(
+            host_boundary=True,
+            supports_device_residency=True,
+            host_finalizer_ref="tests.fake:finalize_table",
+        )
+
+
 def test_cpu_source_writer_and_dynamic_output_boundaries_are_explicit():
     source = compute_specs_for("input")[0]
     writer = compute_specs_for("save_output")[0]
