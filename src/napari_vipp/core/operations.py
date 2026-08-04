@@ -2007,6 +2007,7 @@ def measure_objects(
     axis_scales: tuple[float, ...] | None = None,
     axis_units: tuple[str | None, ...] | None = None,
     source_name: str = "",
+    progress=None,
 ) -> TableData:
     """Measure labeled objects into a row-per-object table."""
     labels = _validated_labels(data)
@@ -2061,9 +2062,18 @@ def measure_objects(
         include_2d_shape_moments=include_2d_shape_moments,
         spatial_ndim=spatial_ndim,
     )
-    for leading_index in np.ndindex(leading_shape or (1,)):
+    block_count, progress_total = _measurement_progress_start(
+        leading_shape,
+        progress,
+    )
+    for completed, leading_index in enumerate(
+        np.ndindex(leading_shape or (1,)),
+        start=1,
+    ):
         block_index = () if not leading_shape else leading_index
         block = labels_for_measure[block_index] if leading_shape else labels_for_measure
+        if progress is not None:
+            progress.check_cancelled()
         block_columns = _measure_label_block(
             block,
             spatial_axis_names,
@@ -2076,6 +2086,10 @@ def measure_objects(
             include_derived_shape_ratios=include_derived_shape_ratios,
             include_2d_shape_moments=include_2d_shape_moments,
         )
+        if progress is not None:
+            # Region-properties measurement is the atomic CPU boundary.  A
+            # cancellation requested while it ran must not publish a table.
+            progress.check_cancelled()
         row_count = len(block_columns["label_id"])
         for axis_position, axis_name in enumerate(leading_axis_names):
             columns[f"{axis_name}_index"].extend(
@@ -2091,6 +2105,14 @@ def measure_objects(
                 ]
             )
             columns["physical_unit"].extend([units.unit_label] * row_count)
+        if progress is not None:
+            progress.report(
+                completed,
+                progress_total,
+                "Object measurement blocks",
+            )
+
+    _measurement_progress_finish_empty(block_count, progress)
 
     return table_from_columns(
         columns,
@@ -2124,6 +2146,7 @@ def measure_objects_with_intensity(
     axis_scales: tuple[float, ...] | None = None,
     axis_units: tuple[str | None, ...] | None = None,
     source_name: str = "",
+    progress=None,
 ) -> TableData:
     """Measure labeled objects and their matching intensity image."""
     labels_data, intensity_data = _labels_and_intensity_inputs(inputs)
@@ -2192,7 +2215,14 @@ def measure_objects_with_intensity(
         include_2d_shape_moments=include_2d_shape_moments,
         spatial_ndim=spatial_ndim,
     )
-    for leading_index in np.ndindex(leading_shape or (1,)):
+    block_count, progress_total = _measurement_progress_start(
+        leading_shape,
+        progress,
+    )
+    for completed, leading_index in enumerate(
+        np.ndindex(leading_shape or (1,)),
+        start=1,
+    ):
         block_index = () if not leading_shape else leading_index
         block = labels_for_measure[block_index] if leading_shape else labels_for_measure
         intensity_block = (
@@ -2200,6 +2230,8 @@ def measure_objects_with_intensity(
             if leading_shape
             else intensity_for_measure
         )
+        if progress is not None:
+            progress.check_cancelled()
         block_columns = _measure_label_block(
             block,
             spatial_axis_names,
@@ -2213,6 +2245,10 @@ def measure_objects_with_intensity(
             include_derived_shape_ratios=include_derived_shape_ratios,
             include_2d_shape_moments=include_2d_shape_moments,
         )
+        if progress is not None:
+            # The paired intensity/morphology call is one atomic CPU block.
+            # Observe cancellation before copying any partial rows outward.
+            progress.check_cancelled()
         row_count = len(block_columns["label_id"])
         for axis_position, axis_name in enumerate(leading_axis_names):
             columns[f"{axis_name}_index"].extend(
@@ -2228,6 +2264,14 @@ def measure_objects_with_intensity(
                 ]
             )
             columns["physical_unit"].extend([units.unit_label] * row_count)
+        if progress is not None:
+            progress.report(
+                completed,
+                progress_total,
+                "Object measurement blocks",
+            )
+
+    _measurement_progress_finish_empty(block_count, progress)
 
     table_kind = _measurement_table_kind(
         str(measurement_set or "Basic morphology + intensity"),
@@ -8527,6 +8571,30 @@ def _normalized_spatial_scales(
     if len(scales) < spatial_ndim:
         scales = [1.0] * (spatial_ndim - len(scales)) + scales
     return tuple(scales)
+
+
+def _measurement_progress_start(
+    leading_shape: tuple[int, ...],
+    progress,
+) -> tuple[int, int]:
+    """Start deterministic progress for independent measurement blocks."""
+
+    block_count = (
+        int(np.prod(leading_shape, dtype=np.int64)) if leading_shape else 1
+    )
+    total = max(block_count, 1)
+    if progress is not None:
+        progress.check_cancelled()
+        progress.report(0, total, "Object measurement blocks")
+    return block_count, total
+
+
+def _measurement_progress_finish_empty(block_count: int, progress) -> None:
+    """Complete progress when a leading batch contains no spatial blocks."""
+
+    if block_count == 0 and progress is not None:
+        progress.check_cancelled()
+        progress.report(1, 1, "Object measurement blocks")
 
 
 def _measure_label_block(
