@@ -1,6 +1,6 @@
 # CuPy Richardson-Lucy TV large-stack performance
 
-- Generated: `2026-08-04T22:46:06.348605+00:00`
+- Generated: `2026-08-05T09:37:22.009393+00:00`
 - Device: `NVIDIA GeForce RTX 5090`
 - Host processor: `Intel64 Family 6 Model 165 Stepping 3, GenuineIntel`
 - Iterations: `25`
@@ -20,8 +20,8 @@ before the observed screening winner was reported.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Speedup | Screen winner |
 |---|---:|---:|---:|---:|---:|---:|:---|
-| Private real-acquisition single-channel ZYX volume | 8,507,700 | 34.921 s | 0.599 s | 0.556 s | 0.023 s | 58.34x | GPU-CuPy |
-| Medium 3D shape stress (synthetic) | 16,777,216 | 55.936 s | 0.564 s | 0.486 s | 0.043 s | 98.61x | GPU-CuPy |
+| Medium 3D shape stress (synthetic) | 16,777,216 | 62.970 s | 0.843 s | 0.745 s | 0.049 s | 74.67x | GPU-CuPy |
+| Private real-acquisition single-channel ZYX volume | 8,507,700 | 42.085 s | 0.580 s | 0.519 s | 0.020 s | 72.58x | GPU-CuPy |
 
 ## Interpretation
 

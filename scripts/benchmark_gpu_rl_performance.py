@@ -13,6 +13,7 @@ not import CuPy, initialize CUDA, or open an ND2 file.
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import importlib.metadata
 import json
@@ -231,7 +232,7 @@ def run_benchmarks(
 
     source_provenance = _source_provenance()
     request = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         runtime_id=RUNTIME_ID,
         device_id=str(device_id).strip(),
         allow_experimental=True,
@@ -266,6 +267,10 @@ def run_benchmarks(
         definitions = list(
             SYNTHETIC_CASES[:1] if selected_profile == "medium" else SYNTHETIC_CASES
         )
+        definitions.sort(
+            key=lambda definition: math.prod(definition.shape),
+            reverse=True,
+        )
         loaded_nd2: tuple[_CaseDefinition, Any] | None = None
         if nd2_path is not None:
             loaded_nd2 = _load_private_nd2_volume(
@@ -273,7 +278,7 @@ def run_benchmarks(
                 time_index=nd2_time_index,
                 channel_index=nd2_channel_index,
             )
-            definitions.insert(0, loaded_nd2[0])
+            definitions.append(loaded_nd2[0])
 
         results: list[dict[str, object]] = []
         for case_index, definition in enumerate(definitions, start=1):
@@ -410,6 +415,7 @@ def run_benchmarks(
                 flush=True,
             )
             del image, psf, call, built, facts, record
+            gc.collect()
 
         document: dict[str, object] = {
             "schema": SCHEMA,

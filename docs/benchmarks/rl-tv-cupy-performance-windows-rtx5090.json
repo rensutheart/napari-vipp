@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-08-04T22:46:06.348605+00:00",
+  "created_utc": "2026-08-05T09:37:22.009393+00:00",
   "environment": {
     "device_class": "nvidia-cuda",
     "device_id": "cuda:0",
@@ -92,233 +92,12 @@
   "results": [
     {
       "benchmark_policy_id": "custom-node-paired-adaptive-bootstrap-v3",
-      "benchmark_record_digest": null,
-      "candidates": [
-        {
-          "cold_host_materialization_seconds": null,
-          "cold_resident_seconds": null,
-          "cold_seconds": 34.87722899996879,
-          "cold_transfer_seconds": null,
-          "error": "",
-          "failure_kind": "",
-          "implementation_id": "cpu-richardson_lucy_tv_deconvolution-v1",
-          "paired_bootstrap_samples": 0,
-          "paired_bootstrap_seed": 0,
-          "paired_speedup_lower_confidence_bound": null,
-          "paired_speedup_median": null,
-          "parity_passed": true,
-          "peak_memory_bytes": 0,
-          "peak_out_of_pool_bytes": 0,
-          "peak_runtime_live_bytes": 0,
-          "peak_runtime_reserved_bytes": 0,
-          "synchronized": false,
-          "timing_scope": "implementation-only",
-          "transfers_included": false,
-          "warm_host_materialization_seconds": [],
-          "warm_resident_seconds": [],
-          "warm_seconds": [
-            34.92052549999789,
-            34.95304690001649,
-            34.851916700012225
-          ],
-          "warm_transfer_seconds": []
-        },
-        {
-          "cold_host_materialization_seconds": 0.0,
-          "cold_resident_seconds": 0.6592089999903692,
-          "cold_seconds": 0.7060807999951066,
-          "cold_transfer_seconds": 0.023862100002588704,
-          "error": "",
-          "failure_kind": "",
-          "implementation_id": "rl-tv-cupy-f32-v1",
-          "paired_bootstrap_samples": 0,
-          "paired_bootstrap_seed": 0,
-          "paired_speedup_lower_confidence_bound": null,
-          "paired_speedup_median": null,
-          "parity_passed": true,
-          "peak_memory_bytes": 1004535808,
-          "peak_out_of_pool_bytes": 20559872,
-          "peak_runtime_live_bytes": 68097024,
-          "peak_runtime_reserved_bytes": 983975936,
-          "synchronized": true,
-          "timing_scope": "synchronized-end-to-end-v1",
-          "transfers_included": true,
-          "warm_host_materialization_seconds": [
-            0.0,
-            0.0,
-            0.0
-          ],
-          "warm_resident_seconds": [
-            0.36891680002736393,
-            0.5564466000359971,
-            0.5785906000091927
-          ],
-          "warm_seconds": [
-            0.4023347000256763,
-            0.5991282000322826,
-            0.622779300007096
-          ],
-          "warm_transfer_seconds": [
-            0.01522560000012163,
-            0.0227896999931545,
-            0.02401060000556754
-          ]
-        }
-      ],
-      "case_id": "private-real-nd2-volume-3d",
-      "direct_private_identifiers_published": false,
-      "dtype": "float32",
-      "environment_fingerprint": "0ed1db9d29dc1df05452208ccf069ed403c8f7581eb28a5f37413906b004a811",
-      "gpu_cleanup": {
-        "all_cleanup_succeeded": true,
-        "all_runtime_pool_terminal_zero": true,
-        "invocation_count": 5,
-        "terminal_snapshots": [
-          {
-            "device_free_bytes": 32482787328,
-            "device_id": "cuda:0",
-            "device_total_bytes": 34190458880,
-            "out_of_pool_bytes": 2097152,
-            "runtime_id": "cuda-cupy",
-            "runtime_live_bytes": 0,
-            "runtime_reserved_bytes": 0,
-            "topology": "discrete"
-          },
-          {
-            "device_free_bytes": 32482787328,
-            "device_id": "cuda:0",
-            "device_total_bytes": 34190458880,
-            "out_of_pool_bytes": 0,
-            "runtime_id": "cuda-cupy",
-            "runtime_live_bytes": 0,
-            "runtime_reserved_bytes": 0,
-            "topology": "discrete"
-          },
-          {
-            "device_free_bytes": 32482787328,
-            "device_id": "cuda:0",
-            "device_total_bytes": 34190458880,
-            "out_of_pool_bytes": 0,
-            "runtime_id": "cuda-cupy",
-            "runtime_live_bytes": 0,
-            "runtime_reserved_bytes": 0,
-            "topology": "discrete"
-          },
-          {
-            "device_free_bytes": 32482787328,
-            "device_id": "cuda:0",
-            "device_total_bytes": 34190458880,
-            "out_of_pool_bytes": 0,
-            "runtime_id": "cuda-cupy",
-            "runtime_live_bytes": 0,
-            "runtime_reserved_bytes": 0,
-            "topology": "discrete"
-          },
-          {
-            "device_free_bytes": 32482787328,
-            "device_id": "cuda:0",
-            "device_total_bytes": 34190458880,
-            "out_of_pool_bytes": 0,
-            "runtime_id": "cuda-cupy",
-            "runtime_live_bytes": 0,
-            "runtime_reserved_bytes": 0,
-            "topology": "discrete"
-          }
-        ]
-      },
-      "image_bytes": 34030800,
-      "input_sha256": null,
-      "label": "Private real-acquisition single-channel ZYX volume",
-      "memory_estimate": {
-        "host_materialization_peak_bytes": 34030800,
-        "model_id": "cupyx-richardson-lucy-tv-fft-memory-v1",
-        "runtime_managed_peak_bytes": 1611824580,
-        "total_device_peak_bytes": 1611824580,
-        "uncertainty_bytes": 402956145
-      },
-      "parameters": {
-        "clip_negative_input": true,
-        "clip_output_negative": true,
-        "denominator_floor": 0.05,
-        "filter_epsilon": 1e-12,
-        "iterations": 25,
-        "normalize_psf": true,
-        "preserve_input_scale": true,
-        "resolved_spatial_ndim": 3,
-        "spatial_mode": "3D ZYX",
-        "tv_epsilon": 1e-06,
-        "tv_regularization": 0.002
-      },
-      "preflight": {
-        "admitted_device_bytes": 2014780725,
-        "device_free_bytes": 32484884480,
-        "device_index": 0,
-        "device_total_bytes": 34190458880,
-        "device_usable_after_reserve_bytes": 29065838592,
-        "host_available_bytes": 14841307136,
-        "input_bytes": 34065396,
-        "required_host_bytes": 4294967296
-      },
-      "psf_sha256": "915c3ffc64f42f7ffd61d2b70a3e2dcb12e2421423edf0dd2c01f6df24c8da2c",
-      "psf_shape": [
-        9,
-        31,
-        31
-      ],
-      "psf_sigma_voxels": [
-        2.25,
-        4.0,
-        4.0
-      ],
-      "service_screening_winner": "rl-tv-cupy-f32-v1",
-      "shape": [
-        9,
-        1150,
-        822
-      ],
-      "source_kind": "private-nd2-volume",
-      "source_metadata": {
-        "direct_identifiers_omitted": true,
-        "original_axes": "TZCYX",
-        "original_dtype": "uint16",
-        "original_shape": [
-          19,
-          9,
-          2,
-          1150,
-          822
-        ],
-        "selected_indices": {
-          "C": 1,
-          "T": 0
-        }
-      },
-      "summary": {
-        "absolute_median_saving_seconds": 34.32139729996561,
-        "cpu_median_seconds": 34.92052549999789,
-        "gpu_end_to_end_median_seconds": 0.5991282000322826,
-        "gpu_resident_median_seconds": 0.5564466000359971,
-        "gpu_transfer_median_seconds": 0.0227896999931545,
-        "paired_speedup_median": 58.3398459597347,
-        "paired_speedups": [
-          86.7947146934364,
-          58.3398459597347,
-          55.96190608714053
-        ],
-        "peak_observed_device_bytes": 1004535808,
-        "screening_choice": "GPU-CuPy"
-      },
-      "voxel_count": 8507700,
-      "workload_fingerprint": null
-    },
-    {
-      "benchmark_policy_id": "custom-node-paired-adaptive-bootstrap-v3",
       "benchmark_record_digest": "a7f694e8aad9605e1c0a8ac4456047f8240adaffe751306c2756d47a6c7d3f34",
       "candidates": [
         {
           "cold_host_materialization_seconds": null,
           "cold_resident_seconds": null,
-          "cold_seconds": 55.61803890001465,
+          "cold_seconds": 58.422986699966714,
           "cold_transfer_seconds": null,
           "error": "",
           "failure_kind": "",
@@ -338,17 +117,17 @@
           "warm_host_materialization_seconds": [],
           "warm_resident_seconds": [],
           "warm_seconds": [
-            55.93632260001323,
-            56.24203660000785,
-            55.62956320000376
+            59.50462549999065,
+            62.96966860003886,
+            65.3229619999911
           ],
           "warm_transfer_seconds": []
         },
         {
           "cold_host_materialization_seconds": 0.0,
-          "cold_resident_seconds": 0.7226136999888695,
-          "cold_seconds": 0.8114049999858253,
-          "cold_transfer_seconds": 0.04627630000322824,
+          "cold_resident_seconds": 0.7035925999953179,
+          "cold_seconds": 0.8021164999954635,
+          "cold_transfer_seconds": 0.05036539999127854,
           "error": "",
           "failure_kind": "",
           "implementation_id": "rl-tv-cupy-f32-v1",
@@ -357,8 +136,8 @@
           "paired_speedup_lower_confidence_bound": null,
           "paired_speedup_median": null,
           "parity_passed": true,
-          "peak_memory_bytes": 2011168768,
-          "peak_out_of_pool_bytes": 11793408,
+          "peak_memory_bytes": 2013265920,
+          "peak_out_of_pool_bytes": 13890560,
           "peak_runtime_live_bytes": 134275584,
           "peak_runtime_reserved_bytes": 1999375360,
           "synchronized": true,
@@ -370,19 +149,19 @@
             0.0
           ],
           "warm_resident_seconds": [
-            0.4584914999722969,
-            0.6963039000183926,
-            0.48641819997283164
+            0.7444110000069486,
+            0.7466950000234647,
+            0.745093600009568
           ],
           "warm_seconds": [
-            0.5283474999741884,
-            0.7804890000115847,
-            0.564115099972696
+            0.848909000022104,
+            0.8433178000123007,
+            0.8411264000169467
           ],
           "warm_transfer_seconds": [
-            0.028879300007247366,
-            0.04591749999963213,
-            0.04340950000187149
+            0.04711920001136605,
+            0.0606957000127295,
+            0.04873730000690557
           ]
         }
       ],
@@ -399,7 +178,7 @@
             "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
-            "out_of_pool_bytes": 0,
+            "out_of_pool_bytes": 2097152,
             "runtime_id": "cuda-cupy",
             "runtime_live_bytes": 0,
             "runtime_reserved_bytes": 0,
@@ -472,11 +251,11 @@
       },
       "preflight": {
         "admitted_device_bytes": 3357718455,
-        "device_free_bytes": 32482787328,
+        "device_free_bytes": 32484884480,
         "device_index": 0,
         "device_total_bytes": 34190458880,
-        "device_usable_after_reserve_bytes": 29063741440,
-        "host_available_bytes": 14634373120,
+        "device_usable_after_reserve_bytes": 29065838592,
+        "host_available_bytes": 11604119552,
         "input_bytes": 67166524,
         "required_host_bytes": 4294967296
       },
@@ -502,22 +281,243 @@
         "generator": "numpy-pcg64-large-rl-tv-v1"
       },
       "summary": {
-        "absolute_median_saving_seconds": 55.37220750004053,
-        "cpu_median_seconds": 55.93632260001323,
-        "gpu_end_to_end_median_seconds": 0.564115099972696,
-        "gpu_resident_median_seconds": 0.48641819997283164,
-        "gpu_transfer_median_seconds": 0.04340950000187149,
-        "paired_speedup_median": 98.61385239057829,
+        "absolute_median_saving_seconds": 62.12635080002656,
+        "cpu_median_seconds": 62.96966860003886,
+        "gpu_end_to_end_median_seconds": 0.8433178000123007,
+        "gpu_resident_median_seconds": 0.745093600009568,
+        "gpu_transfer_median_seconds": 0.04873730000690557,
+        "paired_speedup_median": 74.66896654988236,
         "paired_speedups": [
-          105.8703270153562,
-          72.05999905081693,
-          98.61385239057829
+          70.09541128488597,
+          74.66896654988236,
+          77.6612908579198
         ],
-        "peak_observed_device_bytes": 2011168768,
+        "peak_observed_device_bytes": 2013265920,
         "screening_choice": "GPU-CuPy"
       },
       "voxel_count": 16777216,
       "workload_fingerprint": "dcae202b64d759ffe43db9bfbe15565791841f16f7be25688851a13382686c3d"
+    },
+    {
+      "benchmark_policy_id": "custom-node-paired-adaptive-bootstrap-v3",
+      "benchmark_record_digest": null,
+      "candidates": [
+        {
+          "cold_host_materialization_seconds": null,
+          "cold_resident_seconds": null,
+          "cold_seconds": 41.74884769998607,
+          "cold_transfer_seconds": null,
+          "error": "",
+          "failure_kind": "",
+          "implementation_id": "cpu-richardson_lucy_tv_deconvolution-v1",
+          "paired_bootstrap_samples": 0,
+          "paired_bootstrap_seed": 0,
+          "paired_speedup_lower_confidence_bound": null,
+          "paired_speedup_median": null,
+          "parity_passed": true,
+          "peak_memory_bytes": 0,
+          "peak_out_of_pool_bytes": 0,
+          "peak_runtime_live_bytes": 0,
+          "peak_runtime_reserved_bytes": 0,
+          "synchronized": false,
+          "timing_scope": "implementation-only",
+          "transfers_included": false,
+          "warm_host_materialization_seconds": [],
+          "warm_resident_seconds": [],
+          "warm_seconds": [
+            42.08509249993949,
+            41.36913019999338,
+            42.161002499982715
+          ],
+          "warm_transfer_seconds": []
+        },
+        {
+          "cold_host_materialization_seconds": 0.0,
+          "cold_resident_seconds": 0.5892274000070756,
+          "cold_seconds": 0.6337624000152573,
+          "cold_transfer_seconds": 0.021209600003203377,
+          "error": "",
+          "failure_kind": "",
+          "implementation_id": "rl-tv-cupy-f32-v1",
+          "paired_bootstrap_samples": 0,
+          "paired_bootstrap_seed": 0,
+          "paired_speedup_lower_confidence_bound": null,
+          "paired_speedup_median": null,
+          "parity_passed": true,
+          "peak_memory_bytes": 1002438656,
+          "peak_out_of_pool_bytes": 18462720,
+          "peak_runtime_live_bytes": 68097024,
+          "peak_runtime_reserved_bytes": 983975936,
+          "synchronized": true,
+          "timing_scope": "synchronized-end-to-end-v1",
+          "transfers_included": true,
+          "warm_host_materialization_seconds": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "warm_resident_seconds": [
+            0.5194267999759177,
+            0.6628404000366572,
+            0.4539995000086492
+          ],
+          "warm_seconds": [
+            0.5798642999725416,
+            0.7035551000299165,
+            0.4918331000080798
+          ],
+          "warm_transfer_seconds": [
+            0.02042780000192579,
+            0.01950899999064859,
+            0.017129899992141873
+          ]
+        }
+      ],
+      "case_id": "private-real-nd2-volume-3d",
+      "direct_private_identifiers_published": false,
+      "dtype": "float32",
+      "environment_fingerprint": "0ed1db9d29dc1df05452208ccf069ed403c8f7581eb28a5f37413906b004a811",
+      "gpu_cleanup": {
+        "all_cleanup_succeeded": true,
+        "all_runtime_pool_terminal_zero": true,
+        "invocation_count": 5,
+        "terminal_snapshots": [
+          {
+            "device_free_bytes": 32482787328,
+            "device_id": "cuda:0",
+            "device_total_bytes": 34190458880,
+            "out_of_pool_bytes": 0,
+            "runtime_id": "cuda-cupy",
+            "runtime_live_bytes": 0,
+            "runtime_reserved_bytes": 0,
+            "topology": "discrete"
+          },
+          {
+            "device_free_bytes": 32482787328,
+            "device_id": "cuda:0",
+            "device_total_bytes": 34190458880,
+            "out_of_pool_bytes": 0,
+            "runtime_id": "cuda-cupy",
+            "runtime_live_bytes": 0,
+            "runtime_reserved_bytes": 0,
+            "topology": "discrete"
+          },
+          {
+            "device_free_bytes": 32482787328,
+            "device_id": "cuda:0",
+            "device_total_bytes": 34190458880,
+            "out_of_pool_bytes": 0,
+            "runtime_id": "cuda-cupy",
+            "runtime_live_bytes": 0,
+            "runtime_reserved_bytes": 0,
+            "topology": "discrete"
+          },
+          {
+            "device_free_bytes": 32482787328,
+            "device_id": "cuda:0",
+            "device_total_bytes": 34190458880,
+            "out_of_pool_bytes": 0,
+            "runtime_id": "cuda-cupy",
+            "runtime_live_bytes": 0,
+            "runtime_reserved_bytes": 0,
+            "topology": "discrete"
+          },
+          {
+            "device_free_bytes": 32482787328,
+            "device_id": "cuda:0",
+            "device_total_bytes": 34190458880,
+            "out_of_pool_bytes": 0,
+            "runtime_id": "cuda-cupy",
+            "runtime_live_bytes": 0,
+            "runtime_reserved_bytes": 0,
+            "topology": "discrete"
+          }
+        ]
+      },
+      "image_bytes": 34030800,
+      "input_sha256": null,
+      "label": "Private real-acquisition single-channel ZYX volume",
+      "memory_estimate": {
+        "host_materialization_peak_bytes": 34030800,
+        "model_id": "cupyx-richardson-lucy-tv-fft-memory-v1",
+        "runtime_managed_peak_bytes": 1611824580,
+        "total_device_peak_bytes": 1611824580,
+        "uncertainty_bytes": 402956145
+      },
+      "parameters": {
+        "clip_negative_input": true,
+        "clip_output_negative": true,
+        "denominator_floor": 0.05,
+        "filter_epsilon": 1e-12,
+        "iterations": 25,
+        "normalize_psf": true,
+        "preserve_input_scale": true,
+        "resolved_spatial_ndim": 3,
+        "spatial_mode": "3D ZYX",
+        "tv_epsilon": 1e-06,
+        "tv_regularization": 0.002
+      },
+      "preflight": {
+        "admitted_device_bytes": 2014780725,
+        "device_free_bytes": 32482787328,
+        "device_index": 0,
+        "device_total_bytes": 34190458880,
+        "device_usable_after_reserve_bytes": 29063741440,
+        "host_available_bytes": 10038444032,
+        "input_bytes": 34065396,
+        "required_host_bytes": 4294967296
+      },
+      "psf_sha256": "915c3ffc64f42f7ffd61d2b70a3e2dcb12e2421423edf0dd2c01f6df24c8da2c",
+      "psf_shape": [
+        9,
+        31,
+        31
+      ],
+      "psf_sigma_voxels": [
+        2.25,
+        4.0,
+        4.0
+      ],
+      "service_screening_winner": "rl-tv-cupy-f32-v1",
+      "shape": [
+        9,
+        1150,
+        822
+      ],
+      "source_kind": "private-nd2-volume",
+      "source_metadata": {
+        "direct_identifiers_omitted": true,
+        "original_axes": "TZCYX",
+        "original_dtype": "uint16",
+        "original_shape": [
+          19,
+          9,
+          2,
+          1150,
+          822
+        ],
+        "selected_indices": {
+          "C": 1,
+          "T": 0
+        }
+      },
+      "summary": {
+        "absolute_median_saving_seconds": 41.50522819996695,
+        "cpu_median_seconds": 42.08509249993949,
+        "gpu_end_to_end_median_seconds": 0.5798642999725416,
+        "gpu_resident_median_seconds": 0.5194267999759177,
+        "gpu_transfer_median_seconds": 0.01950899999064859,
+        "paired_speedup_median": 72.57748494248112,
+        "paired_speedups": [
+          72.57748494248112,
+          58.800128374073736,
+          85.72217384167536
+        ],
+        "peak_observed_device_bytes": 1002438656,
+        "screening_choice": "GPU-CuPy"
+      },
+      "voxel_count": 8507700,
+      "workload_fingerprint": null
     }
   ],
   "schema": "napari-vipp-cupy-rl-tv-performance-evidence",
@@ -525,11 +525,11 @@
   "source_provenance": [
     {
       "path": "scripts/benchmark_gpu_rl_tv_performance.py",
-      "sha256": "344dc32a1ac36c968c62a9c56c5359411c8ffe857ca621ccce449c994b8bc70b"
+      "sha256": "2fd05897f86da410c05d65e6573201df81571dc85a1bc443e274e0063928158a"
     },
     {
       "path": "src/napari_vipp/core/compute.py",
-      "sha256": "714f59500f2e61219700734f47b45c1939ccc69ffb9d68c8f49ea1b7cb9b55ec"
+      "sha256": "ef8c27aca8b126fbd68ea1a2c4f882291e98969f035490404276e8b8e7d62cd2"
     },
     {
       "path": "src/napari_vipp/core/accelerator_lease.py",
@@ -541,7 +541,7 @@
     },
     {
       "path": "src/napari_vipp/core/compute_planning.py",
-      "sha256": "2e702ef095e68d16f805dd83240b9b3bf15be924f7d9bcec03aed314705b01eb"
+      "sha256": "4defe993b14841e63f7fab2d845c9c1e1aed7d73aa444d9242eb6a507f221919"
     },
     {
       "path": "src/napari_vipp/core/compute_registry.py",
