@@ -195,17 +195,17 @@ the basic schemas of **Measure Objects** and **Measure Objects + Intensity**,
 with an exact typed-table finalizer after the mandatory GPU-to-host boundary.
 Both deconvolution paths use exact ordered-multi-input benchmarking. The alpha
 includes
-CPU/Auto/Prefer-GPU/Selective execution contracts, visible or strict fallback,
+CPU/Auto/Prefer-GPU/Custom execution contracts, visible or strict fallback,
 transactional device execution, scientific cache identity, and per-node/
 whole-pipeline benchmark services. The toolbar controls
 now provide the first Phase 2 interactive slice: new sessions default to
-`Auto`, the main toolbar exposes `CPU`/`Auto`/`Prefer GPU`/`Selective`, and
-Selective mode
-shows `Follow pipeline policy`, `CPU`, and one choice per declared GPU library
+`Auto`, the main toolbar exposes `CPU`/`Auto`/`Prefer GPU`/`Custom`, and
+Custom mode
+shows `Auto for this node`, `CPU`, and one choice per declared GPU library
 where implemented. `Best GPU` appears only when multiple libraries compete;
 accepted runs add compact CPU/CuPy/cuCIM badges, and CPU fallback is shown in
 amber. `Prefer GPU` considers every reviewed public GPU implementation,
-including `public_selective` providers that Auto does not consider. It skips
+including `public_custom` providers that Auto does not consider. It skips
 only the CPU-versus-GPU speed gate: scientific parity, dtype, parameter,
 shape, environment, dependency, and memory admission remain mandatory, and
 VIPP never inserts a cast or changes an authored parameter to make GPU eligible.
@@ -214,12 +214,23 @@ fastest GPU is selected; otherwise the stable implementation ID provides a
 deterministic choice without implying that it is fastest. A node with no
 eligible GPU receives an explained ordinary CPU decision.
 
+`Auto` starts from reviewed GPU defaults rather than treating missing timing as
+proof that CPU is faster. Successful, fallback-free completed full-pipeline
+runs—whether CPU, GPU, or mixed—add only their wall time to machine-local
+history. If the exact compatible history contains an accelerated observation
+but no CPU observation, the next global Auto run measures the authoritative CPU
+assignment once on the same execution surface. A later matching Auto run uses
+the accelerated assignment only when it beats CPU by at least 1.20x and 20 ms;
+otherwise it uses CPU. Interactive, batch, and registry-lifecycle timing
+surfaces are never mixed. Auto never silently benchmarks multiple
+implementations.
+
 `Prefer GPU` always uses visible fallback; a strict Prefer-GPU request is
 invalid because the policy explicitly means “GPU wherever possible, CPU
 everywhere else.” Saved per-node preferences remain intact but dormant outside
-Selective mode. Switch back to Selective to reactivate them and to use
+Custom mode. Switch back to Custom to reactivate them and to use
 `Benchmark node…` or `Find fastest pipeline…`; the whole-pipeline optimizer is
-intentionally Selective-only. Developer-hidden implementations remain excluded
+intentionally Custom-only. Developer-hidden implementations remain excluded
 unless experimental admission is explicitly enabled, which is not a public
 support claim.
 
@@ -230,7 +241,7 @@ persistence now records portable authored compute intent, while separate
 non-scientific UI metadata preserves explicit optimizer locks without changing
 the scientific workflow hash. Legacy workflow-v3 files load in CPU mode and
 with every node unlocked until the user explicitly opts into Auto, Prefer GPU,
-or Selective.
+or Custom.
 Machine-local runtime/device selection, memory limits, provider admission,
 and benchmark evidence are not copied between machines. Batch config version 2
 captures the full effective run request, while generated Python embeds the
@@ -241,7 +252,7 @@ compute/fallback/node overrides, nested or operation progress, cooperative
 cancellation, exit code 130, structured OOM records, and atomic provenance.
 `Settings > Compute setup and memory…` verifies optional packages and hardware
 on a worker and presents system RAM plus discrete VRAM, or one shared budget on
-unified-memory machines. In Selective mode, eligible single-output nodes with
+unified-memory machines. In Custom mode, eligible single-output nodes with
 one or more ordered inputs offer `Benchmark node…`: VIPP detaches and hashes
 every input, includes every transfer and input in memory accounting, compares
 the exact captured workload, requires scientific parity, saves evidence
@@ -286,7 +297,7 @@ and not a blanket biological-restoration or cross-platform equivalence claim.
 GPU provider visibility in this alpha follows the evidence. An implementation
 whose declared region has passed scientific parity and the required memory,
 progress, cancellation, cleanup, and runtime checks is a normal public
-`Selective` or `Prefer GPU` candidate and may participate in `Auto` where
+`Custom` or `Prefer GPU` candidate and may participate in `Auto` where
 applicable performance evidence exists. `developer_hidden` is reserved for
 incomplete or unvalidated work and is excluded unless experimental admission
 is explicitly enabled. Promotion is region-specific: data types, parameters,
@@ -412,7 +423,7 @@ Review downstream ranges, thresholds, rounding/output semantics, file writers,
 and RAM/VRAM use; `float32` also requires twice the storage of `uint16`. Benchmark
 the exact converted pipeline rather than assuming conversion will be faster.
 
-Selective mode also exposes the review-first `Find fastest pipeline…` analysis
+Custom mode also exposes the review-first `Find fastest pipeline…` analysis
 after the current graph has been calculated. It works from detached source data
 and compares every scientifically eligible CPU/CuPy/cuCIM implementation for
 every **unlocked** node. The implementation currently in use is the starting
@@ -491,7 +502,7 @@ side-effecting, and incomplete workloads still fail closed. Unifying every UI
 optimizer input into one immutable application snapshot remains a named
 hardening task rather than a completed claim. See the
 [production GPU plan](docs/gpu-production-implementation-plan.md) for the
-CPU/Auto/Prefer-GPU/Selective design, per-node and whole-pipeline benchmarking,
+CPU/Auto/Prefer-GPU/Custom design, per-node and whole-pipeline benchmarking,
 fallback,
 memory, and promotion rules. The
 [Phase 1 implementation record](docs/gpu-phase1-implementation-report.md)
@@ -650,7 +661,7 @@ guidance, and report suspected vulnerabilities privately through
 `0.13.0a1` is the current alpha. It is VIPP's first usable, evidence-gated GPU
 release while retaining CPU as the portable scientific reference path:
 
-- toolbar `CPU`/`Auto`/`Prefer GPU`/`Selective` policy, per-node
+- toolbar `CPU`/`Auto`/`Prefer GPU`/`Custom` policy, per-node
   CPU/CuPy/cuCIM choices and
   actual-run badges, setup diagnostics, RAM/VRAM reporting, node benchmarking,
   and a review-before-apply whole-pipeline optimizer;

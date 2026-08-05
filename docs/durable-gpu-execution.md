@@ -17,7 +17,7 @@ fallback decision described below.
 The durable surfaces all submit a `ComputeRequest` to
 `core.execution.execute_pipeline_request()`:
 
-- `mode`: `cpu`, `auto`, `prefer_gpu`, or `selective`;
+- `mode`: `cpu`, `auto`, `prefer_gpu`, or `custom`;
 - `node_preferences`: stable choices keyed by workflow node ID;
 - `fallback_policy`: `visible` or `strict`;
 - runtime/device selection and accelerator memory cap/reserve;
@@ -35,9 +35,9 @@ The four policies have distinct purposes:
 | Mode | GPU selection contract |
 | --- | --- |
 | `cpu` | Use only the authoritative host implementation. |
-| `auto` | Consider reviewed `public_auto_candidate` implementations and use GPU only when the applicable workload evidence clears the CPU-versus-GPU benefit gate. This remains the new-session default. |
-| `prefer_gpu` | Consider every reviewed public GPU implementation, including `public_selective`, and use an eligible GPU without requiring it to beat CPU. |
-| `selective` | Apply the active per-node CPU/library/exact preferences; this is the only mode that exposes node benchmarking and `Find fastest pipeline…`. |
+| `auto` | With no exact compatible history, use reviewed `public_auto_candidate` GPU defaults wherever they pass the current safety gates. Accelerated-only history causes the next global Auto run to measure CPU once on the same execution surface; a complete pair then selects under the 1.20x/20-ms gate. This remains the new-session default. |
+| `prefer_gpu` | Consider every reviewed public GPU implementation, including `public_custom`, and use an eligible GPU without requiring it to beat CPU. |
+| `custom` | Apply the active per-node CPU/library/exact preferences; this is the only mode that exposes node benchmarking and `Find fastest pipeline…`. |
 
 Prefer GPU bypasses only the performance gate. Scientific parity, dtype,
 parameter, shape, optional-dependency, environment, provider, and memory gates
@@ -57,9 +57,21 @@ retryable device OOM still follows the visible one-retry rule described below.
 CPU-only installations remain first-class. Importing VIPP, loading workflows,
 importing a generated program, planning a CPU batch, and completely skipping a
 batch item do not import or initialize CuPy or cuCIM. `Auto` and `Prefer GPU`
-use CPU normally when no admitted accelerator is available. A Selective request
+use CPU normally when no admitted accelerator is available. A Custom request
 follows its saved `visible` or `strict` policy rather than producing an
 optional-package import traceback.
+
+Successful, fallback-free completed full-pipeline runs may append only their
+wall time and exact assignment to machine-local history. With no compatible
+history, Auto uses reviewed GPU defaults. If compatible history contains an
+accelerated assignment but no CPU observation, the next global Auto run
+executes the authoritative CPU assignment once on that same execution surface.
+Once both observations exist, a later matching Auto run selects acceleration
+only when it clears the reviewed 1.20x/20-ms benefit margin; otherwise it
+selects CPU. Interactive, batch, and registry-lifecycle timing surfaces are
+keyed separately and never mixed. Auto never silently benchmarks multiple
+implementations; node and pipeline comparisons remain explicit Custom actions.
+Raw image data and workflow documents are not stored in this timing history.
 
 ## Saved And Effective Compute Requests
 
@@ -70,7 +82,7 @@ experimental settings selected for that run. Batch config version 1 had no
 compute contract and is migrated to an explicit CPU request; VIPP never guesses
 that an old batch intended to use an accelerator. Per-node preferences are
 preserved when another global mode is active but remain dormant unless the mode
-is `selective`.
+is `custom`.
 
 The precedence rules are deliberate:
 
@@ -130,7 +142,7 @@ Use explicit overrides only when the run should differ from the saved config:
 .\.venv-gpu-cu13\Scripts\python.exe .\results\vipp_batch_pipeline.py `
   --config .\results\vipp_batch_config.json `
   --workflow .\results\vipp_batch_workflow.json `
-  --compute-mode selective `
+  --compute-mode custom `
   --fallback-policy visible `
   --node-preference gaussian_blur_1=library:cupyx `
   --node-preference otsu_threshold_1=cpu `
@@ -155,7 +167,7 @@ provided, it uses `visible`. Supplying `--fallback-policy strict` with
 `library:<library-id>`, and `implementation:<implementation-id>`. Prefer values
 written by VIPP or copied from a reviewed config; an exact implementation pin
 may be unavailable on another computer. These preferences are carried through
-all modes for lossless round trips but affect planning only in `selective`.
+all modes for lossless round trips but affect planning only in `custom`.
 
 The runner exits with:
 

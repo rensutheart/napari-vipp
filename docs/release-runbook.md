@@ -76,7 +76,7 @@ eligible reviewed public provider is used without requiring a CPU-speed win,
 an unsupported dtype/parameter node receives an explained ordinary CPU
 decision, no cast or parameter rewrite occurs, and the manifest records
 `prefer_gpu`, visible fallback, and the exact actual implementation per node.
-Confirm per-node preferences remain stored but inactive, the Selective-only
+Confirm per-node preferences remain stored but inactive, the Custom-only
 `Find fastest pipeline…` action is hidden, and an explicit strict Prefer-GPU
 request is rejected before calculation or publication.
 
@@ -96,7 +96,7 @@ assuming `os.sysconf` exists on Windows.
 ### Bounded Pre-Feature Windows Evidence
 
 On 2026-08-04, the operator reported that the native-Windows napari UI smoke
-passed on development commit `ff21040`. The local schema-4 Selective workflow
+passed on development commit `ff21040`. The local schema-4 Custom workflow
 loaded the representative private ND2 acquisition and exercised the intended
 channel, navigation/display behavior, and backend-badge presentation. This is
 an operator attestation only: the retained last-run JSON was later overwritten

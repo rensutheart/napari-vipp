@@ -49,7 +49,7 @@ authoring remain later milestones.
 - [psf-and-deconvolution-plan.md](psf-and-deconvolution-plan.md): PSF
   generation, deconvolution, and microscope metadata requirements.
 - [gpu-production-implementation-plan.md](gpu-production-implementation-plan.md):
-  CPU/Auto/Prefer-GPU/Selective architecture, per-node and whole-pipeline
+  CPU/Auto/Prefer-GPU/Custom architecture, per-node and whole-pipeline
   benchmarking,
   implementation-library selection, fallbacks, memory/provenance, packaging,
   validation gates, and delivery order. Implemented public-candidate regions
@@ -125,7 +125,7 @@ Implemented and documented work includes:
   used by PSF generation and provenance checks;
 - slice/stack thumbnail contrast range controls, cached stack contrast limits,
   and a linked/unlinked napari/VIPP slider setting for large data review;
-- CPU/Auto/Prefer-GPU/Selective compute policy, per-node implementation choices
+- CPU/Auto/Prefer-GPU/Custom compute policy, per-node implementation choices
   and actual
   backend badges, exact-workload node benchmarking, review-first pipeline
   optimization, setup diagnostics, and RAM/VRAM accounting;
@@ -155,7 +155,7 @@ either already implemented enough to build on or intentionally deferred.
 ### GPU Completion And Platform Qualification
 
 Phase 1 is implemented headlessly and interactively:
-CPU/Auto/Prefer-GPU/Selective and per-node/benchmark contracts, unified
+CPU/Auto/Prefer-GPU/Custom and per-node/benchmark contracts, unified
 execution, the dedicated CUDA development/doctor path, and production-parity
 Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian adapters. Phase 2B
 also has a public-candidate ordinary CuPy Richardson-Lucy backend, ordered
@@ -171,7 +171,7 @@ measured 10- and 25-iteration points under a separately versioned nonlinear
 parity study. Lambda-zero retains ordinary RL's 1–25 range. Phase 3A adds
 implemented, exact-mask CuPy/CuPyX Canny and Otsu providers with explicit luma,
 stack/slice, progress, cancellation, memory, and CPU-fallback contracts. Their
-validated regions are normal public `Auto`/`Selective` candidates;
+validated regions are normal public `Auto`/`Custom` candidates;
 `developer_hidden` is reserved for incomplete or unvalidated work.
 Phase 4 adds the public clean-room Sigma Filter and its fused CuPy provider.
 Phase 5 completes Connected Components with an exact CuPyX provider for boolean
@@ -210,9 +210,9 @@ cancellation, zero-residue cleanup, source-integrity, and strict private-metadat
 checks. See the
 [Canny/Otsu evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md); these are
 single-host descriptive measurements, not portable Auto choices.
-The toolbar now has the CPU/Auto/Prefer-GPU/Selective policy slice. Prefer GPU
+The toolbar now has the CPU/Auto/Prefer-GPU/Custom policy slice. Prefer GPU
 uses every reviewed eligible accelerator region without applying Auto's speed
-gate; Selective retains node choices and benchmarking. Actual backend badges
+gate; Custom retains node choices and benchmarking. Actual backend badges
 and a single message-strip component with major/actionable paths
 severity-classified. Optimizer UI
 lifecycle/snapshot hardening continues alongside the maintained next order.
@@ -243,7 +243,7 @@ Still needed before positioning restoration as publication-ready:
 - release-facing tutorial screenshots or walkthroughs for measured PSF,
   generated PSF, baseline RL, and RL-TV comparison workflows;
 - performance profiling on larger 3D volumes to calibrate chunking, CPU vector
-  work, GPU memory estimates, and Auto/Prefer-GPU/Selective admission policies;
+  work, GPU memory estimates, and Auto/Prefer-GPU/Custom admission policies;
 - continued documentation of wavelength, numerical aperture, refractive index,
   pixel size, z step, channel selection, and when metadata is being used versus
   manually overridden.

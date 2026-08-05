@@ -10,8 +10,8 @@ batch, generated-Python, or scientific-default behavior was changed.
 > coarse dtype declaration, universal 1.5x promotion gate, or median-first
 > delivery order. The authoritative
 > [production plan](gpu-production-implementation-plan.md) uses CPU/Auto/
-> Selective, per-node preferences and graph-global benchmarking, per-port value
-> contracts, separate Selective/Auto admission, and a Background → Median →
+> Custom, per-node preferences and graph-global benchmarking, per-port value
+> contracts, separate Custom/Auto admission, and a Background → Median →
 > Gaussian headless first slice.
 
 ## Technical summary

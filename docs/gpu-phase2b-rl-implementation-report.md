@@ -2,7 +2,7 @@
 
 - Date: 2026-07-29
 - Branch: `codex/gpu-cross-platform-support`
-- Status: exact admitted region is a normal public Auto/Selective candidate on
+- Status: exact admitted region is a normal public Auto/Custom candidate on
   the GPU branch; release-wide and cross-platform qualification remains open
 
 Phase 2C has since implemented the RL-TV slice described in
@@ -27,7 +27,7 @@ the substrate that a scientifically meaningful multi-input node needs:
   optimizer.
 
 The validated region is no longer `developer_hidden`: it is visible in normal
-pipelines as a public candidate for `Selective`, and can participate in `Auto`
+pipelines as a public candidate for `Custom`, and can participate in `Auto`
 when the exact workload/runtime has applicable benefit evidence. Unsupported
 dtype, parameter, shape, or runtime regions visibly remain on CPU. This record
 is still branch-scoped development evidence, not a blanket released-package or
@@ -153,9 +153,9 @@ Disk I/O and input generation are excluded.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 24.907 s | 0.397 s | 0.360 s | 0.018 s | 62.79x |
-| Medium 3D shape stress | 16,777,216 | 35.261 s | 0.463 s | 0.379 s | 0.033 s | 76.22x |
-| Large 3D shape stress | 67,108,864 | 136.628 s | 1.548 s | 1.214 s | 0.199 s | 88.26x |
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 25.512 s | 0.593 s | 0.549 s | 0.026 s | 43.05x |
+| Medium 3D shape stress | 16,777,216 | 36.138 s | 0.456 s | 0.394 s | 0.032 s | 79.36x |
+| Large 3D shape stress | 67,108,864 | 141.837 s | 1.448 s | 1.152 s | 0.124 s | 97.97x |
 
 All three exact workloads passed production parity, synchronized execution,
 and terminal-zero private allocator cleanup. Observed device peaks were 0.697,
@@ -257,7 +257,7 @@ separate gates and must not be inferred from this development-host result.
 
 ## Current limitations and open hardening
 
-- Ordinary GPU RL's exact validated region is publicly visible in Selective and
+- Ordinary GPU RL's exact validated region is publicly visible in Custom and
   is an Auto candidate. This does not admit parameters outside that region or
   claim portable performance on unmeasured hardware.
 - The CPU default epsilon (`1e-12`), all epsilon values other than `1e-8`, and

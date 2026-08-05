@@ -2,7 +2,7 @@
 
 Status: implemented on `codex/gpu-cross-platform-support` as a headless and
 interactive public-candidate vertical slice, with the first Phase 2
-interactive controls, workflow-v4 intent, node benchmarking, and Selective-only
+interactive controls, workflow-v4 intent, node benchmarking, and Custom-only
 whole-pipeline optimizer now connected to that service. This remains a
 development-branch surface and is not yet a released cross-platform GPU support
 promise. Each validated region is visible normally; regions outside its
@@ -15,9 +15,10 @@ product sequence and promotion criteria remain in the
 
 ## Delivered substrate
 
-- Provider-neutral CPU, Auto, and Selective requests, including per-node
-  `auto`, `cpu`, `best_gpu`, implementation-library, and exact-implementation
-  preferences.
+- Provider-neutral Phase 1-era CPU, Auto, and Custom requests, including
+  per-node `auto`, `cpu`, `best_gpu`, implementation-library, and
+  exact-implementation preferences. Prefer GPU was added by the later policy
+  update.
 - Distinct optimizer locks persisted as validated, non-scientific workflow UI
   metadata. Missing lock metadata means every node is unlocked; changing a lock
   does not alter normal execution or scientific cache identity.
@@ -48,7 +49,7 @@ product sequence and promotion criteria remain in the
   rounds and extends to 7 or 15 only while the timing remains close or uncertain.
   The key binds the CPU scientific stack and excludes the cancellation time
   budget, which does not change the meaning of a completed measurement.
-- The first Phase 2 Selective-only whole-pipeline optimizer: detached private
+- The first Phase 2 Custom-only whole-pipeline optimizer: detached private
   source/workflow execution, exact workload/environment evidence, measured
   directional transfers, VRAM/liveness-constrained graph assignment,
   operation-specific parity before paired end-to-end validation, review before
@@ -122,7 +123,7 @@ host supplies the required evidence. macOS remains on the authoritative CPU
 path while a separate Metal/MPS/MLX provider and unified-memory accounting are
 investigated. WSL2 is not treated as native-Windows evidence.
 CUDA 12 and secondary NVIDIA devices remain qualification-only tracks outside
-public admission; their setup assets do not make them normal Auto/Selective
+public admission; their setup assets do not make them normal Auto/Custom
 candidates.
 
 ## Recreate the validated development environment
@@ -152,10 +153,12 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 `
 ```
 
 The benchmark document is machine-local evidence, not a portable performance
-promise, and an isolated-node record does not by itself admit Auto. Auto requires
-reviewed whole-segment evidence or policy for the exact graph context, workload,
-and hardware; without it, or when its confidence/noise gate fails, CPU remains
-selected.
+promise, and an isolated-node record does not teach Auto. It can inform a
+reviewed packaged default or an explicit Custom choice. Auto uses reviewed
+defaults with no compatible history. Accelerated-only history causes the next
+global Auto run to measure CPU once on the same execution surface; a completed
+pair then selects under the 1.20x/20-ms gate. Auto never silently benchmarks
+multiple implementations.
 
 ## Local validation target
 
@@ -202,19 +205,23 @@ passed and 2 expected xfails** on 2026-07-28. This is the current
 application-wide validation record; the xfails remain the two deliberately
 CPU-only integer-Gaussian parity regions.
 
-The fixed production benchmark used 21 paired warm rounds for every case. These
-small inputs deliberately demonstrate the conservative Auto gate:
+The fixed production benchmark used 21 paired warm rounds for every case. In
+the Phase 1 implementation, these small inputs exercised the then-current
+candidate-admission screen; they do not describe Auto's current learning
+mechanism:
 
-| Operation | CPU median | GPU end-to-end median | Paired median speedup | Lower 95% bound | Auto choice |
+| Operation | CPU median | GPU end-to-end median | Paired median speedup | Lower 95% bound | Phase 1 screening choice |
 | --- | ---: | ---: | ---: | ---: | --- |
 | Subtract Background, 31 x 37 | 0.588 ms | 2.567 ms | 0.235x | 0.221x | CPU |
 | Gaussian Blur, 128 x 160 | 0.303 ms | 1.630 ms | 0.197x | 0.169x | CPU |
 | Median Filter, 96 x 112 | 3.524 ms | 1.500 ms | 2.357x | 2.090x | CPU |
 
-Median is faster by ratio, but its absolute saving is below the local 10 ms
-noise floor, so Auto correctly retains CPU. Larger workloads and resident
-pipelines require their own exact benchmark evidence; these figures are not
-extrapolated.
+Median is faster by ratio, but its absolute saving is below the then-current
+local 10 ms noise floor, so the Phase 1 screen retained CPU. These figures are
+not extrapolated. Raw node timings remain Custom/optimizer evidence; current
+Auto uses reviewed defaults first, performs one same-surface CPU exploration
+run after accelerated-only history, and then uses an exact compatible completed
+timing pair under the 1.20x/20-ms gate.
 
 The generated evidence document is
 [`benchmarks/phase1-production-node-benchmark-windows-rtx5090.json`](benchmarks/phase1-production-node-benchmark-windows-rtx5090.json).
@@ -223,7 +230,7 @@ The [representative real-acquisition ND2 benchmark](benchmarks/representative-nd
 applies the same registered production-node adapter to two full-resolution
 planes from a 647 MB, two-channel ND2 time series. At native `uint16`, the
 isolated benchmark winner was cuCIM for Subtract Background, CuPyX for Median
-Filter, and CPU for Gaussian Blur. Those local winners are Selective evidence,
+Filter, and CPU for Gaussian Blur. Those local winners are Custom evidence,
 not graph-global Auto admission. The metadata-order defect exposed by the first
 run is now fixed on both `main` and this GPU branch. A later graph-global check
 on the exact central `CYX` plane validated Median Filter changing from CPU to
@@ -245,11 +252,11 @@ current-versus-identical pipeline validation.
 
 ## Deliberately deferred gates
 
-- The first toolbar policy, Selective per-node choices, actual CPU/CuPy/cuCIM
+- The first toolbar policy, Custom per-node choices, actual CPU/CuPy/cuCIM
   badges, visible fallback, and the single message-strip component are
   implemented; major/actionable paths are severity-classified. Durable
   workflow-v4 authored intent, worker-based compute setup, RAM/VRAM presentation,
-  review-first selected-node benchmarking, and the conservative Selective-only
+  review-first selected-node benchmarking, and the conservative Custom-only
   whole-pipeline optimizer are also connected. Batch/generated/export consumers
   preserve workflow-v4 intent but still execute on CPU.
 - The optimizer currently requires a calculated coherent graph, one shared

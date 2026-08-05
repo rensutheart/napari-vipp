@@ -10,7 +10,7 @@ This first 0.13 alpha packages VIPP's progress-to-date GPU work as a usable,
 evidence-gated feature without claiming complete GPU coverage. CPU remains the
 portable scientific reference implementation. Supported nodes may use reviewed
 CuPy, CuPyX, or cuCIM regions through `Auto`, `Prefer GPU`, or explicit
-`Selective` choices; unsupported hardware, dependencies, dtypes, parameters,
+`Custom` choices; unsupported hardware, dependencies, dtypes, parameters,
 shapes, and workloads remain on CPU with a visible reason.
 
 The release also unifies interactive, batch, generated-Python/CLI, and exported
@@ -21,19 +21,31 @@ hardening accumulated since 0.12.0a3.
 
 ### Compute Policy And GPU Execution
 
-- Added the main-toolbar `CPU`/`Auto`/`Prefer GPU`/`Selective` compute policy, a
+- Added the main-toolbar `CPU`/`Auto`/`Prefer GPU`/`Custom` compute policy, a
   Settings mirror, per-node CPU/CuPy/cuCIM choices, actual-run badges, and
   visible CPU fallback reasons. New sessions default to `Auto`; an authored
   node choice is not an optimizer lock unless the user explicitly locks it.
+- Made Auto start from reviewed safe GPU defaults and learn only from exact
+  compatible complete-pipeline timings recorded by successful, fallback-free
+  completed runs. When compatible history is accelerated-only, the next global
+  Auto run measures CPU once on the same execution surface. Once both exist,
+  the accelerated assignment must clear the reviewed 1.20x/20-ms benefit
+  margin or Auto selects CPU. Auto never silently benchmarks multiple
+  implementations or combines incompatible interactive, batch, or
+  registry-lifecycle timing surfaces.
+- Renamed the per-node policy from **Selective** to **Custom**. Development
+  builds that predate 0.13.0a1 may display or serialize `selective`; current
+  builds accept that legacy spelling and write `custom` without changing its
+  behavior.
 - Added `Prefer GPU` for users who want every scientifically eligible reviewed
   GPU implementation even when it is no faster than CPU. It considers both
-  `public_selective` and `public_auto_candidate` providers and bypasses only the
+  `public_custom` and `public_auto_candidate` providers and bypasses only the
   CPU-versus-GPU performance gate; scientific, dtype, parameter, shape,
   dependency, environment, and memory gates still apply, and VIPP never inserts
   a cast. Complete comparable GPU timings choose the fastest GPU; otherwise a
   stable implementation-ID order is deterministic. Unsupported nodes receive
   an explained CPU decision. Prefer GPU requires visible fallback, ignores but
-  preserves dormant per-node preferences, and does not expose Selective-only
+  preserves dormant per-node preferences, and does not expose Custom-only
   benchmarking or `Find fastest pipeline…`. Developer-hidden providers remain
   excluded unless experimental admission is explicitly enabled.
 - Added worker-based compute setup diagnostics, copyable environment repair,
@@ -173,7 +185,7 @@ hardening accumulated since 0.12.0a3.
   finer progress or cancel mid-volume in this implementation.
 - Added immutable compute-policy artifact v5 and source-current RTX 5090
   admission/performance evidence. The validated region is a normal public
-  `Auto`/`Selective` candidate in the pinned environment; the timing matrix is
+  `Auto`/`Custom` candidate in the pinned environment; the timing matrix is
   machine-local screening rather than a portable speed promise or durable Auto
   assignment.
 
@@ -202,7 +214,7 @@ hardening accumulated since 0.12.0a3.
   visible CPU decisions outside the validated region. The source-current RTX
   5090 record passed 10 exact admission cases, 10 matched rejections, all 18
   timed workloads bitwise, synchronized cancellation, and zero-residue cleanup,
-  so the exact region is now a normal public `Auto`/`Selective` candidate.
+  so the exact region is now a normal public `Auto`/`Custom` candidate.
   Transfer-inclusive examples ranged from 23.57x for a 512² radius-0.5 plane to
   170.95x for a 2048² radius-10 plane. Radius 0.5 first cleared both gates at
   512²: its 20.13-ms saving exceeded the 20-ms gate and its paired 95% speedup
@@ -239,11 +251,11 @@ hardening accumulated since 0.12.0a3.
 
 ### Compute Policy Interface
 
-- Added a main-toolbar `CPU`/`Auto`/`Prefer GPU`/`Selective` compute policy with
+- Added a main-toolbar `CPU`/`Auto`/`Prefer GPU`/`Custom` compute policy with
   an actual-run summary, a Settings-menu mirror, and per-node choices for nodes
   that declare GPU implementations. Workflow-v3 files deliberately reopen in
   CPU mode; workflow-v4 files persist portable compute intent.
-- Simplified Selective node choices to `Follow pipeline policy`, `CPU`, and one
+- Simplified Custom node choices to `Auto for this node`, `CPU`, and one
   entry per declared GPU library. `Best GPU` appears only when multiple
   libraries compete, while loaded exact pins remain honestly visible as an
   advanced compatibility entry until replaced.

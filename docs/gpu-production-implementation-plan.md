@@ -4,8 +4,8 @@ Date: 2026-08-04
 Product-direction revision: 2026-08-04
 Status: Phase 1 is implemented headlessly on
 `codex/gpu-cross-platform-support`; the Pass 4 application slice now includes
-the four CPU/Auto/Prefer-GPU/Selective policies, workflow-v4 compute intent,
-setup/memory diagnostics, selected-node benchmark review, and a Selective-only
+the four CPU/Auto/Prefer-GPU/Custom policies, workflow-v4 compute intent,
+setup/memory diagnostics, selected-node benchmark review, and a Custom-only
 review-first whole-pipeline optimizer.
 Phase 2B adds ordinary CuPy/CuPyX Richardson-Lucy,
 ordered-multi-input/single-output exact benchmarking, and a process-wide
@@ -13,10 +13,10 @@ per-device accelerator lease. Phase 2C adds CuPy/CuPyX
 Richardson-Lucy TV with separate lambda-zero and positive-TV scientific
 profiles. Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu. The validated
 regions for all of these providers are normal public
-Auto/Prefer-GPU/Selective candidates
+Auto/Prefer-GPU/Custom candidates
 on this branch; unsupported regions visibly use CPU. Phase 4 adds the public
 CPU Sigma Filter and a clean-room CuPy RawKernel provider whose exact reviewed
-region is also a normal public Auto/Prefer-GPU/Selective candidate. Its source-current
+region is also a normal public Auto/Prefer-GPU/Custom candidate. Its source-current
 RTX 5090 record passed 10 exact admission cases, 10 matched rejections, 18
 bitwise-exact timed workloads, cancellation, and cleanup. Canonical Canny/Otsu
 numerical evidence for this source revision records 28/28 exact admission cases,
@@ -50,21 +50,21 @@ The following constraints and approved product directions are non-negotiable:
 - VIPP's base installation and CPU execution are supported on Windows, macOS,
   and Linux. NVIDIA GPU execution is supported only on native Windows and
   supported Linux distributions. macOS is CPU-only for the NVIDIA-only phase.
-- The main toolbar exposes four execution modes: `CPU`, `Auto (best
-  available)`, `Prefer GPU`, and `Selective`. New interactive sessions default
+- The main toolbar exposes four execution modes: `CPU`, `Auto`, `Prefer GPU`,
+  and `Custom`. New interactive sessions default
   to `Auto`. Prefer GPU considers every reviewed public provider, including
-  `public_selective`, without applying the CPU-versus-GPU benefit gate. It does
+  `public_custom`, without applying the CPU-versus-GPU benefit gate. It does
   not bypass scientific, dtype, parameter, shape, dependency, environment, or
   memory gates; never synthesizes a cast; requires visible fallback; and gives
   unsupported nodes an explained ordinary CPU decision. Complete comparable
   GPU evidence selects the fastest GPU, otherwise stable implementation-ID
   order supplies a deterministic choice. Developer-hidden providers remain
   excluded unless explicit experimental admission is enabled.
-  `Selective` exposes concise authored per-node preferences: `Follow pipeline
-  policy`, `CPU`, and one `GPU · <library>` choice per validated library. `Best
+  `Custom` exposes concise authored per-node preferences: `Auto for this node`,
+  `CPU`, and one `GPU · <library>` choice per validated library. `Best
   GPU` appears only when at least two libraries compete. Exact implementation
   pins remain available to advanced/headless workflows and a loaded pin stays
-  visibly represented until the user replaces it. Selective also exposes the
+  visibly represented until the user replaces it. Custom also exposes the
   node/pipeline benchmark actions described below. Per-node preferences remain
   serialized but dormant in CPU, Auto, and Prefer GPU. Older workflows and
   callers remain CPU until they explicitly adopt the new execution contract.
@@ -88,7 +88,11 @@ The following constraints and approved product directions are non-negotiable:
   appear in `PrototypePipeline.outputs`, `node_outputs`, a `SourcePayload`, a
   napari layer, an exported result, or a batch writer.
 - RTX 4050 measurements are evidence for ordering and feasibility, not a
-  universal `Auto` policy. Unknown workload-policy regions resolve to CPU.
+  universal `Auto` policy. Unknown workload-policy regions resolve to CPU;
+  missing local completed-run history does not, because Auto then uses the
+  reviewed default for an otherwise admitted region. Accelerated-only history
+  schedules one same-surface CPU exploration run before later measured
+  selection.
 - GPU work is introduced behind contracts and promotion gates. The first
   headless vertical slice covers Subtract Background/Rolling-Ball Background,
   median, and 2D/3D Gaussian. Subsequent completed slices add ordinary RL,
@@ -98,7 +102,7 @@ The following constraints and approved product directions are non-negotiable:
   evidence-driven families.
 - Admission and visibility are region-specific. Once a provider region has
   passed its scientific-parity and required memory, progress, cancellation,
-  cleanup, and runtime gates, it is visible as a normal `Selective` and Prefer
+  cleanup, and runtime gates, it is visible as a normal `Custom` and Prefer
   GPU candidate; it may participate in `Auto` after the applicable end-to-end
   benefit gate.
   `developer_hidden` is only for incomplete or unvalidated work. Unsupported
@@ -140,7 +144,8 @@ segmentation waves, broader node coverage, and release-grade platform gates.
 
 The development branch now contains the Phase 1 headless vertical slice:
 
-- immutable CPU/Auto/Selective, per-node preference, typed fallback, operation,
+- the then-current immutable CPU/Auto/Custom contracts, per-node preference,
+  typed fallback, operation,
   policy, benchmark, scientific-cache, and execution-report contracts;
 - a lazy provider registry, graph/device planner, transactional executor,
   private CuPy allocation scope, cleanup/OOM recovery, and host-only public
@@ -172,8 +177,9 @@ completed with 167 passes and no skips.
 
 ### Phase 2 interactive slice status (2026-07-29)
 
-The branch now has the compact toolbar `CPU`/`Auto`/`Selective` policy selector,
-Settings-menu mirror, simplified dynamic Selective per-node choices, accepted
+At that dated milestone, the branch had the then-current compact toolbar
+`CPU`/`Auto`/`Custom` policy selector (before Prefer GPU was added),
+Settings-menu mirror, simplified dynamic Custom per-node choices, accepted
 CPU/CuPy/cuCIM node badges with muted stale state, amber CPU fallback, and one
 message-strip component whose major/actionable paths are severity-classified.
 The current optimizer update adds a distinct per-node lock and removes the
@@ -190,7 +196,7 @@ reports system RAM plus dedicated or unified accelerator memory. Selected-node
 benchmarking is review-before-apply and stores raw evidence only in a
 machine-local cache.
 
-The Selective-only, review-first `Find fastest` pipeline analysis is now
+The Custom-only, review-first `Find fastest` pipeline analysis is now
 implemented. The current backend is only the starting assignment. Every
 scientifically eligible CPU/CuPy/cuCIM implementation participates for every
 unlocked node; only a separate explicit node lock constrains the search, and
@@ -422,7 +428,7 @@ stack (NumPy 2.5.1, SciPy 1.18.0, scikit-image 0.26.0); a missing or changed
 version visibly retains CPU before GPU probing. Regions outside the declarations
 visibly use CPU. Focused implementation tests and exploratory parity matrices
 validated the exact candidate contracts, which are available in normal
-`Auto`/`Selective` pipelines. The source-current schema-v3 canonical record passed 28/28
+`Auto`/`Custom` pipelines. The source-current schema-v3 canonical record passed 28/28
 exact-mask admission cases. On the 8x1024x1024 `uint16` stack, Canny measured
 0.6812 seconds CPU versus 0.0349 seconds GPU end-to-end (19.51x), and Otsu
 measured 0.0455 versus 0.0077 seconds (5.92x). On the privacy-redacted
@@ -487,7 +493,7 @@ full-profile RTX 5090 record passed all 10 exact admission cases, 10 matched
 rejections, 18 bitwise-exact timed workloads, synchronized cancellation, and
 zero-residue cleanup. The implementation and immutable v4 policy artifact both
 declared `public_auto_candidate`; current artifact v5 retains that record. The
-exact region is visible in ordinary Selective pipelines and can participate in
+exact region is visible in ordinary Custom pipelines and can participate in
 Auto. Representative end-to-end
 speedups were 23.57x at 512²/radius 0.5, 55.23x at 512²/radius 2, 170.95x at
 2048²/radius 10, and 93.62x for an 8×512²/radius-2 stack. Radius 0.5 first
@@ -606,7 +612,7 @@ platform claims:
   optimizer: pipeline/workload/environment/device/memory/policy identity must
   stay attached through every future consumer. Never reintroduce a flattened
   `(node, implementation)` view that could clear Auto for a different graph
-  context; Selective authored choices may outlive stale evidence, but every
+  context; Custom authored choices may outlive stale evidence, but every
   `fastest` or `optimal` claim must not;
 - expand beyond the now-supported ordered-multi-input/single-output path only
   with explicit evidence for multi-output nodes, multiple accelerator runtimes,
@@ -639,7 +645,7 @@ The supported product matrix is:
 | Surface | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | Base VIPP install, import, CPU execution, workflows, batch, and generated Python | Required and tested | Required and tested | Required and tested |
-| NVIDIA GPU execution | Native CuPy/CUDA path on validated x86-64 environments | CuPy/CUDA path on validated NVIDIA-supported glibc distributions and architectures | Not available; `Auto` uses CPU, Selective visible fallback uses CPU with a warning, and strict CUDA selection fails preflight |
+| NVIDIA GPU execution | Native CuPy/CUDA path on validated x86-64 environments | CuPy/CUDA path on validated NVIDIA-supported glibc distributions and architectures | Not available; `Auto` uses CPU, Custom visible fallback uses CPU with a warning, and strict CUDA selection fails preflight |
 | GPU package installation | Platform-marked optional extra | Platform-marked optional extra | CUDA packages are not resolved or installed |
 | Saved implementation preferences | Open portably; resolve against the current environment and fallback policy | Open portably; resolve against the current environment and fallback policy | Open portably; CUDA preferences are unavailable and resolve/fail according to the recorded policy |
 | Apple GPU research | Not applicable | Not applicable | M1 Max validation host; evaluate a Metal/MPS or MLX runtime after the CUDA substrate is stable, without promising parity or coverage before evidence exists |
@@ -779,7 +785,7 @@ execution policy, and UI presentation separate.
 
 | Component | Proposed owner | Responsibility |
 | --- | --- | --- |
-| Compute request and result contracts | `core/compute.py` | Immutable `CPU`/`Auto`/`Prefer GPU`/`Selective` intent, per-node preferences, valid fallback policy, selected device, precision policy, typed reason codes, and JSON-safe reports. |
+| Compute request and result contracts | `core/compute.py` | Immutable `CPU`/`Auto`/`Prefer GPU`/`Custom` intent, per-node preferences, valid fallback policy, selected device, precision policy, typed reason codes, and JSON-safe reports. |
 | Operation implementation declarations | `core/compute_specs.py` | Immutable declarations associated with operation IDs. Each CPU/CuPy/cuCIM/future implementation declares its runtime, exact dtype/parameter region, parity, memory, progress, and benchmark contracts without importing optional packages. |
 | Runtime and implementation registry | `core/compute_registry.py` | Lazy runtime descriptors, entry-point discovery, instance lifetime and capability probing, plus implementation lookup by stable ID. It distinguishes an array runtime (`numpy`, `cuda-cupy`, future `metal-*`) from an implementation library (`cpu`, `cupyx`, `cucim`). |
 | Workload policy | `core/compute_policy.py` plus packaged JSON under `src/napari_vipp/compute_policies/` | Deterministic support and benefit decisions from workload, topology, environment, reviewed thresholds, and non-stale local benchmark records. CPU is conservative outside a validated region. |
@@ -790,7 +796,7 @@ execution policy, and UI presentation separate.
 | Benchmark and optimizer services | `core/compute_benchmark.py`, `core/compute_benchmark_coordinator.py`, `core/compute_pipeline_optimizer.py`, and `core/compute_pipeline_optimizer_coordinator.py` | Transactional node benchmarking, local fingerprinted result storage, parity-before-timing checks, cold/warm timing, application-safe evidence capture, and whole-pipeline assignment including transfers, residency, runtime switches, and memory. |
 | Capability/policy diagnostics | `core/compute_diagnostics.py` | JSON-safe support report, installation diagnosis, policy explanation, memory snapshot, and recent execution/fallback information. |
 | Single-run service | `core/execution.py` | Introduced as the mandatory headless/device execution entry in Pass 1, then made the only interactive application entry in Pass 4. It validates a detached workflow, plans, executes, and returns host outputs plus provenance. |
-| Interactive presentation | a reusable controller under `ui/compute.py`, composed by `_widget.py` | Main-toolbar mode dropdown, Selective node preferences, distinct per-node optimizer locks, node/pipeline benchmark actions, compact CPU/CuPy/cuCIM badges, RAM/accelerator-memory status, fallback display, and copyable install guidance. No provider import or policy logic. |
+| Interactive presentation | a reusable controller under `ui/compute.py`, composed by `_widget.py` | Main-toolbar mode dropdown, Custom node preferences, distinct per-node optimizer locks, node/pipeline benchmark actions, compact CPU/CuPy/cuCIM badges, RAM/accelerator-memory status, fallback display, and copyable install guidance. No provider import or policy logic. |
 | Batch integration | `core/batch.py`, `core/batch_setup.py`, and existing `ui/batch*` adapters | Persist the run request, reuse the core execution service per item, checkpoint decisions in manifests, cancel safely, and clean runtime state at item/run boundaries. |
 | Workflow and generated Python | `core/workflow.py`, `core/export.py` | Persist portable global mode and per-node preferences plus non-scientific optimizer-lock UI metadata, not machine timings or resolved hardware; migrate v3 safely, expose explicit runtime overrides, and return/write provenance. |
 
@@ -807,14 +813,14 @@ library and lets operation-family agents edit separate declaration blocks.
 The public contracts should settle on these concepts before an operation is
 promoted:
 
-- `ComputeRequest`: global mode (`cpu`, `auto`, `prefer_gpu`, or `selective`), immutable
+- `ComputeRequest`: global mode (`cpu`, `auto`, `prefer_gpu`, or `custom`), immutable
   node-ID-to-preference mapping, visible/strict fallback policy, selected
   runtime/device, precision-policy ID, workload-policy ID, accelerator-memory
   budget, and safety reserve. It has no Qt types.
 - `NodeComputePreference`: `auto`, `cpu`, `best_gpu`, an implementation-library
   preference such as `cupyx`/`cucim`, or an advanced stable implementation ID.
   Preferences are retained while another global mode is active but ignored
-  outside Selective.
+  outside Custom.
 - Optimizer locks are deliberately not part of `ComputeRequest` or
   `NodeComputePreference`. They control which alternatives `Find fastest` may
   investigate; they do not alter normal execution, scientific cache identity,
@@ -856,12 +862,14 @@ device array.
 
 ```mermaid
 flowchart TD
-    U["User selects CPU, Auto, Prefer GPU, or Selective"] --> UI["Qt presentation captures ComputeRequest"]
-    S["Selective node preferences or benchmark actions"] --> UI
+    U["User selects CPU, Auto, Prefer GPU, or Custom"] --> UI["Qt presentation captures ComputeRequest"]
+    S["Custom node preferences or benchmark actions"] --> UI
     UI --> R["PipelineRunRequest with detached workflow and host snapshots"]
     R --> V["Qt-free workflow, source, axis, grid, and manual/dirty validation"]
     V --> C["Lazy capability and environment snapshot"]
-    C --> P["Policy, local benchmark evidence, and whole-graph planner"]
+    C --> P["Reviewed policy plus whole-graph planner"]
+    HST["Auto: exact completed history isolated by execution surface"] --> P
+    BENCH["Custom: explicit node and pipeline benchmark evidence"] --> P
     P --> M["Accelerator and host-memory preflight"]
     M --> E["Segment executor"]
     E -->|"host segment"| CPU["Existing CPU operation functions"]
@@ -875,7 +883,7 @@ flowchart TD
 ```
 
 Preflight is complete before a scientific or side-effecting node runs. A strict
-Selective preference that cannot be honored therefore fails without partial
+Custom preference that cannot be honored therefore fails without partial
 graph execution. Device segments are execution transactions: device values and
 provisional host copies are committed to the public host result store only
 after the whole segment succeeds. This makes one-time CPU retry after a GPU OOM
@@ -888,13 +896,19 @@ safe and prevents duplicate side effects.
 | Toolbar mode | Exact behavior |
 | --- | --- |
 | `CPU` | Do not discover, probe, or import an accelerator runtime for execution. Every scientific operation uses the current CPU implementation. This is the compatibility/reproduction mode and the migration result for workflow v3. |
-| `Auto (best available)` | Default for new interactive sessions. Lazily discover usable implementations and choose CPU, CuPyX, cuCIM, or a future validated provider per node while optimizing the complete scheduled graph. The choice includes transfer/runtime-switch cost, device residency, memory, cold-start state, and confidence. CPU is a normal Auto decision, not fallback. |
-| `Selective` | Show `Follow pipeline policy`, `CPU`, and one library choice such as `GPU · CuPy` or `GPU · cuCIM` for every implemented node. Show `Best GPU` only when at least two distinct libraries compete. Exact pins are advanced-only, although a loaded pin remains visibly represented until replaced. Unimplemented nodes remain visibly CPU. Preferences are planned together, so the UI may explain that a locally faster node would make the complete pipeline slower by forcing a transfer/runtime boundary. |
+| `Auto` | Default for new interactive sessions. With no exact compatible history, choose from reviewed GPU defaults wherever the scientific, environment, and memory gates pass. If history is accelerated-only, the next global Auto run measures the authoritative CPU assignment once on the same execution surface. Once both observations exist, a later matching run uses acceleration only when it clears the reviewed 1.20x/20-ms benefit margin; otherwise CPU wins. Auto never silently benchmarks multiple implementations. |
+| `Custom` | Show `Auto for this node`, `CPU`, and one library choice such as `GPU · CuPy` or `GPU · cuCIM` for every implemented node. `Auto for this node` authors no backend pin and uses the reviewed Auto default; completed-run history is consulted only when the global mode is Auto. Show `Best GPU` only when at least two distinct libraries compete. Exact pins are advanced-only, although a loaded pin remains visibly represented until replaced. Unimplemented nodes remain visibly CPU. Preferences are planned together, so the UI may explain that a locally faster node would make the complete pipeline slower by forcing a transfer/runtime boundary. |
 
 New sessions default to Auto even when no accelerator package is installed. In
 that environment Auto runs normally on CPU, the toolbar status says that GPU
 acceleration is not installed, and diagnostics offer one copyable command for
 the compatible optional extra. Absence of an optional package is not an error.
+
+Only successful, fallback-free completed full-pipeline wall times enter Auto
+history. Interactive, batch, and registry-lifecycle execution surfaces have
+separate keys and are never combined into a timing pair. The one CPU
+exploration run is reported as Auto performance exploration; node/provider and
+whole-pipeline multi-implementation comparisons remain explicit Custom actions.
 
 `Auto` CPU selection and runtime fallback have different machine-readable
 states. Use `decision_kind=policy_cpu` for the former and
@@ -903,14 +917,15 @@ current `BackendSelection.fell_back=True` for an unsupported Auto operation and
 its eager capability detection before an explicit CPU decision are corrected
 during Pass 0.
 
-### 2.2 Selective choices and fallback
+### 2.2 Custom choices and fallback
 
 `ComputeRequest.node_preferences` is a validated immutable mapping keyed by
-stable node ID. It is active only in Selective mode but retained when the user
+stable node ID. It is active only in Custom mode but retained when the user
 temporarily changes global mode. A node preference may be:
 
-- `auto`: use the whole-graph optimizer (shown as `Follow pipeline policy` in
-  the node dropdown);
+- `auto`: use the reviewed Auto default without authoring a backend pin (shown
+  as `Auto for this node` in the node dropdown); this Custom preference does
+  not consume raw benchmark records or Auto's completed-run history;
 - `cpu`: require the scientific reference implementation;
 - `best_gpu`: require the best supported GPU assignment under whole-graph
   planning without forcing the user to choose a library;
@@ -926,29 +941,29 @@ advanced/developer tooling. If a workflow already contains an exact pin, the
 dropdown shows that current value as an `Advanced pin · <library>` entry. A
 known pin excluded by the active admission setting is marked `unavailable`, as
 is an unknown ID, until the user selects a normal replacement; the control must
-never silently display `Follow pipeline policy` while retaining the pin.
+never silently display `Auto for this node` while retaining the pin.
 
-Interactive Selective mode defaults to **visible fallback** for usability. If a
+Interactive Custom mode defaults to **visible fallback** for usability. If a
 forced `best_gpu`, library, or exact-implementation choice is unavailable,
 unsupported for the actual dtype/parameters, or encounters a classified OOM,
 the planner may choose CPU once and
-must show a persistent node badge and run-level warning. An advanced **Strict
-selected implementations** switch changes the same request to fail complete
+must show a persistent node badge and run-level warning. An advanced **Fail if
+a selected GPU cannot run** switch changes the same request to fail complete
 preflight instead. Batch, headless, and generated callers can select either
 policy explicitly. Invalid parameters, axis/grid errors, parity failures,
 unclassified runtime errors, and writer errors never become fallbacks.
-Selective `auto` choosing CPU is a normal policy result, not fallback.
+Custom `auto` choosing CPU is a normal policy result, not fallback.
 
 ### 2.3 Mixed graphs and preflight
 
 - `CPU`: never mixed.
 - `Auto`: mixed graphs are expected and partitioned at operation, support,
   benefit, runtime, or memory boundaries.
-- `Selective`: authored node preferences are constraints on a whole-graph plan,
+- `Custom`: authored node preferences are constraints on a whole-graph plan,
   not independent wrappers. Compatible CuPyX and cuCIM implementations may stay
   in one CUDA/CuPy segment only after their zero-copy interoperability contract
   passes; otherwise a runtime/library transition is costed as a boundary.
-- That constraint describes ordinary Selective **execution** after preferences
+- That constraint describes ordinary Custom **execution** after preferences
   have been authored. During a `Find fastest` analysis, an unlocked node's
   current preference is only the baseline assignment and every scientifically
   eligible alternative is considered. The optimizer proposes preference edits;
@@ -1022,7 +1037,7 @@ reasons.
 
 Opening a workflow with CUDA preferences on CPU-only or Apple-only hardware
 preserves the authored preferences and shows their unavailable status. Auto runs
-on CPU. Selective visible-fallback mode runs on CPU with explicit warnings;
+on CPU. Custom visible-fallback mode runs on CPU with explicit warnings;
 strict mode fails preflight. A session override does not mutate the document;
 "Use CPU and save" or accepting new benchmark choices does. Generated Python
 uses embedded intent unless the caller supplies an explicit override. Batch
@@ -1056,7 +1071,7 @@ execution provenance.
 | Cache | Every output-port record carries scientific result identity plus separate request/decision provenance. Only the actual implementation and result-affecting semantics key values; global mode, preference, fallback, and benchmark evidence explain the decision but do not invalidate an otherwise identical result. An exact pin cannot consume another implementation's entry. |
 | Batch | `BatchConfig` records the effective override; each item is replanned against current free memory but the request is unchanged. A fallback on one item does not silently rewrite later items to CPU. |
 | Generated Python | Embedded workflow intent is the default. Function/CLI override is explicit, returned in provenance, and does not mutate `_WORKFLOW_JSON`. |
-| Reproducibility | `CPU` is portable and stable. Auto is intentionally hardware-dependent. Prefer GPU expresses placement preference rather than a speed claim. Selective exact pins express stronger intent but may be unavailable elsewhere. Policy, environment, actual decisions, fallback records, and implementation versions are required to reproduce a result. |
+| Reproducibility | `CPU` is portable and stable. Auto is intentionally hardware-dependent. Prefer GPU expresses placement preference rather than a speed claim. Custom exact pins express stronger intent but may be unavailable elsewhere. Policy, environment, actual decisions, fallback records, and implementation versions are required to reproduce a result. |
 
 ## 3. Operation capability model
 
@@ -1076,7 +1091,7 @@ class OperationComputeSpec:
     input_contract_ids: tuple[tuple[str, str], ...]
     output_contract_ids: tuple[tuple[str, str], ...]
     array_domain: str                        # host-numpy/cuda-cupy/...
-    admission_tier: str                      # developer_hidden/public_selective/public_auto_candidate
+    admission_tier: str                      # developer_hidden/public_custom/public_auto_candidate
     validated_environment_policy_id: str     # OS/Python/runtime/library ranges
     parameter_policy_id: str                # exact range/mode validator
     parity_policy_id: str
@@ -1100,13 +1115,15 @@ a coarse operation-wide dtype tuple is prohibited.
 Admission is an explicit, region-specific lifecycle. `developer_hidden` is
 reserved for incomplete or unvalidated work, is available only to an explicit
 headless developer request, and is excluded from ordinary UI, workflow, Auto,
-and Selective discovery. `public_selective` has passed scientific parity plus
+and Custom discovery. `public_custom` has passed scientific parity plus
 the required memory, progress, cancellation, cleanup, and runtime gates and is
 therefore visible in normal pipelines. `public_auto_candidate` has additionally
-met the evidence requirements to be considered by Auto, but only inside its
-validated environment/workload policy. A provider is not hidden merely because
-some of its dtype/parameter/platform subregions are unsupported: those calls
-receive a visible CPU decision or fallback. An internal
+met the reviewed packaged-evidence requirements to be an Auto default, but only
+inside its validated environment/workload policy. This admission evidence is
+not machine-local learning and raw node benchmarks never teach Auto. A provider
+is not hidden merely because some of its dtype/parameter/platform subregions
+are unsupported: those calls receive a visible CPU decision or fallback. An
+internal
 `allow_experimental=True` test/developer flag is never serialized into workflow
 JSON or exposed as a normal user setting.
 
@@ -1182,7 +1199,7 @@ implementations:
 
 Detection has two phases. Descriptor discovery lists built-in and entry-point
 runtimes/libraries without importing them. A probe runs only when the UI asks
-for accelerator status or an Auto/Prefer-GPU/Selective request needs it. The
+for accelerator status or an Auto/Prefer-GPU/Custom request needs it. The
 CuPy probe records every visible device, then creates a context for the selected
 device, checks driver/runtime identity and free/total memory, imports each required CuPyX submodule, executes
 and synchronizes a real one-element kernel, and tears down the probe allocation.
@@ -1320,13 +1337,13 @@ def plan_run(pipeline, run_scope, compute_request, environment, cached_records):
             candidates,
         )
 
-    # Auto and Selective are graph-global: include transfers, residency,
+    # Auto and Custom are graph-global: include transfers, residency,
     # branches/joins, host materialization, memory, and authored constraints.
     decisions = solve_graph_assignment(
         pipeline, scheduled, descriptors, decisions, environment
     )
 
-    failures = unhonored_strict_selective_preferences(decisions, compute_request)
+    failures = unhonored_strict_custom_preferences(decisions, compute_request)
     if failures:
         raise ComputePreflightError(all_failures=failures)
 
@@ -1338,7 +1355,7 @@ def plan_run(pipeline, run_scope, compute_request, environment, cached_records):
 
 `infer_workloads_without_executing_nodes` uses source/cached shapes and pure
 shape/dtype propagation. If an output shape cannot be known until execution,
-Auto resolves that node to CPU. A Selective GPU requirement reports an
+Auto resolves that node to CPU. A Custom GPU requirement reports an
 unsupported-dynamic-shape reason unless the declaration provides a safe
 upper-bound model.
 
@@ -1348,7 +1365,7 @@ validated upstream implementation. Their scan/transfer cost enters Auto and
 benchmark estimates. A sampled scan may tune a cost model but never proves a
 scientific value-domain restriction. If a required complete fact for an
 intermediate cannot be known safely before execution, Auto chooses CPU and a
-forced Selective choice reports the typed unsupported reason; it does not launch
+forced Custom choice reports the typed unsupported reason; it does not launch
 speculatively and silently fall back after observing the values.
 
 ### 4.5 Execution pseudocode
@@ -1462,6 +1479,15 @@ breakpoints, required minimum speedup, confidence, and
 benchmark artifact digests. Raw results remain in `docs/benchmarks/`; shipped
 policy records are the reviewed derivative.
 
+These shipped records define reviewed Auto defaults; they are not Auto's local
+history. With no exact compatible history, Auto uses the reviewed default. An
+accelerated-only observation causes the next global Auto run to measure CPU
+once on the same execution surface; a later matching run applies the
+1.20x/20-ms gate to the completed pair. Interactive, batch, and
+registry-lifecycle timing surfaces are never mixed. Isolated node and **Find
+fastest** records remain explicit Custom evidence, and Auto never silently
+benchmarks multiple implementations.
+
 Device tiers should be based on a short, deterministic startup/transfer/compute
 microprofile plus compute capability and VRAM class, not model-name matching.
 The microprofile contains no user image data and its local result is cached by
@@ -1472,9 +1498,9 @@ result identity.
 
 ### 5.3 On-demand node and pipeline benchmarking
 
-Selective mode exposes `Benchmark node` only when the selected node has at
+Custom mode exposes `Benchmark node` only when the selected node has at
 least two validated candidates for its resolved inputs and parameters. The
-main-toolbar `Find fastest pipeline` action is visible only in Selective mode and
+main-toolbar `Find fastest pipeline` action is visible only in Custom mode and
 only after enough source/cached metadata exists to construct workload
 descriptors and at least one unlocked node has multiple eligible
 implementations. For this analysis, current preferences form the baseline but
@@ -1600,7 +1626,7 @@ pipeline segment. These thresholds are versioned policy, not UI literals.
 6. Run memory preflight. Auto may demote a segment or split it at the least
    costly boundary; it must record that memory caused the CPU decision.
 
-Selective provider/implementation pins ignore the Auto performance threshold
+Custom provider/implementation pins ignore the Auto performance threshold
 but never ignore support, scientific parity, or memory constraints. An accepted
 local benchmark may choose a smaller but statistically clear win because it
 measured the actual workload and environment.
@@ -1676,7 +1702,7 @@ Named implementation memory models cover at least:
 
 Unknown implementation workspace is measured across the declared support matrix
 and stored with a safety multiplier. A model that cannot establish a safe upper
-bound cannot be offered as a Selective GPU choice and causes Auto to choose CPU.
+bound cannot be offered as a Custom GPU choice and causes Auto to choose CPU.
 
 ### 6.3 CuPy pool policy
 
@@ -1707,7 +1733,7 @@ after every node.
   CUDA error.
 - Best-effort synchronize, drop all segment references, free VIPP-pool blocks,
   and capture estimate/free/cap/pool state.
-- `Auto` retries the failed segment once on CPU. A Selective GPU requirement
+- `Auto` retries the failed segment once on CPU. A Custom GPU requirement
   retries only under visible fallback; strict selection fails. Mark the segment
   as already retried to prevent loops.
 - Retry uses committed host boundary inputs and commits no failed GPU output.
@@ -1751,7 +1777,7 @@ provenance and the separate benchmark key—not result identity. Thus an Auto→
 result and explicit-CPU result may reuse the same scientific cache entry. A
 current exact implementation pin rejects a cache produced by another
 implementation even when both passed tolerance parity; automatic Auto,
-Prefer-GPU, or Selective planning may reuse only an implementation its current
+Prefer-GPU, or Custom planning may reuse only an implementation its current
 plan independently admits.
 
 `CacheAdmissibility` is evaluated after current planning, never inferred from
@@ -1865,7 +1891,7 @@ VIPP's base package metadata accepts Python 3.12 and newer, but the initial
 **admitted GPU matrix is CPython 3.12 only**. The setup scripts default to 3.12
 and refuse another minor unless a developer explicitly opts into an unsupported
 probe. Diagnostics report that state, and no public GPU implementation appears
-as available in Auto, Prefer GPU, or Selective—including library or exact
+as available in Auto, Prefer GPU, or Custom—including library or exact
 pins—on an unvalidated Python implementation/minor/ABI. Visible fallback uses
 CPU with the specific matrix reason; strict selection fails preflight. Only the explicit
 headless developer-experimental path may probe such an environment, and it
@@ -1931,7 +1957,7 @@ operation-level parity, packaging, memory, and performance gates on the M1 Max.
   without an import exception.
 - **macOS:** always reports `platform_unsupported` for the NVIDIA provider.
   `Auto` selects CPU as a normal policy decision. An unavailable CUDA choice in
-  Selective mode follows visible/strict fallback policy; diagnostics do not show
+  Custom mode follows visible/strict fallback policy; diagnostics do not show
   a CUDA install command or attempt a source build. Apple acceleration remains a
   separately labelled research path, not an implied CUDA replacement.
 - **Native Windows x86-64:** supported for CuPy after import, device enumeration,
@@ -1990,12 +2016,12 @@ prerequisite for a VIPP I/O requirement.
 
 ### 10.1 Global controls
 
-Add one global `Compute` selector (`CPU`, `Auto (best available)`, `Prefer GPU`,
-`Selective`) to the main toolbar/settings and batch setup summary. New sessions
+Add one global `Compute` selector (`CPU`, `Auto`, `Prefer GPU`,
+`Custom`) to the main toolbar/settings and batch setup summary. New sessions
 default to Auto; v3 workflows initially restore their historical CPU intent
 until the user chooses otherwise. Add adjacent compact status such as
 `Auto · RTX 5090`, `Prefer GPU · 3 GPU / 2 CPU`, or
-`Selective · 2 GPU / 2 CPU`. If multiple usable devices exist, an advanced
+`Custom · 2 GPU / 2 CPU`. If multiple usable devices exist, an advanced
 device selector may choose the run device, but its index is session state rather
 than portable workflow intent.
 
@@ -2004,20 +2030,20 @@ before Settings and is mirrored in the Settings overflow menu so it remains
 reachable at narrow widths. Compute controls must not displace the existing
 preview/zoom state or make the main toolbar wrap unpredictably.
 
-`Find fastest pipeline` appears beside the selector only in Selective mode. It
+`Find fastest pipeline` appears beside the selector only in Custom mode. It
 is disabled with an explanation until the scheduled graph and workload
-descriptors are known. An advanced `Strict selected implementations` switch
-changes visible fallback into fail-closed preflight for Selective intent.
+descriptors are known. An advanced `Fail if a selected GPU cannot run` switch
+changes visible fallback into fail-closed preflight for Custom intent.
 Prefer GPU always uses visible fallback; strict Prefer-GPU requests are invalid.
 The ordinary interactive default keeps fallback enabled and conspicuous.
 
 ### 10.2 Node and run explanations
 
 The inspector Compute section is read-only in CPU, Auto, and Prefer GPU modes.
-In Selective mode, implemented nodes gain a preference dropdown and eligible
+In Custom mode, implemented nodes gain a preference dropdown and eligible
 nodes gain `Benchmark node`. Unimplemented scientific nodes show CPU without a fake selector;
 source/writer infrastructure is marked `Host` or left unbadged.
-The dropdown offers `Follow pipeline policy`, `CPU`, and one `GPU · <library>`
+The dropdown offers `Auto for this node`, `CPU`, and one `GPU · <library>`
 choice per validated library. It adds `Best GPU` only when at least two distinct
 libraries are declared. Exact pins are not normal choices; a loaded current pin
 is shown as a temporary `Advanced pin · <library>` entry. Pins excluded by the
@@ -2086,7 +2112,7 @@ confirmation and one undoable action. The current CPU/Best GPU/library/exact
 choice is displayed as the starting assignment, not treated as a constraint.
 A separate per-node lock is the sole user-authored instruction to preserve a
 backend during this search, and an applied winner remains unlocked unless the
-user locks it separately. A Follow-pipeline/Auto node has no explicit choice to
+user locks it separately. An `Auto for this node` choice has no explicit backend to
 preserve and cannot be locked until the user selects a per-node choice. Before
 analysis, the UI summarizes how many nodes are
 unlocked, locked, or have only one scientifically eligible implementation. If
@@ -2285,9 +2311,12 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
   the memory estimate and timing.
 - Pin independently executed official-plugin fixtures and their source/class,
   ImageJ jar, generator, and harness hashes. The source-current real-device
-  parity/lifecycle record passed, so the exact region is now public in Selective
-  and available to evidence-backed Auto. Future widened regions repeat this
-  gate; they do not inherit admission from the current matrix.
+  parity/lifecycle record passed, so the exact region is now public in Custom
+  and is a reviewed Auto default where its current gates pass. Raw matrix
+  timings do not teach Auto. Completed-run history follows the reviewed-default,
+  same-surface CPU-exploration, then 1.20x/20-ms selection sequence. Future
+  widened regions repeat this gate; they do not inherit admission from the
+  current matrix.
 
 #### Otsu — `cupy-otsu-threshold-exact-v1`
 
@@ -2422,7 +2451,7 @@ change requiring evidence and review, not a test-maintenance edit.
 - `test_plugin_contract.py`, npe2 validation, generated script import, and a
   subprocess assertion that CuPy/CuPyX/optional modules were not imported.
 - Compute-contract parsing/JSON round trips for
-  CPU/Auto/Prefer-GPU/Selective, retained dormant per-node preferences,
+  CPU/Auto/Prefer-GPU/Custom, retained dormant per-node preferences,
   visible/strict validation, benchmark fingerprints, and stable reason-code
   tests.
 - Mock capability/runtime/library tests for absent package, failed import, no device,
@@ -2431,7 +2460,7 @@ change requiring evidence and review, not a test-maintenance edit.
 - Fake-device planner tests for linear, mixed, branch, fan-out, join,
   multi-input, multi-output, cached boundary, skipped/manual, retained/pinned,
   dirty-subgraph, same-runtime CuPyX/cuCIM residency, cross-runtime boundaries,
-  and unavailable strict Selective choices. The fake array is opaque and raises
+  and unavailable strict Custom choices. The fake array is opaque and raises
   if ordinary NumPy code coerces it outside the runtime.
 - Revision-keyed `ArrayFacts` tests cover complete versus sampled facts,
   propagation, invalidation, scan-cost accounting, non-finite exclusion,
@@ -2488,7 +2517,8 @@ permission to rewrite adjacent code.
 ### Delivery phase map
 
 - **Phase 1 — headless foundation and first vertical slice:** Passes 0-3.
-  Freeze CPU/Auto/Selective and benchmark contracts; unify headless/device
+  Freeze the then-current CPU/Auto/Custom and benchmark contracts (before
+  Prefer GPU was added); unify headless/device
   execution behind one Qt-free service; build the fake-tested device-resident
   runtime; create the
   reproducible CUDA 13 development environment/doctor path; and implement
@@ -2496,7 +2526,7 @@ permission to rewrite adjacent code.
   workflow-schema, batch, or generated-Python behavior changes yet.
 - **Phase 2 — interactive use and deconvolution:** Pass 4 plus the RL/RL-TV
   operation work in Passes 6-7. Ordinary RL and RL-TV are implemented
-  headlessly. Add toolbar mode, Selective node choices,
+  headlessly. Add toolbar mode, Custom node choices,
   badges, review-first node and whole-pipeline benchmark UI,
   diagnostics/install guidance, RAM/VRAM presentation, the minimal workflow v4
   compute-intent block plus canonical hash and atomic reader/writer preservation
@@ -2519,11 +2549,12 @@ permission to rewrite adjacent code.
   segmentation, label cleanup, colocalization, and other families where a
   runtime/library implementation is scientifically faithful and operationally useful.
 
-Phase 1 is complete only when all of these are true:
+Phase 1 is complete only when all of these historically scoped conditions are
+true:
 
-- headless contracts support CPU/Auto/Selective, `best_gpu`, library/exact
-  per-node preferences, visible/strict fallback, multiple implementation
-  candidates, and same-runtime CuPyX/cuCIM interoperability;
+- the phase-era headless contracts support CPU/Auto/Custom, `best_gpu`,
+  library/exact per-node preferences, visible/strict fallback, multiple
+  implementation candidates, and same-runtime CuPyX/cuCIM interoperability;
 - old callers remain CPU-compatible and CPU execution imports no accelerator;
 - every real headless/device run uses one Qt-free execution service, and the
   existing synchronous and worker application paths have explicit CPU
@@ -2573,13 +2604,14 @@ reason enums, `OperationComputeSpec`, `WorkloadDescriptor`, `MemoryEstimate`,
 `NodeComputePreference`, `BenchmarkRecord`, `NodeExecutionDecision`,
 `ExecutionPlan`, `ScientificResultKey`, `CacheAdmissibility`,
 `BenchmarkRecordKey`, and transient `ExecutionReport` data shells, JSON
-serialization, and CPU/Auto/Selective semantics. Separate runtime/array domain
+serialization, and the then-current CPU/Auto/Custom semantics, before Prefer
+GPU was added. Separate runtime/array domain
 from implementation library and model per-port public/internal dtype/non-finite
 policies. Add no accelerator callables and advertise zero production GPU
 operations.
 
 **Tests/documentation:** strict parsing, immutable/JSON-safe values, retained
-node preferences, Auto CPU is not fallback, visible/strict Selective behavior,
+node preferences, Auto CPU is not fallback, visible/strict Custom behavior,
 stale benchmark fingerprints, declaration validation, and import safety. Fix
 the spike so CPU resolves before capability detection and imports no optional
 package. Update architecture docs to point to the new contracts.
@@ -2716,7 +2748,7 @@ GPU filter and optimizer tests.
 **Public contracts:** CuPyX implementations for `median_filter`,
 `gaussian_blur`, and `gaussian_blur_3d`; distinct 2D slice-wise and true-3D
 Gaussian IDs; per-port dtype/value policies; versioned host/device tier records;
-and deterministic Auto/Selective planning. `uint8`, `uint16`, and float32 are
+and deterministic Auto/Custom planning. `uint8`, `uint16`, and float32 are
 first-class validation targets. Median requires exact production parity in each
 advertised region; Gaussian uses its reviewed operation-specific tolerances.
 Float64 and non-finite behavior remain explicit per-operation regions, never an
@@ -2731,12 +2763,12 @@ The pipeline optimizer must prefer a single-transfer
 Background → Gaussian → Median CUDA segment when that is globally fastest, even
 when an isolated-node winner differs.
 
-**Migration:** none. Auto/Selective can be passed only as headless runtime
+**Migration:** none. Auto/Custom can be passed only as headless runtime
 requests until Pass 4; raw benchmark evidence is local and no workflow schema
 changes.
 
 **Acceptance/rollback (historical):** scientifically valid implementations
-appeared as Selective candidates within the explicit Phase 1 developer request
+appeared as Custom candidates within the explicit Phase 1 developer request
 regardless of the Auto threshold; at that pass boundary, public exposure still
 required the packaging tier.
 Developer Auto calibration considers only validated regions whose complete
@@ -2765,11 +2797,12 @@ unrelated UI work and give each large composition file one owner.
 
 **Public contracts and UI:** `PipelineRunResult.execution_report`, actual-
 implementation host cache records, a session `ComputeRequest`, and one execution
-service for formerly synchronous and background paths. Add a compact toolbar
-selector immediately before Settings with `CPU`, `Auto`, and `Selective`; new
+service for formerly synchronous and background paths. At this historical pass,
+add the then-current compact toolbar selector immediately before Settings with
+`CPU`, `Auto`, and `Custom`; Prefer GPU is added by the later product update. New
 interactive sessions default to Auto, and the selector is mirrored in Settings
-when the toolbar collapses. `Find fastest pipeline…` exists only in Selective mode.
-The inspector Compute group offers `Follow pipeline policy`, `CPU`, one choice
+when the toolbar collapses. `Find fastest pipeline…` exists only in Custom mode.
+The inspector Compute group offers `Auto for this node`, `CPU`, one choice
 per declared GPU library, and `Best GPU` only where multiple libraries compete,
 plus `Benchmark node…`. Exact preferences remain an advanced/developer contract;
 a loaded current pin remains visibly represented until replaced.
@@ -2791,7 +2824,7 @@ memory budget on unified-memory devices.
 **Tests/documentation:** scientific result identity is based on the actual
 implementation/version and scientific semantics, not global mode, fallback
 policy, device index, or raw benchmark timing. Benchmark-profile identity is
-separate. Test Auto ↔ Selective reuse of identical actual CPU results, stale-run
+separate. Test Auto ↔ Custom reuse of identical actual CPU results, stale-run
 rejection after preference changes; CPU, `best_gpu`, library, exact-pin, and
 independently re-resolved fallback cache admissibility; node deletion/
 duplication; one-step optimizer
@@ -2873,7 +2906,7 @@ algorithm tests after Pass 4 if no shared files are edited.
 ### Pass 6 — Ordinary Richardson–Lucy
 
 **Status (2026-07-29):** the headless implementation, exact node/optimizer
-benchmark substrate, and exact-region public Auto/Selective visibility are
+benchmark substrate, and exact-region public Auto/Custom visibility are
 implemented. Durable batch/generated/CLI/export exposure was completed on
 2026-08-04; broader real-data evidence and cross-platform qualification remain
 gated.
@@ -2922,7 +2955,7 @@ shared RL provider primitives.
 **Status (2026-07-29):** the headless implementation, exact lambda-zero and
 positive-TV regions, ordered-input benchmarking, iteration
 progress/cancellation, conservative memory model, fixed/holdout evidence, and
-exact-region public Auto/Selective visibility are implemented. Durable
+exact-region public Auto/Custom visibility are implemented. Durable
 batch/generated/CLI/export exposure was completed on 2026-08-04; calibrated
 biological data and cross-platform qualification remain gated.
 
@@ -3057,7 +3090,7 @@ resolution.
 environment installs from a clean environment and passes its doctor. A CUDA
 target without a wheel or reproducible supported build is removed from the
 published matrix. Each cuCIM operation requires a reproducible package plus the
-common scientific, memory, cancellation, maintenance, and Selective/Auto gates;
+common scientific, memory, cancellation, maintenance, and Custom/Auto gates;
 one fast primitive cannot admit the whole library. A narrower OS/provider matrix
 must be explicit. Rollback removes cuCIM independently and can remove CUDA
 extras/install UX while retaining the portable CPU base. **Still disabled:**
@@ -3096,10 +3129,10 @@ cancellation granularity, and memory.
 **Migration:** normally none. A new parameter, algorithm, or precision mode is
 separate scientific/schema work.
 
-**Acceptance/rollback:** each Selective candidate meets parity, bounded-memory,
+**Acceptance/rollback:** each Custom candidate meets parity, bounded-memory,
 cleanup, provenance, packaging, and CI requirements. Auto additionally requires
 section 5.4 evidence for the complete segment. A GPU residency bridge may remain
-a Selective candidate even when its isolated kernel is slower, because the
+a Custom candidate even when its isolated kernel is slower, because the
 whole-pipeline optimizer may prove that avoiding transfers is globally faster.
 Rollback deletes only that declaration/policy. **Still disabled:** all
 unpromoted dtype/parameter regions and operations.
@@ -3115,7 +3148,7 @@ Pass 0 contracts
   -> Pass 1 headless execution/benchmark/dev substrate
       -> Pass 2 Background/Subtract Background
           -> Pass 3 Median/Gaussian/headless optimizer
-              -> Pass 4 toolbar + Selective node/pipeline UX
+              -> Pass 4 toolbar + Custom node/pipeline UX
                   -> Pass 6 RL [implemented] -> Pass 7 RL-TV [implemented]
                   -> Pass 10 Otsu/Canny/labels/measurements and bridges
                   -> Pass 5 batch
@@ -3138,7 +3171,7 @@ agents to edit the same tuple/map.
 
 The numbered passes above are the authoritative work orders. Generate a fresh,
 pass-specific task from those contracts when implementation starts; do not reuse
-the pre-2026-07-27 global-only prompts because they predate Selective mode,
+the pre-2026-07-27 global-only prompts because they predate Custom mode,
 per-node choices, and the runtime/library split.
 
 For every implementation pass:
@@ -3153,9 +3186,13 @@ For every implementation pass:
    is evidence only until the complete VIPP adapter passes parity.
 4. Keep optional accelerator discovery lazy. CPU mode and fully skipped batch
    work must not import or initialize an accelerator.
-5. Admit a candidate to Selective only after scientific, memory, cleanup, and
-   cancellation gates. Admit it to Auto only after the separate end-to-end
-   policy gate or valid local evidence.
+5. Admit a candidate to Custom only after scientific, memory, cleanup, and
+   cancellation gates. Make it a reviewed Auto default only after the separate
+   packaged end-to-end policy gate. Raw node or optimizer evidence never admits
+   it automatically. With accelerated-only exact compatible history, the next
+   global Auto run measures CPU once on the same execution surface; later
+   matching runs apply the 1.20x/20-ms gate to the completed pair. Never mix
+   interactive, batch, or registry-lifecycle timing surfaces.
 6. Use deterministic fake runtimes/clocks for required tests and named real GPU
    hosts for promotion evidence. Report unsupported dtype/parameter regions
    explicitly.
@@ -3172,7 +3209,8 @@ For every implementation pass:
 
 ### Phase 1 integration sequence
 
-- **Commit A — contracts:** CPU/Auto/Selective, node preferences, fallback,
+- **Commit A — phase-era contracts:** CPU/Auto/Custom, before Prefer GPU; node
+  preferences, fallback,
   runtime/library/implementation, dtype/value, decision, and benchmark records.
 - **Commit B — CPU execution seam:** unified Qt-free prepared-node/execution
   service with byte/state-for-state CPU compatibility.
@@ -3205,14 +3243,14 @@ not reasons to redesign Phase 1.
 
 | ID | Decision | Recorded direction | Remaining gate |
 | --- | --- | --- | --- |
-| D1 | Compute intent | Global modes are CPU, Auto, Prefer GPU, and Selective; Auto is the new-session default. Prefer GPU selects an admitted reviewed GPU regardless of CPU speed and keeps per-node preferences dormant. Selective provides per-node Follow-pipeline/CPU choices, one choice per GPU library, and Best GPU only when multiple libraries compete; exact pins are advanced-only. `Find fastest` is Selective-only and treats these as the current assignment unless a distinct optimizer lock is set. | Keep lock state separate from execution intent and scientific identity. |
-| D2 | Fallback | Auto or Prefer GPU choosing CPU normally is not fallback. Prefer GPU requires visible fallback; Selective uses visible CPU fallback by default and may opt into strict fail-closed behavior. | Retain typed retryability tests across all execution surfaces. |
-| D3 | OOM | Auto or Prefer GPU may clean and retry one affected transactional segment once on CPU and must report it. Selective follows visible/strict policy. | Validate no partial commit, leak, or duplicate side effect. |
+| D1 | Compute intent | Global modes are CPU, Auto, Prefer GPU, and Custom; Auto is the new-session default. Prefer GPU selects an admitted reviewed GPU regardless of CPU speed and keeps per-node preferences dormant. Custom provides per-node `Auto for this node`/CPU choices, one choice per GPU library, and Best GPU only when multiple libraries compete; exact pins are advanced-only. `Find fastest` is Custom-only and treats these as the current assignment unless a distinct optimizer lock is set. | Keep lock state separate from execution intent and scientific identity. |
+| D2 | Fallback | Auto or Prefer GPU choosing CPU normally is not fallback. Prefer GPU requires visible fallback; Custom uses visible CPU fallback by default and may opt into strict fail-closed behavior. | Retain typed retryability tests across all execution surfaces. |
+| D3 | OOM | Auto or Prefer GPU may clean and retry one affected transactional segment once on CPU and must report it. Custom follows visible/strict policy. | Validate no partial commit, leak, or duplicate side effect. |
 | D4 | Persistence | Workflow v4 stores global intent, fallback, and authored node preferences; v3 migrates to CPU. Separate validated VIPP UI metadata stores optimizer-locked node IDs without changing the scientific workflow hash. Pass 4 atomically updates the canonical workflow hash for compute intent. Batch config v2 stores its full effective request and v1 migrates to CPU; generated/batch/export surfaces execute that intent and record configured/effective hashes plus actual provenance. Resolved hardware and timings remain outside portable workflow JSON. | Implemented across interactive, batch, generated Python/CLI, and export; cross-platform replay evidence remains a release gate. |
 | D5 | Installation UX | Start with provider-aware diagnostics and a safe copyable command. A later in-app installer requires explicit consent, an isolated supported environment, progress, verification, and restart; never mutate an arbitrary napari environment silently. | Validate CUDA-13 and CUDA-12 packages before publishing extras or commands. |
-| D6 | Result caching | Key results by actual implementation/version and scientific semantics. Identical actual CPU execution may be reused across Auto/Prefer-GPU/Selective; different implementations remain separate unless a reviewed bitwise-equivalence group exists. | Prove stale-run and exact-pin behavior in Pass 4. |
+| D6 | Result caching | Key results by actual implementation/version and scientific semantics. Identical actual CPU execution may be reused across Auto/Prefer-GPU/Custom; different implementations remain separate unless a reviewed bitwise-equivalence group exists. | Prove stale-run and exact-pin behavior in Pass 4. |
 | D7 | Initial hardware | CUDA acceleration targets validated native Windows and Linux first, including RTX 5090 and RTX 40-series laptops. WSL2 is a separate Linux deployment. macOS uses CPU initially while M1 Max Metal/MPS/MLX support is investigated. | Name public OS/Python/CUDA/device tiers only after clean-host evidence. |
-| D8 | Performance | Selective admission is scientific/operational. Non-benchmarked Auto requires a lower-confidence 1.20x end-to-end prediction and 20-ms saving; local winners need a clear result beyond the greater of 5% or 10 ms. | Recalibrate only from reviewed multi-device production-adapter evidence. |
+| D8 | Performance | Custom admission is scientific/operational. A reviewed Auto default requires a lower-confidence 1.20x end-to-end prediction and 20-ms saving. With no compatible history, Auto uses that default; accelerated-only history schedules one same-surface CPU measurement; a later matching run applies the same 1.20x/20-ms gate to the pair. Incompatible interactive, batch, and registry-lifecycle surfaces are never mixed. Raw Custom benchmark winners follow their separate review threshold and never teach Auto. | Recalibrate only from reviewed multi-device production-adapter evidence. |
 | D9 | CI | Every PR keeps CPU/package checks on Windows, macOS, and Linux. Scheduled real-GPU jobs cover Windows CUDA 13 and native Linux CUDA 12/13; releases expand the matrix. | Secure stable GPU hosts and define maintenance ownership before public promotion. |
 | D10 | Device identity | Exact device/driver/runtime belongs in local benchmark identity and run provenance, not scientific result identity unless it changes semantics. Portable artifacts use descriptive tiers and privacy-preserving identifiers. | Review the provenance schema in Pass 4. |
 | D11 | Memory | Discrete CUDA starts with an 80% cap and `max(512 MiB, 10%)` reserve, separate from host RAM. Unified-memory providers use one shared budget and never add RAM plus nominal VRAM. | Tune on the 5090, laptop GPUs, and M1 Max before broad defaults ship. |
@@ -3314,10 +3352,10 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
 
 ## Handoff summary
 
-1. **Product model:** CPU, Auto, Prefer GPU, and Selective are distinct global
+1. **Product model:** CPU, Auto, Prefer GPU, and Custom are distinct global
    modes. Auto is the default. Prefer GPU uses every eligible reviewed GPU
    region without the CPU-speed gate, requires visible fallback, and leaves
-   saved per-node choices dormant. Selective adds per-node preferences, node
+   saved per-node choices dormant. Custom adds per-node preferences, node
    benchmarking, and a graph-global `Find fastest pipeline…` action with
    distinct per-node locks.
 2. **Architecture:** one Qt-free execution service plans immutable decisions,
@@ -3330,7 +3368,7 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
    benchmark, scientific cache identity, and whole-pipeline optimizer.
 4. **Next wave:** the initial toolbar/inspector/badge slice, workflow-v4 compute
    intent, setup/memory diagnostics, selected-node benchmark review, the
-   conservative Selective whole-pipeline optimizer, and ordinary GPU RL are
+   conservative Custom whole-pipeline optimizer, and ordinary GPU RL are
    implemented. RL-TV, exact-mask Canny/Otsu, and the Sigma Filter vertical
    slice are now implemented too. Connected Components is also complete with
    exact native-`int32` IDs, resident CuPyX execution, block-boundary lifecycle,
@@ -3343,10 +3381,15 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
    the maintained order above: native/packaging evidence, provider-completeness
    review, Apple feasibility, then explicit bridges and broader node coverage.
 5. **Admission rule:** scientific validity, memory, progress, cancellation,
-   cleanup, and runtime evidence make a region a normal public Selective and
+   cleanup, and runtime evidence make a region a normal public Custom and
    Prefer-GPU candidate; incomplete/unvalidated work alone remains
-   `developer_hidden`. Auto additionally needs conservative whole-segment
-   performance evidence. Prefer GPU bypasses only that performance requirement;
+   `developer_hidden`. A reviewed Auto default additionally needs conservative
+   packaged end-to-end performance evidence. Auto uses that default without
+   compatible history, performs one same-surface CPU measurement after an
+   accelerated-only observation, then applies the 1.20x/20-ms gate once the
+   pair exists. It never silently benchmarks multiple implementations or mixes
+   incompatible execution surfaces. Prefer GPU bypasses only that
+   performance requirement;
    unsupported subregions visibly use CPU, and primitive benchmarks alone admit
    nothing.
 6. **Platform direction:** portable CPU support remains Windows/macOS/Linux;

@@ -14,13 +14,17 @@ branch, not developer-only demonstrations.
 
 Provider visibility is region-specific. A region that has passed scientific
 parity and its required memory, progress, cancellation, cleanup, and runtime
-checks is visible in normal `Selective` pipelines and is eligible in `Auto`.
-Auto still makes an evidence-driven choice for the actual workload, so CPU can
-remain the correct performance decision. `developer_hidden` is reserved for
-incomplete or unvalidated work. A dtype, parameter, shape, runtime, or platform
-outside a public region visibly resolves or falls back to CPU. VIPP does not
-hide a validated provider merely because it cannot cover every CPU call, and it
-never changes authored data or parameters to make a call eligible.
+checks is visible in normal `Custom` pipelines and may be a reviewed Auto
+default in that exact admitted region. Auto uses that default with no compatible
+history; accelerated-only history causes one same-surface CPU exploration run
+before a later matching run applies the 1.20x/20-ms gate. It never silently
+benchmarks multiple implementations, so CPU can still be the correct
+eligibility or learned performance decision. `developer_hidden` is reserved
+for incomplete or unvalidated work. A
+dtype, parameter, shape, runtime, or platform outside a public region visibly
+resolves or falls back to CPU. VIPP does not hide a validated provider merely
+because it cannot cover every CPU call, and it never changes authored data or
+parameters to make a call eligible.
 
 Public visibility on this development branch is not a blanket claim that every
 GPU, operating system, or released VIPP package is supported. The executable
@@ -148,7 +152,7 @@ boundaries, ties, constants, error behavior, progress, cancellation, read-only
 input, residency, memory admission, planning, fallback, and lazy optional
 imports. Wider deterministic exploratory matrices were also used while fixing
 the exact Canny arithmetic and Otsu histogram finalizer. Those validation gates
-make the declared regions normal public `Auto`/`Selective` candidates now; they
+make the declared regions normal public `Auto`/`Custom` candidates now; they
 are not developer-hidden.
 
 The source-current schema-v3

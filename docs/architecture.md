@@ -534,9 +534,14 @@ tests. No CPU/GPU cache-equivalence group is claimed.
 GPU visibility is evidence-driven and region-specific. Sigma's source-current
 RTX 5090 record passed exact parity, matched rejection, synchronized progress,
 cancellation, cleanup, runtime, and timing review. Its declared region is
-therefore a normal public `Selective` candidate and participates in
-evidence-backed `Auto`; the implementation entered immutable artifact v4 as
-`public_auto_candidate`, and current artifact v5 retains it unchanged.
+therefore a normal public `Custom` candidate and a reviewed Auto default; the
+implementation entered immutable artifact v4
+as `public_auto_candidate`, and current artifact v5 retains it unchanged. Auto
+uses the reviewed default with no compatible history. Accelerated-only history
+causes the next global Auto run to measure CPU once on the same execution
+surface; a later run uses the completed pair under the 1.20x/20-ms gate. It
+never silently benchmarks multiple implementations or mixes incompatible
+interactive, batch, or registry-lifecycle timing surfaces.
 Non-native-endian arrays and other unsupported dtypes,
 parameters, values, runtimes, and platforms visibly use CPU. This branch rule
 does not imply support for every
@@ -591,7 +596,7 @@ One plane/volume is therefore an indivisible CuPyX call with no truthful
 mid-volume progress or cancellation boundary.
 
 The source-current exact-label, lifecycle, memory, and timing matrix makes this
-region a normal public Selective/Auto candidate in the pinned environment and
+region a normal public Custom/Auto candidate in the pinned environment and
 is recorded in the
 [Phase 5 implementation report](gpu-phase5-connected-components-implementation-report.md).
 Packaged compute-policy artifact v5 appends this declaration while preserving
@@ -1273,11 +1278,11 @@ Workflow persistence:
   semantics, and composite intensity mapping. It adds the required
   `execution.compute` object with portable `mode`, `fallback_policy`,
   `node_preferences`, `precision_policy`, and `workload_policy` fields.
-- Portable `mode` values are `cpu`, `auto`, `prefer_gpu`, and `selective`.
-  Prefer GPU requires visible fallback and considers reviewed public Selective
+- Portable `mode` values are `cpu`, `auto`, `prefer_gpu`, and `custom`.
+  Prefer GPU requires visible fallback and considers reviewed public Custom
   as well as Auto-candidate providers while bypassing only the CPU-performance
   gate. Saved node preferences remain canonical but are inactive outside
-  Selective; this preserves intent when switching modes without changing what
+  Custom; this preserves intent when switching modes without changing what
   the other three modes mean.
 - Version-3 documents are accepted and decoded as an explicit CPU
   `ComputeRequest`; a subsequent save emits version 4. Versions 1 and 2 are

@@ -15,11 +15,15 @@ IDs are:
 - `cucim-measure-objects-basic-v1`
 - `cucim-measure-objects-intensity-basic-v1`
 
-Both are normal `Selective` candidates in their validated region and are
-eligible for workload-specific `Auto`/whole-pipeline comparison. CPU remains a
-normal possible winner. In particular, GPU setup and host-table construction
-can dominate a small measurement, and the measured float32 plane stack did not
-benefit on the qualification host.
+Both are normal `Custom` candidates in their validated region and are
+reviewed Auto defaults wherever their current gates pass. Auto uses those
+defaults with no compatible history; accelerated-only history causes one
+same-surface CPU exploration run before a later matching run applies the
+1.20x/20-ms gate. It never silently compares multiple implementations;
+explicit whole-pipeline comparison remains a Custom/**Find fastest** action.
+CPU remains a normal possible result. In particular, GPU setup and host-table
+construction can dominate a small measurement, and the measured float32 plane
+stack did not benefit on the qualification host.
 
 ## Exact public region
 

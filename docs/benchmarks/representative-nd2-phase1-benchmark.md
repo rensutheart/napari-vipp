@@ -61,10 +61,13 @@ as “Gaussian does not benefit from a GPU”: dtype is part of the candidate's
 scientific eligibility.
 
 The original benchmark harness called its isolated-node performance result an
-`Auto choice`. Under the current product contract this is local Selective
+`Auto choice`. Under the current product contract this is local Custom
 evidence only: it can support an explicit reviewed node/pipeline choice, but it
-does not by itself admit a graph-global Auto assignment. Auto requires compatible
-whole-segment evidence for the exact graph context.
+does not teach Auto or by itself admit a graph-global Auto assignment. Auto uses
+reviewed defaults with no compatible history. Accelerated-only history causes
+the next global Auto run to measure CPU once on the same execution surface; a
+later matching run applies the 1.20x/20-ms gate. Auto never silently benchmarks
+multiple implementations.
 
 ## Native uint16 results and isolated-node choices
 
@@ -122,13 +125,13 @@ whole-pipeline evidence rather than an assumption based on this isolated result.
 
 The acquisition contains 342 channel planes. A strictly linear projection of
 the measured plane medians gives approximately 56.4 minutes for the example
-three-node chain entirely on CPU and 35.6 seconds with the measured selective
+three-node chain entirely on CPU and 35.6 seconds with the measured custom
 choices. This is useful only as an order-of-magnitude planning estimate. It
 does not account for full-array batching, resident graph segments, disk I/O,
 thermal behavior, or memory pressure, and it must not be persisted as the Auto
 record for the full acquisition.
 
-## Whole-pipeline Selective optimizer validation
+## Whole-pipeline Custom optimizer validation
 
 The review-first whole-pipeline optimizer was subsequently exercised on the
 same acquisition and machine using the exact full-resolution `CYX` workload at
@@ -184,7 +187,7 @@ contract.
 
 The implemented unlocked-search contract was then tested on the same central
 `CYX` workload and parameter defaults. ND2 decoding occurred before the analysis
-timer. Starting from a clean all-CPU Selective assignment, both eligible nodes
+timer. Starting from a clean all-CPU Custom assignment, both eligible nodes
 were screened across all admitted alternatives and stopped decisively after
 three paired node rounds. Native-`uint16` Gaussian remained scientifically
 ineligible for GPU and therefore remained CPU. The optimizer proposed:

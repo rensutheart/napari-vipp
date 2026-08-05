@@ -3,7 +3,7 @@
 - Date: 2026-08-02
 - Branch: `codex/gpu-cross-platform-support`
 - CPU status: public node and frozen scientific contract implemented
-- GPU status: exact reviewed CuPy region is a normal public Selective and Auto
+- GPU status: exact reviewed CuPy region is a normal public Custom and Auto
   candidate on the GPU branch
 
 ## Outcome and visibility rule
@@ -19,18 +19,22 @@ cleanup contracts.
 VIPP exposes accelerator support by validated region, not by operation name
 alone. An exact region that has passed scientific parity, memory, synchronized
 progress, cancellation, cleanup, runtime, and real-device evidence is a normal
-public `Selective` candidate and may participate in evidence-backed `Auto`.
-Only unfinished or unvalidated candidates remain `developer_hidden`. Dtypes,
-parameters, values, layouts, runtimes, and platforms outside the reviewed
-region visibly use CPU; VIPP does not change authored data or parameters to
-make them eligible.
+public `Custom` candidate and may become a reviewed Auto default. Auto uses that
+default with no compatible history; accelerated-only history causes one
+same-surface CPU exploration run before a later matching run applies the
+1.20x/20-ms gate. It never silently benchmarks multiple implementations. Only
+unfinished or unvalidated candidates remain
+`developer_hidden`. Dtypes, parameters, values, layouts, runtimes, and
+platforms outside the reviewed region visibly use CPU; VIPP does not change
+authored data or parameters to make them eligible.
 
 The source-current full-profile RTX 5090 record passed exact parity, matched
 rejection, cancellation, cleanup, and timing review. The implementation entered
 the immutable v4 policy artifact as `public_auto_candidate`, and current v5
-retains that record unchanged: the exact region appears in ordinary Selective
-pipelines and can be selected by Auto when the workload clears its conservative
-performance gate. This does not wait for
+retains that record unchanged: the exact region appears in ordinary Custom
+pipelines and is a reviewed Auto default wherever its current gates pass.
+The completed-run exploration sequence may later select CPU or an accelerated
+assignment under Auto's conservative gate. This does not wait for
 every CPU dtype or operating system to gain a GPU implementation, and branch
 visibility is not a released-package or universal-GPU support claim.
 
@@ -281,7 +285,7 @@ Success, parity failure, cancellation, error, and benchmark exit use the shared
 transactional runtime cleanup contract. A missing package, failed runtime/library
 probe, out-of-domain workload, memory rejection, or unsupported platform is a
 typed decision before execution where possible. Auto may visibly retry a
-classified unavailable/support/OOM segment once on CPU; strict Selective GPU
+classified unavailable/support/OOM segment once on CPU; strict Custom GPU
 intent reports the actionable failure. An unclassified provider or scientific
 error is not hidden by fallback.
 
@@ -291,7 +295,7 @@ The CPU operation is registered in the normal node library and therefore uses
 the established palette, workflow-v4 serialization, snapshots, generated
 Python, batch preservation, export, metadata history, and widget parameter
 paths. The node card can display the actual CPU or `GPU · CuPy` badge after an
-accepted run. Selective node benchmarking and the whole-pipeline optimizer use
+accepted run. Custom node benchmarking and the whole-pipeline optimizer use
 the Sigma-specific parity gate and exact workload/environment identity.
 
 Workflow files persist portable authored compute intent, not resolved hardware,

@@ -4,7 +4,7 @@
 - Implementation branch: `codex/gpu-connected-components`; integration target:
   `codex/gpu-cross-platform-support`
 - CPU status: public node and authoritative scientific contract preserved
-- GPU status: exact CuPyX region is a normal public Selective and Auto
+- GPU status: exact CuPyX region is a normal public Custom and Auto
   candidate in the pinned environment
 
 ## Outcome and visibility rule
@@ -18,13 +18,17 @@ planning, benchmarking, provenance, memory, progress, cancellation, fallback,
 and cleanup contracts as the earlier GPU families.
 
 Accelerator visibility is region-specific. The reviewed boolean-mask 2D/3D
-region is declared `public_auto_candidate`, so it is shown in normal Selective
-pipelines and may participate in evidence-backed Auto on the exact pinned
-environment. Numeric nonzero-mask conversion, 1D labeling, oversized spatial
-blocks, unqualified runtimes/platforms, and any other unsupported region
-visibly remain on CPU. VIPP does not coerce an authored numeric image to bool,
-change its spatial interpretation, or renumber an approximately equivalent GPU
-partition merely to make it eligible.
+region is declared `public_auto_candidate`, so it is shown in normal Custom
+pipelines and is a reviewed Auto default in the exact pinned environment. Auto
+uses that default with no compatible history; accelerated-only history causes
+one same-surface CPU exploration run before a later matching run applies the
+1.20x/20-ms gate. It never silently benchmarks multiple implementations.
+Numeric
+nonzero-mask conversion, 1D labeling, oversized spatial blocks, unqualified
+runtimes/platforms, and any other unsupported region visibly remain on CPU.
+VIPP does not coerce an authored numeric image to bool, change its spatial
+interpretation, or renumber an approximately equivalent GPU partition merely
+to make it eligible.
 
 The source-current RTX 5090 record passed every exact admission case plus the
 synchronized lifecycle and private-pool cleanup checks. That is sufficient for
@@ -81,7 +85,7 @@ than being silently reinterpreted as 2D.
 Invalid authored settings that also violate the CPU contract remain errors;
 they are not disguised as accelerator fallback. Valid-but-unreviewed dtypes,
 rank, block size, environment, or platform regions produce a typed CPU
-decision. Strict Selective GPU intent reports an actionable unsupported or
+decision. Strict Custom GPU intent reports an actionable unsupported or
 unavailable decision instead of silently switching implementations.
 
 ## GPU implementation and library choice

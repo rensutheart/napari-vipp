@@ -2,7 +2,7 @@
 
 - Date: 2026-07-29
 - Branch: `codex/gpu-cross-platform-support`
-- Status: exact validated profiles are normal public Auto/Selective candidates
+- Status: exact validated profiles are normal public Auto/Custom candidates
   on the GPU branch; broader biological-data, release, and cross-platform
   qualification remains open
 
@@ -24,11 +24,14 @@ The slice includes:
   operations in the application UI.
 
 The validated profiles are no longer `developer_hidden`: they are visible in
-normal pipelines as public `Selective` candidates and may participate in
-`Auto` where applicable workload/runtime benefit evidence exists. Unsupported
-parameters, data, shapes, or runtimes visibly remain on CPU. This report is
-still branch-scoped development-host evidence, not a blanket released-package
-or cross-platform GPU-support statement.
+normal pipelines as public `Custom` candidates and reviewed Auto defaults in
+their admitted regions. Auto uses those defaults with no compatible history;
+accelerated-only history causes one same-surface CPU exploration run before a
+later matching run applies the 1.20x/20-ms gate. It never silently benchmarks
+multiple implementations. Unsupported parameters, data,
+shapes, or runtimes visibly remain on CPU. This report is still branch-scoped
+development-host evidence, not a blanket released-package or cross-platform
+GPU-support statement.
 
 ## Frozen scientific contract
 
@@ -191,8 +194,8 @@ pixels, content hash, and content-derived workload identity are not published.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 35.747 s | 0.593 s | 0.544 s | 0.026 s | 59.79x |
-| Medium 3D shape stress | 16,777,216 | 56.885 s | 0.570 s | 0.505 s | 0.031 s | 99.80x |
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 42.085 s | 0.580 s | 0.519 s | 0.020 s | 72.58x |
+| Medium 3D shape stress | 16,777,216 | 62.970 s | 0.843 s | 0.745 s | 0.049 s | 74.67x |
 
 Both cases passed exact production parity and terminal-zero private allocator
 cleanup. Observed device peaks were 0.934 GiB and 1.873 GiB. The memory model
@@ -234,7 +237,7 @@ phantom validator, machine-readable evidence, and validation CSVs are included.
 
 ## Current limitations and required hardening
 
-- RL-TV's exact validated profiles are publicly visible in Selective and are
+- RL-TV's exact validated profiles are publicly visible in Custom and are
   Auto candidates. This does not admit parameters outside those profiles or
   claim portable performance on unmeasured hardware.
 - Positive TV is admitted only for the exact shipped tuple at 10 or 25

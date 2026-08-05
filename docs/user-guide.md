@@ -70,11 +70,11 @@ The compute selector in the main toolbar has four policies. New sessions use
 | Policy | Behavior |
 | --- | --- |
 | `CPU` | Keep every operation on the established host implementation. |
-| `Auto` | Use a reviewed Auto candidate only when the applicable evidence says the GPU is beneficial; otherwise use CPU. |
+| `Auto` | With no exact compatible history, use reviewed GPU defaults. After accelerated-only history, measure CPU once on the same execution surface; then apply the 1.20x/20-ms gate to the completed pair. |
 | `Prefer GPU` | Use a reviewed GPU implementation wherever it is scientifically eligible, even if it is only slightly faster, tied, or slower than CPU. |
-| `Selective` | Expose a compact per-node preference in the Inspector wherever a GPU implementation is declared. |
+| `Custom` | Expose a compact per-node preference in the Inspector wherever a GPU implementation is declared. |
 
-`Prefer GPU` considers both public Selective and public Auto-candidate
+`Prefer GPU` considers both public Custom and public Auto-candidate
 implementations. It bypasses only the CPU-versus-GPU speed requirement. It does
 not bypass scientific parity, dtype, parameter, shape, optional-dependency,
 environment, or memory gates, and it never inserts a dtype conversion or alters
@@ -85,8 +85,8 @@ an explained ordinary CPU decision, not a misleading GPU success.
 
 Prefer GPU therefore requires `visible` fallback; `strict` is not a valid
 combination. Per-node choices remain saved but are dormant until you switch
-back to Selective. `Benchmark node…` and `Find fastest pipeline…` are also
-Selective-only. Developer-hidden implementations are not considered unless an
+back to Custom. `Benchmark node…` and `Find fastest pipeline…` are also
+Custom-only. Developer-hidden implementations are not considered unless an
 advanced request explicitly enables experimental admission; doing so is not a
 public support claim. Node-card badges always report what the accepted run
 actually used: CPU, CuPy, cuCIM, or an amber CPU fallback.
@@ -97,9 +97,17 @@ implementation on a worker. Parity must pass before timings can influence a
 choice. The review dialog shows warm timing, CPU speedup, parity, and peak
 memory; no preference changes until you click `Use fastest for this node`.
 The complete benchmark record is stored only on this machine. Raw timing is not
-fed into `Auto`, because an isolated-node record does not carry the same
-transfer/topology context as a full pipeline plan. The portable
-CPU/library/exact preference you explicitly accept in `Selective` is used going
+fed directly into `Auto`, because an isolated-node record does not carry the
+same transfer/topology context as a full pipeline plan. Separately, every
+successful, fallback-free completed full-pipeline run can record its wall time
+locally. With no compatible history, global Auto uses reviewed safe GPU
+defaults. If history is accelerated-only, the next matching global Auto run
+measures CPU once on the same execution surface. Once both observations exist,
+a later matching run selects acceleration only when it clears the 1.20x/20-ms
+gate; otherwise it selects CPU. Interactive, batch, and registry-lifecycle
+surfaces are never mixed, and Auto never silently benchmarks multiple
+implementations. The portable
+CPU/library/exact preference you explicitly accept in `Custom` is used going
 forward and saved in workflow schema 4.
 
 `Find fastest pipeline…` shows two levels of progress. The overall bar tracks
@@ -553,7 +561,7 @@ runs the workflow.
 
 Schema-version-3 workflows remain supported. Because version 3 had no compute
 policy, VIPP migrates them to an explicit CPU request; saving the loaded graph
-writes version 4. Select `Auto`, `Prefer GPU`, or `Selective` deliberately if
+writes version 4. Select `Auto`, `Prefer GPU`, or `Custom` deliberately if
 that workflow should use admitted GPU implementations. Versions 1 and 2 are
 intentionally rejected because silently inventing threshold, cutoff, channel
 axis, color, or intensity-mapping choices could change scientific results.
@@ -621,7 +629,7 @@ for multiple varying sources.
 The embedded schema-4 workflow retains `execution.compute` so authored intent
 is not lost in review, version control, or later regeneration. Generated Python
 and collection batch use the same CPU/GPU execution service as interactive
-VIPP. They preserve CPU/Auto/Prefer-GPU/Selective mode and per-node choices,
+VIPP. They preserve CPU/Auto/Prefer-GPU/Custom mode and per-node choices,
 apply the same scientific eligibility and valid fallback rules, and report the
 actual implementation for every completed computed node. A CPU-only
 installation remains import-safe and `Auto` uses CPU when no admitted GPU is
