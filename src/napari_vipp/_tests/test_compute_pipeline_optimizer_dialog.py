@@ -292,6 +292,33 @@ def test_modeled_timing_text_prefers_gpu_resident_series():
     assert "1.000 s" not in text
 
 
+def test_modeled_timing_text_labels_censored_lower_bound_as_non_exact():
+    evidence = SimpleNamespace(
+        record=SimpleNamespace(
+            candidates=(
+                SimpleNamespace(
+                    implementation_id="cpu-a",
+                    parity_passed=True,
+                    error="",
+                    timing_censored=True,
+                    timing_lower_bound_seconds=10.75,
+                    timing_censor_incumbent_id="gpu-a",
+                    timing_censor_reason=(
+                        "Stopped after the confidence-adjusted bound was exceeded."
+                    ),
+                ),
+            )
+        )
+    )
+
+    text = _candidate_timing_text(evidence)
+
+    assert "cpu-a >10.750 s" in text
+    assert "censored CPU/warm lower bound" in text
+    assert "versus gpu-a" in text
+    assert "median" not in text
+
+
 def test_shutdown_terminates_queued_worker_and_ignores_late_finish(qtbot):
     dialog = PipelineOptimizerDialog()
     qtbot.addWidget(dialog)

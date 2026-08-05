@@ -35,6 +35,7 @@ from napari_vipp.core.compute import (
 )
 
 PIPELINE_TIMING_POLICY_ID = "completed-pipeline-wall-v2"
+PIPELINE_TIMING_HISTORY_PATH_ENV = "NAPARI_VIPP_PIPELINE_TIMING_HISTORY_PATH"
 _MAX_SAMPLES_PER_ASSIGNMENT = 9
 _MAX_TOTAL_SAMPLES = 1_000
 
@@ -275,6 +276,15 @@ def host_performance_fingerprint() -> str:
 
 def default_pipeline_timing_history_path() -> Path:
     """Return the shared cross-platform path used by interactive/CLI runs."""
+
+    override = os.environ.get(PIPELINE_TIMING_HISTORY_PATH_ENV)
+    if override is not None:
+        if not override.strip():
+            raise ValueError(
+                f"{PIPELINE_TIMING_HISTORY_PATH_ENV} must name a JSON file "
+                "when it is set."
+            )
+        return Path(override).expanduser().resolve(strict=False)
 
     if sys.platform == "win32":
         root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))

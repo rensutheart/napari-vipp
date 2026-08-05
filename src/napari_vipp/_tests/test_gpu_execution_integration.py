@@ -56,6 +56,7 @@ from napari_vipp.core.compute_registry import (
 from napari_vipp.core.compute_specs import OperationComputeSpec, compute_specs_for
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
 from napari_vipp.core.export import export_pipeline_to_python
+from napari_vipp.core.host_memory import HostMemorySnapshot
 from napari_vipp.core.operations import canny_edges as cpu_canny_edges
 from napari_vipp.core.operations import gaussian_blur as cpu_gaussian_blur
 from napari_vipp.core.operations import median_filter as cpu_median_filter
@@ -486,6 +487,72 @@ def test_prefer_gpu_then_auto_cpu_comparison_teaches_next_auto_assignment(
     assert decision.performance_evidence_kind == "completed_pipeline_timing"
     assert decision.performance_evidence_digest
     assert "2.000 s for CPU" in decision.reason_text
+
+
+def test_auto_skips_optional_cpu_comparison_when_host_headroom_is_unsafe(
+    tmp_path,
+    monkeypatch,
+    validated_windows_compute_host,
+):
+    pipeline = PrototypePipeline()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    data = np.arange(4_096, dtype=np.float32).reshape(64, 64)
+    history_path = tmp_path / "pipeline-timings.json"
+    runtime = _ShapeAwareRuntime()
+    registry, _specs = _test_registry(runtime, (("gaussian_blur", _device_copy),))
+    prefer_result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            data,
+            ComputeRequest(mode=ComputeMode.PREFER_GPU),
+            performance_history_path=history_path,
+        ),
+        compute_registry=registry,
+    )
+    assert not prefer_result.error
+    store = JsonPipelineTimingStore(history_path)
+    gpu_sample = store.samples()[0]
+    store.clear()
+    store.append(replace(gpu_sample, elapsed_seconds=0.1))
+    monkeypatch.setattr(
+        execution_module,
+        "capture_host_memory",
+        lambda: HostMemorySnapshot(
+            platform="win32",
+            source="windows_global_memory_status_ex",
+            physical_total_bytes=1_000,
+            physical_available_bytes=100,
+            commit_limit_bytes=1_000,
+            commit_available_bytes=100,
+        ),
+    )
+
+    result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            data,
+            ComputeRequest(mode=ComputeMode.AUTO),
+            performance_history_path=history_path,
+        ),
+        compute_registry=registry,
+    )
+
+    assert not result.error
+    assert result.execution_report is not None
+    decision = next(
+        item
+        for item in result.execution_report.actual_decisions
+        if item.node_id == gaussian.id
+    )
+    assert decision.runtime_id == "cuda-cupy"
+    assert any(
+        "Skipped Auto CPU timing comparison" in warning
+        and "memory headroom" in warning
+        for warning in result.execution_report.warnings
+    )
+    assert len(store.samples()) == 2
 
 
 def test_optional_history_fingerprint_failure_does_not_fail_scientific_run(

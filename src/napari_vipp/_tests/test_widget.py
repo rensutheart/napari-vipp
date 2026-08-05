@@ -110,8 +110,10 @@ from napari_vipp.core.compute import (
     FallbackReason,
     NodeComputePreference,
     NodeExecutionDecision,
+    NodePreferenceKind,
     canonical_digest,
 )
+from napari_vipp.core.execution import PipelineExecutionFailure
 from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.graph_search import find_graph_matches
 from napari_vipp.core.io import (
@@ -155,6 +157,11 @@ from napari_vipp.core.workflow import (
 )
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.batch_workers import CollectionBatchOperationProgress
+from napari_vipp.ui.compute_benchmark_dialog import NodeBenchmarkWorkerOutcome
+from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
+    PipelineOptimizerWorkerOutcome,
+)
+from napari_vipp.ui.file_sources import SourceFileLoadSpec
 
 
 class _Event:
@@ -573,11 +580,11 @@ def test_compute_toolbar_defaults_to_auto_and_shows_actual_compute_badges(qtbot)
     assert [
         widget.compute_mode_combo.itemData(index)
         for index in range(widget.compute_mode_combo.count())
-    ] == ["cpu", "auto", "prefer_gpu", "custom"]
+    ] == ["auto", "cpu", "prefer_gpu", "custom"]
     assert [
         widget.compute_mode_combo.itemText(index)
         for index in range(widget.compute_mode_combo.count())
-    ] == ["CPU", "Auto", "Prefer GPU", "Custom"]
+    ] == ["Auto", "CPU", "Prefer GPU", "Custom"]
     prefer_gpu_index = widget.compute_mode_combo.findData("prefer_gpu")
     assert "scientifically eligible" in str(
         widget.compute_mode_combo.itemData(prefer_gpu_index, Qt.ToolTipRole)
@@ -595,6 +602,83 @@ def test_compute_toolbar_defaults_to_auto_and_shows_actual_compute_badges(qtbot)
     assert all(text == "CPU" or text.startswith("GPU ·") for text in badges)
     assert widget.compute_status_label.text().startswith("Auto ·")
     assert widget.compute_group.isHidden()
+
+
+def test_entering_custom_preserves_actual_results_without_recalculation(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    output = widget.pipeline.outputs["gaussian"]
+    previous_request = widget._last_execution_report.request
+    previous_badge = widget.graph_view._cards["gaussian"].compute_badge.text()
+    monkeypatch.setattr(
+        widget,
+        "_invalidate_compute_policy_results",
+        lambda *_args, **_kwargs: pytest.fail("Custom must not invalidate results"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda: pytest.fail("Custom must not recalculate on entry"),
+    )
+
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("custom")
+    )
+
+    assert widget._compute_mode is ComputeMode.CUSTOM
+    assert widget.pipeline.outputs["gaussian"] is output
+    assert widget._last_execution_report.request is previous_request
+    assert widget.graph_view._cards["gaussian"].compute_badge.text() == previous_badge
+    assert widget.compute_status_label.text().startswith("Auto ·")
+    assert "last actual Auto result" in widget.status_label.text()
+
+
+def test_entering_custom_marks_mismatched_dormant_choice_as_previous(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._compute_node_preferences["gaussian"] = NodeComputePreference(
+        "implementation",
+        "unavailable-test-gpu",
+    )
+
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("custom")
+    )
+
+    badge = widget.graph_view._cards["gaussian"].compute_badge
+    assert widget.pipeline.outputs["gaussian"] is not None
+    assert badge.text() in {"CPU", "GPU · CuPy", "GPU · cuCIM"}
+    assert "Previous result (stale)" in badge.toolTip()
+    assert "Current intent: exact implementation unavailable-test-gpu" in (
+        badge.toolTip()
+    )
+    assert widget.compute_status_label.text().endswith("· previous")
+
+
+def test_compute_mode_cannot_change_until_active_calculation_is_cancelled(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8)))
+    qtbot.addWidget(widget)
+    widget._active_pipeline_run_id = 123
+    widget._pipeline_cancel_events[123] = threading.Event()
+    widget._pipeline_run_context[123] = (
+        None,
+        "input volume",
+        "gaussian",
+        widget._last_pipeline_source_signature,
+        {"gaussian"},
+    )
+    widget._inflight_dirty_node_ids = {"gaussian"}
+    widget._set_pipeline_busy(True, "gaussian")
+
+    assert not widget.compute_mode_combo.isEnabled()
+    widget._on_compute_mode_changed(widget.compute_mode_combo.findData("cpu"))
+
+    assert widget._compute_mode is ComputeMode.AUTO
+    assert widget.compute_mode_combo.currentData() == "auto"
+    assert "Cancel the current calculation" in widget.status_label.text()
 
 
 def test_widget_uses_one_severity_aware_message_strip(qtbot):
@@ -751,6 +835,13 @@ def test_node_benchmark_apply_is_atomic_and_undoable(qtbot):
         "library",
         "cupyx",
     )
+    widget.undo()
+    assert "gaussian" not in widget._compute_node_preferences
+    widget.redo()
+    assert widget._compute_node_preferences["gaussian"] == NodeComputePreference(
+        "library",
+        "cupyx",
+    )
     assert len(widget._undo_stack) == undo_count + 1
 
     widget.undo()
@@ -833,6 +924,43 @@ def test_pipeline_optimizer_action_is_custom_only(qtbot):
     assert "Find fastest pipeline…" in {
         action.text() for action in widget.settings_menu.actions()
     }
+
+
+def test_optimizer_captures_exact_retained_mixed_assignment(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget._compute_mode = ComputeMode.CUSTOM
+    authored = widget._current_compute_request()
+
+    baseline = widget._retained_optimizer_baseline_request(authored)
+
+    assert baseline is not None
+    assert baseline.mode is ComputeMode.CUSTOM
+    assert baseline.fallback_policy is FallbackPolicy.STRICT
+    assert set(baseline.node_preferences) == set(
+        widget._accepted_compute_decisions
+    )
+    for node_id, decision in widget._accepted_compute_decisions.items():
+        preference = baseline.preference_for(node_id)
+        if decision.runtime_id == "cpu-numpy":
+            assert preference.kind is NodePreferenceKind.CPU
+        else:
+            assert preference == NodeComputePreference(
+                NodePreferenceKind.IMPLEMENTATION,
+                decision.implementation_id,
+            )
+
+
+def test_optimizer_uses_fresh_private_baseline_after_scientific_edit(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget._compute_mode = ComputeMode.CUSTOM
+    authored = widget._current_compute_request()
+    widget._pending_dirty_node_ids.add("gaussian")
+
+    assert widget._retained_optimizer_baseline_request(authored) is None
 
 
 def test_optimizer_lock_is_separate_undoable_and_does_not_recalculate(qtbot):
@@ -1175,6 +1303,46 @@ def test_pipeline_optimizer_uses_dialog_time_limit(qtbot, monkeypatch):
     widget._start_pipeline_optimizer_analysis()
 
     assert captured["time_budget_seconds"] == pytest.approx(1_800.0)
+    baseline = captured["baseline_compute_request"]
+    assert baseline is not None
+    assert baseline.mode is ComputeMode.CUSTOM
+    assert baseline.fallback_policy is FallbackPolicy.STRICT
+
+
+def test_pipeline_optimizer_apply_requires_active_calculation_to_be_cancelled(
+    qtbot,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._compute_mode = ComputeMode.CUSTOM
+    widget._active_pipeline_run_id = 123
+
+    widget._apply_pipeline_optimizer_result(
+        SimpleNamespace(proposal=SimpleNamespace(rows=()), identity=object())
+    )
+
+    assert "Cancel the current calculation" in widget.status_label.text()
+
+
+def test_stale_retained_assignments_use_optimizer_private_baseline(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    rows = tuple(
+        SimpleNamespace(node_id=node_id)
+        for node_id in widget._accepted_compute_decisions
+    )
+    baseline = tuple(
+        (node_id, decision.implementation_id)
+        for node_id, decision in widget._accepted_compute_decisions.items()
+    )
+    proposal = SimpleNamespace(rows=rows, baseline_assignment=baseline)
+    widget._stale_compute_badge_node_ids.update(
+        widget._accepted_compute_decisions
+    )
+
+    assert widget._current_pipeline_optimizer_assignments(proposal) == dict(
+        baseline
+    )
 
 
 def test_pipeline_optimizer_cleanup_failure_cannot_publish_result(
@@ -1188,6 +1356,28 @@ def test_pipeline_optimizer_cleanup_failure_cannot_publish_result(
     widget._compute_mode = ComputeMode.CUSTOM
     monkeypatch.setattr(widget, "_can_optimize_pipeline", lambda: (True, ""))
     outcomes = []
+    existing_key = SimpleNamespace(digest="existing-exact-benchmark")
+    existing_record = SimpleNamespace(key=existing_key, marker="previous")
+    replacement_record = SimpleNamespace(key=existing_key, marker="replacement")
+    new_key = SimpleNamespace(digest="new-exact-benchmark")
+    new_record = SimpleNamespace(key=new_key, marker="new")
+
+    class TrackingStore:
+        def __init__(self):
+            self.records = {existing_key.digest: existing_record}
+            self.discarded = []
+
+        def get(self, key):
+            return self.records.get(key.digest)
+
+        def put(self, record):
+            self.records[record.key.digest] = record
+
+        def discard(self, key):
+            self.discarded.append(key)
+            self.records.pop(key.digest, None)
+
+    store = TrackingStore()
 
     class FailingCleanupRegistry:
         def close(self):
@@ -1195,10 +1385,11 @@ def test_pipeline_optimizer_cleanup_failure_cannot_publish_result(
 
     class SuccessfulCoordinator:
         def __init__(self, _registry, _store_path):
-            pass
+            self.node_benchmarker = SimpleNamespace(store=store)
 
-        @staticmethod
-        def optimize(*_args, **_kwargs):
+        def optimize(self, *_args, **_kwargs):
+            self.node_benchmarker.store.put(replacement_record)
+            self.node_benchmarker.store.put(new_record)
             return object()
 
     class SynchronousDialog:
@@ -1224,8 +1415,148 @@ def test_pipeline_optimizer_cleanup_failure_cannot_publish_result(
 
     assert len(outcomes) == 1
     assert outcomes[0].result is None
-    assert outcomes[0].reason_code == "optimizer_failed"
+    assert outcomes[0].reason_code == "cleanup_failed"
     assert "cleanup failed" in outcomes[0].error
+    assert store.records == {existing_key.digest: existing_record}
+    assert store.discarded == [new_key]
+
+
+def test_pipeline_optimizer_rollback_failure_quarantines_entire_store(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._compute_mode = ComputeMode.CUSTOM
+    monkeypatch.setattr(widget, "_can_optimize_pipeline", lambda: (True, ""))
+    benchmark_path = tmp_path / "compute-benchmarks-v1.json"
+    benchmark_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "napari_vipp._widget._default_compute_benchmark_store_path",
+        lambda: benchmark_path,
+    )
+    outcomes = []
+    key = SimpleNamespace(digest="existing-exact-benchmark")
+    existing_record = SimpleNamespace(key=key, marker="previous")
+    replacement_record = SimpleNamespace(key=key, marker="replacement")
+
+    class FailingRestoreStore:
+        def __init__(self):
+            self.current = existing_record
+
+        def get(self, _key):
+            return self.current
+
+        def put(self, record):
+            if record is existing_record:
+                raise OSError("synthetic restore failure")
+            self.current = record
+
+        def discard(self, _key):
+            self.current = None
+
+    store = FailingRestoreStore()
+
+    class FailingCleanupRegistry:
+        def close(self):
+            raise RuntimeError("GPU cleanup failed")
+
+    class SuccessfulCoordinator:
+        def __init__(self, _registry, _store_path):
+            self.node_benchmarker = SimpleNamespace(store=store)
+
+        def optimize(self, *_args, **_kwargs):
+            self.node_benchmarker.store.put(replacement_record)
+            return object()
+
+    class SynchronousDialog:
+        running = False
+
+        @staticmethod
+        def start(worker, _pool):
+            worker.signals.finished.connect(outcomes.append)
+            worker.run()
+
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_registry.ComputeRegistry",
+        FailingCleanupRegistry,
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "ApplicationPipelineOptimizerCoordinator",
+        SuccessfulCoordinator,
+    )
+    widget._pipeline_optimizer_dialog = SynchronousDialog()
+
+    widget._start_pipeline_optimizer_analysis()
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.reason_code == "cleanup_failed"
+    assert "could not be fully rolled back" in outcome.error
+    assert "will not be reused" in outcome.error
+    assert not benchmark_path.exists()
+    quarantined = tuple(tmp_path.glob("compute-benchmarks-v1.json.unsafe-*"))
+    assert len(quarantined) == 1
+
+    widget._on_pipeline_optimizer_finished(outcome)
+
+    assert "No proposed assignment was accepted" in widget.status_label.text()
+    assert "will not be reused" in widget.status_label.text()
+    assert widget.status_label.property("messageSeverity") == "error"
+
+
+def test_benchmark_cleanup_failure_quarantines_all_compute(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._pipeline_run_pending = True
+
+    widget._on_node_benchmark_finished(
+        NodeBenchmarkWorkerOutcome(
+            "input",
+            error="Benchmark cleanup failed: provider did not close",
+            reason_code="cleanup_failed",
+        )
+    )
+
+    assert not widget._pipeline_run_pending
+    assert "Restart VIPP" in widget._compute_runtime_quarantined_reason
+    assert not widget.compute_mode_combo.isEnabled()
+    assert "No benchmark preference was accepted" in widget.status_label.text()
+    assert "Benchmark cleanup failed" in widget.status_label.text()
+
+
+def test_optimizer_cleanup_failure_quarantines_all_compute(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._pipeline_run_pending = True
+
+    widget._on_pipeline_optimizer_finished(
+        PipelineOptimizerWorkerOutcome(
+            error="Find fastest cleanup failed",
+            reason_code="cleanup_failed",
+        )
+    )
+
+    assert not widget._pipeline_run_pending
+    assert "Restart VIPP" in widget._compute_runtime_quarantined_reason
+    assert not widget.compute_mode_combo.isEnabled()
+    assert "proposed assignment" in widget.status_label.text()
+
+
+def test_pending_graph_work_reports_active_optimizer_owner(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._pipeline_run_pending = True
+    widget._pipeline_optimizer_dialog = SimpleNamespace(running=True)
+
+    reason = widget._compute_policy_edit_block_reason()
+
+    assert "Find fastest" in reason
+    assert "current calculation" not in reason
 
 
 def test_normal_pipeline_run_waits_for_optimizer_evidence_window(
@@ -1293,7 +1624,7 @@ def test_non_cpu_compute_modes_use_detached_compute_service(
 
 @pytest.mark.parametrize(
     "mode",
-    (ComputeMode.PREFER_GPU, ComputeMode.CUSTOM),
+    (ComputeMode.AUTO, ComputeMode.PREFER_GPU, ComputeMode.CUSTOM),
 )
 def test_force_sync_required_gpu_intent_still_uses_detached_compute_service(
     qtbot,
@@ -1323,6 +1654,73 @@ def test_force_sync_required_gpu_intent_still_uses_detached_compute_service(
     assert len(captured) == 1
     assert captured[0][1]["execute_synchronously"] is True
     assert widget._current_compute_request().mode is mode
+
+
+def test_background_auto_run_is_detached_and_cancel_button_remains_usable(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    widget.background_all_checkbox.setChecked(True)
+    widget._invalidate_pipeline_cache()
+
+    widget.run_pipeline()
+
+    assert len(pool.workers) == 1
+    run_id = widget._active_pipeline_run_id
+    assert run_id is not None
+    assert not widget.pipeline_cancel_button.isHidden()
+    assert widget.pipeline_cancel_button.isEnabled()
+    assert not widget.compute_mode_combo.isEnabled()
+
+    widget._cancel_background_pipeline_run()
+
+    assert widget._pipeline_cancel_events[run_id].is_set()
+    assert widget.pipeline_cancel_button.isHidden()
+    assert not widget.compute_mode_combo.isEnabled()
+    pool.workers[0].run()
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None)
+    assert widget.compute_mode_combo.isEnabled()
+
+
+def test_small_auto_wait_keeps_qt_cancel_action_responsive(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    cancel_clicked = []
+
+    def wait_for_cancel(request, **_kwargs):
+        assert request.cancel_event.wait(timeout=5)
+        return PipelineRunResult(
+            request.run_id,
+            request.workflow,
+            cancelled=True,
+            failure=PipelineExecutionFailure(
+                kind="cancelled",
+                error_type="OperationCancelled",
+                message="cancelled by test",
+                cleanup_succeeded=True,
+            ),
+        )
+
+    monkeypatch.setattr(
+        "napari_vipp.ui.workers.execute_pipeline_request",
+        wait_for_cancel,
+    )
+    widget._invalidate_pipeline_cache()
+
+    def click_cancel() -> None:
+        assert widget._active_pipeline_run_id is not None
+        assert not widget.pipeline_cancel_button.isHidden()
+        cancel_clicked.append(True)
+        widget.pipeline_cancel_button.click()
+
+    QTimer.singleShot(0, click_cancel)
+    widget.run_pipeline()
+
+    assert cancel_clicked == [True]
+    assert widget._active_pipeline_run_id is None
+    assert widget.compute_mode_combo.isEnabled()
+    assert "cleanup completed" in widget.status_label.text()
 
 
 def test_small_cpu_run_keeps_existing_responsiveness_heuristic(qtbot):
@@ -1647,13 +2045,59 @@ def test_compute_policy_edits_are_directly_undoable_and_redoable(qtbot):
         "library",
         "cupyx",
     )
-    widget.undo()
-    assert "gaussian" not in widget._compute_node_preferences
-    widget.redo()
-    assert widget._compute_node_preferences["gaussian"] == NodeComputePreference(
-        "library",
-        "cupyx",
+
+
+def test_undo_cannot_change_compute_policy_during_active_calculation(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("custom")
     )
+    assert widget._history.can_undo
+    widget._active_pipeline_run_id = 123
+    widget._sync_compute_policy_editability()
+
+    widget.undo()
+
+    assert widget._compute_mode is ComputeMode.CUSTOM
+    assert widget._history.can_undo
+    assert not widget.undo_action.isEnabled()
+    assert "Cancel the current calculation" in widget.status_label.text()
+
+    widget._active_pipeline_run_id = None
+    widget._sync_compute_policy_editability()
+    widget.undo()
+
+    assert widget._compute_mode is ComputeMode.AUTO
+    assert widget.compute_mode_combo.currentData() == "auto"
+
+
+def test_undo_cannot_change_compute_policy_after_runtime_quarantine(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("custom")
+    )
+    assert widget._history.can_undo
+    widget._compute_runtime_quarantined_reason = (
+        "CPU/GPU cleanup failed. Restart VIPP before calculating again."
+    )
+    widget._sync_compute_policy_editability()
+
+    widget.undo()
+
+    assert widget._compute_mode is ComputeMode.CUSTOM
+    assert widget._history.can_undo
+    assert not widget.undo_action.isEnabled()
+    assert "Restart VIPP" in widget.status_label.text()
+
+    widget._compute_runtime_quarantined_reason = ""
+    widget._sync_compute_policy_editability()
+    assert widget.undo_action.isEnabled()
+    widget.undo()
+    assert widget._compute_mode is ComputeMode.AUTO
 
 
 def test_prefer_gpu_policy_is_undoable_and_local_to_each_workflow_tab(qtbot):
@@ -2735,6 +3179,45 @@ def test_microscope_file_source_loads_in_background(qtbot, tmp_path, monkeypatch
     assert widget.pipeline.output_states["input"].axis_order == "YX"
 
 
+def test_uncached_source_waits_for_active_pipeline_cleanup(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    cancel_event = threading.Event()
+    widget._active_pipeline_run_id = 41
+    widget._pipeline_cancel_events[41] = cancel_event
+    spec = SourceFileLoadSpec(
+        node_id="input",
+        path="C:/data/new-source.nd2",
+        series_index=0,
+        cache_key=("C:/data/new-source.nd2", 0),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_uncached_async_file_source_specs",
+        lambda: (spec,),
+    )
+    started = []
+    monkeypatch.setattr(
+        widget,
+        "_start_source_file_load",
+        lambda specs: started.append(specs),
+    )
+
+    widget.run_pipeline()
+
+    assert started == []
+    assert cancel_event.is_set()
+    assert widget._pipeline_run_pending
+    assert widget._active_source_load_id is None
+    assert "waiting for CPU/GPU cleanup" in widget.status_label.text()
+
+    widget._active_pipeline_run_id = None
+    widget._pipeline_run_pending = False
+    widget.run_pipeline()
+
+    assert started == [(spec,)]
+
+
 def test_current_view_metadata_follows_napari_dims(qtbot):
     viewer = _Viewer(
         np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
@@ -2918,7 +3401,13 @@ def test_view_dims_bar_maps_rescaled_axis_values_to_viewer_steps(qtbot):
     node = widget.add_node_from_palette("rescale_axes")
     widget.pipeline.set_param(node.id, "z_scale", 0.5)
     widget._connect_nodes("input", node.id)
-    widget.run_pipeline(force_sync=True)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and widget.pipeline.outputs[node.id] is not None
+        ),
+        timeout=30_000,
+    )
     widget.graph_view.select_node(node.id)
 
     assert widget.pipeline.outputs[node.id].shape[0] == 6
@@ -8974,8 +9463,11 @@ def test_large_inputs_automatically_use_background_processing(qtbot, monkeypatch
 
     assert widget._background_processing_node_id({"threshold"}) is None
     watershed = widget.pipeline.add_node("auto_watershed_from_mask")
+    assert widget.pipeline.connect("threshold", watershed.id).success
     assert widget._background_processing_node_id({watershed.id}) == watershed.id
+    assert widget.pipeline.disconnect("threshold", watershed.id)
     minimum = widget.pipeline.add_node("minimum_threshold")
+    assert widget.pipeline.connect("input", minimum.id).success
     assert widget._background_processing_node_id({minimum.id}) == minimum.id
 
     monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 1_000)
@@ -9502,8 +9994,11 @@ def test_parallel_branch_queues_behind_active_deconvolution(qtbot):
     assert widget.graph_view._cards[deconvolution.id].is_processing()
 
     # Complete the old workflow snapshot. The unrelated graph addition must not
-    # invalidate its deconvolution result; the cheap parallel branch runs next.
+    # invalidate its deconvolution result; the cheap parallel branch is then
+    # dispatched through the same detached Auto service.
     pool.workers[0].run()
+    qtbot.waitUntil(lambda: len(pool.workers) == 2, timeout=5_000)
+    pool.workers[1].run()
     qtbot.waitUntil(
         lambda: (
             widget._active_pipeline_run_id is None
@@ -9638,12 +10133,77 @@ def test_discarded_inflight_run_requeues_dirty_nodes(qtbot):
     assert widget._inflight_dirty_node_ids is None
 
 
+def test_discarded_full_graph_run_requeues_every_node(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8)))
+    qtbot.addWidget(widget)
+
+    widget._begin_pipeline_dispatch(None)
+    assert widget._inflight_full_graph is True
+
+    widget._requeue_inflight_dirty_nodes()
+
+    assert widget._inflight_full_graph is False
+    assert widget._inflight_dirty_node_ids is None
+    assert set(widget.pipeline.nodes) <= widget._pending_dirty_node_ids
+
+
+def test_failed_partial_clone_preserves_valid_outputs_thumbnails_and_badges(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    old_output = widget.pipeline.outputs["gaussian"]
+    card = widget.graph_view._cards["gaussian"]
+    old_badge = card.compute_badge.text()
+    assert card.preview.pixmap() is not None
+    assert not card.preview.pixmap().isNull()
+    partial = deepcopy(widget.pipeline)
+    unreported_output = np.full_like(old_output, 77)
+    partial.outputs["gaussian"] = unreported_output
+    partial.node_outputs["gaussian"] = [unreported_output]
+    partial.completed_node_ids.add("gaussian")
+    run_id = 123
+    widget._active_pipeline_run_id = run_id
+    widget._pipeline_cancel_events[run_id] = threading.Event()
+    widget._pipeline_run_context[run_id] = (
+        None,
+        "input volume",
+        "gaussian",
+        widget._last_pipeline_source_signature,
+        {"gaussian"},
+        widget._current_compute_request(),
+        frozenset({"gaussian"}),
+    )
+    widget._begin_pipeline_dispatch({"gaussian"})
+    widget._set_pipeline_busy(True, "gaussian")
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(
+            run_id,
+            serialize_workflow(
+                widget.pipeline,
+                compute_request=widget._current_compute_request(),
+            ),
+            pipeline=partial,
+            error="synthetic allocation failure",
+        )
+    )
+
+    assert widget.pipeline.outputs["gaussian"] is old_output
+    assert card.preview.pixmap() is not None
+    assert not card.preview.pixmap().isNull()
+    assert card.compute_badge.text() == old_badge
+    assert "Previous result (stale)" in card.compute_badge.toolTip()
+    assert "gaussian" in widget._pending_dirty_node_ids
+    assert "synthetic allocation failure" in widget.status_label.text()
+
+
 def test_cancel_background_run_requeues_dirty_nodes(qtbot):
     viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
     widget._active_pipeline_run_id = 123
+    cancel_event = threading.Event()
+    widget._pipeline_cancel_events[123] = cancel_event
     widget._pipeline_run_pending = True
     widget._pipeline_run_context[123] = (None, "input volume", "gaussian", None, None)
     widget._inflight_dirty_node_ids = {"gaussian"}
@@ -9654,14 +10214,135 @@ def test_cancel_background_run_requeues_dirty_nodes(qtbot):
 
     widget._cancel_background_pipeline_run()
 
-    assert widget._active_pipeline_run_id is None
+    assert cancel_event.is_set()
+    assert widget._active_pipeline_run_id == 123
     assert widget._pipeline_run_pending is False
+    assert 123 in widget._pipeline_run_context
+    assert widget._inflight_dirty_node_ids == {"gaussian"}
+    assert widget.pipeline_cancel_button.isHidden()
+    assert widget.graph_view._cards["gaussian"].is_processing()
+    assert not widget.compute_mode_combo.isEnabled()
+    assert "waiting" in widget.status_label.text().lower() or (
+        "remain locked" in widget.status_label.text().lower()
+    )
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(123, {}, cancelled=True)
+    )
+
+    assert widget._active_pipeline_run_id is None
     assert 123 not in widget._pipeline_run_context
     assert "gaussian" in widget._pending_dirty_node_ids
     assert widget._inflight_dirty_node_ids is None
-    assert widget.pipeline_cancel_button.isHidden()
     assert not widget.graph_view._cards["gaussian"].is_processing()
-    assert "result will be ignored" in widget.status_label.text()
+    assert widget.compute_mode_combo.isEnabled()
+    assert "cleanup completed" in widget.status_label.text()
+
+
+def test_cancel_cleanup_failure_quarantines_compute_until_restart(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8) * 20))
+    qtbot.addWidget(widget)
+    previous_output = widget.pipeline.outputs["gaussian"]
+    run_id = 124
+    widget._active_pipeline_run_id = run_id
+    widget._pipeline_cancel_events[run_id] = threading.Event()
+    widget._pipeline_run_context[run_id] = (
+        None,
+        "input volume",
+        "gaussian",
+        widget._last_pipeline_source_signature,
+        {"gaussian"},
+        widget._current_compute_request(),
+        frozenset({"gaussian"}),
+    )
+    widget._inflight_dirty_node_ids = {"gaussian"}
+    widget._set_pipeline_busy(True, "gaussian")
+
+    widget._cancel_background_pipeline_run()
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(
+            run_id,
+            {},
+            cancelled=True,
+            failure=PipelineExecutionFailure(
+                kind="cancelled",
+                error_type="RuntimeCleanupError",
+                message="CUDA cleanup failed",
+                cleanup_succeeded=False,
+            ),
+        )
+    )
+
+    assert widget._compute_runtime_quarantined_reason
+    assert "Restart VIPP" in widget._compute_runtime_quarantined_reason
+    assert widget.pipeline.outputs["gaussian"] is previous_output
+    assert not widget.compute_mode_combo.isEnabled()
+    assert widget.status_label.property("messageSeverity") == "error"
+    assert widget.status_label.property("messageActionable") is True
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    widget.run_pipeline()
+    assert pool.workers == []
+    assert "Restart VIPP" in widget.status_label.text()
+
+
+def test_internal_abandon_retains_worker_ownership_until_cleanup(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8) * 20))
+    qtbot.addWidget(widget)
+    run_id = 125
+    cancel_event = threading.Event()
+    context = (None, "input volume", "gaussian", None, {"gaussian"})
+    widget._active_pipeline_run_id = run_id
+    widget._active_pipeline_node_id = "gaussian"
+    widget._pipeline_cancel_events[run_id] = cancel_event
+    widget._pipeline_run_context[run_id] = context
+    widget._set_pipeline_busy(True, "gaussian")
+
+    widget._abandon_background_pipeline_run()
+
+    assert cancel_event.is_set()
+    assert widget._active_pipeline_run_id == run_id
+    assert widget._pipeline_run_context[run_id] is context
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert widget.pipeline_cancel_button.isHidden()
+    assert not widget.compute_mode_combo.isEnabled()
+    assert "cleaning up" in widget.pipeline_busy_label.text()
+
+
+def test_internal_cleanup_failure_also_quarantines_compute(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8) * 20))
+    qtbot.addWidget(widget)
+    run_id = 126
+    widget._active_pipeline_run_id = run_id
+    widget._pipeline_cancel_events[run_id] = threading.Event()
+    widget._pipeline_run_context[run_id] = (
+        None,
+        "input volume",
+        "gaussian",
+        widget._last_pipeline_source_signature,
+        {"gaussian"},
+    )
+    widget._inflight_dirty_node_ids = {"gaussian"}
+    widget._set_pipeline_busy(True, "gaussian")
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(
+            run_id,
+            {},
+            cancelled=True,
+            failure=PipelineExecutionFailure(
+                kind="cancelled",
+                error_type="RuntimeCleanupError",
+                message="CUDA cleanup failed",
+                cleanup_succeeded=False,
+            ),
+        )
+    )
+
+    assert widget._compute_runtime_quarantined_reason
+    assert not widget.compute_mode_combo.isEnabled()
+    assert "Restart VIPP" in widget.status_label.text()
 
 
 def test_affecting_background_request_cancels_active_run_and_remembers_manual(
@@ -9733,7 +10414,7 @@ def test_cancelled_run_with_independent_pending_work_restarts(qtbot, monkeypatch
     qtbot.waitUntil(lambda: reruns == ["run"], timeout=5_000)
 
 
-def test_force_sync_supersedes_full_background_scope(qtbot, monkeypatch):
+def test_force_sync_does_not_detach_active_background_worker(qtbot):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8) * 20))
     qtbot.addWidget(widget)
     qtbot.waitUntil(
@@ -9743,8 +10424,6 @@ def test_force_sync_supersedes_full_background_scope(qtbot, monkeypatch):
     manual = widget.add_node_from_palette("measure_objects")
     pending = widget.add_node_from_palette("gamma_correction")
     cancel_event = threading.Event()
-    captured = []
-
     widget._active_pipeline_run_id = 123
     widget._active_pipeline_node_id = "gaussian"
     widget._pipeline_cancel_events[123] = cancel_event
@@ -9759,26 +10438,20 @@ def test_force_sync_supersedes_full_background_scope(qtbot, monkeypatch):
     widget._inflight_dirty_node_ids = None
     widget._pending_dirty_node_ids = {pending.id}
     widget._set_pipeline_busy(True, "gaussian")
-    monkeypatch.setattr(
-        widget,
-        "_start_background_pipeline_run",
-        lambda *args, **kwargs: captured.append((args, kwargs)),
-    )
 
     widget.run_pipeline(force_sync=True)
 
-    assert len(captured) == 1
-    args, kwargs = captured[0]
-    assert args[-3] is None
-    assert manual.id in args[-2]
-    assert args[-1] is None
-    assert kwargs["execute_synchronously"] is True
-    assert cancel_event.is_set()
-    assert widget._active_pipeline_run_id is None
-    assert widget._pending_dirty_node_ids == set()
-    assert 123 not in widget._pipeline_run_context
-    assert 123 not in widget._pipeline_run_manual_node_ids
-    assert widget.pipeline_busy_bar.isHidden()
+    # The new work is structurally independent, so the active worker may finish
+    # normally; either way, force_sync must not detach its cleanup ownership.
+    assert not cancel_event.is_set()
+    assert widget._active_pipeline_run_id == 123
+    assert widget._pipeline_run_pending
+    assert widget._pipeline_run_manual_node_ids[123] == {manual.id}
+    assert pending.id in widget._pending_dirty_node_ids
+    assert 123 in widget._pipeline_run_context
+    assert 123 in widget._pipeline_run_manual_node_ids
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert not widget.compute_mode_combo.isEnabled()
 
 
 def test_background_progress_updates_busy_bar(qtbot):
@@ -14101,6 +14774,119 @@ def test_edited_batch_settings_run_on_first_click_without_repreview(
     assert "3 completed" in dialog.run_progress_label.text()
 
 
+def test_batch_cleanup_failure_quarantines_interactive_compute(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    session = widget._workflow_tabs.current
+    assert session is not None
+
+    class Dialog:
+        @staticmethod
+        def finish_run(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def mark_plan_historical_after_run():
+            return None
+
+    context = SimpleNamespace(
+        job_id=7,
+        origin_session_id=session.session_id,
+        dialog=Dialog(),
+        validation_config_path=None,
+        total=1,
+        graph_refresh_pending=False,
+    )
+    widget._active_collection_batch_job = context
+    widget._collection_batch_workers[7] = object()
+    widget._collection_batch_running = True
+    active_run_id = 91
+    active_cancel_event = threading.Event()
+    widget._active_pipeline_run_id = active_run_id
+    widget._pipeline_cancel_events[active_run_id] = active_cancel_event
+    widget._pipeline_run_pending = True
+    cancelled_surfaces = []
+    widget._node_benchmark_dialog = SimpleNamespace(
+        running=True,
+        cancel=lambda: cancelled_surfaces.append("benchmark"),
+    )
+    widget._pipeline_optimizer_dialog = SimpleNamespace(
+        running=True,
+        cancel=lambda: cancelled_surfaces.append("optimizer"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_validate_collection_batch_demo_result",
+        lambda *_args, **_kwargs: "",
+    )
+    result = SimpleNamespace(
+        manifest=SimpleNamespace(compute={"runtime_cleanup_succeeded": False}),
+        manifest_path=tmp_path / "manifest.json",
+        summary={
+            "completed": 0,
+            "partial": 0,
+            "skipped": 0,
+            "cancelled": 0,
+            "failed": 1,
+        },
+        cancelled=False,
+        saved_paths=(),
+    )
+
+    widget._on_collection_batch_worker_finished(
+        SimpleNamespace(job_id=7, error="", result=result)
+    )
+
+    assert not widget._collection_batch_running
+    assert "Restart VIPP" in widget._compute_runtime_quarantined_reason
+    assert not widget.compute_mode_combo.isEnabled()
+    assert "durable manifest" in widget.status_label.text()
+    assert active_cancel_event.is_set()
+    assert widget._active_pipeline_run_id == active_run_id
+    assert widget._pipeline_user_cancel_requested_run_id == active_run_id
+    assert not widget._pipeline_run_pending
+    assert cancelled_surfaces == ["benchmark", "optimizer"]
+    widget._interactive_collection_batch_requested_index = 0
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(active_run_id, {}, cancelled=True)
+    )
+
+    assert widget._active_pipeline_run_id is None
+    assert widget._pipeline_quarantine_cancel_requested_run_id is None
+    assert "Restart VIPP" in widget.status_label.text()
+    assert "Representative preview failed" in widget.status_label.text()
+    assert widget.status_label.property("messageSeverity") == "error"
+    assert widget.status_label.property("messageActionable") is True
+
+
+def test_full_batch_locks_only_its_origin_workflow_compute_policy(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    session = widget._workflow_tabs.current
+    assert session is not None
+    widget._collection_batch_running = True
+    widget._active_collection_batch_job = SimpleNamespace(
+        origin_session_id=session.session_id,
+    )
+
+    widget._sync_compute_policy_editability()
+
+    assert not widget.compute_mode_combo.isEnabled()
+    assert "Cancel the active full batch" in widget.compute_mode_combo.toolTip()
+
+    widget._active_collection_batch_job = SimpleNamespace(
+        origin_session_id="another-workflow",
+    )
+    widget._sync_compute_policy_editability()
+
+    assert widget.compute_mode_combo.isEnabled()
+
+
 def test_run_stops_when_reviewed_fixed_batch_source_changes(qtbot, tmp_path):
     collection_dir = tmp_path / "collection"
     collection_dir.mkdir()
@@ -17994,6 +18780,9 @@ def test_large_auto_contrast_dispatches_exact_work_without_blocking(qtbot):
 
     pool.workers[0].run()
     qtbot.waitUntil(lambda: widget._active_auto_contrast_run_id is None)
+    qtbot.waitUntil(lambda: len(pool.workers) == 2)
+    pool.workers[1].run()
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None)
 
     params = widget.pipeline.nodes[node.id].params
     np.testing.assert_allclose(params["alpha"], 2.55, atol=0.0001)
@@ -18005,8 +18794,8 @@ def test_large_auto_contrast_dispatches_exact_work_without_blocking(qtbot):
 
     # Publishing the new output intentionally keeps the shared progress area
     # active until its exact thumbnail contrast worker also completes.
-    qtbot.waitUntil(lambda: len(pool.workers) > 1)
-    pool.workers[1].run()
+    qtbot.waitUntil(lambda: len(pool.workers) > 2)
+    pool.workers[2].run()
     qtbot.waitUntil(
         lambda: (
             widget._active_thumbnail_contrast_run_id is None

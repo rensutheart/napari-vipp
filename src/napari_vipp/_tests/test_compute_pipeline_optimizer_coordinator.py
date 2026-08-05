@@ -41,6 +41,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
 from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
     ApplicationPipelineOptimizerCoordinator,
     PipelineOptimizerPhase,
+    _adaptive_cpu_stop_is_safe_for_current_assignment,
     _build_optimizer_graph,
     _optimizer_validation_node_ids,
     _pipeline_output_parity,
@@ -136,9 +137,13 @@ class _NodeBenchmarker:
         self.environment = environment
         self.registry = registry
         self.observed_budgets: list[float] = []
+        self.adaptive_stop_values: list[bool] = []
 
     def prepare(self, pipeline, node_id, **kwargs):
         self.observed_budgets.append(float(kwargs["time_budget_seconds"]))
+        self.adaptive_stop_values.append(
+            bool(kwargs.get("adaptive_candidate_stopping", False))
+        )
         progress = kwargs.get("progress")
         if progress is not None:
             progress(
@@ -283,8 +288,10 @@ class _PrivateExecutor:
         self.gpu_seconds = gpu_seconds
         self.target_sets: list[frozenset[str]] = []
         self.detached_source_arrays: list[np.ndarray] = []
+        self.compute_requests: list[ComputeRequest] = []
 
     def __call__(self, request, **_kwargs):
+        self.compute_requests.append(request.compute_request)
         restored = deserialize_workflow(request.workflow)
         pipeline = PrototypePipeline()
         pipeline.restore_graph(
@@ -401,10 +408,12 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
         node_benchmarker=node_benchmarker,
     )
 
+    baseline_request = ComputeRequest("prefer_gpu", allow_experimental=True)
     result = coordinator.optimize(
         document,
         {source_id: SourcePayload(values, name="private-source")},
         ComputeRequest("custom", allow_experimental=True),
+        baseline_compute_request=baseline_request,
         time_budget_seconds=20.0,
         progress=progress.append,
     )
@@ -422,6 +431,11 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     assert progress[0].phase is PipelineOptimizerPhase.PREPARING
     assert progress[-1].phase is PipelineOptimizerPhase.COMPLETE
     assert node_benchmarker.observed_budgets == [pytest.approx(19.9)]
+    assert node_benchmarker.adaptive_stop_values == [False]
+    assert executor.compute_requests[0].fingerprint == baseline_request.fingerprint
+    assert all(
+        request.mode.value == "custom" for request in executor.compute_requests[1:]
+    )
     operation = next(
         item for item in progress if item.measurement_phase == "paired_warm"
     )
@@ -710,9 +724,35 @@ def test_application_optimizer_refuses_non_custom_and_missing_sources(tmp_path):
         coordinator.optimize(document, {}, ComputeRequest("cpu"))
     assert non_custom.value.reasons[0].code == "custom_required"
 
+    with pytest.raises(TypeError, match="baseline_compute_request"):
+        coordinator.optimize(
+            document,
+            {},
+            ComputeRequest("custom"),
+            baseline_compute_request=object(),
+        )
+
+    with pytest.raises(ValueError, match="incompatible field.*device_id"):
+        coordinator.optimize(
+            document,
+            {},
+            ComputeRequest("custom"),
+            baseline_compute_request=ComputeRequest("auto", device_id="cuda:1"),
+        )
+
     with pytest.raises(PipelineOptimizationEvidenceIncomplete) as missing:
         coordinator.optimize(document, {}, ComputeRequest("custom"))
     assert missing.value.reasons[0].code == "source_identity_incomplete"
+
+
+def test_adaptive_cpu_stop_requires_a_retained_gpu_current_assignment():
+    assert not _adaptive_cpu_stop_is_safe_for_current_assignment(None)
+    assert not _adaptive_cpu_stop_is_safe_for_current_assignment(
+        SimpleNamespace(runtime_id="cpu-numpy")
+    )
+    assert _adaptive_cpu_stop_is_safe_for_current_assignment(
+        SimpleNamespace(runtime_id="cuda-cupy")
+    )
 
 
 def test_environment_recheck_probes_exact_candidates_without_execution(monkeypatch):

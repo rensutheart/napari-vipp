@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +19,7 @@ from napari_vipp.core.compute import (
     NodeExecutionDecision,
 )
 from napari_vipp.core.compute_history import (
+    PIPELINE_TIMING_HISTORY_PATH_ENV,
     JsonPipelineTimingStore,
     PipelineTimingSample,
     PipelineTimingStoreError,
@@ -88,6 +93,59 @@ def _sample(
         execution_surface="planned-owned-registry-v1",
         created_utc=created_utc,
     )
+
+
+def test_pytest_routes_default_history_to_current_test_temp_directory(tmp_path):
+    expected = (
+        tmp_path
+        / ".napari-vipp-test-state"
+        / "pipeline-timing-history-v2.json"
+    ).resolve()
+
+    assert compute_history.default_pipeline_timing_history_path() == expected
+
+
+def test_default_history_path_honors_explicit_override(tmp_path, monkeypatch):
+    override = tmp_path / "isolated" / "history.json"
+    monkeypatch.setenv(PIPELINE_TIMING_HISTORY_PATH_ENV, str(override))
+
+    assert compute_history.default_pipeline_timing_history_path() == override.resolve()
+
+
+def test_default_history_path_rejects_an_empty_explicit_override(monkeypatch):
+    monkeypatch.setenv(PIPELINE_TIMING_HISTORY_PATH_ENV, "   ")
+
+    with pytest.raises(ValueError, match=PIPELINE_TIMING_HISTORY_PATH_ENV):
+        compute_history.default_pipeline_timing_history_path()
+
+
+def test_timing_history_override_is_inherited_by_subprocess(tmp_path, monkeypatch):
+    override = tmp_path / "subprocess" / "history.json"
+    monkeypatch.setenv(PIPELINE_TIMING_HISTORY_PATH_ENV, str(override))
+    source_root = Path(__file__).resolve().parents[2]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(source_root), environment.get("PYTHONPATH", "")))
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from napari_vipp.core.compute_history import "
+                "default_pipeline_timing_history_path; "
+                "print(default_pipeline_timing_history_path())"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert Path(completed.stdout.strip()) == override.resolve()
 
 
 def test_one_exact_cpu_and_gpu_sample_selects_a_decisive_gpu_win(tmp_path):

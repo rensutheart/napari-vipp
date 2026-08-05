@@ -25,14 +25,29 @@ Use `Run all in BG` off when:
 - edits are usually small and fast;
 - reducing per-run orchestration overhead is more important than progress UI.
 
-The toolbar `Cancel` button appears while a background graph update is active.
-It cancels queued reruns, marks the in-flight dirty nodes as pending again, and
-asks cooperative operations to stop. Rolling-ball/subtract-background block
+The toolbar `Cancel calculation` button appears while a background graph update
+is active. Compute mode and per-node backend controls are disabled for the
+entire run. Use this explicit button before changing CPU/GPU policy. It cancels
+queued reruns, marks the in-flight dirty nodes as pending again, and asks
+cooperative operations to stop. The button and compute controls remain in their
+stopping state until the worker has synchronized and released CPU/GPU resources;
+selecting CPU can therefore never leave an earlier GPU calculation running.
+Rolling-ball/subtract-background block
 processing, rescale axes, and 3D mesh morphology now report progress and check
 for cancellation between internal work units. VIPP still cannot forcibly
 terminate a NumPy, SciPy, or scikit-image call that is already executing inside
 the worker thread, so CPU use may continue briefly while the current work unit
 finishes.
+
+Cancellation retains the last coherent result. After a failed/OOM calculation,
+VIPP may accept a verified source boundary. If cleanup itself failed, it may
+also accept a completed processing node whose matching actual-implementation
+decision is available; an uncomputed or
+unreported processing value never replaces a prior valid output. Existing
+images, thumbnails, and truthful CPU/GPU badges therefore remain available for
+uncompleted work, with pending or previous-result styling where intent differs.
+If accelerator cleanup itself fails, all calculation, policy, benchmark,
+optimizer, and new batch controls stay disabled until VIPP is restarted.
 
 ## Preview and Dims Strategy
 

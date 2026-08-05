@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import multiprocessing
+from dataclasses import asdict, replace
 from pathlib import Path
 from threading import BrokenBarrierError
 
@@ -96,3 +98,48 @@ def test_json_store_serializes_cross_process_read_merge_write(tmp_path):
     assert set(reopened.records()) == set(records)
     lock_path = Path(f"{store_path}.lock")
     assert lock_path.read_bytes().startswith(b"\0")
+
+
+def test_json_store_loads_legacy_candidates_and_round_trips_censor_metadata(
+    tmp_path,
+):
+    path = tmp_path / "benchmarks.json"
+    legacy = asdict(_record("legacy"))
+    candidate = legacy["candidates"][0]
+    for name in (
+        "timing_censored",
+        "timing_lower_bound_seconds",
+        "timing_censor_reason",
+        "timing_censor_incumbent_id",
+    ):
+        candidate.pop(name)
+    path.write_text(
+        json.dumps({"schema_version": 1, "records": [legacy]}),
+        encoding="utf-8",
+    )
+
+    loaded = JsonBenchmarkStore(path).records()[0].candidates[0]
+
+    assert not loaded.timing_censored
+    assert loaded.timing_lower_bound_seconds is None
+
+    record = _record("censored")
+    cpu = record.candidates[0]
+    censored = replace(
+        record,
+        candidates=(
+            replace(
+                cpu,
+                timing_censored=True,
+                timing_lower_bound_seconds=0.02,
+                timing_censor_reason="Stopped after a decisive bound.",
+                timing_censor_incumbent_id="gpu",
+            ),
+        ),
+    )
+    store = JsonBenchmarkStore(path)
+    store.put(censored)
+
+    reopened = JsonBenchmarkStore(path).get(censored.key)
+
+    assert reopened == censored

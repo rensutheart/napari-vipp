@@ -282,9 +282,12 @@ This batch runner is intentionally different from `Export Python...`. The
 export embeds a validated immutable workflow and executes it through the same
 headless pipeline service as VIPP, while its command-line folder harness is a
 primary-source convenience rather than the complete multi-source collection
-configuration used by batch runs. That convenience loop does not provide batch
-source-byte identities, collision planning, private staging, checkpoints,
-manifests, or automatic replay guarantees. Use the saved batch runner for
+configuration used by batch runs. The convenience loop hashes its local source
+before reading, verifies the identity after materialization, and privately
+stages and rollback-protects the complete requested output/sidecar set. It does
+not provide multi-source pairing, collision planning, a final source recheck
+immediately before publication, checkpoints, manifests, or automatic replay
+guarantees. Use the saved batch runner for
 production collection processing. See
 [Durable GPU execution](durable-gpu-execution.md) for commands and the complete
 fallback/provenance/cancellation contract.

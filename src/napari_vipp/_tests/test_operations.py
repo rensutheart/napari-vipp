@@ -1666,6 +1666,29 @@ def test_targeted_execution_recovers_a_missing_required_upstream_cache():
     assert plan.runnable_node_ids == {"input", gaussian.id}
 
 
+def test_execution_plan_excludes_structurally_disconnected_processing_nodes():
+    data = np.arange(49, dtype=np.float32).reshape(7, 7)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    threshold = pipeline.add_node("binary_threshold")
+    assert pipeline.connect("input", gaussian.id).success
+
+    plan = pipeline.plan_execution()
+    started: list[str] = []
+    outputs = pipeline.run(
+        data,
+        input_metadata={"axes": "YX"},
+        node_started_callback=started.append,
+    )
+
+    assert plan.candidate_node_ids == {"input", gaussian.id}
+    assert plan.runnable_node_ids == {"input", gaussian.id}
+    assert threshold.id not in started
+    assert outputs[threshold.id] is None
+    assert pipeline.node_execution_states[threshold.id] == EXECUTION_NOT_CALCULATED
+
+
 def test_manual_execution_barrier_is_operation_agnostic():
     data = np.zeros((9, 9), dtype=np.float32)
     data[1:4, 1:4] = 10

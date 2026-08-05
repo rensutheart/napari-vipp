@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-08-05T09:28:26.062095+00:00",
+  "created_utc": "2026-08-05T17:41:31.315888+00:00",
   "environment": {
     "device_class": "nvidia-cuda",
     "device_id": "cuda:0",
@@ -94,7 +94,7 @@
         {
           "cold_host_materialization_seconds": null,
           "cold_resident_seconds": null,
-          "cold_seconds": 141.62367049994646,
+          "cold_seconds": 139.38495869998587,
           "cold_transfer_seconds": null,
           "error": "",
           "failure_kind": "",
@@ -109,22 +109,26 @@
           "peak_runtime_live_bytes": 0,
           "peak_runtime_reserved_bytes": 0,
           "synchronized": false,
+          "timing_censor_incumbent_id": "",
+          "timing_censor_reason": "",
+          "timing_censored": false,
+          "timing_lower_bound_seconds": null,
           "timing_scope": "implementation-only",
           "transfers_included": false,
           "warm_host_materialization_seconds": [],
           "warm_resident_seconds": [],
           "warm_seconds": [
-            141.9767665999534,
-            141.8374301000149,
-            140.71509180002613
+            139.5316060999903,
+            135.94002369994996,
+            136.81606029997056
           ],
           "warm_transfer_seconds": []
         },
         {
           "cold_host_materialization_seconds": 0.0,
-          "cold_resident_seconds": 1.2058001999830594,
-          "cold_seconds": 1.5308346999954665,
-          "cold_transfer_seconds": 0.18933699998888187,
+          "cold_resident_seconds": 1.2112522000534227,
+          "cold_seconds": 1.4687621000630315,
+          "cold_transfer_seconds": 0.19262560000061058,
           "error": "",
           "failure_kind": "",
           "implementation_id": "rl-cupy-f32-v1",
@@ -138,6 +142,10 @@
           "peak_runtime_live_bytes": 536928768,
           "peak_runtime_reserved_bytes": 4820595712,
           "synchronized": true,
+          "timing_censor_incumbent_id": "",
+          "timing_censor_reason": "",
+          "timing_censored": false,
+          "timing_lower_bound_seconds": null,
           "timing_scope": "synchronized-end-to-end-v1",
           "transfers_included": true,
           "warm_host_materialization_seconds": [
@@ -146,19 +154,19 @@
             0.0
           ],
           "warm_resident_seconds": [
-            1.2274177999934182,
-            1.1522746999980882,
-            1.1366584000206785
+            1.0766824999736855,
+            1.1434795000241138,
+            1.036521099958918
           ],
           "warm_seconds": [
-            1.4959629999939352,
-            1.4477007999958005,
-            1.3757561000238638
+            1.2463178999896627,
+            1.396314900019206,
+            1.186009999961243
           ],
           "warm_transfer_seconds": [
-            0.12354149999737274,
-            0.16964070001267828,
-            0.1131703999999445
+            0.12926219998917077,
+            0.18417629998293705,
+            0.11073529999703169
           ]
         }
       ],
@@ -249,7 +257,7 @@
         "device_index": 0,
         "device_total_bytes": 34190458880,
         "device_usable_after_reserve_bytes": 29065838592,
-        "host_available_bytes": 11033317376,
+        "host_available_bytes": 16295043072,
         "input_bytes": 268493116,
         "required_host_bytes": 9631948515
       },
@@ -275,16 +283,16 @@
         "generator": "numpy-pcg64-large-rl-v1"
       },
       "summary": {
-        "absolute_median_saving_seconds": 140.3897293000191,
-        "cpu_median_seconds": 141.8374301000149,
-        "gpu_end_to_end_median_seconds": 1.4477007999958005,
-        "gpu_resident_median_seconds": 1.1522746999980882,
-        "gpu_transfer_median_seconds": 0.12354149999737274,
-        "paired_speedup_median": 97.97427071976912,
+        "absolute_median_saving_seconds": 135.5697423999809,
+        "cpu_median_seconds": 136.81606029997056,
+        "gpu_end_to_end_median_seconds": 1.2463178999896627,
+        "gpu_resident_median_seconds": 1.0766824999736855,
+        "gpu_transfer_median_seconds": 0.12926219998917077,
+        "paired_speedup_median": 111.95506868764994,
         "paired_speedups": [
-          94.9066030379956,
-          97.97427071976912,
-          102.28200463554934
+          111.95506868764994,
+          97.35627951694859,
+          115.35826873672355
         ],
         "peak_observed_device_bytes": 4833935360,
         "screening_choice": "GPU-CuPy"
@@ -299,7 +307,7 @@
         {
           "cold_host_materialization_seconds": null,
           "cold_resident_seconds": null,
-          "cold_seconds": 36.227127799997106,
+          "cold_seconds": 35.41304540002602,
           "cold_transfer_seconds": null,
           "error": "",
           "failure_kind": "",
@@ -314,22 +322,26 @@
           "peak_runtime_live_bytes": 0,
           "peak_runtime_reserved_bytes": 0,
           "synchronized": false,
+          "timing_censor_incumbent_id": "",
+          "timing_censor_reason": "",
+          "timing_censored": false,
+          "timing_lower_bound_seconds": null,
           "timing_scope": "implementation-only",
           "transfers_included": false,
           "warm_host_materialization_seconds": [],
           "warm_resident_seconds": [],
           "warm_seconds": [
-            36.18508840001596,
-            36.13843890007411,
-            36.13238359995012
+            35.72058209996612,
+            36.032729999991716,
+            35.07053789999918
           ],
           "warm_transfer_seconds": []
         },
         {
           "cold_host_materialization_seconds": 0.0,
-          "cold_resident_seconds": 0.5780676999711432,
-          "cold_seconds": 0.6702363999793306,
-          "cold_transfer_seconds": 0.06139850000909064,
+          "cold_resident_seconds": 0.519298700033687,
+          "cold_seconds": 0.5795078000373906,
+          "cold_transfer_seconds": 0.04920490000222344,
           "error": "",
           "failure_kind": "",
           "implementation_id": "rl-cupy-f32-v1",
@@ -343,6 +355,10 @@
           "peak_runtime_live_bytes": 134275584,
           "peak_runtime_reserved_bytes": 1165280256,
           "synchronized": true,
+          "timing_censor_incumbent_id": "",
+          "timing_censor_reason": "",
+          "timing_censored": false,
+          "timing_lower_bound_seconds": null,
           "timing_scope": "synchronized-end-to-end-v1",
           "transfers_included": true,
           "warm_host_materialization_seconds": [
@@ -351,19 +367,19 @@
             0.0
           ],
           "warm_resident_seconds": [
-            0.3938091999880271,
-            0.5146745999809355,
-            0.38808569994580466
+            0.3357036999805132,
+            0.5030625000072177,
+            0.35457450001558755
           ],
           "warm_seconds": [
-            0.455936299986206,
-            0.5983476999972481,
-            0.4509188999509206
+            0.3948406999843428,
+            0.5724361000029603,
+            0.39381050001247786
           ],
           "warm_transfer_seconds": [
-            0.0324413999915123,
-            0.05048219999298453,
-            0.031011899991426617
+            0.028654199981247075,
+            0.05746529999305494,
+            0.029387899994617328
           ]
         }
       ],
@@ -454,7 +470,7 @@
         "device_index": 0,
         "device_total_bytes": 34190458880,
         "device_usable_after_reserve_bytes": 29063741440,
-        "host_available_bytes": 11768762368,
+        "host_available_bytes": 16283484160,
         "input_bytes": 67166524,
         "required_host_bytes": 4294967296
       },
@@ -480,16 +496,16 @@
         "generator": "numpy-pcg64-large-rl-v1"
       },
       "summary": {
-        "absolute_median_saving_seconds": 35.6825026000879,
-        "cpu_median_seconds": 36.13843890007411,
-        "gpu_end_to_end_median_seconds": 0.455936299986206,
-        "gpu_resident_median_seconds": 0.3938091999880271,
-        "gpu_transfer_median_seconds": 0.0324413999915123,
-        "paired_speedup_median": 79.36435068037072,
+        "absolute_median_saving_seconds": 35.32574139998178,
+        "cpu_median_seconds": 35.72058209996612,
+        "gpu_end_to_end_median_seconds": 0.3948406999843428,
+        "gpu_resident_median_seconds": 0.35457450001558755,
+        "gpu_transfer_median_seconds": 0.029387899994617328,
+        "paired_speedup_median": 89.05434948760374,
         "paired_speedups": [
-          79.36435068037072,
-          60.39705492348397,
-          80.13055918455154
+          90.46833850052086,
+          62.946292170960874,
+          89.05434948760374
         ],
         "peak_observed_device_bytes": 1178599424,
         "screening_choice": "GPU-CuPy"
@@ -504,7 +520,7 @@
         {
           "cold_host_materialization_seconds": null,
           "cold_resident_seconds": null,
-          "cold_seconds": 25.047278199956054,
+          "cold_seconds": 24.88275140004407,
           "cold_transfer_seconds": null,
           "error": "",
           "failure_kind": "",
@@ -519,22 +535,26 @@
           "peak_runtime_live_bytes": 0,
           "peak_runtime_reserved_bytes": 0,
           "synchronized": false,
+          "timing_censor_incumbent_id": "",
+          "timing_censor_reason": "",
+          "timing_censored": false,
+          "timing_lower_bound_seconds": null,
           "timing_scope": "implementation-only",
           "transfers_included": false,
           "warm_host_materialization_seconds": [],
           "warm_resident_seconds": [],
           "warm_seconds": [
-            25.51175169997441,
-            25.1649497999897,
-            25.538159499992616
+            25.31520119999186,
+            24.900668200003565,
+            25.03067279998504
           ],
           "warm_transfer_seconds": []
         },
         {
           "cold_host_materialization_seconds": 0.0,
-          "cold_resident_seconds": 0.47496580008009914,
-          "cold_seconds": 0.5330293000733946,
-          "cold_transfer_seconds": 0.02512069998192601,
+          "cold_resident_seconds": 0.41566120002244134,
+          "cold_seconds": 0.48225430001912173,
+          "cold_transfer_seconds": 0.05838029998994898,
           "error": "",
           "failure_kind": "",
           "implementation_id": "rl-cupy-f32-v1",
@@ -548,6 +568,10 @@
           "peak_runtime_live_bytes": 68097024,
           "peak_runtime_reserved_bytes": 732410880,
           "synchronized": true,
+          "timing_censor_incumbent_id": "",
+          "timing_censor_reason": "",
+          "timing_censored": false,
+          "timing_lower_bound_seconds": null,
           "timing_scope": "synchronized-end-to-end-v1",
           "transfers_included": true,
           "warm_host_materialization_seconds": [
@@ -556,19 +580,19 @@
             0.0
           ],
           "warm_resident_seconds": [
-            0.5399970001017209,
-            0.5800840999436332,
-            0.548901800008025
+            0.44998020003549755,
+            0.48006729996996,
+            0.48301520000677556
           ],
           "warm_seconds": [
-            0.5902745000930736,
-            0.6253273999464,
-            0.5932887000089977
+            0.48262370002339594,
+            0.5119124999764608,
+            0.5144029000075534
           ],
           "warm_transfer_seconds": [
-            0.027662799999234267,
-            0.02612970001064241,
-            0.02557199999864679
+            0.024333900000783615,
+            0.023948999994900078,
+            0.02337209999677725
           ]
         }
       ],
@@ -659,7 +683,7 @@
         "device_index": 0,
         "device_total_bytes": 34190458880,
         "device_usable_after_reserve_bytes": 29063741440,
-        "host_available_bytes": 11792674816,
+        "host_available_bytes": 16324354048,
         "input_bytes": 34065396,
         "required_host_bytes": 4294967296
       },
@@ -698,16 +722,16 @@
         }
       },
       "summary": {
-        "absolute_median_saving_seconds": 24.918462999965413,
-        "cpu_median_seconds": 25.51175169997441,
-        "gpu_end_to_end_median_seconds": 0.5932887000089977,
-        "gpu_resident_median_seconds": 0.548901800008025,
-        "gpu_transfer_median_seconds": 0.02612970001064241,
-        "paired_speedup_median": 43.045079907312086,
+        "absolute_median_saving_seconds": 24.51876030000858,
+        "cpu_median_seconds": 25.03067279998504,
+        "gpu_end_to_end_median_seconds": 0.5119124999764608,
+        "gpu_resident_median_seconds": 0.48006729996996,
+        "gpu_transfer_median_seconds": 0.023948999994900078,
+        "paired_speedup_median": 48.659665020585024,
         "paired_speedups": [
-          43.22014875443841,
-          40.242838874718615,
-          43.045079907312086
+          52.453290625314644,
+          48.64243049573622,
+          48.659665020585024
         ],
         "peak_observed_device_bytes": 748683264,
         "screening_choice": "GPU-CuPy"
@@ -725,7 +749,7 @@
     },
     {
       "path": "src/napari_vipp/core/compute.py",
-      "sha256": "ef8c27aca8b126fbd68ea1a2c4f882291e98969f035490404276e8b8e7d62cd2"
+      "sha256": "c9325c729ee9d051af60eefb8d11d94308374e6b2f51bd7a7dcaa7680ab8c99d"
     },
     {
       "path": "src/napari_vipp/core/accelerator_lease.py",
@@ -733,7 +757,7 @@
     },
     {
       "path": "src/napari_vipp/core/compute_benchmark.py",
-      "sha256": "fc893a52e1dc16c101986afee9a6bb37e6bfe9382fe2f1e0e1d442c246764f6a"
+      "sha256": "5f8e989fb06ab9a1f1dc8cb2f41579cf4713e00e9dfd41cdfe223828e70c1d61"
     },
     {
       "path": "src/napari_vipp/core/compute_planning.py",

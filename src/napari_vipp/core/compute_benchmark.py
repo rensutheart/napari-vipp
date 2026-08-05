@@ -21,7 +21,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
@@ -46,6 +46,9 @@ DEFAULT_BOOTSTRAP_SAMPLES = 2_000
 DEFAULT_BOOTSTRAP_SEED = 17_029
 DEFAULT_CONFIDENCE_LEVEL = 0.95
 HOST_RUNTIME_ID = "cpu-numpy"
+ADAPTIVE_STOP_MINIMUM_INCUMBENT_SAMPLES = 2
+ADAPTIVE_STOP_MINIMUM_MARGIN_SECONDS = 0.010
+ADAPTIVE_STOP_RELATIVE_MARGIN = 0.05
 
 
 def _noop() -> None:
@@ -79,6 +82,43 @@ class BenchmarkRejected(BenchmarkError):
 
 class BenchmarkCancelled(BenchmarkError):
     """Raised when cooperative cancellation aborts a transaction."""
+
+
+class BenchmarkCandidateTimingCensored(BenchmarkCancelled):
+    """A cooperative provider stopped after a decisive timing lower bound."""
+
+    def __init__(
+        self,
+        implementation_id: str,
+        incumbent_implementation_id: str,
+        *,
+        lower_bound_seconds: float,
+        decision_bound_seconds: float,
+        confidence_level: float,
+        incumbent_samples: int,
+    ) -> None:
+        self.implementation_id = str(implementation_id).strip()
+        self.incumbent_implementation_id = str(
+            incumbent_implementation_id
+        ).strip()
+        self.lower_bound_seconds = _validated_duration(lower_bound_seconds)
+        self.decision_bound_seconds = _validated_duration(decision_bound_seconds)
+        self.confidence_level = float(confidence_level)
+        self.incumbent_samples = int(incumbent_samples)
+        if not self.implementation_id or not self.incumbent_implementation_id:
+            raise ValueError("censored timing requires implementation IDs.")
+        if self.lower_bound_seconds <= self.decision_bound_seconds:
+            raise ValueError("censored timing must exceed its decision bound.")
+        if not 0 < self.confidence_level < 1:
+            raise ValueError("censored timing confidence must be between zero and one.")
+        if self.incumbent_samples < ADAPTIVE_STOP_MINIMUM_INCUMBENT_SAMPLES:
+            raise ValueError("censored timing has insufficient incumbent samples.")
+        super().__init__(
+            f"{self.implementation_id} exceeded "
+            f"{self.decision_bound_seconds:.6g} seconds "
+            f"while {self.incumbent_implementation_id} was the synchronized "
+            "resident-compute incumbent"
+        )
 
 
 class BenchmarkBudgetExceeded(BenchmarkError):
@@ -333,6 +373,7 @@ class NodeBenchmarkRequest:
     paired_bootstrap_samples: int = 0
     paired_bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED
     paired_confidence_level: float = DEFAULT_CONFIDENCE_LEVEL
+    adaptive_candidate_stopping: bool = False
     device_id: str = ""
     memory_limit_bytes: int | None = None
     safety_reserve_bytes: int | None = None
@@ -371,6 +412,8 @@ class NodeBenchmarkRequest:
             raise TypeError("time_parity_as_cold must be a boolean.")
         if not isinstance(self.adaptive_rounds, bool):
             raise TypeError("adaptive_rounds must be a boolean.")
+        if not isinstance(self.adaptive_candidate_stopping, bool):
+            raise TypeError("adaptive_candidate_stopping must be a boolean.")
         for name in (
             "warmup_rounds",
             "max_warm_rounds",
@@ -459,6 +502,10 @@ class NodeBenchmarkRequest:
                 else None
             ),
         }
+        if self.adaptive_candidate_stopping:
+            # Keep the legacy/non-adaptive exact identity stable.  Only the
+            # opt-in censored policy needs a distinct key.
+            effective_profile["adaptive_candidate_stopping"] = True
         effective_policy_id = (
             f"{self.benchmark_policy_id}@"
             f"{canonical_digest(effective_profile)}"
@@ -472,6 +519,25 @@ class NodeBenchmarkRequest:
             memory_limit_bytes=self.memory_limit_bytes,
             safety_reserve_bytes=self.safety_reserve_bytes,
         )
+
+    @property
+    def exact_timing_compatible_key(self) -> BenchmarkRecordKey:
+        """Return the exact-evidence key compatible with this request.
+
+        Adaptive candidate stopping changes only whether a slow alternative may
+        finish with a censored lower bound.  A record produced with stopping
+        disabled is therefore strictly stronger evidence for the otherwise
+        identical adaptive request.  The reverse is intentionally not true:
+        an exact/non-adaptive request never probes an adaptive key, even when a
+        particular adaptive run happened to finish every timing.
+        """
+
+        if not self.adaptive_candidate_stopping:
+            return self.key
+        return replace(
+            self,
+            adaptive_candidate_stopping=False,
+        ).key
 
 
 class InMemoryBenchmarkStore:
@@ -909,6 +975,19 @@ class _CandidateState:
     failure_kind: BenchmarkCandidateFailureKind = (
         BenchmarkCandidateFailureKind.NONE
     )
+    timing_censored: bool = False
+    timing_lower_bound_seconds: float | None = None
+    timing_censor_reason: str = ""
+    timing_censor_incumbent_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateStopBound:
+    implementation_id: str
+    incumbent_implementation_id: str
+    decision_bound_seconds: float
+    confidence_level: float
+    incumbent_samples: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -976,6 +1055,36 @@ def paired_bootstrap_speedup(
         sample_count=sample_count,
         seed=seed,
     )
+
+
+def _bootstrap_upper_median(
+    values: Sequence[float],
+    *,
+    sample_count: int,
+    seed: int,
+    confidence_level: float,
+) -> float:
+    """Return a deterministic one-sided upper bound for a warm median."""
+
+    samples = tuple(_validated_duration(value) for value in values)
+    if len(samples) < ADAPTIVE_STOP_MINIMUM_INCUMBENT_SAMPLES:
+        raise ValueError("an incumbent timing bound requires at least two samples.")
+    if isinstance(sample_count, bool) or not isinstance(sample_count, int):
+        raise ValueError("sample_count must be a positive integer.")
+    if sample_count < 1:
+        raise ValueError("sample_count must be a positive integer.")
+    rng = random.Random(seed)
+    length = len(samples)
+    bootstrap = []
+    for _index in range(sample_count):
+        sample = [samples[rng.randrange(length)] for _item in range(length)]
+        bootstrap.append(float(statistics.median(sample)))
+    bootstrap.sort()
+    upper_index = min(
+        sample_count - 1,
+        max(0, math.ceil(float(confidence_level) * sample_count) - 1),
+    )
+    return bootstrap[upper_index]
 
 
 def _validated_duration(value: float) -> float:
@@ -1388,6 +1497,11 @@ class NodeBenchmarkService:
                 if implementation_id not in active:
                     continue
                 state = states[implementation_id]
+                candidate_stop = self._candidate_stop_bound(
+                    request,
+                    states,
+                    implementation_id=implementation_id,
+                )
                 implementation_label = self._implementation_label(state.implementation)
                 if extended_from is None:
                     before_message = (
@@ -1412,16 +1526,53 @@ class NodeBenchmarkService:
                         f"Finished paired warm round {round_index + 1} of "
                         f"{target_rounds} for {implementation_label}."
                     ),
-                    call=lambda operation_progress, state=state: self._timed_invoke(
+                    call=lambda operation_progress,
+                    state=state,
+                    candidate_stop=candidate_stop: self._timed_invoke(
                         state,
                         request,
                         started,
                         cancelled,
                         phase="warm",
                         operation_progress=operation_progress,
+                        candidate_stop=candidate_stop,
                     ),
                 )
                 if call_error is not None:
+                    if isinstance(call_error, BenchmarkCandidateTimingCensored):
+                        # The provider has fully unwound (including any detached
+                        # accelerator scope) before _progressed_call returns.
+                        # Re-check user/deadline cancellation first so a local
+                        # optimization never masks an explicit global abort.
+                        self._check_abort(request, started, cancelled)
+                        state.timing_censored = True
+                        state.timing_lower_bound_seconds = (
+                            call_error.lower_bound_seconds
+                        )
+                        state.timing_censor_incumbent_id = (
+                            call_error.incumbent_implementation_id
+                        )
+                        state.timing_censor_reason = (
+                            "Stopped early after elapsed CPU time exceeded the "
+                            f"{call_error.confidence_level:.0%} upper confidence "
+                            "bound plus the material-decision margin for "
+                            f"{call_error.incumbent_implementation_id}."
+                        )
+                        active.remove(implementation_id)
+                        self._emit_measurement_progress(
+                            progress,
+                            phase=BenchmarkMeasurementPhase.PAIRED_WARM,
+                            implementation=state.implementation,
+                            completed=round_index,
+                            total=target_rounds,
+                            message=(
+                                f"Stopped {implementation_label} early at more "
+                                f"than {call_error.lower_bound_seconds:.6g} seconds; "
+                                f"{call_error.incumbent_implementation_id} was "
+                                "already decisively faster."
+                            ),
+                        )
+                        continue
                     if isinstance(
                         call_error,
                         (
@@ -1614,6 +1765,79 @@ class NodeBenchmarkService:
         )
 
     @staticmethod
+    def _candidate_stop_bound(
+        request: NodeBenchmarkRequest,
+        states: Mapping[str, _CandidateState],
+        *,
+        implementation_id: str,
+    ) -> _CandidateStopBound | None:
+        """Return a conservative CPU stop bound from resident GPU evidence.
+
+        The graph model treats CPU wall time and GPU resident compute as node
+        costs, then adds directional transfers globally.  Consequently only the
+        CPU reference can be censored here: stopping a GPU call from its total
+        wall time could wrongly discard a fast resident implementation whose
+        one-off transfers are amortized by a resident pipeline region.
+        """
+
+        if (
+            not request.adaptive_candidate_stopping
+            or implementation_id != request.reference.implementation_id
+        ):
+            return None
+        incumbents: list[_CandidateStopBound] = []
+        for candidate in request.candidates:
+            state = states[candidate.implementation_id]
+            resident = state.warm_resident_seconds
+            if (
+                not state.parity_passed
+                or state.error
+                or state.timing_censored
+                or len(state.warm_seconds)
+                < ADAPTIVE_STOP_MINIMUM_INCUMBENT_SAMPLES
+                or len(resident) != len(state.warm_seconds)
+                or any(value is None for value in resident)
+                or not state.synchronized_observations
+                or not all(state.synchronized_observations)
+            ):
+                continue
+            samples = tuple(float(value) for value in resident if value is not None)
+            upper = _bootstrap_upper_median(
+                samples,
+                sample_count=max(
+                    request.paired_bootstrap_samples,
+                    DEFAULT_BOOTSTRAP_SAMPLES,
+                ),
+                seed=_candidate_bootstrap_seed(
+                    request.paired_bootstrap_seed,
+                    candidate.implementation_id,
+                ),
+                confidence_level=request.paired_confidence_level,
+            )
+            margin = max(
+                ADAPTIVE_STOP_MINIMUM_MARGIN_SECONDS,
+                ADAPTIVE_STOP_RELATIVE_MARGIN * upper,
+            )
+            incumbents.append(
+                _CandidateStopBound(
+                    implementation_id,
+                    candidate.implementation_id,
+                    upper + margin,
+                    request.paired_confidence_level,
+                    len(samples),
+                )
+            )
+        if not incumbents:
+            return None
+        return min(
+            incumbents,
+            key=lambda item: (
+                item.decision_bound_seconds,
+                item.incumbent_implementation_id,
+            ),
+        )
+
+    @staticmethod
     def _candidate_result(
         request: NodeBenchmarkRequest,
         state: _CandidateState,
@@ -1695,6 +1919,10 @@ class NodeBenchmarkService:
             ),
             paired_bootstrap_seed=(paired.seed if paired is not None else 0),
             failure_kind=state.failure_kind,
+            timing_censored=state.timing_censored,
+            timing_lower_bound_seconds=state.timing_lower_bound_seconds,
+            timing_censor_reason=state.timing_censor_reason,
+            timing_censor_incumbent_id=state.timing_censor_incumbent_id,
         )
 
     @staticmethod
@@ -1739,6 +1967,31 @@ class NodeBenchmarkService:
     ) -> BenchmarkCandidateResult:
         by_id = {result.implementation_id: result for result in results}
         reference = by_id[request.reference.implementation_id]
+        if reference.timing_censored:
+            # Adaptive stopping is used only by the whole-pipeline optimizer.
+            # The censored CPU lower bound remains available to that model, but
+            # the record's conventional winner must be one implementation with
+            # complete exact timings.  Censored records are deliberately not
+            # cache-reusable, so this cannot become durable Auto evidence.
+            complete = [
+                result
+                for result in results
+                if result.parity_passed
+                and not result.error
+                and not result.timing_censored
+                and len(result.warm_seconds) >= request.warm_rounds
+            ]
+            if not complete:
+                raise BenchmarkError(
+                    "adaptive stopping produced no complete incumbent timing."
+                )
+            return min(
+                complete,
+                key=lambda result: (
+                    statistics.median(result.warm_seconds),
+                    result.implementation_id,
+                ),
+            )
         cpu_seconds = statistics.median(reference.warm_seconds)
         admitted = [reference]
         for result in results:
@@ -1810,11 +2063,55 @@ class NodeBenchmarkService:
         operation_progress: BenchmarkOperationProgressCallback | None = None,
     ) -> object:
         private_input = request.private_input_factory()
+        return self._invoke_prepared(
+            implementation,
+            private_input,
+            request,
+            started,
+            cancelled,
+            operation_progress=operation_progress,
+        )
+
+    def _invoke_prepared(
+        self,
+        implementation: BenchmarkImplementation,
+        private_input: object,
+        request: NodeBenchmarkRequest,
+        started: float,
+        cancelled: Callable[[], bool] | None,
+        *,
+        operation_progress: BenchmarkOperationProgressCallback | None = None,
+        candidate_stop: _CandidateStopBound | None = None,
+        call_started: float | None = None,
+        observer_seconds: Callable[[], float] | None = None,
+    ) -> object:
         binder = request.bind_operation_progress
         if binder is not None:
 
             def abort_operation() -> bool:
                 self._check_abort(request, started, cancelled)
+                if candidate_stop is not None:
+                    if call_started is None or observer_seconds is None:
+                        raise BenchmarkError(
+                            "candidate stop bound requires active timing state."
+                        )
+                    elapsed = max(
+                        self._read_clock()
+                        - call_started
+                        - float(observer_seconds()),
+                        0.0,
+                    )
+                    if elapsed > candidate_stop.decision_bound_seconds:
+                        raise BenchmarkCandidateTimingCensored(
+                            candidate_stop.implementation_id,
+                            candidate_stop.incumbent_implementation_id,
+                            lower_bound_seconds=elapsed,
+                            decision_bound_seconds=(
+                                candidate_stop.decision_bound_seconds
+                            ),
+                            confidence_level=candidate_stop.confidence_level,
+                            incumbent_samples=candidate_stop.incumbent_samples,
+                        )
                 return False
 
             private_input = binder(
@@ -1835,6 +2132,7 @@ class NodeBenchmarkService:
         *,
         phase: str,
         operation_progress: BenchmarkOperationProgressCallback | None = None,
+        candidate_stop: _CandidateStopBound | None = None,
     ) -> float:
         _result, elapsed = self._timed_invoke_with_result(
             state,
@@ -1843,6 +2141,7 @@ class NodeBenchmarkService:
             cancelled,
             phase=phase,
             operation_progress=operation_progress,
+            candidate_stop=candidate_stop,
         )
         return elapsed
 
@@ -1855,6 +2154,7 @@ class NodeBenchmarkService:
         *,
         phase: str,
         operation_progress: BenchmarkOperationProgressCallback | None = None,
+        candidate_stop: _CandidateStopBound | None = None,
     ) -> tuple[object, float]:
         self._check_abort(request, started, cancelled)
         observer_seconds = 0.0
@@ -1875,13 +2175,24 @@ class NodeBenchmarkService:
                 if observer_elapsed >= 0 and math.isfinite(observer_elapsed):
                     observer_seconds += observer_elapsed
 
+        # Preparing the private benchmark input is harness work, commonly a
+        # deep copy of a large image stack.  It remains inside the transaction's
+        # global time budget, but is not implementation work and therefore must
+        # not contribute to either the recorded candidate duration or an
+        # adaptive candidate-stop lower bound.
+        private_input = request.private_input_factory()
+        self._check_abort(request, started, cancelled)
         call_started = self._read_clock()
-        result = self._invoke(
+        result = self._invoke_prepared(
             state.implementation,
+            private_input,
             request,
             started,
             cancelled,
             operation_progress=timed_operation_progress,
+            candidate_stop=candidate_stop,
+            call_started=call_started,
+            observer_seconds=lambda: observer_seconds,
         )
         call_finished = self._read_clock()
         raw_elapsed = call_finished - call_started
@@ -2626,6 +2937,7 @@ __all__ = [
     "MINIMUM_WARM_ROUNDS",
     "SCREENING_MINIMUM_WARM_ROUNDS",
     "BenchmarkBudgetExceeded",
+    "BenchmarkCandidateTimingCensored",
     "BenchmarkCancelled",
     "BenchmarkError",
     "BenchmarkImplementation",

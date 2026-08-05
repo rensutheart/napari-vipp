@@ -6485,6 +6485,11 @@ class PrototypePipeline:
         )
         if required_nodes is not None:
             candidates.intersection_update(required_nodes)
+        candidates = {
+            node_id
+            for node_id in candidates
+            if self._has_required_input_connections(node_id)
+        }
         skipped = self._manual_nodes_to_skip(
             candidates,
             manual_mode,
@@ -6498,6 +6503,22 @@ class PrototypePipeline:
             blocked_node_ids=frozenset(blocked),
             runnable_node_ids=frozenset(candidates - barriers - blocked),
             target_node_ids=(None if targets is None else frozenset(targets)),
+        )
+
+    def _has_required_input_connections(self, node_id: str) -> bool:
+        """Return whether a node has every structurally required input edge."""
+
+        node = self.nodes[node_id]
+        if not self.operation_spec(node.operation_id).has_input:
+            return True
+        connections = self._input_connections(node_id)
+        if not connections:
+            return False
+        if not self._node_accepts_multiple_inputs(node):
+            return True
+        connected_ports = {connection.target_port for connection in connections}
+        return all(
+            port in connected_ports for port in range(self._required_inputs_for(node))
         )
 
     def _mark_nodes_blocked_by_manual_barrier(

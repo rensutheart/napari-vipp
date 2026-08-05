@@ -41,11 +41,6 @@ class ComputeModeOption:
 
 COMPUTE_MODE_OPTIONS = (
     ComputeModeOption(
-        ComputeMode.CPU,
-        "CPU",
-        "Run every node with VIPP's authoritative CPU implementation.",
-    ),
-    ComputeModeOption(
         ComputeMode.AUTO,
         "Auto",
         (
@@ -53,6 +48,11 @@ COMPUTE_MODE_OPTIONS = (
             "missing CPU comparison when needed; otherwise use reviewed GPU "
             "defaults wherever they pass the current safety gates."
         ),
+    ),
+    ComputeModeOption(
+        ComputeMode.CPU,
+        "CPU",
+        "Run every node with VIPP's authoritative CPU implementation.",
     ),
     ComputeModeOption(
         ComputeMode.PREFER_GPU,
@@ -388,6 +388,68 @@ def actual_decision_badge(
         tone,
         experimental,
     )
+
+
+def custom_request_satisfied_by_actual_decisions(
+    request: ComputeRequest,
+    decisions: tuple[NodeExecutionDecision, ...],
+    *,
+    previous_request: ComputeRequest | None = None,
+) -> bool:
+    """Return whether retained actual choices satisfy current Custom intent.
+
+    This is deliberately narrower than scientific output validity.  A retained
+    result can remain useful even when this returns ``False``; the UI then marks
+    it as a previous result instead of implying that dormant Custom choices have
+    already been applied.
+    """
+
+    if not isinstance(request, ComputeRequest):
+        raise TypeError("request must be a ComputeRequest.")
+    if request.mode is not ComputeMode.CUSTOM:
+        raise ValueError("request must use Custom compute mode.")
+    if previous_request is not None and not isinstance(
+        previous_request, ComputeRequest
+    ):
+        raise TypeError("previous_request must be a ComputeRequest or None.")
+    actual = tuple(decisions)
+    if any(not isinstance(item, NodeExecutionDecision) for item in actual):
+        raise TypeError("decisions must contain NodeExecutionDecision values.")
+    if previous_request is not None and (
+        previous_request.precision_policy_id != request.precision_policy_id
+        or previous_request.workload_policy_id != request.workload_policy_id
+    ):
+        return False
+    if request.fallback_policy.value == "strict" and any(
+        decision.fallback_used for decision in actual
+    ):
+        return False
+    if not request.allow_experimental and any(
+        _decision_is_experimental(decision) for decision in actual
+    ):
+        return False
+
+    by_node = {decision.node_id: decision for decision in actual}
+    for node_id, preference in request.node_preferences.items():
+        if preference.kind is NodePreferenceKind.AUTO:
+            continue
+        decision = by_node.get(node_id)
+        if decision is None:
+            return False
+        if preference.kind is NodePreferenceKind.CPU:
+            satisfied = decision.runtime_id == "cpu-numpy"
+        elif preference.kind is NodePreferenceKind.BEST_GPU:
+            satisfied = decision.runtime_id != "cpu-numpy"
+        elif preference.kind is NodePreferenceKind.LIBRARY:
+            satisfied = (
+                decision.runtime_id != "cpu-numpy"
+                and decision.implementation_library_id == preference.value
+            )
+        else:
+            satisfied = decision.implementation_id == preference.value
+        if not satisfied:
+            return False
+    return True
 
 
 @dataclass(frozen=True, slots=True)

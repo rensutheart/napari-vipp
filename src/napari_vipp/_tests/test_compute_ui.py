@@ -22,6 +22,7 @@ from napari_vipp.ui.compute import (
     actual_decision_badge,
     compute_mode_label,
     compute_toolbar_summary,
+    custom_request_satisfied_by_actual_decisions,
     node_preference_options,
     preference_from_value,
     preference_to_value,
@@ -70,19 +71,80 @@ def _gpu_environment() -> ComputeEnvironment:
 
 def test_compute_mode_options_have_stable_public_order_and_labels():
     assert [option.mode.value for option in COMPUTE_MODE_OPTIONS] == [
-        "cpu",
         "auto",
+        "cpu",
         "prefer_gpu",
         "custom",
     ]
     assert [option.label for option in COMPUTE_MODE_OPTIONS] == [
-        "CPU",
         "Auto",
+        "CPU",
         "Prefer GPU",
         "Custom",
     ]
     assert compute_mode_label("AUTO") == "Auto"
     assert compute_mode_label("PREFER_GPU") == "Prefer GPU"
+
+
+def test_custom_intent_compatibility_keeps_actual_provenance_separate():
+    cpu = _decision(
+        node_id="cpu_node",
+        operation_id="gaussian_blur",
+        runtime_id="cpu-numpy",
+        library_id="cpu",
+        implementation_id="cpu-gaussian_blur-v1",
+    )
+    gpu = _decision(
+        node_id="gpu_node",
+        operation_id="median_filter",
+        runtime_id="cuda-cupy",
+        library_id="cupyx",
+        implementation_id="cupyx-median_filter-v1",
+    )
+    matching = ComputeRequest(
+        mode="custom",
+        node_preferences={
+            "cpu_node": "cpu",
+            "gpu_node": "library:cupyx",
+        },
+    )
+    mismatching = ComputeRequest(
+        mode="custom",
+        node_preferences={"cpu_node": "best_gpu"},
+    )
+
+    assert custom_request_satisfied_by_actual_decisions(
+        matching,
+        (cpu, gpu),
+        previous_request=ComputeRequest(mode="auto"),
+    )
+    assert not custom_request_satisfied_by_actual_decisions(
+        mismatching,
+        (cpu, gpu),
+        previous_request=ComputeRequest(mode="prefer_gpu"),
+    )
+
+
+def test_strict_custom_intent_rejects_previous_fallback_result():
+    fallback = _decision(
+        node_id="median",
+        operation_id="median_filter",
+        runtime_id="cpu-numpy",
+        library_id="cpu",
+        implementation_id="cpu-median_filter-v1",
+        fallback=FallbackReason.DEPENDENCY_UNAVAILABLE,
+    )
+    request = ComputeRequest(
+        mode="custom",
+        node_preferences={"median": "library:cupyx"},
+        fallback_policy="strict",
+    )
+
+    assert not custom_request_satisfied_by_actual_decisions(
+        request,
+        (fallback,),
+        previous_request=ComputeRequest(mode="auto"),
+    )
     prefer_gpu = next(
         option for option in COMPUTE_MODE_OPTIONS if option.mode.value == "prefer_gpu"
     )

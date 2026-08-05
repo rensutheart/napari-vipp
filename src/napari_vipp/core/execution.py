@@ -68,6 +68,10 @@ from napari_vipp.core.compute_policy import (
     evaluate_candidate_workload_support,
     propagate_output_descriptors,
 )
+from napari_vipp.core.host_memory import (
+    capture_host_memory,
+    preflight_host_allocation,
+)
 from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.pipeline import (
     EXECUTION_RUNNING,
@@ -352,6 +356,29 @@ class PipelineExecutionFailure:
         return result
 
 
+class AcceleratorCleanupError(RuntimeError):
+    """A primary accelerated failure followed by failed registry cleanup."""
+
+    cleanup_succeeded = False
+
+    def __init__(
+        self,
+        primary_error: BaseException,
+        cleanup_error: BaseException,
+    ) -> None:
+        self.primary_error = primary_error
+        self.primary_error_type = type(primary_error).__name__
+        self.cleanup_error_type = type(cleanup_error).__name__
+        self.fallback_records = tuple(
+            getattr(primary_error, "fallback_records", ())
+            or getattr(primary_error, "vipp_fallback_records", ())
+        )
+        super().__init__(
+            "Accelerator cleanup failed while handling "
+            f"{self.primary_error_type}: {cleanup_error}"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineRunResult:
     """Success, cancellation, or explicit error from one execution attempt."""
@@ -631,6 +658,7 @@ def execute_pipeline_request(
             request.workflow,
             pipeline=pipeline,
             error=str(exc),
+            cancelled=failure.kind == "cancelled",
             source_revisions=request.source_revisions,
             failure=failure,
         )
@@ -743,6 +771,19 @@ def _pipeline_execution_failure(
         getattr(exc, "fallback_records", ())
         or getattr(exc, "vipp_fallback_records", ())
     )
+    if isinstance(exc, AcceleratorCleanupError):
+        primary = _pipeline_execution_failure(
+            exc.primary_error,
+            cancelled=isinstance(exc.primary_error, OperationCancelled),
+            cpu_only=False,
+        )
+        return replace(
+            primary,
+            error_type=type(exc).__name__,
+            message=message,
+            cleanup_succeeded=False,
+            fallback_records=fallback_records or primary.fallback_records,
+        )
     if cancelled:
         return PipelineExecutionFailure(
             kind="cancelled",
@@ -760,6 +801,28 @@ def _pipeline_execution_failure(
             message=message,
             reason_code="compute_preflight_rejected",
             cleanup_succeeded=True,
+            fallback_records=fallback_records,
+        )
+
+    if isinstance(exc, MemoryError):
+        snapshot = capture_host_memory()
+        available_candidates = tuple(
+            value
+            for value in (
+                snapshot.physical_available_bytes,
+                snapshot.commit_available_bytes,
+            )
+            if value is not None
+        )
+        return PipelineExecutionFailure(
+            kind="host_memory_oom",
+            error_type=error_type,
+            message=message,
+            reason_code="host_allocation_failed",
+            available_bytes=(
+                min(available_candidates) if available_candidates else None
+            ),
+            cleanup_succeeded=True if cpu_only else cleanup,
             fallback_records=fallback_records,
         )
 
@@ -850,6 +913,7 @@ def _execute_accelerated_pipeline(
     assert registry is not None
     planner = compute_planner or _default_compute_planner()
     closed_cleanly = True
+    active_error: BaseException | None = None
     history_warnings: list[str] = []
     try:
         # A request cancelled before execution starts must not publish even its
@@ -951,13 +1015,28 @@ def _execute_accelerated_pipeline(
                     timing_choice = candidate_choice
                     effective_compute_request = historical_request
                 elif coverage.needs_cpu_exploration:
-                    effective_compute_request = (
-                        _auto_cpu_exploration_compute_request(
-                            request.compute_request,
-                            workloads,
-                        )
+                    required_host_bytes = _estimate_auto_cpu_exploration_peak_bytes(
+                        workloads
                     )
-                    timing_cpu_exploration = True
+                    memory_preflight = preflight_host_allocation(
+                        capture_host_memory(),
+                        required_bytes=required_host_bytes,
+                        purpose="Auto CPU timing comparison",
+                    )
+                    if memory_preflight.allowed:
+                        effective_compute_request = (
+                            _auto_cpu_exploration_compute_request(
+                                request.compute_request,
+                                workloads,
+                            )
+                        )
+                        timing_cpu_exploration = True
+                    else:
+                        history_warnings.append(
+                            f"{memory_preflight.reason} Auto kept its reviewed "
+                            "safe assignment; the missing CPU timing can be "
+                            "collected later when memory headroom is sufficient."
+                        )
         planning = planner(
             effective_compute_request,
             workloads,
@@ -1167,12 +1246,20 @@ def _execute_accelerated_pipeline(
             source_scientific_contexts=source_scientific_contexts,
             cancel_callback=cancel_callback,
         )
+    except BaseException as exc:
+        active_error = exc
+        raise
     finally:
         if owned_registry:
             try:
                 registry.close()
-            except Exception:
+            except Exception as cleanup_error:
                 closed_cleanly = False
+                if active_error is not None:
+                    raise AcceleratorCleanupError(
+                        active_error,
+                        cleanup_error,
+                    ) from active_error
     if not closed_cleanly:
         report = replace(
             report,
@@ -1265,6 +1352,55 @@ def _auto_cpu_exploration_compute_request(
             for item in workloads
         },
     )
+
+
+def _estimate_auto_cpu_exploration_peak_bytes(
+    workloads: Sequence[WorkloadDescriptor],
+) -> int:
+    """Conservatively estimate additional host peak for an optional CPU run.
+
+    CPU filters frequently promote integer microscopy data to floating-point and
+    allocate several same-sized work arrays. Keep-all execution also retains
+    node outputs. This estimate intentionally favors skipping optional timing
+    evidence over risking process/system commit exhaustion.
+    """
+
+    retained_output_bytes = 0
+    largest_workspace_bytes = 0
+    high_workspace_operations = {
+        "richardson_lucy_deconvolution",
+        "richardson_lucy_tv_deconvolution",
+        "prepare_validate_psf",
+    }
+    for workload in workloads:
+        largest_elements = 0
+        largest_itemsize = 1
+        for shape, dtype_name in zip(
+            workload.input_shapes,
+            workload.input_dtypes,
+            strict=True,
+        ):
+            elements = int(math.prod(shape)) if shape else 1
+            largest_elements = max(largest_elements, elements)
+            try:
+                largest_itemsize = max(
+                    largest_itemsize,
+                    int(np.dtype(dtype_name).itemsize),
+                )
+            except (TypeError, ValueError):
+                largest_itemsize = max(largest_itemsize, 8)
+        if largest_elements <= 0:
+            continue
+        promoted_output_bytes = largest_elements * max(largest_itemsize, 8)
+        retained_output_bytes += promoted_output_bytes
+        workspace_multiplier = (
+            10 if workload.operation_id in high_workspace_operations else 4
+        )
+        largest_workspace_bytes = max(
+            largest_workspace_bytes,
+            promoted_output_bytes * workspace_multiplier,
+        )
+    return retained_output_bytes + largest_workspace_bytes
 
 
 def _mark_historical_auto_planning(
@@ -1635,6 +1771,19 @@ def _assemble_workloads(
         node = pipeline.nodes[node_id]
         operation = pipeline.operation_spec(node.operation_id)
         connections = pipeline._input_connections(node_id)
+        if operation.has_input:
+            if not connections:
+                # Disconnected processing nodes are valid graph-editing state,
+                # but they have no scientific workload to preflight or plan.
+                # PrototypePipeline.run() will leave them uncalculated.
+                continue
+            if pipeline._node_accepts_multiple_inputs(node):
+                required = pipeline._required_inputs_for(node)
+                connected_ports = {
+                    connection.target_port for connection in connections
+                }
+                if any(port not in connected_ports for port in range(required)):
+                    continue
         input_shapes: list[tuple[int, ...]] = []
         input_dtypes: list[str] = []
         input_values: list[object] = []
@@ -3813,6 +3962,7 @@ def _publish_actual_compute_provenance(
 
 
 __all__ = [
+    "AcceleratorCleanupError",
     "ComputePlanner",
     "NodeFinishedCallback",
     "NodeStartedCallback",

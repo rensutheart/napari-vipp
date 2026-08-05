@@ -199,7 +199,7 @@ CPU/Auto/Prefer-GPU/Custom execution contracts, visible or strict fallback,
 transactional device execution, scientific cache identity, and per-node/
 whole-pipeline benchmark services. The toolbar controls
 now provide the first Phase 2 interactive slice: new sessions default to
-`Auto`, the main toolbar exposes `CPU`/`Auto`/`Prefer GPU`/`Custom`, and
+`Auto`, the main toolbar lists `Auto`/`CPU`/`Prefer GPU`/`Custom`, and
 Custom mode
 shows `Auto for this node`, `CPU`, and one choice per declared GPU library
 where implemented. `Best GPU` appears only when multiple libraries compete;
@@ -223,7 +223,11 @@ assignment once on the same execution surface. A later matching Auto run uses
 the accelerated assignment only when it beats CPU by at least 1.20x and 20 ms;
 otherwise it uses CPU. Interactive, batch, and registry-lifecycle timing
 surfaces are never mixed. Auto never silently benchmarks multiple
-implementations.
+implementations. The optional CPU comparison is preflighted against host-memory
+headroom. On Windows that includes both available physical RAM and remaining
+system commit; if either reserve would be unsafe, Auto keeps its reviewed safe
+assignment, explains that the comparison was skipped, and can collect the
+missing CPU evidence on a later run.
 
 `Prefer GPU` always uses visible fallback; a strict Prefer-GPU request is
 invalid because the policy explicitly means “GPU wherever possible, CPU
@@ -233,6 +237,26 @@ Custom mode. Switch back to Custom to reactivate them and to use
 intentionally Custom-only. Developer-hidden implementations remain excluded
 unless experimental admission is explicitly enabled, which is not a public
 support claim.
+
+Compute intent is immutable while a calculation or benchmark is active. The
+mode selector and Custom per-node controls remain disabled until the work
+finishes normally. To change policy sooner, the user must explicitly choose
+`Cancel calculation`/`Cancel analysis`; controls unlock only after the worker
+has finished synchronizing and releasing CPU/GPU resources. Entering Custom while
+idle is configuration-only: it retains the last valid output and its actual
+CPU/GPU provenance. When that result does not satisfy the saved Custom choices,
+VIPP marks its badges and summary as a previous result; changing a per-node
+choice or calculating replaces it.
+
+Failure handling is provenance-aware rather than all-or-nothing. A failed run
+may accept a verified source boundary, and a cleanup-failed run may retain a
+completed processing node only when the matching actual-implementation decision
+is available for its badge and report. Uncomputed or unreported processing
+values never replace an earlier valid result. Cancellation keeps the prior
+coherent result. If accelerator cleanup fails during a calculation, node
+benchmark, whole-pipeline analysis, or collection batch, VIPP treats the
+process runtime as unsafe: all new compute and policy changes are disabled
+until VIPP is restarted.
 
 VIPP uses one message-strip component, with major and actionable paths now
 severity-classified;
@@ -252,7 +276,9 @@ compute/fallback/node overrides, nested or operation progress, cooperative
 cancellation, exit code 130, structured OOM records, and atomic provenance.
 `Settings > Compute setup and memory…` verifies optional packages and hardware
 on a worker and presents system RAM plus discrete VRAM, or one shared budget on
-unified-memory machines. In Custom mode, eligible single-output nodes with
+unified-memory machines. On Windows the cache status also distinguishes
+physical RAM from commit headroom because either can bound a large CPU
+allocation. In Custom mode, eligible single-output nodes with
 one or more ordered inputs offer `Benchmark node…`: VIPP detaches and hashes
 every input, includes every transfer and input in memory accounting, compares
 the exact captured workload, requires scientific parity, saves evidence
@@ -423,8 +449,11 @@ Review downstream ranges, thresholds, rounding/output semantics, file writers,
 and RAM/VRAM use; `float32` also requires twice the storage of `uint16`. Benchmark
 the exact converted pipeline rather than assuming conversion will be faster.
 
-Custom mode also exposes the review-first `Find fastest pipeline…` analysis
-after the current graph has been calculated. It works from detached source data
+Custom mode also exposes the review-first `Find fastest pipeline…` analysis.
+After cancellation cleanup, it can establish a private fresh baseline for the
+current graph and parameters when the retained display is previous or stale;
+the user does not have to publish an ordinary replacement run first. It works
+from detached source data
 and compares every scientifically eligible CPU/CuPy/cuCIM implementation for
 every **unlocked** node. The implementation currently in use is the starting
 assignment, not an optimizer constraint. Only a separate, explicit node lock
@@ -444,6 +473,18 @@ timing never
 replaces fresh whole-pipeline parity before a changed assignment can be offered.
 If the current assignment wins, VIPP reports that as a successful result rather
 than an optimization failure.
+
+When a synchronized GPU candidate already has enough repeat measurements to be
+a reliable incumbent, the optimizer may stop a cooperative CPU warm call after
+its elapsed time exceeds the incumbent's one-sided confidence bound plus a
+material margin. The report records `CPU > ...; stopped early`: this is a
+**censored lower bound**, not an exact CPU timing, and it is not reusable as
+durable timing history. Parity is still established independently, directional
+transfers remain in the graph-wide cost model, and any changed modeled
+assignment must pass final paired whole-pipeline validation before it can be
+offered. If the already-current assignment remains the winner, its fresh
+baseline plus parity and conservative exact-or-censored comparison evidence is
+reported without inventing a redundant paired alternative run.
 The analysis dialog separates **overall progress** from the **current
 operation**. Overall progress follows the complete analysis, while the second
 bar names the node, implementation, phase, and timing round currently being

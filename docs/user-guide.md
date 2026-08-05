@@ -69,8 +69,8 @@ The compute selector in the main toolbar has four policies. New sessions use
 
 | Policy | Behavior |
 | --- | --- |
-| `CPU` | Keep every operation on the established host implementation. |
 | `Auto` | With no exact compatible history, use reviewed GPU defaults. After accelerated-only history, measure CPU once on the same execution surface; then apply the 1.20x/20-ms gate to the completed pair. |
+| `CPU` | Keep every operation on the established host implementation. |
 | `Prefer GPU` | Use a reviewed GPU implementation wherever it is scientifically eligible, even if it is only slightly faster, tied, or slower than CPU. |
 | `Custom` | Expose a compact per-node preference in the Inspector wherever a GPU implementation is declared. |
 
@@ -91,6 +91,24 @@ advanced request explicitly enables experimental admission; doing so is not a
 public support claim. Node-card badges always report what the accepted run
 actually used: CPU, CuPy, cuCIM, or an amber CPU fallback.
 
+Entering `Custom` while VIPP is idle does not recalculate or relabel the last
+valid result. Its thumbnails, values, and actual CPU/GPU provenance remain
+available. If those actual decisions do not satisfy the saved Custom choices,
+the summary and muted badges identify them as a **previous result** and their
+tooltips describe the pending intent. Changing a per-node choice or explicitly
+calculating then replaces that result. A retained result that already satisfies
+the saved choices remains current.
+
+VIPP does not permit compute intent to change underneath active work. While a
+pipeline calculation, node benchmark, or `Find fastest` analysis is running,
+the compute-mode and applicable per-node controls are disabled. They unlock
+after normal completion. To select another policy sooner, use the explicit
+`Cancel calculation`, `Cancel benchmark`, or `Cancel analysis` action. The
+controls stay disabled while the worker reaches a cooperative checkpoint,
+synchronizes, and releases CPU/GPU resources; only then can another mode or
+backend be selected. This prevents, for example, a GPU benchmark from
+continuing after the user has requested CPU-only execution.
+
 For an eligible selected node, `Benchmark node…` captures its exact current
 input and parameters and compares CPU with every scientifically eligible GPU
 implementation on a worker. Parity must pass before timings can influence a
@@ -106,7 +124,12 @@ measures CPU once on the same execution surface. Once both observations exist,
 a later matching run selects acceleration only when it clears the 1.20x/20-ms
 gate; otherwise it selects CPU. Interactive, batch, and registry-lifecycle
 surfaces are never mixed, and Auto never silently benchmarks multiple
-implementations. The portable
+implementations. An optional Auto CPU comparison first checks conservative host
+memory headroom. On Windows, both available physical RAM and remaining system
+commit must preserve a safety reserve. If the comparison is unsafe or commit
+cannot be measured, Auto keeps the reviewed safe assignment, explains that the
+CPU evidence was skipped, and may collect it on a later compatible run. The
+portable
 CPU/library/exact preference you explicitly accept in `Custom` is used going
 forward and saved in workflow schema 4.
 
@@ -117,6 +140,25 @@ round in progress. Some NumPy, SciPy, CuPy, and cuCIM operations run as one
 synchronized call, so VIPP can report immediately before and after the call but
 cannot update a percentage from inside it. An unchanged current-operation bar
 therefore does not by itself mean that the worker is stuck.
+
+If the current graph or parameters are newer than the displayed result,
+`Find fastest` may first calculate a private fresh current-graph baseline after
+all prior cancellation cleanup has completed. It does not publish that baseline
+as an ordinary interactive result or treat stale output as current. The final
+proposal is still review-before-apply.
+
+The optimizer can also stop a cooperative **CPU warm timing** early when a
+synchronized GPU incumbent already has enough repeated measurements and the
+CPU's elapsed time exceeds a confidence-adjusted decision bound. The result is
+shown as a lower bound such as `CPU > 10.6 s; stopped early`, not as an exact
+timing. Censored measurements are not reused as timing-history samples. VIPP
+still checks scientific parity independently, models directional transfers in
+the complete graph, and subjects a changed modeled assignment to final paired
+end-to-end validation before it can be offered. If the current assignment wins,
+the fresh baseline plus parity and conservative exact-or-censored comparison
+evidence supports retaining it; VIPP does not describe that case as a redundant
+paired comparison against itself. GPU candidates are not discarded from one-off transfer-inclusive
+elapsed time because residency can amortize those transfers across a pipeline.
 
 The dialog's time limit is a wall-clock limit for the whole analysis; it is not
 a RAM or VRAM allocation. If the limit is reached, VIPP has **not** established
@@ -130,7 +172,10 @@ comparison is worth waiting for.
 Use `Settings > Compute setup and memory…` to verify optional GPU packages and
 hardware without freezing the interface. VIPP shows separate system RAM and
 VRAM for discrete GPUs, and one shared CPU/GPU memory budget on unified-memory
-systems. If setup is unavailable or misconfigured, VIPP offers a command to
+systems. On Windows the cache status separately reports physical RAM and
+remaining commit headroom: a large allocation can fail when commit is exhausted
+even if some physical RAM appears available. If setup is unavailable or
+misconfigured, VIPP offers a command to
 copy; it does not run installation commands automatically.
 
 ## Core Concepts
@@ -623,8 +668,13 @@ inputs carry the complete normalized `ImageState`; raw arrays use only metadata
 explicitly supplied to the call. Multi-source workflows can bind every source
 through the generated function or its `source_payloads` mapping. Missing,
 unknown, and duplicate bindings fail. The simple command-line folder helper
-binds only the primary source; use the callable API or saved-config batch runner
-for multiple varying sources.
+binds only the primary source. Its built-in local loader hashes the exact source
+before reading and verifies the identity again after materialization. For each
+item it privately stages the complete requested output/sidecar set in one
+destination and commits it with rollback on a caught promotion failure. It
+still has no multi-source pairing, collision plan, final prepublication source
+recheck, checkpoints, manifest, or resumable replay; use the callable API or
+saved-config batch runner for those needs.
 
 The embedded schema-4 workflow retains `execution.compute` so authored intent
 is not lost in review, version control, or later regeneration. Generated Python
@@ -785,6 +835,18 @@ cleans the complete device segment and retries it once on CPU. `strict` records
 the failure instead. If accelerator cleanup is false or cannot be proven,
 publication is blocked: privately staged outputs are not promoted. The manifest
 records this separately from an ordinary scientific or writer error.
+
+An interactive calculation that fails or runs out of host/GPU memory never
+replaces an earlier processing result with an uncomputed or provenance-unknown
+value. A verified source boundary may still be accepted. Completed processing
+nodes may additionally be merged from a cleanup-failed result, but only when it
+carries matching actual-implementation decisions; all other affected nodes
+retain their prior valid outputs,
+thumbnails, and badges and remain pending. Cancellation retains the prior
+coherent result. If CPU/GPU cleanup fails, VIPP keeps only those
+provenance-safe results, disables calculation, policy changes, node benchmarks,
+pipeline optimization, and new batch starts, and requires a restart before
+compute can resume.
 
 ## Manual Calculation Nodes
 

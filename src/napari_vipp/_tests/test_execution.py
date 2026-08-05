@@ -21,6 +21,7 @@ from napari_vipp.core.execution import (
     PipelineRunRequest,
     execute_pipeline_request,
 )
+from napari_vipp.core.host_memory import HostMemorySnapshot
 from napari_vipp.core.pipeline import (
     EXECUTION_BLOCKED,
     EXECUTION_STALE,
@@ -193,6 +194,47 @@ def test_cancelled_cpu_result_has_typed_cleanup_provenance():
     assert result.failure.as_dict()["reason_code"] == "operation_cancelled"
 
 
+def test_accelerated_cancellation_reports_registry_cleanup_failure(monkeypatch):
+    cancelled = threading.Event()
+
+    class FailingRegistry:
+        implementation_specs = ()
+
+        @staticmethod
+        def close() -> None:
+            raise RuntimeError("provider would not close")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_registry.ComputeRegistry",
+        FailingRegistry,
+    )
+    monkeypatch.setattr(
+        execution_module,
+        "_capture_source_scientific_contexts",
+        lambda *_args, **_kwargs: (cancelled.set() or {}),
+    )
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=14,
+            workflow=_input_only_workflow(),
+            input_data=np.zeros((3, 4), dtype=np.float32),
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            compute_request=ComputeRequest(mode=ComputeMode.AUTO),
+            cancel_event=cancelled,
+        )
+    )
+
+    assert result.error
+    assert result.cancelled
+    assert result.failure is not None
+    assert result.failure.kind == "cancelled"
+    assert result.failure.error_type == "AcceleratorCleanupError"
+    assert result.failure.cleanup_succeeded is False
+    assert "provider would not close" in result.failure.message
+
+
 def test_terminal_failure_serializes_prior_oom_retry_attempts():
     record = ExecutionFallbackRecord(
         segment_id="segment-1",
@@ -229,6 +271,29 @@ def test_compute_preflight_failure_proves_no_device_cleanup_was_required():
     assert detail.kind == "compute_preflight"
     assert detail.reason_code == "compute_preflight_rejected"
     assert detail.cleanup_succeeded is True
+
+
+def test_host_memory_error_records_available_physical_and_commit_headroom(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        execution_module,
+        "capture_host_memory",
+        lambda: HostMemorySnapshot(
+            platform="win32",
+            source="windows_global_memory_status_ex",
+            physical_total_bytes=32_000,
+            physical_available_bytes=8_000,
+            commit_limit_bytes=64_000,
+            commit_available_bytes=2_000,
+        ),
+    )
+
+    detail = execution_module._pipeline_execution_failure(MemoryError("allocation"))
+
+    assert detail.kind == "host_memory_oom"
+    assert detail.reason_code == "host_allocation_failed"
+    assert detail.available_bytes == 2_000
 
 
 def test_accelerated_planning_error_preserves_only_resolved_source_boundary():

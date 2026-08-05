@@ -13,6 +13,7 @@ from napari_vipp.core.compute_benchmark import (
     BenchmarkBudgetExceeded,
     BenchmarkCancelled,
     BenchmarkImplementation,
+    BenchmarkInvocationObservation,
     BenchmarkMeasurementPhase,
     BenchmarkMeasurementProgress,
     BenchmarkRejected,
@@ -273,6 +274,77 @@ def test_progress_wraps_every_measurement_without_changing_durations():
         )
 
 
+def test_private_input_factory_time_is_excluded_from_candidate_durations():
+    clock = ManualClock()
+    events: list[str] = []
+    factory_calls = 0
+
+    def expensive_private_input_factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        clock.advance(7.0)
+        return {"value": 3}
+
+    request = replace(
+        _request(
+            clock=clock,
+            events=events,
+            live_input={"value": 3},
+            bad=False,
+        ),
+        private_input_factory=expensive_private_input_factory,
+        warm_rounds=3,
+    )
+
+    record = NodeBenchmarkService(clock=clock).benchmark(request)
+
+    results = {item.implementation_id: item for item in record.candidates}
+    assert results["cpu-reference"].cold_seconds == pytest.approx(0.10)
+    assert results["cpu-reference"].warm_seconds == pytest.approx((0.10,) * 3)
+    assert results["cuda-cupy"].cold_seconds == pytest.approx(0.04)
+    assert results["cuda-cupy"].warm_seconds == pytest.approx((0.04,) * 3)
+    assert factory_calls == 10
+
+
+def test_private_input_factory_time_remains_in_global_benchmark_budget():
+    clock = ManualClock()
+    store = InMemoryBenchmarkStore()
+    provider_calls: list[str] = []
+    progress_events: list[BenchmarkMeasurementProgress] = []
+
+    def expensive_private_input_factory():
+        clock.advance(1.0)
+        return {"value": 3}
+
+    def execute(private_input):
+        provider_calls.append("execute")
+        return private_input["value"]
+
+    request = NodeBenchmarkRequest(
+        workload=_workload(),
+        environment_fingerprint="environment-factory-budget",
+        reference=BenchmarkImplementation("cpu", execute),
+        candidates=(BenchmarkImplementation("gpu", execute),),
+        private_input_factory=expensive_private_input_factory,
+        parity=lambda expected, actual: expected == actual,
+        warm_rounds=3,
+        time_budget_seconds=0.5,
+        time_parity_as_cold=True,
+    )
+
+    with pytest.raises(BenchmarkBudgetExceeded):
+        NodeBenchmarkService(store=store, clock=clock).benchmark(
+            request,
+            progress=progress_events.append,
+        )
+
+    assert provider_calls == []
+    assert len(store) == 0
+    assert len(progress_events) == 1
+    assert progress_events[0].phase is BenchmarkMeasurementPhase.PARITY_COLD
+    assert progress_events[0].completed == 0
+
+
 def test_nested_operation_progress_is_ordered_and_observer_time_is_not_measured():
     clock = ManualClock()
     progress_events: list[BenchmarkMeasurementProgress] = []
@@ -470,6 +542,140 @@ def test_adaptive_progress_updates_three_to_seven_to_fifteen_truthfully():
     assert "round 4 of 7" in before_calls[3].message
     assert "needed after 7 rounds" in before_calls[7].message
     assert "round 8 of 15" in before_calls[7].message
+
+
+def test_adaptive_stop_records_cpu_lower_bound_after_parity_and_gpu_evidence():
+    clock = ManualClock()
+    cpu_scope_active = False
+    calls: list[str] = []
+    progress_events: list[BenchmarkMeasurementProgress] = []
+
+    def bind(private, reporter, abort):
+        private["reporter"] = reporter
+        private["abort"] = abort
+        return private
+
+    def cpu(private):
+        nonlocal cpu_scope_active
+        cpu_scope_active = True
+        calls.append("cpu")
+        try:
+            for index in range(48):
+                clock.advance(0.25)
+                private["abort"]()
+                if private["reporter"] is not None:
+                    private["reporter"](index + 1, 48, "CPU block")
+            return private["value"]
+        finally:
+            cpu_scope_active = False
+
+    def gpu(private):
+        assert not cpu_scope_active
+        calls.append("gpu")
+        clock.advance(1.0)
+        return private["value"]
+
+    observation = BenchmarkInvocationObservation(
+        timing_scope="synchronized-end-to-end-v1",
+        synchronized=True,
+        transfers_included=True,
+        transfer_seconds=0.0,
+        resident_seconds=1.0,
+    )
+    request = NodeBenchmarkRequest(
+        workload=_workload(),
+        environment_fingerprint="environment-adaptive-stop",
+        reference=BenchmarkImplementation("cpu", cpu),
+        candidates=(
+            BenchmarkImplementation("gpu", gpu, observation=lambda: observation),
+        ),
+        private_input_factory=lambda: {"value": 3},
+        parity=lambda expected, actual: expected == actual,
+        warm_rounds=3,
+        adaptive_candidate_stopping=True,
+        paired_bootstrap_samples=50,
+        bind_operation_progress=bind,
+    )
+    service = NodeBenchmarkService(
+        clock=clock,
+        orderer=lambda values, _rng: tuple(
+            sorted(values, key=lambda value: value == "cpu")
+        ),
+    )
+
+    record = service.benchmark(request, progress=progress_events.append)
+
+    by_id = {item.implementation_id: item for item in record.candidates}
+    cpu_result = by_id["cpu"]
+    assert cpu_result.parity_passed
+    assert cpu_result.timing_censored
+    assert cpu_result.timing_lower_bound_seconds == pytest.approx(1.25)
+    assert cpu_result.timing_censor_incumbent_id == "gpu"
+    assert "upper confidence bound" in cpu_result.timing_censor_reason
+    assert cpu_result.warm_seconds == pytest.approx((12.0,))
+    assert by_id["gpu"].warm_resident_seconds == pytest.approx((1.0,) * 3)
+    assert record.accepted_implementation_id == "gpu"
+    assert not cpu_scope_active
+    assert any("already decisively faster" in item.message for item in progress_events)
+
+
+def test_private_input_factory_time_cannot_trigger_adaptive_cpu_censor():
+    clock = ManualClock()
+
+    def bind(private, reporter, abort):
+        private["reporter"] = reporter
+        private["abort"] = abort
+        return private
+
+    def expensive_private_input_factory():
+        clock.advance(5.0)
+        return {"value": 3}
+
+    def cpu(private):
+        clock.advance(0.25)
+        private["abort"]()
+        return private["value"]
+
+    def gpu(private):
+        clock.advance(1.0)
+        return private["value"]
+
+    observation = BenchmarkInvocationObservation(
+        timing_scope="synchronized-end-to-end-v1",
+        synchronized=True,
+        transfers_included=True,
+        transfer_seconds=0.0,
+        resident_seconds=1.0,
+    )
+    request = NodeBenchmarkRequest(
+        workload=_workload(),
+        environment_fingerprint="environment-expensive-input-factory",
+        reference=BenchmarkImplementation("cpu", cpu),
+        candidates=(
+            BenchmarkImplementation("gpu", gpu, observation=lambda: observation),
+        ),
+        private_input_factory=expensive_private_input_factory,
+        parity=lambda expected, actual: expected == actual,
+        warm_rounds=3,
+        adaptive_candidate_stopping=True,
+        paired_bootstrap_samples=50,
+        bind_operation_progress=bind,
+    )
+    service = NodeBenchmarkService(
+        clock=clock,
+        orderer=lambda values, _rng: tuple(
+            sorted(values, key=lambda value: value == "cpu")
+        ),
+    )
+
+    record = service.benchmark(request)
+
+    by_id = {item.implementation_id: item for item in record.candidates}
+    assert not by_id["cpu"].timing_censored
+    assert by_id["cpu"].cold_seconds == pytest.approx(0.25)
+    assert by_id["cpu"].warm_seconds == pytest.approx((0.25,) * 3)
+    assert by_id["gpu"].warm_seconds == pytest.approx((1.0,) * 3)
+    assert record.accepted_implementation_id == "cpu"
 
 
 def test_progress_failure_keeps_benchmark_publication_atomic():
@@ -811,16 +1017,33 @@ def test_key_includes_effective_profile_and_exact_implementation_versions():
         request.key.digest,
         replace(request, warm_rounds=15).key.digest,
         replace(request, adaptive_rounds=True).key.digest,
+        replace(request, adaptive_candidate_stopping=True).key.digest,
         replace(request, paired_bootstrap_samples=200).key.digest,
         replace(request, reference=versioned_reference).key.digest,
     }
 
-    assert len(keys) == 5
+    assert len(keys) == 6
     assert request.key.implementation_ids == (
         "cpu-reference@unspecified",
         "cuda-cupy@unspecified",
     )
     assert request.key.policy_id.startswith("paired-warm-v1@")
+
+
+def test_adaptive_request_names_only_the_stronger_exact_compatible_key():
+    clock = ManualClock()
+    events: list[str] = []
+    exact = _request(
+        clock=clock,
+        events=events,
+        live_input={"value": 3},
+        bad=False,
+    )
+    adaptive = replace(exact, adaptive_candidate_stopping=True)
+
+    assert exact.exact_timing_compatible_key == exact.key
+    assert adaptive.exact_timing_compatible_key == exact.key
+    assert adaptive.key != exact.key
 
 
 def test_completed_record_identity_does_not_depend_on_abort_budget():

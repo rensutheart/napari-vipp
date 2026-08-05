@@ -726,6 +726,158 @@ def test_exact_saved_record_reuses_completed_candidate_rejection(
 
     assert coordinator.cached_result(plan) is None
 
+    censored = replace(
+        measured,
+        candidates=tuple(
+            replace(
+                candidate,
+                timing_censored=True,
+                timing_lower_bound_seconds=0.05,
+                timing_censor_reason="CPU exceeded the decisive GPU bound.",
+                timing_censor_incumbent_id=gpu_id,
+            )
+            if candidate.implementation_id == cpu_id
+            else candidate
+            for candidate in measured.candidates
+        ),
+        accepted_implementation_id=gpu_id,
+    )
+    coordinator.store.put(censored)
+
+    assert coordinator.cached_result(plan) is None
+
+
+def test_prepare_opt_in_separates_adaptive_censored_policy_identity(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime = _coordinator_with_fake_runtime(
+        tmp_path,
+        monkeypatch,
+        clock,
+    )
+    pipeline, _source_id, node_id = _median_pipeline(
+        np.arange(31 * 37, dtype=np.uint16).reshape(31, 37)
+    )
+
+    exact = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+    )
+    adaptive = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        adaptive_candidate_stopping=True,
+    )
+
+    assert not exact.registered.request.adaptive_candidate_stopping
+    assert adaptive.registered.request.adaptive_candidate_stopping
+    assert exact.key_digest != adaptive.key_digest
+
+
+def test_adaptive_plan_reuses_stronger_exact_uncensored_record(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime = _coordinator_with_fake_runtime(
+        tmp_path,
+        monkeypatch,
+        clock,
+    )
+    pipeline, _source_id, node_id = _median_pipeline(
+        np.arange(31 * 37, dtype=np.uint16).reshape(31, 37)
+    )
+    exact_plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+    )
+    exact_record = coordinator.run(exact_plan).record
+    adaptive_plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        adaptive_candidate_stopping=True,
+    )
+    before_lookup = clock.value
+
+    reused = coordinator.cached_result(adaptive_plan)
+
+    assert reused is not None
+    assert reused.plan == adaptive_plan
+    assert reused.record.key == adaptive_plan.registered.request.key
+    assert reused.record.candidates == exact_record.candidates
+    assert not any(item.timing_censored for item in reused.record.candidates)
+    assert coordinator.store.get(adaptive_plan.registered.request.key) is None
+    assert clock.value == before_lookup
+
+
+def test_exact_profile_never_reuses_adaptive_or_censored_compatible_record(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime = _coordinator_with_fake_runtime(
+        tmp_path,
+        monkeypatch,
+        clock,
+    )
+    pipeline, _source_id, node_id = _median_pipeline(
+        np.arange(31 * 37, dtype=np.uint16).reshape(31, 37)
+    )
+    exact_plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+    )
+    measured = coordinator.run(exact_plan).record
+    adaptive_plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        adaptive_candidate_stopping=True,
+    )
+    coordinator.store.discard(exact_plan.registered.request.key)
+    coordinator.store.put(
+        replace(measured, key=adaptive_plan.registered.request.key)
+    )
+
+    assert coordinator.cached_result(exact_plan) is None
+    coordinator.store.discard(adaptive_plan.registered.request.key)
+
+    cpu_id = exact_plan.registered.request.reference.implementation_id
+    gpu_id = exact_plan.registered.request.candidates[0].implementation_id
+    coordinator.store.put(
+        replace(
+            measured,
+            candidates=tuple(
+                replace(
+                    candidate,
+                    timing_censored=True,
+                    timing_lower_bound_seconds=0.05,
+                    timing_censor_reason="CPU exceeded the decisive GPU bound.",
+                    timing_censor_incumbent_id=gpu_id,
+                )
+                if candidate.implementation_id == cpu_id
+                else candidate
+                for candidate in measured.candidates
+            ),
+            accepted_implementation_id=gpu_id,
+        )
+    )
+
+    assert coordinator.cached_result(adaptive_plan) is None
+
 
 def test_benchmark_environment_identity_includes_cpu_scientific_stack(
     monkeypatch,

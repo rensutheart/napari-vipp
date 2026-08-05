@@ -167,6 +167,16 @@ class PipelineValidationWinner(StrEnum):
     PROPOSED = "proposed"
 
 
+class PipelineOptimizationSelectionBasis(StrEnum):
+    """Stable provenance for why the optimizer selected its final assignment."""
+
+    PAIRED_VALIDATED_ALTERNATIVE = "paired-validated-alternative"
+    EXACT_MODEL_RETAINED_CURRENT = "exact-model-retained-current"
+    CONSERVATIVE_BOUND_RETAINED_CURRENT = (
+        "conservative-bound-retained-current"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceRefusal:
     code: str
@@ -542,6 +552,7 @@ class PipelineOptimizationProposal:
         PipelineValidationWinner.NOT_RUN
     )
     tested_assignment: tuple[tuple[str, str], ...] = ()
+    selection_basis: PipelineOptimizationSelectionBasis | str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.pipeline_validation_performed, bool):
@@ -586,6 +597,34 @@ class PipelineOptimizationProposal:
             float(reverse_bound),
         )
         object.__setattr__(self, "validation_winner", winner)
+        raw_basis = str(self.selection_basis).strip()
+        basis = (
+            PipelineOptimizationSelectionBasis(raw_basis)
+            if raw_basis
+            else (
+                PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE
+                if self.pipeline_validation_performed
+                else PipelineOptimizationSelectionBasis.EXACT_MODEL_RETAINED_CURRENT
+            )
+        )
+        paired_basis = (
+            basis
+            is PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE
+        )
+        if self.pipeline_validation_performed != paired_basis:
+            raise ValueError(
+                "selection_basis must identify paired validation exactly when "
+                "pipeline_validation_performed is true"
+            )
+        if not paired_basis and winner is not PipelineValidationWinner.CURRENT:
+            raise ValueError(
+                "a model-retained selection basis requires the current assignment"
+            )
+        if any(row.changed for row in self.rows) and not paired_basis:
+            raise ValueError(
+                "a changed assignment requires paired whole-pipeline validation"
+            )
+        object.__setattr__(self, "selection_basis", basis)
         tested_assignment = self.tested_assignment or tuple(
             (row.node_id, row.proposed_implementation_id) for row in self.rows
         )
@@ -722,6 +761,7 @@ class PipelineOptimizationCoordinator:
         graph_nodes: list[GraphCostNode] = []
         refusals: list[EvidenceRefusal] = []
         allowed_by_node: dict[str, tuple[PipelineOptimizationCandidate, ...]] = {}
+        conservative_bound_used = False
         for node in node_values:
             self._check_abort(deadline, cancelled)
             allowed = _allowed_candidates(
@@ -788,6 +828,8 @@ class PipelineOptimizationCoordinator:
                             continue
                         refusals.append(refusal)
                         continue
+                    if result.timing_censored:
+                        conservative_bound_used = True
                 else:
                     cost = 0.0
                     result = None
@@ -921,6 +963,9 @@ class PipelineOptimizationCoordinator:
         proposed_assignment = tested_assignment
         validation_performed = tested_assignment != current_assignment
         if validation_performed:
+            selection_basis = (
+                PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE
+            )
             validation_request = PipelineValidationRequest(
                 identity.digest,
                 current_assignment,
@@ -979,6 +1024,11 @@ class PipelineOptimizationCoordinator:
                     "bound above 1.0."
                 )
         else:
+            selection_basis = (
+                PipelineOptimizationSelectionBasis.CONSERVATIVE_BOUND_RETAINED_CURRENT
+                if conservative_bound_used
+                else PipelineOptimizationSelectionBasis.EXACT_MODEL_RETAINED_CURRENT
+            )
             validation = PipelineAssignmentValidation(
                 identity.digest,
                 current_assignment,
@@ -1032,6 +1082,7 @@ class PipelineOptimizationCoordinator:
             validation.current_speedup_lower_confidence_bound,
             validation_winner,
             tested_assignment,
+            selection_basis,
         )
 
     def _cancelled_or_expired(
@@ -1142,6 +1193,26 @@ def _candidate_cost(
             "runtime/timing failure.",
             node.node_id,
         )
+    if result.timing_censored:
+        if (
+            candidate.runtime_id != host_runtime_id
+            or result.timing_lower_bound_seconds is None
+        ):
+            return 0.0, EvidenceRefusal(
+                "candidate_censor_scope_unsupported",
+                "Only a CPU warm-call lower bound can be modeled without "
+                "conflating resident compute and directional transfers.",
+                node.node_id,
+            )
+        # Treat every completed warm observation and the censored observation
+        # only as a conservative lower bound.  The minimum cannot make the CPU
+        # look slower than the evidence proves, so an accelerator selected by
+        # this model must still pass exact paired whole-pipeline validation.
+        lower_bounds = (
+            *tuple(float(value) for value in result.warm_seconds),
+            float(result.timing_lower_bound_seconds),
+        )
+        return min(lower_bounds), None
     if candidate.runtime_id == host_runtime_id:
         if not result.warm_seconds:
             return 0.0, EvidenceRefusal(
@@ -1273,6 +1344,7 @@ __all__ = [
     "PipelineOptimizationNotBeneficial",
     "PipelineOptimizationProposal",
     "PipelineOptimizationRow",
+    "PipelineOptimizationSelectionBasis",
     "PipelineOptimizationStale",
     "PipelineOptimizationTimeoutReport",
     "PipelineValidationRequest",

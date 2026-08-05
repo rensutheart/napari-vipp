@@ -275,8 +275,11 @@ current-versus-identical pipeline validation.
   candidate environment, or VIPP/NumPy/SciPy/scikit-image benchmark stack.
   Deterministic typed parity rejections can be reused and explained; transient
   runtime, OOM, cleanup, and timing failures are retried and cannot support an
-  exhaustive-optimum claim. A final paired-validation win for the current
-  assignment is reported as success with the reverse confidence bound.
+  exhaustive-optimum claim. A changed modeled assignment requires final paired
+  validation. When the already-current assignment remains best, the optimizer
+  reports success from its fresh baseline, parity, and conservative
+  exact-or-censored comparison evidence rather than manufacturing a redundant
+  paired alternative run against the same assignment.
 - Before broader use, capture workflow/source/retention/compute/assignment as one
   immutable application snapshot, preserve the optimizer's exact evidence
   envelope through every future consumer, retain a single end-to-end deadline

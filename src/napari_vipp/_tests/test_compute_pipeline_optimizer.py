@@ -28,6 +28,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationIdentity,
     PipelineOptimizationNode,
     PipelineOptimizationNotBeneficial,
+    PipelineOptimizationSelectionBasis,
     PipelineOptimizationStale,
     PipelineValidationWinner,
 )
@@ -120,6 +121,10 @@ def _result(
     failure_kind: BenchmarkCandidateFailureKind = (
         BenchmarkCandidateFailureKind.NONE
     ),
+    timing_censored: bool = False,
+    timing_lower_bound_seconds: float | None = None,
+    timing_censor_reason: str = "",
+    timing_censor_incumbent_id: str = "",
 ) -> BenchmarkCandidateResult:
     end_to_end = seconds if end_to_end_seconds is None else end_to_end_seconds
     resident = (
@@ -137,6 +142,10 @@ def _result(
         synchronized=synchronized,
         warm_resident_seconds=resident,
         failure_kind=failure_kind,
+        timing_censored=timing_censored,
+        timing_lower_bound_seconds=timing_lower_bound_seconds,
+        timing_censor_reason=timing_censor_reason,
+        timing_censor_incumbent_id=timing_censor_incumbent_id,
     )
 
 
@@ -312,6 +321,76 @@ def test_global_assignment_keeps_resident_gpu_chain_despite_local_transfer_cost(
     assert proposal.estimated_proposed_seconds == pytest.approx(16.0)
 
 
+def test_censored_cpu_lower_bound_is_conservative_and_finally_validated():
+    nodes = (_node("a"),)
+    validation_calls = []
+
+    def validate(request):
+        validation_calls.append(request)
+        return _validator(current_seconds=20.0, proposed_seconds=10.0)(request)
+
+    proposal = _optimize(
+        nodes,
+        timings={"a": {"cpu": 20.0, "gpu": 10.0}},
+        result_overrides={
+            "a": {
+                "cpu": {
+                    "timing_censored": True,
+                    "timing_lower_bound_seconds": 11.0,
+                    "timing_censor_reason": "CPU exceeded the GPU decision bound.",
+                    "timing_censor_incumbent_id": "gpu",
+                }
+            }
+        },
+        validate=validate,
+    )
+
+    assert proposal.estimated_current_seconds == pytest.approx(11.0)
+    assert proposal.estimated_proposed_seconds == pytest.approx(10.0)
+    assert proposal.rows[0].proposed_implementation_id == "gpu"
+    assert proposal.pipeline_validation_performed
+    assert (
+        proposal.selection_basis
+        is PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE
+    )
+    assert len(validation_calls) == 1
+
+
+def test_censored_cpu_alternative_retains_current_gpu_with_explicit_basis():
+    nodes = (_node("a", current="gpu"),)
+    validation_calls = []
+
+    def validate(request):
+        validation_calls.append(request)
+        raise AssertionError("an unchanged current assignment is not revalidated")
+
+    proposal = _optimize(
+        nodes,
+        timings={"a": {"cpu": 20.0, "gpu": 10.0}},
+        result_overrides={
+            "a": {
+                "cpu": {
+                    "timing_censored": True,
+                    "timing_lower_bound_seconds": 11.0,
+                    "timing_censor_reason": "CPU exceeded the GPU decision bound.",
+                    "timing_censor_incumbent_id": "gpu",
+                }
+            }
+        },
+        validate=validate,
+    )
+
+    assert proposal.rows[0].proposed_implementation_id == "gpu"
+    assert not proposal.rows[0].changed
+    assert not proposal.pipeline_validation_performed
+    assert proposal.validation_winner is PipelineValidationWinner.CURRENT
+    assert (
+        proposal.selection_basis
+        is PipelineOptimizationSelectionBasis.CONSERVATIVE_BOUND_RETAINED_CURRENT
+    )
+    assert validation_calls == []
+
+
 def test_directional_device_to_host_cost_can_keep_node_on_cpu():
     nodes = (_node("a", host_input_bytes=1, requires_host_output=True),)
     identity = _identity(nodes)
@@ -325,6 +404,10 @@ def test_directional_device_to_host_cost_can_keep_node_on_cpu():
     )
     assert retained.rows[0].proposed_implementation_id == "cpu"
     assert not retained.pipeline_validation_performed
+    assert (
+        retained.selection_basis
+        is PipelineOptimizationSelectionBasis.EXACT_MODEL_RETAINED_CURRENT
+    )
 
     proposal = _optimize(
         nodes,
@@ -735,6 +818,23 @@ def test_validation_accepts_material_confident_speedup():
 
     assert proposal.validated_proposed_seconds == pytest.approx(0.94)
     assert proposal.validation_winner is PipelineValidationWinner.PROPOSED
+    assert (
+        proposal.selection_basis
+        is PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="changed assignment requires paired whole-pipeline validation",
+    ):
+        replace(
+            proposal,
+            pipeline_validation_performed=False,
+            validation_winner=PipelineValidationWinner.CURRENT,
+            selection_basis=(
+                PipelineOptimizationSelectionBasis.EXACT_MODEL_RETAINED_CURRENT
+            ),
+        )
 
 
 def test_validation_returns_success_when_current_assignment_decisively_wins():

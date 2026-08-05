@@ -72,6 +72,11 @@ selects CPU. Interactive, batch, and registry-lifecycle timing surfaces are
 keyed separately and never mixed. Auto never silently benchmarks multiple
 implementations; node and pipeline comparisons remain explicit Custom actions.
 Raw image data and workflow documents are not stored in this timing history.
+Before the optional authoritative CPU comparison, the executor conservatively
+estimates its additional host peak. It proceeds only when physical RAM—and, on
+Windows, system commit—retain a safety reserve. Otherwise Auto keeps the
+reviewed safe assignment and records a warning that the missing CPU observation
+was skipped rather than risking an avoidable host OOM.
 
 ## Saved And Effective Compute Requests
 
@@ -216,9 +221,15 @@ With provenance enabled, a successful output has an atomic sibling such as
 also attempts to write a failure sidecar at the requested destination name.
 
 The generated `batch_process()` folder loop is deliberately only a convenience
-for one varying primary source. It warns when used and does **not** provide the
-saved batch runner's multi-source pairing, source-byte identities, collision
-plan, private staging, checkpoints, manifest, or durable replay guarantees. Use
+for one varying primary source. Local files opened by its built-in
+`load_image()` helper are content-hashed before reading, verified again after
+materialization, and bound to each output sidecar. For each item, all requested
+outputs and sidecars are written to a private staging directory, checked for
+duplicate destinations and cleanup success, and committed as one
+rollback-protected set within one destination directory. The loop still does
+**not** provide the saved batch runner's multi-source pairing, collision plan,
+final source-identity recheck immediately before publication, checkpoints,
+manifest, or durable replay guarantees. Use
 `vipp_batch_pipeline.py` for production collection processing.
 
 ## Exact Provenance
@@ -272,6 +283,11 @@ or availability fallback selected before execution remains visible in each
 node decision and the compact `fallbacks` summary; `fallback_records` is the
 more detailed audit trail for an attempted device segment and CPU retry.
 
+Host `MemoryError` is classified separately from GPU OOM. Windows diagnostics
+distinguish available physical RAM from remaining commit headroom because
+either can limit a large CPU allocation; the `GlobalMemoryStatusEx` page-file
+fields represent system commit limit/headroom, not just page-file size.
+
 Each OOM retry produces a structured record containing the segment/runtime and
 node IDs, typed reason and reason code, exception type/message, attempt counts,
 whether the CPU retry succeeded, cleanup result, the planned memory estimate,
@@ -285,6 +301,22 @@ cleanup result blocks promotion, records a failure in the item/manifest, and
 leaves no newly published output for that item. Standalone generated output
 publication follows the same rule and reports publication failures separately
 from successful scientific calculation.
+
+In an interactive VIPP process, a false cleanup result from pipeline execution,
+a node benchmark, **Find fastest**, or collection batch means the accelerator
+runtime is no longer safe to reuse. VIPP requests cooperative cancellation of
+every other active compute owner, preserves its last coherent interactive
+result, and disables new calculation, policy changes (including policy-changing
+undo/redo), benchmark/optimizer work, and batch starts until the application is
+restarted. **Find fastest** also rolls back benchmark records written by the
+unsafe analysis. If an individual rollback cannot be written safely, VIPP
+writes a durable poison marker first and moves the complete local timing-store
+file to an `.unsafe-*` quarantine name under the store's cross-process lock. A
+restart resolves that marker or refuses to open the active store, so suspect
+evidence is never silently reused. If even the marker cannot be written, the
+restart alert names the active file that must be moved manually. This
+process-level quarantine is separate from ordinary visible CPU fallback, which
+requires cleanup to have succeeded.
 
 ## Progress And Cancellation
 
@@ -331,10 +363,12 @@ are finalized on the normal cooperative-cancellation path, and the CLI exits
 - Item checkpoints are a recovery trail, not automatic resume. The generated
   folder convenience is not a durable batch substitute.
 - Generated workflow programs require the exact VIPP version that created
-  them. They preserve a complete source identity supplied by `ImageDataset` or
-  `SourcePayload`, but do not themselves hash arbitrary input source bytes. The
-  saved batch runner is the surface that captures and reverifies source
-  identities.
+  them. Their built-in `load_image()` helper captures and verifies exact local
+  source identities, and their folder helper privately stages and transactionally
+  commits each requested output set. Callers supplying raw arrays must also
+  supply any source identity they want recorded. The saved batch runner remains
+  the durable surface for multi-source capture, a final source recheck before
+  publication, collision planning, checkpoints, manifests, and replay.
 - Native Linux, secondary RTX 40-series Windows hardware, Apple M1 Max
   provider feasibility, and feature-complete cuCIM/Clara packaging remain
   release work. CPU execution remains the portable Windows/macOS/Linux path.

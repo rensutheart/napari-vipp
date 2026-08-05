@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from qtpy.QtCore import Qt
 
@@ -18,6 +19,7 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     NodeBenchmarkProgress,
     NodeBenchmarkUnavailable,
 )
+from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.ui.compute_benchmark_dialog import (
     NodeBenchmarkDialog,
     NodeBenchmarkWorker,
@@ -143,6 +145,69 @@ def test_worker_emits_progress_and_success_then_closes_registry(tmp_path):
     assert registry.close_calls == 1
 
 
+def test_worker_freezes_live_pipeline_without_copying_array_payloads(tmp_path):
+    pipeline = PrototypePipeline()
+    source = np.arange(16, dtype=np.uint16).reshape(4, 4)
+    pipeline.nodes["gaussian"].params["_vipp_snapshot_probe"] = {
+        "values": ["before"]
+    }
+    pipeline.outputs["input"] = source
+    pipeline.node_outputs["input"] = [source]
+    pipeline.completed_node_ids.add("input")
+    pipeline.node_execution_states["input"] = "ready"
+
+    observed = {}
+
+    class Coordinator:
+        @staticmethod
+        def benchmark(snapshot, node_id, **_kwargs):
+            observed["pipeline"] = snapshot
+            observed["node_id"] = node_id
+            return object()
+
+    worker = NodeBenchmarkWorker(
+        pipeline=pipeline,
+        node_id="gaussian",
+        store_path=tmp_path / "benchmarks.json",
+        allow_experimental=False,
+        registry_factory=_ClosingRegistry,
+        coordinator_factory=lambda _registry, _path: Coordinator(),
+    )
+
+    # The UI-thread capture owns its containers and parameters, but the large
+    # input remains a shared reference until the worker coordinator detaches it.
+    snapshot = worker.pipeline
+    assert snapshot is not pipeline
+    assert snapshot.outputs["input"] is source
+    assert snapshot.node_outputs["input"][0] is source
+    assert snapshot.node_outputs["input"] is not pipeline.node_outputs["input"]
+
+    pipeline.nodes["gaussian"].params["sigma"] = 99.0
+    pipeline.nodes["gaussian"].params["_vipp_snapshot_probe"]["values"].append(
+        "after"
+    )
+    pipeline.connections.clear()
+    pipeline.outputs["input"] = np.zeros_like(source)
+    pipeline.node_outputs["input"].clear()
+    pipeline.completed_node_ids.clear()
+    pipeline.node_execution_states["input"] = "stale"
+
+    worker.run()
+
+    captured = observed["pipeline"]
+    assert captured is snapshot
+    assert observed["node_id"] == "gaussian"
+    assert captured.nodes["gaussian"].params["sigma"] == 1.2
+    assert captured.nodes["gaussian"].params["_vipp_snapshot_probe"] == {
+        "values": ["before"]
+    }
+    assert len(captured.connections) == 2
+    assert captured.outputs["input"] is source
+    assert captured.node_outputs["input"] == [source]
+    assert captured.completed_node_ids == {"input"}
+    assert captured.node_execution_states["input"] == "ready"
+
+
 def test_worker_cleanup_failure_withdraws_saved_result(tmp_path):
     discarded = []
     result = SimpleNamespace(record=SimpleNamespace(key="exact-key"))
@@ -176,8 +241,111 @@ def test_worker_cleanup_failure_withdraws_saved_result(tmp_path):
 
     assert discarded == ["exact-key"]
     assert outcomes[0].result is None
-    assert outcomes[0].reason_code == "benchmark_failed"
+    assert outcomes[0].reason_code == "cleanup_failed"
     assert "cleanup failed" in outcomes[0].error
+
+
+def test_worker_cleanup_failure_restores_overwritten_record(tmp_path):
+    key = SimpleNamespace(digest="exact-key")
+    previous = SimpleNamespace(key=key, marker="previous")
+    measured = SimpleNamespace(key=key, marker="measured")
+    result = SimpleNamespace(record=measured)
+
+    class FailingRegistry:
+        @staticmethod
+        def close():
+            raise RuntimeError("device cleanup failed")
+
+    class Store:
+        current = previous
+
+        @classmethod
+        def get(cls, _key):
+            return cls.current
+
+        @classmethod
+        def put(cls, record):
+            cls.current = record
+
+        @classmethod
+        def discard(cls, _key):
+            cls.current = None
+
+    class Coordinator:
+        store = Store()
+
+        @classmethod
+        def benchmark(cls, *_args, **_kwargs):
+            cls.store.put(measured)
+            return result
+
+    worker = _worker(
+        tmp_path,
+        registry_factory=FailingRegistry,
+        coordinator_factory=lambda _registry, _path: Coordinator(),
+    )
+    outcomes = []
+    worker.signals.finished.connect(outcomes.append)
+
+    worker.run()
+
+    assert Store.current is previous
+    assert outcomes[0].reason_code == "cleanup_failed"
+    assert "evidence was rolled back" in outcomes[0].error
+
+
+def test_worker_rollback_failure_quarantines_entire_store(tmp_path):
+    store_path = tmp_path / "benchmarks.json"
+    store_path.write_text("{}\n", encoding="utf-8")
+    key = SimpleNamespace(digest="exact-key")
+    previous = SimpleNamespace(key=key, marker="previous")
+    measured = SimpleNamespace(key=key, marker="measured")
+    result = SimpleNamespace(record=measured)
+
+    class FailingRegistry:
+        @staticmethod
+        def close():
+            raise RuntimeError("device cleanup failed")
+
+    class Store:
+        current = previous
+
+        @classmethod
+        def get(cls, _key):
+            return cls.current
+
+        @classmethod
+        def put(cls, record):
+            if record is previous:
+                raise OSError("synthetic restore failure")
+            cls.current = record
+
+        @classmethod
+        def discard(cls, _key):
+            cls.current = None
+
+    class Coordinator:
+        store = Store()
+
+        @classmethod
+        def benchmark(cls, *_args, **_kwargs):
+            cls.store.put(measured)
+            return result
+
+    worker = _worker(
+        tmp_path,
+        registry_factory=FailingRegistry,
+        coordinator_factory=lambda _registry, _path: Coordinator(),
+    )
+    outcomes = []
+    worker.signals.finished.connect(outcomes.append)
+
+    worker.run()
+
+    assert outcomes[0].reason_code == "cleanup_failed"
+    assert "will not be reused" in outcomes[0].error
+    assert not store_path.exists()
+    assert len(tuple(tmp_path.glob("benchmarks.json.unsafe-*"))) == 1
 
 
 @pytest.mark.parametrize(

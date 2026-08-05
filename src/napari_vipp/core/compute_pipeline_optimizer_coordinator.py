@@ -244,6 +244,7 @@ class ApplicationPipelineOptimizerCoordinator:
         compute_request: ComputeRequest,
         retain_node_ids: Sequence[str] | frozenset[str] = (),
         *,
+        baseline_compute_request: ComputeRequest | None = None,
         optimizer_locked_node_ids: Sequence[str] | frozenset[str] = (),
         time_budget_seconds: float = 120.0,
         max_assignments: int = 100_000,
@@ -256,6 +257,13 @@ class ApplicationPipelineOptimizerCoordinator:
             raise TypeError("compute_request must be a ComputeRequest")
         if compute_request.mode is not ComputeMode.CUSTOM:
             _refuse("custom_required", "Choose Custom compute policy.")
+        if baseline_compute_request is None:
+            baseline_request = compute_request
+        elif not isinstance(baseline_compute_request, ComputeRequest):
+            raise TypeError("baseline_compute_request must be a ComputeRequest or None")
+        else:
+            baseline_request = baseline_compute_request
+        _validate_baseline_compute_request(compute_request, baseline_request)
         if compute_request.accelerator_memory_cap_bytes == 0:
             _refuse(
                 "accelerator_memory_cap_invalid",
@@ -373,7 +381,7 @@ class ApplicationPipelineOptimizerCoordinator:
         baseline = self._execute(
             document,
             sources.payloads,
-            compute_request,
+            baseline_request,
             environment,
             target_node_ids=frozenset(safe_ids),
             retain_node_ids=frozenset(safe_ids),
@@ -535,6 +543,11 @@ class ApplicationPipelineOptimizerCoordinator:
                     allow_experimental=compute_request.allow_experimental,
                     paired_bootstrap_samples=DEFAULT_BOOTSTRAP_SAMPLES,
                     paired_bootstrap_seed=DEFAULT_BOOTSTRAP_SEED,
+                    adaptive_candidate_stopping=(
+                        _adaptive_cpu_stop_is_safe_for_current_assignment(
+                            decisions.get(node_id)
+                        )
+                    ),
                     cancelled=cancelled,
                     progress=forward_node_progress,
                 )
@@ -2213,6 +2226,54 @@ def _topology_fingerprint(pipeline: PrototypePipeline) -> str:
                 for item in pipeline.output_tunnel_list()
             ],
         }
+    )
+
+
+def _validate_baseline_compute_request(
+    authored: ComputeRequest,
+    baseline: ComputeRequest,
+) -> None:
+    """Require one scientific/runtime envelope while allowing policy history.
+
+    ``mode`` and per-node preferences may differ because the baseline can be the
+    exact last accepted Auto/CPU/Prefer-GPU assignment displayed when the user
+    entered Custom.  Device, precision, eligibility, and memory policy remain
+    identical so that the captured assignment belongs to this optimizer run.
+    """
+
+    fields = (
+        "runtime_id",
+        "device_id",
+        "precision_policy_id",
+        "workload_policy_id",
+        "accelerator_memory_cap_bytes",
+        "accelerator_safety_reserve_bytes",
+        "allow_experimental",
+    )
+    changed = tuple(
+        name for name in fields if getattr(authored, name) != getattr(baseline, name)
+    )
+    if changed:
+        raise ValueError(
+            "baseline_compute_request may differ only in compute mode, per-node "
+            "preferences, and fallback policy; incompatible field(s): "
+            + ", ".join(changed)
+        )
+
+
+def _adaptive_cpu_stop_is_safe_for_current_assignment(decision: object) -> bool:
+    """Allow censoring only when CPU is not the retained current candidate.
+
+    A censored alternative has a conservative lower bound: if it still wins the
+    model, exact whole-pipeline validation measures it.  A censored *current*
+    CPU assignment could instead make an unchanged result appear optimal without
+    any final comparison, so that case intentionally keeps exact CPU timings.
+    """
+
+    return bool(
+        decision is not None
+        and str(getattr(decision, "runtime_id", "")).strip()
+        and str(getattr(decision, "runtime_id", "")).strip() != _CPU_RUNTIME_ID
     )
 
 

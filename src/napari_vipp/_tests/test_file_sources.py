@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import replace
 
 import numpy as np
 import pytest
 
+from napari_vipp.core import file_sources
 from napari_vipp.core.file_sources import (
     FILE_SOURCE_SNAPSHOT_POLICY,
     load_frozen_file_source_snapshot,
@@ -22,6 +24,7 @@ from napari_vipp.core.metadata import (
     SourceMetadata,
     image_state_from_array,
 )
+from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import (
     SourceChangedError,
     capture_local_source_identity,
@@ -177,3 +180,101 @@ def test_frozen_file_snapshot_rejects_directory_mutation_during_read(tmp_path):
 
     assert source.stat().st_mtime_ns == root_stat.st_mtime_ns
     assert source.stat().st_size == root_stat.st_size
+
+
+def test_frozen_file_snapshot_cancels_during_initial_full_hash(tmp_path):
+    source = tmp_path / "source.fake"
+    source.write_bytes(b"a" * (3 * 1024 * 1024))
+    cancel_event = threading.Event()
+    progress = []
+    reader_called = False
+
+    def reader(path, *, series_index=0):
+        nonlocal reader_called
+        reader_called = True
+        return _dataset(path, np.ones((2, 3), dtype=np.uint8))
+
+    def on_progress(current, total, message):
+        progress.append((current, total, message))
+        if "Source validation 1/3" in message and current >= 1024 * 1024:
+            cancel_event.set()
+
+    with pytest.raises(OperationCancelled, match="validating a source identity"):
+        load_frozen_file_source_snapshot(
+            source,
+            0,
+            reader=reader,
+            cancel_callback=cancel_event.is_set,
+            progress_callback=on_progress,
+        )
+
+    assert progress
+    assert not reader_called
+
+
+def test_frozen_file_snapshot_cancels_during_chunked_materialization(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "source.fake"
+    source.write_bytes(b"stable scientific bytes")
+    backing = np.arange(64, dtype=np.uint8).reshape(8, 8)
+    cancel_event = threading.Event()
+    progress = []
+    monkeypatch.setattr(file_sources, "_MATERIALIZE_CHUNK_BYTES", 16)
+
+    def on_progress(current, total, message):
+        progress.append((current, total, message))
+        if (
+            "Source materialization 2/3" in message
+            and 0 < current < total
+        ):
+            cancel_event.set()
+
+    with pytest.raises(OperationCancelled, match="materializing image data"):
+        load_frozen_file_source_snapshot(
+            source,
+            0,
+            reader=lambda path, *, series_index=0: _dataset(path, backing),
+            cancel_callback=cancel_event.is_set,
+            progress_callback=on_progress,
+        )
+
+    materialization_updates = [
+        update
+        for update in progress
+        if "Source materialization 2/3" in update[2]
+    ]
+    assert materialization_updates[0][:2] == (0, backing.nbytes)
+    assert 0 < materialization_updates[-1][0] < backing.nbytes
+
+
+def test_frozen_file_snapshot_cancels_during_full_reverification(tmp_path):
+    source = tmp_path / "source.fake"
+    source.write_bytes(b"stable scientific bytes")
+    cancel_event = threading.Event()
+    progress = []
+    reader_called = False
+
+    def reader(path, *, series_index=0):
+        nonlocal reader_called
+        reader_called = True
+        return _dataset(path, np.ones((2, 3), dtype=np.uint8))
+
+    def on_progress(current, total, message):
+        progress.append((current, total, message))
+        if "Source reverification 3/3" in message:
+            cancel_event.set()
+
+    with pytest.raises(OperationCancelled, match="validating a source identity"):
+        load_frozen_file_source_snapshot(
+            source,
+            0,
+            reader=reader,
+            cancel_callback=cancel_event.is_set,
+            progress_callback=on_progress,
+        )
+
+    assert reader_called
+    assert any("Source materialization 2/3" in item[2] for item in progress)
+    assert any("Source reverification 3/3" in item[2] for item in progress)

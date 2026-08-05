@@ -296,12 +296,19 @@ def _record_is_complete_for_plan(
     """Distinguish a completed rejection from incomplete/corrupt evidence."""
 
     request = plan.registered.request
+    if record.key != request.key:
+        return False
     expected_ids = {
         request.reference.implementation_id,
         *(candidate.implementation_id for candidate in request.candidates),
     }
     by_id = {candidate.implementation_id: candidate for candidate in record.candidates}
     if len(by_id) != len(record.candidates) or set(by_id) != expected_ids:
+        return False
+    # A censored lower bound is useful to the active whole-pipeline search, but
+    # it is intentionally not an exact reusable median.  A later run may reuse
+    # only a record in which every admitted timing completed.
+    if any(candidate.timing_censored for candidate in record.candidates):
         return False
 
     def has_complete_timings(implementation_id: str) -> bool:
@@ -369,12 +376,15 @@ class ApplicationNodeBenchmarkCoordinator:
         paired_bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
         paired_bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
         paired_confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
+        adaptive_candidate_stopping: bool = False,
         cancelled: CancelCallback | None = None,
         progress: ProgressCallback | None = None,
     ) -> ApplicationNodeBenchmarkPlan:
         """Capture current inputs and build an admitted detached benchmark."""
 
         _validate_callbacks(cancelled, progress)
+        if not isinstance(adaptive_candidate_stopping, bool):
+            raise TypeError("adaptive_candidate_stopping must be a boolean.")
         budget = _validated_budget(time_budget_seconds)
         started = _read_clock(self.clock)
 
@@ -538,6 +548,13 @@ class ApplicationNodeBenchmarkCoordinator:
             check_abort=check_abort,
             call_is_detached=True,
         )
+        registered = replace(
+            registered,
+            request=replace(
+                registered.request,
+                adaptive_candidate_stopping=adaptive_candidate_stopping,
+            ),
+        )
         check_abort()
         preparation_seconds = _elapsed(self.clock, started)
         if budget is not None:
@@ -671,14 +688,52 @@ class ApplicationNodeBenchmarkCoordinator:
             raise TypeError("plan must be an ApplicationNodeBenchmarkPlan.")
         if plan.store_path != self.store.path:
             raise ValueError("plan belongs to a different local benchmark store.")
-        record = self.store.get(plan.registered.request.key)
+        request = plan.registered.request
+        record = self.store.get(request.key)
         if record is None or not _record_is_complete_for_plan(record, plan):
-            return None
+            record = self._compatible_exact_record(plan)
+            if record is None:
+                return None
         try:
             preference = plan.preference_for(record)
         except (TypeError, ValueError):
             return None
         return ApplicationNodeBenchmarkResult(plan, record, preference)
+
+    def _compatible_exact_record(
+        self,
+        plan: ApplicationNodeBenchmarkPlan,
+    ) -> BenchmarkRecord | None:
+        """Adapt strictly stronger legacy evidence to an adaptive plan.
+
+        The compatibility direction is deliberately one-way.  An adaptive
+        request may reuse a complete, uncensored record produced by the exact
+        profile, while an exact request never looks at an adaptive record.  The
+        returned record is an in-memory view keyed to the prepared plan; the
+        durable source record remains under its original exact identity.
+        """
+
+        request = plan.registered.request
+        if not request.adaptive_candidate_stopping:
+            return None
+        exact_key = request.exact_timing_compatible_key
+        if exact_key == request.key:
+            return None
+        exact_request = replace(
+            request,
+            adaptive_candidate_stopping=False,
+        )
+        exact_plan = replace(
+            plan,
+            registered=replace(
+                plan.registered,
+                request=exact_request,
+            ),
+        )
+        record = self.store.get(exact_key)
+        if record is None or not _record_is_complete_for_plan(record, exact_plan):
+            return None
+        return replace(record, key=request.key)
 
     def benchmark(
         self,

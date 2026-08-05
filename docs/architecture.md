@@ -132,7 +132,7 @@ quietly changing a scientific result.
 | Local file/store revisions | `core/source_identity.py`, `core/file_sources.py`, `ui/file_sources.py` | VIPP hashes every regular-file path and byte in a file or directory store before inspection/materialization and verifies the same identity afterward. The selected series is copied to an owned, read-only NumPy array. A path-and-series revision stays pinned until explicit `Refresh`; stale in-flight loads cannot repopulate the cache. |
 | Live napari revisions | `ui/source_adapter.py`, `_widget.py` | In-memory NumPy layer data and metadata are detached on the GUI thread and tagged with a revision token. Relevant layer events invalidate the token; a background result from an older revision is discarded. Live data that cannot be detached, including lazy arrays, is rejected with an instruction to materialize it or use an immutable file source. Non-axis-aligned napari transforms are rejected rather than ignored. |
 | Axis semantics | `core/metadata.py`, `core/pipeline.py` | Every axis carries `explicit` or `shape-inferred` confidence, with `mixed` available at the image-state level. Operations that need semantic auto-selection of spatial rank, channel axis, projection axes, or PSF parameters reject inferred-only axes with `AmbiguousAxisError`; callers must supply explicit metadata or an explicit supported mode/index. Positional kernels also reject explicit noncanonical layouts instead of treating a `ZX` suffix as `YX`; semantic-capable crop, projection, rescaling, and measurement paths resolve named axes directly. Array shape alone never establishes RGB or Z/Y/X meaning. Malformed declared axes, stale carried shapes, and non-finite or non-positive calibration fail instead of being replaced by inferred/default metadata. |
-| Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. A typed `PipelineNodeResult` may expose one completed node's transient execution-display state immediately, so its card and sampled thumbnail can advance while later nodes run. When the active cache policy already retains that node, its run-scoped presentation payload also keeps inspection, pinning, tables, and metadata synchronized without defeating Low-memory pruning. The live scientific cache and execution state are updated only from the accepted final result; cancellation, failure, or supersession discards transient presentation state and restores the coherent live-cache view. Source ownership remains an explicit upstream responsibility. |
+| Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. A typed `PipelineNodeResult` may expose one completed node's transient execution-display state immediately, so its card and sampled thumbnail can advance while later nodes run. When the active cache policy already retains that node, its run-scoped presentation payload also keeps inspection, pinning, tables, and metadata synchronized without defeating Low-memory pruning. Normal success replaces the live scientific cache and execution state with the accepted final result. Cancellation or supersession discards transient presentation state. On failure, a verified source boundary may be merged. A cleanup-failed result may additionally merge completed processing output only with matching actual-implementation provenance; otherwise the coherent earlier value is restored. Source ownership remains an explicit upstream responsibility. |
 | Physical grids | `core/grid.py`, `core/pipeline.py` | Registered multi-image operations compare axis semantics, sizes, scale, unit, and origin for same-shaped inputs. A lower-rank mask is broadcast only through a unique explicit semantic/calibration mapping; coincident dimension sizes are never used to guess omitted axes. Deconvolution separately requires image/PSF axis semantics and sampling to agree while allowing a different PSF extent. Unit aliases are normalized for comparison. VIPP never resamples, reorders, or registers an input implicitly to make grids agree. |
 | Diagnostic calculations | `core/diagnostics.py` | Finite statistics, percentiles, histograms, generated-layer extrema, and label-volume summaries use the complete declared population. Chunking bounds temporary memory but is not sampling. Wide integer histogram placement avoids lossy float conversion, and multichannel behavior requires an explicit `channel_axis` rather than a trailing-size RGB guess. |
 | Scientific parameters and inputs | `core/operations.py`, operation tests | Invalid, ambiguous, unordered, non-finite, or incomplete parameters are rejected where silently clamping, swapping, defaulting, or dropping values would change the requested method. Dynamic choices have persisted grammars rather than accepting arbitrary non-empty text. RGB/luminance behavior requires an explicit channel declaration. Representative operation tests use read-only inputs and verify that upstream buffers are not mutated. |
@@ -1368,8 +1368,11 @@ Selected-node benchmarking:
 - Generated programs are locked to the VIPP version that created them and fail
   on a different runtime version instead of silently changing behavior.
 - The command-line folder helper supplies one primary image source as a simple
-  convenience. Saved batch configuration remains the complete multi-source
-  collection interface.
+  convenience. Its built-in loader hashes the local source before reading and
+  verifies the same identity after materialization. Each requested output and
+  provenance sidecar is privately staged and committed as one rollback-protected
+  output set in one destination directory. Saved batch configuration remains
+  the complete multi-source collection interface.
 
 Collection batch UI:
 
@@ -1507,9 +1510,11 @@ Collection batch UI:
   shared-executor workflow program emitted by `Export Python...`.
 - The saved runner exposes config/workflow paths, mode/fallback/per-node
   overrides, two-level progress, SIGINT cancellation, and exit code 130. The
-  generated export's folder helper is explicitly non-durable and does not claim
-  the batch runner's multi-source identity, staging, checkpoint, or manifest
-  guarantees.
+  generated export's folder helper is explicitly non-durable. It does provide
+  exact pre-read/post-materialization local-source verification and private,
+  rollback-protected output-set staging, but does not claim the batch runner's
+  multi-source pairing, collision plan, final prepublication source recheck,
+  checkpoint, manifest, or replay guarantees.
 - Collection execution remains local-folder oriented. Semantic-axis iteration
   and plate/well/field HCS traversal are deliberately deferred rather than
   inferred from array axes or directory names.

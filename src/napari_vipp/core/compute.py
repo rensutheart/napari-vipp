@@ -634,6 +634,10 @@ class BenchmarkCandidateResult:
     failure_kind: BenchmarkCandidateFailureKind | str = (
         BenchmarkCandidateFailureKind.NONE
     )
+    timing_censored: bool = False
+    timing_lower_bound_seconds: float | None = None
+    timing_censor_reason: str = ""
+    timing_censor_incumbent_id: str = ""
 
     def __post_init__(self) -> None:
         implementation_id = str(self.implementation_id).strip()
@@ -692,6 +696,36 @@ class BenchmarkCandidateResult:
                 or value < 0
             ):
                 raise ValueError(f"{name} must be finite and non-negative or None.")
+        if not isinstance(self.timing_censored, bool):
+            raise TypeError("timing_censored must be a boolean.")
+        lower_bound = self.timing_lower_bound_seconds
+        if lower_bound is not None and (
+            isinstance(lower_bound, bool)
+            or not isinstance(lower_bound, (int, float))
+            or not math.isfinite(float(lower_bound))
+            or lower_bound <= 0
+        ):
+            raise ValueError(
+                "timing_lower_bound_seconds must be finite and positive or None."
+            )
+        censor_reason = str(self.timing_censor_reason).strip()
+        censor_incumbent = str(self.timing_censor_incumbent_id).strip()
+        if self.timing_censored:
+            if (
+                lower_bound is None
+                or not censor_reason
+                or not censor_incumbent
+                or not self.parity_passed
+                or str(self.error).strip()
+            ):
+                raise ValueError(
+                    "censored timing evidence requires passed parity, a positive "
+                    "lower bound, an incumbent ID, a reason, and no runtime error."
+                )
+        elif lower_bound is not None or censor_reason or censor_incumbent:
+            raise ValueError(
+                "timing censor metadata requires timing_censored=True."
+            )
         timing_scope = str(self.timing_scope).strip()
         if not timing_scope:
             raise ValueError("timing_scope must not be empty.")
@@ -731,6 +765,18 @@ class BenchmarkCandidateResult:
         object.__setattr__(self, "implementation_id", implementation_id)
         object.__setattr__(self, "timing_scope", timing_scope)
         object.__setattr__(self, "failure_kind", failure_kind)
+        object.__setattr__(self, "timing_censor_reason", censor_reason)
+        object.__setattr__(
+            self,
+            "timing_censor_incumbent_id",
+            censor_incumbent,
+        )
+        if lower_bound is not None:
+            object.__setattr__(
+                self,
+                "timing_lower_bound_seconds",
+                float(lower_bound),
+            )
         object.__setattr__(
             self, "warm_seconds", tuple(float(value) for value in self.warm_seconds)
         )

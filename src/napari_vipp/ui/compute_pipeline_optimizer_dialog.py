@@ -28,6 +28,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationEvidenceIncomplete,
     PipelineOptimizationNotBeneficial,
     PipelineOptimizationProposal,
+    PipelineOptimizationSelectionBasis,
     PipelineOptimizationTimeoutReport,
     PipelineValidationWinner,
 )
@@ -92,6 +93,12 @@ class PipelineOptimizerWorkerOutcome:
     timeout_report: PipelineOptimizationTimeoutReport | None = None
 
 
+class PipelineOptimizerCleanupError(RuntimeError):
+    """The optimizer's private accelerator runtime did not close safely."""
+
+    cleanup_succeeded = False
+
+
 class _PipelineOptimizerWorkerSignals(QObject):
     progress = Signal(object)
     finished = Signal(object)
@@ -146,6 +153,11 @@ class PipelineOptimizerWorker(QRunnable):
                 reason_code="deadline_exceeded",
                 timeout_report=exc.report,
             )
+        except PipelineOptimizerCleanupError as exc:
+            outcome = PipelineOptimizerWorkerOutcome(
+                error=str(exc),
+                reason_code="cleanup_failed",
+            )
         except Exception as exc:
             outcome = PipelineOptimizerWorkerOutcome(
                 error=f"{type(exc).__name__}: {exc}",
@@ -190,7 +202,10 @@ class PipelineOptimizerDialog(QDialog):
             "result.</li>"
             "<li><b>Timing:</b> CPU uses paired warm medians; GPU uses "
             "resident-compute medians, with transfers modeled across the whole "
-            "pipeline.</li>"
+            "pipeline. A decisively slower cooperative CPU attempt may stop "
+            "early and is shown as a lower bound, never an exact timing; the "
+            "chosen assignment still receives final whole-pipeline "
+            "validation.</li>"
             "</ul>"
         )
         self.summary_label.setTextFormat(Qt.RichText)
@@ -621,10 +636,26 @@ class PipelineOptimizerDialog(QDialog):
                     f"{len(reused)} node benchmark(s) reused exact saved evidence."
                 )
         else:
+            basis_type = PipelineOptimizationSelectionBasis
+            conservative_basis = basis_type.CONSERVATIVE_BOUND_RETAINED_CURRENT
+            if (
+                proposal.selection_basis
+                is conservative_basis
+            ):
+                explanation = (
+                    "The current GPU assignment was retained because every "
+                    "competing CPU measurement had already crossed a decisive "
+                    "slower lower bound. Those losing CPU timings stopped early, "
+                    "so a redundant alternative pipeline run was not needed. "
+                )
+            else:
+                explanation = (
+                    "The current exact backend assignment won the measured global "
+                    "comparison, so no alternative pipeline timing run was needed. "
+                )
             self.result_label.setText(
-                "The current exact backend assignment won the measured global "
-                "comparison, so no alternative pipeline timing run was needed. "
-                f"{changed} measured preference(s) can still be saved; "
+                explanation
+                + f"{changed} measured preference(s) can still be saved; "
                 f"{len(reused)} node benchmark(s) reused exact saved evidence."
             )
 
@@ -761,6 +792,26 @@ def _candidate_timing_text(evidence: object) -> str:
     candidates = getattr(record, "candidates", ())
     values: list[str] = []
     for candidate in candidates:
+        if bool(getattr(candidate, "timing_censored", False)):
+            lower_bound = getattr(candidate, "timing_lower_bound_seconds", None)
+            incumbent = str(
+                getattr(candidate, "timing_censor_incumbent_id", "") or ""
+            ).strip()
+            reason = str(
+                getattr(candidate, "timing_censor_reason", "") or ""
+            ).strip()
+            if lower_bound is not None:
+                detail = (
+                    f">{_format_seconds(float(lower_bound))} "
+                    "(censored CPU/warm lower bound; stopped early"
+                )
+                if incumbent:
+                    detail += f" versus {incumbent}"
+                detail += ")"
+                if reason:
+                    detail += f" — {reason}"
+                values.append(f"{candidate.implementation_id} {detail}")
+                continue
         error = str(getattr(candidate, "error", "") or "").strip()
         if error or not bool(getattr(candidate, "parity_passed", False)):
             detail = error or "scientific parity failed"
@@ -787,6 +838,7 @@ def _candidate_timing_text(evidence: object) -> str:
 
 __all__ = [
     "PipelineOptimizerDialog",
+    "PipelineOptimizerCleanupError",
     "PipelineOptimizerProgress",
     "PipelineOptimizerWorker",
     "PipelineOptimizerWorkerOutcome",

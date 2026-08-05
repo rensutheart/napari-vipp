@@ -5,6 +5,7 @@ from __future__ import annotations
 import statistics
 import threading
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,10 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_vipp.core.benchmark_store_quarantine import (
+    ensure_benchmark_store_ready,
+    quarantine_benchmark_store,
+)
 from napari_vipp.core.compute_benchmark import (
     BenchmarkBudgetExceeded,
     BenchmarkCancelled,
@@ -68,7 +73,7 @@ class NodeBenchmarkWorker(QRunnable):
         ] = ApplicationNodeBenchmarkCoordinator,
     ) -> None:
         super().__init__()
-        self.pipeline = pipeline
+        self.pipeline = _snapshot_prototype_pipeline(pipeline)
         self.node_id = str(node_id).strip()
         self.store_path = Path(store_path)
         self.allow_experimental = bool(allow_experimental)
@@ -85,9 +90,40 @@ class NodeBenchmarkWorker(QRunnable):
         registry: ComputeRegistry | None = None
         coordinator: ApplicationNodeBenchmarkCoordinator | None = None
         result: ApplicationNodeBenchmarkResult | None = None
+        benchmark_store = None
+        original_store_put = None
+        measured_record_rollbacks: dict[
+            str,
+            tuple[object, object | None, object],
+        ] = {}
         try:
+            store_path = ensure_benchmark_store_ready(self.store_path)
             registry = self.registry_factory()
-            coordinator = self.coordinator_factory(registry, self.store_path)
+            coordinator = self.coordinator_factory(registry, store_path)
+            benchmark_store = getattr(coordinator, "store", None)
+            if (
+                benchmark_store is not None
+                and callable(getattr(benchmark_store, "get", None))
+                and callable(getattr(benchmark_store, "put", None))
+            ):
+                original_store_put = benchmark_store.put
+                original_store_get = benchmark_store.get
+
+                def track_benchmark_record(record) -> None:
+                    digest = str(getattr(record.key, "digest", record.key))
+                    first_write = digest not in measured_record_rollbacks
+                    previous = (
+                        original_store_get(record.key) if first_write else None
+                    )
+                    original_store_put(record)
+                    if first_write:
+                        measured_record_rollbacks[digest] = (
+                            record.key,
+                            previous,
+                            record,
+                        )
+
+                benchmark_store.put = track_benchmark_record
             result = coordinator.benchmark(
                 self.pipeline,
                 self.node_id,
@@ -127,24 +163,155 @@ class NodeBenchmarkWorker(QRunnable):
                 try:
                     registry.close()
                 except Exception as exc:
-                    discard_error = None
-                    if coordinator is not None and result is not None:
+                    rollback_failures: list[str] = []
+                    if benchmark_store is not None and measured_record_rollbacks:
+                        for key, previous, written in reversed(
+                            tuple(measured_record_rollbacks.values())
+                        ):
+                            try:
+                                if benchmark_store.get(key) != written:
+                                    continue
+                                if previous is None:
+                                    benchmark_store.discard(key)
+                                elif original_store_put is not None:
+                                    original_store_put(previous)
+                            except Exception as rollback_exc:
+                                rollback_failures.append(
+                                    f"{type(rollback_exc).__name__}: {rollback_exc}"
+                                )
+                    elif coordinator is not None and result is not None:
                         try:
                             coordinator.store.discard(result.record.key)
-                        except Exception as discard_exc:
-                            discard_error = discard_exc
+                        except Exception as rollback_exc:
+                            rollback_failures.append(
+                                f"{type(rollback_exc).__name__}: {rollback_exc}"
+                            )
                     detail = f"{type(exc).__name__}: {exc}"
-                    if discard_error is not None:
+                    if rollback_failures:
                         detail += (
-                            "; invalid benchmark evidence could not be removed: "
-                            f"{type(discard_error).__name__}: {discard_error}"
+                            "; invalid benchmark evidence could not be fully "
+                            "rolled back: " + "; ".join(rollback_failures)
                         )
+                        quarantine = quarantine_benchmark_store(
+                            self.store_path,
+                            reason=(
+                                "Node benchmark runtime cleanup and record "
+                                "rollback both failed."
+                            ),
+                        )
+                        if quarantine.safe_for_restart:
+                            detail += (
+                                "; the complete local benchmark store was moved "
+                                "away from its active path and will not be reused"
+                            )
+                            if quarantine.quarantined_path is not None:
+                                detail += f" ({quarantine.quarantined_path})"
+                        elif quarantine.marker_present:
+                            detail += (
+                                "; a durable quarantine marker prevents the store "
+                                f"from reopening ({quarantine.marker_path}): "
+                                f"{quarantine.error}"
+                            )
+                        else:
+                            detail += (
+                                "; suspect evidence may remain at "
+                                f"{self.store_path}: {quarantine.error}; rename or "
+                                "delete it before restarting VIPP"
+                            )
+                    elif result is not None:
+                        detail += "; newly measured benchmark evidence was rolled back"
+                    else:
+                        detail += "; no newly measured evidence was retained"
                     outcome = NodeBenchmarkWorkerOutcome(
                         self.node_id,
                         error=f"Benchmark cleanup failed: {detail}",
-                        reason_code="benchmark_failed",
+                        reason_code="cleanup_failed",
                     )
+                finally:
+                    if benchmark_store is not None and original_store_put is not None:
+                        benchmark_store.put = original_store_put
         self.signals.finished.emit(outcome)
+
+
+def _snapshot_prototype_pipeline(pipeline):
+    """Freeze graph/runtime ownership without copying large result arrays.
+
+    A selected-node benchmark is dispatched after the dialog opens.  Retaining
+    the live pipeline here would let graph edits, parameter edits, or a later
+    calculation change the evidence before the runnable starts.  The snapshot
+    therefore owns its graph containers, parameters, and runtime bookkeeping,
+    while intentionally retaining references to the current output values.
+    The benchmark coordinator performs the potentially large, read-only array
+    detachment later on the worker thread.
+
+    Non-production objects are returned unchanged so lightweight test doubles
+    and embedders keep the established worker contract.
+    """
+
+    # Keep the operation catalog import behind construction of an actual
+    # production worker.  Importing it can inspect optional scientific
+    # packages, while this Qt module and its test doubles remain import-safe.
+    from napari_vipp.core.pipeline import GraphNode, PrototypePipeline
+
+    if not isinstance(pipeline, PrototypePipeline):
+        return pipeline
+
+    nodes = tuple(
+        GraphNode(
+            node.id,
+            node.operation_id,
+            node.title,
+            node.category,
+            node.input_type,
+            node.output_type,
+            deepcopy(node.params),
+            node.max_inputs,
+        )
+        for node in pipeline.nodes.values()
+    )
+    snapshot = PrototypePipeline()
+    snapshot.restore_graph(
+        nodes,
+        tuple(pipeline.connections),
+        pipeline.output_tunnel_list(),
+    )
+    node_ids = set(snapshot.nodes)
+
+    # Copy containers, not payloads.  Replacing outputs or mutating an output
+    # list on the live graph can no longer affect the worker, and no image stack
+    # is copied while the UI thread is dispatching the benchmark.
+    snapshot.outputs = {
+        node_id: pipeline.outputs.get(node_id) for node_id in snapshot.nodes
+    }
+    snapshot.output_states = {
+        node_id: pipeline.output_states.get(node_id) for node_id in snapshot.nodes
+    }
+    snapshot.node_outputs = {
+        node_id: list(pipeline.node_outputs.get(node_id, ()))
+        for node_id in snapshot.nodes
+    }
+    snapshot.node_output_states = {
+        node_id: list(pipeline.node_output_states.get(node_id, ()))
+        for node_id in snapshot.nodes
+    }
+    snapshot.completed_node_ids = set(pipeline.completed_node_ids) & node_ids
+    snapshot.node_compute_provenance = {
+        node_id: provenance
+        for node_id, provenance in pipeline.node_compute_provenance.items()
+        if node_id in node_ids
+    }
+    snapshot.node_execution_states = {
+        node_id: pipeline.node_execution_states.get(
+            node_id,
+            snapshot.node_execution_states[node_id],
+        )
+        for node_id in snapshot.nodes
+    }
+    snapshot.node_execution_messages = {
+        node_id: pipeline.node_execution_messages.get(node_id, "")
+        for node_id in snapshot.nodes
+    }
+    return snapshot
 
 
 class NodeBenchmarkDialog(QDialog):

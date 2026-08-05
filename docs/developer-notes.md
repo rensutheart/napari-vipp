@@ -229,6 +229,14 @@ for the exact owning modules and limitations.
 Run the smallest relevant contract tests while developing, then the complete
 suite before handoff.
 
+Pytest must never read or append to a developer's production Auto timing
+history. The repository-wide autouse fixture points
+`NAPARI_VIPP_PIPELINE_TIMING_HISTORY_PATH` at each test's temporary directory;
+subprocesses inherit the same isolated path. Preserve that fixture when adding
+interactive, batch, CLI, or registry-lifecycle timing tests. Tests that exercise
+history persistence may override the variable with their own `tmp_path`, but
+must not unset it or target the normal platform application-data directory.
+
 ```bash
 python -m pytest -q src/napari_vipp/_tests/test_operation_input_contracts.py
 python -m pytest -q src/napari_vipp/_tests/test_axis_semantics.py

@@ -1,6 +1,6 @@
 # Cache And Memory Policy
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-08-05
 
 VIPP is currently an eager, interactive workflow builder. Most nodes calculate
 NumPy-like in-memory outputs so that graph thumbnails, node inspection, pinned
@@ -78,7 +78,7 @@ branch; VIPP does not assume that one memory API exists everywhere:
 
 | Platform | Provider |
 | --- | --- |
-| Windows | `GlobalMemoryStatusEx` through the native Windows API. |
+| Windows | `GlobalMemoryStatusEx` through the native Windows API, with physical RAM and system commit reported separately. |
 | macOS | `host_statistics64` for available pages plus POSIX page-size and physical-page counts. |
 | Other POSIX systems | `os.sysconf` page and physical-memory counters. |
 
@@ -87,6 +87,26 @@ counter is absent. A missing platform counter must not prevent graph execution,
 and Windows never enters the POSIX/macOS `sysconf` path. The auto memory guard
 then uses the information that is available, including its existing total-RAM
 fallback, rather than inventing a cross-platform estimate.
+
+On Windows, `Commit free` is the remaining system commit headroom reported by
+`GlobalMemoryStatusEx`; it is not merely free physical RAM or the configured
+page-file size. A large NumPy/SciPy allocation can fail when commit is exhausted
+even if Windows still reports physical RAM available. VIPP therefore checks
+both physical and commit reserves before an optional memory-intensive Auto CPU
+timing comparison. If that comparison is unsafe—or commit information is
+unavailable on Windows—Auto retains its reviewed safe assignment, reports why
+the timing was skipped, and can gather the missing evidence on a later run.
+
+This preflight protects optional evidence collection; it is not a guarantee
+that every library allocation will succeed. A real host `MemoryError` is
+classified separately. In the interactive graph, a failed or canceled private
+run never publishes uncomputed or provenance-unknown processing data over an
+earlier valid result. A verified source boundary may be accepted; a completed
+processing node may additionally be accepted from a cleanup-failed result, and
+only with its matching actual-implementation decision. Prior outputs,
+thumbnails, and truthful backend badges remain for all
+other affected work while it is requeued. A cleanup failure additionally
+quarantines new compute in that VIPP process until restart.
 
 ## Per-Node Keep Cached
 

@@ -32,6 +32,7 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     SourcePayload,
 )
+from napari_vipp.core.source_identity import capture_local_source_identity
 from napari_vipp.core.workflow import serialize_workflow
 
 
@@ -466,7 +467,8 @@ def test_export_produces_valid_python():
     assert '"sigma":1.2' in code
     assert "execute_pipeline_request(" in code
     assert "pipeline_from_workflow(document)" in code
-    assert "ImageDataset, read_image, write_image" in code
+    assert "ImageDataset, write_image" in code
+    assert "load_frozen_file_source_snapshot" in code
     assert "skimage" not in code
 
 
@@ -704,6 +706,85 @@ def test_exported_output_provenance_preserves_supplied_exact_source_identity(
     assert sidecar["sources"][0]["binding_sha256"]
 
 
+def test_generated_file_loader_binds_verified_local_revision_to_output(
+    tmp_path,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    source_path = tmp_path / "source.npy"
+    np.save(source_path, np.arange(8 * 9, dtype=np.float32).reshape(8, 9))
+    expected_identity = capture_local_source_identity(source_path)
+    progress = []
+
+    payload = namespace["load_image"](
+        source_path,
+        progress_callback=lambda *update: progress.append(update),
+    )
+    results = namespace["run_pipeline"](payload)
+    output_provenance = results.provenance_for("threshold")
+    source_record = output_provenance["sources"][0]
+
+    assert source_record["node_id"] == "input"
+    assert source_record["path"] == str(source_path.resolve())
+    assert source_record["identity_complete"] is True
+    assert source_record["identity"] == expected_identity.to_dict()
+    assert source_record["identity"]["sha256"] == expected_identity.sha256
+    assert source_record["binding_sha256"]
+    assert output_provenance["output"]["node_id"] == "threshold"
+    messages = [message for _node, _current, _total, message in progress]
+    assert any("Source validation 1/3" in message for message in messages)
+    assert any("Source materialization 2/3" in message for message in messages)
+    assert any("Source reverification 3/3" in message for message in messages)
+
+
+def test_generated_cli_sidecar_binds_exact_local_source_path_and_sha256(
+    tmp_path,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    source_path = tmp_path / "source.npy"
+    output_path = tmp_path / "output.npy"
+    np.save(source_path, np.arange(8 * 9, dtype=np.float32).reshape(8, 9))
+    expected_identity = capture_local_source_identity(source_path)
+
+    assert namespace["main"]([str(source_path), str(output_path)]) == 0
+
+    sidecar = json.loads(
+        (tmp_path / "output.npy.vipp-provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sidecar["sources"] == [
+        {
+            "node_id": "input",
+            "name": "source",
+            "path": str(source_path.resolve()),
+            "identity_complete": True,
+            "identity": expected_identity.to_dict(),
+            "reader_provenance": {},
+            "binding_sha256": sidecar["sources"][0]["binding_sha256"],
+        }
+    ]
+    assert sidecar["sources"][0]["identity"]["sha256"] == (
+        expected_identity.sha256
+    )
+    assert sidecar["output"]["node_id"] == "threshold"
+
+
 def test_generated_artifact_sha256_hashes_saved_script_bytes(tmp_path):
     script = tmp_path / "pipeline.py"
     script.write_text(
@@ -912,7 +993,10 @@ def test_custom_export_function_name_is_used_by_generated_harness():
 
     assert "def analyze_image(" in code
     assert "results = analyze_image(" in code
-    assert "load_image(source_path)," in code
+    assert (
+        "load_image(source_path, progress_callback=progress_callback, "
+        "cancel_event=cancel_event),"
+    ) in code
     assert namespace["analyze_image"](image)["threshold"].dtype == bool
 
 
@@ -1014,7 +1098,12 @@ def test_generated_cli_passes_run_override_and_provenance_choice(
 
     def fake_run(*_args, **kwargs):
         calls["request"] = kwargs["compute_request"]
+        calls["run_cancel_event"] = kwargs["cancel_event"]
         return results
+
+    def fake_load(_path, **kwargs):
+        calls["load"] = kwargs
+        return np.ones((2, 3), dtype=np.float32)
 
     def fake_save(data, path, **kwargs):
         calls["saved"] = (data, path, kwargs)
@@ -1027,16 +1116,19 @@ def test_generated_cli_passes_run_override_and_provenance_choice(
             )
         return path
 
-    namespace["load_image"] = lambda _path: np.ones((2, 3), dtype=np.float32)
+    namespace["load_image"] = fake_load
     namespace["run_pipeline"] = fake_run
     namespace["_write_output_uncommitted"] = fake_save
     args = [str(tmp_path / "input.tif"), str(tmp_path / "output.tif")]
+    args.append("--progress")
     if not write_provenance:
         args.append("--no-provenance")
 
     assert namespace["main"](args) == 0
 
     assert calls["request"].mode.value == "cpu"
+    assert callable(calls["load"]["progress_callback"])
+    assert calls["load"]["cancel_event"] is calls["run_cancel_event"]
     assert calls["saved"][2]["provenance"] is (
         results if write_provenance else None
     )
@@ -1064,7 +1156,9 @@ def test_generated_cli_distinguishes_cancellation_and_writes_failure_sidecar(
             "cleanup_succeeded": True,
         },
     }
-    namespace["load_image"] = lambda _path: np.ones((2, 3), dtype=np.float32)
+    namespace["load_image"] = lambda _path, **_kwargs: np.ones(
+        (2, 3), dtype=np.float32
+    )
 
     def cancel(*_args, **_kwargs):
         raise failure
@@ -1099,7 +1193,9 @@ def test_generated_cli_reports_publication_failure_with_no_fallback(
         ),
         namespace,
     )
-    namespace["load_image"] = lambda _path: np.ones((4, 5), dtype=np.float32)
+    namespace["load_image"] = lambda _path, **_kwargs: np.ones(
+        (4, 5), dtype=np.float32
+    )
 
     def disk_full(*_args, **_kwargs):
         raise OSError("simulated disk full")
@@ -1131,7 +1227,9 @@ def test_generated_cli_defers_publication_cancellation_until_writer_returns(
         ),
         namespace,
     )
-    namespace["load_image"] = lambda _path: np.ones((4, 5), dtype=np.float32)
+    namespace["load_image"] = lambda _path, **_kwargs: np.ones(
+        (4, 5), dtype=np.float32
+    )
     real_run = namespace["run_pipeline"]
     captured: dict[str, object] = {}
 
@@ -1179,7 +1277,7 @@ def test_generated_cli_provenance_failure_preserves_preexisting_output_set(
         ),
         namespace,
     )
-    namespace["load_image"] = lambda _path: np.ones(
+    namespace["load_image"] = lambda _path, **_kwargs: np.ones(
         (4, 5), dtype=np.float32
     )
     output_path = tmp_path / "output.tif"
@@ -1229,7 +1327,7 @@ def test_generated_cli_later_multi_output_failure_publishes_none(tmp_path):
         compile(export_pipeline_to_python(pipeline), "<exported>", "exec"),
         namespace,
     )
-    namespace["load_image"] = lambda _path: np.ones(
+    namespace["load_image"] = lambda _path, **_kwargs: np.ones(
         (5, 6), dtype=np.float32
     )
     output_dir = tmp_path / "outputs"
@@ -1287,7 +1385,7 @@ def test_generated_cli_rolls_back_partial_multi_output_commit(tmp_path):
         compile(export_pipeline_to_python(pipeline), "<exported>", "exec"),
         namespace,
     )
-    namespace["load_image"] = lambda _path: np.ones(
+    namespace["load_image"] = lambda _path, **_kwargs: np.ones(
         (5, 6), dtype=np.float32
     )
     output_dir = tmp_path / "outputs"
@@ -1353,7 +1451,9 @@ def test_convenience_folder_loop_returns_only_lightweight_records(tmp_path):
     input_dir.mkdir()
     for name in ("first.tif", "second.tif"):
         (input_dir / name).write_bytes(b"placeholder")
-    namespace["load_image"] = lambda _path: np.ones((4, 5), dtype=np.float32)
+    namespace["load_image"] = lambda _path, **_kwargs: np.ones(
+        (4, 5), dtype=np.float32
+    )
     def fake_save(_data, path, **kwargs):
         path = Path(path)
         path.write_bytes(b"staged-output")
@@ -1408,9 +1508,17 @@ def test_convenience_folder_loop_releases_prior_outputs_before_next_run(
     input_dir.mkdir()
     for name in ("first.tif", "second.tif"):
         (input_dir / name).write_bytes(b"placeholder")
-    namespace["load_image"] = lambda path: path
     prior_refs = []
+    prior_alive_during_next_load = []
     prior_alive_during_next_run = []
+
+    def load_one(path, **_kwargs):
+        if prior_refs:
+            gc.collect()
+            prior_alive_during_next_load.append(prior_refs[-1]() is not None)
+        return path
+
+    namespace["load_image"] = load_one
 
     class Results(dict):
         image_states = {}
@@ -1440,6 +1548,7 @@ def test_convenience_folder_loop_releases_prior_outputs_before_next_run(
     with pytest.warns(FutureWarning):
         namespace["batch_process"](input_dir, output_dir)
 
+    assert prior_alive_during_next_load == [False]
     assert prior_alive_during_next_run == [False]
 
 
@@ -2416,14 +2525,60 @@ def test_export_executes_embedded_strict_intent_and_accepts_visible_override():
     assert json.loads(namespace["_WORKFLOW_JSON"]) == embedded
 
 
-def test_exported_load_helper_keeps_the_complete_dataset():
+def test_exported_load_helper_returns_the_verified_frozen_payload():
     code = export_pipeline_to_python(_starter_pipeline())
     namespace: dict[str, object] = {"__name__": "exported_pipeline"}
     exec(compile(code, "<exported>", "exec"), namespace)
-    dataset = object()
-    namespace["read_image"] = lambda _path: dataset
+    payload = SourcePayload(np.ones((2, 3), dtype=np.uint8), {"axes": "YX"})
+    calls = []
 
-    assert namespace["load_image"]("source.ome.tif") is dataset
+    def frozen_snapshot(path, series_index, **kwargs):
+        calls.append((path, series_index, kwargs))
+        return SimpleNamespace(payload=payload)
+
+    namespace["load_frozen_file_source_snapshot"] = frozen_snapshot
+    cancel_event = threading.Event()
+    progress = []
+
+    assert (
+        namespace["load_image"](
+            "source.ome.tif",
+            series_index=2,
+            progress_callback=lambda *update: progress.append(update),
+            cancel_event=cancel_event,
+        )
+        is payload
+    )
+    assert len(calls) == 1
+    path, series_index, kwargs = calls[0]
+    assert (path, series_index) == ("source.ome.tif", 2)
+    assert kwargs["cancel_callback"]() is False
+    kwargs["progress_callback"](3, 9, "Hashing source bytes")
+    assert progress == [("source-load", 3, 9, "Hashing source bytes")]
+
+
+def test_exported_load_helper_honors_precancel_before_source_hashing():
+    code = export_pipeline_to_python(_starter_pipeline())
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    cancel_event = threading.Event()
+    cancel_event.set()
+    called = False
+
+    def frozen_snapshot(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("cancelled source load reached the loader")
+
+    namespace["load_frozen_file_source_snapshot"] = frozen_snapshot
+
+    with pytest.raises(
+        namespace["OperationCancelled"],
+        match="before hashing",
+    ):
+        namespace["load_image"]("source.ome.tif", cancel_event=cancel_event)
+
+    assert not called
 
 
 def test_exported_save_helper_passes_carried_output_state(tmp_path):

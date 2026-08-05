@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from napari_vipp.core.compute_history import PIPELINE_TIMING_HISTORY_PATH_ENV
 from napari_vipp.ui import recent_paths
 
 
@@ -25,3 +26,17 @@ def _isolate_recent_path_settings(monkeypatch):
     values: dict[str, object] = {}
     settings = _MemorySettings(values)
     monkeypatch.setattr(recent_paths, "_settings", lambda: settings)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pipeline_timing_history(monkeypatch, tmp_path):
+    """Keep every test and inherited subprocess out of user timing history."""
+
+    monkeypatch.setenv(
+        PIPELINE_TIMING_HISTORY_PATH_ENV,
+        str(
+            tmp_path
+            / ".napari-vipp-test-state"
+            / "pipeline-timing-history-v2.json"
+        ),
+    )

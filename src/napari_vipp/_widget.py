@@ -112,6 +112,10 @@ from napari_vipp.core.batch_demo import (
     next_synthetic_batch_demo_root,
     validate_synthetic_batch_demo,
 )
+from napari_vipp.core.benchmark_store_quarantine import (
+    ensure_benchmark_store_ready,
+    quarantine_benchmark_store,
+)
 from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_CHOICES,
     CHANNEL_COLOR_HEX,
@@ -163,7 +167,6 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.execution import (
     PipelineRunResult as PipelineRunResult,
 )
-from napari_vipp.core.execution import execute_pipeline_request
 from napari_vipp.core.export import (
     export_batch_runner_to_python,
     export_pipeline_to_python,
@@ -184,6 +187,7 @@ from napari_vipp.core.graph_search import (
     GraphSearchMatch,
     find_graph_matches,
 )
+from napari_vipp.core.host_memory import capture_host_memory
 from napari_vipp.core.io import (
     MICROSCOPE_SUFFIXES,
     AnalysisLabel,
@@ -335,7 +339,9 @@ from napari_vipp.ui.compute import (
     ComputePresentationTone,
     ComputeStatusSnapshot,
     actual_decision_badge,
+    compute_mode_label,
     compute_toolbar_summary,
+    custom_request_satisfied_by_actual_decisions,
     node_preference_options,
     preference_from_value,
     preference_to_value,
@@ -346,6 +352,7 @@ from napari_vipp.ui.compute_benchmark_dialog import (
     NodeBenchmarkWorkerOutcome,
 )
 from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
+    PipelineOptimizerCleanupError,
     PipelineOptimizerDialog,
     PipelineOptimizerProgress,
     PipelineOptimizerWorker,
@@ -1092,6 +1099,7 @@ class VippWidget(QWidget):
         "_rescale_auto_output_ranges",
         "_pending_dirty_node_ids",
         "_pending_manual_node_ids",
+        "_inflight_full_graph",
         "_last_pipeline_source_signature",
         "_recent_cache_node_ids",
         "_thumbnail_contrast_limit_cache",
@@ -1180,6 +1188,7 @@ class VippWidget(QWidget):
         self._pending_dirty_node_ids: set[str] = set()
         self._pending_manual_node_ids: set[str] = set()
         self._inflight_dirty_node_ids: set[str] | None = None
+        self._inflight_full_graph = False
         self._isolated_tuning_node_id: str | None = None
         self._isolated_tuning_snapshot: _IsolatedTuningSnapshot | None = None
         self._isolated_tuning_has_changes = False
@@ -1272,6 +1281,7 @@ class VippWidget(QWidget):
         self._compute_precision_policy_id = "scientific-default-v1"
         self._compute_workload_policy_id = "vipp-best-available-v1"
         self._compute_allow_experimental = False
+        self._compute_runtime_quarantined_reason = ""
         self._accepted_compute_decisions: dict[str, NodeExecutionDecision] = {}
         self._compute_decision_environments: dict[str, ComputeEnvironment] = {}
         self._stale_compute_badge_node_ids: set[str] = set()
@@ -1513,10 +1523,10 @@ class VippWidget(QWidget):
         self.pipeline_busy_bar.setTextVisible(False)
         self.pipeline_busy_bar.setFixedWidth(96)
         self.pipeline_busy_bar.setFixedHeight(12)
-        self.pipeline_cancel_button = QPushButton("Cancel")
+        self.pipeline_cancel_button = QPushButton("Cancel calculation")
         self.pipeline_cancel_button.setToolTip(
-            "Cancel queued background reruns and ignore the active result. "
-            "The operation already running in a worker may finish in the background."
+            "Request cooperative cancellation and wait for the active worker to "
+            "release its CPU/GPU resources before changing compute policy."
         )
         self.pipeline_cancel_button.setVisible(False)
         self.pipeline_busy_label.setVisible(False)
@@ -1593,6 +1603,8 @@ class VippWidget(QWidget):
         self._pipeline_run_context: dict[int, tuple] = {}
         self._pipeline_run_manual_node_ids: dict[int, frozenset[str]] = {}
         self._pipeline_cancel_events: dict[int, threading.Event] = {}
+        self._pipeline_user_cancel_requested_run_id: int | None = None
+        self._pipeline_quarantine_cancel_requested_run_id: int | None = None
         self._background_execution_state_overrides: dict[
             str,
             tuple[int, str, str],
@@ -2509,6 +2521,7 @@ class VippWidget(QWidget):
         action = menu.addAction(label)
         action.setCheckable(True)
         action.setChecked(checkbox.isChecked())
+        action.setEnabled(checkbox.isEnabled())
         action.triggered.connect(lambda checked: checkbox.setChecked(bool(checked)))
         return action
 
@@ -2519,6 +2532,8 @@ class VippWidget(QWidget):
         combo: QComboBox,
     ) -> QMenu:
         submenu = menu.addMenu(label)
+        submenu.setEnabled(combo.isEnabled())
+        submenu.setToolTip(combo.toolTip())
         current = combo.currentText()
         for index in range(combo.count()):
             value = combo.itemText(index)
@@ -2997,10 +3012,10 @@ class VippWidget(QWidget):
             dialog.verify()
 
     def _compute_setup_host_memory(self) -> HostMemorySnapshot:
-        available_bytes, total_bytes = _system_memory_bytes()
+        snapshot = capture_host_memory()
         return HostMemorySnapshot(
-            total_bytes=total_bytes,
-            available_bytes=available_bytes,
+            total_bytes=snapshot.physical_total_bytes,
+            available_bytes=snapshot.physical_available_bytes,
         )
 
     def _on_compute_setup_presentation_changed(
@@ -3045,6 +3060,92 @@ class VippWidget(QWidget):
             workload_policy_id=self._compute_workload_policy_id,
         )
 
+    def _active_compute_edit_block_reason(self) -> str:
+        """Explain which active owner currently freezes graph compute intent."""
+        if self._active_pipeline_run_id is not None:
+            if (
+                self._pipeline_user_cancel_requested_run_id
+                == self._active_pipeline_run_id
+            ):
+                return (
+                    "Cancellation is still cleaning up CPU/GPU resources. Wait "
+                    "for it to finish before changing compute policy."
+                )
+            return (
+                "Cancel the current calculation before changing compute policy."
+            )
+        if self._active_source_load_id is not None:
+            return "Wait for the current source load before changing compute policy."
+        batch_job = self._active_collection_batch_job
+        if (
+            self._collection_batch_running
+            and batch_job is not None
+            and self._workflow_tab_is_active(batch_job.origin_session_id)
+        ):
+            return (
+                "Cancel the active full batch and wait for CPU/GPU cleanup "
+                "before changing this workflow's compute policy."
+            )
+        if (
+            self._pipeline_optimizer_dialog is not None
+            and self._pipeline_optimizer_dialog.running
+        ):
+            return "Cancel the active Find fastest analysis before changing policy."
+        if (
+            self._node_benchmark_dialog is not None
+            and self._node_benchmark_dialog.running
+        ):
+            return "Cancel the active node benchmark before changing policy."
+        if self._pipeline_run_pending:
+            return (
+                "Wait for the queued calculation to finish before changing "
+                "compute policy."
+            )
+        if self._source_load_pending:
+            return "Wait for the queued source load before changing compute policy."
+        return ""
+
+    def _compute_policy_edit_block_reason(self) -> str:
+        """Explain why compute intent must remain immutable right now."""
+        active_reason = self._active_compute_edit_block_reason()
+        if active_reason:
+            return active_reason
+        if self._compute_runtime_quarantined_reason:
+            return self._compute_runtime_quarantined_reason
+        return ""
+
+    def _sync_compute_policy_editability(self) -> None:
+        reason = self._compute_policy_edit_block_reason()
+        editable = not reason
+        if hasattr(self, "compute_mode_combo"):
+            self.compute_mode_combo.setEnabled(editable)
+            self.compute_mode_combo.setToolTip(
+                reason
+                or (
+                    "Choose CPU for host execution; Auto to learn from exact "
+                    "compatible successful runs; Prefer GPU to use every "
+                    "scientifically eligible GPU implementation; or Custom for "
+                    "per-node choices."
+                )
+            )
+        custom_editable = editable and self._compute_mode is ComputeMode.CUSTOM
+        if hasattr(self, "strict_compute_checkbox"):
+            self.strict_compute_checkbox.setEnabled(custom_editable)
+        if hasattr(self, "node_compute_preference_combo"):
+            self.node_compute_preference_combo.setEnabled(custom_editable)
+        if hasattr(self, "node_compute_optimizer_lock_checkbox"):
+            preference = self._compute_node_preferences.get(
+                self._selected_node_id,
+                NodeComputePreference(),
+            )
+            self.node_compute_optimizer_lock_checkbox.setEnabled(
+                custom_editable
+                and preference.kind is not NodePreferenceKind.AUTO
+                and self._selected_node_id in self.pipeline.nodes
+            )
+        if hasattr(self, "undo_action"):
+            self._sync_history_actions()
+
     def _on_compute_mode_changed(self, index: int) -> None:
         value = self.compute_mode_combo.itemData(int(index))
         if value is None:
@@ -3054,10 +3155,56 @@ class VippWidget(QWidget):
             self._sync_node_compute_control()
             self._sync_compute_toolbar_summary()
             return
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            with QSignalBlocker(self.compute_mode_combo):
+                self.compute_mode_combo.setCurrentIndex(
+                    self.compute_mode_combo.findData(self._compute_mode.value)
+                )
+            self._set_status(
+                blocked,
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            self._sync_compute_policy_editability()
+            return
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         self._compute_mode = mode
         self._push_undo_if_changed(before)
+        if mode is ComputeMode.CUSTOM:
+            current_request = self._current_compute_request()
+            previous_report = self._last_execution_report
+            compatible = bool(
+                self._accepted_compute_decisions
+                and custom_request_satisfied_by_actual_decisions(
+                    current_request,
+                    tuple(self._accepted_compute_decisions.values()),
+                    previous_request=(
+                        previous_report.request if previous_report is not None else None
+                    ),
+                )
+            )
+            if self._accepted_compute_decisions and not compatible:
+                self._mark_compute_badges_stale(self._accepted_compute_decisions)
+            self._sync_node_compute_control()
+            self._sync_compute_toolbar_summary()
+            previous_mode = (
+                compute_mode_label(previous_report.request.mode)
+                if previous_report is not None
+                else "the previous policy"
+            )
+            suffix = (
+                " It already satisfies the saved Custom choices."
+                if compatible
+                else " Custom choices apply on the next calculation."
+            )
+            self._set_status(
+                f"Custom compute policy enabled. The last actual {previous_mode} "
+                f"result was retained.{suffix}",
+                severity=MessageSeverity.INFO,
+            )
+            return
         self._invalidate_compute_policy_results()
         self._sync_node_compute_control()
         self._sync_compute_toolbar_summary()
@@ -3069,6 +3216,14 @@ class VippWidget(QWidget):
         self.run_pipeline()
 
     def _on_strict_compute_toggled(self, checked: bool) -> None:
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            with QSignalBlocker(self.strict_compute_checkbox):
+                self.strict_compute_checkbox.setChecked(
+                    self._compute_fallback_policy is FallbackPolicy.STRICT
+                )
+            self._set_status(blocked, severity=MessageSeverity.WARNING)
+            return
         policy = FallbackPolicy.STRICT if checked else FallbackPolicy.VISIBLE
         if policy is self._compute_fallback_policy:
             return
@@ -3094,6 +3249,11 @@ class VippWidget(QWidget):
             self._compute_mode is not ComputeMode.CUSTOM
             or node_id not in self.pipeline.nodes
         ):
+            return
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            self._sync_node_compute_control()
+            self._set_status(blocked, severity=MessageSeverity.WARNING)
             return
         value = self.node_compute_preference_combo.itemData(int(index))
         if value is None:
@@ -3126,6 +3286,11 @@ class VippWidget(QWidget):
         self.run_pipeline()
 
     def _on_node_compute_optimizer_lock_toggled(self, checked: bool) -> None:
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            self._sync_node_compute_control()
+            self._set_status(blocked, severity=MessageSeverity.WARNING)
+            return
         node_id = self._selected_node_id
         preference = self._compute_node_preferences.get(
             node_id,
@@ -3162,6 +3327,7 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None or self._compute_mode is not ComputeMode.CUSTOM:
             self.compute_group.setHidden(True)
+            self._sync_compute_policy_editability()
             return
         current_preference = self._compute_node_preferences.get(
             node_id,
@@ -3175,6 +3341,7 @@ class VippWidget(QWidget):
         has_gpu_choice = len(options) > 2
         self.compute_group.setVisible(has_gpu_choice)
         if not has_gpu_choice:
+            self._sync_compute_policy_editability()
             return
         selected_value = preference_to_value(current_preference)
         with QSignalBlocker(self.node_compute_preference_combo):
@@ -3249,8 +3416,11 @@ class VippWidget(QWidget):
         benchmark_ready, benchmark_reason = self._can_benchmark_selected_node()
         self.node_benchmark_button.setEnabled(benchmark_ready)
         self.node_benchmark_button.setToolTip(benchmark_reason)
+        self._sync_compute_policy_editability()
 
     def _can_benchmark_selected_node(self) -> tuple[bool, str]:
+        if self._compute_runtime_quarantined_reason:
+            return False, self._compute_runtime_quarantined_reason
         node_id = self._selected_node_id
         if self._compute_mode is not ComputeMode.CUSTOM:
             return False, "Choose Custom compute policy to benchmark a node."
@@ -3259,11 +3429,24 @@ class VippWidget(QWidget):
         dialog = self._node_benchmark_dialog
         if dialog is not None and dialog.running:
             return False, "A node benchmark is already running."
+        optimizer_dialog = self._pipeline_optimizer_dialog
+        if optimizer_dialog is not None and optimizer_dialog.running:
+            return False, "Wait for the active Find fastest analysis to finish."
         if (
             self._active_pipeline_run_id is not None
             or self._active_source_load_id is not None
         ):
             return False, "Wait for the current calculation or source load to finish."
+        relevant_nodes = self.pipeline.ancestors_inclusive({node_id})
+        if (
+            self._pending_dirty_node_ids & relevant_nodes
+            or self._stale_compute_badge_node_ids & relevant_nodes
+        ):
+            return (
+                False,
+                "Calculate current upstream inputs before benchmarking this node. "
+                "Find fastest can instead establish a fresh whole-pipeline baseline.",
+            )
         values_by_port = self.pipeline.input_data_by_port_for_node(node_id)
         input_ports = self.pipeline.input_ports(node_id)
         expected_ports = set(range(len(input_ports)))
@@ -3285,6 +3468,8 @@ class VippWidget(QWidget):
         )
 
     def _can_optimize_pipeline(self) -> tuple[bool, str]:
+        if self._compute_runtime_quarantined_reason:
+            return False, self._compute_runtime_quarantined_reason
         if self._compute_mode is not ComputeMode.CUSTOM:
             return (
                 False,
@@ -3293,22 +3478,34 @@ class VippWidget(QWidget):
         dialog = self._pipeline_optimizer_dialog
         if dialog is not None and dialog.running:
             return False, "A pipeline optimization is already running."
+        benchmark_dialog = self._node_benchmark_dialog
+        if benchmark_dialog is not None and benchmark_dialog.running:
+            return False, "Wait for the active node benchmark to finish."
         if (
             self._active_pipeline_run_id is not None
             or self._active_source_load_id is not None
             or self._pipeline_run_pending
         ):
+            if (
+                self._pipeline_user_cancel_requested_run_id
+                == self._active_pipeline_run_id
+            ):
+                return (
+                    False,
+                    "Wait for cancellation cleanup to release CPU/GPU resources.",
+                )
             return False, "Wait for the current calculation or source load to finish."
         if (
             self._last_pipeline_source_signature is None
-            or self._pending_dirty_node_ids
             or self._inflight_dirty_node_ids is not None
-            or self._stale_compute_badge_node_ids
         ):
-            return False, "Calculate the current graph before optimizing it."
+            return False, "Calculate this source once before optimizing its pipeline."
+        fresh_baseline_required = bool(
+            self._pending_dirty_node_ids or self._stale_compute_badge_node_ids
+        )
         has_candidate = any(
-            self.pipeline._has_cached_output(node_id)
-            and node_id not in self._compute_optimizer_locked_node_ids
+            node_id not in self._compute_optimizer_locked_node_ids
+            and self.pipeline.operation_spec(node.operation_id).has_input
             and len(
                 node_preference_options(
                     node.operation_id,
@@ -3325,8 +3522,13 @@ class VippWidget(QWidget):
         if not has_candidate:
             return (
                 False,
-                "No calculated, unlocked node in this graph has a GPU "
-                "implementation.",
+                "No unlocked node in this graph has a declared GPU implementation.",
+            )
+        if fresh_baseline_required:
+            return (
+                True,
+                "Find fastest will first calculate a private fresh baseline for "
+                "the current graph and parameters, then compare eligible backends.",
             )
         return (
             True,
@@ -3342,6 +3544,64 @@ class VippWidget(QWidget):
         ready, reason = self._can_optimize_pipeline()
         self.optimize_pipeline_button.setEnabled(custom and ready)
         self.optimize_pipeline_button.setToolTip(reason)
+
+    def _retained_optimizer_baseline_request(
+        self,
+        authored_request: ComputeRequest,
+    ) -> ComputeRequest | None:
+        """Capture the exact retained assignment when it is scientifically fresh.
+
+        Entering Custom deliberately preserves the last valid result.  The
+        optimizer may use that mixed actual assignment as its private baseline,
+        but only while no graph/parameter edit is waiting to be calculated.
+        Every accelerator decision is pinned to its implementation ID so a
+        second Auto/Prefer-GPU policy decision cannot silently select a
+        different starting assignment.
+        """
+
+        if (
+            authored_request.mode is not ComputeMode.CUSTOM
+            or self._pending_dirty_node_ids
+            or self._inflight_dirty_node_ids is not None
+            or self._inflight_full_graph
+            or self._last_execution_report is None
+            or not self._accepted_compute_decisions
+        ):
+            return None
+        preferences: dict[str, NodeComputePreference] = {}
+        for node_id, decision in self._accepted_compute_decisions.items():
+            node = self.pipeline.nodes.get(node_id)
+            if (
+                node is None
+                or node.operation_id != decision.operation_id
+                or not self.pipeline.operation_spec(node.operation_id).has_input
+            ):
+                return None
+            if decision.runtime_id == "cpu-numpy":
+                preferences[node_id] = NodeComputePreference(
+                    NodePreferenceKind.CPU
+                )
+            else:
+                preferences[node_id] = NodeComputePreference(
+                    NodePreferenceKind.IMPLEMENTATION,
+                    decision.implementation_id,
+                )
+        return ComputeRequest(
+            mode=ComputeMode.CUSTOM,
+            node_preferences=preferences,
+            fallback_policy=FallbackPolicy.STRICT,
+            runtime_id=authored_request.runtime_id,
+            device_id=authored_request.device_id,
+            precision_policy_id=authored_request.precision_policy_id,
+            workload_policy_id=authored_request.workload_policy_id,
+            accelerator_memory_cap_bytes=(
+                authored_request.accelerator_memory_cap_bytes
+            ),
+            accelerator_safety_reserve_bytes=(
+                authored_request.accelerator_safety_reserve_bytes
+            ),
+            allow_experimental=authored_request.allow_experimental,
+        )
 
     def _benchmark_selected_node(self) -> None:
         ready, reason = self._can_benchmark_selected_node()
@@ -3375,6 +3635,7 @@ class VippWidget(QWidget):
         dialog.activateWindow()
         try:
             dialog.start(worker, self._node_benchmark_thread_pool)
+            self._sync_compute_policy_editability()
         except Exception as exc:
             dialog.shutdown()
             self._node_benchmark_dialog = None
@@ -3396,6 +3657,24 @@ class VippWidget(QWidget):
             if outcome.node_id in self.pipeline.nodes
             else outcome.node_id
         )
+        if outcome.reason_code == "cleanup_failed":
+            self._pipeline_run_pending = False
+            self._compute_runtime_quarantined_reason = (
+                "CPU/GPU cleanup failed after the node benchmark. Restart VIPP "
+                "before changing compute policy or calculating again."
+            )
+            self._stop_active_compute_after_runtime_quarantine()
+            self._sync_compute_policy_editability()
+            self._sync_pipeline_optimizer_action()
+            self._set_status(
+                self._compute_runtime_quarantined_reason
+                + " No benchmark preference was accepted. "
+                + (outcome.error or "New timing evidence was not retained."),
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
+        self._resume_pipeline_after_optimizer_if_pending()
         if outcome.result is not None:
             winner = outcome.result.record.accepted_implementation_id
             self._set_status(
@@ -3428,6 +3707,14 @@ class VippWidget(QWidget):
         )
 
     def _apply_node_benchmark_result(self, result) -> None:
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            self._set_status(
+                blocked,
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
         node_id = result.plan.node_id
         baseline = self._node_benchmark_baseline
         if (
@@ -3474,6 +3761,7 @@ class VippWidget(QWidget):
             self._node_benchmark_dialog = None
             self._node_benchmark_baseline = None
         self._sync_node_compute_control()
+        self._sync_compute_policy_editability()
 
     def _show_pipeline_optimizer(self) -> None:
         ready, reason = self._can_optimize_pipeline()
@@ -3519,6 +3807,9 @@ class VippWidget(QWidget):
             if not source_payloads:
                 raise ValueError("No Image Source has a resolved payload.")
             compute_request = self._current_compute_request()
+            baseline_compute_request = (
+                self._retained_optimizer_baseline_request(compute_request)
+            )
             workflow = deepcopy(
                 serialize_workflow(
                     self.pipeline,
@@ -3553,12 +3844,45 @@ class VippWidget(QWidget):
             )
             from napari_vipp.core.compute_registry import ComputeRegistry
 
+            benchmark_store_path = ensure_benchmark_store_ready(
+                _default_compute_benchmark_store_path()
+            )
             registry = ComputeRegistry()
+            benchmark_store = None
+            original_store_put = None
+            measured_record_rollbacks: dict[
+                str,
+                tuple[object, object | None, object],
+            ] = {}
             try:
                 coordinator = ApplicationPipelineOptimizerCoordinator(
                     registry,
-                    _default_compute_benchmark_store_path(),
+                    benchmark_store_path,
                 )
+                benchmark_store = getattr(
+                    getattr(coordinator, "node_benchmarker", None),
+                    "store",
+                    None,
+                )
+                if benchmark_store is not None:
+                    original_store_put = benchmark_store.put
+                    original_store_get = benchmark_store.get
+
+                    def track_optimizer_record(record) -> None:
+                        digest = record.key.digest
+                        first_write = digest not in measured_record_rollbacks
+                        previous = (
+                            original_store_get(record.key) if first_write else None
+                        )
+                        original_store_put(record)
+                        if first_write:
+                            measured_record_rollbacks[digest] = (
+                                record.key,
+                                previous,
+                                record,
+                            )
+
+                    benchmark_store.put = track_optimizer_record
 
                 def forward(progress) -> None:
                     raw_phase = getattr(progress, "phase", "")
@@ -3596,6 +3920,7 @@ class VippWidget(QWidget):
                     source_payloads,
                     compute_request,
                     retain_node_ids,
+                    baseline_compute_request=baseline_compute_request,
                     optimizer_locked_node_ids=optimizer_locked_node_ids,
                     time_budget_seconds=optimizer_time_budget_seconds,
                     cancelled=cancelled,
@@ -3604,7 +3929,76 @@ class VippWidget(QWidget):
             finally:
                 # A cleanup failure invalidates timings and memory observations;
                 # let the worker convert it into a non-applicable failure outcome.
-                registry.close()
+                try:
+                    registry.close()
+                except Exception as exc:
+                    rollback_failures: list[str] = []
+                    if benchmark_store is not None and original_store_put is not None:
+                        for key, previous, written in reversed(
+                            tuple(measured_record_rollbacks.values())
+                        ):
+                            try:
+                                if benchmark_store.get(key) != written:
+                                    continue
+                                if previous is None:
+                                    benchmark_store.discard(key)
+                                else:
+                                    original_store_put(previous)
+                            except Exception as rollback_exc:
+                                rollback_failures.append(
+                                    f"{type(rollback_exc).__name__}: {rollback_exc}"
+                                )
+                    rollback_detail = (
+                        " Newly measured benchmark evidence could not be fully "
+                        "rolled back: " + "; ".join(rollback_failures)
+                        if rollback_failures
+                        else (
+                            " Newly measured benchmark evidence was rolled back."
+                            if measured_record_rollbacks
+                            else " No newly measured benchmark evidence was retained."
+                        )
+                    )
+                    if rollback_failures:
+                        quarantine = quarantine_benchmark_store(
+                            benchmark_store_path,
+                            reason=(
+                                "Find fastest runtime cleanup and benchmark "
+                                "record rollback both failed."
+                            ),
+                        )
+                        if quarantine.safe_for_restart:
+                            rollback_detail += (
+                                " The complete local benchmark store was moved "
+                                "away from its active path and will not be reused."
+                            )
+                            if quarantine.quarantined_path is not None:
+                                rollback_detail += (
+                                    " Quarantined store: "
+                                    f"{quarantine.quarantined_path}."
+                                )
+                            if quarantine.error:
+                                rollback_detail += f" {quarantine.error}."
+                        elif quarantine.marker_present:
+                            rollback_detail += (
+                                " A durable quarantine marker prevents this store "
+                                "from being reopened until it can be moved safely: "
+                                f"{quarantine.marker_path}. {quarantine.error}"
+                            )
+                        else:
+                            rollback_detail += (
+                                " Suspect timing evidence may remain at "
+                                f"{benchmark_store_path}: {quarantine.error}. "
+                                "Rename or delete that file "
+                                "before restarting VIPP."
+                            )
+                    raise PipelineOptimizerCleanupError(
+                        "Find fastest could not safely release its CPU/GPU "
+                        f"runtime: {type(exc).__name__}: {exc}."
+                        + rollback_detail
+                    ) from exc
+                finally:
+                    if benchmark_store is not None and original_store_put is not None:
+                        benchmark_store.put = original_store_put
 
         self._pipeline_optimizer_baseline = self._current_history_snapshot()
         self._pipeline_optimizer_source_signature = source_signature
@@ -3617,6 +4011,7 @@ class VippWidget(QWidget):
         )
         try:
             dialog.start(worker, self._pipeline_optimizer_thread_pool)
+            self._sync_compute_policy_editability()
         except Exception as exc:
             self._pipeline_optimizer_baseline = None
             self._pipeline_optimizer_source_signature = None
@@ -3633,7 +4028,28 @@ class VippWidget(QWidget):
         self,
         outcome: PipelineOptimizerWorkerOutcome,
     ) -> None:
+        self._sync_compute_policy_editability()
         self._sync_pipeline_optimizer_action()
+        if outcome.reason_code == "cleanup_failed":
+            self._pipeline_run_pending = False
+            self._compute_runtime_quarantined_reason = (
+                "CPU/GPU cleanup failed after Find fastest. Restart VIPP before "
+                "changing compute policy or calculating again."
+            )
+            self._stop_active_compute_after_runtime_quarantine()
+            self._sync_compute_policy_editability()
+            self._sync_pipeline_optimizer_action()
+            self._set_status(
+                self._compute_runtime_quarantined_reason
+                + " No proposed assignment was accepted. "
+                + (
+                    outcome.error
+                    or "Newly measured timing evidence was not retained."
+                ),
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
         if outcome.result is not None:
             proposal = getattr(outcome.result, "proposal", outcome.result)
             changed = sum(
@@ -3656,11 +4072,26 @@ class VippWidget(QWidget):
                         "before applying."
                     )
             else:
-                message = (
-                    "Find fastest confirmed that the current exact backend "
-                    "assignment wins the global model. Review the measured "
-                    f"preferences ({changed} change(s)) before applying."
+                selection_basis = str(
+                    getattr(
+                        getattr(proposal, "selection_basis", ""),
+                        "value",
+                        getattr(proposal, "selection_basis", ""),
+                    )
                 )
+                if selection_basis == "conservative-bound-retained-current":
+                    message = (
+                        "Find fastest retained the current GPU assignment after "
+                        "each competing CPU measurement crossed a decisive slower "
+                        "bound and stopped early. Review the measured preferences "
+                        f"({changed} change(s)) before applying."
+                    )
+                else:
+                    message = (
+                        "Find fastest confirmed that the current exact backend "
+                        "assignment wins the global model. Review the measured "
+                        f"preferences ({changed} change(s)) before applying."
+                    )
             self._set_status(message, severity=MessageSeverity.SUCCESS)
             self._resume_pipeline_after_optimizer_if_pending()
             return
@@ -3702,6 +4133,14 @@ class VippWidget(QWidget):
         QTimer.singleShot(0, self.run_pipeline)
 
     def _apply_pipeline_optimizer_result(self, result: object) -> None:
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            self._set_status(
+                blocked,
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
         proposal = getattr(result, "proposal", result)
         identity = getattr(result, "identity", None)
         baseline = self._pipeline_optimizer_baseline
@@ -3915,6 +4354,12 @@ class VippWidget(QWidget):
         self.run_pipeline()
 
     def _current_pipeline_optimizer_assignments(self, proposal) -> dict[str, str]:
+        row_node_ids = {row.node_id for row in proposal.rows}
+        if (
+            self._pending_dirty_node_ids & row_node_ids
+            or self._stale_compute_badge_node_ids & row_node_ids
+        ):
+            return dict(getattr(proposal, "baseline_assignment", ()))
         assignments: dict[str, str] = {}
         for row in proposal.rows:
             node = self.pipeline.nodes.get(row.node_id)
@@ -3923,11 +4368,10 @@ class VippWidget(QWidget):
                 node is not None
                 and decision is not None
                 and decision.operation_id == node.operation_id
-                and row.node_id not in self._stale_compute_badge_node_ids
             ):
                 assignments[row.node_id] = decision.implementation_id
             elif node is not None:
-                assignments[row.node_id] = f"cpu-{node.operation_id}-v1"
+                assignments[row.node_id] = "<no-current-actual-assignment>"
         return assignments
 
     def _on_pipeline_optimizer_dialog_finished(self, _result: int) -> None:
@@ -3936,6 +4380,7 @@ class VippWidget(QWidget):
             self._pipeline_optimizer_dialog = None
             self._pipeline_optimizer_baseline = None
             self._pipeline_optimizer_source_signature = None
+        self._sync_compute_policy_editability()
         self._sync_pipeline_optimizer_action()
 
     def _invalidate_compute_policy_results(
@@ -4006,12 +4451,41 @@ class VippWidget(QWidget):
             kind = ComputeBadgeKind.CUCIM
         else:
             kind = ComputeBadgeKind.CUPY
+        tooltip = presentation.tooltip
+        if node_id in self._stale_compute_badge_node_ids:
+            tooltip = (
+                f"{tooltip} Current intent: "
+                f"{self._planned_compute_intent_text(node_id)}. Calculate or run "
+                "Find fastest to replace this previous actual result."
+            )
         self.graph_view.set_node_compute_badge(
             node_id,
             kind,
-            tooltip=presentation.tooltip,
+            tooltip=tooltip,
             stale=node_id in self._stale_compute_badge_node_ids,
         )
+
+    def _planned_compute_intent_text(self, node_id: str) -> str:
+        mode = self._compute_mode
+        if mode is ComputeMode.CPU:
+            return "CPU only"
+        if mode is ComputeMode.AUTO:
+            return "Auto (compatible timing evidence or reviewed safe default)"
+        if mode is ComputeMode.PREFER_GPU:
+            return "GPU wherever scientifically eligible, with visible CPU fallback"
+        preference = self._compute_node_preferences.get(
+            node_id,
+            NodeComputePreference(),
+        )
+        if preference.kind is NodePreferenceKind.AUTO:
+            return "Auto for this node"
+        if preference.kind is NodePreferenceKind.CPU:
+            return "CPU"
+        if preference.kind is NodePreferenceKind.BEST_GPU:
+            return "Best eligible GPU"
+        if preference.kind is NodePreferenceKind.LIBRARY:
+            return f"GPU library {preference.value}"
+        return f"exact implementation {preference.value}"
 
     def _sync_all_compute_badges(self) -> None:
         if not hasattr(self, "graph_view"):
@@ -4035,7 +4509,11 @@ class VippWidget(QWidget):
             )
         )
         return ComputeStatusSnapshot(
-            request=request or self._current_compute_request(),
+            request=(
+                latest.request
+                if latest is not None
+                else (request or self._current_compute_request())
+            ),
             actual_decisions=decisions,
             decision_environments={
                 decision.node_id: environment
@@ -4399,6 +4877,7 @@ class VippWidget(QWidget):
             "_rescale_auto_output_ranges": {},
             "_pending_dirty_node_ids": set(),
             "_pending_manual_node_ids": set(),
+            "_inflight_full_graph": False,
             "_last_pipeline_source_signature": None,
             "_recent_cache_node_ids": [],
             "_thumbnail_contrast_limit_cache": {},
@@ -4931,6 +5410,14 @@ class VippWidget(QWidget):
 
     def undo(self) -> None:
         """Restore the previous workflow graph snapshot."""
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            self._set_status(
+                blocked,
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
         if self._isolated_tuning_node_id is not None:
             self._apply_isolated_tuning(run=False, announce=False)
         self._finish_parameter_history_group()
@@ -4947,6 +5434,14 @@ class VippWidget(QWidget):
 
     def redo(self) -> None:
         """Reapply the most recently undone workflow graph snapshot."""
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            self._set_status(
+                blocked,
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
         self._finish_parameter_history_group()
         if not self._history.can_redo:
             return
@@ -5076,6 +5571,9 @@ class VippWidget(QWidget):
             self.run_pipeline()
 
     def _restore_history_snapshot(self, snapshot: WorkflowHistorySnapshot) -> None:
+        preserved_graph_center = self.graph_view.mapToScene(
+            self.graph_view.viewport().rect().center()
+        )
         if self._isolated_tuning_node_id is not None:
             self._apply_isolated_tuning(run=False, announce=False)
         self._debounce_timer.stop()
@@ -5152,14 +5650,21 @@ class VippWidget(QWidget):
             self._sync_pin_ui()
             self._invalidate_pipeline_cache()
             self.run_pipeline()
+            # A small Auto run enters a nested Qt event loop while its detached
+            # worker completes.  That loop may settle parent layouts and resize
+            # the viewport after build_graph restored its center.  Reapply the
+            # exact scene center after the run handoff so undo/redo never pans
+            # the user's graph merely because computation was responsive.
+            self._restore_graph_view_center(preserved_graph_center)
             if selected:
                 self.graph_view.select_node(selected)
             else:
                 self._select_first_available_node()
 
     def _sync_history_actions(self) -> None:
-        undo_enabled = self._history.can_undo
-        redo_enabled = self._history.can_redo
+        blocked = self._compute_policy_edit_block_reason()
+        undo_enabled = self._history.can_undo and not blocked
+        redo_enabled = self._history.can_redo and not blocked
         self.undo_action.setEnabled(undo_enabled)
         self.redo_action.setEnabled(redo_enabled)
         undo_shortcut = QKeySequence(QKeySequence.Undo).toString(
@@ -5168,8 +5673,23 @@ class VippWidget(QWidget):
         redo_shortcut = QKeySequence(QKeySequence.Redo).toString(
             QKeySequence.NativeText
         )
-        self.undo_action.setToolTip(f"Undo last workflow edit ({undo_shortcut})")
-        self.redo_action.setToolTip(f"Redo workflow edit ({redo_shortcut})")
+        self.undo_action.setToolTip(
+            blocked or f"Undo last workflow edit ({undo_shortcut})"
+        )
+        self.redo_action.setToolTip(
+            blocked or f"Redo workflow edit ({redo_shortcut})"
+        )
+
+    def _restore_graph_view_center(self, center: QPointF) -> None:
+        """Center the graph while compensating integer scrollbar rounding."""
+        target = QPointF(center)
+        self.graph_view.centerOn(target)
+        observed = self.graph_view.mapToScene(
+            self.graph_view.viewport().rect().center()
+        )
+        correction = target - observed
+        if abs(correction.x()) > 0.25 or abs(correction.y()) > 0.25:
+            self.graph_view.centerOn(target + correction)
 
     def _set_left_panel_visible(self, visible: bool) -> None:
         self._set_side_panel_visible("left", visible)
@@ -7230,7 +7750,13 @@ class VippWidget(QWidget):
             return
         had_source_overrides = bool(self._interactive_collection_source_paths)
         if self._active_pipeline_run_id is not None and had_source_overrides:
-            self._abandon_background_pipeline_run()
+            self._set_status(
+                "Cancel the current calculation and wait for cleanup before "
+                "leaving Batch workspace.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
         self._clear_interactive_collection_batch_session()
         if had_source_overrides:
             self._invalidate_pipeline_cache()
@@ -7382,6 +7908,17 @@ class VippWidget(QWidget):
 
         # Supersede representative work before freezing this tab's workflow and
         # configuration for the detached headless run.
+        if self._active_pipeline_run_id is not None:
+            dialog.show_run_error(
+                "Cancel the representative calculation and wait for CPU/GPU "
+                "cleanup before starting the full batch."
+            )
+            self._set_status(
+                "Cancel the current calculation before starting the full batch.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
         self._debounce_timer.stop()
         if self._interactive_collection_batch_requested_index >= 0:
             self._show_interactive_collection_batch_preview_error(
@@ -7389,7 +7926,6 @@ class VippWidget(QWidget):
                 "the representative calculation was superseded by the full "
                 "batch run",
             )
-        self._abandon_background_pipeline_run()
         if self._active_source_load_id is not None:
             self._source_load_serial += 1
             self._active_source_load_id = None
@@ -7424,6 +7960,8 @@ class VippWidget(QWidget):
         session = self._workflow_tabs.current
         if session is None:
             raise RuntimeError("No workflow tab is available for this batch.")
+        if self._compute_runtime_quarantined_reason:
+            raise RuntimeError(self._compute_runtime_quarantined_reason)
         if self._collection_batch_running:
             raise RuntimeError("A collection batch is already running.")
 
@@ -7453,6 +7991,7 @@ class VippWidget(QWidget):
         self._active_collection_batch_job = context
         self._collection_batch_workers[job_id] = worker
         self._collection_batch_running = True
+        self._sync_compute_policy_editability()
         dialog.begin_run(total)
         self.batch_navigator.set_navigation_enabled(False)
         self.batch_navigator.begin_batch_progress(
@@ -7542,6 +8081,7 @@ class VippWidget(QWidget):
             return
         self._active_collection_batch_job = None
         self._collection_batch_running = False
+        self._sync_compute_policy_editability()
         origin_active = self._workflow_tab_is_active(context.origin_session_id)
         origin_session = self._workflow_tab_session(context.origin_session_id)
 
@@ -7567,6 +8107,17 @@ class VippWidget(QWidget):
             return
 
         result = outcome.result
+        cleanup_failed = (
+            result.manifest.compute.get("runtime_cleanup_succeeded") is False
+        )
+        if cleanup_failed:
+            self._compute_runtime_quarantined_reason = (
+                "CPU/GPU cleanup failed during the full batch. Restart VIPP "
+                "before changing compute policy or calculating again."
+            )
+            self._stop_active_compute_after_runtime_quarantine()
+            self._sync_compute_policy_editability()
+            self._sync_pipeline_optimizer_action()
         validation_text = (
             "Synthetic ground-truth validation was not run because the batch "
             "was cancelled."
@@ -7596,9 +8147,18 @@ class VippWidget(QWidget):
         context.dialog.mark_plan_historical_after_run()
         if origin_active:
             self.batch_navigator.set_navigation_enabled(True)
-            self.status_label.setText(
-                summary_text + (f" {validation_text}" if validation_text else "")
-            )
+            if cleanup_failed:
+                self._set_status(
+                    self._compute_runtime_quarantined_reason
+                    + f" The durable manifest is available at {result.manifest_path}.",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+            else:
+                self.status_label.setText(
+                    summary_text
+                    + (f" {validation_text}" if validation_text else "")
+                )
             self.batch_navigator.finish_batch_progress(
                 f"{finished_prefix}: {summary['completed']} completed, "
                 f"{summary['partial']} partial, {summary['skipped']} skipped, "
@@ -7621,12 +8181,44 @@ class VippWidget(QWidget):
             runtime = origin_session.runtime_cache
             runtime["_collection_batch_last_summary"] = summary_text
             runtime["_collection_batch_last_total"] = context.total
+            if cleanup_failed:
+                runtime["_collection_batch_last_error"] = (
+                    self._compute_runtime_quarantined_reason
+                )
             if (
                 runtime.get("_interactive_collection_batch_items")
                 and int(runtime.get("_interactive_collection_batch_index", -1)) >= 0
             ):
                 runtime["_interactive_collection_batch_plan_stale"] = True
         self._resume_origin_graph_after_batch(context, origin_session)
+
+    def _stop_active_compute_after_runtime_quarantine(self) -> None:
+        """Cancel every live compute owner after the shared runtime is unsafe."""
+
+        batch_context = self._active_collection_batch_job
+        if self._collection_batch_running and batch_context is not None:
+            batch_worker = self._collection_batch_workers.get(batch_context.job_id)
+            if (
+                batch_worker is not None
+                and not bool(getattr(batch_worker, "cancellation_requested", False))
+            ):
+                batch_worker.cancel()
+        if self._active_pipeline_run_id is not None:
+            self._pipeline_quarantine_cancel_requested_run_id = (
+                self._active_pipeline_run_id
+            )
+            self._cancel_background_pipeline_run()
+        else:
+            self._pipeline_run_pending = False
+        for dialog in (
+            self._node_benchmark_dialog,
+            self._pipeline_optimizer_dialog,
+        ):
+            if dialog is None or not bool(getattr(dialog, "running", False)):
+                continue
+            cancel = getattr(dialog, "cancel", None)
+            if callable(cancel):
+                cancel()
 
     def _resume_origin_graph_after_batch(
         self,
@@ -8053,8 +8645,13 @@ class VippWidget(QWidget):
                 and self._interactive_collection_batch_failed_index < 0
             )
             dialog.set_representative_pending(not representative_ready)
+        prefix = (
+            self._compute_runtime_quarantined_reason + " "
+            if self._compute_runtime_quarantined_reason
+            else ""
+        )
         self._set_status(
-            f"Representative preview failed: {message}",
+            prefix + f"Representative preview failed: {message}",
             severity=MessageSeverity.ERROR,
             actionable=True,
         )
@@ -8958,7 +9555,13 @@ class VippWidget(QWidget):
             return False
         self._debounce_timer.stop()
         if self._active_pipeline_run_id is not None:
-            self._abandon_background_pipeline_run()
+            self._set_status(
+                "Cancel the current calculation and wait for cleanup before "
+                "canceling isolated tuning.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return False
         self._pending_dirty_node_ids.discard(node_id)
         self._pending_manual_node_ids.discard(node_id)
         node = self.pipeline.nodes.get(node_id)
@@ -9084,6 +9687,7 @@ class VippWidget(QWidget):
         self._pending_dirty_node_ids.clear()
         self._pending_manual_node_ids.clear()
         self._inflight_dirty_node_ids = None
+        self._inflight_full_graph = False
         self._last_pipeline_source_signature = None
         self._clear_thumbnail_contrast_limit_state()
         self._clear_input_histogram_cache()
@@ -9109,6 +9713,7 @@ class VippWidget(QWidget):
         self._inflight_dirty_node_ids = (
             None if dirty_node_ids is None else set(dirty_node_ids)
         )
+        self._inflight_full_graph = dirty_node_ids is None
         stale_node_ids = (
             set(self.pipeline.nodes)
             if dirty_node_ids is None
@@ -9121,11 +9726,14 @@ class VippWidget(QWidget):
 
     def _requeue_inflight_dirty_nodes(self) -> None:
         """Return a discarded run's dirty nodes to the pending set for a rerun."""
-        if self._inflight_dirty_node_ids:
+        if self._inflight_full_graph:
+            self._pending_dirty_node_ids.update(self.pipeline.nodes)
+        elif self._inflight_dirty_node_ids:
             self._pending_dirty_node_ids.update(
                 self._inflight_dirty_node_ids & set(self.pipeline.nodes)
             )
         self._inflight_dirty_node_ids = None
+        self._inflight_full_graph = False
 
     def _pipeline_source_signature(
         self,
@@ -9192,6 +9800,7 @@ class VippWidget(QWidget):
         # while this run was in flight and must survive for the next run.
         self._last_pipeline_source_signature = source_signature
         self._inflight_dirty_node_ids = None
+        self._inflight_full_graph = False
 
     def _cache_mode(self) -> str:
         mode = self.cache_mode_combo.currentText()
@@ -9429,7 +10038,9 @@ class VippWidget(QWidget):
 
     def _refresh_cache_status(self) -> None:
         cache_bytes = _pipeline_cache_nbytes(self.pipeline)
-        free_bytes, total_bytes = _system_memory_bytes()
+        host_memory = capture_host_memory()
+        free_bytes = host_memory.physical_available_bytes
+        total_bytes = host_memory.physical_total_bytes
         cache_text = _format_byte_count(cache_bytes)
         mode_label = CACHE_MODE_STATUS_LABELS.get(
             self._cache_mode(),
@@ -9445,6 +10056,15 @@ class VippWidget(QWidget):
         else:
             memory_text = f"RAM free {_format_byte_count(free_bytes)}"
         text = f"Cache {cache_text} ({mode_label}) | {memory_text}"
+        commit_text = ""
+        if host_memory.has_commit_accounting:
+            commit_text = (
+                "Commit free "
+                f"{_format_byte_count(host_memory.commit_available_bytes)} / "
+                f"{_format_byte_count(host_memory.commit_limit_bytes)}"
+            )
+            if sys.platform == "win32":
+                text += f" | {commit_text}"
         guard_state = "on" if self.memory_guard_checkbox.isChecked() else "off"
         self.cache_status_label.setText(text)
         self.cache_status_label.setToolTip(
@@ -9452,6 +10072,8 @@ class VippWidget(QWidget):
             f"\nMemory guard: {guard_state}"
             f"\nCache limit: {int(self.memory_limit_spin.value())}% of "
             "free RAM + VIPP cache"
+            + (f"\n{commit_text}" if commit_text and sys.platform != "win32" else "")
+            + (f"\nMemory probe: {host_memory.detail}" if host_memory.detail else "")
         )
 
     def _dirty_nodes_affect_node(
@@ -16224,6 +16846,13 @@ class VippWidget(QWidget):
     ) -> None:
         if self._closing:
             return
+        if self._compute_runtime_quarantined_reason:
+            self._set_status(
+                self._compute_runtime_quarantined_reason,
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
         if self._collection_batch_running:
             batch_job = self._active_collection_batch_job
             if batch_job is None or self._workflow_tab_is_active(
@@ -16242,6 +16871,15 @@ class VippWidget(QWidget):
                 severity=MessageSeverity.INFO,
             )
             return
+        node_benchmark_dialog = self._node_benchmark_dialog
+        if node_benchmark_dialog is not None and node_benchmark_dialog.running:
+            self._pipeline_run_pending = True
+            self._set_status(
+                "Calculation queued until the node benchmark releases its "
+                "exclusive timing window.",
+                severity=MessageSeverity.INFO,
+            )
+            return
         manual_node_ids = {
             node_id
             for node_id in (manual_node_ids or set())
@@ -16257,13 +16895,33 @@ class VippWidget(QWidget):
         source_load_specs = self._uncached_async_file_source_specs()
         if source_load_specs:
             self._pending_manual_node_ids.update(manual_node_ids)
+            if self._active_pipeline_run_id is not None:
+                # A newly selected, uncached file is part of the scientific
+                # input.  Do not let its loader steal progress/Cancel ownership
+                # while the old graph still owns CPU/GPU resources.  Supersede
+                # that run, wait for cleanup, then launch the latest source load
+                # from the normal pending-run handoff.
+                self._pipeline_run_pending = True
+                self._pending_dirty_node_ids.update(
+                    spec.node_id
+                    for spec in source_load_specs
+                    if spec.node_id in self.pipeline.nodes
+                )
+                self._abandon_background_pipeline_run()
+                self._set_status(
+                    "Stopping the current calculation before loading the new "
+                    "image source; waiting for CPU/GPU cleanup.",
+                    severity=MessageSeverity.INFO,
+                )
+                return
             self._start_source_file_load(source_load_specs)
             return
         try:
             source_payloads, source_layers = self._source_payloads_for_pipeline()
         except OptionalMicroscopeReaderError as exc:
             self._abandon_background_pipeline_run()
-            self._set_pipeline_busy(False)
+            if self._active_pipeline_run_id is None:
+                self._set_pipeline_busy(False)
             self._show_optional_reader_error(exc)
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
@@ -16272,7 +16930,8 @@ class VippWidget(QWidget):
             return
         except Exception as exc:
             self._abandon_background_pipeline_run()
-            self._set_pipeline_busy(False)
+            if self._active_pipeline_run_id is None:
+                self._set_pipeline_busy(False)
             self._set_status(
                 f"Image source error: {exc}",
                 severity=MessageSeverity.ERROR,
@@ -16285,7 +16944,19 @@ class VippWidget(QWidget):
             return
 
         if not source_payloads:
+            if self._active_pipeline_run_id is not None:
+                # Cleanup completion must hand control back to run_pipeline so
+                # the now-empty graph is cleared only after the worker releases
+                # every CPU/GPU resource it owns.
+                self._pipeline_run_pending = True
             self._abandon_background_pipeline_run()
+            if self._active_pipeline_run_id is not None:
+                self._set_status(
+                    "Stopping the current calculation after its source was "
+                    "removed; waiting for CPU/GPU cleanup.",
+                    severity=MessageSeverity.INFO,
+                )
+                return
             self._set_pipeline_busy(False)
             self._invalidate_pipeline_cache()
             self._restore_hidden_input_layers()
@@ -16345,20 +17016,6 @@ class VippWidget(QWidget):
                 dirty_node_ids = set(manual_node_ids)
             else:
                 dirty_node_ids.update(manual_node_ids)
-        if force_sync and self._active_pipeline_run_id is not None:
-            inflight_dirty = self._inflight_dirty_node_ids
-            if inflight_dirty is None:
-                dirty_node_ids = None
-                self._pending_dirty_node_ids.clear()
-            elif dirty_node_ids is not None:
-                dirty_node_ids.update(inflight_dirty)
-            manual_node_ids.update(
-                self._pipeline_run_manual_node_ids.get(
-                    self._active_pipeline_run_id,
-                    frozenset(),
-                )
-            )
-            self._abandon_background_pipeline_run()
         compute_request = self._current_compute_request()
         if self._active_pipeline_run_id is not None or (
             not force_sync
@@ -16418,22 +17075,24 @@ class VippWidget(QWidget):
             )
 
     def _abandon_background_pipeline_run(self) -> None:
-        """Cancel and detach an in-flight clone whose result must be ignored."""
+        """Request internal cancellation while retaining worker ownership."""
         run_id = self._active_pipeline_run_id
         if run_id is None:
             cleared_overrides = self._discard_background_node_result_overrides()
             self._refresh_node_presentation_surfaces(cleared_overrides)
             return
-        cancel_event = self._pipeline_cancel_events.pop(run_id, None)
+        cancel_event = self._pipeline_cancel_events.get(run_id)
         if cancel_event is not None:
             cancel_event.set()
-        self._pipeline_run_context.pop(run_id, None)
-        self._pipeline_run_manual_node_ids.pop(run_id, None)
-        self._active_pipeline_run_id = None
-        self._active_pipeline_node_id = None
-        self._pipeline_run_pending = False
-        self._inflight_dirty_node_ids = None
-        self._set_pipeline_busy(False)
+        self._set_pipeline_busy(
+            True,
+            self._active_pipeline_node_id,
+            cancelable=False,
+            preserve_progress=True,
+        )
+        self.pipeline_busy_label.setText(
+            "Stopping superseded calculation; cleaning up resources…"
+        )
 
     def _manual_node_ids_for_run(
         self,
@@ -16975,21 +17634,6 @@ class VippWidget(QWidget):
             else "graph"
         )
         self.status_label.setText(f"Processing '{title}' in background...")
-        if execute_synchronously:
-            result = execute_pipeline_request(
-                request,
-                node_started_callback=lambda node_id: (
-                    self._on_background_pipeline_node_started((run_id, node_id))
-                ),
-                node_finished_callback=self._on_background_pipeline_node_finished,
-                progress_callback=lambda node_id, current, total, message: (
-                    self._on_background_pipeline_progress(
-                        (run_id, node_id, current, total, message)
-                    )
-                ),
-            )
-            self._on_background_pipeline_finished(result)
-            return
         worker = PipelineRunWorker(request)
         worker.signals.node_started.connect(self._on_background_pipeline_node_started)
         worker.signals.node_finished.connect(
@@ -16997,7 +17641,38 @@ class VippWidget(QWidget):
         )
         worker.signals.progress.connect(self._on_background_pipeline_progress)
         worker.signals.finished.connect(self._on_background_pipeline_finished)
+        completion_loop = None
+        completion_observed = False
+        completion_graph_center = None
+        if execute_synchronously and isinstance(
+            self._pipeline_thread_pool,
+            QThreadPool,
+        ):
+            # Preserve the established immediate small-edit API while moving the
+            # scientific call off the Qt thread. A nested event loop keeps
+            # progress, repaint, and the explicit Cancel button responsive until
+            # the detached worker finishes cleanup. Lightweight queued pool
+            # adapters used by embedders/tests own their own dispatch semantics
+            # and must never be waited as though they were a live Qt pool.
+            completion_loop = QEventLoop(self)
+            completion_graph_center = self.graph_view.mapToScene(
+                self.graph_view.viewport().rect().center()
+            )
+
+            def finish_wait(_result: object) -> None:
+                nonlocal completion_observed
+                completion_observed = True
+                completion_loop.quit()
+
+            worker.signals.finished.connect(finish_wait)
         self._pipeline_thread_pool.start(worker)
+        if completion_loop is not None and not completion_observed:
+            completion_loop.exec()
+        if completion_graph_center is not None:
+            # Processing pending Qt layout events can resize the graph viewport.
+            # Preserve the scene location the user was inspecting across this
+            # responsive synchronous handoff.
+            self._restore_graph_view_center(completion_graph_center)
 
     def _on_background_pipeline_node_started(self, payload: object) -> None:
         try:
@@ -17005,6 +17680,8 @@ class VippWidget(QWidget):
         except Exception:
             return
         if run_id != self._active_pipeline_run_id:
+            return
+        if self._pipeline_user_cancel_requested_run_id == run_id:
             return
         node_id = str(node_id)
         cleared_overrides = self._discard_background_node_result_overrides({node_id})
@@ -17020,6 +17697,8 @@ class VippWidget(QWidget):
         except Exception:
             return
         if run_id != self._active_pipeline_run_id:
+            return
+        if self._pipeline_user_cancel_requested_run_id == run_id:
             return
         node_id = str(node_id)
         title = self._node_title(node_id) if node_id in self.pipeline.nodes else "graph"
@@ -17044,6 +17723,8 @@ class VippWidget(QWidget):
     ) -> None:
         """Publish a completed node's sampled card preview during a graph run."""
         if result.run_id != self._active_pipeline_run_id:
+            return
+        if self._pipeline_user_cancel_requested_run_id == result.run_id:
             return
         if result.source_revisions and not self._live_source_adapter.tokens_are_current(
             result.source_revisions
@@ -17095,6 +17776,16 @@ class VippWidget(QWidget):
     def _on_background_pipeline_finished(self, result: PipelineRunResult) -> None:
         if result.run_id != self._active_pipeline_run_id:
             return
+        user_cancel_requested = (
+            self._pipeline_user_cancel_requested_run_id == result.run_id
+        )
+        quarantine_cancel_requested = (
+            self._pipeline_quarantine_cancel_requested_run_id == result.run_id
+        )
+        if user_cancel_requested:
+            self._pipeline_user_cancel_requested_run_id = None
+        if quarantine_cancel_requested:
+            self._pipeline_quarantine_cancel_requested_run_id = None
         self._active_pipeline_run_id = None
         self._pipeline_cancel_events.pop(result.run_id, None)
         inflight_manual_node_ids = set(
@@ -17117,6 +17808,112 @@ class VippWidget(QWidget):
         runnable_node_ids = (
             run_context[6] if len(run_context) > 6 else frozenset()
         )
+        cleanup_failed = bool(
+            (
+                result.failure is not None
+                and result.failure.cleanup_succeeded is False
+            )
+            or (
+                result.execution_report is not None
+                and not result.execution_report.cleanup_succeeded
+            )
+        )
+        if user_cancel_requested:
+            self._pipeline_run_pending = False
+            self._requeue_inflight_dirty_nodes()
+            self._pending_manual_node_ids.update(
+                node_id
+                for node_id in inflight_manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
+            if inflight_manual_node_ids:
+                self.pipeline.mark_manual_descendants_stale(
+                    inflight_manual_node_ids
+                )
+            if cleanup_failed:
+                self._compute_runtime_quarantined_reason = (
+                    "CPU/GPU cleanup failed after cancellation. Restart VIPP "
+                    "before changing compute policy or calculating again."
+                )
+                self._stop_active_compute_after_runtime_quarantine()
+            self._set_pipeline_busy(False)
+            if cleanup_failed:
+                self._set_status(
+                    self._compute_runtime_quarantined_reason
+                    + " Previous valid outputs and actual backend badges were "
+                    "retained.",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+            elif quarantine_cancel_requested:
+                self._set_status(
+                    self._compute_runtime_quarantined_reason
+                    + " The other active calculation stopped cleanly; its "
+                    "result was not applied and its previous valid outputs and "
+                    "actual backend badges were retained.",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+            else:
+                self._set_status(
+                    "Calculation canceled and CPU/GPU cleanup completed. Previous "
+                    "valid outputs and actual backend badges were retained.",
+                    severity=MessageSeverity.INFO,
+                )
+            self._show_interactive_collection_batch_preview_error(
+                self._interactive_collection_batch_requested_index,
+                "background processing was canceled",
+            )
+            return
+        if cleanup_failed:
+            # A provider that could not release its runtime is unsafe to reuse,
+            # even when a CPU fallback or some upstream nodes produced valid
+            # outputs.  Keep those completed results available for inspection,
+            # but quarantine all further compute until the process is restarted.
+            completed = self._merge_completed_pipeline_run_result(
+                result.pipeline,
+                include_processing=result.execution_report is not None,
+            )
+            self._pipeline_run_pending = False
+            self._requeue_inflight_dirty_nodes()
+            self._pending_manual_node_ids.update(
+                node_id
+                for node_id in inflight_manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
+            if inflight_manual_node_ids:
+                self.pipeline.mark_manual_descendants_stale(
+                    inflight_manual_node_ids
+                )
+            if result.error:
+                self.pipeline.set_node_execution_error(
+                    processing_node_id,
+                    result.error,
+                )
+            self._compute_runtime_quarantined_reason = (
+                "CPU/GPU cleanup failed. Restart VIPP before changing compute "
+                "policy or calculating again."
+            )
+            self._stop_active_compute_after_runtime_quarantine()
+            if result.execution_report is not None:
+                self._accept_execution_report(
+                    replace(
+                        result.execution_report,
+                        actual_decisions=tuple(
+                            decision
+                            for decision in result.execution_report.actual_decisions
+                            if decision.node_id in completed
+                        ),
+                    )
+                )
+            self._set_pipeline_busy(False)
+            self._set_status(
+                self._compute_runtime_quarantined_reason
+                + " Previous valid outputs and actual backend badges were retained.",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
         if result.source_revisions and not self._live_source_adapter.tokens_are_current(
             result.source_revisions
         ):
@@ -17172,6 +17969,16 @@ class VippWidget(QWidget):
                 )
                 QTimer.singleShot(0, self.run_pipeline)
                 return
+            self._requeue_inflight_dirty_nodes()
+            self._pending_manual_node_ids.update(
+                node_id
+                for node_id in inflight_manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
+            if inflight_manual_node_ids:
+                self.pipeline.mark_manual_descendants_stale(
+                    inflight_manual_node_ids
+                )
             self._set_pipeline_busy(False)
             self.status_label.setText("Background processing canceled.")
             self._show_interactive_collection_batch_preview_error(
@@ -17180,18 +17987,24 @@ class VippWidget(QWidget):
             )
             return
         if result.error:
-            if (
-                result.pipeline is not None
-                and self._workflow_matches_current_pipeline(result.workflow)
-            ):
-                self._apply_pipeline_run_result(
-                    result.pipeline,
-                    update_params=False,
+            # A failed private clone can contain a mixture of new arrays and
+            # uncomputed ``None`` outputs. Publish only nodes the clone actually
+            # completed, while retaining the last coherent result for every
+            # failed or uncomputed node.
+            self._merge_completed_pipeline_run_result(result.pipeline)
+            self._requeue_inflight_dirty_nodes()
+            self._pending_manual_node_ids.update(
+                node_id
+                for node_id in inflight_manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
+            if inflight_manual_node_ids:
+                self.pipeline.mark_manual_descendants_stale(
+                    inflight_manual_node_ids
                 )
             self.pipeline.set_node_execution_error(processing_node_id, result.error)
             continue_pending = bool(self._pipeline_run_pending and pending_dirty)
             self._pipeline_run_pending = False
-            self._inflight_dirty_node_ids = None
             self._set_pipeline_busy(False)
             suffix = "; continuing queued graph edit" if continue_pending else ""
             self._set_status(
@@ -17208,13 +18021,18 @@ class VippWidget(QWidget):
                 )
             return
         if result.pipeline is None:
+            self._requeue_inflight_dirty_nodes()
+            self._pending_manual_node_ids.update(
+                node_id
+                for node_id in inflight_manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
             self.pipeline.set_node_execution_error(
                 processing_node_id,
                 "No result returned.",
             )
             continue_pending = bool(self._pipeline_run_pending and pending_dirty)
             self._pipeline_run_pending = False
-            self._inflight_dirty_node_ids = None
             self._set_pipeline_busy(False)
             suffix = "; continuing queued graph edit" if continue_pending else ""
             self._set_status(
@@ -17394,6 +18212,72 @@ class VippWidget(QWidget):
         }
         self._discard_background_node_result_overrides()
 
+    def _merge_completed_pipeline_run_result(
+        self,
+        result_pipeline: PrototypePipeline | None,
+        *,
+        include_processing: bool = False,
+    ) -> set[str]:
+        """Merge only provenance-safe nodes from an interrupted graph run.
+
+        Exact source boundaries can be published without an execution report.
+        Processing outputs are published only when the caller also has the
+        matching actual-decision report needed to update their backend badges.
+        Failed/uncomputed ``None`` values never replace prior thumbnails or
+        cached arrays.
+        """
+
+        if result_pipeline is None:
+            return set()
+        completed = {
+            node_id
+            for node_id in result_pipeline.completed_node_ids
+            if (
+                node_id in self.pipeline.nodes
+                and node_id in result_pipeline.nodes
+                and result_pipeline.nodes[node_id].operation_id
+                == self.pipeline.nodes[node_id].operation_id
+                and (
+                    include_processing
+                    or not self.pipeline.operation_spec(
+                        self.pipeline.nodes[node_id].operation_id
+                    ).has_input
+                )
+            )
+        }
+        if not completed:
+            return set()
+        self._discard_pending_thumbnail_contrast_limit_requests()
+        for node_id in completed:
+            self.pipeline.outputs[node_id] = result_pipeline.outputs.get(node_id)
+            self.pipeline.output_states[node_id] = (
+                result_pipeline.output_states.get(node_id)
+            )
+            self.pipeline.node_outputs[node_id] = list(
+                result_pipeline.node_outputs.get(node_id, [])
+            )
+            self.pipeline.node_output_states[node_id] = list(
+                result_pipeline.node_output_states.get(node_id, [])
+            )
+            self.pipeline.node_execution_states[node_id] = (
+                result_pipeline.node_execution_states.get(
+                    node_id,
+                    EXECUTION_NOT_CALCULATED,
+                )
+            )
+            self.pipeline.node_execution_messages[node_id] = (
+                result_pipeline.node_execution_messages.get(node_id, "")
+            )
+            provenance = result_pipeline.node_compute_provenance.get(node_id)
+            if provenance is None:
+                self.pipeline.node_compute_provenance.pop(node_id, None)
+            else:
+                self.pipeline.node_compute_provenance[node_id] = provenance
+        self.pipeline.completed_node_ids.update(completed)
+        cleared = self._discard_background_node_result_overrides(completed)
+        self._refresh_node_presentation_surfaces(cleared)
+        return completed
+
     def _cancel_background_pipeline_run(self) -> None:
         run_id = self._active_pipeline_run_id
         if run_id is None:
@@ -17402,23 +18286,29 @@ class VippWidget(QWidget):
             self.status_label.setText("No background run is active.")
             return
 
-        event = self._pipeline_cancel_events.pop(run_id, None)
+        if self._pipeline_user_cancel_requested_run_id == run_id:
+            self._set_status(
+                "Cancellation is already in progress; waiting for CPU/GPU cleanup.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+
+        event = self._pipeline_cancel_events.get(run_id)
         if event is not None:
             event.set()
-        self._active_pipeline_run_id = None
+        self._pipeline_user_cancel_requested_run_id = run_id
         self._pipeline_run_pending = False
-        self._pending_manual_node_ids.clear()
-        self._pipeline_run_context.pop(run_id, None)
-        self._pipeline_run_manual_node_ids.pop(run_id, None)
-        self._requeue_inflight_dirty_nodes()
-        self._set_pipeline_busy(False)
-        self.status_label.setText(
-            "Canceled background processing. The current worker may finish in "
-            "the background, but its result will be ignored."
+        self._set_pipeline_busy(
+            True,
+            self._active_pipeline_node_id,
+            cancelable=False,
+            preserve_progress=True,
         )
-        self._show_interactive_collection_batch_preview_error(
-            self._interactive_collection_batch_requested_index,
-            "background processing was canceled",
+        self.pipeline_busy_label.setText("Stopping calculation; cleaning up resources…")
+        self._set_status(
+            "Cancellation requested. Compute controls remain locked until the "
+            "worker releases CPU/GPU resources; its result will not be applied.",
+            severity=MessageSeverity.INFO,
         )
 
     def _set_pipeline_busy(
@@ -17431,6 +18321,7 @@ class VippWidget(QWidget):
         preserve_progress: bool = False,
     ) -> None:
         self._sync_pipeline_optimizer_action()
+        self._sync_compute_policy_editability()
         keep_current_progress = bool(
             busy and preserve_progress and not self.pipeline_busy_bar.isHidden()
         )
@@ -17447,6 +18338,7 @@ class VippWidget(QWidget):
             self._sync_execution_ui()
             self._refresh_node_presentation_surfaces(cleared_overrides)
             self._sync_compute_toolbar_summary()
+            self._sync_compute_policy_editability()
             return
         if not keep_current_progress:
             self.pipeline_busy_bar.setRange(0, 0)
