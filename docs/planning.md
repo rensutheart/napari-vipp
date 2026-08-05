@@ -319,6 +319,13 @@ Still needed:
   resolution controls beyond the fixed card-render targets;
 - broader lazy/chunked all-pixel histograms for large arrays, without changing
   operational results through hidden sampling;
+- learned machine/runtime/dtype crossover evidence and aggregate multi-node
+  planning, while retaining the current conservative cold/warm defaults when
+  trustworthy local history is unavailable;
+- cancel-then-cleanup-then-resume handling for graph-only Undo/Redo and workflow
+  navigation during a genuinely long presentation-statistics scan. Compute-mode
+  or per-node compute-intent changes must continue to require explicit user
+  cancellation rather than accepting stale CPU/GPU work;
 - operation capability declarations such as eager, lazy-safe, memory-heavy, and
   scale-aware;
 - warnings before eager-only nodes materialize very large lazy arrays;
