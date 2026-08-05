@@ -2,7 +2,7 @@
 
 The widget owns Qt controls and execution lifecycle.  This module owns the
 small, deterministic translations needed by those controls: authored compute
-intent to labels, registered candidates to Selective-mode options, and typed
+intent to labels, registered candidates to Custom-mode options, and typed
 execution decisions to compact graph/toolbar presentation.  Candidate listing
 uses declarations only and must never import CuPy, cuCIM, or initialize a
 device.
@@ -48,7 +48,11 @@ COMPUTE_MODE_OPTIONS = (
     ComputeModeOption(
         ComputeMode.AUTO,
         "Auto",
-        "Use a validated GPU implementation when it is supported and beneficial.",
+        (
+            "Learn from exact compatible successful completed runs; collect one "
+            "missing CPU comparison when needed; otherwise use reviewed GPU "
+            "defaults wherever they pass the current safety gates."
+        ),
     ),
     ComputeModeOption(
         ComputeMode.PREFER_GPU,
@@ -59,9 +63,12 @@ COMPUTE_MODE_OPTIONS = (
         ),
     ),
     ComputeModeOption(
-        ComputeMode.SELECTIVE,
-        "Selective",
-        "Choose pipeline policy, CPU, or a GPU library for implemented nodes.",
+        ComputeMode.CUSTOM,
+        "Custom",
+        (
+            "Choose Auto for this node, CPU, or a GPU provider per node, and "
+            "benchmark individual nodes or the whole pipeline."
+        ),
     ),
 )
 
@@ -102,7 +109,7 @@ def preference_from_value(
 
 @dataclass(frozen=True, slots=True)
 class NodePreferenceOption:
-    """One Selective-mode preference offered for an operation."""
+    """One Custom-mode preference offered for an operation."""
 
     preference: NodeComputePreference
     label: str
@@ -124,7 +131,7 @@ def node_preference_options(
         NodeComputePreference | str | Mapping[str, object] | None
     ) = None,
 ) -> tuple[NodePreferenceOption, ...]:
-    """Return import-free Selective choices for ``operation_id``.
+    """Return import-free Custom choices for ``operation_id``.
 
     Follow-policy and CPU are always valid authored intent.  One GPU library
     produces one concise library choice.  Best GPU appears only when several
@@ -146,8 +153,11 @@ def node_preference_options(
     options = [
         NodePreferenceOption(
             NodeComputePreference(NodePreferenceKind.AUTO),
-            "Follow pipeline policy",
-            "Let the pipeline policy choose CPU or a validated GPU for this node.",
+            "Auto for this node",
+            (
+                "Leave this node unpinned and use its reviewed automatic default; "
+                "completed-run learning belongs to the global Auto policy."
+            ),
         ),
         NodePreferenceOption(
             NodeComputePreference(NodePreferenceKind.CPU),
@@ -361,6 +371,12 @@ def actual_decision_badge(
         details.append(
             "Benchmark evidence: " + decision.benchmark_record_digest[:12] + "…"
         )
+    if decision.performance_evidence_kind == "completed_pipeline_timing":
+        details.append(
+            "Compatible completed-run timing: "
+            + decision.performance_evidence_digest[:12]
+            + "…"
+        )
     if experimental:
         details.append(
             "Experimental GPU implementation; platform support is still being "
@@ -421,7 +437,7 @@ def compute_toolbar_summary(
             for preference in request.node_preferences.values()
         )
         text = compute_mode_label(request.mode)
-        if request.mode is ComputeMode.SELECTIVE:
+        if request.mode is ComputeMode.CUSTOM:
             suffix = "choice" if selected == 1 else "choices"
             text += f" · {selected} {suffix}"
         return ComputeToolbarSummary(
@@ -555,7 +571,7 @@ def _request_tooltip(request: ComputeRequest) -> str:
             "VIPP uses GPU wherever scientifically eligible without requiring "
             "it to outperform CPU."
         )
-    if request.mode is ComputeMode.SELECTIVE:
+    if request.mode is ComputeMode.CUSTOM:
         details.append(f"{len(request.node_preferences)} saved per-node preference(s).")
         details.append(f"Fallback policy: {request.fallback_policy.value}.")
     if request.allow_experimental:

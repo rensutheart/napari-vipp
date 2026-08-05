@@ -81,7 +81,7 @@ def test_serialize_roundtrip_preserves_graph(tmp_path):
 def test_workflow_v4_persists_only_portable_compute_intent(tmp_path):
     pipeline = _build_pipeline()
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={
             "gaussian": "implementation:future.provider.gaussian-v9",
             "median_filter_1": "library:cupyx",
@@ -101,7 +101,7 @@ def test_workflow_v4_persists_only_portable_compute_intent(tmp_path):
     assert document["version"] == 4
     assert document["execution"] == {
         "compute": {
-            "mode": "selective",
+            "mode": "custom",
             "fallback_policy": "strict",
             "node_preferences": {
                 "gaussian": "implementation:future.provider.gaussian-v9",
@@ -123,7 +123,7 @@ def test_workflow_v4_persists_only_portable_compute_intent(tmp_path):
     )
     restored = load_workflow(path)["compute_request"]
 
-    assert restored.mode is ComputeMode.SELECTIVE
+    assert restored.mode is ComputeMode.CUSTOM
     assert restored.fallback_policy.value == "strict"
     assert restored.preference_for("gaussian").value == (
         "future.provider.gaussian-v9"
@@ -183,7 +183,7 @@ def test_workflow_preserves_unavailable_exact_preference_without_provider_import
 ):
     document = serialize_workflow(_build_pipeline())
     exact_id = "uninstalled.future.provider.gaussian-v12"
-    document["execution"]["compute"]["mode"] = "selective"
+    document["execution"]["compute"]["mode"] = "custom"
     document["execution"]["compute"]["node_preferences"] = {
         "gaussian": f"implementation:{exact_id}",
     }

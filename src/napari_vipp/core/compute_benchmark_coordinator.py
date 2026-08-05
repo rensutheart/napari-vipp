@@ -443,7 +443,7 @@ class ApplicationNodeBenchmarkCoordinator:
             selected_environment, _warnings = probe_compute_environment(
                 self.registry,
                 ComputeRequest(
-                    mode="selective",
+                    mode="custom",
                     device_id=str(device_id).strip(),
                     allow_experimental=allow_experimental,
                 ),

@@ -1185,6 +1185,7 @@ def run_batch_from_files(
     execution_progress_callback: (
         Callable[[BatchExecutionProgress], None] | None
     ) = None,
+    performance_history_path: str | Path | None = None,
 ) -> BatchRunResult:
     """Load a saved workflow/config pair and execute it headlessly."""
     if not str(config_path).strip():
@@ -1205,6 +1206,7 @@ def run_batch_from_files(
         cancel_event=cancel_event,
         progress_callback=progress_callback,
         execution_progress_callback=execution_progress_callback,
+        performance_history_path=performance_history_path,
     )
 
 
@@ -1223,6 +1225,7 @@ def run_batch(
     ) = None,
     compute_registry: ComputeRegistry | None = None,
     compute_planner: ComputePlanner | None = None,
+    performance_history_path: str | Path | None = None,
 ) -> BatchRunResult:
     """Execute a deterministic batch plan with checkpointed provenance."""
     effective_request = effective_batch_compute_request(config, compute_request)
@@ -1410,6 +1413,7 @@ def run_batch(
                         retain_node_ids=frozenset(output_node_ids),
                         prune_unretained=True,
                         cancel_event=cancel_event,
+                        performance_history_path=performance_history_path,
                     ),
                     node_started_callback=node_started,
                     node_finished_callback=node_finished,
@@ -3030,10 +3034,15 @@ def _implicit_v3_cpu_execution() -> dict[str, object]:
 
 def _canonical_compute_execution(request: ComputeRequest) -> dict[str, object]:
     """Canonicalize validated authored compute intent for scientific hashing."""
+    # Preserve hashes created by early workflow-v4 development builds while
+    # emitting the clearer public spelling ``custom`` everywhere else.
+    hash_mode = (
+        "selective" if request.mode is ComputeMode.CUSTOM else request.mode.value
+    )
     return {
         "compute": {
             "fallback_policy": request.fallback_policy.value,
-            "mode": request.mode.value,
+            "mode": hash_mode,
             "node_preferences": {
                 node_id: (
                     f"{preference.kind.value}:{preference.value}"

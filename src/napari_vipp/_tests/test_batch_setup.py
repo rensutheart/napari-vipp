@@ -94,7 +94,7 @@ def test_build_collection_batch_config_preserves_full_compute_request(tmp_path):
     input_dir = tmp_path / "inputs"
     input_dir.mkdir()
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"input": "cpu"},
         fallback_policy="strict",
         runtime_id="cuda-cupy",

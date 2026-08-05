@@ -124,7 +124,7 @@ def test_otsu_to_connected_components_planning_never_scans_source_values(
     y, x = np.indices((31, 37), dtype=np.uint16)
     image = np.asarray(x * 977 + y * 613, dtype=np.uint16)
     compute_request = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={
             otsu_id: f"implementation:{OTSU_IMPLEMENTATION_ID}",
             node_id: f"implementation:{CONNECTED_COMPONENTS_IMPLEMENTATION_ID}",
@@ -209,7 +209,7 @@ def test_real_otsu_to_connected_components_is_one_resident_cuda_segment(
         )
 
         compute_request = ComputeRequest(
-            mode=ComputeMode.SELECTIVE,
+            mode=ComputeMode.CUSTOM,
             node_preferences={
                 otsu.id: f"implementation:{OTSU_IMPLEMENTATION_ID}",
                 labels.id: (

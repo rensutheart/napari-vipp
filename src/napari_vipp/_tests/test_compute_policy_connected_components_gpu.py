@@ -272,7 +272,7 @@ def test_cpu_and_cupyx_keep_distinct_scientific_cache_and_provenance_identity() 
     assert implementation_identity(cpu_spec) != implementation_identity(gpu_spec)
 
     request = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={"labels": f"implementation:{IMPLEMENTATION_ID}"},
         runtime_id="cuda-cupy",
         device_id="cuda:0",

@@ -207,7 +207,7 @@ class _CallbackCancelEvent:
 
 
 class ApplicationPipelineOptimizerCoordinator:
-    """Acquire, solve, and validate one exact Selective pipeline assignment."""
+    """Acquire, solve, and validate one exact Custom pipeline assignment."""
 
     def __init__(
         self,
@@ -254,8 +254,8 @@ class ApplicationPipelineOptimizerCoordinator:
 
         if not isinstance(compute_request, ComputeRequest):
             raise TypeError("compute_request must be a ComputeRequest")
-        if compute_request.mode is not ComputeMode.SELECTIVE:
-            _refuse("selective_required", "Choose Selective compute policy.")
+        if compute_request.mode is not ComputeMode.CUSTOM:
+            _refuse("custom_required", "Choose Custom compute policy.")
         if compute_request.accelerator_memory_cap_bytes == 0:
             _refuse(
                 "accelerator_memory_cap_invalid",
@@ -1335,8 +1335,8 @@ def probe_pipeline_optimizer_environment(
         raise TypeError("workflow must be a detached workflow mapping")
     if not isinstance(compute_request, ComputeRequest):
         raise TypeError("compute_request must be a ComputeRequest")
-    if compute_request.mode is not ComputeMode.SELECTIVE:
-        _refuse("selective_required", "Choose Selective compute policy.")
+    if compute_request.mode is not ComputeMode.CUSTOM:
+        _refuse("custom_required", "Choose Custom compute policy.")
     restored = deserialize_workflow(deepcopy(dict(workflow)))
     pipeline = PrototypePipeline()
     pipeline.restore_graph(
@@ -2087,7 +2087,7 @@ def _exact_assignment_request(
         )
     return replace(
         request,
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences=preferences,
         fallback_policy=FallbackPolicy.STRICT,
     )

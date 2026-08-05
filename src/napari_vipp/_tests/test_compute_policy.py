@@ -409,7 +409,7 @@ def test_every_public_phase1_gpu_spec_uses_the_shared_cpu_stack_gate():
         spec
         for spec in accelerator_compute_specs()
         if spec.admission_tier
-        in {AdmissionTier.PUBLIC_SELECTIVE, AdmissionTier.PUBLIC_AUTO_CANDIDATE}
+        in {AdmissionTier.PUBLIC_CUSTOM, AdmissionTier.PUBLIC_AUTO_CANDIDATE}
         and spec.validated_environment_policy_id in CUDA_ENVIRONMENT_POLICIES
     )
 

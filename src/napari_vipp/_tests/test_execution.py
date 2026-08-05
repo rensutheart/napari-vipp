@@ -217,7 +217,7 @@ def test_compute_preflight_failure_proves_no_device_cleanup_was_required():
     failure = ComputePreflightFailure(
         node_id="median-1",
         operation_id="median_filter",
-        preference=ComputeRequest(mode="selective").preference_for("median-1"),
+        preference=ComputeRequest(mode="custom").preference_for("median-1"),
         reason=DecisionReason.WORKLOAD_UNSUPPORTED,
         reason_text="The exact workload is not eligible.",
     )

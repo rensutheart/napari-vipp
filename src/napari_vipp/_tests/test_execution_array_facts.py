@@ -367,7 +367,7 @@ def _float32_gaussian_pipeline() -> tuple[PrototypePipeline, str, np.ndarray]:
     return pipeline, gaussian.id, data
 
 
-def test_auto_without_performance_evidence_does_not_scan(monkeypatch):
+def test_auto_reviewed_default_scans_required_scientific_facts(monkeypatch):
     calls = _scan_spy(monkeypatch)
     pipeline, gaussian_id, data = _float32_gaussian_pipeline()
     planner = _CapturingPlanner()
@@ -382,10 +382,10 @@ def test_auto_without_performance_evidence_does_not_scan(monkeypatch):
     )
 
     assert result.error == ""
-    assert calls == []
-    assert planner.array_facts == {}
+    assert len(calls) == 1
+    assert calls[0] is data
+    assert gaussian_id in planner.array_facts
     assert planner.performance_evidence == {}
-    assert gaussian_id not in planner.array_facts
 
 
 def test_auto_below_threshold_performance_evidence_does_not_scan(monkeypatch):
@@ -437,12 +437,12 @@ def test_auto_viable_performance_evidence_scans_and_reaches_planner(monkeypatch)
     assert planner.performance_evidence == evidence
 
 
-def test_forced_selective_candidate_scans_without_performance_evidence(monkeypatch):
+def test_forced_custom_candidate_scans_without_performance_evidence(monkeypatch):
     calls = _scan_spy(monkeypatch)
     pipeline, gaussian_id, data = _float32_gaussian_pipeline()
     implementation_key = next(iter(_viable_evidence_for_pipeline(pipeline)))
     compute_request = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={
             gaussian_id: f"implementation:{implementation_key[1]}",
         },
@@ -696,7 +696,7 @@ def test_float32_canny_executes_visible_cpu_fallback_without_fact_scan(monkeypat
             pipeline,
             data,
             compute_request=ComputeRequest(
-                mode=ComputeMode.SELECTIVE,
+                mode=ComputeMode.CUSTOM,
                 node_preferences={
                     canny.id: "implementation:cupyx-canny-edges-exact-v1"
                 },
@@ -748,7 +748,7 @@ def test_integer_otsu_wide_stack_slice_scope_executes_visible_cpu_fallback():
                 )
             },
             compute_request=ComputeRequest(
-                mode=ComputeMode.SELECTIVE,
+                mode=ComputeMode.CUSTOM,
                 node_preferences={
                     otsu.id: (
                         "implementation:cupy-otsu-threshold-exact-v1"

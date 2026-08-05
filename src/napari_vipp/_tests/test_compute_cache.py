@@ -54,21 +54,21 @@ from napari_vipp.core.compute_specs import (
 
 def test_node_compute_context_ignores_sibling_preferences_but_not_local_intent():
     baseline = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={
             "node": "cpu",
             "sibling": "library:cupyx",
         },
     )
     sibling_changed = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={
             "node": "cpu",
             "sibling": "library:cucim",
         },
     )
     local_changed = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={"node": "best_gpu"},
     )
 
@@ -496,7 +496,7 @@ def test_scientific_key_api_excludes_selection_benchmark_and_hardware_provenance
     assert parameters.isdisjoint(excluded)
 
 
-def test_same_actual_cpu_result_is_reusable_across_cpu_auto_and_selective():
+def test_same_actual_cpu_result_is_reusable_across_cpu_auto_and_custom():
     cpu = _spec()
     key = _key(cpu)
     record = _record(cpu, key=key)
@@ -504,7 +504,7 @@ def test_same_actual_cpu_result_is_reusable_across_cpu_auto_and_selective():
         (ComputeRequest(mode="cpu"), _decision(cpu, "auto")),
         (ComputeRequest(mode="auto"), _decision(cpu, "auto")),
         (
-            ComputeRequest(mode="selective", node_preferences={"node": "cpu"}),
+            ComputeRequest(mode="custom", node_preferences={"node": "cpu"}),
             _decision(cpu, "cpu"),
         ),
     )
@@ -747,7 +747,7 @@ def test_reviewed_group_preserves_actual_producer_and_authorizes_cross_key_reuse
     )
     preference = NodeComputePreference("implementation", gpu.implementation_id)
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": preference},
     )
 
@@ -775,7 +775,7 @@ def test_group_string_or_tolerance_parity_never_authorizes_cache_sharing():
     gpu = _gpu_spec(cache_equivalence_group=group)
     preference = NodeComputePreference("implementation", gpu.implementation_id)
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": preference},
     )
 
@@ -889,7 +889,7 @@ def test_reviewed_catalog_member_order_does_not_change_identity():
     assert forward.entries[0].identity_version == reverse.entries[0].identity_version
 
 
-def test_auto_uses_only_current_plan_and_selective_constraints_remain_authoritative():
+def test_auto_uses_only_current_plan_and_custom_constraints_remain_authoritative():
     gpu = _gpu_spec()
     other = _gpu_spec(
         implementation_id="cucim-median-filter-v1",
@@ -915,7 +915,7 @@ def test_auto_uses_only_current_plan_and_selective_constraints_remain_authoritat
     ).admissible
 
     library_request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": "library:cupyx"},
     )
     assert _admissible(
@@ -963,7 +963,7 @@ def test_best_gpu_rejects_cached_cpu_and_runtime_pin_cannot_be_bypassed():
     cpu = _spec()
     gpu = _gpu_spec()
     best_gpu = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": "best_gpu"},
     )
 
@@ -1003,11 +1003,11 @@ def test_library_pin_blocks_cross_library_equivalence_but_exact_pin_allows_it():
     )
 
     library_request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": "library:cupyx"},
     )
     exact_request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={
             "node": f"implementation:{cupyx.implementation_id}",
         },
@@ -1052,7 +1052,7 @@ def test_cached_fallback_requires_current_matching_visible_fallback():
         fallback_preference=preference,
     )
     visible = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": preference},
         fallback_policy="visible",
     )
@@ -1097,7 +1097,7 @@ def test_fallback_reason_and_preference_must_match_but_normal_cpu_can_hydrate():
         fallback_preference=best_gpu,
     )
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": best_gpu},
     )
 
@@ -1114,7 +1114,7 @@ def test_fallback_reason_and_preference_must_match_but_normal_cpu_can_hydrate():
 
     library = NodeComputePreference("library", "cupyx")
     library_request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": library},
     )
     assert not _admissible(

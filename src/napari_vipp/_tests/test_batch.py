@@ -328,17 +328,17 @@ def test_scientific_workflow_hash_includes_authored_compute_intent():
         pipeline,
         compute_request=ComputeRequest(mode="auto"),
     )
-    selective_cupy = serialize_workflow(
+    custom_cupy = serialize_workflow(
         pipeline,
         compute_request=ComputeRequest(
-            mode="selective",
+            mode="custom",
             node_preferences={"gaussian": "library:cupyx"},
         ),
     )
-    selective_unknown = serialize_workflow(
+    custom_unknown = serialize_workflow(
         pipeline,
         compute_request=ComputeRequest(
-            mode="selective",
+            mode="custom",
             node_preferences={
                 "gaussian": "implementation:future.gaussian-v4"
             },
@@ -368,8 +368,8 @@ def test_scientific_workflow_hash_includes_authored_compute_intent():
         for document in (
             cpu,
             auto,
-            selective_cupy,
-            selective_unknown,
+            custom_cupy,
+            custom_unknown,
             strict,
             precision,
             workload,
@@ -384,7 +384,7 @@ def test_scientific_workflow_hash_canonicalizes_compute_spellings():
     canonical = serialize_workflow(
         pipeline,
         compute_request=ComputeRequest(
-            mode="selective",
+            mode="custom",
             fallback_policy="strict",
             node_preferences={"gaussian": "cpu"},
             precision_policy_id="verified-float32-v2",
@@ -394,7 +394,7 @@ def test_scientific_workflow_hash_canonicalizes_compute_spellings():
     equivalent = deepcopy(canonical)
     equivalent["execution"]["compute"].update(
         {
-            "mode": " SELECTIVE ",
+            "mode": " CUSTOM ",
             "fallback_policy": " STRICT ",
             "node_preferences": {" gaussian ": " CPU "},
             "precision_policy": " verified-float32-v2 ",

@@ -1,7 +1,7 @@
 """Qt-free compute intent, environment, decision, and provenance contracts.
 
 The production contract distinguishes a user request (CPU, Auto, Prefer GPU,
-or Selective) from an array runtime (NumPy, CuPy, or a future Metal runtime)
+or Custom) from an array runtime (NumPy, CuPy, or a future Metal runtime)
 and from the implementation library used by one node (CPU, CuPyX, cuCIM,
 ...).  This module contains data and validation only: importing it must never
 import an optional accelerator package or initialize a device.
@@ -34,13 +34,17 @@ class ComputeMode(StrEnum):
     CPU = "cpu"
     AUTO = "auto"
     PREFER_GPU = "prefer_gpu"
-    SELECTIVE = "selective"
+    CUSTOM = "custom"
+    # Compatibility for unreleased development workflow/config snapshots.
+    SELECTIVE = "custom"
 
     @classmethod
     def parse(cls, value: ComputeMode | str) -> ComputeMode:
         if isinstance(value, cls):
             return value
         normalized = str(value).strip().lower()
+        if normalized == "selective":
+            normalized = cls.CUSTOM.value
         try:
             return cls(normalized)
         except ValueError as exc:
@@ -452,6 +456,8 @@ class DecisionReason(StrEnum):
     DEPENDENCY_UNAVAILABLE = "dependency_unavailable"
     WORKLOAD_UNSUPPORTED = "workload_unsupported"
     PERFORMANCE_GATE = "performance_gate"
+    PERFORMANCE_EXPLORATION = "performance_exploration"
+    HISTORICAL_PERFORMANCE = "historical_performance"
     MEMORY_LIMIT = "memory_limit"
     VISIBLE_FALLBACK = "visible_fallback"
     OUT_OF_MEMORY_FALLBACK = "out_of_memory_fallback"
@@ -791,6 +797,9 @@ class NodeExecutionDecision:
     fallback_reason: FallbackReason | str = FallbackReason.NONE
     benchmark_record_digest: str = ""
     memory_estimate: MemoryEstimate = MemoryEstimate()
+    performance_evidence_kind: str = ""
+    performance_evidence_digest: str = ""
+    implementation_version: str = ""
 
     def __post_init__(self) -> None:
         reason = (
@@ -819,6 +828,18 @@ class NodeExecutionDecision:
         object.__setattr__(self, "reason", reason)
         if not isinstance(self.memory_estimate, MemoryEstimate):
             raise TypeError("memory_estimate must be a MemoryEstimate.")
+        for name in (
+            "performance_evidence_kind",
+            "performance_evidence_digest",
+            "implementation_version",
+        ):
+            object.__setattr__(self, name, str(getattr(self, name)).strip())
+        if bool(self.performance_evidence_kind) != bool(
+            self.performance_evidence_digest
+        ):
+            raise ValueError(
+                "performance evidence kind and digest must be supplied together."
+            )
         object.__setattr__(self, "fallback_reason", fallback_reason)
 
     @property

@@ -130,6 +130,8 @@ def serialize_execution_provenance(
             "fallback_used": decision.fallback_used,
             "fallback_reason": decision.fallback_reason.value,
             "benchmark_record_digest": decision.benchmark_record_digest,
+            "performance_evidence_kind": decision.performance_evidence_kind,
+            "performance_evidence_digest": decision.performance_evidence_digest,
             "memory_estimate": _json_safe(decision.memory_estimate),
         }
         node_records.append(record)
@@ -344,7 +346,7 @@ def _actual_identity(
             "array_domain": "",
             "implementation_library_id": decision.implementation_library_id,
             "implementation_id": decision.implementation_id,
-            "implementation_version": "",
+            "implementation_version": decision.implementation_version,
             "parity_policy_id": "",
             "cache_equivalence_group": "",
         }
@@ -368,7 +370,7 @@ def _cpu_decision(
 ) -> NodeExecutionDecision:
     preference = (
         request.preference_for(node_id)
-        if request.mode in {ComputeMode.CPU, ComputeMode.SELECTIVE}
+        if request.mode in {ComputeMode.CPU, ComputeMode.CUSTOM}
         else NodeComputePreference()
     )
     reason = (
@@ -389,6 +391,7 @@ def _cpu_decision(
             "The authoritative host implementation completed this node."
         ),
         fallback_reason=FallbackReason.NONE,
+        implementation_version="1",
     )
 
 

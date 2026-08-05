@@ -29,6 +29,7 @@ class PreparedCollectionBatchRun:
     config_path: Path
     plan: BatchPlan
     artifact_paths: tuple[Path, ...]
+    performance_history_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +122,7 @@ class CollectionBatchWorker(QRunnable):
                 cancel_event=self._cancel_event,
                 progress_callback=emit_progress,
                 execution_progress_callback=emit_operation_progress,
+                performance_history_path=prepared.performance_history_path,
             )
             outcome = CollectionBatchWorkerOutcome(
                 job_id=prepared.job_id,

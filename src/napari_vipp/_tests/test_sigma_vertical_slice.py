@@ -522,7 +522,7 @@ def test_sigma_cache_provenance_names_the_exact_cupy_implementation() -> None:
         allow_experimental=True,
     )[0]
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"sigma": f"implementation:{SIGMA_IMPLEMENTATION_ID}"},
         fallback_policy="strict",
         runtime_id="cuda-cupy",
@@ -579,7 +579,7 @@ def test_sigma_public_admission_is_visible_and_exact_pin_selects() -> None:
 
         workload = _sigma_workload()
         public_request = ComputeRequest(
-            mode="selective",
+            mode="custom",
             node_preferences={
                 "sigma": f"implementation:{SIGMA_IMPLEMENTATION_ID}",
             },
@@ -640,7 +640,7 @@ def test_sigma_forced_gpu_path_executes_with_device_residency_and_provenance() -
         },
     )
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={node_id: f"implementation:{SIGMA_IMPLEMENTATION_ID}"},
         fallback_policy=FallbackPolicy.STRICT,
         runtime_id="cuda-cupy",
@@ -726,7 +726,7 @@ def test_real_two_sigma_nodes_form_one_resident_cuda_segment() -> None:
             radius=2.0,
         )
         request = ComputeRequest(
-            mode="selective",
+            mode="custom",
             node_preferences={
                 first.id: f"implementation:{SIGMA_IMPLEMENTATION_ID}",
                 second.id: f"implementation:{SIGMA_IMPLEMENTATION_ID}",

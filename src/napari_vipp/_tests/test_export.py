@@ -358,7 +358,7 @@ def test_exported_batch_runner_overlays_compute_flags_and_nested_progress(
                 "--config",
                 str(tmp_path / "config.json"),
                 "--compute-mode",
-                "selective",
+                "custom",
                 "--fallback-policy",
                 "strict",
                 "--node-preference",
@@ -371,7 +371,7 @@ def test_exported_batch_runner_overlays_compute_flags_and_nested_progress(
 
     override = captured["kwargs"]["compute_request"]
     assert captured["args"][0] == authored_workflow
-    assert override.mode.value == "selective"
+    assert override.mode.value == "custom"
     assert override.fallback_policy.value == "strict"
     assert override.preference_for("gaussian").kind.value == "cpu"
     assert override.preference_for("threshold").kind.value == "cpu"
@@ -386,7 +386,7 @@ def test_exported_batch_cli_accepts_prefer_gpu_and_resets_inherited_strict(
     tmp_path,
 ):
     authored = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"gaussian": "cpu"},
         fallback_policy="strict",
     )
@@ -918,7 +918,7 @@ def test_custom_export_function_name_is_used_by_generated_harness():
 
 def test_generated_cli_overlays_only_explicit_compute_fields():
     authored = ComputeRequest(
-        mode="selective",
+        mode="custom",
         fallback_policy="visible",
         node_preferences={"gaussian": "cpu"},
     )
@@ -941,7 +941,7 @@ def test_generated_cli_overlays_only_explicit_compute_fields():
         node_preferences=["threshold=cpu"],
     )
 
-    assert request.mode.value == "selective"
+    assert request.mode.value == "custom"
     assert request.fallback_policy.value == "strict"
     assert request.preference_for("gaussian").kind.value == "cpu"
     assert request.preference_for("threshold").kind.value == "cpu"
@@ -958,7 +958,7 @@ def test_generated_cli_overlays_only_explicit_compute_fields():
 
 def test_generated_pipeline_cli_accepts_prefer_gpu_and_resets_inherited_strict():
     authored = ComputeRequest(
-        mode="selective",
+        mode="custom",
         fallback_policy="strict",
         node_preferences={"gaussian": "cpu"},
     )
@@ -2359,7 +2359,7 @@ def test_export_executes_embedded_strict_intent_and_accepts_visible_override():
 
     pipeline = _starter_pipeline()
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={
             "gaussian": "implementation:unavailable.future.gaussian-v1"
         },
@@ -2372,7 +2372,7 @@ def test_export_executes_embedded_strict_intent_and_accepts_visible_override():
     embedded = json.loads(namespace["_WORKFLOW_JSON"])
 
     assert embedded["execution"]["compute"] == {
-        "mode": "selective",
+        "mode": "custom",
         "fallback_policy": "strict",
         "node_preferences": {
             "gaussian": "implementation:unavailable.future.gaussian-v1"
@@ -2394,7 +2394,7 @@ def test_export_executes_embedded_strict_intent_and_accepts_visible_override():
         image,
         input_metadata={"axes": "YX"},
         compute_request=ComputeRequest(
-            mode="selective",
+            mode="custom",
             node_preferences={
                 "gaussian": "implementation:unavailable.future.gaussian-v1"
             },

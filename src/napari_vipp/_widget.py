@@ -132,6 +132,7 @@ from napari_vipp.core.compute import (
     canonical_digest,
 )
 from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
+from napari_vipp.core.compute_history import default_pipeline_timing_history_path
 from napari_vipp.core.diagnostics import (
     PSF_EDGE_MASS_WARNING_FRACTION,
     PsfPreflightResult,
@@ -1450,9 +1451,10 @@ class VippWidget(QWidget):
             self.compute_mode_combo.findData(ComputeMode.AUTO.value)
         )
         self.compute_mode_combo.setToolTip(
-            "Choose CPU for host execution, Auto for GPU only when validated as "
-            "beneficial, Prefer GPU to use every scientifically eligible GPU "
-            "implementation, or Selective for per-node choices."
+            "Choose CPU for host execution; Auto to learn from exact compatible "
+            "successful completed runs or use reviewed safe GPU defaults; Prefer "
+            "GPU to use every scientifically eligible GPU implementation; or "
+            "Custom for per-node choices."
         )
         _configure_toolbar_combo(self.compute_mode_combo)
         self.compute_status_label = QLabel("Auto")
@@ -1464,10 +1466,12 @@ class VippWidget(QWidget):
         self.optimize_pipeline_button.setToolTip(
             "Compare every scientifically eligible implementation for each "
             "unlocked node and review the fastest whole-pipeline assignment. "
-            "Available only in Selective mode."
+            "Available only in Custom mode."
         )
         self.optimize_pipeline_button.setVisible(False)
-        self.strict_compute_checkbox = QCheckBox("Strict selective GPU choices")
+        self.strict_compute_checkbox = QCheckBox(
+            "Fail if a selected GPU cannot run"
+        )
         self.strict_compute_checkbox.setChecked(False)
         self.strict_compute_checkbox.setToolTip(
             "When enabled, an unavailable explicitly selected GPU implementation "
@@ -1665,7 +1669,7 @@ class VippWidget(QWidget):
             "Compute preference for selected node"
         )
         self.node_compute_preference_combo.setToolTip(
-            "Choose how this node runs while the toolbar policy is Selective."
+            "Choose how this node runs while the toolbar policy is Custom."
         )
         self.node_compute_optimizer_lock_checkbox = QCheckBox(
             "Lock this choice during Find fastest"
@@ -2419,14 +2423,14 @@ class VippWidget(QWidget):
         self._add_combo_menu(menu, "Compute policy", self.compute_mode_combo)
         strict_compute_action = self._add_checkbox_menu_action(
             menu,
-            "Strict selective GPU choices",
+            "Fail if a selected GPU cannot run",
             self.strict_compute_checkbox,
         )
         strict_compute_action.setEnabled(
-            self._compute_mode is ComputeMode.SELECTIVE
+            self._compute_mode is ComputeMode.CUSTOM
         )
         strict_compute_action.setToolTip(
-            "Available only in Selective mode for explicitly required GPU choices."
+            "Available only in Custom mode for explicitly required GPU choices."
         )
         compute_setup_action = menu.addAction("Compute setup and memory…")
         compute_setup_action.setToolTip(
@@ -2434,7 +2438,7 @@ class VippWidget(QWidget):
             "blocking VIPP."
         )
         compute_setup_action.triggered.connect(self._show_compute_setup_dialog)
-        if self._compute_mode is ComputeMode.SELECTIVE:
+        if self._compute_mode is ComputeMode.CUSTOM:
             optimize_ready, optimize_reason = self._can_optimize_pipeline()
             optimize_action = menu.addAction("Find fastest pipeline…")
             optimize_action.setEnabled(optimize_ready)
@@ -3030,7 +3034,7 @@ class VippWidget(QWidget):
             node_preferences=preferences,
             fallback_policy=(
                 self._compute_fallback_policy
-                if self._compute_mode is ComputeMode.SELECTIVE
+                if self._compute_mode is ComputeMode.CUSTOM
                 else FallbackPolicy.VISIBLE
             ),
             allow_experimental=(
@@ -3073,11 +3077,11 @@ class VippWidget(QWidget):
         self._compute_fallback_policy = policy
         self._push_undo_if_changed(before)
         self._sync_compute_toolbar_summary()
-        if self._compute_mode is not ComputeMode.SELECTIVE:
+        if self._compute_mode is not ComputeMode.CUSTOM:
             return
         self._invalidate_compute_policy_results()
         self._set_status(
-            "Strict Selective fallback enabled; recalculating."
+            "Strict Custom fallback enabled; recalculating."
             if checked
             else "Visible CPU fallback enabled; recalculating.",
             severity=MessageSeverity.INFO,
@@ -3087,7 +3091,7 @@ class VippWidget(QWidget):
     def _on_node_compute_preference_changed(self, index: int) -> None:
         node_id = self._selected_node_id
         if (
-            self._compute_mode is not ComputeMode.SELECTIVE
+            self._compute_mode is not ComputeMode.CUSTOM
             or node_id not in self.pipeline.nodes
         ):
             return
@@ -3128,7 +3132,7 @@ class VippWidget(QWidget):
             NodeComputePreference(),
         )
         if (
-            self._compute_mode is not ComputeMode.SELECTIVE
+            self._compute_mode is not ComputeMode.CUSTOM
             or node_id not in self.pipeline.nodes
             or preference.kind is NodePreferenceKind.AUTO
         ):
@@ -3156,7 +3160,7 @@ class VippWidget(QWidget):
     def _sync_node_compute_control(self) -> None:
         node_id = self._selected_node_id
         node = self.pipeline.nodes.get(node_id)
-        if node is None or self._compute_mode is not ComputeMode.SELECTIVE:
+        if node is None or self._compute_mode is not ComputeMode.CUSTOM:
             self.compute_group.setHidden(True)
             return
         current_preference = self._compute_node_preferences.get(
@@ -3248,8 +3252,8 @@ class VippWidget(QWidget):
 
     def _can_benchmark_selected_node(self) -> tuple[bool, str]:
         node_id = self._selected_node_id
-        if self._compute_mode is not ComputeMode.SELECTIVE:
-            return False, "Choose Selective compute policy to benchmark a node."
+        if self._compute_mode is not ComputeMode.CUSTOM:
+            return False, "Choose Custom compute policy to benchmark a node."
         if node_id not in self.pipeline.nodes:
             return False, "Select a workflow node first."
         dialog = self._node_benchmark_dialog
@@ -3281,10 +3285,10 @@ class VippWidget(QWidget):
         )
 
     def _can_optimize_pipeline(self) -> tuple[bool, str]:
-        if self._compute_mode is not ComputeMode.SELECTIVE:
+        if self._compute_mode is not ComputeMode.CUSTOM:
             return (
                 False,
-                "Choose Selective compute policy to find the fastest pipeline.",
+                "Choose Custom compute policy to find the fastest pipeline.",
             )
         dialog = self._pipeline_optimizer_dialog
         if dialog is not None and dialog.running:
@@ -3333,10 +3337,10 @@ class VippWidget(QWidget):
     def _sync_pipeline_optimizer_action(self) -> None:
         if not hasattr(self, "optimize_pipeline_button"):
             return
-        selective = self._compute_mode is ComputeMode.SELECTIVE
-        self.optimize_pipeline_button.setVisible(selective)
+        custom = self._compute_mode is ComputeMode.CUSTOM
+        self.optimize_pipeline_button.setVisible(custom)
         ready, reason = self._can_optimize_pipeline()
-        self.optimize_pipeline_button.setEnabled(selective and ready)
+        self.optimize_pipeline_button.setEnabled(custom and ready)
         self.optimize_pipeline_button.setToolTip(reason)
 
     def _benchmark_selected_node(self) -> None:
@@ -3427,7 +3431,7 @@ class VippWidget(QWidget):
         node_id = result.plan.node_id
         baseline = self._node_benchmark_baseline
         if (
-            self._compute_mode is not ComputeMode.SELECTIVE
+            self._compute_mode is not ComputeMode.CUSTOM
             or node_id not in self.pipeline.nodes
             or baseline is None
             or self._current_history_snapshot() != baseline
@@ -3717,7 +3721,7 @@ class VippWidget(QWidget):
             sorted(self._cache_retention_node_ids())
         )
         if (
-            self._compute_mode is not ComputeMode.SELECTIVE
+            self._compute_mode is not ComputeMode.CUSTOM
             or baseline is None
             or identity is None
             or tuple(sorted(self._compute_optimizer_locked_node_ids))
@@ -4140,7 +4144,7 @@ class VippWidget(QWidget):
                 continue
             preference = (
                 request.preference_for(node_id)
-                if request.mode in {ComputeMode.CPU, ComputeMode.SELECTIVE}
+                if request.mode in {ComputeMode.CPU, ComputeMode.CUSTOM}
                 else NodeComputePreference()
             )
             explicit = (
@@ -4162,6 +4166,7 @@ class VippWidget(QWidget):
                     else "Auto kept this interactive update on CPU; accelerator "
                     "dispatch is reserved for background-eligible workloads."
                 ),
+                implementation_version="1",
             )
             self._accepted_compute_decisions[node_id] = decision
             self._compute_decision_environments[node_id] = environment
@@ -8293,6 +8298,7 @@ class VippWidget(QWidget):
             config_path=config_path,
             plan=plan,
             artifact_paths=tuple(artifact_paths),
+            performance_history_path=default_pipeline_timing_history_path(),
         )
 
     def _run_collection_batch(
@@ -8334,6 +8340,7 @@ class VippWidget(QWidget):
                 config_path=prepared.config_path,
                 plan=prepared.plan,
                 progress_callback=self._collection_batch_progress,
+                performance_history_path=default_pipeline_timing_history_path(),
             )
         finally:
             self._set_pipeline_busy(False)
@@ -16375,9 +16382,10 @@ class VippWidget(QWidget):
                 target_node_ids,
             )
             return
-        if compute_request.mode is ComputeMode.CPU or (
-            force_sync and compute_request.mode is ComputeMode.AUTO
-        ):
+        if compute_request.mode is ComputeMode.CPU:
+            # Retain the established low-latency path for small explicit CPU
+            # edits. Large/background CPU runs already entered the shared
+            # service above and therefore contribute comparable timing history.
             self._run_pipeline_synchronously(
                 input_data,
                 input_metadata,
@@ -16391,10 +16399,8 @@ class VippWidget(QWidget):
                 target_node_ids,
             )
         else:
-            # Small automatic workloads and explicitly synchronous GPU-preferred
-            # previews use the same detached planner and accelerator executor as
-            # normal background work. Running that service inline gives the
-            # caller one coherent result without bypassing required GPU intent.
+            # Auto must never use the direct CPU shortcut: doing so used to
+            # present Auto while silently bypassing GPU planning.
             self._start_background_pipeline_run(
                 input_data,
                 input_metadata,
@@ -16725,9 +16731,9 @@ class VippWidget(QWidget):
         compute_request = self._current_compute_request()
         if compute_request.mode in {
             ComputeMode.PREFER_GPU,
-            ComputeMode.SELECTIVE,
+            ComputeMode.CUSTOM,
         }:
-            # Prefer GPU and Selective execution can require an accelerator even
+            # Prefer GPU and Custom execution can require an accelerator even
             # for a small array, so keep them off the GUI thread. Auto may use the
             # normal responsiveness heuristic because its small synchronous path
             # also goes through the detached compute service.
@@ -16947,6 +16953,7 @@ class VippWidget(QWidget):
                     )
                 )
             ),
+            performance_history_path=default_pipeline_timing_history_path(),
         )
         self._active_pipeline_run_id = run_id
         self._pipeline_cancel_events[run_id] = cancel_event

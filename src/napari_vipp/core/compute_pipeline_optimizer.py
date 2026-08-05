@@ -660,12 +660,12 @@ class PipelineOptimizationCoordinator:
     ) -> PipelineOptimizationProposal:
         if not isinstance(request, ComputeRequest):
             raise TypeError("request must be a ComputeRequest")
-        if request.mode is not ComputeMode.SELECTIVE:
+        if request.mode is not ComputeMode.CUSTOM:
             raise PipelineOptimizationEvidenceIncomplete(
                 (
                     EvidenceRefusal(
-                        "selective_required",
-                        "Choose Selective compute policy.",
+                        "custom_required",
+                        "Choose Custom compute policy.",
                     ),
                 )
             )

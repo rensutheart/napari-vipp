@@ -245,7 +245,7 @@ def node_compute_context_fingerprint(
     Only the selected node's effective preference is included. Preferences
     authored for sibling nodes cannot invalidate an otherwise reusable
     upstream cache entry, and dormant preferences are ignored outside
-    Selective mode.
+    Custom mode.
     """
 
     if not isinstance(request, ComputeRequest):
@@ -255,7 +255,7 @@ def node_compute_context_fingerprint(
         raise ValueError("node_id must not be empty.")
     preference = (
         request.preference_for(normalized_node_id)
-        if request.mode is ComputeMode.SELECTIVE
+        if request.mode is ComputeMode.CUSTOM
         else NodeComputePreference(NodePreferenceKind.AUTO)
     )
     return canonical_digest(
@@ -995,10 +995,10 @@ def evaluate_cache_admissibility(
         return reject("stale_global_policy_preference")
     authored = request.preference_for(current_decision.node_id)
     if (
-        request.mode is ComputeMode.SELECTIVE
+        request.mode is ComputeMode.CUSTOM
         and authored != current_decision.requested_preference
     ):
-        return reject("stale_selective_preference")
+        return reject("stale_custom_preference")
 
     exact_key = record.key.digest == required_key.digest
     reviewed_key_equivalence = catalog.equivalent(
@@ -1089,7 +1089,7 @@ def evaluate_cache_admissibility(
         ):
             return reject("exact_preference_requires_authorized_implementation")
 
-    return CacheAdmissibility(True, "admissible_current_selective_plan", required)
+    return CacheAdmissibility(True, "admissible_current_custom_plan", required)
 
 
 class CacheTransactionConflict(RuntimeError):

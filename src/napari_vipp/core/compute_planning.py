@@ -130,10 +130,10 @@ def plan_compute_decisions(
     array_facts: Mapping[str, tuple[ArrayFacts, ...]] | None = None,
     performance_evidence: Mapping[tuple[str, str], PerformanceEvidence] | None = None,
 ) -> ComputePlanningResult:
-    """Resolve CPU/Auto/Prefer-GPU/Selective intent for prepared workloads.
+    """Resolve CPU/Auto/Prefer-GPU/Custom intent for prepared workloads.
 
     ``performance_evidence`` is keyed by ``(node_id, implementation_id)``.
-    Selective library/exact pins bypass the Auto speed threshold, but never the
+    Custom library/exact pins bypass the Auto speed threshold, but never the
     scientific, environment, or memory gates. Prefer GPU applies the same
     safety gates to every visible GPU candidate while deliberately ignoring the
     CPU-versus-GPU speed threshold. A strict forced preference is collected
@@ -198,11 +198,11 @@ def plan_compute_decisions(
         for workload in prepared:
             preference = (
                 request.preference_for(workload.node_id)
-                if request.mode is ComputeMode.SELECTIVE
+                if request.mode is ComputeMode.CUSTOM
                 else NodeComputePreference(NodePreferenceKind.AUTO)
             )
             if (
-                request.mode is ComputeMode.SELECTIVE
+                request.mode is ComputeMode.CUSTOM
                 and preference.kind is NodePreferenceKind.CPU
             ):
                 decisions.append(
@@ -348,6 +348,9 @@ def actual_cpu_fallback_decision(
         text,
         fallback_reason=fallback_reason,
         benchmark_record_digest=decision.benchmark_record_digest,
+        performance_evidence_kind=decision.performance_evidence_kind,
+        performance_evidence_digest=decision.performance_evidence_digest,
+        implementation_version="1",
     )
 
 
@@ -363,7 +366,7 @@ def _potential_specs(
             continue
         preference = (
             request.preference_for(workload.node_id)
-            if request.mode is ComputeMode.SELECTIVE
+            if request.mode is ComputeMode.CUSTOM
             else NodeComputePreference(NodePreferenceKind.AUTO)
         )
         if preference.kind is NodePreferenceKind.CPU:
@@ -392,7 +395,7 @@ def _specs_for_preference(
         allow_experimental=request.allow_experimental,
     )
     automatic_intent = request.mode is ComputeMode.AUTO or (
-        request.mode is ComputeMode.SELECTIVE
+        request.mode is ComputeMode.CUSTOM
         and preference.kind is NodePreferenceKind.AUTO
     )
     if automatic_intent:
@@ -621,26 +624,17 @@ def _admit_candidates(
             continue
         candidate_evidence = evidence.get((workload.node_id, spec.implementation_id))
         if not forced and not prefer_gpu:
-            if candidate_evidence is None:
-                rejections.append(
-                    SupportDecision(
-                        False,
-                        DecisionReason.PERFORMANCE_GATE,
-                        "No validated performance evidence is available for this "
-                        "Auto candidate.",
+            if candidate_evidence is not None:
+                performance = evaluate_auto_performance(candidate_evidence)
+                if not performance.select_candidate:
+                    rejections.append(
+                        SupportDecision(
+                            False,
+                            performance.reason,
+                            performance.reason_text,
+                        )
                     )
-                )
-                continue
-            performance = evaluate_auto_performance(candidate_evidence)
-            if not performance.select_candidate:
-                rejections.append(
-                    SupportDecision(
-                        False,
-                        performance.reason,
-                        performance.reason_text,
-                    )
-                )
-                continue
+                    continue
         support = evaluate_candidate_support(
             spec,
             workload,
@@ -722,25 +716,22 @@ def _select_candidate(
             ),
         ), None
 
-    accepted = []
-    for candidate in candidates:
-        if candidate.evidence is None:
-            continue
-        performance = evaluate_auto_performance(candidate.evidence)
-        if performance.select_candidate:
-            accepted.append(candidate)
-    if not accepted:
-        return None, SupportDecision(
-            False,
-            DecisionReason.PERFORMANCE_GATE,
-            "No validated candidate clears the conservative Auto performance gate.",
-        )
+    measured = tuple(candidate for candidate in candidates if candidate.evidence)
+    if measured:
+        return min(
+            measured,
+            key=lambda candidate: (
+                candidate.evidence.end_to_end_candidate_seconds,
+                candidate.spec.implementation_id,
+            ),
+        ), None
+    # PUBLIC_AUTO_CANDIDATE is itself a reviewed release-policy default.  An
+    # absence of exact local timing is unknown performance, not evidence that
+    # CPU is faster. Exact compatible evidence above can still reject or rank
+    # candidates, and all scientific/environment/memory gates remain active.
     return min(
-        accepted,
-        key=lambda candidate: (
-            candidate.evidence.end_to_end_candidate_seconds,
-            candidate.spec.implementation_id,
-        ),
+        candidates,
+        key=lambda candidate: candidate.spec.implementation_id,
     ), None
 
 
@@ -803,7 +794,7 @@ def _selected_decision(
             "available, and within the admitted memory bound. Prefer GPU selected "
             "it without applying the CPU-versus-GPU speed threshold."
         )
-    elif mode is ComputeMode.SELECTIVE and preference.kind not in {
+    elif mode is ComputeMode.CUSTOM and preference.kind not in {
         NodePreferenceKind.AUTO,
         NodePreferenceKind.CPU,
     }:
@@ -811,10 +802,16 @@ def _selected_decision(
             f"The validated {preference.kind.value} preference selected "
             f"{candidate.spec.implementation_id!r}."
         )
-    else:
+    elif candidate.evidence is not None:
         reason_text = (
             f"{candidate.spec.implementation_id!r} clears scientific, memory, "
             "and Auto performance policy."
+        )
+    else:
+        reason_text = (
+            f"{candidate.spec.implementation_id!r} is a reviewed Auto default "
+            "and clears the current scientific, environment, and memory gates; "
+            "no exact compatible local speed comparison was available."
         )
     return NodeExecutionDecision(
         workload.node_id,
@@ -827,6 +824,7 @@ def _selected_decision(
         DecisionReason.SELECTED_IMPLEMENTATION,
         reason_text,
         memory_estimate=candidate.memory_estimate,
+        implementation_version=candidate.spec.implementation_version,
     )
 
 
@@ -850,6 +848,7 @@ def _cpu_decision(
         reason,
         reason_text,
         fallback_reason=fallback_reason,
+        implementation_version="1",
     )
 
 
@@ -861,7 +860,7 @@ def _is_forced_gpu_preference(
     mode: ComputeMode,
     preference: NodeComputePreference,
 ) -> bool:
-    return mode is ComputeMode.SELECTIVE and preference.kind in {
+    return mode is ComputeMode.CUSTOM and preference.kind in {
         NodePreferenceKind.BEST_GPU,
         NodePreferenceKind.LIBRARY,
         NodePreferenceKind.IMPLEMENTATION,

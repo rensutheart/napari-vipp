@@ -98,7 +98,7 @@ def _request(
     nodes: tuple[PipelineOptimizationNode, ...],
 ) -> ComputeRequest:
     return ComputeRequest(
-        ComputeMode.SELECTIVE,
+        ComputeMode.CUSTOM,
         {
             node.node_id: node.authored_preference
             for node in nodes
@@ -377,7 +377,7 @@ def test_best_gpu_choice_does_not_hide_a_faster_cpu_when_unlocked():
 def test_request_and_captured_authored_preferences_must_match():
     nodes = (_node("a"),)
     mismatched = ComputeRequest(
-        ComputeMode.SELECTIVE,
+        ComputeMode.CUSTOM,
         {"a": NodeComputePreference(NodePreferenceKind.CPU)},
     )
 

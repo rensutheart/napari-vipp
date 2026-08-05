@@ -73,13 +73,13 @@ def test_compute_mode_options_have_stable_public_order_and_labels():
         "cpu",
         "auto",
         "prefer_gpu",
-        "selective",
+        "custom",
     ]
     assert [option.label for option in COMPUTE_MODE_OPTIONS] == [
         "CPU",
         "Auto",
         "Prefer GPU",
-        "Selective",
+        "Custom",
     ]
     assert compute_mode_label("AUTO") == "Auto"
     assert compute_mode_label("PREFER_GPU") == "Prefer GPU"
@@ -104,7 +104,7 @@ def test_node_preference_value_round_trip_preserves_stable_identifiers():
     )
 
 
-def test_selective_public_options_are_declaration_only_and_not_experimental(
+def test_custom_public_options_are_declaration_only_and_not_experimental(
     monkeypatch,
 ):
     def unexpected_import(_name, _package=None):
@@ -122,7 +122,7 @@ def test_selective_public_options_are_declaration_only_and_not_experimental(
         "cpu",
         "library:cupyx",
     ]
-    assert options[0].label == "Follow pipeline policy"
+    assert options[0].label == "Auto for this node"
     assert options[-1].label.startswith("GPU · CuPy")
     assert "best_gpu" not in values
     assert not any(value.startswith("implementation:") for value in values)
@@ -217,13 +217,13 @@ def test_aggregate_gpu_choices_are_experimental_if_any_candidate_is_hidden(
     public_cupyx = replace(
         public_base,
         implementation_id="cupyx-median-filter-public-v1",
-        admission_tier=AdmissionTier.PUBLIC_SELECTIVE,
+        admission_tier=AdmissionTier.PUBLIC_CUSTOM,
     )
     public_cucim = replace(
         public_base,
         implementation_id="cucim-median-filter-public-v1",
         implementation_library_id="cucim",
-        admission_tier=AdmissionTier.PUBLIC_SELECTIVE,
+        admission_tier=AdmissionTier.PUBLIC_CUSTOM,
     )
 
     monkeypatch.setattr(
@@ -453,9 +453,9 @@ def test_actual_fallback_decision_is_amber_cpu_badge():
     assert "dependency unavailable" in badge.tooltip
 
 
-def test_toolbar_summary_covers_authored_selective_state_before_a_run():
+def test_toolbar_summary_covers_authored_custom_state_before_a_run():
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={
             "median": "library:cupyx",
             "gaussian": "auto",
@@ -466,7 +466,7 @@ def test_toolbar_summary_covers_authored_selective_state_before_a_run():
 
     summary = compute_toolbar_summary(request)
 
-    assert summary.text == "Selective · 2 choices"
+    assert summary.text == "Custom · 2 choices"
     assert summary.tone is ComputePresentationTone.NEUTRAL
     assert "Experimental GPU candidates are enabled" in summary.tooltip
 

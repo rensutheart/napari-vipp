@@ -38,7 +38,7 @@ from napari_vipp.core.compute_specs import (
 
 def test_compute_request_is_strict_immutable_and_json_safe():
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         fallback_policy="strict",
         node_preferences={
             "median": "cpu",
@@ -51,7 +51,7 @@ def test_compute_request_is_strict_immutable_and_json_safe():
         accelerator_memory_cap_bytes=4_000_000_000,
     )
 
-    assert request.mode is ComputeMode.SELECTIVE
+    assert request.mode is ComputeMode.CUSTOM
     assert request.fallback_policy is FallbackPolicy.STRICT
     assert request.preference_for("median").kind is NodePreferenceKind.CPU
     assert request.preference_for("gaussian").value == "cupyx"
@@ -63,6 +63,13 @@ def test_compute_request_is_strict_immutable_and_json_safe():
     assert ComputeRequest.from_dict(payload) == request
     json.dumps(payload, allow_nan=False)
     assert len(request.fingerprint) == 64
+
+
+def test_legacy_selective_mode_loads_as_canonical_custom():
+    request = ComputeRequest(mode="selective")
+
+    assert request.mode is ComputeMode.CUSTOM
+    assert request.as_dict()["mode"] == "custom"
 
 
 def test_prefer_gpu_is_a_round_trippable_visible_fallback_policy():
@@ -214,7 +221,7 @@ def test_execution_report_serializes_durable_fallback_attempt_schema():
         device_free_bytes=500,
     )
     payload = ExecutionReport(
-        ComputeRequest(mode="selective"),
+        ComputeRequest(mode="custom"),
         ComputeEnvironment(),
         fallback_records=(record,),
     ).as_dict()

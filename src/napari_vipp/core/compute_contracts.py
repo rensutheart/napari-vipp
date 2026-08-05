@@ -15,7 +15,9 @@ class AdmissionTier(StrEnum):
     """Visibility of an implementation candidate."""
 
     DEVELOPER_HIDDEN = "developer_hidden"
-    PUBLIC_SELECTIVE = "public_selective"
+    PUBLIC_CUSTOM = "public_custom"
+    # Compatibility alias for unreleased development policy artifacts.
+    PUBLIC_SELECTIVE = "public_custom"
     PUBLIC_AUTO_CANDIDATE = "public_auto_candidate"
 
 
@@ -119,10 +121,13 @@ class OperationComputeSpec:
     host_finalizer_ref: str = ""
 
     def __post_init__(self) -> None:
+        raw_tier = str(self.admission_tier).strip().lower()
+        if raw_tier == "public_selective":
+            raw_tier = AdmissionTier.PUBLIC_CUSTOM.value
         tier = (
             self.admission_tier
             if isinstance(self.admission_tier, AdmissionTier)
-            else AdmissionTier(str(self.admission_tier).strip().lower())
+            else AdmissionTier(raw_tier)
         )
         required = (
             "operation_id",

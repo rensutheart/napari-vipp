@@ -45,6 +45,7 @@ from napari_vipp.core.compute import (
     WorkloadDescriptor,
 )
 from napari_vipp.core.compute_benchmark_adapter import operation_parity
+from napari_vipp.core.compute_history import JsonPipelineTimingStore
 from napari_vipp.core.compute_planning import plan_compute_decisions
 from napari_vipp.core.compute_registry import (
     ComputeRegistry,
@@ -350,6 +351,7 @@ def _accelerated_request(
     manual_node_ids: frozenset[str] | None = None,
     dirty_node_ids: frozenset[str] | None = None,
     cached_pipeline: PrototypePipeline | None = None,
+    performance_history_path: Path | None = None,
 ) -> PipelineRunRequest:
     cached = cached_pipeline
     return PipelineRunRequest(
@@ -395,7 +397,131 @@ def _accelerated_request(
         completed_node_ids=(
             frozenset() if cached is None else frozenset(cached.completed_node_ids)
         ),
+        performance_history_path=performance_history_path,
     )
+
+
+def test_prefer_gpu_then_auto_cpu_comparison_teaches_next_auto_assignment(
+    tmp_path,
+    validated_windows_compute_host,
+):
+    pipeline = PrototypePipeline()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    data = np.arange(4_096, dtype=np.float32).reshape(64, 64)
+    history_path = tmp_path / "pipeline-timings.json"
+
+    runtime = _ShapeAwareRuntime()
+    registry, _specs = _test_registry(runtime, (("gaussian_blur", _device_copy),))
+    prefer_result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            data,
+            ComputeRequest(mode=ComputeMode.PREFER_GPU),
+            performance_history_path=history_path,
+        ),
+        compute_registry=registry,
+    )
+    assert not prefer_result.error
+
+    store = JsonPipelineTimingStore(history_path)
+    samples = store.samples()
+    assert len(samples) == 1
+    gpu_sample = next(item for item in samples if item.assignment.uses_accelerator)
+    store.clear()
+    store.append(replace(gpu_sample, elapsed_seconds=0.1))
+
+    comparison_result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            data,
+            ComputeRequest(mode=ComputeMode.AUTO),
+            performance_history_path=history_path,
+        ),
+        compute_registry=registry,
+    )
+
+    assert not comparison_result.error
+    assert comparison_result.execution_report is not None
+    comparison_decision = next(
+        item
+        for item in comparison_result.execution_report.actual_decisions
+        if item.node_id == gaussian.id
+    )
+    assert comparison_decision.runtime_id == "cpu-numpy"
+    assert comparison_decision.reason is DecisionReason.PERFORMANCE_EXPLORATION
+    assert any(
+        "completed its one-time CPU comparison" in warning
+        for warning in comparison_result.execution_report.warnings
+    )
+    samples = store.samples()
+    assert len(samples) == 2
+    cpu_sample = next(
+        item for item in samples if not item.assignment.uses_accelerator
+    )
+    store.clear()
+    store.append(replace(cpu_sample, elapsed_seconds=2.0))
+    store.append(replace(gpu_sample, elapsed_seconds=0.1))
+
+    auto_result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            data,
+            ComputeRequest(mode=ComputeMode.AUTO),
+            performance_history_path=history_path,
+        ),
+        compute_registry=registry,
+    )
+
+    assert not auto_result.error
+    assert auto_result.execution_report is not None
+    decision = next(
+        item
+        for item in auto_result.execution_report.actual_decisions
+        if item.node_id == gaussian.id
+    )
+    assert decision.runtime_id == "cuda-cupy"
+    assert decision.reason is DecisionReason.HISTORICAL_PERFORMANCE
+    assert decision.performance_evidence_kind == "completed_pipeline_timing"
+    assert decision.performance_evidence_digest
+    assert "2.000 s for CPU" in decision.reason_text
+
+
+def test_optional_history_fingerprint_failure_does_not_fail_scientific_run(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+
+    def fail_fingerprint():
+        raise OSError("metadata unavailable")
+
+    monkeypatch.setattr(
+        execution_module,
+        "host_performance_fingerprint",
+        fail_fingerprint,
+    )
+
+    result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            np.arange(256, dtype=np.float32).reshape(16, 16),
+            ComputeRequest(mode=ComputeMode.CPU),
+            performance_history_path=tmp_path / "timings.json",
+        )
+    )
+
+    assert not result.error
+    assert result.execution_report is not None
+    assert any(
+        "continue without it" in warning
+        for warning in result.execution_report.warnings
+    )
+    assert not (tmp_path / "timings.json").exists()
 
 
 def test_run_batch_reuses_fake_cuda_after_visible_oom_fallback(tmp_path):
@@ -594,7 +720,7 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         assert pipeline.connect(median.id, gaussian.id).success
         assert pipeline.connect(gaussian.id, output.id).success
         request = ComputeRequest(
-            mode=ComputeMode.SELECTIVE,
+            mode=ComputeMode.CUSTOM,
             node_preferences={
                 gaussian.id: "implementation:cupyx-gaussian-blur-v1",
                 median.id: "implementation:cupyx-median-filter-v1",
@@ -780,7 +906,7 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
     assert pipeline.connect(median.id, gaussian.id).success
 
     gpu_request = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={
             median.id: "implementation:cupyx-median-filter-v1",
             gaussian.id: "implementation:cupyx-gaussian-blur-v1",
@@ -816,7 +942,7 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
     generated = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generated)
     embedded_request = json.loads(generated._WORKFLOW_JSON)["execution"]["compute"]
-    assert embedded_request["mode"] == "selective"
+    assert embedded_request["mode"] == "custom"
     assert embedded_request["fallback_policy"] == "strict"
     assert embedded_request["node_preferences"] == {
         median.id: "implementation:cupyx-median-filter-v1",
@@ -1215,7 +1341,7 @@ def test_cpu_extract_channel_projects_shape_through_requested_mixed_chain(
         ),
     )
     compute_request = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={
             extract.id: "cpu",
             background.id: (
@@ -1314,7 +1440,7 @@ def test_extreme_float_background_facts_fail_closed_for_downstream_gpu(
         ),
     )
     compute_request = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={
             background.id: (
                 f"implementation:{specs['rolling_ball_background'].implementation_id}"
@@ -1694,7 +1820,7 @@ def test_real_headless_measurements_pipeline_finalizes_public_table_and_cleans(
         gpu_result = run_request(
             372,
             ComputeRequest(
-                mode=ComputeMode.SELECTIVE,
+                mode=ComputeMode.CUSTOM,
                 node_preferences={
                     otsu.id: "cpu",
                     components.id: "cpu",
@@ -1798,7 +1924,7 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
     pipeline.run(data, input_metadata={"axes": "YX"})
     expected = pipeline.outputs[median.id].copy()
     compute_request = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={
             background.id: ("implementation:cucim-subtract_background-v2"),
             gaussian.id: "implementation:cupyx-gaussian-blur-v1",
@@ -1977,7 +2103,7 @@ def test_real_headless_rgba_canny_otsu_stays_in_one_exact_device_segment(
         )
 
         compute_request = ComputeRequest(
-            mode=ComputeMode.SELECTIVE,
+            mode=ComputeMode.CUSTOM,
             node_preferences={
                 canny.id: "implementation:cupyx-canny-edges-exact-v1",
                 otsu.id: "implementation:cupy-otsu-threshold-exact-v1",
@@ -2145,7 +2271,7 @@ def test_real_extreme_float_background_keeps_finite_only_nodes_on_cpu(
             dtype=np.float32,
         )
         compute_request = ComputeRequest(
-            mode=ComputeMode.SELECTIVE,
+            mode=ComputeMode.CUSTOM,
             node_preferences={
                 background.id: (f"implementation:{background_spec.implementation_id}"),
                 downstream.id: (f"implementation:{downstream_spec.implementation_id}"),
@@ -2299,7 +2425,7 @@ def test_real_headless_rl_two_source_pipeline_cleans_fft_plans_and_reuses_runtim
         assert cpu_progress == expected_progress
 
         compute_request = ComputeRequest(
-            mode=ComputeMode.SELECTIVE,
+            mode=ComputeMode.CUSTOM,
             node_preferences={deconvolution.id: "implementation:rl-cupy-f32-v1"},
             runtime_id="cuda-cupy",
             device_id=runtime_probe.selected_device_id,
@@ -2463,7 +2589,7 @@ def test_real_headless_rl_tv_pipeline_selects_provider_reports_and_cleans():
         gpu_result = run(
             452,
             ComputeRequest(
-                mode=ComputeMode.SELECTIVE,
+                mode=ComputeMode.CUSTOM,
                 node_preferences={
                     deconvolution.id: "implementation:rl-tv-cupy-f32-v1"
                 },

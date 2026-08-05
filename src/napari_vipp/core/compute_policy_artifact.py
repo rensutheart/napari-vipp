@@ -642,6 +642,7 @@ def _parse_operation(value: object, path: str) -> PackagedOperationPolicy:
             f"{path}.admission_tier",
             {
                 "developer_hidden",
+                "public_custom",
                 "public_selective",
                 "public_auto_candidate",
             },

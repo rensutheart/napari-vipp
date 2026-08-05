@@ -566,18 +566,18 @@ def test_widget_builds_graph_and_inspects_node(qtbot):
     assert not viewer.layers["input volume"].visible
 
 
-def test_compute_toolbar_defaults_to_auto_and_shows_actual_cpu_badges(qtbot):
+def test_compute_toolbar_defaults_to_auto_and_shows_actual_compute_badges(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
 
     assert [
         widget.compute_mode_combo.itemData(index)
         for index in range(widget.compute_mode_combo.count())
-    ] == ["cpu", "auto", "prefer_gpu", "selective"]
+    ] == ["cpu", "auto", "prefer_gpu", "custom"]
     assert [
         widget.compute_mode_combo.itemText(index)
         for index in range(widget.compute_mode_combo.count())
-    ] == ["CPU", "Auto", "Prefer GPU", "Selective"]
+    ] == ["CPU", "Auto", "Prefer GPU", "Custom"]
     prefer_gpu_index = widget.compute_mode_combo.findData("prefer_gpu")
     assert "scientifically eligible" in str(
         widget.compute_mode_combo.itemData(prefer_gpu_index, Qt.ToolTipRole)
@@ -587,10 +587,13 @@ def test_compute_toolbar_defaults_to_auto_and_shows_actual_cpu_badges(qtbot):
     )
     assert "Prefer GPU" in widget.compute_mode_combo.toolTip()
     assert widget.compute_mode_combo.currentData() == "auto"
-    assert widget.compute_status_label.text() == "Auto · 2 CPU"
     assert widget.graph_view._cards["input"].compute_badge.isHidden()
-    assert widget.graph_view._cards["gaussian"].compute_badge.text() == "CPU"
-    assert widget.graph_view._cards["threshold"].compute_badge.text() == "CPU"
+    badges = (
+        widget.graph_view._cards["gaussian"].compute_badge.text(),
+        widget.graph_view._cards["threshold"].compute_badge.text(),
+    )
+    assert all(text == "CPU" or text.startswith("GPU ·") for text in badges)
+    assert widget.compute_status_label.text().startswith("Auto ·")
     assert widget.compute_group.isHidden()
 
 
@@ -690,14 +693,14 @@ def test_obsolete_source_failure_is_not_actionable_while_retrying_latest_edit(
     qtbot.waitUntil(lambda: bool(queued_runs))
 
 
-def test_selective_gpu_choice_is_captured_by_background_request(qtbot):
+def test_custom_gpu_choice_is_captured_by_background_request(qtbot):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
     qtbot.addWidget(widget)
     pool = _QueuedThreadPool()
     widget._pipeline_thread_pool = pool
 
     widget.compute_mode_combo.setCurrentIndex(
-        widget.compute_mode_combo.findData("selective")
+        widget.compute_mode_combo.findData("custom")
     )
     widget.graph_view.select_node("gaussian")
 
@@ -713,7 +716,7 @@ def test_selective_gpu_choice_is_captured_by_background_request(qtbot):
 
     assert pool.workers
     request = pool.workers[-1].request.compute_request
-    assert request.mode.value == "selective"
+    assert request.mode.value == "custom"
     assert not request.allow_experimental
     assert request.preference_for("gaussian") == NodeComputePreference(
         "library",
@@ -728,9 +731,9 @@ def test_node_benchmark_apply_is_atomic_and_undoable(qtbot):
     widget.run_pipeline = lambda *args, **kwargs: None
     with QSignalBlocker(widget.compute_mode_combo):
         widget.compute_mode_combo.setCurrentIndex(
-            widget.compute_mode_combo.findData("selective")
+            widget.compute_mode_combo.findData("custom")
         )
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     widget.graph_view.select_node("gaussian")
     widget._node_benchmark_baseline = widget._current_history_snapshot()
     result = SimpleNamespace(
@@ -765,7 +768,7 @@ def test_node_benchmark_control_accepts_resolved_ordered_multi_input_node(
     widget._active_source_load_id = None
     node = widget.pipeline.add_node("richardson_lucy_tv_deconvolution")
     widget._selected_node_id = node.id
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     image = np.ones((8, 8), dtype=np.float32)
     psf = np.ones((3, 3), dtype=np.float32) / np.float32(9)
     monkeypatch.setattr(
@@ -791,7 +794,7 @@ def test_node_benchmark_control_accepts_resolved_ordered_multi_input_node(
     assert "every ordered input" in reason
 
 
-def test_pipeline_optimizer_action_is_selective_only(qtbot):
+def test_pipeline_optimizer_action_is_custom_only(qtbot):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
     qtbot.addWidget(widget)
     widget.run_pipeline = lambda *args, **kwargs: None
@@ -820,9 +823,9 @@ def test_pipeline_optimizer_action_is_selective_only(qtbot):
 
     with QSignalBlocker(widget.compute_mode_combo):
         widget.compute_mode_combo.setCurrentIndex(
-            widget.compute_mode_combo.findData("selective")
+            widget.compute_mode_combo.findData("custom")
         )
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     widget._sync_compute_toolbar_summary()
     widget._populate_settings_toolbar_menu()
 
@@ -838,9 +841,9 @@ def test_optimizer_lock_is_separate_undoable_and_does_not_recalculate(qtbot):
     widget._abandon_background_pipeline_run()
     with QSignalBlocker(widget.compute_mode_combo):
         widget.compute_mode_combo.setCurrentIndex(
-            widget.compute_mode_combo.findData("selective")
+            widget.compute_mode_combo.findData("custom")
         )
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     widget._compute_node_preferences["gaussian"] = NodeComputePreference(
         "library",
         "cupyx",
@@ -875,7 +878,7 @@ def test_integer_gaussian_compute_note_explains_float32_gpu_option(qtbot):
     qtbot.addWidget(widget)
     widget.run_pipeline = lambda *args, **kwargs: None
     widget.compute_mode_combo.setCurrentIndex(
-        widget.compute_mode_combo.findData("selective")
+        widget.compute_mode_combo.findData("custom")
     )
     widget.graph_view.select_node("gaussian")
 
@@ -893,9 +896,9 @@ def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
     widget.run_pipeline = lambda *args, **kwargs: None
     with QSignalBlocker(widget.compute_mode_combo):
         widget.compute_mode_combo.setCurrentIndex(
-            widget.compute_mode_combo.findData("selective")
+            widget.compute_mode_combo.findData("custom")
         )
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     widget._pipeline_optimizer_baseline = widget._current_history_snapshot()
     payloads, _layers = widget._source_payloads_for_pipeline()
     widget._pipeline_optimizer_source_signature = (
@@ -913,7 +916,7 @@ def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
         def is_current(self, identity, request, assignments):
             return bool(
                 identity
-                and request.mode is ComputeMode.SELECTIVE
+                and request.mode is ComputeMode.CUSTOM
                 and assignments
             )
 
@@ -1079,7 +1082,7 @@ def test_pipeline_optimizer_rejects_stale_review_result(qtbot):
     qtbot.addWidget(widget)
     widget._abandon_background_pipeline_run()
     widget.run_pipeline = lambda *args, **kwargs: None
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     widget._pipeline_optimizer_baseline = widget._current_history_snapshot()
     payloads, _layers = widget._source_payloads_for_pipeline()
     widget._pipeline_optimizer_source_signature = (
@@ -1108,7 +1111,7 @@ def test_pipeline_optimizer_dispatch_failure_clears_review_baseline(
     qtbot.addWidget(widget)
     widget._abandon_background_pipeline_run()
     widget.run_pipeline = lambda *args, **kwargs: None
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     monkeypatch.setattr(widget, "_can_optimize_pipeline", lambda: (True, ""))
 
     class FailingDialog:
@@ -1132,7 +1135,7 @@ def test_pipeline_optimizer_uses_dialog_time_limit(qtbot, monkeypatch):
     qtbot.addWidget(widget)
     widget._abandon_background_pipeline_run()
     widget.run_pipeline = lambda *args, **kwargs: None
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     monkeypatch.setattr(widget, "_can_optimize_pipeline", lambda: (True, ""))
     captured = {}
 
@@ -1182,7 +1185,7 @@ def test_pipeline_optimizer_cleanup_failure_cannot_publish_result(
     qtbot.addWidget(widget)
     widget._abandon_background_pipeline_run()
     widget.run_pipeline = lambda *args, **kwargs: None
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     monkeypatch.setattr(widget, "_can_optimize_pipeline", lambda: (True, ""))
     outcomes = []
 
@@ -1269,7 +1272,7 @@ def test_scoped_compute_invalidation_preserves_clean_upstream_cache(qtbot):
     (
         (ComputeMode.AUTO, False),
         (ComputeMode.PREFER_GPU, True),
-        (ComputeMode.SELECTIVE, True),
+        (ComputeMode.CUSTOM, True),
     ),
 )
 def test_non_cpu_compute_modes_use_detached_compute_service(
@@ -1290,7 +1293,7 @@ def test_non_cpu_compute_modes_use_detached_compute_service(
 
 @pytest.mark.parametrize(
     "mode",
-    (ComputeMode.PREFER_GPU, ComputeMode.SELECTIVE),
+    (ComputeMode.PREFER_GPU, ComputeMode.CUSTOM),
 )
 def test_force_sync_required_gpu_intent_still_uses_detached_compute_service(
     qtbot,
@@ -1331,12 +1334,12 @@ def test_small_cpu_run_keeps_existing_responsiveness_heuristic(qtbot):
     assert widget._should_run_pipeline_in_background({"gaussian"}) is False
 
 
-def test_selective_exact_pin_is_honest_until_user_replaces_it(qtbot):
+def test_custom_exact_pin_is_honest_until_user_replaces_it(qtbot):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
     qtbot.addWidget(widget)
     widget.run_pipeline = lambda *args, **kwargs: None
     widget.compute_mode_combo.setCurrentIndex(
-        widget.compute_mode_combo.findData("selective")
+        widget.compute_mode_combo.findData("custom")
     )
     widget.graph_view.select_node("gaussian")
     exact_value = "implementation:cupyx-gaussian-blur-v1"
@@ -1355,9 +1358,7 @@ def test_selective_exact_pin_is_honest_until_user_replaces_it(qtbot):
     widget.node_compute_preference_combo.setCurrentIndex(follow_index)
 
     assert "gaussian" not in widget._compute_node_preferences
-    assert widget.node_compute_preference_combo.currentText() == (
-        "Follow pipeline policy"
-    )
+    assert widget.node_compute_preference_combo.currentText() == "Auto for this node"
     assert all(
         not str(widget.node_compute_preference_combo.itemData(index)).startswith(
             "implementation:"
@@ -1379,9 +1380,7 @@ def test_selective_exact_pin_is_honest_until_user_replaces_it(qtbot):
 
     assert "gaussian" not in widget._compute_node_preferences
     assert widget.node_compute_preference_combo.currentData() == "auto"
-    assert widget.node_compute_preference_combo.currentText() == (
-        "Follow pipeline policy"
-    )
+    assert widget.node_compute_preference_combo.currentText() == "Auto for this node"
     assert all(
         not str(widget.node_compute_preference_combo.itemData(index)).startswith(
             "implementation:"
@@ -1393,6 +1392,7 @@ def test_selective_exact_pin_is_honest_until_user_replaces_it(qtbot):
 def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
+    widget._reset_compute_decisions()
     request = ComputeRequest(mode="auto")
     decision = NodeExecutionDecision(
         "gaussian",
@@ -1404,6 +1404,17 @@ def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
         DecisionKind.SELECTED,
         DecisionReason.SELECTED_IMPLEMENTATION,
         "Validated CuPy implementation selected.",
+    )
+    cpu_decision = NodeExecutionDecision(
+        "threshold",
+        widget.pipeline.nodes["threshold"].operation_id,
+        NodeComputePreference(),
+        "cpu-numpy",
+        "cpu",
+        f"cpu-{widget.pipeline.nodes['threshold'].operation_id}-v1",
+        DecisionKind.POLICY_CPU,
+        DecisionReason.AUTO_CPU,
+        "CPU selected for this node.",
     )
     gpu_environment = ComputeEnvironment(
         runtime_ids=("cpu-numpy", "cuda-cupy"),
@@ -1417,13 +1428,13 @@ def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
         request.fingerprint,
         gpu_environment.fingerprint,
         (),
-        (decision,),
+        (decision, cpu_decision),
     )
     report = ExecutionReport(
         request,
         gpu_environment,
         plan=plan,
-        actual_decisions=(decision,),
+        actual_decisions=(decision, cpu_decision),
     )
 
     widget._accept_execution_report(report)
@@ -1496,7 +1507,7 @@ def test_loading_legacy_workflow_stays_cpu_until_user_opts_in(qtbot, tmp_path):
     path.write_text(json.dumps(legacy_document), encoding="utf-8")
 
     assert widget.compute_mode_combo.currentData() == "auto"
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     widget._compute_fallback_policy = FallbackPolicy.STRICT
     widget._compute_node_preferences["gaussian"] = NodeComputePreference(
         "library",
@@ -1504,7 +1515,7 @@ def test_loading_legacy_workflow_stays_cpu_until_user_opts_in(qtbot, tmp_path):
     )
     widget.compute_mode_combo.blockSignals(True)
     widget.compute_mode_combo.setCurrentIndex(
-        widget.compute_mode_combo.findData("selective")
+        widget.compute_mode_combo.findData("custom")
     )
     widget.compute_mode_combo.blockSignals(False)
     widget.strict_compute_checkbox.blockSignals(True)
@@ -1527,7 +1538,7 @@ def test_loading_legacy_workflow_stays_cpu_until_user_opts_in(qtbot, tmp_path):
         widget._workflow_tabs.index_of(original_session.session_id)
     )
 
-    assert widget.compute_mode_combo.currentData() == "selective"
+    assert widget.compute_mode_combo.currentData() == "custom"
     assert widget._compute_fallback_policy is FallbackPolicy.STRICT
     assert widget.strict_compute_checkbox.isChecked()
     assert widget._compute_node_preferences["gaussian"] == NodeComputePreference(
@@ -1540,7 +1551,7 @@ def test_loading_v4_workflow_restores_portable_compute_intent(qtbot, tmp_path):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     widget.run_pipeline = lambda *args, **kwargs: None
-    path = tmp_path / "selective-v4-workflow.json"
+    path = tmp_path / "custom-v4-workflow.json"
     preference = NodeComputePreference(
         "implementation",
         "future-provider.gaussian-v2",
@@ -1555,7 +1566,7 @@ def test_loading_v4_workflow_restores_portable_compute_intent(qtbot, tmp_path):
             }
         },
         compute_request=ComputeRequest(
-            mode="selective",
+            mode="custom",
             fallback_policy="strict",
             node_preferences={"gaussian": preference},
             runtime_id="machine-local-runtime",
@@ -1568,7 +1579,7 @@ def test_loading_v4_workflow_restores_portable_compute_intent(qtbot, tmp_path):
 
     widget.load_workflow_file(path)
 
-    assert widget.compute_mode_combo.currentData() == "selective"
+    assert widget.compute_mode_combo.currentData() == "custom"
     assert widget.strict_compute_checkbox.isChecked()
     assert widget._compute_node_preferences == {"gaussian": preference}
     assert widget._compute_optimizer_locked_node_ids == {"gaussian"}
@@ -1611,14 +1622,14 @@ def test_compute_policy_edits_are_directly_undoable_and_redoable(qtbot):
     widget.run_pipeline = lambda *args, **kwargs: None
 
     widget.compute_mode_combo.setCurrentIndex(
-        widget.compute_mode_combo.findData("selective")
+        widget.compute_mode_combo.findData("custom")
     )
-    assert widget._compute_mode is ComputeMode.SELECTIVE
+    assert widget._compute_mode is ComputeMode.CUSTOM
     widget.undo()
     assert widget._compute_mode is ComputeMode.AUTO
     assert widget.compute_mode_combo.currentData() == "auto"
     widget.redo()
-    assert widget._compute_mode is ComputeMode.SELECTIVE
+    assert widget._compute_mode is ComputeMode.CUSTOM
 
     widget.strict_compute_checkbox.setChecked(True)
     assert widget._compute_fallback_policy is FallbackPolicy.STRICT
@@ -1677,7 +1688,7 @@ def test_prefer_gpu_policy_is_undoable_and_local_to_each_workflow_tab(qtbot):
     assert widget.compute_mode_combo.currentData() == "prefer_gpu"
 
 
-def test_strict_selective_setting_does_not_leak_into_other_modes(qtbot):
+def test_strict_custom_setting_does_not_leak_into_other_modes(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     widget.run_pipeline = lambda *args, **kwargs: None
@@ -1688,7 +1699,7 @@ def test_strict_selective_setting_does_not_leak_into_other_modes(qtbot):
     assert widget._current_compute_request().fallback_policy is FallbackPolicy.VISIBLE
 
     widget.compute_mode_combo.setCurrentIndex(
-        widget.compute_mode_combo.findData("selective")
+        widget.compute_mode_combo.findData("custom")
     )
     assert widget._current_compute_request().fallback_policy is FallbackPolicy.STRICT
 
@@ -5260,6 +5271,7 @@ def test_scatter_node_popout_uses_independent_native_ranges(qtbot):
     data = np.arange(16, dtype=np.float32).reshape(4, 4)
     widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
 
     offset = widget.add_node_from_palette("linear_scale_offset")
@@ -9749,16 +9761,18 @@ def test_force_sync_supersedes_full_background_scope(qtbot, monkeypatch):
     widget._set_pipeline_busy(True, "gaussian")
     monkeypatch.setattr(
         widget,
-        "_run_pipeline_synchronously",
-        lambda *args: captured.append(args),
+        "_start_background_pipeline_run",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
     )
 
     widget.run_pipeline(force_sync=True)
 
     assert len(captured) == 1
-    assert captured[0][-3] is None
-    assert manual.id in captured[0][-2]
-    assert captured[0][-1] is None
+    args, kwargs = captured[0]
+    assert args[-3] is None
+    assert manual.id in args[-2]
+    assert args[-1] is None
+    assert kwargs["execute_synchronously"] is True
     assert cancel_event.is_set()
     assert widget._active_pipeline_run_id is None
     assert widget._pending_dirty_node_ids == set()
@@ -10686,6 +10700,7 @@ def test_low_memory_cache_keeps_working_node_input_and_explicit_outputs(qtbot):
 def test_low_memory_dirty_run_reuses_retained_working_input(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
 
     widget.graph_view.select_node("threshold")
@@ -10714,6 +10729,7 @@ def test_composite_edit_preserves_upstream_manual_deconvolution_cache(qtbot):
     data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
     widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
 
     deconvolution = widget.add_node_from_palette("richardson_lucy_deconvolution")
@@ -12789,6 +12805,7 @@ def test_stale_deconvolution_holds_automatic_descendants_in_widget(qtbot, monkey
     data[4, 4] = 1.0
     widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     psf = widget.add_node_from_palette("gaussian_blur")
     deconvolution = widget.add_node_from_palette(
@@ -14048,7 +14065,7 @@ def test_loaded_batch_compute_request_wins_until_toolbar_changes(qtbot, tmp_path
 
     assert widget._compute_request_for_batch_dialog(dialog) == saved_request
 
-    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_mode = ComputeMode.CUSTOM
     current = widget._current_compute_request()
     assert widget._compute_request_for_batch_dialog(dialog) == current
     assert dialog._loaded_compute_request is None

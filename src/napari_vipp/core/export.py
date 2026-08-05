@@ -191,6 +191,7 @@ from napari_vipp.core.batch import (
     run_batch,
 )
 from napari_vipp.core.compute import ComputeRequest
+from napari_vipp.core.compute_history import default_pipeline_timing_history_path
 from napari_vipp.core.workflow import deserialize_workflow
 
 
@@ -300,7 +301,7 @@ def main(argv=None):
     )
     parser.add_argument(
         "--compute-mode",
-        choices=("cpu", "auto", "prefer_gpu", "selective"),
+        choices=("cpu", "auto", "prefer_gpu", "custom"),
         help="Override the saved compute mode for this run.",
     )
     parser.add_argument(
@@ -358,6 +359,7 @@ def main(argv=None):
             execution_progress_callback=(
                 _execution_progress if args.progress else None
             ),
+            performance_history_path=default_pipeline_timing_history_path(),
         )
     except Exception as exc:
         print(f"Batch failed before or during execution: {exc}", file=sys.stderr)
@@ -424,6 +426,10 @@ def _build_imports() -> str:
             "from napari_vipp.core.batch import scientific_workflow_hash",
             "from napari_vipp.core.batch_setup import pipeline_from_workflow",
             "from napari_vipp.core.compute import ComputeRequest, canonical_digest",
+            (
+                "from napari_vipp.core.compute_history import "
+                "default_pipeline_timing_history_path"
+            ),
             "from napari_vipp.core.execution import (",
             "    PipelineRunRequest,",
             "    execute_pipeline_request,",
@@ -633,6 +639,9 @@ def _build_function_body(
             f"{_INDENT}{_INDENT}{_INDENT}authored_pipeline.manual_node_ids()",
             f"{_INDENT}{_INDENT}),",
             f"{_INDENT}{_INDENT}cancel_event=cancel_event,",
+            f"{_INDENT}{_INDENT}performance_history_path=(",
+            f"{_INDENT}{_INDENT}{_INDENT}default_pipeline_timing_history_path()",
+            f"{_INDENT}{_INDENT}),",
             f"{_INDENT})",
             f"{_INDENT}try:",
             f"{_INDENT}{_INDENT}run_result = execute_pipeline_request(",
@@ -1734,7 +1743,7 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT})",
         f"{_INDENT}parser.add_argument(",
         f'{_INDENT}{_INDENT}"--compute-mode",',
-        f'{_INDENT}{_INDENT}choices=("cpu", "auto", "prefer_gpu", "selective"),',
+        f'{_INDENT}{_INDENT}choices=("cpu", "auto", "prefer_gpu", "custom"),',
         f'{_INDENT}{_INDENT}help="Override the workflow compute mode for this run.",',
         f"{_INDENT})",
         f"{_INDENT}parser.add_argument(",

@@ -116,7 +116,7 @@ def _facts(workload, *, guarantees=()):
 
 def _request(preference, *, fallback="visible", allow_experimental=True):
     return ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": preference},
         fallback_policy=fallback,
         allow_experimental=allow_experimental,
@@ -160,11 +160,11 @@ def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
     assert requested_distributions == ["numpy", "scipy", "scikit-image"]
 
 
-def test_selective_all_cpu_preserves_a_healthy_host_environment(monkeypatch):
+def test_custom_all_cpu_preserves_a_healthy_host_environment(monkeypatch):
     registry = ComputeRegistry()
 
     def forbidden_probe(*_args, **_kwargs):
-        raise AssertionError("An all-CPU selective plan must not probe a provider.")
+        raise AssertionError("An all-CPU custom plan must not probe a provider.")
 
     monkeypatch.setattr(registry, "probe_runtime", forbidden_probe)
     monkeypatch.setattr(registry, "probe_library", forbidden_probe)
@@ -240,7 +240,7 @@ def test_static_workload_rejection_precedes_environment_but_missing_facts_do_not
     assert missing_facts.decisions[0].reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
 
 
-def test_selective_exact_and_library_preferences_bypass_auto_threshold():
+def test_custom_exact_and_library_preferences_bypass_auto_threshold():
     workload = _workload()
     facts = {"node": _facts(workload)}
 
@@ -263,14 +263,14 @@ def test_selective_exact_and_library_preferences_bypass_auto_threshold():
     assert library.decisions[0].decision_kind is DecisionKind.SELECTED
 
 
-def test_public_selective_candidate_requires_explicit_selective_choice():
+def test_public_custom_candidate_requires_explicit_custom_choice():
     base = compute_specs_for("gaussian_blur", include_cpu=False)[0]
-    selective = replace(base, admission_tier=AdmissionTier.PUBLIC_SELECTIVE)
-    registry = ComputeRegistry(implementation_specs=(selective,))
+    custom = replace(base, admission_tier=AdmissionTier.PUBLIC_CUSTOM)
+    registry = ComputeRegistry(implementation_specs=(custom,))
     workload = _workload()
     facts = {"node": _facts(workload)}
     evidence = {
-        ("node", selective.implementation_id): PerformanceEvidence(
+        ("node", custom.implementation_id): PerformanceEvidence(
             0.2,
             0.05,
             lower_confidence_speedup=2.0,
@@ -287,7 +287,7 @@ def test_public_selective_candidate_requires_explicit_selective_choice():
     )
     explicit = plan_compute_decisions(
         _request(
-            f"implementation:{selective.implementation_id}",
+            f"implementation:{custom.implementation_id}",
             allow_experimental=False,
         ),
         (workload,),
@@ -297,15 +297,15 @@ def test_public_selective_candidate_requires_explicit_selective_choice():
     )
 
     assert automatic.decisions[0].decision_kind is DecisionKind.POLICY_CPU
-    assert explicit.decisions[0].implementation_id == selective.implementation_id
+    assert explicit.decisions[0].implementation_id == custom.implementation_id
     assert explicit.decisions[0].decision_kind is DecisionKind.SELECTED
     registry.close()
 
 
-def test_prefer_gpu_includes_reviewed_public_selective_candidates():
+def test_prefer_gpu_includes_reviewed_public_custom_candidates():
     base = compute_specs_for("gaussian_blur", include_cpu=False)[0]
-    selective = replace(base, admission_tier=AdmissionTier.PUBLIC_SELECTIVE)
-    registry = ComputeRegistry(implementation_specs=(selective,))
+    custom = replace(base, admission_tier=AdmissionTier.PUBLIC_CUSTOM)
+    registry = ComputeRegistry(implementation_specs=(custom,))
     workload = _workload()
 
     result = plan_compute_decisions(
@@ -319,7 +319,7 @@ def test_prefer_gpu_includes_reviewed_public_selective_candidates():
 
     decision = result.decisions[0]
     assert decision.decision_kind is DecisionKind.SELECTED
-    assert decision.implementation_id == selective.implementation_id
+    assert decision.implementation_id == custom.implementation_id
     assert "speed threshold" in decision.reason_text
     registry.close()
 
@@ -505,7 +505,7 @@ def test_prefer_gpu_ignores_dormant_node_preferences():
     assert decision.runtime_id == "cuda-cupy"
 
 
-def test_auto_cpu_is_policy_not_fallback_until_evidence_clears_gate():
+def test_auto_uses_reviewed_default_without_evidence_and_measured_candidate_with_it():
     workload = _workload()
     request = ComputeRequest(mode="auto", allow_experimental=True)
     without_evidence = plan_compute_decisions(
@@ -528,25 +528,34 @@ def test_auto_cpu_is_policy_not_fallback_until_evidence_clears_gate():
         },
     )
 
-    assert without_evidence.decisions[0].decision_kind is DecisionKind.POLICY_CPU
+    assert without_evidence.decisions[0].decision_kind is DecisionKind.SELECTED
     assert not without_evidence.decisions[0].fallback_used
-    assert without_evidence.decisions[0].reason is DecisionReason.PERFORMANCE_GATE
+    assert without_evidence.decisions[0].implementation_id == (
+        "cupyx-gaussian-blur-v1"
+    )
+    assert "reviewed Auto default" in without_evidence.decisions[0].reason_text
     assert with_evidence.decisions[0].decision_kind is DecisionKind.SELECTED
 
 
 @pytest.mark.parametrize(
-    "evidence",
+    ("evidence", "expected_reason"),
     (
-        None,
-        PerformanceEvidence(
-            0.2,
-            0.19,
-            lower_confidence_speedup=1.01,
+        (None, DecisionReason.WORKLOAD_UNSUPPORTED),
+        (
+            PerformanceEvidence(
+                0.2,
+                0.19,
+                lower_confidence_speedup=1.01,
+            ),
+            DecisionReason.PERFORMANCE_GATE,
         ),
     ),
     ids=("missing", "below-threshold"),
 )
-def test_unforced_auto_performance_gate_precedes_complete_fact_requirement(evidence):
+def test_unforced_auto_applies_reviewed_default_or_measured_performance_gate(
+    evidence,
+    expected_reason,
+):
     performance_evidence = (
         {} if evidence is None else {("node", "cupyx-gaussian-blur-v1"): evidence}
     )
@@ -558,7 +567,7 @@ def test_unforced_auto_performance_gate_precedes_complete_fact_requirement(evide
         performance_evidence=performance_evidence,
     )
 
-    assert result.decisions[0].reason is DecisionReason.PERFORMANCE_GATE
+    assert result.decisions[0].reason is expected_reason
 
 
 def test_viable_auto_evidence_still_requires_complete_scientific_facts():
@@ -787,7 +796,7 @@ def test_prefer_gpu_safe_rejections_are_policy_cpu_not_fallback(
 def test_memory_cap_rejects_forced_gpu_before_execution():
     workload = _workload()
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"node": "best_gpu"},
         accelerator_memory_cap_bytes=1,
         allow_experimental=True,

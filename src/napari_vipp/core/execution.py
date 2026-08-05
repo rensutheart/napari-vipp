@@ -49,6 +49,12 @@ from napari_vipp.core.compute_cache import (
     cached_node_provenance_matches,
     cached_source_provenance_matches,
 )
+from napari_vipp.core.compute_history import (
+    JsonPipelineTimingStore,
+    PipelineTimingChoice,
+    PipelineTimingSample,
+    host_performance_fingerprint,
+)
 from napari_vipp.core.compute_policy import (
     OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS,
     ArrayFacts,
@@ -189,6 +195,11 @@ class PipelineRunRequest:
         ]
         | None
     ) = field(default=None, repr=False, compare=False)
+    performance_history_path: str | PathLike[str] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         raw_provenance = self.cached_compute_provenance
@@ -261,6 +272,12 @@ class PipelineRunRequest:
             "performance_evidence",
             MappingProxyType(dict(sorted(normalized.items()))),
         )
+        history_path = self.performance_history_path
+        if history_path is not None:
+            history_path = fspath(history_path).strip()
+            if not history_path:
+                raise ValueError("performance_history_path must not be blank.")
+        object.__setattr__(self, "performance_history_path", history_path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,7 +405,47 @@ def execute_pipeline_request(
     """
     if not isinstance(raise_errors, bool):
         raise TypeError("raise_errors must be a boolean.")
+    run_started: float | None = None
+    observer_seconds = 0.0
     pipeline: PrototypePipeline | None = None
+    timing_store: JsonPipelineTimingStore | None = None
+    timing_workload_fingerprint = ""
+    timing_host_environment_fingerprint = ""
+    timing_execution_surface = ""
+    timing_runnable_node_ids: frozenset[str] = frozenset()
+    timing_warnings: list[str] = []
+
+    def call_observer(callback, *args) -> None:
+        nonlocal observer_seconds
+        if callback is None:
+            return
+        observer_started = perf_counter()
+        try:
+            callback(*args)
+        finally:
+            observer_seconds += max(0.0, perf_counter() - observer_started)
+
+    observed_node_started_callback = (
+        None
+        if node_started_callback is None
+        else lambda node_id: call_observer(node_started_callback, node_id)
+    )
+    observed_node_finished_callback = (
+        None
+        if node_finished_callback is None
+        else lambda result: call_observer(node_finished_callback, result)
+    )
+    observed_progress_callback = (
+        None
+        if progress_callback is None
+        else lambda operation_id, completed, total, message: call_observer(
+            progress_callback,
+            operation_id,
+            completed,
+            total,
+            message,
+        )
+    )
     try:
         workflow = deserialize_workflow(deepcopy(request.workflow))
         pipeline = PrototypePipeline()
@@ -415,12 +472,67 @@ def execute_pipeline_request(
             source_scientific_contexts=source_scientific_contexts,
             cancel_callback=cancel_callback,
         )
+        timing_schedule = pipeline.plan_execution(
+            request.dirty_node_ids,
+            manual_mode=MANUAL_RUN_SKIP,
+            manual_node_ids=request.manual_node_ids,
+            target_node_ids=request.target_node_ids,
+        )
+        timing_runnable_node_ids = frozenset(
+            node_id
+            for node_id in timing_schedule.runnable_node_ids
+            if pipeline.operation_spec(
+                pipeline.nodes[node_id].operation_id
+            ).has_input
+        )
+        if request.performance_history_path is not None:
+            try:
+                timing_workload_fingerprint = (
+                    _pipeline_timing_workload_fingerprint(
+                        pipeline,
+                        timing_runnable_node_ids,
+                        retain_node_ids=request.retain_node_ids,
+                        prune_unretained=request.prune_unretained,
+                        manual_node_ids=request.manual_node_ids,
+                        target_node_ids=request.target_node_ids,
+                        compute_request=request.compute_request,
+                        source_scientific_contexts=source_scientific_contexts,
+                        cancel_callback=cancel_callback,
+                    )
+                )
+                if timing_workload_fingerprint:
+                    timing_store = JsonPipelineTimingStore(
+                        request.performance_history_path
+                    )
+                    timing_host_environment_fingerprint = (
+                        host_performance_fingerprint()
+                    )
+                    timing_execution_surface = (
+                        "direct-cpu-v1"
+                        if request.compute_request.mode is ComputeMode.CPU
+                        else (
+                            "planned-borrowed-registry-v1"
+                            if compute_registry is not None
+                            else "planned-owned-registry-v1"
+                        )
+                    )
+            except OperationCancelled:
+                raise
+            except Exception as exc:
+                timing_store = None
+                timing_workload_fingerprint = ""
+                timing_host_environment_fingerprint = ""
+                timing_execution_surface = ""
+                timing_warnings.append(
+                    "VIPP could not prepare local completed-run timing history; "
+                    f"this run will continue without it ({exc})."
+                )
 
         def publish_node_result(node_id: str) -> None:
-            if node_finished_callback is None:
+            if observed_node_finished_callback is None:
                 return
             node = pipeline.nodes[node_id]
-            node_finished_callback(
+            observed_node_finished_callback(
                 PipelineNodeResult(
                     run_id=request.run_id,
                     node_id=node_id,
@@ -440,22 +552,17 @@ def execute_pipeline_request(
                 )
             )
 
+        run_started = perf_counter() if timing_store is not None else None
         if request.compute_request.mode is ComputeMode.CPU:
-            cpu_schedule = pipeline.plan_execution(
-                request.dirty_node_ids,
-                manual_mode=MANUAL_RUN_SKIP,
-                manual_node_ids=request.manual_node_ids,
-                target_node_ids=request.target_node_ids,
-            )
             pipeline.run(
                 request.input_data,
                 input_metadata=request.input_metadata,
                 input_name=request.input_name,
                 source_payloads=request.source_payloads,
                 dirty_node_ids=request.dirty_node_ids,
-                node_started_callback=node_started_callback,
+                node_started_callback=observed_node_started_callback,
                 node_finished_callback=publish_node_result,
-                progress_callback=progress_callback,
+                progress_callback=observed_progress_callback,
                 cancel_callback=cancel_callback,
                 manual_mode=MANUAL_RUN_SKIP,
                 manual_node_ids=request.manual_node_ids,
@@ -466,7 +573,7 @@ def execute_pipeline_request(
             actual_decisions = _publish_cpu_compute_provenance(
                 pipeline,
                 request,
-                cpu_schedule.runnable_node_ids,
+                timing_schedule.runnable_node_ids,
                 source_scientific_contexts=source_scientific_contexts,
             )
             execution_report = ExecutionReport(
@@ -478,9 +585,9 @@ def execute_pipeline_request(
             execution_report = _execute_accelerated_pipeline(
                 pipeline,
                 request,
-                node_started_callback=node_started_callback,
+                node_started_callback=observed_node_started_callback,
                 node_finished_callback=publish_node_result,
-                progress_callback=progress_callback,
+                progress_callback=observed_progress_callback,
                 cancel_callback=cancel_callback,
                 compute_registry=compute_registry,
                 compute_planner=compute_planner,
@@ -490,6 +597,12 @@ def execute_pipeline_request(
                     else array_facts_cache
                 ),
                 source_scientific_contexts=source_scientific_contexts,
+                timing_store=timing_store,
+                timing_workload_fingerprint=timing_workload_fingerprint,
+                timing_host_environment_fingerprint=(
+                    timing_host_environment_fingerprint
+                ),
+                timing_execution_surface=timing_execution_surface,
             )
     except OperationCancelled as exc:
         failure = _pipeline_execution_failure(
@@ -521,6 +634,89 @@ def execute_pipeline_request(
             source_revisions=request.source_revisions,
             failure=failure,
         )
+    if timing_warnings:
+        execution_report = replace(
+            execution_report,
+            warnings=execution_report.warnings + tuple(timing_warnings),
+        )
+    timing_decisions = tuple(
+        decision
+        for decision in execution_report.actual_decisions
+        if decision.node_id in timing_runnable_node_ids
+    )
+    if (
+        timing_store is not None
+        and timing_workload_fingerprint
+        and timing_runnable_node_ids
+        and run_started is not None
+        and execution_report.cleanup_succeeded
+        and not execution_report.fallback_records
+        and not any(
+            decision.fallback_used
+            for decision in timing_decisions
+        )
+        and not any(
+            decision.reason is DecisionReason.HISTORICAL_PERFORMANCE
+            for decision in timing_decisions
+        )
+        and {decision.node_id for decision in timing_decisions}
+        == set(timing_runnable_node_ids)
+    ):
+        try:
+            timing_store.append(
+                PipelineTimingSample.completed_run(
+                    workload_fingerprint=timing_workload_fingerprint,
+                    host_environment_fingerprint=(
+                        timing_host_environment_fingerprint
+                    ),
+                    environment=execution_report.environment,
+                    decisions=timing_decisions,
+                    elapsed_seconds=max(
+                        perf_counter() - run_started - observer_seconds,
+                        1e-12,
+                    ),
+                    requested_mode=request.compute_request.mode,
+                    execution_surface=timing_execution_surface,
+                )
+            )
+            if any(
+                decision.reason is DecisionReason.PERFORMANCE_EXPLORATION
+                for decision in timing_decisions
+            ):
+                learned_choice = timing_store.choose(
+                    workload_fingerprint=timing_workload_fingerprint,
+                    host_environment_fingerprint=(
+                        timing_host_environment_fingerprint
+                    ),
+                    accelerator_environment_fingerprint=(
+                        execution_report.environment.fingerprint
+                    ),
+                    execution_surface=timing_execution_surface,
+                )
+                if learned_choice is not None:
+                    learned_label = (
+                        "an accelerated assignment"
+                        if learned_choice.uses_accelerator
+                        else "CPU"
+                    )
+                    execution_report = replace(
+                        execution_report,
+                        warnings=execution_report.warnings
+                        + (
+                            "Auto completed its one-time CPU comparison and "
+                            f"learned {learned_label} for the next exact matching "
+                            "run.",
+                        ),
+                    )
+        except Exception as exc:
+            execution_report = replace(
+                execution_report,
+                warnings=execution_report.warnings
+                + (
+                    "VIPP completed the run but could not save its local timing "
+                    f"history ({exc}).",
+                ),
+            )
     return PipelineRunResult(
         request.run_id,
         request.workflow,
@@ -634,6 +830,10 @@ def _execute_accelerated_pipeline(
     compute_planner: ComputePlanner | None,
     array_facts_cache: ArrayFactsCache | None,
     source_scientific_contexts: Mapping[str, str],
+    timing_store: JsonPipelineTimingStore | None,
+    timing_workload_fingerprint: str,
+    timing_host_environment_fingerprint: str,
+    timing_execution_surface: str,
 ) -> ExecutionReport:
     """Plan and atomically commit one non-CPU headless execution."""
     # Accelerator modules remain behind this branch so the default CPU path
@@ -650,6 +850,7 @@ def _execute_accelerated_pipeline(
     assert registry is not None
     planner = compute_planner or _default_compute_planner()
     closed_cleanly = True
+    history_warnings: list[str] = []
     try:
         # A request cancelled before execution starts must not publish even its
         # source boundary through the incremental-result callback.  Source
@@ -703,14 +904,92 @@ def _execute_accelerated_pipeline(
             cancel_callback=cancel_callback,
             array_facts_cache=array_facts_cache,
         )
+        effective_compute_request = request.compute_request
+        timing_choice: PipelineTimingChoice | None = None
+        timing_cpu_exploration = False
+        if (
+            request.compute_request.mode is ComputeMode.AUTO
+            and timing_store is not None
+            and timing_workload_fingerprint
+            and timing_host_environment_fingerprint
+            and timing_execution_surface
+        ):
+            try:
+                candidate_choice = timing_store.choose(
+                    workload_fingerprint=timing_workload_fingerprint,
+                    host_environment_fingerprint=(
+                        timing_host_environment_fingerprint
+                    ),
+                    accelerator_environment_fingerprint=(
+                        preflight_environment.fingerprint
+                    ),
+                    execution_surface=timing_execution_surface,
+                )
+                coverage = timing_store.coverage(
+                    workload_fingerprint=timing_workload_fingerprint,
+                    host_environment_fingerprint=(
+                        timing_host_environment_fingerprint
+                    ),
+                    accelerator_environment_fingerprint=(
+                        preflight_environment.fingerprint
+                    ),
+                    execution_surface=timing_execution_surface,
+                )
+            except Exception as exc:
+                history_warnings.append(
+                    "VIPP could not reuse local completed-run timing history; "
+                    f"reviewed Auto defaults remain active ({exc})."
+                )
+            else:
+                historical_request = _historical_auto_compute_request(
+                    request.compute_request,
+                    candidate_choice,
+                    workloads,
+                    registry,
+                )
+                if candidate_choice is not None:
+                    timing_choice = candidate_choice
+                    effective_compute_request = historical_request
+                elif coverage.needs_cpu_exploration:
+                    effective_compute_request = (
+                        _auto_cpu_exploration_compute_request(
+                            request.compute_request,
+                            workloads,
+                        )
+                    )
+                    timing_cpu_exploration = True
         planning = planner(
-            request.compute_request,
+            effective_compute_request,
             workloads,
             registry=registry,
             environment=preflight_environment,
             array_facts=array_facts,
             performance_evidence=request.performance_evidence,
         )
+        if timing_choice is not None:
+            historical_planning = _mark_historical_auto_planning(
+                planning,
+                original_request=request.compute_request,
+                choice=timing_choice,
+            )
+            if historical_planning is None:
+                timing_choice = None
+                effective_compute_request = request.compute_request
+                planning = planner(
+                    effective_compute_request,
+                    workloads,
+                    registry=registry,
+                    environment=preflight_environment,
+                    array_facts=array_facts,
+                    performance_evidence=request.performance_evidence,
+                )
+            else:
+                planning = historical_planning
+        elif timing_cpu_exploration:
+            planning = _mark_auto_cpu_exploration_planning(
+                planning,
+                original_request=request.compute_request,
+            )
         decisions_by_node = _planning_decisions_by_node(planning)
 
         retained_node_ids = set(request.retain_node_ids)
@@ -729,7 +1008,7 @@ def _execute_accelerated_pipeline(
             pipeline,
             decisions_by_node,
             registry,
-            request.compute_request,
+            effective_compute_request,
             dirty_node_ids=request.dirty_node_ids,
             manual_mode=MANUAL_RUN_SKIP,
             manual_node_ids=request.manual_node_ids,
@@ -822,7 +1101,7 @@ def _execute_accelerated_pipeline(
             device_plan,
             pipeline,
             registry,
-            request.compute_request,
+            effective_compute_request,
             host_values=host_values,
             prepare_call=prepare_call,
             cancel_callback=cancel_callback,
@@ -860,6 +1139,7 @@ def _execute_accelerated_pipeline(
             device_result.fallback_segment_ids,
         )
         warnings = list(getattr(planning, "warnings", ()))
+        warnings.extend(history_warnings)
         if device_result.fallback_segment_ids:
             warnings.append(
                 "Device out-of-memory fallback used for "
@@ -907,6 +1187,272 @@ def _default_compute_planner() -> ComputePlanner:
     from napari_vipp.core.compute_planning import plan_compute_decisions
 
     return plan_compute_decisions
+
+
+def _historical_auto_compute_request(
+    request: ComputeRequest,
+    choice: PipelineTimingChoice | None,
+    workloads: Sequence[WorkloadDescriptor],
+    registry: ComputeRegistry,
+) -> ComputeRequest:
+    """Translate one compatible whole-pipeline choice into private exact pins."""
+
+    if choice is None or request.mode is not ComputeMode.AUTO:
+        return request
+    workloads_by_node = {item.node_id: item for item in workloads}
+    decisions_by_node = {
+        item.node_id: item for item in choice.assignment.decisions
+    }
+    if not decisions_by_node or not set(decisions_by_node).issubset(
+        workloads_by_node
+    ):
+        return request
+    specs_by_id = {
+        item.implementation_id: item for item in registry.implementation_specs
+    }
+    preferences: dict[str, NodeComputePreference] = {}
+    for node_id, decision in decisions_by_node.items():
+        workload = workloads_by_node[node_id]
+        if decision.operation_id != workload.operation_id:
+            return request
+        if decision.runtime_id == "cpu-numpy":
+            if (
+                decision.implementation_library_id != "cpu"
+                or decision.implementation_id
+                != f"cpu-{workload.operation_id}-v1"
+                or decision.implementation_version != "1"
+            ):
+                return request
+            preferences[node_id] = NodeComputePreference(NodePreferenceKind.CPU)
+            continue
+        implementation = specs_by_id.get(decision.implementation_id)
+        if implementation is None:
+            return request
+        if (
+            implementation.operation_id != workload.operation_id
+            or implementation.runtime_id != decision.runtime_id
+            or implementation.implementation_library_id
+            != decision.implementation_library_id
+            or implementation.implementation_version
+            != decision.implementation_version
+            or not implementation.eligible_for_auto(
+                allow_experimental=request.allow_experimental
+            )
+        ):
+            return request
+        preferences[node_id] = NodeComputePreference(
+            NodePreferenceKind.IMPLEMENTATION,
+            decision.implementation_id,
+        )
+    return replace(
+        request,
+        mode=ComputeMode.CUSTOM,
+        node_preferences=preferences,
+    )
+
+
+def _auto_cpu_exploration_compute_request(
+    request: ComputeRequest,
+    workloads: Sequence[WorkloadDescriptor],
+) -> ComputeRequest:
+    """Author one private all-CPU run to complete a GPU-only timing pair."""
+
+    return replace(
+        request,
+        mode=ComputeMode.CUSTOM,
+        node_preferences={
+            item.node_id: NodeComputePreference(NodePreferenceKind.CPU)
+            for item in workloads
+        },
+    )
+
+
+def _mark_historical_auto_planning(
+    planning: object,
+    *,
+    original_request: ComputeRequest,
+    choice: PipelineTimingChoice,
+) -> object | None:
+    """Restore public Auto intent and attach exact timing evidence provenance."""
+
+    expected = {
+        item.node_id: item for item in choice.assignment.decisions
+    }
+    decisions_by_node = {item.node_id: item for item in planning.decisions}
+    if not set(expected).issubset(decisions_by_node):
+        return None
+    mismatches = [
+        node_id
+        for node_id, decision in decisions_by_node.items()
+        if node_id in expected
+        if decision.fallback_used
+        or decision.runtime_id != expected[node_id].runtime_id
+        or decision.implementation_library_id
+        != expected[node_id].implementation_library_id
+        or decision.implementation_id != expected[node_id].implementation_id
+        or decision.implementation_version
+        != expected[node_id].implementation_version
+    ]
+    if mismatches:
+        return None
+    decisions = []
+    for decision in planning.decisions:
+        if decision.node_id not in expected:
+            decisions.append(decision)
+            continue
+        decisions.append(
+            replace(
+                decision,
+                requested_preference=NodeComputePreference(
+                    NodePreferenceKind.AUTO
+                ),
+                reason=DecisionReason.HISTORICAL_PERFORMANCE,
+                reason_text=choice.reason,
+                performance_evidence_kind="completed_pipeline_timing",
+                performance_evidence_digest=choice.evidence_digest,
+            )
+        )
+    return replace(
+        planning,
+        request=original_request,
+        decisions=tuple(decisions),
+    )
+
+
+def _mark_auto_cpu_exploration_planning(
+    planning: object,
+    *,
+    original_request: ComputeRequest,
+):
+    """Expose a private CPU comparison run as the user's public Auto intent."""
+
+    decisions = []
+    for decision in planning.decisions:
+        if decision.runtime_id != "cpu-numpy" or decision.fallback_used:
+            return replace(planning, request=original_request)
+        decisions.append(
+            replace(
+                decision,
+                requested_preference=NodeComputePreference(
+                    NodePreferenceKind.AUTO
+                ),
+                reason=DecisionReason.PERFORMANCE_EXPLORATION,
+                reason_text=(
+                    "Auto already has a compatible accelerated timing but needs "
+                    "one CPU comparison. This run measures CPU once; the next "
+                    "exact matching run can use the faster assignment."
+                ),
+            )
+        )
+    return replace(
+        planning,
+        request=original_request,
+        decisions=tuple(decisions),
+    )
+
+
+def _pipeline_timing_workload_fingerprint(
+    pipeline: PrototypePipeline,
+    runnable_node_ids: frozenset[str],
+    *,
+    retain_node_ids: frozenset[str],
+    prune_unretained: bool,
+    manual_node_ids: frozenset[str] | None,
+    target_node_ids: frozenset[str] | None,
+    compute_request: ComputeRequest,
+    source_scientific_contexts: Mapping[str, str],
+    cancel_callback: Callable[[], bool] | None,
+) -> str:
+    """Identify an exact scientific graph/source/scope without compute intent."""
+
+    source_node_ids = {
+        node_id
+        for node_id, node in pipeline.nodes.items()
+        if not pipeline.operation_spec(node.operation_id).has_input
+    }
+    if not source_node_ids.issubset(source_scientific_contexts):
+        # Opaque metadata/source values must disable learning rather than permit
+        # fuzzy evidence reuse.
+        return ""
+    try:
+        runnable = set(runnable_node_ids)
+        cached_boundaries = []
+        for connection in pipeline.connections:
+            if (
+                connection.target_id not in runnable
+                or connection.source_id in runnable
+            ):
+                continue
+            source_node = pipeline.nodes[connection.source_id]
+            if pipeline.operation_spec(source_node.operation_id).has_input:
+                provenance = pipeline.node_compute_provenance.get(
+                    connection.source_id
+                )
+                if provenance is None:
+                    return ""
+                result_context = provenance.result_context_fingerprint
+            else:
+                result_context = source_scientific_contexts.get(
+                    connection.source_id,
+                    "",
+                )
+                if not result_context:
+                    return ""
+            cached_boundaries.append(
+                {
+                    "source_id": connection.source_id,
+                    "source_port": connection.source_port,
+                    "target_id": connection.target_id,
+                    "target_port": connection.target_port,
+                    "result_context": result_context,
+                }
+            )
+        nodes = [
+            _node_structural_identity(
+                pipeline,
+                node_id,
+                cancel_callback=cancel_callback,
+            )
+            for node_id in pipeline.topological_order()
+        ]
+        tunnels = [
+            {
+                "name": item.name,
+                "source_id": item.source_id,
+                "source_port": item.source_port,
+            }
+            for item in pipeline.output_tunnel_list()
+        ]
+        return canonical_digest(
+            {
+                "schema_id": "vipp-completed-pipeline-workload-v1",
+                "nodes": nodes,
+                "tunnels": tunnels,
+                "source_scientific_contexts": dict(
+                    sorted(source_scientific_contexts.items())
+                ),
+                "runnable_node_ids": sorted(runnable_node_ids),
+                "manual_node_ids": sorted(manual_node_ids or ()),
+                "target_node_ids": sorted(target_node_ids or ()),
+                "retain_node_ids": sorted(retain_node_ids),
+                "prune_unretained": bool(prune_unretained),
+                "cached_boundaries": cached_boundaries,
+                "compute_contract": {
+                    "precision_policy_id": compute_request.precision_policy_id,
+                    "workload_policy_id": compute_request.workload_policy_id,
+                    "runtime_id": compute_request.runtime_id,
+                    "device_id": compute_request.device_id,
+                    "accelerator_memory_cap_bytes": (
+                        compute_request.accelerator_memory_cap_bytes
+                    ),
+                    "accelerator_safety_reserve_bytes": (
+                        compute_request.accelerator_safety_reserve_bytes
+                    ),
+                },
+            }
+        )
+    except (OverflowError, TypeError, ValueError, RecursionError):
+        return ""
 
 
 def _initial_transaction_values(
@@ -1661,10 +2207,10 @@ def _candidate_can_clear_performance_gate(
 ) -> bool:
     preference = (
         request.preference_for(workload.node_id)
-        if request.mode is ComputeMode.SELECTIVE
+        if request.mode is ComputeMode.CUSTOM
         else NodeComputePreference(NodePreferenceKind.AUTO)
     )
-    forced = request.mode is ComputeMode.SELECTIVE and preference.kind in {
+    forced = request.mode is ComputeMode.CUSTOM and preference.kind in {
         NodePreferenceKind.BEST_GPU,
         NodePreferenceKind.LIBRARY,
         NodePreferenceKind.IMPLEMENTATION,
@@ -1674,7 +2220,7 @@ def _candidate_can_clear_performance_gate(
     evidence = performance_evidence.get(
         (workload.node_id, implementation.implementation_id)
     )
-    return evidence is not None and evaluate_auto_performance(evidence).select_candidate
+    return evidence is None or evaluate_auto_performance(evidence).select_candidate
 
 
 def _candidate_specs_for_workload(
@@ -1686,11 +2232,11 @@ def _candidate_specs_for_workload(
         return ()
     preference = (
         request.preference_for(workload.node_id)
-        if request.mode is ComputeMode.SELECTIVE
+        if request.mode is ComputeMode.CUSTOM
         else NodeComputePreference(NodePreferenceKind.AUTO)
     )
     if (
-        request.mode is ComputeMode.SELECTIVE
+        request.mode is ComputeMode.CUSTOM
         and preference.kind is NodePreferenceKind.CPU
     ):
         return ()
@@ -1699,7 +2245,7 @@ def _candidate_specs_for_workload(
         allow_experimental=request.allow_experimental,
     )
     automatic_intent = request.mode is ComputeMode.AUTO or (
-        request.mode is ComputeMode.SELECTIVE
+        request.mode is ComputeMode.CUSTOM
         and preference.kind is NodePreferenceKind.AUTO
     )
     if automatic_intent:
@@ -1715,7 +2261,7 @@ def _candidate_specs_for_workload(
             item for item in implementations if item.runtime_id == request.runtime_id
         )
     if (
-        request.mode is ComputeMode.SELECTIVE
+        request.mode is ComputeMode.CUSTOM
         and preference.kind is NodePreferenceKind.LIBRARY
     ):
         implementations = tuple(
@@ -1724,7 +2270,7 @@ def _candidate_specs_for_workload(
             if item.implementation_library_id == preference.value
         )
     elif (
-        request.mode is ComputeMode.SELECTIVE
+        request.mode is ComputeMode.CUSTOM
         and preference.kind is NodePreferenceKind.IMPLEMENTATION
     ):
         implementations = tuple(
@@ -3163,6 +3709,7 @@ def _publish_cpu_compute_provenance(
                 reason_text=(
                     "The CPU policy selected the authoritative host implementation."
                 ),
+                implementation_version="1",
             )
         )
     _publish_actual_compute_provenance(

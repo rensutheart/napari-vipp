@@ -162,7 +162,7 @@ def test_workflow_snapshot_isolates_metadata_and_preserves_order():
 def test_workflow_snapshot_preserves_detached_compute_intent():
     pipeline = PrototypePipeline()
     request = ComputeRequest(
-        mode="selective",
+        mode="custom",
         node_preferences={"gaussian": "library:cupyx"},
         fallback_policy="strict",
     )

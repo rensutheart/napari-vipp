@@ -368,7 +368,7 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     monkeypatch,
 ):
     pipeline, source_id, median_id, writer_id = _writer_workflow()
-    document = serialize_workflow(pipeline, compute_request=ComputeRequest("selective"))
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("custom"))
     values = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64).T
     original = values.copy()
     environment = _environment()
@@ -404,7 +404,7 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     result = coordinator.optimize(
         document,
         {source_id: SourcePayload(values, name="private-source")},
-        ComputeRequest("selective", allow_experimental=True),
+        ComputeRequest("custom", allow_experimental=True),
         time_budget_seconds=20.0,
         progress=progress.append,
     )
@@ -460,7 +460,7 @@ def test_node_benchmark_timeout_reports_stage_progress_and_no_optimality(
     monkeypatch,
 ):
     pipeline, source_id, median_id, writer_id = _writer_workflow()
-    document = serialize_workflow(pipeline, compute_request=ComputeRequest("selective"))
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("custom"))
     environment = _environment()
     clock = _ManualClock()
     registry = ComputeRegistry()
@@ -490,7 +490,7 @@ def test_node_benchmark_timeout_reports_stage_progress_and_no_optimality(
         executor=executor,
         node_benchmarker=node_benchmarker,
     )
-    request = ComputeRequest("selective", allow_experimental=True)
+    request = ComputeRequest("custom", allow_experimental=True)
     progress = []
 
     with pytest.raises(PipelineOptimizationDeadlineExceeded) as caught:
@@ -542,7 +542,7 @@ def test_close_pipeline_validation_uses_full_fifteen_rounds(
     monkeypatch,
 ):
     pipeline, source_id, median_id, writer_id = _writer_workflow()
-    document = serialize_workflow(pipeline, compute_request=ComputeRequest("selective"))
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("custom"))
     environment = _environment()
     clock = _ManualClock()
     registry = ComputeRegistry()
@@ -582,7 +582,7 @@ def test_close_pipeline_validation_uses_full_fifteen_rounds(
                     np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
                 )
             },
-            ComputeRequest("selective", allow_experimental=True),
+            ComputeRequest("custom", allow_experimental=True),
             time_budget_seconds=20.0,
         )
 
@@ -594,7 +594,7 @@ def test_decisive_current_pipeline_win_stops_after_five_rounds(
     monkeypatch,
 ):
     pipeline, source_id, median_id, writer_id = _writer_workflow()
-    document = serialize_workflow(pipeline, compute_request=ComputeRequest("selective"))
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("custom"))
     environment = _environment()
     clock = _ManualClock()
     registry = ComputeRegistry()
@@ -629,7 +629,7 @@ def test_decisive_current_pipeline_win_stops_after_five_rounds(
     result = coordinator.optimize(
         document,
         {source_id: SourcePayload(np.arange(64 * 64, dtype=np.uint16).reshape(64, 64))},
-        ComputeRequest("selective", allow_experimental=True),
+        ComputeRequest("custom", allow_experimental=True),
         time_budget_seconds=20.0,
     )
 
@@ -652,7 +652,7 @@ def test_locked_gpu_graph_node_needs_no_comparative_benchmark_record():
         allow_experimental=True,
     )[0]
     request = ComputeRequest(
-        "selective",
+        "custom",
         {
             median_id: NodeComputePreference(
                 "implementation",
@@ -694,7 +694,7 @@ def test_locked_gpu_graph_node_needs_no_comparative_benchmark_record():
     assert median.candidates[0].minimum_workspace_bytes == 2_560
 
 
-def test_application_optimizer_refuses_non_selective_and_missing_sources(tmp_path):
+def test_application_optimizer_refuses_non_custom_and_missing_sources(tmp_path):
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     source_id = next(iter(pipeline.nodes))
@@ -706,12 +706,12 @@ def test_application_optimizer_refuses_non_selective_and_missing_sources(tmp_pat
         tmp_path / "benchmarks.json",
     )
 
-    with pytest.raises(PipelineOptimizationEvidenceIncomplete) as non_selective:
+    with pytest.raises(PipelineOptimizationEvidenceIncomplete) as non_custom:
         coordinator.optimize(document, {}, ComputeRequest("cpu"))
-    assert non_selective.value.reasons[0].code == "selective_required"
+    assert non_custom.value.reasons[0].code == "custom_required"
 
     with pytest.raises(PipelineOptimizationEvidenceIncomplete) as missing:
-        coordinator.optimize(document, {}, ComputeRequest("selective"))
+        coordinator.optimize(document, {}, ComputeRequest("custom"))
     assert missing.value.reasons[0].code == "source_identity_incomplete"
 
 
@@ -730,7 +730,7 @@ def test_environment_recheck_probes_exact_candidates_without_execution(monkeypat
         "napari_vipp.core.compute_pipeline_optimizer_coordinator.probe_compute_environment",
         probe,
     )
-    request = ComputeRequest("selective", allow_experimental=True)
+    request = ComputeRequest("custom", allow_experimental=True)
 
     actual = probe_pipeline_optimizer_environment(registry, document, request)
 
@@ -741,7 +741,7 @@ def test_environment_recheck_probes_exact_candidates_without_execution(monkeypat
     public = probe_pipeline_optimizer_environment(
         registry,
         document,
-        ComputeRequest("selective", allow_experimental=False),
+        ComputeRequest("custom", allow_experimental=False),
     )
 
     assert public.fingerprint == environment.fingerprint
@@ -857,7 +857,7 @@ def test_pipeline_validation_checks_unchanged_observable_downstream_output(
     validation = coordinator._validate_assignments(
         document,
         {source_id: SourcePayload(np.zeros((4, 4), dtype=np.float32))},
-        ComputeRequest("selective", allow_experimental=True),
+        ComputeRequest("custom", allow_experimental=True),
         _environment(),
         pipeline,
         frozenset(pipeline.nodes),
@@ -990,7 +990,7 @@ def test_pipeline_validation_stops_at_skipped_manual_barrier(tmp_path):
     validation = coordinator._validate_assignments(
         document,
         {source_id: SourcePayload(np.arange(64, dtype=np.uint16).reshape(8, 8))},
-        ComputeRequest("selective", allow_experimental=True),
+        ComputeRequest("custom", allow_experimental=True),
         _environment(),
         pipeline,
         frozenset(pipeline.nodes),
@@ -1120,7 +1120,7 @@ def test_pipeline_validation_rejects_untrustworthy_execution_report(
         coordinator._validate_assignments(
             document,
             {source_id: SourcePayload(np.zeros((8, 8), dtype=np.uint16))},
-            ComputeRequest("selective", allow_experimental=True),
+            ComputeRequest("custom", allow_experimental=True),
             _environment(),
             pipeline,
             frozenset(pipeline.nodes),

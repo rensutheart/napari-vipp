@@ -415,7 +415,7 @@ def test_stale_compute_preference_fails_before_batch_artifacts(tmp_path):
     invalid = replace(
         config,
         compute_request=ComputeRequest(
-            mode=ComputeMode.SELECTIVE,
+            mode=ComputeMode.CUSTOM,
             node_preferences={"deleted-node": "cpu"},
         ),
     )
@@ -426,7 +426,7 @@ def test_stale_compute_preference_fails_before_batch_artifacts(tmp_path):
     assert not invalid.output_dir.exists()
 
     override = ComputeRequest(
-        mode=ComputeMode.SELECTIVE,
+        mode=ComputeMode.CUSTOM,
         node_preferences={"deleted-node": "best_gpu"},
     )
     with pytest.raises(ValueError, match="missing node IDs: deleted-node"):
