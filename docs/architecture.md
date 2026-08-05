@@ -853,7 +853,7 @@ conventional TIFF for label images, and OME-TIFF for other TIFF outputs.
 
 `core/preview.py` reduces arbitrary output arrays to displayable thumbnails.
 
-`make_preview(data, mode, current_step, state, channel_colors=None)` supports:
+`make_preview(...)` accepts a configurable `preview_size` and supports:
 
 - `Slice`: reduce non-spatial axes by current napari dims or midpoint;
 - `MIP`: project spatial axes where appropriate;
@@ -971,14 +971,82 @@ calculations.
 Toolbar thumbnail controls are global display settings. `Preview` chooses the
 thumbnail reduction (`Slice`, `MIP`, or `Off`); `Off` disables node-card
 thumbnail generation globally. The selected-node inspector checkbox still acts
-as a per-node opt-out when previews are enabled. `Contrast` chooses how scalar
-thumbnail intensities are mapped to display: `Percentile` uses the current
-robust 1st/99th percentile stretch, `Min-max` uses the displayed data minimum
+as a per-node opt-out when previews are enabled. `Thumbnail detail` selects a
+90 × 55, 180 × 110, or 360 × 220 render target while the card viewport remains
+180 × 110. The full source pixmap is retained and rescaled from that source on
+each paint, so High supplies 360 × 220 backing detail for HiDPI display or
+downsampling; it does not promise a physically larger card. Changing this local
+`QSettings` preference rerenders cards without recalculating the graph or
+invalidating cached Stack contrast limits. Stack statistics summarize the
+complete output and are resolution-independent. Slice-scope normalization is
+deliberately calculated from the selected detail's spatially sampled current
+view for responsiveness, so Low/Standard/High may produce slightly different
+Slice display limits.
+`Contrast` chooses how scalar thumbnail intensities are mapped to display:
+`Percentile` uses the current
+robust 0.5th/99.9th percentile stretch, `Min-max` uses the displayed data minimum
 and maximum, and `Raw` uses dtype/range display without adaptive stretching.
 For `uint16`, raw mode maps 0..65535 to 0..255, so dim microscopy signals may
 appear dark by design. The toolbar `Mono` dropdown controls the colormap used
 for monochrome thumbnails only. These controls are display settings, not
 metadata, and do not alter graph outputs or histogram values.
+
+Stack thumbnail statistics run through the presentation-only
+`ThumbnailStatisticsEngine`, independently of operation planning and actual-run
+compute provenance. Percentile mode uses exact native `uint8`/`uint16`
+histograms and reproduces the existing NumPy-linear result bit for bit without
+a whole-stack float/order-statistic buffer. Min-max uses an exact native
+reduction instead of paying to construct a histogram. Integer CPU counting and
+min-max reduction use bounded chunks with cancellation checkpoints. The lazily
+imported CuPy histogram adapter uploads the full eligible input once, allocates
+a fixed count table, owns a private runtime scope, synchronizes, and closes it
+before returning. Device-memory admission includes the input, count table, and
+a conservative overhead; "bounded histogram" does not mean zero-copy or no full
+device input. An active GPU kernel/synchronization cannot be interrupted. Float
+and other dtypes retain the exact NumPy-compatible CPU percentile calculation,
+which can allocate full-array conversion/filter temporaries. One NumPy
+percentile call may likewise be a non-interruptible inner pass, so the UI
+reports these phases honestly and applies cancellation after they return. Raw
+integer, mask, label, table, and other scan-free contracts do not probe an
+accelerator.
+
+The presentation policy is stored locally as `Auto`, `CPU`, or `Prefer GPU`.
+The scientific main-toolbar `CPU` policy hard-forces presentation CPU; its
+`Prefer GPU` policy biases presentation Auto to Prefer GPU; scientific Auto and
+Custom leave presentation Auto adaptive. Auto makes one deterministic decision
+per eligible Percentile result from the full array dtype and `nbytes`. Before
+the session engine has completed a GPU histogram, the conservative crossover is
+384 MiB for `uint8` or 512 MiB for `uint16`; it becomes 32 MiB after that path
+is warm. These are measured default heuristics, not a universal fastest
+guarantee: hardware, CUDA startup, data distribution, residency, and competing
+work can move the crossover. Thumbnail render resolution is deliberately absent
+from this decision. `Prefer GPU` is the explicit override and uses visible CPU
+fallback for ineligibility, unavailability, or a classified safe failure;
+cleanup failure is non-fallback-safe and enters the shared compute quarantine.
+
+Before worker submission, the same probe-free selector admits a deliberately
+small CPU-only fast path: no more than 1 MiB of aggregate scanned data, eight
+requests, and eight aggregate scalar/channel lanes, all with ordinary numeric
+dtypes. The existing worker executes directly from its queued GUI callback, so
+the normal result, cache, weak-identity, error, and Stats-provenance paths remain
+single-sourced. It does not claim the shared progress strip. Any GPU decision,
+selection error, larger scan, high-channel histogram, or non-numeric dtype uses
+the normal background worker. This avoids thread-pool overhead and incidental
+UI blocking for micro-workloads without risking CUDA startup or a large
+per-channel histogram on the GUI thread.
+
+Exact limits and typed decision/result metadata are cached separately. Per-card
+`Stats…` (pending), `Stats · CPU`, `Stats · GPU`, `Stats · CPU fallback`, and
+`Stats · error` chips expose presentation backend, algorithm, byte count,
+timing, crossover, reason, and fallback without overwriting the scientific
+CPU/CuPy/cuCIM badge. The shared toolbar progress/cancel ownership covers
+thumbnail scans. CPU integer paths advance between bounded chunks. An active
+GPU kernel/synchronization or float/other-dtype NumPy percentile phase can be
+indeterminate and cannot be interrupted inside its current call. Cancellation
+takes effect at the next cooperative phase boundary, keeps provisional previews,
+and never publishes a partial limit; already completed exact node results may
+be retained when the whole statistics batch ends normally with a different node
+failure.
 
 Scientific diagnostic reductions live in `core/diagnostics.py`; Qt plot widgets
 live in `ui/plots.py`. Typed request/result objects and Qt runnables for

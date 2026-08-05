@@ -9,9 +9,12 @@ from napari_vipp.core.channel_colors import (
     channel_color_table,
 )
 from napari_vipp.core.metadata import ImageState
+from napari_vipp.core.thumbnail_statistics import (
+    THUMBNAIL_PERCENTILE_RANGE,
+    exact_uint_thumbnail_contrast_limits,
+)
 
 RGB_CHANNELS = (3, 4)
-THUMBNAIL_PERCENTILE_RANGE = (0.5, 99.9)
 MONOCHROME_COLORMAPS = (
     "Gray",
     "Viridis",
@@ -49,8 +52,6 @@ def make_preview(
     arr = np.asarray(data)
     if arr.size == 0:
         return None
-    if preview_size is not None:
-        arr = _sample_spatial_axes_for_preview(arr, state, preview_size)
 
     mode = mode.lower()
     if state is not None:
@@ -64,16 +65,22 @@ def make_preview(
             contrast_mode=contrast_mode,
             contrast_scope=contrast_scope,
             contrast_limits=contrast_limits,
+            preview_size=preview_size,
         )
         if state_preview is not None:
             return state_preview
     if mode == "mip":
+        if preview_size is not None:
+            arr = _sample_spatial_axes_for_preview(arr, None, preview_size)
         return _mip(arr)
-    return _slice(
+    preview = _slice(
         arr,
         current_step=current_step,
         current_step_nsteps=current_step_nsteps,
     )
+    if preview_size is not None:
+        preview = _sample_spatial_axes_for_preview(preview, None, preview_size)
+    return preview
 
 
 def normalize_thumbnail(data, size: tuple[int, int] = (180, 110)) -> np.ndarray | None:
@@ -160,6 +167,12 @@ def thumbnail_contrast_limits(
     arr = np.asarray(data)
     if arr.size == 0:
         return (0.0, 0.0)
+    if arr.dtype in {np.dtype(np.uint8), np.dtype(np.uint16)}:
+        return exact_uint_thumbnail_contrast_limits(
+            arr,
+            contrast_mode=contrast_mode,
+            data_kind=data_kind,
+        )
 
     mode = _contrast_mode_key(contrast_mode)
     if mode == "raw":
@@ -213,6 +226,16 @@ def thumbnail_channel_contrast_limits(
         return ()
     count = arr.shape[axis] if channel_count is None else int(channel_count)
     count = max(0, min(count, arr.shape[axis]))
+    if (
+        count == arr.shape[axis]
+        and arr.dtype in {np.dtype(np.uint8), np.dtype(np.uint16)}
+    ):
+        return exact_uint_thumbnail_contrast_limits(
+            arr,
+            channel_axis=axis,
+            contrast_mode=contrast_mode,
+            data_kind=data_kind,
+        )
     return tuple(
         thumbnail_contrast_limits(
             np.take(arr, channel, axis=axis),
@@ -233,7 +256,7 @@ def _slice(arr: np.ndarray, current_step=None, current_step_nsteps=None) -> np.n
             current_step,
             current_step_nsteps=current_step_nsteps,
         )
-        arr = np.take(arr, index, axis=axis)
+        arr = arr[index]
     return arr
 
 
@@ -242,17 +265,22 @@ def _sample_spatial_axes_for_preview(
     state: ImageState | None,
     size: tuple[int, int],
 ) -> np.ndarray:
-    """Sample X/Y before reductions so thumbnail work stays thumbnail-sized.
-
-    Nearest-neighbour spatial sampling commutes with selecting a slice and with
-    a projection over non-X/Y axes. Doing it first therefore produces the same
-    thumbnail pixels without materializing or normalizing a full camera frame.
-    """
+    """Nearest-sample X/Y while preserving every non-spatial axis."""
     if arr.ndim < 2:
         return arr
     y_axis, x_axis = _preview_spatial_axes(arr, state)
     if y_axis is None or x_axis is None:
         return arr
+    return _sample_axes_for_preview(arr, y_axis, x_axis, size)
+
+
+def _sample_axes_for_preview(
+    arr: np.ndarray,
+    y_axis: int,
+    x_axis: int,
+    size: tuple[int, int],
+) -> np.ndarray:
+    """Nearest-sample two known spatial axes to a bounded render target."""
     target_w, target_h = (max(int(value), 1) for value in size)
     height = int(arr.shape[y_axis])
     width = int(arr.shape[x_axis])
@@ -293,6 +321,7 @@ def _state_aware_preview(
     contrast_mode: str = "Percentile",
     contrast_scope: str = "Slice",
     contrast_limits=None,
+    preview_size: tuple[int, int] | None = None,
 ) -> np.ndarray | None:
     if len(state.axes) != arr.ndim:
         return None
@@ -311,6 +340,7 @@ def _state_aware_preview(
             mode=mode,
             current_step=current_step,
             current_step_nsteps=current_step_nsteps,
+            preview_size=preview_size,
         )
         if reduced.ndim != 3:
             return None
@@ -348,6 +378,7 @@ def _state_aware_preview(
         mode=mode,
         current_step=current_step,
         current_step_nsteps=current_step_nsteps,
+        preview_size=preview_size,
     )
     if reduced.ndim != 2:
         return None
@@ -365,25 +396,51 @@ def _reduce_to_axes(
     mode: str,
     current_step,
     current_step_nsteps,
+    preview_size: tuple[int, int] | None = None,
 ) -> np.ndarray:
-    result = arr
-    remaining = list(range(arr.ndim))
-    for original_axis in reversed(range(arr.ndim)):
-        if original_axis in keep_axes:
+    projection_axes = {
+        original_axis
+        for original_axis, axis in enumerate(state.axes)
+        if original_axis not in keep_axes
+        and mode == "mip"
+        and axis.type == "space"
+    }
+    selection_axes = set(range(arr.ndim)) - keep_axes - projection_axes
+    selection: list[int | slice] = []
+    for original_axis in range(arr.ndim):
+        if original_axis not in selection_axes:
+            selection.append(slice(None))
             continue
-        local_axis = remaining.index(original_axis)
-        axis = state.axes[original_axis]
-        if mode == "mip" and axis.type == "space":
-            result = np.max(result, axis=local_axis)
-        else:
-            step_axis = _current_step_axis(state, original_axis, current_step)
-            index = _axis_index(
+        step_axis = _current_step_axis(state, original_axis, current_step)
+        selection.append(
+            _axis_index(
                 step_axis,
-                result.shape[local_axis],
+                arr.shape[original_axis],
                 current_step,
                 current_step_nsteps=current_step_nsteps,
             )
-            result = np.take(result, index, axis=local_axis)
+        )
+    result = arr[tuple(selection)]
+    remaining = [
+        original_axis
+        for original_axis in range(arr.ndim)
+        if original_axis not in selection_axes
+    ]
+
+    if preview_size is not None:
+        y_axis = _axis_index_by_name(state, "y")
+        x_axis = _axis_index_by_name(state, "x")
+        if y_axis in remaining and x_axis in remaining:
+            result = _sample_axes_for_preview(
+                result,
+                remaining.index(y_axis),
+                remaining.index(x_axis),
+                preview_size,
+            )
+
+    for original_axis in sorted(projection_axes, reverse=True):
+        local_axis = remaining.index(original_axis)
+        result = np.max(result, axis=local_axis)
         remaining.pop(local_axis)
     return result
 
@@ -461,7 +518,7 @@ def _fluorescence_composite(
         arr.shape[-1],
         metadata_colors=metadata_colors,
     )
-    channels = []
+    composite = np.zeros(arr.shape[:2] + (3,), dtype=np.float32)
     for channel in range(arr.shape[-1]):
         channel_reference = _channel_reference(reference, channel)
         normalized = (
@@ -476,10 +533,8 @@ def _fluorescence_composite(
             / 255.0
         )
         color = color_table[channel]
-        channels.append(normalized[..., None] * color)
-    if not channels:
-        return np.zeros(arr.shape[:2] + (3,), dtype=np.float32)
-    return np.clip(np.sum(channels, axis=0), 0, 1)
+        composite += normalized[..., None] * color
+    return np.clip(composite, 0, 1, out=composite)
 
 
 def _mip(arr: np.ndarray) -> np.ndarray:

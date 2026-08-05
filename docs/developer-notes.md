@@ -47,6 +47,7 @@ napari / npe2
 | How are axes, calibration, kind, channels, and history propagated? | `core/metadata.py` |
 | May several images or an image/PSF be combined on their physical grids? | `core/grid.py` |
 | How are exact statistics, histograms, percentiles, contrast extrema, or label sizes calculated? | `core/diagnostics.py` |
+| How are presentation-only thumbnail contrast statistics selected and calculated? | `core/thumbnail_statistics.py`, `core/gpu/cupy_thumbnail_statistics.py`, `ui/diagnostic_workers.py` |
 | How is a local file/store revision identified and frozen? | `core/source_identity.py`, `core/file_sources.py` |
 | How is a live napari layer revision frozen and invalidated? | `ui/source_adapter.py` |
 | How does background graph execution cross the Qt boundary? | `core/execution.py`, `ui/workers.py` |

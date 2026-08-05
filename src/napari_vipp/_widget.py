@@ -84,6 +84,7 @@ from napari_vipp._graph import (
     ComputeBadgeKind,
     PipelineGraphView,
     PortLabelMode,
+    ThumbnailStatsBadgeKind,
 )
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp.core.batch import (
@@ -239,10 +240,9 @@ from napari_vipp.core.preview import (
     MONOCHROME_COLORMAPS,
     THUMBNAIL_CONTRAST_MODES,
     THUMBNAIL_CONTRAST_SCOPES,
+    THUMBNAIL_PERCENTILE_RANGE,
     make_preview,
     normalize_thumbnail_with_colormap,
-    thumbnail_channel_contrast_limits,
-    thumbnail_contrast_limits,
 )
 from napari_vipp.core.source_identity import (
     LocalSourceIdentity,
@@ -251,6 +251,11 @@ from napari_vipp.core.source_identity import (
     verify_local_source_identity,
 )
 from napari_vipp.core.tables import is_table_data, save_table_output
+from napari_vipp.core.thumbnail_statistics import (
+    ThumbnailStatisticsBackend,
+    ThumbnailStatisticsEngine,
+    ThumbnailStatisticsRequest,
+)
 from napari_vipp.core.workflow import (
     load_workflow,
     save_workflow,
@@ -486,6 +491,16 @@ from napari_vipp.ui.plots import (
 from napari_vipp.ui.plots import (
     _qcolor_from_channel_color as _qcolor_from_channel_color,
 )
+from napari_vipp.ui.presentation_settings import (
+    THUMBNAIL_RESOLUTION_CHOICES,
+    THUMBNAIL_STATISTICS_POLICY_CHOICES,
+    ThumbnailStatisticsPolicy,
+    load_thumbnail_resolution,
+    load_thumbnail_statistics_policy,
+    save_thumbnail_resolution,
+    save_thumbnail_statistics_policy,
+    thumbnail_resolution_preset,
+)
 from napari_vipp.ui.search import (
     _fuzzy_match as _fuzzy_match,
 )
@@ -555,6 +570,14 @@ AUTO_BACKGROUND_MIN_BYTES = 32 * 1024 * 1024
 AUTO_BACKGROUND_MIN_ELEMENTS = 4_000_000
 AUTO_CONTRAST_BACKGROUND_MIN_ELEMENTS = 1_000_000
 INSPECTOR_STATISTICS_CHUNK_ELEMENTS = 1_048_576
+THUMBNAIL_CONTRAST_CACHE_MAX_ENTRIES = 512
+# Exact CPU statistics below this aggregate scan size are quicker and safer to
+# finish in the queued GUI callback than to occupy the shared worker pool.  The
+# selector must still confirm CPU for every request; GPU work always remains
+# asynchronous so CUDA startup or synchronization can never freeze the UI.
+THUMBNAIL_INLINE_CPU_MAX_BYTES = 1 * 1024 * 1024
+THUMBNAIL_INLINE_CPU_MAX_REQUESTS = 8
+THUMBNAIL_INLINE_CPU_MAX_CHANNEL_LANES = 8
 
 
 if TYPE_CHECKING:
@@ -773,6 +796,7 @@ def _toolbar_field_pair(
     label = QLabel(label_text, field)
     label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+    label.setBuddy(control)
     layout.addWidget(label)
     layout.addWidget(control)
     field.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
@@ -1103,6 +1127,9 @@ class VippWidget(QWidget):
         "_last_pipeline_source_signature",
         "_recent_cache_node_ids",
         "_thumbnail_contrast_limit_cache",
+        "_thumbnail_contrast_statistics_cache",
+        "_thumbnail_contrast_failure_cache",
+        "_thumbnail_contrast_identity_refs",
         "_input_histogram_cache",
         "_input_histogram_distribution_cache",
         "_label_volume_cache",
@@ -1169,6 +1196,9 @@ class VippWidget(QWidget):
         self._collection_batch_job_serial = 0
         self._active_collection_batch_job: _CollectionBatchJobContext | None = None
         self._collection_batch_workers: dict[int, CollectionBatchWorker] = {}
+        self._pending_collection_batch_start: (
+            tuple[CollectionBatchDialog, dict[str, object]] | None
+        ) = None
         self._last_workflow_load_detail = ""
         self._active_source_load_id: int | None = None
         self._source_load_serial = 0
@@ -1200,14 +1230,24 @@ class VippWidget(QWidget):
         self._toolbar_settings_widgets: list[QWidget] = []
         self._recent_cache_node_ids: list[str] = []
         self._thumbnail_contrast_limit_cache: dict[tuple, object] = {}
+        self._thumbnail_contrast_statistics_cache: dict[tuple, object] = {}
+        self._thumbnail_contrast_failure_cache: dict[tuple, str] = {}
+        self._thumbnail_contrast_identity_refs: dict[
+            tuple,
+            weakref.ReferenceType,
+        ] = {}
         self._queued_thumbnail_contrast_limit_requests: dict[
             tuple,
             ThumbnailContrastLimitRequest,
         ] = {}
         self._pending_thumbnail_contrast_limit_keys: set[tuple] = set()
         self._active_thumbnail_contrast_run_id: int | None = None
+        self._active_thumbnail_contrast_cancel_event: threading.Event | None = None
+        self._thumbnail_contrast_discarded_run_ids: set[int] = set()
+        self._thumbnail_user_cancel_requested_run_id: int | None = None
         self._thumbnail_contrast_serial = 0
         self._thumbnail_contrast_busy_visible = False
+        self._thumbnail_statistics_engine = ThumbnailStatisticsEngine()
         self._input_histogram_serial = 0
         self._active_input_histogram_run_id: int | None = None
         self._active_input_histogram_key: tuple | None = None
@@ -1311,13 +1351,66 @@ class VippWidget(QWidget):
         self.thumbnail_scope_combo.addItems(THUMBNAIL_CONTRAST_SCOPES)
         self.thumbnail_colormap_combo = QComboBox()
         self.thumbnail_colormap_combo.addItems(MONOCHROME_COLORMAPS)
+        self.thumbnail_resolution_combo = QComboBox()
+        for preset_id, label in THUMBNAIL_RESOLUTION_CHOICES:
+            self.thumbnail_resolution_combo.addItem(label, preset_id)
+        self._thumbnail_resolution = load_thumbnail_resolution()
+        self.thumbnail_resolution_combo.setCurrentIndex(
+            max(
+                self.thumbnail_resolution_combo.findData(
+                    self._thumbnail_resolution.id
+                ),
+                0,
+            )
+        )
+        self.thumbnail_statistics_policy_combo = QComboBox()
+        for policy_id, label in THUMBNAIL_STATISTICS_POLICY_CHOICES:
+            self.thumbnail_statistics_policy_combo.addItem(label, policy_id)
+        self._thumbnail_statistics_policy = load_thumbnail_statistics_policy()
+        self.thumbnail_statistics_policy_combo.setCurrentIndex(
+            max(
+                self.thumbnail_statistics_policy_combo.findData(
+                    self._thumbnail_statistics_policy.value
+                ),
+                0,
+            )
+        )
         for combo in (
             self.preview_mode_combo,
             self.thumbnail_contrast_combo,
             self.thumbnail_scope_combo,
             self.thumbnail_colormap_combo,
+            self.thumbnail_resolution_combo,
+            self.thumbnail_statistics_policy_combo,
         ):
             _configure_toolbar_combo(combo)
+        self.preview_mode_combo.setToolTip(
+            "Choose a current slice, a maximum-intensity projection, or hide "
+            "node thumbnails."
+        )
+        self.thumbnail_contrast_combo.setToolTip(
+            "Choose percentile, min-max, or raw presentation contrast. This "
+            "changes thumbnails only, never pipeline data."
+        )
+        self.thumbnail_scope_combo.setToolTip(
+            "Stack keeps contrast consistent across slices and may scan each "
+            "full result after calculation. Slice adapts quickly to the current view."
+        )
+        self.thumbnail_colormap_combo.setToolTip(
+            "Choose the presentation-only colormap for scalar thumbnails."
+        )
+        self.thumbnail_resolution_combo.setToolTip(
+            "Choose thumbnail render detail. Low is faster, Standard is the "
+            "default, and High retains more spatial detail. This does not change "
+            "pipeline results or the cost of full-stack contrast statistics."
+        )
+        self.thumbnail_statistics_policy_combo.setToolTip(
+            "Choose how presentation-only full-stack thumbnail statistics run. "
+            "Auto selects CPU or GPU per result from dtype and workload size; CPU "
+            "never initializes CUDA; Prefer GPU uses CuPy when eligible with a "
+            "visible CPU fallback. Main CPU always forces CPU; main Prefer GPU "
+            "biases presentation Auto toward every eligible CuPy path."
+        )
         self.follow_dims_checkbox = QCheckBox("Link napari/VIPP sliders")
         self.follow_dims_checkbox.setChecked(True)
         self.follow_dims_checkbox.setToolTip(
@@ -1837,9 +1930,17 @@ class VippWidget(QWidget):
         if self._closing:
             super().closeEvent(event)
             return
-        if self._collection_batch_running:
+        if (
+            self._collection_batch_running
+            or self._pending_collection_batch_start is not None
+        ):
+            message = (
+                "Cancel the queued full batch before closing VIPP."
+                if self._pending_collection_batch_start is not None
+                else "Wait for the collection batch to finish before closing VIPP."
+            )
             self._set_status(
-                "Wait for the collection batch to finish before closing VIPP.",
+                message,
                 severity=MessageSeverity.INFO,
             )
             event.ignore()
@@ -2135,11 +2236,20 @@ class VippWidget(QWidget):
             self.thumbnail_colormap_combo,
             parent=self.thumbnail_toolbar_group,
         )
+        (
+            self.thumbnail_resolution_toolbar_field,
+            self.thumbnail_resolution_toolbar_label,
+        ) = _toolbar_field_pair(
+            "Detail",
+            self.thumbnail_resolution_combo,
+            parent=self.thumbnail_toolbar_group,
+        )
         for field in (
             self.preview_toolbar_field,
             self.contrast_toolbar_field,
             self.contrast_range_toolbar_field,
             self.mono_toolbar_field,
+            self.thumbnail_resolution_toolbar_field,
         ):
             thumbnail_layout.addWidget(field)
         self.thumbnail_toolbar_group.setSizePolicy(
@@ -2462,6 +2572,11 @@ class VippWidget(QWidget):
             "Save thumbnail visibility in workflows",
             self.save_thumbnail_visibility_checkbox,
         )
+        self._add_combo_menu(
+            menu,
+            "Thumbnail statistics",
+            self.thumbnail_statistics_policy_combo,
+        )
         self._add_checkbox_menu_action(
             menu,
             "Run all in background",
@@ -2505,6 +2620,11 @@ class VippWidget(QWidget):
                 menu,
                 "Monochrome colormap",
                 self.thumbnail_colormap_combo,
+            )
+            self._add_combo_menu(
+                menu,
+                "Thumbnail detail",
+                self.thumbnail_resolution_combo,
             )
             added_section = True
         if hide_zoom:
@@ -2802,7 +2922,7 @@ class VippWidget(QWidget):
         )
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.tunnel_manager_button.clicked.connect(self._show_tunnel_manager)
-        self.pipeline_cancel_button.clicked.connect(self._cancel_background_pipeline_run)
+        self.pipeline_cancel_button.clicked.connect(self._cancel_active_toolbar_work)
         self.port_label_mode_combo.currentTextChanged.connect(
             self._on_port_label_mode_changed
         )
@@ -2827,13 +2947,23 @@ class VippWidget(QWidget):
         self.memory_limit_spin.valueChanged.connect(
             self._on_memory_guard_setting_changed
         )
-        self.preview_mode_combo.currentTextChanged.connect(self._update_thumbnails)
-        self.thumbnail_contrast_combo.currentTextChanged.connect(
-            self._update_thumbnails,
+        self.preview_mode_combo.currentTextChanged.connect(
+            self._on_thumbnail_preview_mode_changed
         )
-        self.thumbnail_scope_combo.currentTextChanged.connect(self._update_thumbnails)
+        self.thumbnail_contrast_combo.currentTextChanged.connect(
+            self._on_thumbnail_contrast_mode_changed,
+        )
+        self.thumbnail_scope_combo.currentTextChanged.connect(
+            self._on_thumbnail_contrast_scope_changed
+        )
         self.thumbnail_colormap_combo.currentTextChanged.connect(
             self._update_thumbnails
+        )
+        self.thumbnail_resolution_combo.currentIndexChanged.connect(
+            self._on_thumbnail_resolution_changed
+        )
+        self.thumbnail_statistics_policy_combo.currentIndexChanged.connect(
+            self._on_thumbnail_statistics_policy_changed
         )
         self.follow_dims_checkbox.toggled.connect(self._on_follow_dims_toggled)
         self.graph_zoom_slider.valueChanged.connect(self._on_graph_zoom_slider_changed)
@@ -3076,6 +3206,24 @@ class VippWidget(QWidget):
             )
         if self._active_source_load_id is not None:
             return "Wait for the current source load before changing compute policy."
+        if self._pending_collection_batch_start is not None:
+            return (
+                "Cancel the queued full batch or wait for thumbnail-statistics "
+                "cleanup before changing compute policy."
+            )
+        if self._active_thumbnail_contrast_run_id is not None:
+            if (
+                self._thumbnail_user_cancel_requested_run_id
+                == self._active_thumbnail_contrast_run_id
+            ):
+                return (
+                    "Thumbnail-statistics cancellation is still cleaning up CPU/GPU "
+                    "resources. Wait for it to finish before changing compute policy."
+                )
+            return (
+                "Cancel the active thumbnail-statistics calculation before changing "
+                "compute policy."
+            )
         batch_job = self._active_collection_batch_job
         if (
             self._collection_batch_running
@@ -3128,6 +3276,29 @@ class VippWidget(QWidget):
                     "per-node choices."
                 )
             )
+        if hasattr(self, "thumbnail_statistics_policy_combo"):
+            self.thumbnail_statistics_policy_combo.setEnabled(editable)
+            effective_note = (
+                " The main CPU compute policy currently forces thumbnail "
+                "statistics to CPU."
+                if self._compute_mode is ComputeMode.CPU
+                else (
+                    " The main Prefer GPU policy currently biases thumbnail "
+                    "Auto toward every eligible CuPy path."
+                    if self._compute_mode is ComputeMode.PREFER_GPU
+                    else ""
+                )
+            )
+            self.thumbnail_statistics_policy_combo.setToolTip(
+                reason
+                or (
+                    "Choose how presentation-only full-stack thumbnail statistics "
+                    "run. Auto selects per result from dtype and byte size; CPU "
+                    "never initializes CUDA; Prefer GPU uses CuPy when eligible "
+                    "with a visible fallback."
+                    + effective_note
+                )
+            )
         custom_editable = editable and self._compute_mode is ComputeMode.CUSTOM
         if hasattr(self, "strict_compute_checkbox"):
             self.strict_compute_checkbox.setEnabled(custom_editable)
@@ -3143,6 +3314,10 @@ class VippWidget(QWidget):
                 and preference.kind is not NodePreferenceKind.AUTO
                 and self._selected_node_id in self.pipeline.nodes
             )
+        if hasattr(self, "node_benchmark_button"):
+            benchmark_ready, benchmark_reason = self._can_benchmark_selected_node()
+            self.node_benchmark_button.setEnabled(benchmark_ready)
+            self.node_benchmark_button.setToolTip(benchmark_reason)
         if hasattr(self, "undo_action"):
             self._sync_history_actions()
 
@@ -3171,6 +3346,7 @@ class VippWidget(QWidget):
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         self._compute_mode = mode
+        self._thumbnail_statistics_engine.reset_accelerator_capability()
         self._push_undo_if_changed(before)
         if mode is ComputeMode.CUSTOM:
             current_request = self._current_compute_request()
@@ -3435,8 +3611,24 @@ class VippWidget(QWidget):
         if (
             self._active_pipeline_run_id is not None
             or self._active_source_load_id is not None
+            or self._pipeline_run_pending
+            or self._source_load_pending
         ):
             return False, "Wait for the current calculation or source load to finish."
+        if self._active_thumbnail_contrast_run_id is not None:
+            return (
+                False,
+                "Cancel thumbnail statistics and wait for CPU/GPU cleanup before "
+                "benchmarking this node.",
+            )
+        if (
+            self._collection_batch_running
+            or self._pending_collection_batch_start is not None
+        ):
+            return (
+                False,
+                "Wait for the full batch to finish or cancel its queued start.",
+            )
         relevant_nodes = self.pipeline.ancestors_inclusive({node_id})
         if (
             self._pending_dirty_node_ids & relevant_nodes
@@ -3485,6 +3677,7 @@ class VippWidget(QWidget):
             self._active_pipeline_run_id is not None
             or self._active_source_load_id is not None
             or self._pipeline_run_pending
+            or self._source_load_pending
         ):
             if (
                 self._pipeline_user_cancel_requested_run_id
@@ -3495,6 +3688,20 @@ class VippWidget(QWidget):
                     "Wait for cancellation cleanup to release CPU/GPU resources.",
                 )
             return False, "Wait for the current calculation or source load to finish."
+        if self._active_thumbnail_contrast_run_id is not None:
+            return (
+                False,
+                "Cancel thumbnail statistics and wait for CPU/GPU cleanup before "
+                "finding the fastest pipeline.",
+            )
+        if (
+            self._collection_batch_running
+            or self._pending_collection_batch_start is not None
+        ):
+            return (
+                False,
+                "Wait for the full batch to finish or cancel its queued start.",
+            )
         if (
             self._last_pipeline_source_signature is None
             or self._inflight_dirty_node_ids is not None
@@ -3608,6 +3815,10 @@ class VippWidget(QWidget):
         if not ready:
             self._set_status(reason, severity=MessageSeverity.WARNING)
             return
+        # A not-yet-started presentation request may be queued for the next
+        # event-loop turn. Drop it before opening the exclusive timing window so
+        # it cannot perturb cold-start or resident GPU measurements.
+        self._discard_pending_thumbnail_contrast_limit_requests()
         existing = self._node_benchmark_dialog
         if existing is not None:
             existing.close()
@@ -3768,6 +3979,7 @@ class VippWidget(QWidget):
         if not ready:
             self._set_status(reason, severity=MessageSeverity.WARNING)
             return
+        self._discard_pending_thumbnail_contrast_limit_requests()
         existing = self._pipeline_optimizer_dialog
         if existing is not None:
             existing.show()
@@ -3802,6 +4014,7 @@ class VippWidget(QWidget):
         if not ready:
             self._set_status(reason, severity=MessageSeverity.WARNING)
             return
+        self._discard_pending_thumbnail_contrast_limit_requests()
         try:
             source_payloads, _source_layers = self._source_payloads_for_pipeline()
             if not source_payloads:
@@ -4881,6 +5094,9 @@ class VippWidget(QWidget):
             "_last_pipeline_source_signature": None,
             "_recent_cache_node_ids": [],
             "_thumbnail_contrast_limit_cache": {},
+            "_thumbnail_contrast_statistics_cache": {},
+            "_thumbnail_contrast_failure_cache": {},
+            "_thumbnail_contrast_identity_refs": {},
             "_input_histogram_cache": {},
             "_input_histogram_distribution_cache": {},
             "_label_volume_cache": {},
@@ -4962,6 +5178,15 @@ class VippWidget(QWidget):
         if isinstance(pending, set):
             pending.update(node_ids)
         session.runtime_cache["_last_pipeline_source_signature"] = None
+        for name in (
+            "_thumbnail_contrast_limit_cache",
+            "_thumbnail_contrast_statistics_cache",
+            "_thumbnail_contrast_failure_cache",
+            "_thumbnail_contrast_identity_refs",
+        ):
+            cache = session.runtime_cache.get(name)
+            if isinstance(cache, dict):
+                cache.clear()
 
     def _workflow_tab_switch_block_reason(self) -> str:
         # Requests not yet handed to a worker are disposable presentation work.
@@ -4985,6 +5210,8 @@ class VippWidget(QWidget):
             return "the graph calculation finishes"
         if self._active_source_load_id is not None or self._source_load_pending:
             return "the source load finishes"
+        if self._pending_collection_batch_start is not None:
+            return "the queued full batch starts or is cancelled"
         if self._active_thumbnail_contrast_run_id is not None:
             return "thumbnail contrast calculation finishes"
         if (
@@ -7611,6 +7838,19 @@ class VippWidget(QWidget):
         config: BatchConfig | None = None,
         preview_config: bool = True,
     ) -> CollectionBatchDialog | None:
+        pending_batch = self._pending_collection_batch_start
+        if pending_batch is not None:
+            pending_dialog, _values = pending_batch
+            self._set_status(
+                "A full batch is queued while thumbnail CPU/GPU statistics "
+                "release their resources. Cancel it from the toolbar before "
+                "opening another batch workspace.",
+                severity=MessageSeverity.INFO,
+            )
+            pending_dialog.show()
+            pending_dialog.raise_()
+            pending_dialog.activateWindow()
+            return pending_dialog
         if self._collection_batch_running:
             batch_job = self._active_collection_batch_job
             self.status_label.setText(
@@ -7743,6 +7983,13 @@ class VippWidget(QWidget):
 
     def _leave_collection_batch_workspace(self) -> None:
         """Discard retained batch state and resume ordinary source resolution."""
+        if self._pending_collection_batch_start is not None:
+            self._set_status(
+                "Cancel the queued full batch from the toolbar before leaving "
+                "Batch workspace.",
+                severity=MessageSeverity.INFO,
+            )
+            return
         if self._collection_batch_running:
             self.status_label.setText(
                 "Wait for the active batch run to finish before leaving batch mode."
@@ -7771,6 +8018,7 @@ class VippWidget(QWidget):
         dialog: CollectionBatchDialog,
     ) -> None:
         """Permanently discard a replaced workspace instead of hiding it."""
+        self._cancel_pending_collection_batch_start(dialog, announce=False)
         if dialog is self._active_collection_batch_dialog:
             self._active_collection_batch_dialog = None
             self._collection_batch_workspace_engaged = False
@@ -7794,11 +8042,26 @@ class VippWidget(QWidget):
         if not isinstance(values, dict):
             dialog.show_run_error("The batch workspace returned invalid settings.")
             return
-        if self._interactive_collection_batch_items and (
+        if (
+            self._pending_collection_batch_start is not None
+            and self._active_thumbnail_contrast_run_id is None
+        ):
+            # A direct retry can arrive in the event-loop turn between
+            # thumbnail completion and the deferred resume callback. It owns
+            # the newest visible values and supersedes that callback.
+            self._pending_collection_batch_start = None
+            self._sync_compute_policy_editability()
+        # Scientific graph/source work always wins over presentation-only
+        # statistics and a detached batch.  In particular, do not consume an
+        # active thumbnail run when a parameter edit has already queued the
+        # next scientific calculation: doing so could leave that rerun stranded
+        # after the thumbnail worker exits.
+        if (
             self._active_source_load_id is not None
             or self._active_pipeline_run_id is not None
             or self._source_load_pending
             or self._pipeline_run_pending
+            or self._debounce_timer.isActive()
         ):
             dialog.show_plan_refresh_required(
                 "Wait for the active source load or graph calculation to finish "
@@ -7823,6 +8086,30 @@ class VippWidget(QWidget):
                 "Retry it or select another sample and wait for a successful "
                 "calculation before running the full batch."
             )
+            return
+        if self._active_thumbnail_contrast_run_id is not None:
+            self._pending_collection_batch_start = (dialog, dict(values))
+            self._discard_pending_thumbnail_contrast_limit_requests()
+            self._set_pipeline_busy(
+                True,
+                None,
+                cancelable=True,
+                preserve_progress=True,
+            )
+            self.pipeline_cancel_button.setText("Cancel queued batch")
+            self.pipeline_cancel_button.setToolTip(
+                "Cancel the full batch that is waiting for optional thumbnail "
+                "statistics to release CPU/GPU resources."
+            )
+            self.pipeline_busy_label.setText(
+                "Stopping optional thumbnail statistics before full batch…"
+            )
+            self._set_status(
+                "Full batch queued while thumbnail CPU/GPU statistics release "
+                "their resources. Use Cancel queued batch to abandon it.",
+                severity=MessageSeverity.INFO,
+            )
+            self._sync_compute_policy_editability()
             return
         try:
             fresh_preview = self._collection_batch_controller.preview(
@@ -7964,6 +8251,16 @@ class VippWidget(QWidget):
             raise RuntimeError(self._compute_runtime_quarantined_reason)
         if self._collection_batch_running:
             raise RuntimeError("A collection batch is already running.")
+        if self._active_thumbnail_contrast_run_id is not None:
+            raise RuntimeError(
+                "Thumbnail statistics must release CPU/GPU resources before "
+                "the full batch starts."
+            )
+        if (
+            self._queued_thumbnail_contrast_limit_requests
+            or self._pending_thumbnail_contrast_limit_keys
+        ):
+            self._discard_pending_thumbnail_contrast_limit_requests()
 
         self._collection_batch_job_serial += 1
         job_id = self._collection_batch_job_serial
@@ -8054,6 +8351,9 @@ class VippWidget(QWidget):
     ) -> None:
         """Route a dialog request to only its currently active worker."""
 
+        if self._cancel_pending_collection_batch_start(dialog):
+            return
+
         context = self._active_collection_batch_job
         if context is None or context.dialog is not dialog:
             return
@@ -8070,6 +8370,79 @@ class VippWidget(QWidget):
                 "at its next safe checkpoint.",
                 severity=MessageSeverity.INFO,
             )
+
+    def _cancel_pending_collection_batch_start(
+        self,
+        dialog: CollectionBatchDialog | None = None,
+        *,
+        announce: bool = True,
+    ) -> bool:
+        """Abandon only the batch waiting on thumbnail-worker cleanup."""
+
+        pending = self._pending_collection_batch_start
+        if pending is None:
+            return False
+        pending_dialog, _values = pending
+        if dialog is not None and dialog is not pending_dialog:
+            return False
+        self._pending_collection_batch_start = None
+        self._sync_compute_policy_editability()
+        if self._active_thumbnail_contrast_run_id is not None:
+            # The optional worker was already asked to stop when the batch was
+            # queued.  Keep its ownership/progress visible until terminal
+            # cleanup, but do not treat this as a user thumbnail-cancel action.
+            self._set_pipeline_busy(
+                True,
+                None,
+                cancelable=False,
+                preserve_progress=True,
+            )
+            self.pipeline_busy_label.setText(
+                "Stopping thumbnail statistics; cleaning up resources…"
+            )
+        elif (
+            self._active_pipeline_run_id is None
+            and self._active_source_load_id is None
+        ):
+            self._set_pipeline_busy(False)
+        if announce:
+            self._set_status(
+                "Queued full batch cancelled. Optional thumbnail-statistics "
+                "cleanup will finish without starting the batch.",
+                severity=MessageSeverity.INFO,
+            )
+        return True
+
+    def _resume_pending_collection_batch_start(
+        self,
+        dialog: CollectionBatchDialog,
+        values: dict[str, object],
+    ) -> None:
+        """Consume one still-current queued batch after thumbnail cleanup."""
+
+        pending = self._pending_collection_batch_start
+        if pending is None or pending[0] is not dialog or pending[1] is not values:
+            return
+        if self._closing or dialog is not self._active_collection_batch_dialog:
+            self._pending_collection_batch_start = None
+            self._sync_compute_policy_editability()
+            return
+        self._pending_collection_batch_start = None
+        self._sync_compute_policy_editability()
+        try:
+            current_values = dialog.values()
+        except Exception as exc:
+            dialog.show_run_error(
+                f"Queued batch settings could not be read after cleanup: {exc}"
+            )
+            return
+        if not isinstance(current_values, dict):
+            dialog.show_run_error(
+                "Queued batch settings became invalid while thumbnail "
+                "statistics were stopping."
+            )
+            return
+        self._run_collection_batch_from_workspace(dialog, current_values)
 
     def _on_collection_batch_worker_finished(
         self,
@@ -8104,6 +8477,10 @@ class VippWidget(QWidget):
                 runtime["_collection_batch_last_error"] = message
                 runtime["_collection_batch_last_total"] = context.total
             self._resume_origin_graph_after_batch(context, origin_session)
+            self._resume_thumbnail_statistics_after_batch(
+                origin_active=origin_active,
+                graph_refresh_pending=context.graph_refresh_pending,
+            )
             return
 
         result = outcome.result
@@ -8191,6 +8568,27 @@ class VippWidget(QWidget):
             ):
                 runtime["_interactive_collection_batch_plan_stale"] = True
         self._resume_origin_graph_after_batch(context, origin_session)
+        self._resume_thumbnail_statistics_after_batch(
+            origin_active=origin_active,
+            graph_refresh_pending=context.graph_refresh_pending,
+        )
+
+    def _resume_thumbnail_statistics_after_batch(
+        self,
+        *,
+        origin_active: bool,
+        graph_refresh_pending: bool,
+    ) -> None:
+        """Refresh optional stats only when no scientific refresh will do it."""
+
+        if (
+            not origin_active
+            or graph_refresh_pending
+            or self._closing
+            or self._compute_runtime_quarantined_reason
+        ):
+            return
+        QTimer.singleShot(0, self._update_thumbnails)
 
     def _stop_active_compute_after_runtime_quarantine(self) -> None:
         """Cancel every live compute owner after the shared runtime is unsafe."""
@@ -10153,6 +10551,9 @@ class VippWidget(QWidget):
         }
         if not node_ids or not self._mark_pipeline_branches_dirty(node_ids):
             return
+        # A live layer may mutate in place, so ndarray identity alone cannot
+        # prove that cached presentation statistics still describe its values.
+        self._clear_thumbnail_contrast_limit_state()
         self._clear_input_histogram_cache()
         self._clear_output_histogram_cache()
         self._label_volume_cache.clear()
@@ -15490,12 +15891,81 @@ class VippWidget(QWidget):
             return None
         if request.key in self._thumbnail_contrast_limit_cache:
             return self._thumbnail_contrast_limit_cache[request.key]
+        if request.key in self._thumbnail_contrast_failure_cache:
+            return None
+        if self._thumbnail_statistics_dispatch_blocked():
+            return None
         self._queue_thumbnail_contrast_limit_request(request)
         return None
 
+    def _thumbnail_statistics_dispatch_blocked(self) -> bool:
+        """Return whether a higher-priority owner forbids presentation work."""
+
+        benchmark = self._node_benchmark_dialog
+        optimizer = self._pipeline_optimizer_dialog
+        return bool(
+            self._closing
+            or self._active_pipeline_run_id is not None
+            or self._pipeline_run_pending
+            or self._active_source_load_id is not None
+            or self._source_load_pending
+            or self._collection_batch_running
+            or self._pending_collection_batch_start is not None
+            or (benchmark is not None and benchmark.running)
+            or (optimizer is not None and optimizer.running)
+        )
+
     def _clear_thumbnail_contrast_limit_state(self) -> None:
         self._thumbnail_contrast_limit_cache.clear()
+        self._thumbnail_contrast_statistics_cache.clear()
+        self._thumbnail_contrast_failure_cache.clear()
+        self._thumbnail_contrast_identity_refs.clear()
         self._discard_pending_thumbnail_contrast_limit_requests()
+
+    def _register_thumbnail_contrast_identity(
+        self,
+        request: ThumbnailContrastLimitRequest,
+    ) -> bool:
+        """Guard an ID-based cache key with the exact live ndarray object."""
+        key = request.key
+        identity = request.data
+        existing = self._thumbnail_contrast_identity_refs.get(key)
+        if existing is not None and existing() is identity:
+            return True
+        if existing is not None or any(
+            key in cache
+            for cache in (
+                self._thumbnail_contrast_limit_cache,
+                self._thumbnail_contrast_statistics_cache,
+                self._thumbnail_contrast_failure_cache,
+            )
+        ):
+            self._drop_thumbnail_contrast_cache_key(key)
+        try:
+            self._thumbnail_contrast_identity_refs[key] = weakref.ref(identity)
+        except TypeError:
+            return False
+        return True
+
+    def _thumbnail_contrast_identity_is_live(self, key: tuple) -> bool:
+        identity_ref = self._thumbnail_contrast_identity_refs.get(key)
+        return identity_ref is not None and identity_ref() is not None
+
+    def _drop_thumbnail_contrast_cache_key(self, key: tuple) -> None:
+        self._thumbnail_contrast_limit_cache.pop(key, None)
+        self._thumbnail_contrast_statistics_cache.pop(key, None)
+        self._thumbnail_contrast_failure_cache.pop(key, None)
+        self._thumbnail_contrast_identity_refs.pop(key, None)
+        self._queued_thumbnail_contrast_limit_requests.pop(key, None)
+        self._pending_thumbnail_contrast_limit_keys.discard(key)
+
+    def _trim_thumbnail_contrast_cache(self) -> None:
+        while (
+            len(self._thumbnail_contrast_identity_refs)
+            > THUMBNAIL_CONTRAST_CACHE_MAX_ENTRIES
+        ):
+            oldest = next(iter(self._thumbnail_contrast_identity_refs))
+            self._drop_thumbnail_contrast_cache_key(oldest)
 
     def _clear_input_histogram_cache(self) -> None:
         if self._active_input_histogram_cancel_event is not None:
@@ -15601,9 +16071,34 @@ class VippWidget(QWidget):
         self._generated_layer_contrast_keys.clear()
 
     def _discard_pending_thumbnail_contrast_limit_requests(self) -> None:
+        unfinished_node_ids = {
+            str(getattr(request, "node_id", "") or "")
+            for request in self._queued_thumbnail_contrast_limit_requests.values()
+            if str(getattr(request, "node_id", "") or "") in self.pipeline.nodes
+        }
+        unfinished_node_ids.update(
+            str(key[1])
+            for key in self._pending_thumbnail_contrast_limit_keys
+            if len(key) > 1 and str(key[1]) in self.pipeline.nodes
+        )
+        queued_keys = tuple(self._queued_thumbnail_contrast_limit_requests)
         self._queued_thumbnail_contrast_limit_requests.clear()
+        for key in queued_keys:
+            if key not in self._thumbnail_contrast_limit_cache:
+                self._thumbnail_contrast_identity_refs.pop(key, None)
+        run_id = self._active_thumbnail_contrast_run_id
+        for node_id in unfinished_node_ids:
+            self.graph_view.clear_node_thumbnail_stats_badge(node_id)
+        if run_id is not None:
+            if self._active_thumbnail_contrast_cancel_event is not None:
+                self._active_thumbnail_contrast_cancel_event.set()
+            self._thumbnail_contrast_discarded_run_ids.add(run_id)
+            # Keep worker ownership until it reports terminal cleanup. A new
+            # request may queue behind it, but cannot overlap its CPU/GPU scope.
+            return
         self._pending_thumbnail_contrast_limit_keys.clear()
-        self._active_thumbnail_contrast_run_id = None
+        self._active_thumbnail_contrast_cancel_event = None
+        self._thumbnail_user_cancel_requested_run_id = None
         if (
             self._thumbnail_contrast_busy_visible
             and self._active_pipeline_run_id is None
@@ -15629,6 +16124,8 @@ class VippWidget(QWidget):
             arr = np.asarray(data)
         except Exception:
             return None
+        if self._thumbnail_is_encoded_uint8_rgb(arr, state):
+            return None
         channel_axis = self._thumbnail_channel_axis_for_contrast(arr, state)
         shape = tuple(int(size) for size in arr.shape)
         dtype = str(getattr(arr, "dtype", ""))
@@ -15637,7 +16134,7 @@ class VippWidget(QWidget):
             key = (
                 "channel",
                 node_id,
-                id(data),
+                id(arr),
                 shape,
                 dtype,
                 mode_key,
@@ -15645,7 +16142,7 @@ class VippWidget(QWidget):
                 int(channel_axis),
                 int(arr.shape[channel_axis]),
             )
-            return ThumbnailContrastLimitRequest(
+            request = ThumbnailContrastLimitRequest(
                 key,
                 node_id,
                 arr,
@@ -15653,22 +16150,30 @@ class VippWidget(QWidget):
                 contrast_mode,
                 data_kind,
             )
-
-        key = ("scalar", node_id, id(data), shape, dtype, mode_key, data_kind)
-        return ThumbnailContrastLimitRequest(
-            key,
-            node_id,
-            arr,
-            None,
-            contrast_mode,
-            data_kind,
-        )
+        else:
+            key = ("scalar", node_id, id(arr), shape, dtype, mode_key, data_kind)
+            request = ThumbnailContrastLimitRequest(
+                key,
+                node_id,
+                arr,
+                None,
+                contrast_mode,
+                data_kind,
+            )
+        self._register_thumbnail_contrast_identity(request)
+        return request
 
     def _queue_thumbnail_contrast_limit_request(
         self,
         request: ThumbnailContrastLimitRequest,
     ) -> None:
+        if self._thumbnail_statistics_dispatch_blocked():
+            return
+        if not self._register_thumbnail_contrast_identity(request):
+            return
         if request.key in self._thumbnail_contrast_limit_cache:
+            return
+        if request.key in self._thumbnail_contrast_failure_cache:
             return
         if request.key in self._pending_thumbnail_contrast_limit_keys:
             return
@@ -15678,8 +16183,60 @@ class VippWidget(QWidget):
         if self._active_thumbnail_contrast_run_id is None:
             QTimer.singleShot(0, self._start_thumbnail_contrast_limit_run)
 
+    def _thumbnail_requests_can_run_inline_on_cpu(
+        self,
+        requests: tuple[ThumbnailContrastLimitRequest, ...],
+        compute_mode: ComputeMode,
+    ) -> bool:
+        """Return whether a tiny request batch is guaranteed to stay on CPU."""
+
+        if not requests or len(requests) > THUMBNAIL_INLINE_CPU_MAX_REQUESTS:
+            return False
+        scanned_bytes = 0
+        channel_lanes = 0
+        for request in requests:
+            try:
+                arr = np.asarray(request.data)
+                if arr.dtype.kind not in "buifc":
+                    return False
+                decision = self._thumbnail_statistics_engine.select(
+                    ThumbnailStatisticsRequest(
+                        arr,
+                        contrast_mode=request.contrast_mode,
+                        data_kind=request.data_kind,
+                        channel_axis=request.channel_axis,
+                        compute_mode=compute_mode,
+                    )
+                )
+            except Exception:
+                # Preserve the worker's normal visible error/fallback path.
+                return False
+            if decision.backend is not ThumbnailStatisticsBackend.CPU_NUMPY:
+                return False
+            scanned_bytes += max(int(decision.scanned_bytes), 0)
+            if scanned_bytes > THUMBNAIL_INLINE_CPU_MAX_BYTES:
+                return False
+            if request.channel_axis is None:
+                channel_lanes += 1
+            else:
+                axis = int(request.channel_axis)
+                if axis < 0:
+                    axis += arr.ndim
+                if axis < 0 or axis >= arr.ndim:
+                    return False
+                channel_lanes += max(int(arr.shape[axis]), 1)
+            if channel_lanes > THUMBNAIL_INLINE_CPU_MAX_CHANNEL_LANES:
+                return False
+        return True
+
     def _start_thumbnail_contrast_limit_run(self) -> None:
         if self._active_thumbnail_contrast_run_id is not None:
+            return
+        if self._thumbnail_statistics_dispatch_blocked():
+            # A timer may have been queued before a scientific/timing owner
+            # became active.  Presentation work is disposable and must not
+            # linger until it can unexpectedly launch against a later state.
+            self._discard_pending_thumbnail_contrast_limit_requests()
             return
         if not self._queued_thumbnail_contrast_limit_requests:
             return
@@ -15691,53 +16248,124 @@ class VippWidget(QWidget):
             request.key for request in requests
         )
         self._active_thumbnail_contrast_run_id = run_id
-        self._show_thumbnail_contrast_busy(len(requests))
+        cancel_event = threading.Event()
+        self._active_thumbnail_contrast_cancel_event = cancel_event
+        total_values = sum(
+            max(int(np.asarray(request.data).size), 0) for request in requests
+        )
+        compute_mode = self._effective_thumbnail_statistics_compute_mode()
+        run_inline = self._thumbnail_requests_can_run_inline_on_cpu(
+            requests,
+            compute_mode,
+        )
+        if not run_inline:
+            self._show_thumbnail_contrast_busy(len(requests), total_values)
         worker = ThumbnailContrastLimitWorker(
             run_id,
             requests,
-            calculate_scalar=thumbnail_contrast_limits,
-            calculate_channel=thumbnail_channel_contrast_limits,
+            statistics_engine=self._thumbnail_statistics_engine,
+            compute_mode=compute_mode,
+            cancel_event=cancel_event,
         )
         worker.signals.progress.connect(self._on_thumbnail_contrast_limit_progress)
         worker.signals.finished.connect(self._on_thumbnail_contrast_limit_finished)
+        if run_inline:
+            worker.run()
+            return
         self._pipeline_thread_pool.start(worker)
 
-    def _show_thumbnail_contrast_busy(self, total: int) -> None:
+    def _show_thumbnail_contrast_busy(
+        self,
+        total: int,
+        total_values: int,
+    ) -> None:
         if self._active_pipeline_run_id is not None or self._active_source_load_id:
             self._thumbnail_contrast_busy_visible = False
             return
         self._thumbnail_contrast_busy_visible = True
-        self._set_pipeline_busy(True, None, cancelable=False)
-        self.pipeline_busy_label.setText("Calculating thumbnail contrast...")
-        if total > 1:
-            self.pipeline_busy_bar.setRange(0, total)
+        self._set_pipeline_busy(True, None, cancelable=True)
+        self.pipeline_cancel_button.setText("Cancel thumbnails")
+        self.pipeline_cancel_button.setToolTip(
+            "Cancel presentation-only thumbnail statistics. Provisional "
+            "thumbnails and scientific pipeline results will be retained."
+        )
+        self.pipeline_busy_label.setText(
+            f"Thumbnail statistics: preparing {total} node"
+            f"{'s' if total != 1 else ''}..."
+        )
+        if total_values > 0:
+            self.pipeline_busy_bar.setRange(0, 1000)
             self.pipeline_busy_bar.setValue(0)
             self.pipeline_busy_bar.setTextVisible(True)
-            self.pipeline_busy_bar.setFormat("%v/%m")
+            self.pipeline_busy_bar.setFormat("Overall 0%")
+        else:
+            self.pipeline_busy_bar.setRange(0, 0)
+            self.pipeline_busy_bar.setTextVisible(False)
 
     def _on_thumbnail_contrast_limit_progress(self, payload: object) -> None:
-        try:
-            run_id, current, total = payload
-        except Exception:
-            return
+        if hasattr(payload, "run_id"):
+            run_id = int(payload.run_id)
+            current = int(getattr(payload, "overall_current", 0))
+            total = int(getattr(payload, "overall_total", 0))
+            node_id = str(getattr(payload, "node_id", "") or "")
+            node_index = int(getattr(payload, "node_index", 0) or 0)
+            node_total = int(getattr(payload, "node_total", 0) or 0)
+            backend = str(getattr(payload, "backend", "") or "")
+            message = str(getattr(payload, "message", "") or "")
+            indeterminate = bool(getattr(payload, "indeterminate", False))
+        else:
+            try:
+                run_id, current, total = payload
+            except Exception:
+                return
+            node_id = ""
+            node_index = int(current)
+            node_total = int(total)
+            backend = ""
+            message = ""
+            indeterminate = False
         if run_id != self._active_thumbnail_contrast_run_id:
             return
         if not self._thumbnail_contrast_busy_visible:
             return
         current = int(current)
         total = int(total)
-        if total > 1:
-            self.pipeline_busy_bar.setRange(0, total)
-            self.pipeline_busy_bar.setValue(max(0, min(current, total)))
+        if indeterminate:
+            self.pipeline_busy_bar.setRange(0, 0)
+            self.pipeline_busy_bar.setTextVisible(False)
+        elif total > 0:
+            ratio = max(0.0, min(float(current) / float(total), 1.0))
+            percent = int(round(ratio * 100.0))
+            self.pipeline_busy_bar.setRange(0, 1000)
+            self.pipeline_busy_bar.setValue(int(round(ratio * 1000.0)))
             self.pipeline_busy_bar.setTextVisible(True)
-            self.pipeline_busy_bar.setFormat("%v/%m")
-            self.pipeline_busy_label.setText(
-                f"Calculating thumbnail contrast {current}/{total}..."
-            )
+            self.pipeline_busy_bar.setFormat(f"Overall {percent}%")
         else:
             self.pipeline_busy_bar.setRange(0, 0)
             self.pipeline_busy_bar.setTextVisible(False)
-            self.pipeline_busy_label.setText("Calculating thumbnail contrast...")
+        if node_id in self.pipeline.nodes:
+            title = self._node_title(node_id)
+            backend_note = f" · {backend}" if backend else ""
+            node_note = (
+                f" ({node_index}/{node_total})" if node_total > 0 else ""
+            )
+            phase = f" · {message}" if message else ""
+            self.pipeline_busy_label.setText(
+                f"Thumbnail stats: {title}{backend_note}{phase}{node_note}"
+            )
+            self.graph_view.set_node_thumbnail_stats_badge(
+                node_id,
+                ThumbnailStatsBadgeKind.PENDING,
+                tooltip=(
+                    "Thumbnail presentation only.\n"
+                    f"{backend or 'CPU/GPU'} statistics in progress: "
+                    f"{message or 'calculating exact contrast limits'}.\n"
+                    "This does not affect pipeline data or scientific compute "
+                    "provenance."
+                ),
+            )
+        else:
+            self.pipeline_busy_label.setText("Thumbnail statistics: preparing...")
 
     def _on_thumbnail_contrast_limit_finished(
         self,
@@ -15745,10 +16373,40 @@ class VippWidget(QWidget):
     ) -> None:
         if result.run_id != self._active_thumbnail_contrast_run_id:
             return
+        run_id = result.run_id
+        discarded = run_id in self._thumbnail_contrast_discarded_run_ids
+        user_cancelled = self._thumbnail_user_cancel_requested_run_id == run_id
+        self._thumbnail_contrast_discarded_run_ids.discard(run_id)
         self._active_thumbnail_contrast_run_id = None
+        self._active_thumbnail_contrast_cancel_event = None
+        self._thumbnail_user_cancel_requested_run_id = None
         self._pending_thumbnail_contrast_limit_keys.difference_update(result.keys)
-        if not result.error:
-            self._thumbnail_contrast_limit_cache.update(result.limits)
+        if not discarded and not result.cancelled:
+            live_limits = {
+                key: limits
+                for key, limits in result.limits.items()
+                if self._thumbnail_contrast_identity_is_live(key)
+            }
+            live_statistics = {
+                key: statistics
+                for key, statistics in result.statistics.items()
+                if self._thumbnail_contrast_identity_is_live(key)
+            }
+            live_errors = {
+                key: error
+                for key, error in result.errors.items()
+                if self._thumbnail_contrast_identity_is_live(key)
+            }
+            self._thumbnail_contrast_limit_cache.update(live_limits)
+            self._thumbnail_contrast_statistics_cache.update(live_statistics)
+            for key in live_limits:
+                self._thumbnail_contrast_failure_cache.pop(key, None)
+            self._thumbnail_contrast_failure_cache.update(live_errors)
+            self._trim_thumbnail_contrast_cache()
+        else:
+            for key in result.keys:
+                if key not in self._thumbnail_contrast_limit_cache:
+                    self._thumbnail_contrast_identity_refs.pop(key, None)
         if self._thumbnail_contrast_busy_visible:
             self._thumbnail_contrast_busy_visible = False
             if (
@@ -15756,15 +16414,82 @@ class VippWidget(QWidget):
                 and self._active_source_load_id is None
             ):
                 self._set_pipeline_busy(False)
-        if result.error:
+        self._sync_compute_policy_editability()
+
+        if result.cleanup_failed:
+            self._compute_runtime_quarantined_reason = (
+                "CPU/GPU cleanup failed during thumbnail statistics. Restart "
+                "VIPP before starting more accelerator work."
+            )
+            self._sync_compute_policy_editability()
             self._set_status(
-                f"Thumbnail contrast calculation failed: {result.error}",
+                f"{self._compute_runtime_quarantined_reason} {result.error}",
                 severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+        elif user_cancelled or (result.cancelled and not discarded):
+            self._set_status(
+                "Thumbnail statistics cancelled. Provisional thumbnails and "
+                "scientific pipeline results were retained.",
+                severity=MessageSeverity.INFO,
+            )
+        elif discarded:
+            pass
+        elif result.errors or result.error:
+            self._set_status(
+                "Some thumbnail statistics could not be completed; provisional "
+                "previews were retained. Hover the thumbnail Stats badges for "
+                "details.",
+                severity=MessageSeverity.WARNING,
             )
         else:
-            self.status_label.setText("Thumbnail contrast ready.")
+            fallback_count = sum(
+                bool(getattr(item, "used_fallback", False))
+                for item in result.statistics.values()
+            )
+            if fallback_count:
+                self._set_status(
+                    f"Thumbnail statistics used a visible CPU fallback for "
+                    f"{fallback_count} node{'s' if fallback_count != 1 else ''}. "
+                    "Hover its Stats badge for details.",
+                    severity=MessageSeverity.WARNING,
+                )
+        if not discarded and not result.cancelled and not self._closing:
             self._update_thumbnails()
-        if self._queued_thumbnail_contrast_limit_requests:
+        if self._pipeline_run_pending and not self._closing:
+            pending = self._pending_collection_batch_start
+            if pending is not None:
+                dialog, _values = pending
+                self._cancel_pending_collection_batch_start(dialog, announce=False)
+                dialog.show_plan_refresh_required(
+                    "The queued full batch was cancelled because a newer "
+                    "scientific graph calculation is waiting to run."
+                )
+            QTimer.singleShot(0, self.run_pipeline)
+            return
+        pending_batch = self._pending_collection_batch_start
+        if pending_batch is not None:
+            if result.cleanup_failed or self._closing:
+                self._pending_collection_batch_start = None
+                if result.cleanup_failed:
+                    dialog, _values = pending_batch
+                    dialog.show_run_error(
+                        self._compute_runtime_quarantined_reason
+                        or "Thumbnail CPU/GPU cleanup failed before batch start."
+                    )
+                return
+            dialog, values = pending_batch
+            QTimer.singleShot(
+                0,
+                lambda queued_dialog=dialog, queued_values=values: (
+                    self._resume_pending_collection_batch_start(
+                        queued_dialog,
+                        queued_values,
+                    )
+                ),
+            )
+            return
+        if self._queued_thumbnail_contrast_limit_requests and not self._closing:
             QTimer.singleShot(0, self._start_thumbnail_contrast_limit_run)
 
     def _thumbnail_channel_axis_for_contrast(
@@ -15780,6 +16505,27 @@ class VippWidget(QWidget):
                 ):
                     return index
         return None
+
+    def _thumbnail_is_encoded_uint8_rgb(
+        self,
+        arr: np.ndarray,
+        state: ImageState | None,
+    ) -> bool:
+        if (
+            state is None
+            or arr.dtype != np.dtype(np.uint8)
+            or len(state.axes) != arr.ndim
+        ):
+            return False
+        channel_axis = self._thumbnail_channel_axis_for_contrast(arr, state)
+        if channel_axis is None or channel_axis != arr.ndim - 1:
+            return False
+        axis = state.axes[channel_axis]
+        return (
+            _axis_is_explicit(axis)
+            and axis.name.casefold() in {"rgb", "rgba"}
+            and int(arr.shape[channel_axis]) in {3, 4}
+        )
 
     def _thumbnail_preview_consumes_contrast(
         self,
@@ -16853,6 +17599,18 @@ class VippWidget(QWidget):
                 actionable=True,
             )
             return
+        pending_batch = self._pending_collection_batch_start
+        if pending_batch is not None:
+            pending_dialog, _values = pending_batch
+            self._cancel_pending_collection_batch_start(
+                pending_dialog,
+                announce=False,
+            )
+            pending_dialog.show_plan_refresh_required(
+                "The queued full batch was cancelled because a newer scientific "
+                "graph calculation took priority. Review the refreshed result "
+                "before running the batch again."
+            )
         if self._collection_batch_running:
             batch_job = self._active_collection_batch_job
             if batch_job is None or self._workflow_tab_is_active(
@@ -16862,6 +17620,11 @@ class VippWidget(QWidget):
                 if batch_job is not None:
                     batch_job.graph_refresh_pending = True
                 return
+        if (
+            self._active_thumbnail_contrast_run_id is None
+            and self._queued_thumbnail_contrast_limit_requests
+        ):
+            self._discard_pending_thumbnail_contrast_limit_requests()
         optimizer_dialog = self._pipeline_optimizer_dialog
         if optimizer_dialog is not None and optimizer_dialog.running:
             self._pipeline_run_pending = True
@@ -16892,6 +17655,19 @@ class VippWidget(QWidget):
                 if self.pipeline.is_manual_node(node_id)
             )
             self._pending_manual_node_ids.clear()
+        if self._active_thumbnail_contrast_run_id is not None:
+            self._pending_manual_node_ids.update(manual_node_ids)
+            self._pipeline_run_pending = True
+            self._discard_pending_thumbnail_contrast_limit_requests()
+            self.pipeline_busy_label.setText(
+                "Stopping thumbnail statistics before recalculating…"
+            )
+            self._set_status(
+                "Calculation queued until thumbnail CPU/GPU statistics release "
+                "their resources.",
+                severity=MessageSeverity.INFO,
+            )
+            return
         source_load_specs = self._uncached_async_file_source_specs()
         if source_load_specs:
             self._pending_manual_node_ids.update(manual_node_ids)
@@ -17303,6 +18079,18 @@ class VippWidget(QWidget):
     ) -> None:
         if not specs:
             return
+        if self._active_thumbnail_contrast_run_id is not None:
+            self._pipeline_run_pending = True
+            self._pending_dirty_node_ids.update(
+                spec.node_id for spec in specs if spec.node_id in self.pipeline.nodes
+            )
+            self._discard_pending_thumbnail_contrast_limit_requests()
+            self.pipeline_busy_label.setText(
+                "Stopping thumbnail statistics before loading the image source…"
+            )
+            return
+        if self._queued_thumbnail_contrast_limit_requests:
+            self._discard_pending_thumbnail_contrast_limit_requests()
         if self._active_source_load_id is not None:
             self._source_load_pending = True
             self._set_pipeline_busy(
@@ -18278,6 +19066,48 @@ class VippWidget(QWidget):
         self._refresh_node_presentation_surfaces(cleared)
         return completed
 
+    def _cancel_active_toolbar_work(self) -> None:
+        if self._pending_collection_batch_start is not None:
+            self._cancel_pending_collection_batch_start()
+            return
+        if self._active_thumbnail_contrast_run_id is not None:
+            self._cancel_thumbnail_contrast_run()
+            return
+        self._cancel_background_pipeline_run()
+
+    def _cancel_thumbnail_contrast_run(self) -> None:
+        run_id = self._active_thumbnail_contrast_run_id
+        if run_id is None:
+            self._set_status(
+                "No thumbnail-statistics calculation is active.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+        if self._thumbnail_user_cancel_requested_run_id == run_id:
+            self._set_status(
+                "Thumbnail cancellation is already in progress; waiting for "
+                "CPU/GPU cleanup.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+        self._thumbnail_user_cancel_requested_run_id = run_id
+        self._discard_pending_thumbnail_contrast_limit_requests()
+        self._set_pipeline_busy(
+            True,
+            None,
+            cancelable=False,
+            preserve_progress=True,
+        )
+        self.pipeline_busy_label.setText(
+            "Stopping thumbnail statistics; cleaning up resources…"
+        )
+        self._set_status(
+            "Thumbnail cancellation requested. Provisional thumbnails and "
+            "scientific pipeline results are retained; controls remain locked "
+            "until CPU/GPU resources are released.",
+            severity=MessageSeverity.INFO,
+        )
+
     def _cancel_background_pipeline_run(self) -> None:
         run_id = self._active_pipeline_run_id
         if run_id is None:
@@ -18333,6 +19163,11 @@ class VippWidget(QWidget):
             self.pipeline_busy_label.setText("Processing")
             self.pipeline_busy_bar.setRange(0, 0)
             self.pipeline_busy_bar.setTextVisible(False)
+            self.pipeline_cancel_button.setText("Cancel calculation")
+            self.pipeline_cancel_button.setToolTip(
+                "Request cooperative cancellation and wait for the active worker "
+                "to release its CPU/GPU resources before changing compute policy."
+            )
             self.graph_view.clear_node_processing()
             self._active_pipeline_node_id = None
             self._sync_execution_ui()
@@ -18574,6 +19409,94 @@ class VippWidget(QWidget):
         self._update_metadata_panel()
         self._update_histogram()
 
+    def _thumbnail_render_size(self) -> tuple[int, int]:
+        return tuple(self._thumbnail_resolution.size)
+
+    def _on_thumbnail_preview_mode_changed(self, mode: str) -> None:
+        if str(mode).strip().casefold() == "off":
+            self._discard_pending_thumbnail_contrast_limit_requests()
+        self._update_thumbnails()
+
+    def _on_thumbnail_contrast_mode_changed(self, _mode: str) -> None:
+        # Contrast algorithm is part of every request/cache identity.  Stop an
+        # obsolete in-flight scan while retaining its already completed cache
+        # entry for an intentional switch back later.
+        self._discard_pending_thumbnail_contrast_limit_requests()
+        self._update_thumbnails()
+
+    def _on_thumbnail_contrast_scope_changed(self, scope: str) -> None:
+        if str(scope).strip().casefold().startswith("slice"):
+            self._discard_pending_thumbnail_contrast_limit_requests()
+        self._update_thumbnails()
+
+    def _on_thumbnail_resolution_changed(self, index: int) -> None:
+        preset_id = self.thumbnail_resolution_combo.itemData(int(index))
+        if preset_id is None:
+            return
+        preset = thumbnail_resolution_preset(str(preset_id))
+        if preset == self._thumbnail_resolution:
+            return
+        self._thumbnail_resolution = save_thumbnail_resolution(preset)
+        self._update_thumbnails()
+        self._set_status(
+            f"Thumbnail detail changed to {preset.label}. Pipeline results and "
+            "cached full-stack contrast statistics were retained.",
+            severity=MessageSeverity.INFO,
+        )
+
+    def _on_thumbnail_statistics_policy_changed(self, index: int) -> None:
+        raw_policy = self.thumbnail_statistics_policy_combo.itemData(int(index))
+        if raw_policy is None:
+            return
+        policy = ThumbnailStatisticsPolicy.parse(str(raw_policy))
+        if policy is self._thumbnail_statistics_policy:
+            return
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            with QSignalBlocker(self.thumbnail_statistics_policy_combo):
+                self.thumbnail_statistics_policy_combo.setCurrentIndex(
+                    self.thumbnail_statistics_policy_combo.findData(
+                        self._thumbnail_statistics_policy.value
+                    )
+                )
+            self._set_status(
+                blocked,
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        self._thumbnail_statistics_policy = save_thumbnail_statistics_policy(policy)
+        self._thumbnail_statistics_engine.reset_accelerator_capability()
+        had_failures = bool(self._thumbnail_contrast_failure_cache)
+        self._thumbnail_contrast_failure_cache.clear()
+        if had_failures:
+            self._update_thumbnails()
+        self._set_status(
+            f"Thumbnail statistics set to {policy.label}. Existing exact limits "
+            "remain cached, and each Stats badge continues to show the backend "
+            "that produced its cached result. This choice applies to new results.",
+            severity=MessageSeverity.INFO,
+        )
+
+    def _effective_thumbnail_statistics_compute_mode(self) -> ComputeMode:
+        if (
+            self._compute_runtime_quarantined_reason
+            or
+            self._compute_mode is ComputeMode.CPU
+            or self._thumbnail_statistics_policy is ThumbnailStatisticsPolicy.CPU
+        ):
+            return ComputeMode.CPU
+        if (
+            self._thumbnail_statistics_policy
+            is ThumbnailStatisticsPolicy.PREFER_GPU
+            or (
+                self._thumbnail_statistics_policy is ThumbnailStatisticsPolicy.AUTO
+                and self._compute_mode is ComputeMode.PREFER_GPU
+            )
+        ):
+            return ComputeMode.PREFER_GPU
+        return ComputeMode.AUTO
+
     def _update_thumbnails(self) -> None:
         for node_id, data in self.pipeline.outputs.items():
             preview_data, preview_state, output_port = self._node_display_payload(
@@ -18631,6 +19554,7 @@ class VippWidget(QWidget):
         self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
         if not preview_enabled:
             self.graph_view.set_thumbnail(node_id, None)
+            self.graph_view.clear_node_thumbnail_stats_badge(node_id)
             return
 
         contrast_limits = None
@@ -18660,6 +19584,7 @@ class VippWidget(QWidget):
             preview_data,
             preview_state,
         )
+        thumbnail_size = self._thumbnail_render_size()
         preview = make_preview(
             preview_data,
             mode=mode,
@@ -18670,10 +19595,11 @@ class VippWidget(QWidget):
             contrast_mode=contrast_mode,
             contrast_scope=contrast_scope,
             contrast_limits=contrast_limits,
-            preview_size=(180, 110),
+            preview_size=thumbnail_size,
         )
         thumbnail = normalize_thumbnail_with_colormap(
             preview,
+            size=thumbnail_size,
             colormap=self.thumbnail_colormap_combo.currentText(),
             contrast_mode=contrast_mode,
             contrast_reference=(preview if effective_scope_is_slice else None),
@@ -18681,6 +19607,205 @@ class VippWidget(QWidget):
             data_kind=node_output_type,
         )
         self.graph_view.set_thumbnail(node_id, thumbnail)
+        self._sync_node_thumbnail_statistics_presentation(
+            node_id,
+            preview_data,
+            preview_state,
+            contrast_mode,
+            contrast_scope,
+            node_output_type,
+        )
+
+    def _sync_node_thumbnail_statistics_presentation(
+        self,
+        node_id: str,
+        data,
+        state: ImageState | None,
+        contrast_mode: str,
+        contrast_scope: str,
+        data_kind: str,
+    ) -> None:
+        """Explain presentation-only work without altering compute provenance."""
+        preset = self._thumbnail_resolution
+        common = [
+            "Thumbnail presentation only.",
+            f"Render detail: {preset.label}.",
+            f"Contrast: {contrast_scope} {contrast_mode}.",
+        ]
+        if str(contrast_scope or "").strip().lower().startswith("slice"):
+            detail = "\n".join(
+                common
+                + [
+                    "Statistics: CPU slice-local normalization; no full-stack scan.",
+                    "This does not affect pipeline data or scientific compute "
+                    "provenance.",
+                ]
+            )
+            self.graph_view.set_node_thumbnail_stats_badge(
+                node_id,
+                ThumbnailStatsBadgeKind.CPU,
+                tooltip=detail,
+                accessible_description=detail,
+            )
+            return
+
+        request = self._thumbnail_contrast_limit_request(
+            node_id,
+            data,
+            state,
+            contrast_mode,
+            contrast_scope,
+            data_kind,
+        )
+        if request is None:
+            detail = "\n".join(
+                common
+                + [
+                    "No full-stack statistics scan is required for this preview.",
+                    "This does not affect pipeline data or scientific compute "
+                    "provenance.",
+                ]
+            )
+            self.graph_view.set_node_thumbnail_stats_badge(
+                node_id,
+                ThumbnailStatsBadgeKind.CPU,
+                tooltip=detail,
+                accessible_description=detail,
+            )
+            return
+
+        result = self._thumbnail_contrast_statistics_cache.get(request.key)
+        failure = self._thumbnail_contrast_failure_cache.get(request.key, "")
+        if failure:
+            detail = "\n".join(
+                common
+                + [
+                    "Exact full-stack statistics could not be completed; the "
+                    "scan-free provisional thumbnail was retained.",
+                    f"Reason: {failure}",
+                    "Change the thumbnail statistics policy to retry, or use "
+                    "Slice contrast to avoid a full-stack scan.",
+                    "This does not affect pipeline data or scientific compute "
+                    "provenance.",
+                ]
+            )
+            self.graph_view.set_node_thumbnail_stats_badge(
+                node_id,
+                ThumbnailStatsBadgeKind.ERROR,
+                tooltip=detail,
+                accessible_description=detail,
+            )
+            return
+        if result is None:
+            if self._thumbnail_statistics_dispatch_blocked():
+                self.graph_view.clear_node_thumbnail_stats_badge(node_id)
+                return
+            effective = self._effective_thumbnail_statistics_compute_mode()
+            policy_label = {
+                ComputeMode.CPU: "CPU",
+                ComputeMode.PREFER_GPU: "Prefer GPU",
+            }.get(effective, "Auto")
+            percentile_note = ""
+            if str(contrast_mode).strip().casefold() == "percentile":
+                low, high = THUMBNAIL_PERCENTILE_RANGE
+                percentile_note = f" ({low:g}–{high:g}%)"
+            detail = "\n".join(
+                common
+                + [
+                    f"Statistics pending: {policy_label} selection{percentile_note}.",
+                    "Auto uses the full output dtype and byte size, not thumbnail "
+                    "pixels.",
+                    "This does not affect pipeline data or scientific compute "
+                    "provenance.",
+                ]
+            )
+            self.graph_view.set_node_thumbnail_stats_badge(
+                node_id,
+                ThumbnailStatsBadgeKind.PENDING,
+                tooltip=detail,
+                accessible_description=detail,
+            )
+            return
+
+        decision = getattr(result, "decision", None)
+        actual_backend = getattr(result, "actual_backend", None)
+        backend_value = str(
+            getattr(actual_backend, "value", actual_backend or "cpu")
+        ).casefold()
+        runtime_id = str(getattr(result, "runtime_id", "") or "")
+        device_id = str(getattr(result, "device_id", "") or "")
+        used_gpu = "gpu" in backend_value or "cupy" in backend_value
+        fallback_message = str(getattr(result, "fallback_message", "") or "")
+        badge_kind = (
+            ThumbnailStatsBadgeKind.CPU_FALLBACK
+            if fallback_message
+            else (
+                ThumbnailStatsBadgeKind.GPU
+                if used_gpu
+                else ThumbnailStatsBadgeKind.CPU
+            )
+        )
+        backend_label = "GPU · CuPy" if used_gpu else "CPU · NumPy"
+        algorithm = str(getattr(result, "algorithm_id", "statistics") or "statistics")
+        algorithm_label = algorithm.replace("-", " ").replace("_", " ")
+        elapsed = max(float(getattr(result, "elapsed_seconds", 0.0) or 0.0), 0.0)
+        scanned_bytes = max(int(getattr(decision, "scanned_bytes", 0) or 0), 0)
+        host_staging_bytes = max(
+            int(getattr(decision, "host_staging_bytes", 0) or 0),
+            0,
+        )
+        reason = str(getattr(decision, "reason", "") or "")
+        reason_code = str(getattr(decision, "reason_code", "") or "")
+        details = common + [
+            f"Statistics: {backend_label}; {algorithm_label}.",
+            f"Processed {_format_byte_count(scanned_bytes)} in {elapsed:.3f} s; "
+            "exact limits cached.",
+        ]
+        if reason:
+            details.append(f"Selection: {reason}")
+        if host_staging_bytes and (
+            used_gpu
+            or bool(fallback_message)
+            or reason_code
+            in {
+                "auto_noncontiguous_host_staging",
+                "gpu_host_staging_memory_insufficient",
+            }
+        ):
+            details.append(
+                "Contiguous GPU-upload staging estimate: "
+                f"{_format_byte_count(host_staging_bytes)} of additional host RAM."
+            )
+        if used_gpu:
+            if runtime_id:
+                details.append(f"Runtime: {runtime_id}.")
+            if device_id:
+                details.append(f"Device: {device_id}.")
+        threshold_bytes = max(
+            int(getattr(decision, "threshold_bytes", 0) or 0),
+            0,
+        )
+        if threshold_bytes:
+            details.append(
+                "Auto GPU crossover for this session state: "
+                f"{_format_byte_count(threshold_bytes)}."
+            )
+        if fallback_message:
+            details.append(f"Fallback: {fallback_message}")
+            if runtime_id:
+                details.append(f"Attempted runtime: {runtime_id}")
+            if device_id:
+                details.append(f"Attempted device: {device_id}")
+        details.append(
+            "This does not affect pipeline data or scientific compute provenance."
+        )
+        detail = "\n".join(details)
+        self.graph_view.set_node_thumbnail_stats_badge(
+            node_id,
+            badge_kind,
+            tooltip=detail,
+            accessible_description=detail,
+        )
 
     def _interactive_collection_card_metadata(self, node_id: str) -> str:
         items = self._interactive_collection_batch_items

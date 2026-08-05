@@ -1,6 +1,6 @@
 # VIPP Operator Tips and Performance
 
-Last reviewed: 2026-07-15
+Last reviewed: 2026-08-05
 
 This guide is for day-to-day operation of larger or more complex workflows.
 It focuses on responsiveness, stability, and practical tuning.
@@ -59,8 +59,36 @@ the current napari dim position.
 
 For heavy scenes, these settings can help reduce UI churn:
 
+- set `Thumbnail detail` to `Low (90 × 55)` while authoring; use Standard
+  (180 × 110) or High (360 × 220) when more backing detail is useful on a HiDPI
+  display or during downsampling;
+- set `Contrast Range` to `Slice` when you do not need stable brightness across
+  the whole output;
 - set preview mode to `Off` when tuning non-visual parameters;
 - keep histogram scope to `Slice` while iterating.
+
+Thumbnail detail changes only the backing image for the fixed card viewport. It
+does not change the full output read by Stack contrast. Slice contrast instead
+normalizes the spatially sampled current view, so its display limits may shift
+slightly between Low, Standard, and High. `Settings > Thumbnail statistics`
+controls full-output Stack work. Auto uses eligible exact
+`uint8` Percentile histograms on CuPy from a conservative 384-MiB cold crossover
+and `uint16` histograms from 512 MiB; both use 32 MiB once warm. These measured
+defaults are heuristics, not a guarantee for every distribution or computer.
+CPU avoids CUDA, and Prefer GPU is the explicit override with visible fallback.
+Min-max uses an exact native reduction on CPU instead of a histogram. Float and
+other-dtype percentiles retain the exact NumPy-compatible CPU path. Main compute
+CPU always forces these statistics to CPU; main Prefer GPU biases presentation
+Auto toward GPU.
+
+Read the node's separate `Stats…`, `Stats · CPU`, `Stats · GPU`,
+`Stats · CPU fallback`, or `Stats · error` chip for presentation state; the
+ordinary compute badge still identifies what produced the scientific output.
+Stack statistics use the toolbar progress and Cancel surfaces and retain
+provisional thumbnails if cancelled. CPU integer work stops between bounded
+chunks. An active GPU kernel/synchronization or exact float/other-dtype NumPy
+percentile can have a non-interruptible inner pass; the progress message
+identifies the phase and cancellation takes effect after that pass returns.
 
 Large stack histograms and automatic-threshold markers are calculated in the
 background. The inspector briefly shows `calculating...` and reuses the result
@@ -103,10 +131,12 @@ If updates feel slow:
 
 1. Turn `Run all in BG` on if a mid-sized operation falls below the automatic
    cutoff but still pauses interaction.
-2. Set preview mode to `Off` and retest.
-3. Switch preview mode from `MIP` to `Slice`.
-4. Reduce graph fan-out while tuning upstream nodes.
-5. Re-enable features one by one to identify the dominant cost.
+2. Set thumbnail detail to `Low`.
+3. Use `Slice` contrast range to avoid full-output thumbnail statistics.
+4. Set preview mode to `Off` and retest.
+5. Switch preview mode from `MIP` to `Slice`.
+6. Reduce graph fan-out while tuning upstream nodes.
+7. Re-enable features one by one to identify the dominant cost.
 
 ## Related Docs
 

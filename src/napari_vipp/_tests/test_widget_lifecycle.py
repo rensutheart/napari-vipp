@@ -122,6 +122,7 @@ def test_close_stops_and_invalidates_all_background_work(qtbot):
     widget._debounce_timer.start()
 
     pipeline_cancel = threading.Event()
+    thumbnail_cancel = threading.Event()
     input_histogram_cancel = threading.Event()
     scatter_cancel = threading.Event()
 
@@ -137,6 +138,7 @@ def test_close_stops_and_invalidates_all_background_work(qtbot):
     widget._source_load_pending = True
 
     widget._active_thumbnail_contrast_run_id = 13
+    widget._active_thumbnail_contrast_cancel_event = thumbnail_cancel
     widget._queued_thumbnail_contrast_limit_requests = {("queued",): object()}
     widget._pending_thumbnail_contrast_limit_keys = {("pending",)}
 
@@ -168,6 +170,7 @@ def test_close_stops_and_invalidates_all_background_work(qtbot):
 
     assert not widget._debounce_timer.isActive()
     assert pipeline_cancel.is_set()
+    assert thumbnail_cancel.is_set()
     assert input_histogram_cancel.is_set()
     assert scatter_cancel.is_set()
     assert pool.clear_calls == 1

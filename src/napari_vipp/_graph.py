@@ -7,7 +7,7 @@ from enum import StrEnum
 from math import ceil
 
 import numpy as np
-from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from qtpy.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
     QFont,
@@ -64,11 +64,37 @@ class ComputeBadgeKind(StrEnum):
     CPU_FALLBACK = "cpu_fallback"
 
 
+class ThumbnailStatsBadgeKind(StrEnum):
+    """Presentation identities for non-scientific thumbnail statistics work."""
+
+    PENDING = "pending"
+    CPU = "cpu"
+    GPU = "gpu"
+    CPU_FALLBACK = "cpu_fallback"
+    ERROR = "error"
+
+
 _COMPUTE_BADGE_LABELS = {
     ComputeBadgeKind.CPU: "CPU",
     ComputeBadgeKind.CUPY: "GPU · CuPy",
     ComputeBadgeKind.CUCIM: "GPU · cuCIM",
     ComputeBadgeKind.CPU_FALLBACK: "CPU fallback",
+}
+
+_THUMBNAIL_STATS_BADGE_LABELS = {
+    ThumbnailStatsBadgeKind.PENDING: "Stats…",
+    ThumbnailStatsBadgeKind.CPU: "Stats · CPU",
+    ThumbnailStatsBadgeKind.GPU: "Stats · GPU",
+    ThumbnailStatsBadgeKind.CPU_FALLBACK: "Stats · CPU fallback",
+    ThumbnailStatsBadgeKind.ERROR: "Stats · error",
+}
+
+_THUMBNAIL_STATS_BADGE_COLORS = {
+    ThumbnailStatsBadgeKind.PENDING: ("#1f2937", "#cbd5e1", "#64748b"),
+    ThumbnailStatsBadgeKind.CPU: ("#1f2937", "#d1d5db", "#4b5563"),
+    ThumbnailStatsBadgeKind.GPU: ("#172033", "#bfdbfe", "#475569"),
+    ThumbnailStatsBadgeKind.CPU_FALLBACK: ("#292524", "#fde68a", "#78716c"),
+    ThumbnailStatsBadgeKind.ERROR: ("#2b1719", "#fecaca", "#991b1b"),
 }
 
 _COMPUTE_BADGE_COLORS = {
@@ -84,7 +110,9 @@ def _coerce_compute_badge_kind(
 ) -> ComputeBadgeKind:
     if isinstance(value, ComputeBadgeKind):
         return value
-    normalized = str(value).strip().casefold().replace("-", "_").replace(" ", "_")
+    normalized = (
+        str(value).strip().casefold().replace("-", "_").replace(" ", "_")
+    )
     aliases = {
         "gpu_·_cupy": ComputeBadgeKind.CUPY,
         "gpu_cupy": ComputeBadgeKind.CUPY,
@@ -100,6 +128,30 @@ def _coerce_compute_badge_kind(
         choices = ", ".join(kind.value for kind in ComputeBadgeKind)
         raise ValueError(
             f"Unknown compute badge kind {value!r}; expected one of: {choices}."
+        ) from exc
+
+
+def _coerce_thumbnail_stats_badge_kind(
+    value: ThumbnailStatsBadgeKind | str,
+) -> ThumbnailStatsBadgeKind:
+    if isinstance(value, ThumbnailStatsBadgeKind):
+        return value
+    normalized = str(value).strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "calculating": ThumbnailStatsBadgeKind.PENDING,
+        "cpu_fallback": ThumbnailStatsBadgeKind.CPU_FALLBACK,
+        "fallback_cpu": ThumbnailStatsBadgeKind.CPU_FALLBACK,
+        "failed": ThumbnailStatsBadgeKind.ERROR,
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    try:
+        return ThumbnailStatsBadgeKind(normalized)
+    except ValueError as exc:
+        choices = ", ".join(kind.value for kind in ThumbnailStatsBadgeKind)
+        raise ValueError(
+            "Unknown thumbnail statistics badge kind "
+            f"{value!r}; expected one of: {choices}."
         ) from exc
 
 
@@ -119,6 +171,45 @@ def _coerce_port_label_mode(value: PortLabelMode | str) -> PortLabelMode:
 
 class ClickablePreview(QLabel):
     clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._source_pixmap = QPixmap()
+
+    def set_source_pixmap(self, pixmap: QPixmap) -> None:
+        """Retain full render detail and derive a device-aware display copy."""
+        self._source_pixmap = QPixmap(pixmap)
+        self._refresh_display_pixmap()
+
+    def source_pixmap(self) -> QPixmap:
+        """Return the retained full-detail thumbnail backing pixmap."""
+        return QPixmap(self._source_pixmap)
+
+    def clear_source_pixmap(self) -> None:
+        self._source_pixmap = QPixmap()
+        super().setPixmap(QPixmap())
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if not self._source_pixmap.isNull():
+            self._refresh_display_pixmap()
+
+    def _refresh_display_pixmap(self) -> None:
+        if self._source_pixmap.isNull() or self.width() < 1 or self.height() < 1:
+            super().setPixmap(QPixmap())
+            return
+        ratio = max(float(self.devicePixelRatioF()), 1.0)
+        physical_size = QSize(
+            max(int(round(self.width() * ratio)), 1),
+            max(int(round(self.height() * ratio)), 1),
+        )
+        displayed = self._source_pixmap.scaled(
+            physical_size,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        displayed.setDevicePixelRatio(ratio)
+        super().setPixmap(displayed)
 
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.LeftButton:
@@ -221,6 +312,7 @@ class NodeCard(QFrame):
         self._pinned = False
         self._search_highlight = False
         self._preview_enabled = True
+        self._thumbnail_present = False
         self._processing = False
         self._processing_queued = False
         self._processing_angle = 0
@@ -270,6 +362,7 @@ class NodeCard(QFrame):
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumSize(180, 110)
         self.preview.setText("No preview")
+        self.preview.setAccessibleName(f"{title} thumbnail preview")
         self.preview.setStyleSheet(
             "background: #111827; color: #9ca3af; border-radius: 4px;"
         )
@@ -291,6 +384,23 @@ class NodeCard(QFrame):
         self.pin_button = QPushButton("Pin", self)
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
         self.pin_button.setVisible(False)
+        self.thumbnail_stats_badge = QLabel("", self)
+        self.thumbnail_stats_badge.setObjectName("NodeThumbnailStatsBadge")
+        self.thumbnail_stats_badge.setAlignment(Qt.AlignCenter)
+        self.thumbnail_stats_badge.setSizePolicy(
+            QSizePolicy.Fixed,
+            QSizePolicy.Fixed,
+        )
+        # The preview remains the click target. Details are mirrored onto the
+        # preview itself so this overlay never intercepts selection/inspection.
+        self.thumbnail_stats_badge.setAttribute(
+            Qt.WA_TransparentForMouseEvents,
+            True,
+        )
+        self.thumbnail_stats_badge.hide()
+        self._thumbnail_stats_badge_kind: ThumbnailStatsBadgeKind | None = None
+        self._thumbnail_stats_badge_tooltip = ""
+        self._thumbnail_stats_accessible_description = ""
         self.processing_badge = ProcessingBadge(self)
 
         self.card_layout = QVBoxLayout(self)
@@ -345,6 +455,7 @@ class NodeCard(QFrame):
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._position_processing_badge()
+        self._position_thumbnail_stats_badge()
 
     def set_selected(self, selected: bool) -> None:
         selected = bool(selected)
@@ -383,10 +494,12 @@ class NodeCard(QFrame):
         self._preview_enabled = enabled
         self.preview.setVisible(enabled)
         if not enabled:
+            self._thumbnail_present = False
             self.preview.setText("")
-            self.preview.setPixmap(QPixmap())
+            self.preview.clear_source_pixmap()
         elif self.preview.pixmap() is None:
             self.preview.setText("No preview")
+        self._refresh_thumbnail_stats_badge_visibility()
 
     def set_processing(self, processing: bool, *, queued: bool = False) -> None:
         self._processing = processing
@@ -503,22 +616,85 @@ class NodeCard(QFrame):
         if not self._preview_enabled:
             return
         if thumbnail is None:
+            self._thumbnail_present = False
             self.preview.setText("Preview off")
-            self.preview.setPixmap(QPixmap())
+            self.preview.clear_source_pixmap()
+            self._refresh_thumbnail_stats_badge_visibility()
             return
 
+        self._thumbnail_present = True
         thumb = np.ascontiguousarray(thumbnail[..., :3].astype(np.uint8, copy=False))
         h, w = thumb.shape[:2]
         qimage = QImage(thumb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimage)
         self.preview.setText("")
-        self.preview.setPixmap(
-            pixmap.scaled(
-                self.preview.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
+        self.preview.set_source_pixmap(pixmap)
+        self._refresh_thumbnail_stats_badge_visibility()
+
+    def set_thumbnail_stats_badge(
+        self,
+        kind: ThumbnailStatsBadgeKind | str | None,
+        *,
+        tooltip: str = "",
+        accessible_description: str = "",
+    ) -> bool:
+        """Present non-scientific thumbnail-statistics state over the preview.
+
+        The widget owner supplies the complete presentation-only explanation.
+        It is mirrored onto the preview so the mouse-transparent chip preserves
+        thumbnail click behavior. Passing ``None`` clears the state.
+        """
+        if kind is None:
+            if (
+                self._thumbnail_stats_badge_kind is None
+                and not self._thumbnail_stats_badge_tooltip
+                and not self._thumbnail_stats_accessible_description
+            ):
+                return False
+            self._thumbnail_stats_badge_kind = None
+            self._thumbnail_stats_badge_tooltip = ""
+            self._thumbnail_stats_accessible_description = ""
+            self.thumbnail_stats_badge.clear()
+            self.thumbnail_stats_badge.setToolTip("")
+            self.thumbnail_stats_badge.setAccessibleName("")
+            self.thumbnail_stats_badge.setAccessibleDescription("")
+            self.preview.setToolTip("")
+            self.preview.setAccessibleDescription("")
+            self.thumbnail_stats_badge.hide()
+            return True
+
+        resolved = _coerce_thumbnail_stats_badge_kind(kind)
+        detail = str(tooltip or "").strip()
+        accessible_detail = str(accessible_description or detail).strip()
+        if (
+            self._thumbnail_stats_badge_kind is resolved
+            and self._thumbnail_stats_badge_tooltip == detail
+            and self._thumbnail_stats_accessible_description == accessible_detail
+        ):
+            self._refresh_thumbnail_stats_badge_visibility()
+            return False
+
+        label = _THUMBNAIL_STATS_BADGE_LABELS[resolved]
+        background, foreground, border = _THUMBNAIL_STATS_BADGE_COLORS[resolved]
+        self._thumbnail_stats_badge_kind = resolved
+        self._thumbnail_stats_badge_tooltip = detail
+        self._thumbnail_stats_accessible_description = accessible_detail
+        self.thumbnail_stats_badge.setText(label)
+        self.thumbnail_stats_badge.setToolTip(detail)
+        self.thumbnail_stats_badge.setAccessibleName(
+            f"Thumbnail statistics: {label}"
         )
+        self.thumbnail_stats_badge.setAccessibleDescription(accessible_detail)
+        self.thumbnail_stats_badge.setStyleSheet(
+            "QLabel#NodeThumbnailStatsBadge {"
+            f" background: {background}; color: {foreground};"
+            f" border: 1px solid {border}; border-radius: 6px;"
+            " font-size: 9px; font-weight: 600; padding: 1px 5px;"
+            "}"
+        )
+        self.thumbnail_stats_badge.adjustSize()
+        self._refresh_thumbnail_stats_badge_visibility()
+        return True
 
     def set_metadata_summary(self, text: str) -> None:
         self.metadata_label.setText(text)
@@ -720,6 +896,7 @@ class NodeCard(QFrame):
             """
         )
         self.pin_button.setVisible(False)
+        self.thumbnail_stats_badge.raise_()
         self.processing_badge.raise_()
 
     def _execution_summary(self) -> str:
@@ -758,6 +935,36 @@ class NodeCard(QFrame):
             y = 10
         self.processing_badge.move(max(0, x), max(0, y))
         self.processing_badge.raise_()
+
+    def _refresh_thumbnail_stats_badge_visibility(self) -> None:
+        visible = bool(
+            self._preview_enabled
+            and self._thumbnail_present
+            and self._thumbnail_stats_badge_kind is not None
+        )
+        self.thumbnail_stats_badge.setVisible(visible)
+        if visible:
+            self.preview.setToolTip(self._thumbnail_stats_badge_tooltip)
+            self.preview.setAccessibleDescription(
+                self._thumbnail_stats_accessible_description
+            )
+            self._position_thumbnail_stats_badge()
+            return
+        self.preview.setToolTip("")
+        self.preview.setAccessibleDescription("")
+
+    def _position_thumbnail_stats_badge(self) -> None:
+        if self.thumbnail_stats_badge.isHidden():
+            return
+        badge_size = self.thumbnail_stats_badge.sizeHint()
+        preview_rect = self.preview.geometry()
+        if not self.preview.isVisible() or not preview_rect.isValid():
+            self.thumbnail_stats_badge.hide()
+            return
+        x = preview_rect.left() + 8
+        y = preview_rect.bottom() - badge_size.height() - 8
+        self.thumbnail_stats_badge.move(max(0, x), max(0, y))
+        self.thumbnail_stats_badge.raise_()
 
 
 class TunnelBadgeItem(QGraphicsItem):
@@ -2902,6 +3109,41 @@ class PipelineGraphView(QGraphicsView):
         selected = tuple(self._cards) if node_ids is None else tuple(node_ids)
         for node_id in selected:
             self.clear_node_compute_badge(str(node_id))
+
+    def set_node_thumbnail_stats_badge(
+        self,
+        node_id: str,
+        kind: ThumbnailStatsBadgeKind | str | None,
+        *,
+        tooltip: str = "",
+        accessible_description: str = "",
+    ) -> None:
+        """Set one node's presentation-only thumbnail-statistics identity."""
+        card = self._cards.get(node_id)
+        if card is None:
+            return
+        if not card.set_thumbnail_stats_badge(
+            kind,
+            tooltip=tooltip,
+            accessible_description=accessible_description,
+        ):
+            return
+        card.update()
+        proxy = self._proxies.get(node_id)
+        if proxy is not None:
+            proxy.update()
+        if self.scene is not None:
+            self.scene.update()
+
+    def clear_node_thumbnail_stats_badge(self, node_id: str) -> None:
+        """Hide one node's thumbnail-statistics presentation."""
+        self.set_node_thumbnail_stats_badge(node_id, None)
+
+    def clear_node_thumbnail_stats_badges(self, node_ids=None) -> None:
+        """Hide thumbnail-statistics presentation for selected or all nodes."""
+        selected = tuple(self._cards) if node_ids is None else tuple(node_ids)
+        for node_id in selected:
+            self.clear_node_thumbnail_stats_badge(str(node_id))
 
     def set_pinned_node(self, node_id: str | None) -> None:
         for card_id, card in self._cards.items():

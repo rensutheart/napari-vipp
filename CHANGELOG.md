@@ -106,6 +106,32 @@ hardening accumulated since 0.12.0a3.
 - Added responsive high-resolution and pop-out colocalization scatter views,
   cached threshold-independent densities, exact full-ROI recounting, memory-
   bounded histogram construction, and export at the selected display size.
+- Added persistent Low (90 × 55), Standard (180 × 110), and High
+  (360 × 220) thumbnail render detail without changing card size or scientific
+  results. High retains a 360 × 220 backing image for HiDPI display or
+  downsampling rather than guaranteeing a larger on-screen card. Changing
+  detail rerenders cards while retaining cached exact Stack contrast limits.
+  Stack statistics remain full-output and resolution-independent; responsive
+  Slice contrast normalizes the spatially sampled current view, so its display
+  limits may change slightly with detail.
+- Replaced full-stack `uint8`/`uint16` thumbnail percentile sorting with exact
+  native-dtype histograms on CPU or eligible CuPy GPU. Min-max uses a faster
+  exact native reduction instead of building a histogram. The presentation-only
+  Auto policy uses full output dtype/bytes—not render resolution—with
+  conservative cold crossovers of 384 MiB for `uint8` and 512 MiB for `uint16`,
+  then 32 MiB after the GPU path is warm. These measured heuristics are not a
+  universal fastest guarantee; CPU and Prefer GPU remain explicit controls, and
+  float/other dtypes retain exact NumPy-compatible CPU percentile behavior.
+- Added separate per-node `Stats` pending/backend/fallback/error chips plus
+  shared progress and cooperative cancellation for thumbnail statistics. CPU
+  integer histogram and min-max work stop between bounded chunks; an active GPU
+  kernel/synchronization or exact NumPy percentile for another dtype may have a
+  non-interruptible inner pass. Main compute CPU hard-forces presentation CPU,
+  main Prefer GPU biases presentation Auto, and these display decisions never
+  replace scientific CPU/CuPy/cuCIM provenance. CPU-selected micro-workloads
+  up to 1 MiB, eight requests, and eight aggregate channel lanes complete
+  inline to avoid worker-queue overhead; larger, high-channel, and GPU work
+  remains asynchronous and cancellable.
 - Hardened structural cache identity, stale-source rejection, optimizer/manual
   barriers, memory accounting, cancellation cleanup, measurement assembly,
   and generated-output provenance/publication.

@@ -306,16 +306,19 @@ Deferred beyond this milestone:
 ### 4. OME-Zarr Scale And Preview Strategy
 
 Already implemented: local OME-Zarr 0.4/0.5 image read/write, lazy reads,
-OME-Zarr image plus label analysis packages, cache modes, and operation memory
-documentation.
+OME-Zarr image plus label analysis packages, cache modes, operation memory
+documentation, selectable 90 × 55 / 180 × 110 / 360 × 220 card-backing detail,
+and exact dtype-aware Stack thumbnail Percentile histograms/native Min-max
+reductions with conservative adaptive CPU/CuPy routing.
 
 Still needed:
 
 - generated OME-Zarr pyramids for exported image datasets;
 - label colors and label-property table round-tripping where practical;
-- preview-resolution controls for thumbnails and inspector views;
-- lazy/chunked all-pixel histograms and pyramid-aware thumbnails for large
-  arrays, without changing operational results through hidden sampling;
+- pyramid-aware thumbnail source-level selection and separate inspector-view
+  resolution controls beyond the fixed card-render targets;
+- broader lazy/chunked all-pixel histograms for large arrays, without changing
+  operational results through hidden sampling;
 - operation capability declarations such as eager, lazy-safe, memory-heavy, and
   scale-aware;
 - warnings before eager-only nodes materialize very large lazy arrays;

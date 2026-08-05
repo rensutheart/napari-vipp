@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+import weakref
 from copy import deepcopy
 from dataclasses import replace
 from fractions import Fraction
@@ -39,6 +40,7 @@ from napari_vipp._graph import (
     BLOCKED_EXECUTION_ACCENT,
     STALE_EXECUTION_ACCENT,
     PortLabelMode,
+    ThumbnailStatsBadgeKind,
 )
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import (
@@ -150,6 +152,11 @@ from napari_vipp.core.pipeline import (
 from napari_vipp.core.preview import make_preview
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.tables import TableData, TableState
+from napari_vipp.core.thumbnail_statistics import (
+    ThumbnailStatisticsBackend,
+    ThumbnailStatisticsDecision,
+    ThumbnailStatisticsResult,
+)
 from napari_vipp.core.workflow import (
     deserialize_workflow,
     save_workflow,
@@ -161,7 +168,9 @@ from napari_vipp.ui.compute_benchmark_dialog import NodeBenchmarkWorkerOutcome
 from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     PipelineOptimizerWorkerOutcome,
 )
+from napari_vipp.ui.diagnostic_workers import ThumbnailContrastProgress
 from napari_vipp.ui.file_sources import SourceFileLoadSpec
+from napari_vipp.ui.presentation_settings import ThumbnailStatisticsPolicy
 
 
 class _Event:
@@ -185,6 +194,46 @@ class _QueuedThreadPool:
 
     def start(self, worker, _priority=0):
         self.workers.append(worker)
+
+
+def _thumbnail_statistics_result(
+    data,
+    *,
+    limits=(0.0, 10.0),
+    intended_backend=ThumbnailStatisticsBackend.CPU_NUMPY,
+    actual_backend=ThumbnailStatisticsBackend.CPU_NUMPY,
+    fallback_reason_code="",
+    fallback_message="",
+):
+    arr = np.asarray(data)
+    decision = ThumbnailStatisticsDecision(
+        intended_backend,
+        "test-selection",
+        "Test backend selection.",
+        int(arr.size),
+        int(arr.nbytes),
+        32 * 1024**2,
+        True,
+    )
+    return ThumbnailStatisticsResult(
+        limits,
+        decision,
+        actual_backend,
+        "exact-native-uint-histogram-test-v1",
+        0.125,
+        runtime_id=(
+            "cuda-cupy"
+            if intended_backend is ThumbnailStatisticsBackend.GPU_CUPY
+            else ""
+        ),
+        device_id=(
+            "test-gpu"
+            if actual_backend is ThumbnailStatisticsBackend.GPU_CUPY
+            else ""
+        ),
+        fallback_reason_code=fallback_reason_code,
+        fallback_message=fallback_message,
+    )
 
 
 class _LayerEvents:
@@ -706,7 +755,7 @@ def test_diagnostic_failure_callbacks_classify_nonactionable_status(qtbot):
     widget._on_thumbnail_contrast_limit_finished(
         ThumbnailContrastLimitResult(11, frozenset(), {}, error="thumbnail boom")
     )
-    assert widget.status_label.property("messageSeverity") == "error"
+    assert widget.status_label.property("messageSeverity") == "warning"
     assert widget.status_label.property("fullWidthAlert") is False
 
     widget._active_auto_contrast_run_id = 12
@@ -2633,6 +2682,16 @@ def test_live_source_data_event_advances_revision_and_recalculates(qtbot):
     layer = viewer.layers["input volume"]
     old_output = widget.pipeline.outputs["input"]
     old_signature = widget._last_pipeline_source_signature
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    sentinel_key = ("thumbnail-sentinel",)
+    widget._thumbnail_contrast_limit_cache[sentinel_key] = (0.0, 1.0)
+    widget._thumbnail_contrast_statistics_cache[sentinel_key] = object()
+    widget._thumbnail_contrast_failure_cache[sentinel_key] = "old failure"
+    widget._thumbnail_contrast_identity_refs[sentinel_key] = weakref.ref(old_output)
 
     replacement = np.full((4, 5), 17, dtype=np.uint16)
     layer.data = replacement
@@ -2646,6 +2705,10 @@ def test_live_source_data_event_advances_revision_and_recalculates(qtbot):
     assert not np.shares_memory(updated, replacement)
     assert not updated.flags.writeable
     np.testing.assert_array_equal(updated, replacement)
+    assert widget._thumbnail_contrast_limit_cache == {}
+    assert widget._thumbnail_contrast_statistics_cache == {}
+    assert widget._thumbnail_contrast_failure_cache == {}
+    assert widget._thumbnail_contrast_identity_refs == {}
 
 
 def test_explicit_refresh_captures_direct_live_array_mutation(qtbot):
@@ -8622,6 +8685,16 @@ def test_extract_channel_thumbnail_uses_selected_semantic_channel(qtbot):
     widget.pipeline.set_param(extract.id, "channel", 2)
     widget.run_pipeline()
 
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(extract.id) is not None
+            and int(np.max(widget.pipeline.outputs[extract.id])) == 42
+        ),
+        timeout=30_000,
+    )
+
     output = widget.pipeline.outputs[extract.id]
     state = widget.pipeline.output_states[extract.id]
     viewer.dims.current_step = (1, 0, 0, 0)
@@ -8906,6 +8979,13 @@ def test_reorder_axes_updates_metadata_axes(qtbot):
 
     control.set_order("TZYXC")
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget.pipeline.outputs.get(node.id) is not None
+            and widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6, 3)
+        ),
+        timeout=5_000,
+    )
     widget.graph_view.select_node(node.id)
 
     assert widget.pipeline.nodes[node.id].params["order"] == "TZYXC"
@@ -8918,6 +8998,13 @@ def test_reorder_axes_updates_metadata_axes(qtbot):
 
     control.reset_order()
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget.pipeline.outputs.get(node.id) is not None
+            and widget.pipeline.outputs[node.id].shape == data.shape
+        ),
+        timeout=5_000,
+    )
 
     assert widget.pipeline.nodes[node.id].params["order"] == ""
     assert widget.pipeline.outputs[node.id].shape == data.shape
@@ -9003,6 +9090,15 @@ def test_reorder_axes_thumbnail_uses_reoriented_state(qtbot, monkeypatch):
     widget._connect_nodes("input", node.id)
     widget.pipeline.set_param(node.id, "order", "CYZX")
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(node.id) is not None
+            and tuple(widget.pipeline.outputs[node.id].shape) == (3, 96, 12, 128)
+        ),
+        timeout=30_000,
+    )
     calls = []
 
     def fake_make_preview(
@@ -10911,6 +11007,957 @@ def test_thumbnail_contrast_mode_is_passed_to_preview(qtbot, monkeypatch):
     assert ("Raw", "Slice") in calls
 
 
+def test_thumbnail_controls_default_and_persist_between_widgets(qtbot):
+    first = VippWidget(_Viewer(np.ones((4, 8, 8), dtype=np.uint16)))
+    qtbot.addWidget(first)
+
+    assert first.thumbnail_resolution_combo.currentData() == "standard"
+    assert first._thumbnail_render_size() == (180, 110)
+    assert first.thumbnail_statistics_policy_combo.currentData() == "auto"
+    assert first._thumbnail_statistics_policy is ThumbnailStatisticsPolicy.AUTO
+
+    qtbot.waitUntil(
+        lambda: first._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    first.preview_mode_combo.setCurrentText("Off")
+    first.thumbnail_resolution_combo.setCurrentIndex(
+        first.thumbnail_resolution_combo.findData("high")
+    )
+    first.thumbnail_statistics_policy_combo.setCurrentIndex(
+        first.thumbnail_statistics_policy_combo.findData("prefer_gpu")
+    )
+
+    second = VippWidget(_Viewer(np.ones((4, 8, 8), dtype=np.uint16)))
+    qtbot.addWidget(second)
+
+    assert second.thumbnail_resolution_combo.currentData() == "high"
+    assert second._thumbnail_render_size() == (360, 220)
+    assert second.thumbnail_statistics_policy_combo.currentData() == "prefer_gpu"
+    assert (
+        second._thumbnail_statistics_policy
+        is ThumbnailStatisticsPolicy.PREFER_GPU
+    )
+
+
+def test_thumbnail_detail_changes_render_size_without_recalculation_or_rescan(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((4, 8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
+    preview_sizes = []
+    normalize_sizes = []
+
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        current_step_nsteps=None,
+        state=None,
+        channel_colors=None,
+        contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
+        preview_size=None,
+    ):
+        preview_sizes.append(preview_size)
+        return np.zeros((4, 4), dtype=np.uint8)
+
+    def fake_normalize(
+        data,
+        size=(180, 110),
+        *,
+        colormap="Gray",
+        contrast_mode="Percentile",
+        contrast_reference=None,
+        contrast_limits=None,
+        data_kind="image",
+    ):
+        normalize_sizes.append(size)
+        return np.zeros((size[1], size[0], 3), dtype=np.uint8)
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    monkeypatch.setattr(
+        "napari_vipp._widget.normalize_thumbnail_with_colormap",
+        fake_normalize,
+    )
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda: pytest.fail("Thumbnail detail must not recalculate the pipeline"),
+    )
+    exact_limits = {("limits",): (0.0, 1.0)}
+    exact_statistics = {("statistics",): object()}
+    widget._thumbnail_contrast_limit_cache.update(exact_limits)
+    widget._thumbnail_contrast_statistics_cache.update(exact_statistics)
+
+    widget.thumbnail_resolution_combo.setCurrentIndex(
+        widget.thumbnail_resolution_combo.findData("high")
+    )
+
+    assert preview_sizes
+    assert normalize_sizes
+    assert set(preview_sizes) == {(360, 220)}
+    assert set(normalize_sizes) == {(360, 220)}
+    assert widget._thumbnail_contrast_limit_cache == exact_limits
+    assert widget._thumbnail_contrast_statistics_cache == exact_statistics
+    assert "cached full-stack contrast statistics were retained" in (
+        widget.status_label.text()
+    )
+
+
+def test_thumbnail_statistics_effective_policy_honors_global_compute_intent(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+
+    cases = (
+        (ComputeMode.AUTO, ThumbnailStatisticsPolicy.AUTO, ComputeMode.AUTO),
+        (
+            ComputeMode.PREFER_GPU,
+            ThumbnailStatisticsPolicy.AUTO,
+            ComputeMode.PREFER_GPU,
+        ),
+        (
+            ComputeMode.CUSTOM,
+            ThumbnailStatisticsPolicy.AUTO,
+            ComputeMode.AUTO,
+        ),
+        (
+            ComputeMode.AUTO,
+            ThumbnailStatisticsPolicy.PREFER_GPU,
+            ComputeMode.PREFER_GPU,
+        ),
+        (ComputeMode.CPU, ThumbnailStatisticsPolicy.PREFER_GPU, ComputeMode.CPU),
+        (ComputeMode.PREFER_GPU, ThumbnailStatisticsPolicy.CPU, ComputeMode.CPU),
+    )
+    for compute_mode, statistics_policy, expected in cases:
+        widget._compute_mode = compute_mode
+        widget._thumbnail_statistics_policy = statistics_policy
+        widget._compute_runtime_quarantined_reason = ""
+        assert widget._effective_thumbnail_statistics_compute_mode() is expected
+
+    widget._compute_mode = ComputeMode.PREFER_GPU
+    widget._thumbnail_statistics_policy = ThumbnailStatisticsPolicy.PREFER_GPU
+    widget._compute_runtime_quarantined_reason = "cleanup failed"
+    assert widget._effective_thumbnail_statistics_compute_mode() is ComputeMode.CPU
+
+
+def test_tiny_cpu_thumbnail_statistics_finish_inline_without_busy_ownership(
+    qtbot,
+):
+    data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    widget.preview_mode_combo.setCurrentText("Off")
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    request = widget._thumbnail_contrast_limit_request(
+        "input",
+        data,
+        widget.pipeline.output_states["input"],
+        "Percentile",
+        "Stack",
+        "image",
+    )
+    assert request is not None
+    widget._queued_thumbnail_contrast_limit_requests[request.key] = request
+
+    widget._start_thumbnail_contrast_limit_run()
+
+    assert pool.workers == []
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert not widget._thumbnail_contrast_busy_visible
+    assert widget.pipeline_busy_label.isHidden()
+    result = widget._thumbnail_contrast_statistics_cache[request.key]
+    assert result.actual_backend is ThumbnailStatisticsBackend.CPU_NUMPY
+    assert request.key in widget._thumbnail_contrast_limit_cache
+    assert widget._compute_policy_edit_block_reason() == ""
+    assert widget._workflow_tab_switch_block_reason() == ""
+
+
+def test_tiny_inline_thumbnail_failure_releases_state_and_records_error(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    widget.preview_mode_combo.setCurrentText("Off")
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    request = widget._thumbnail_contrast_limit_request(
+        "input",
+        data,
+        widget.pipeline.output_states["input"],
+        "Percentile",
+        "Stack",
+        "image",
+    )
+    assert request is not None
+    widget._queued_thumbnail_contrast_limit_requests[request.key] = request
+
+    def fail_calculation(*_args, **_kwargs):
+        raise RuntimeError("synthetic inline statistics failure")
+
+    monkeypatch.setattr(
+        widget._thumbnail_statistics_engine,
+        "calculate",
+        fail_calculation,
+    )
+
+    widget._start_thumbnail_contrast_limit_run()
+
+    assert pool.workers == []
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert not widget._pending_thumbnail_contrast_limit_keys
+    assert "synthetic inline statistics failure" in (
+        widget._thumbnail_contrast_failure_cache[request.key]
+    )
+    assert widget._compute_policy_edit_block_reason() == ""
+
+
+@pytest.mark.parametrize("boundary", ("gpu", "large", "many_channels"))
+def test_nontrivial_thumbnail_statistics_keep_background_ownership(
+    qtbot,
+    boundary,
+):
+    if boundary == "large":
+        data = np.zeros(1 * 1024 * 1024 + 1, dtype=np.uint8)
+        state = image_state_from_array(data)
+    elif boundary == "many_channels":
+        data = np.zeros((9, 8, 8), dtype=np.uint16)
+        state = image_state_from_array(
+            data,
+            layer_metadata={
+                "axes": [
+                    {"name": "c", "type": "channel"},
+                    {"name": "y", "type": "space"},
+                    {"name": "x", "type": "space"},
+                ]
+            },
+        )
+    else:
+        data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+        state = image_state_from_array(data)
+
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    widget.preview_mode_combo.setCurrentText("Off")
+    widget._thumbnail_statistics_policy = (
+        ThumbnailStatisticsPolicy.PREFER_GPU
+        if boundary == "gpu"
+        else ThumbnailStatisticsPolicy.CPU
+    )
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    request = widget._thumbnail_contrast_limit_request(
+        "input",
+        data,
+        state,
+        "Percentile",
+        "Stack",
+        "image",
+    )
+    assert request is not None
+    widget._queued_thumbnail_contrast_limit_requests[request.key] = request
+
+    widget._start_thumbnail_contrast_limit_run()
+
+    assert len(pool.workers) == 1
+    run_id = widget._active_thumbnail_contrast_run_id
+    assert run_id is not None
+    assert widget._thumbnail_contrast_busy_visible
+    widget._on_thumbnail_contrast_limit_finished(
+        ThumbnailContrastLimitResult(
+            run_id,
+            frozenset({request.key}),
+            {},
+            cancelled=True,
+        )
+    )
+    assert widget._active_thumbnail_contrast_run_id is None
+
+
+def test_thumbnail_statistics_policy_retries_only_failures_and_keeps_exact_cache(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    exact_limits = {("ready",): (1.0, 2.0)}
+    exact_statistics = {("ready",): object()}
+    widget._thumbnail_contrast_limit_cache.update(exact_limits)
+    widget._thumbnail_contrast_statistics_cache.update(exact_statistics)
+    widget._thumbnail_contrast_failure_cache[("failed",)] = "old failure"
+    refreshes = []
+    monkeypatch.setattr(widget, "_update_thumbnails", lambda: refreshes.append(True))
+
+    widget.thumbnail_statistics_policy_combo.setCurrentIndex(
+        widget.thumbnail_statistics_policy_combo.findData("cpu")
+    )
+
+    assert widget._thumbnail_statistics_policy is ThumbnailStatisticsPolicy.CPU
+    assert widget._thumbnail_contrast_limit_cache == exact_limits
+    assert widget._thumbnail_contrast_statistics_cache == exact_statistics
+    assert widget._thumbnail_contrast_failure_cache == {}
+    assert refreshes == [True]
+
+
+def test_thumbnail_statistics_cache_rejects_reused_object_identity(qtbot):
+    data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    state = widget.pipeline.output_states["input"]
+    request = widget._thumbnail_contrast_limit_request(
+        "input",
+        data,
+        state,
+        "Percentile",
+        "Stack",
+        "image",
+    )
+    assert request is not None
+    impostor = np.zeros_like(data)
+    widget._thumbnail_contrast_limit_cache[request.key] = (12.0, 34.0)
+    widget._thumbnail_contrast_statistics_cache[request.key] = object()
+    widget._thumbnail_contrast_failure_cache[request.key] = "stale"
+    widget._thumbnail_contrast_identity_refs[request.key] = weakref.ref(impostor)
+
+    assert widget._register_thumbnail_contrast_identity(request)
+
+    assert request.key not in widget._thumbnail_contrast_limit_cache
+    assert request.key not in widget._thumbnail_contrast_statistics_cache
+    assert request.key not in widget._thumbnail_contrast_failure_cache
+    assert widget._thumbnail_contrast_identity_refs[request.key]() is request.data
+
+
+def test_encoded_uint8_rgb_thumbnail_is_scan_free(qtbot):
+    data = np.full((32, 48, 3), (200, 100, 50), dtype=np.uint8)
+    state = image_state_from_array(
+        data,
+        layer_metadata={
+            "axes": [
+                {"name": "y", "type": "space"},
+                {"name": "x", "type": "space"},
+                {"name": "rgb", "type": "channel"},
+            ]
+        },
+    )
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    request = widget._thumbnail_contrast_limit_request(
+        "input",
+        data,
+        state,
+        "Percentile",
+        "Stack",
+        "image",
+    )
+
+    assert request is None
+
+
+def test_thumbnail_statistics_progress_and_cancel_use_shared_toolbar(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    run_id = 407
+    cancel_event = threading.Event()
+    widget._active_thumbnail_contrast_run_id = run_id
+    widget._active_thumbnail_contrast_cancel_event = cancel_event
+    widget._show_thumbnail_contrast_busy(2, 100)
+
+    assert widget.pipeline_cancel_button.text() == "Cancel thumbnails"
+    assert widget.pipeline_cancel_button.isEnabled()
+    widget._on_thumbnail_contrast_limit_progress(
+        ThumbnailContrastProgress(
+            run_id,
+            "input",
+            1,
+            2,
+            40,
+            50,
+            40,
+            100,
+            "GPU",
+            "Exact uint16 histogram",
+        )
+    )
+
+    assert widget.pipeline_busy_bar.value() == 400
+    assert widget.pipeline_busy_bar.format() == "Overall 40%"
+    assert "Image Source" in widget.pipeline_busy_label.text()
+    assert "GPU" in widget.pipeline_busy_label.text()
+    card = widget.graph_view._cards["input"]
+    assert card._thumbnail_stats_badge_kind is ThumbnailStatsBadgeKind.PENDING
+    assert "in progress" in card.thumbnail_stats_badge.toolTip()
+    queued_data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    queued_request = widget._thumbnail_contrast_limit_request(
+        "input",
+        queued_data,
+        widget.pipeline.output_states["input"],
+        "Min-max",
+        "Stack",
+        "image",
+    )
+    assert queued_request is not None
+    widget._queued_thumbnail_contrast_limit_requests[queued_request.key] = (
+        queued_request
+    )
+    assert queued_request.key in widget._thumbnail_contrast_identity_refs
+
+    widget._cancel_thumbnail_contrast_run()
+
+    assert cancel_event.is_set()
+    assert run_id in widget._thumbnail_contrast_discarded_run_ids
+    assert queued_request.key not in widget._thumbnail_contrast_identity_refs
+    assert widget.pipeline_cancel_button.isHidden()
+    assert widget._active_thumbnail_contrast_run_id == run_id
+
+    widget._on_thumbnail_contrast_limit_finished(
+        ThumbnailContrastLimitResult(
+            run_id,
+            frozenset(),
+            {},
+            cancelled=True,
+        )
+    )
+
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert widget.pipeline_busy_label.isHidden()
+    assert "cancelled" in widget.status_label.text().lower()
+
+
+def test_full_batch_preempts_thumbnail_statistics_then_resumes_once(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    dialog = widget._batch_collection_dialog(preview_config=False)
+    assert dialog is not None
+    run_id = 510
+    cancel_event = threading.Event()
+    widget._active_thumbnail_contrast_run_id = run_id
+    widget._active_thumbnail_contrast_cancel_event = cancel_event
+    widget.graph_view.set_node_thumbnail_stats_badge(
+        "input",
+        ThumbnailStatsBadgeKind.PENDING,
+    )
+    request_key = ("scalar", "input", 510)
+    widget._pending_thumbnail_contrast_limit_keys.add(request_key)
+    values = {"collection": "frozen"}
+
+    widget._run_collection_batch_from_workspace(dialog, values)
+
+    assert widget._pending_collection_batch_start == (dialog, values)
+    assert cancel_event.is_set()
+    assert run_id in widget._thumbnail_contrast_discarded_run_ids
+    assert widget.pipeline_cancel_button.text() == "Cancel queued batch"
+    assert widget.pipeline_cancel_button.isEnabled()
+    assert (
+        widget.graph_view._cards["input"]._thumbnail_stats_badge_kind is None
+    )
+
+    latest_values = {"collection": "edited while queued"}
+    monkeypatch.setattr(dialog, "values", lambda: latest_values)
+    resumed = []
+    monkeypatch.setattr(
+        widget,
+        "_run_collection_batch_from_workspace",
+        lambda queued_dialog, queued_values: resumed.append(
+            (queued_dialog, queued_values)
+        ),
+    )
+    widget._on_thumbnail_contrast_limit_finished(
+        ThumbnailContrastLimitResult(
+            run_id,
+            frozenset((request_key,)),
+            {},
+            cancelled=True,
+        )
+    )
+
+    qtbot.waitUntil(lambda: bool(resumed), timeout=5_000)
+    assert resumed == [(dialog, latest_values)]
+    assert widget._pending_collection_batch_start is None
+
+
+def test_cancel_queued_batch_does_not_resurrect_after_thumbnail_cleanup(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    dialog = widget._batch_collection_dialog(preview_config=False)
+    assert dialog is not None
+    run_id = 511
+    cancel_event = threading.Event()
+    widget._active_thumbnail_contrast_run_id = run_id
+    widget._active_thumbnail_contrast_cancel_event = cancel_event
+    widget._run_collection_batch_from_workspace(dialog, {"collection": "frozen"})
+    resumed = []
+    monkeypatch.setattr(
+        widget,
+        "_run_collection_batch_from_workspace",
+        lambda *_args, **_kwargs: resumed.append(True),
+    )
+
+    widget.pipeline_cancel_button.click()
+
+    assert widget._pending_collection_batch_start is None
+    assert widget._active_thumbnail_contrast_run_id == run_id
+    assert widget.pipeline_cancel_button.isHidden()
+    assert "queued full batch cancelled" in widget.status_label.text().lower()
+    widget._on_thumbnail_contrast_limit_finished(
+        ThumbnailContrastLimitResult(
+            run_id,
+            frozenset(),
+            {},
+            cancelled=True,
+        )
+    )
+    QApplication.processEvents()
+
+    assert resumed == []
+    assert widget._active_thumbnail_contrast_run_id is None
+
+
+def test_discarding_queued_batch_dialog_clears_deferred_start(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    dialog = widget._batch_collection_dialog(preview_config=False)
+    assert dialog is not None
+    run_id = 516
+    widget._active_thumbnail_contrast_run_id = run_id
+    widget._active_thumbnail_contrast_cancel_event = threading.Event()
+    widget._run_collection_batch_from_workspace(dialog, {"collection": "frozen"})
+    resumed = []
+    monkeypatch.setattr(
+        widget,
+        "_run_collection_batch_from_workspace",
+        lambda *_args, **_kwargs: resumed.append(True),
+    )
+
+    widget._discard_collection_batch_dialog(dialog)
+    widget._on_thumbnail_contrast_limit_finished(
+        ThumbnailContrastLimitResult(
+            run_id,
+            frozenset(),
+            {},
+            cancelled=True,
+        )
+    )
+    QApplication.processEvents()
+
+    assert widget._pending_collection_batch_start is None
+    assert widget._active_collection_batch_dialog is None
+    assert resumed == []
+
+
+def test_pending_scientific_run_wins_without_consuming_thumbnail_worker(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    dialog = widget._batch_collection_dialog(preview_config=False)
+    assert dialog is not None
+    run_id = 512
+    cancel_event = threading.Event()
+    widget._active_thumbnail_contrast_run_id = run_id
+    widget._active_thumbnail_contrast_cancel_event = cancel_event
+    widget._pipeline_run_pending = True
+
+    widget._run_collection_batch_from_workspace(dialog, {"collection": "stale"})
+
+    assert widget._pending_collection_batch_start is None
+    assert not cancel_event.is_set()
+    assert widget._active_thumbnail_contrast_run_id == run_id
+    scientific_runs = []
+    monkeypatch.setattr(widget, "run_pipeline", lambda: scientific_runs.append(True))
+    widget._on_thumbnail_contrast_limit_finished(
+        ThumbnailContrastLimitResult(run_id, frozenset(), {})
+    )
+
+    qtbot.waitUntil(lambda: bool(scientific_runs), timeout=5_000)
+    assert scientific_runs == [True]
+    assert widget._pending_collection_batch_start is None
+
+
+@pytest.mark.parametrize(
+    "owner",
+    ("pipeline", "source", "benchmark", "optimizer", "batch", "closing"),
+)
+def test_thumbnail_timer_discards_requests_when_exclusive_owner_arrives(
+    qtbot,
+    owner,
+):
+    data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    request = widget._thumbnail_contrast_limit_request(
+        "input",
+        data,
+        widget.pipeline.output_states["input"],
+        "Percentile",
+        "Stack",
+        "image",
+    )
+    assert request is not None
+    widget._queued_thumbnail_contrast_limit_requests[request.key] = request
+    if owner == "pipeline":
+        widget._pipeline_run_pending = True
+    elif owner == "source":
+        widget._source_load_pending = True
+    elif owner == "benchmark":
+        widget._node_benchmark_dialog = SimpleNamespace(running=True)
+    elif owner == "optimizer":
+        widget._pipeline_optimizer_dialog = SimpleNamespace(running=True)
+    elif owner == "batch":
+        widget._collection_batch_running = True
+    else:
+        widget._closing = True
+
+    widget._start_thumbnail_contrast_limit_run()
+
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert widget._queued_thumbnail_contrast_limit_requests == {}
+    widget._pipeline_run_pending = False
+    widget._source_load_pending = False
+    widget._node_benchmark_dialog = None
+    widget._pipeline_optimizer_dialog = None
+    widget._collection_batch_running = False
+    widget._closing = False
+
+
+def test_active_thumbnail_statistics_clearly_block_timing_actions(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    widget._compute_mode = ComputeMode.CUSTOM
+    widget._active_thumbnail_contrast_run_id = 517
+
+    benchmark_ready, benchmark_reason = widget._can_benchmark_selected_node()
+    optimizer_ready, optimizer_reason = widget._can_optimize_pipeline()
+    widget._sync_compute_policy_editability()
+
+    assert not benchmark_ready
+    assert "thumbnail statistics" in benchmark_reason.lower()
+    assert not optimizer_ready
+    assert "thumbnail statistics" in optimizer_reason.lower()
+    assert not widget.node_benchmark_button.isEnabled()
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "value"),
+    (
+        ("_on_thumbnail_preview_mode_changed", "Off"),
+        ("_on_thumbnail_contrast_mode_changed", "Min-max"),
+        ("_on_thumbnail_contrast_scope_changed", "Slice"),
+    ),
+)
+def test_obsolete_thumbnail_presentation_change_cancels_active_statistics(
+    qtbot,
+    handler_name,
+    value,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    run_id = 513
+    cancel_event = threading.Event()
+    widget._active_thumbnail_contrast_run_id = run_id
+    widget._active_thumbnail_contrast_cancel_event = cancel_event
+
+    getattr(widget, handler_name)(value)
+
+    assert cancel_event.is_set()
+    assert run_id in widget._thumbnail_contrast_discarded_run_ids
+    assert widget._active_thumbnail_contrast_run_id == run_id
+
+
+def test_thumbnail_resolution_change_retains_active_statistics(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    run_id = 514
+    cancel_event = threading.Event()
+    widget._active_thumbnail_contrast_run_id = run_id
+    widget._active_thumbnail_contrast_cancel_event = cancel_event
+    next_index = (
+        widget.thumbnail_resolution_combo.currentIndex() + 1
+    ) % widget.thumbnail_resolution_combo.count()
+
+    widget._on_thumbnail_resolution_changed(next_index)
+    widget._update_thumbnails()
+
+    assert not cancel_event.is_set()
+    assert run_id not in widget._thumbnail_contrast_discarded_run_ids
+    assert widget._active_thumbnail_contrast_run_id == run_id
+
+
+def test_batch_completion_requeues_thumbnail_statistics_only_when_safe(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    calls = []
+    scheduled = []
+    monkeypatch.setattr(widget, "_update_thumbnails", lambda: calls.append(True))
+    monkeypatch.setattr(
+        "napari_vipp._widget.QTimer.singleShot",
+        lambda _delay, callback: scheduled.append(callback),
+    )
+
+    widget._resume_thumbnail_statistics_after_batch(
+        origin_active=True,
+        graph_refresh_pending=False,
+    )
+    qtbot.waitUntil(lambda: bool(calls), timeout=5_000)
+    widget._resume_thumbnail_statistics_after_batch(
+        origin_active=True,
+        graph_refresh_pending=True,
+    )
+    widget._resume_thumbnail_statistics_after_batch(
+        origin_active=False,
+        graph_refresh_pending=False,
+    )
+    assert len(scheduled) == 1
+    calls.clear()
+    scheduled[0]()
+
+    assert calls == [True]
+
+
+@pytest.mark.parametrize(
+    ("actual_backend", "fallback_code", "fallback_message", "badge_kind"),
+    (
+        (
+            ThumbnailStatisticsBackend.GPU_CUPY,
+            "",
+            "",
+            ThumbnailStatsBadgeKind.GPU,
+        ),
+        (
+            ThumbnailStatisticsBackend.CPU_NUMPY,
+            "gpu-runtime-unavailable",
+            "CuPy could not initialize; exact CPU statistics were used.",
+            ThumbnailStatsBadgeKind.CPU_FALLBACK,
+        ),
+    ),
+)
+def test_thumbnail_statistics_badge_reports_actual_backend_and_provenance(
+    qtbot,
+    actual_backend,
+    fallback_code,
+    fallback_message,
+    badge_kind,
+):
+    data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    state = widget.pipeline.output_states["input"]
+    request = widget._thumbnail_contrast_limit_request(
+        "input",
+        data,
+        state,
+        "Percentile",
+        "Stack",
+        "image",
+    )
+    assert request is not None
+    result = _thumbnail_statistics_result(
+        data,
+        intended_backend=ThumbnailStatisticsBackend.GPU_CUPY,
+        actual_backend=actual_backend,
+        fallback_reason_code=fallback_code,
+        fallback_message=fallback_message,
+    )
+    widget._thumbnail_contrast_statistics_cache[request.key] = result
+    before_compute_badge = widget.graph_view._cards["input"].compute_badge.text()
+
+    widget._sync_node_thumbnail_statistics_presentation(
+        "input",
+        data,
+        state,
+        "Percentile",
+        "Stack",
+        "image",
+    )
+
+    card = widget.graph_view._cards["input"]
+    assert card._thumbnail_stats_badge_kind is badge_kind
+    assert "Processed 128 B in 0.125 s" in card.thumbnail_stats_badge.toolTip()
+    assert "exact limits cached" in card.thumbnail_stats_badge.toolTip()
+    assert "scientific compute provenance" in card.thumbnail_stats_badge.toolTip()
+    assert card.compute_badge.text() == before_compute_badge
+    if fallback_message:
+        assert fallback_message in card.thumbnail_stats_badge.toolTip()
+        assert "Attempted runtime: cuda-cupy" in card.thumbnail_stats_badge.toolTip()
+    else:
+        assert "GPU · CuPy" in card.thumbnail_stats_badge.toolTip()
+
+
+def test_thumbnail_statistics_failure_keeps_partial_results_and_explains_preview(
+    qtbot,
+):
+    data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    successful_key = ("successful",)
+    failed_key = ("failed",)
+    statistics = _thumbnail_statistics_result(data)
+    widget._thumbnail_contrast_identity_refs.update(
+        {
+            successful_key: weakref.ref(data),
+            failed_key: weakref.ref(data),
+        }
+    )
+    widget._active_thumbnail_contrast_run_id = 408
+
+    widget._on_thumbnail_contrast_limit_finished(
+        ThumbnailContrastLimitResult(
+            408,
+            frozenset((successful_key, failed_key)),
+            {successful_key: statistics.limits},
+            statistics={successful_key: statistics},
+            errors={failed_key: "GPU and CPU statistics failed"},
+        )
+    )
+
+    assert widget._thumbnail_contrast_limit_cache[successful_key] == (
+        statistics.limits
+    )
+    assert widget._thumbnail_contrast_statistics_cache[successful_key] is statistics
+    assert widget._thumbnail_contrast_failure_cache[failed_key] == (
+        "GPU and CPU statistics failed"
+    )
+    assert widget.status_label.property("messageSeverity") == "warning"
+    assert "provisional previews were retained" in widget.status_label.text()
+
+    widget.preview_mode_combo.setCurrentText("Slice")
+    state = widget.pipeline.output_states["input"]
+    request = widget._thumbnail_contrast_limit_request(
+        "input",
+        data,
+        state,
+        "Percentile",
+        "Stack",
+        "image",
+    )
+    assert request is not None
+    widget._thumbnail_contrast_failure_cache[request.key] = "exact scan failed"
+    widget._sync_node_thumbnail_statistics_presentation(
+        "input",
+        data,
+        state,
+        "Percentile",
+        "Stack",
+        "image",
+    )
+    card = widget.graph_view._cards["input"]
+    assert card._thumbnail_stats_badge_kind is ThumbnailStatsBadgeKind.ERROR
+    assert "exact scan failed" in card.thumbnail_stats_badge.toolTip()
+    assert "Slice contrast" in card.thumbnail_stats_badge.toolTip()
+
+
+def test_thumbnail_statistics_cleanup_failure_quarantines_accelerator(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    widget._active_thumbnail_contrast_run_id = 409
+    widget._thumbnail_contrast_busy_visible = True
+    widget._show_thumbnail_contrast_busy(1, 64)
+
+    widget._on_thumbnail_contrast_limit_finished(
+        ThumbnailContrastLimitResult(
+            409,
+            frozenset(),
+            {},
+            error="CUDA cleanup timed out",
+            cleanup_failed=True,
+        )
+    )
+
+    assert "cleanup failed during thumbnail statistics" in (
+        widget._compute_runtime_quarantined_reason
+    )
+    assert widget._effective_thumbnail_statistics_compute_mode() is ComputeMode.CPU
+    assert widget.status_label.property("messageSeverity") == "error"
+    assert widget.status_label.property("fullWidthAlert") is True
+    assert "Restart VIPP" in widget.status_label.text()
+
+
 def test_stack_thumbnail_contrast_limits_are_cached(qtbot, monkeypatch):
     data = np.zeros((5, 16, 18), dtype=np.float32)
     data[4, 8, 9] = 10.0
@@ -10922,22 +11969,24 @@ def test_stack_thumbnail_contrast_limits_are_cached(qtbot, monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
-    def fake_thumbnail_contrast_limits(
-        data,
-        *,
-        contrast_mode="Percentile",
-        data_kind="image",
-    ):
-        calls.append((id(data), contrast_mode, data_kind))
-        if len(calls) == 1:
-            started.set()
-            assert release.wait(5)
-        return (0.0, 10.0)
+    class BlockingStatisticsEngine:
+        def select(self, request):
+            # Exercise background progress rather than the tiny CPU fast path.
+            return replace(
+                _thumbnail_statistics_result(request.data).decision,
+                scanned_bytes=2 * 1024 * 1024,
+            )
 
-    monkeypatch.setattr(
-        "napari_vipp._widget.thumbnail_contrast_limits",
-        fake_thumbnail_contrast_limits,
-    )
+        def calculate(self, request, *, progress=None):
+            calls.append(
+                (id(request.data), request.contrast_mode, request.data_kind)
+            )
+            if len(calls) == 1:
+                started.set()
+                assert release.wait(5)
+            return _thumbnail_statistics_result(request.data)
+
+    widget._thumbnail_statistics_engine = BlockingStatisticsEngine()
     widget._clear_thumbnail_contrast_limit_state()
     widget.thumbnail_scope_combo.setCurrentText("Stack")
     widget.thumbnail_contrast_combo.setCurrentText("Min-max")
@@ -10945,7 +11994,7 @@ def test_stack_thumbnail_contrast_limits_are_cached(qtbot, monkeypatch):
 
     qtbot.waitUntil(started.is_set, timeout=5_000)
     assert not widget.pipeline_busy_bar.isHidden()
-    assert "thumbnail contrast" in widget.pipeline_busy_label.text().lower()
+    assert "thumbnail" in widget.pipeline_busy_label.text().lower()
 
     release.set()
     qtbot.waitUntil(
@@ -10977,15 +12026,18 @@ def test_pending_stack_thumbnail_uses_scan_free_provisional_limits(
     release = threading.Event()
     preview_calls = []
 
-    def blocking_thumbnail_contrast(
-        data,
-        *,
-        contrast_mode="Percentile",
-        data_kind="image",
-    ):
-        started.set()
-        assert release.wait(5)
-        return (0.0, 10.0)
+    class BlockingStatisticsEngine:
+        def select(self, request):
+            # Keep the provisional-preview assertion asynchronous.
+            return replace(
+                _thumbnail_statistics_result(request.data).decision,
+                scanned_bytes=2 * 1024 * 1024,
+            )
+
+        def calculate(self, request, *, progress=None):
+            started.set()
+            assert release.wait(5)
+            return _thumbnail_statistics_result(request.data)
 
     def fake_make_preview(
         data,
@@ -11002,10 +12054,7 @@ def test_pending_stack_thumbnail_uses_scan_free_provisional_limits(
         preview_calls.append((contrast_scope, contrast_limits, preview_size))
         return np.zeros((4, 4), dtype=np.uint8)
 
-    monkeypatch.setattr(
-        "napari_vipp._widget.thumbnail_contrast_limits",
-        blocking_thumbnail_contrast,
-    )
+    widget._thumbnail_statistics_engine = BlockingStatisticsEngine()
     monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
     widget._clear_thumbnail_contrast_limit_state()
     widget.thumbnail_scope_combo.setCurrentText("Stack")
@@ -11013,7 +12062,7 @@ def test_pending_stack_thumbnail_uses_scan_free_provisional_limits(
     widget._finish_pipeline_update(None, "input volume")
 
     assert not widget.pipeline_busy_bar.isHidden()
-    assert "thumbnail contrast" in widget.pipeline_busy_label.text().lower()
+    assert "thumbnail" in widget.pipeline_busy_label.text().lower()
     qtbot.waitUntil(started.is_set, timeout=5_000)
     assert preview_calls
     assert all(scope == "Stack" for scope, _limits, _size in preview_calls)
@@ -13165,6 +14214,10 @@ def test_cancel_isolated_tuning_restores_parameters_and_cached_results(qtbot):
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
     qtbot.addWidget(widget)
     widget.run_pipeline(force_sync=True)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
     widget.graph_view.select_node("gaussian")
     original_sigma = widget.pipeline.nodes["gaussian"].params["sigma"]
     original_gaussian = widget.pipeline.outputs["gaussian"]
@@ -14968,8 +16021,16 @@ def test_source_refresh_blocks_batch_until_representative_is_recalculated(
     assert dialog._preview_result is None
     assert not np.array_equal(widget.pipeline.outputs["batch_output_1"], previous)
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
-    assert (demo.root / "results" / BATCH_MANIFEST_FILENAME).is_file()
+    manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
+    qtbot.waitUntil(
+        lambda: (
+            widget._pending_collection_batch_start is None
+            and not widget._collection_batch_running
+            and manifest_path.is_file()
+        ),
+        timeout=15_000,
+    )
+    assert manifest_path.is_file()
     assert "3 completed" in dialog.run_progress_label.text()
 
 
@@ -15213,10 +16274,18 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
     assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
 
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+    manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
+    qtbot.waitUntil(
+        lambda: (
+            widget._pending_collection_batch_start is None
+            and not widget._collection_batch_running
+            and manifest_path.is_file()
+        ),
+        timeout=15_000,
+    )
 
     assert preview_calls == 2
-    assert (demo.root / "results" / BATCH_MANIFEST_FILENAME).is_file()
+    assert manifest_path.is_file()
     assert "4 completed" in dialog.run_progress_label.text()
 
 
@@ -15275,7 +16344,15 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     )
 
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+    manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
+    qtbot.waitUntil(
+        lambda: (
+            widget._pending_collection_batch_start is None
+            and not widget._collection_batch_running
+            and manifest_path.is_file()
+        ),
+        timeout=15_000,
+    )
 
     assert dialog.isVisible()
     assert dialog.run_progress_bar.value() == 3
@@ -15287,7 +16364,7 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     assert "3 completed" in dialog.run_progress_label.text()
     assert "Synthetic ground truth passed" in dialog.run_result_label.text()
     assert widget.batch_navigator.progress_bar.value() == 3
-    assert (demo.root / "results" / BATCH_MANIFEST_FILENAME).is_file()
+    assert manifest_path.is_file()
     assert dialog._preview_result is None
     assert "Historical preflight" in dialog.preview_status.text()
     qtbot.waitUntil(dialog.run_button.isEnabled, timeout=1_000)
@@ -16714,6 +17791,42 @@ def test_terminal_close_checks_active_batch_before_dirty_tabs(
         widget._current_history_snapshot(),
         persistence_token=widget._workflow_tab_persistence_token(),
     )
+
+
+def test_terminal_close_requires_explicit_queued_batch_cancellation(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    dialog = widget._batch_collection_dialog(preview_config=False)
+    assert dialog is not None
+    run_id = 515
+    cancel_event = threading.Event()
+    widget._active_thumbnail_contrast_run_id = run_id
+    widget._active_thumbnail_contrast_cancel_event = cancel_event
+    widget._run_collection_batch_from_workspace(dialog, {"collection": "frozen"})
+    assert widget._pending_collection_batch_start is not None
+    first_event = QCloseEvent()
+
+    widget.closeEvent(first_event)
+
+    assert not first_event.isAccepted()
+    assert not widget._closing
+    assert widget._pending_collection_batch_start is not None
+    assert cancel_event.is_set()
+    assert "Cancel the queued full batch" in widget.status_label.text()
+
+    widget.pipeline_cancel_button.click()
+
+    assert widget._pending_collection_batch_start is None
+    second_event = QCloseEvent()
+    widget.closeEvent(second_event)
+
+    assert second_event.isAccepted()
+    assert widget._closing
 
 
 def test_terminal_close_cancel_keeps_all_workflow_tabs_open(qtbot, monkeypatch):

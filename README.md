@@ -718,7 +718,11 @@ release while retaining CPU as the portable scientific reference path:
   explicit CPU;
 - independent workflow tabs, high-resolution colocalization scatter tools,
   live source subtitles, draggable tunnel rerouting, and retained napari
-  camera/slice/display state during node tuning; and
+  camera/slice/display state during node tuning;
+- Low/Standard/High thumbnail backing detail, responsive sampled Slice contrast,
+  exact resolution-independent Stack Percentile histograms/native Min-max
+  reductions, conservative adaptive CPU/CuPy presentation routing, separate
+  per-node Stats chips, and truthful progress/cooperative cancellation; and
 - ND2 ordered-axis metadata correction, Crop Stack type preservation, new
   Sigma Filter and ImageJ Auto Threshold nodes, plus substantial cache,
   optimizer, progress, cancellation, and publication hardening.

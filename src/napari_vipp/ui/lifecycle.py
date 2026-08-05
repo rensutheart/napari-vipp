@@ -74,6 +74,14 @@ class WidgetLifecycle:
 
         widget._thumbnail_contrast_serial += 1
         widget._discard_pending_thumbnail_contrast_limit_requests()
+        # Terminal close invalidates ownership immediately after requesting
+        # cooperative cancellation.  Late worker signals cannot publish into a
+        # closing widget, while the worker may still finish private cleanup.
+        widget._active_thumbnail_contrast_run_id = None
+        widget._active_thumbnail_contrast_cancel_event = None
+        widget._thumbnail_user_cancel_requested_run_id = None
+        widget._pending_thumbnail_contrast_limit_keys.clear()
+        widget._thumbnail_contrast_busy_visible = False
         widget._clear_input_histogram_cache()
         widget._clear_output_histogram_cache()
         widget._clear_colocalization_scatter_cache()

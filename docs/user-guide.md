@@ -363,6 +363,70 @@ catalog and rationale.
 
 The preview mode affects graph thumbnails, not the napari layer view.
 
+### Thumbnail Detail And Statistics
+
+`Thumbnail detail` controls how many pixels VIPP renders for each node card:
+
+| Detail | Render size | Use |
+| --- | --- | --- |
+| `Low` | 90 × 55 | Fastest redraws while editing a large graph. |
+| `Standard` | 180 × 110 | Default balance of speed and spatial detail. |
+| `High` | 360 × 220 | Retain more backing detail for HiDPI display or downsampling. |
+
+The card viewport remains the same size. Increasing detail retains a larger
+source image that can improve HiDPI display or downsampling; it does not
+guarantee more physical screen pixels. It also does not change a pipeline result
+or rerun a node. Stack contrast always uses the complete output and remains
+resolution-independent. Slice contrast intentionally normalizes the selected
+detail's spatially sampled current view for responsiveness, so Low, Standard,
+and High can produce slightly different Slice display limits. Changing detail
+retains any exact Stack limits already cached.
+
+`Settings > Thumbnail statistics` controls where presentation-only Stack
+contrast work runs:
+
+| Policy | Behavior |
+| --- | --- |
+| `Auto` | Choose CPU or GPU separately for each eligible node result from its full output dtype and byte size. |
+| `CPU` | Use NumPy and do not initialize CUDA for thumbnail statistics. |
+| `Prefer GPU` | Use CuPy for every eligible result, with a visible CPU fallback if it cannot run. |
+
+The main compute policy remains authoritative. Main-toolbar `CPU` always forces
+thumbnail statistics to CPU. With thumbnail statistics on `Auto`, main-toolbar
+`Prefer GPU` biases eligible statistics to GPU; main-toolbar `Auto` and
+`Custom` use the adaptive crossover. An explicit thumbnail-statistics `CPU` or
+`Prefer GPU` choice otherwise supplies the presentation preference. These
+local settings are remembered on this machine but do not enter workflow JSON
+or scientific provenance.
+
+For eligible Percentile work, Auto currently chooses GPU at 384 MiB or more for
+`uint8` and 512 MiB or more for `uint16` before its first successful thumbnail
+GPU calculation. Both use 32 MiB once that path is warm. These conservative
+crossovers are measured default heuristics, not promises of the fastest backend:
+hardware, CUDA startup, data distribution, residency, and competing work can
+move the break-even point. The boundary uses the complete node output's native
+dtype and byte size—not the Low, Standard, or High render size. Choose Prefer
+GPU when the explicit intent is to try every eligible CuPy path regardless of
+the heuristic. Float and other dtypes retain the exact NumPy-compatible CPU
+percentile calculation in this release. Min-max uses an exact native CPU
+reduction. Integer Raw contrast, masks, labels, tables, and other scan-free
+contracts do not launch an unnecessary GPU calculation.
+
+Tiny batches that the selector guarantees will remain on CPU finish immediately
+without taking over the shared progress strip: at most 1 MiB in aggregate, with
+no more than eight requests or eight channel-statistics lanes. Larger work,
+high-channel data, and every selected GPU path remain asynchronous and
+cancellable. This scheduling boundary is separate from the CPU/GPU crossover
+and does not change the calculated limits or recorded Stats provenance.
+
+Each node card reports this display work independently as `Stats…` (pending),
+`Stats · CPU`, `Stats · GPU`, `Stats · CPU fallback`, or `Stats · error`. These
+small Stats chips must not be confused with the scientific `CPU`, `GPU · CuPy`,
+`GPU · cuCIM`, and `CPU fallback` compute badges. Hover a Stats chip for render
+detail, scope, algorithm, processed bytes, elapsed time, selection reason,
+crossover, and any fallback or failure. Presentation statistics never change
+the node output or the implementation recorded for it.
+
 ### Contrast And Contrast Range
 
 `Contrast` chooses the intensity mapping:
@@ -378,11 +442,35 @@ The preview mode affects graph thumbnails, not the napari layer view.
 | Range | Meaning |
 | --- | --- |
 | `Stack` | Cache one range for the node output, then reuse it while moving through slices. Best for stable brightness across Z/T/C. |
-| `Slice` | Recompute display scaling from the currently viewed slice. Useful when individual slices are very different. |
+| `Slice` | Recompute display scaling from the spatially sampled current view at the selected detail. Fast and responsive when individual slices differ; Low/Standard/High can change display limits slightly. |
 
 For large volumes, prefer `Stack` once the cache is built. VIPP calculates stack
 thumbnail limits in the background and reuses them while the node output remains
-unchanged.
+unchanged. For `uint8` and `uint16`, Percentile Stack limits use an exact
+native-dtype histogram; the 0.5th/99.9th-percentile result preserves the
+existing NumPy-linear display semantics without sorting a float copy. GPU and
+CPU histogram implementations produce the same limits. Min-max uses a faster
+exact native reduction and does not construct a histogram. Float and other
+dtypes use the exact NumPy-compatible CPU percentile path.
+
+The shared toolbar progress area identifies the node, backend, and active
+statistics phase while Stack work runs. CPU integer histograms and min-max
+reductions advance and stop between bounded chunks. An active GPU
+kernel/synchronization or exact float/other-dtype NumPy percentile can contain a
+non-interruptible inner pass; VIPP shows that phase honestly and applies
+`Cancel` at the next cooperative boundary. The GPU histogram uploads the full
+eligible input once, while the NumPy fallback may allocate full-array conversion
+or finite-filter temporaries. Completed exact limits are cached. Cancellation
+retains scan-free provisional thumbnails; a failed Prefer-GPU attempt is shown as
+`Stats · CPU fallback` when safe CPU fallback succeeds. A failure of both paths
+is `Stats · error`. Cleanup failure instead quarantines accelerator work until
+restart, just like a scientific GPU cleanup failure.
+
+`Slice` avoids the full-output scan. It calculates CPU-local display
+normalization from the selected detail's spatially sampled current view and
+changes as T/Z/C or thumbnail detail changes. Use it when rapid browsing matters
+more than holding one resolution-independent brightness window across the
+stack.
 
 `Auto contrast` in the selected-node inspector is also display-only. It derives
 its limits from every finite input value (RGB images use luminance and ignore an

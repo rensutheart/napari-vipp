@@ -55,6 +55,36 @@ def test_preview_samples_spatial_axes_before_large_mip():
     assert np.array_equal(preview, expected)
 
 
+def test_slice_selects_tz_before_spatial_sampling(monkeypatch):
+    data = np.broadcast_to(
+        np.asarray(7, dtype=np.uint16),
+        (19, 9, 1150, 822),
+    )
+    state = image_state_from_array(data, layer_metadata={"axes": "TZYX"})
+    take_shapes = []
+    original_take = np.take
+
+    def recording_take(values, indices, *args, **kwargs):
+        take_shapes.append(np.asarray(values).shape)
+        return original_take(values, indices, *args, **kwargs)
+
+    monkeypatch.setattr("napari_vipp.core.preview.np.take", recording_take)
+
+    preview = make_preview(
+        data,
+        mode="slice",
+        current_step=(4, 3, 0, 0),
+        current_step_nsteps=data.shape,
+        state=state,
+        preview_size=(180, 110),
+    )
+
+    assert preview.shape == (110, 79)
+    assert take_shapes
+    assert take_shapes[0] == (1150, 822)
+    assert all(len(shape) == 2 for shape in take_shapes)
+
+
 def test_shape_inferred_yxc_preview_is_reduced_as_scalar_data():
     data = np.arange(5 * 7 * 3, dtype=np.uint16).reshape(5, 7, 3)
     state = image_state_from_array(data)
@@ -91,6 +121,28 @@ def test_explicit_yxc_channel_axis_remains_a_fluorescence_composite():
     # A plain C axis represents independently displayed fluorescence channels,
     # even when it happens to contain three channel-last planes.
     assert np.allclose(preview[2, 3], (1.0, 1.0, 1.0))
+
+
+def test_high_channel_fluorescence_composite_accumulates_without_channel_stack(
+    monkeypatch,
+):
+    data = np.ones((8, 9, 512), dtype=np.uint16)
+    state = image_state_from_array(data, layer_metadata={"axes": "YXC"})
+
+    def forbidden_sum(*_args, **_kwargs):
+        raise AssertionError("Composite must not stack every rendered channel.")
+
+    monkeypatch.setattr("napari_vipp.core.preview.np.sum", forbidden_sum)
+
+    preview = make_preview(
+        data,
+        mode="slice",
+        state=state,
+        preview_size=(360, 220),
+    )
+
+    assert preview.shape == (8, 9, 3)
+    assert preview.dtype == np.float32
 
 
 def test_declared_rgb_and_rgba_previews_preserve_encoded_uint8_color():

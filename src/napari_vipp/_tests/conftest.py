@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from napari_vipp.core.compute_history import PIPELINE_TIMING_HISTORY_PATH_ENV
-from napari_vipp.ui import recent_paths
+from napari_vipp.ui import presentation_settings, recent_paths
 
 
 class _MemorySettings:
@@ -21,11 +21,12 @@ class _MemorySettings:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_recent_path_settings(monkeypatch):
-    """Keep dialog-history tests deterministic and out of user settings."""
+def _isolate_ui_settings(monkeypatch):
+    """Keep UI preference tests deterministic and out of user settings."""
     values: dict[str, object] = {}
     settings = _MemorySettings(values)
     monkeypatch.setattr(recent_paths, "_settings", lambda: settings)
+    monkeypatch.setattr(presentation_settings, "_settings", lambda: settings)
 
 
 @pytest.fixture(autouse=True)

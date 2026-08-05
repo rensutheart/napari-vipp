@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt
 from qtpy.QtGui import QPainterPath
@@ -9,6 +10,7 @@ from napari_vipp._graph import (
     ComputeBadgeKind,
     PipelineGraphView,
     PortLabelMode,
+    ThumbnailStatsBadgeKind,
     _wire_path,
 )
 from napari_vipp._theme import category_color, category_tint
@@ -437,6 +439,210 @@ def test_unchanged_compute_badge_skips_card_geometry_refresh(qtbot, monkeypatch)
     )
 
     assert refreshes == ["card", "ports"]
+
+
+def test_thumbnail_retains_full_render_detail_for_device_aware_painting(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+    thumbnail = np.full((220, 360, 3), 127, dtype=np.uint8)
+
+    view.set_thumbnail("gaussian", thumbnail)
+
+    source = card.preview.source_pixmap()
+    displayed = card.preview.pixmap()
+    assert (source.width(), source.height()) == (360, 220)
+    assert displayed is not None
+    assert not displayed.isNull()
+    assert displayed.devicePixelRatio() >= 1.0
+
+
+@pytest.mark.parametrize(
+    ("kind", "label"),
+    (
+        (ThumbnailStatsBadgeKind.PENDING, "Stats…"),
+        (ThumbnailStatsBadgeKind.CPU, "Stats · CPU"),
+        (ThumbnailStatsBadgeKind.GPU, "Stats · GPU"),
+        (ThumbnailStatsBadgeKind.CPU_FALLBACK, "Stats · CPU fallback"),
+        (ThumbnailStatsBadgeKind.ERROR, "Stats · error"),
+    ),
+)
+def test_thumbnail_stats_badge_is_preview_local_and_accessible(
+    qtbot,
+    kind,
+    label,
+):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+    view.set_thumbnail(
+        "gaussian",
+        np.full((24, 32, 3), 127, dtype=np.uint8),
+    )
+    detail = (
+        "Thumbnail presentation only. 180×110. Exact uint16 histogram. "
+        "Does not affect pipeline data."
+    )
+    accessible_detail = f"{detail} Backend state: {label}."
+
+    view.set_node_thumbnail_stats_badge(
+        "gaussian",
+        kind,
+        tooltip=detail,
+        accessible_description=accessible_detail,
+    )
+
+    badge = card.thumbnail_stats_badge
+    assert not badge.isHidden()
+    assert badge.parent() is card
+    assert badge.text() == label
+    assert badge.toolTip() == detail
+    assert badge.accessibleName() == f"Thumbnail statistics: {label}"
+    assert badge.accessibleDescription() == accessible_detail
+    assert card.preview.toolTip() == detail
+    assert card.preview.accessibleDescription() == accessible_detail
+    assert card.preview.accessibleName() == "Gaussian Blur thumbnail preview"
+    assert badge.testAttribute(Qt.WA_TransparentForMouseEvents)
+
+
+def test_thumbnail_stats_badge_is_independent_and_preserves_preview_clicks(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    card = view._cards["gaussian"]
+    view.set_thumbnail(
+        "gaussian",
+        np.full((24, 32, 3), 127, dtype=np.uint8),
+    )
+    view.set_node_compute_badge(
+        "gaussian",
+        "cupy",
+        tooltip="Scientific node execution used CuPy.",
+    )
+    view.set_node_thumbnail_stats_badge(
+        "gaussian",
+        "cpu_fallback",
+        tooltip="Thumbnail statistics fell back to CPU after a GPU OOM.",
+    )
+    view.set_node_processing("gaussian", True)
+
+    stats_badge = card.thumbnail_stats_badge
+    assert card.compute_badge.text() == "GPU · CuPy"
+    assert stats_badge.text() == "Stats · CPU fallback"
+    assert "Scientific node execution" in card.compute_badge.toolTip()
+    assert "Thumbnail statistics" in card.preview.toolTip()
+    assert not card.compute_badge.isHidden()
+    assert not stats_badge.isHidden()
+    assert not card.processing_badge.isHidden()
+    assert card.compute_badge.parent() is card.title_row
+    assert stats_badge.parent() is card
+    assert card.processing_badge.parent() is card
+    assert stats_badge.geometry().left() < card.processing_badge.geometry().left()
+    assert stats_badge.geometry().top() > card.processing_badge.geometry().top()
+
+    selected = []
+    view.node_selected.connect(selected.append)
+    scene_position = view._proxies["gaussian"].mapToScene(
+        QPointF(stats_badge.geometry().center())
+    )
+    view_position = view.mapFromScene(scene_position)
+    qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=view_position)
+
+    assert selected[-1] == "gaussian"
+
+
+def test_thumbnail_stats_badge_repositions_with_preview_on_resize(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    card = view._cards["gaussian"]
+    view.set_thumbnail(
+        "gaussian",
+        np.full((24, 32, 3), 127, dtype=np.uint8),
+    )
+    view.set_node_thumbnail_stats_badge("gaussian", "gpu")
+
+    badge = card.thumbnail_stats_badge
+
+    def expected_position():
+        preview_rect = card.preview.geometry()
+        return (
+            preview_rect.left() + 8,
+            preview_rect.bottom() - badge.sizeHint().height() - 8,
+        )
+
+    assert (badge.x(), badge.y()) == expected_position()
+
+    card.resize(card.width() + 100, card.height() + 80)
+    qtbot.wait(10)
+
+    assert (badge.x(), badge.y()) == expected_position()
+
+
+def test_thumbnail_stats_badge_hides_without_preview_or_relevant_stats(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+    thumbnail = np.full((24, 32, 3), 127, dtype=np.uint8)
+    view.set_thumbnail("gaussian", thumbnail)
+    view.set_node_thumbnail_stats_badge(
+        "gaussian",
+        "cpu",
+        tooltip="Presentation-only CPU histogram.",
+    )
+    assert not card.thumbnail_stats_badge.isHidden()
+
+    view.set_node_preview_enabled("gaussian", False)
+    assert card.thumbnail_stats_badge.isHidden()
+    assert card.preview.toolTip() == ""
+    assert card.preview.accessibleDescription() == ""
+
+    view.set_node_preview_enabled("gaussian", True)
+    assert card.thumbnail_stats_badge.isHidden()
+
+    view.set_thumbnail("gaussian", thumbnail)
+    assert not card.thumbnail_stats_badge.isHidden()
+
+    view.set_thumbnail("gaussian", None)
+    assert card.thumbnail_stats_badge.isHidden()
+
+    view.set_thumbnail("gaussian", thumbnail)
+    view.clear_node_thumbnail_stats_badge("gaussian")
+    assert card.thumbnail_stats_badge.isHidden()
+    assert card._thumbnail_stats_badge_kind is None
+    assert card.preview.toolTip() == ""
+    assert card.preview.accessibleDescription() == ""
+    assert card.preview.accessibleName() == "Gaussian Blur thumbnail preview"
+
+
+def test_thumbnail_stats_badge_clear_api_supports_one_node_or_all(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    thumbnail = np.full((24, 32, 3), 127, dtype=np.uint8)
+    for node_id in ("input", "gaussian"):
+        view.set_thumbnail(node_id, thumbnail)
+        view.set_node_thumbnail_stats_badge(node_id, "cpu")
+
+    view.clear_node_thumbnail_stats_badges(("input",))
+
+    assert view._cards["input"].thumbnail_stats_badge.isHidden()
+    assert not view._cards["gaussian"].thumbnail_stats_badge.isHidden()
+
+    view.clear_node_thumbnail_stats_badges()
+
+    assert all(
+        card.thumbnail_stats_badge.isHidden() for card in view._cards.values()
+    )
+
+
+def test_thumbnail_stats_badge_rejects_unknown_presentation_identity(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    with pytest.raises(ValueError, match="thumbnail statistics badge kind"):
+        view.set_node_thumbnail_stats_badge("gaussian", "mystery-accelerator")
 
 
 def test_automatic_stale_node_is_visibly_amber(qtbot):

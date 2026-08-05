@@ -11,12 +11,17 @@ from __future__ import annotations
 import threading
 import weakref
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from qtpy.QtCore import QObject, QRunnable, Signal
 
+from napari_vipp.core.compute import ComputeMode
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.thumbnail_statistics import (
+    ThumbnailStatisticsCleanupError,
+    ThumbnailStatisticsRequest,
+)
 from napari_vipp.ui.plots import (
     COLOCALIZATION_SCATTER_BINS,
 )
@@ -38,6 +43,27 @@ class ThumbnailContrastLimitResult:
     keys: frozenset[tuple]
     limits: dict[tuple, object]
     error: str = ""
+    statistics: dict[tuple, object] = field(default_factory=dict)
+    errors: dict[tuple, str] = field(default_factory=dict)
+    cancelled: bool = False
+    cleanup_failed: bool = False
+
+
+@dataclass(frozen=True)
+class ThumbnailContrastProgress:
+    """Chunk-aware progress for one presentation-only statistics batch."""
+
+    run_id: int
+    node_id: str
+    node_index: int
+    node_total: int
+    current: int
+    total: int
+    overall_current: int
+    overall_total: int
+    backend: str = ""
+    message: str = ""
+    indeterminate: bool = False
 
 
 @dataclass(frozen=True)
@@ -204,64 +230,292 @@ class ThumbnailContrastLimitWorker(QRunnable):
         run_id: int,
         requests: tuple[ThumbnailContrastLimitRequest, ...],
         *,
-        calculate_scalar: Callable[..., object],
-        calculate_channel: Callable[..., object],
+        calculate_scalar: Callable[..., object] | None = None,
+        calculate_channel: Callable[..., object] | None = None,
+        statistics_engine: object | None = None,
+        compute_mode: ComputeMode = ComputeMode.AUTO,
+        cancel_event: threading.Event | None = None,
     ):
         super().__init__()
         self.run_id = int(run_id)
         self.requests = tuple(requests)
+        if statistics_engine is None and (
+            calculate_scalar is None or calculate_channel is None
+        ):
+            raise TypeError(
+                "Thumbnail worker requires a statistics engine or both legacy "
+                "calculation callables."
+            )
         self._calculate_scalar = calculate_scalar
         self._calculate_channel = calculate_channel
+        self._statistics_engine = statistics_engine
+        self._compute_mode = ComputeMode.parse(compute_mode)
+        self._cancel_event = cancel_event or threading.Event()
         self.signals = _ThumbnailContrastLimitSignals()
 
     def run(self) -> None:
         keys = frozenset(request.key for request in self.requests)
         limits: dict[tuple, object] = {}
-        total = len(self.requests)
-        try:
-            if not _emit_if_alive(
-                self.signals,
-                "progress",
-                (self.run_id, 0, total),
+        statistics: dict[tuple, object] = {}
+        errors: dict[tuple, str] = {}
+        request_values: list[int] = []
+        for item in self.requests:
+            decision = None
+            if self._statistics_engine is not None:
+                try:
+                    decision = self._statistics_engine.select(
+                        ThumbnailStatisticsRequest(
+                            item.data,
+                            contrast_mode=item.contrast_mode,
+                            data_kind=item.data_kind,
+                            channel_axis=item.channel_axis,
+                            compute_mode=self._compute_mode,
+                        )
+                    )
+                except Exception:
+                    decision = None
+            scanned_values = (
+                int(getattr(decision, "scanned_values", 0) or 0)
+                if decision is not None and hasattr(decision, "scanned_values")
+                else _thumbnail_request_values(item)
+            )
+            request_values.append(
+                max(
+                    scanned_values
+                    if decision is not None
+                    else _thumbnail_request_values(item),
+                    1,
+                )
+            )
+        request_values_tuple = tuple(request_values)
+        overall_total = sum(request_values_tuple)
+        node_total = len(self.requests)
+        overall_completed = 0
+        cancelled = False
+        cleanup_failed = False
+
+        if not self._emit_progress(
+            ThumbnailContrastProgress(
+                self.run_id,
+                "",
+                0,
+                node_total,
+                0,
+                0,
+                0,
+                overall_total,
+                "",
+                "Preparing thumbnail statistics",
+            )
+        ):
+            return
+
+        for index, (request, value_total) in enumerate(
+            zip(self.requests, request_values_tuple, strict=True),
+            start=1,
+        ):
+            if self._cancel_event.is_set():
+                cancelled = True
+                break
+
+            statistics_request = None
+            selected_backend = "CPU"
+            selection_message = "Selecting CPU statistics backend"
+            try:
+                if self._statistics_engine is not None:
+                    statistics_request = ThumbnailStatisticsRequest(
+                        request.data,
+                        contrast_mode=request.contrast_mode,
+                        data_kind=request.data_kind,
+                        channel_axis=request.channel_axis,
+                        compute_mode=self._compute_mode,
+                    )
+                    decision = self._statistics_engine.select(statistics_request)
+                    backend_value = str(
+                        getattr(decision.backend, "value", decision.backend)
+                    )
+                    selected_backend = (
+                        "GPU" if "gpu" in backend_value else "CPU"
+                    )
+                    selection_message = (
+                        f"{selected_backend} selected: {decision.reason}"
+                    )
+            except Exception as exc:
+                errors[request.key] = f"{type(exc).__name__}: {exc}"
+                overall_completed += value_total
+                self._emit_progress(
+                    ThumbnailContrastProgress(
+                        self.run_id,
+                        request.node_id,
+                        index,
+                        node_total,
+                        1,
+                        1,
+                        overall_completed,
+                        overall_total,
+                        "CPU/GPU",
+                        "Thumbnail statistics selection failed",
+                    )
+                )
+                continue
+
+            progress_state: dict[str, object] = {
+                "backend": selected_backend,
+                "scaled_current": 0,
+            }
+
+            def report(
+                update,
+                *,
+                base=overall_completed,
+                item=request,
+                item_index=index,
+                item_values=value_total,
+                item_state=progress_state,
             ):
-                return
-            for index, request in enumerate(self.requests, start=1):
-                if request.channel_axis is None:
+                operation_current = int(update.current)
+                operation_total = int(update.total)
+                fraction = (
+                    min(max(float(operation_current) / operation_total, 0.0), 1.0)
+                    if operation_total > 0
+                    else 0.0
+                )
+                scaled_current = int(round(item_values * fraction))
+                scaled_current = max(
+                    int(item_state["scaled_current"]),
+                    min(scaled_current, item_values),
+                )
+                item_state["scaled_current"] = scaled_current
+                message = str(update.message)
+                indeterminate = (
+                    "cancel applies after this pass" in message.casefold()
+                    or "probe may not be interruptible" in message.casefold()
+                )
+                if message.casefold().startswith("cpu fallback"):
+                    item_state["backend"] = "CPU fallback"
+                self._emit_progress(
+                    ThumbnailContrastProgress(
+                        self.run_id,
+                        item.node_id,
+                        item_index,
+                        node_total,
+                        operation_current,
+                        operation_total,
+                        base + scaled_current,
+                        overall_total,
+                        str(item_state["backend"]),
+                        message,
+                        indeterminate,
+                    )
+                )
+
+            progress = ProgressContext(
+                cancelled=self._cancel_event.is_set,
+                reporter=report,
+            )
+            try:
+                progress.report(0, value_total, selection_message)
+                if self._statistics_engine is not None:
+                    assert statistics_request is not None
+                    result = self._statistics_engine.calculate(
+                        statistics_request,
+                        progress=progress,
+                    )
+                    limits[request.key] = result.limits
+                    statistics[request.key] = result
+                    backend_value = str(
+                        getattr(result.actual_backend, "value", result.actual_backend)
+                    ).casefold()
+                    progress_state["backend"] = (
+                        "CPU fallback"
+                        if bool(getattr(result, "used_fallback", False))
+                        else "GPU"
+                        if "gpu" in backend_value
+                        else "CPU"
+                    )
+                elif request.channel_axis is None:
+                    assert self._calculate_scalar is not None
                     limits[request.key] = self._calculate_scalar(
                         request.data,
                         contrast_mode=request.contrast_mode,
                         data_kind=request.data_kind,
                     )
                 else:
+                    assert self._calculate_channel is not None
                     limits[request.key] = self._calculate_channel(
                         request.data,
                         channel_axis=request.channel_axis,
                         contrast_mode=request.contrast_mode,
                         data_kind=request.data_kind,
                     )
-                if not _emit_if_alive(
-                    self.signals,
-                    "progress",
-                    (self.run_id, index, total),
-                ):
-                    return
-        except Exception as exc:
-            _emit_if_alive(
-                self.signals,
-                "finished",
-                ThumbnailContrastLimitResult(
-                    self.run_id,
-                    keys,
-                    {},
-                    error=str(exc),
+                progress.report(value_total, value_total, "Thumbnail statistics ready")
+            except OperationCancelled:
+                cancelled = True
+                break
+            except ThumbnailStatisticsCleanupError as exc:
+                errors[request.key] = str(exc)
+                cleanup_failed = True
+                self._emit_progress(
+                    ThumbnailContrastProgress(
+                        self.run_id,
+                        request.node_id,
+                        index,
+                        node_total,
+                        1,
+                        1,
+                        overall_completed + value_total,
+                        overall_total,
+                        str(progress_state["backend"]),
+                        "Thumbnail statistics cleanup failed",
+                    )
                 )
-            )
-            return
+                break
+            except Exception as exc:
+                # One failed presentation refinement must not discard exact
+                # limits already completed for other node cards.
+                errors[request.key] = f"{type(exc).__name__}: {exc}"
+                self._emit_progress(
+                    ThumbnailContrastProgress(
+                        self.run_id,
+                        request.node_id,
+                        index,
+                        node_total,
+                        1,
+                        1,
+                        overall_completed + value_total,
+                        overall_total,
+                        str(progress_state["backend"]),
+                        "Thumbnail statistics failed; provisional preview retained",
+                    )
+                )
+            finally:
+                overall_completed += value_total
+
+        error = "; ".join(errors.values())
         _emit_if_alive(
             self.signals,
             "finished",
-            ThumbnailContrastLimitResult(self.run_id, keys, limits),
+            ThumbnailContrastLimitResult(
+                self.run_id,
+                keys,
+                limits,
+                error=error,
+                statistics=statistics,
+                errors=errors,
+                cancelled=cancelled,
+                cleanup_failed=cleanup_failed,
+            ),
         )
+
+    def _emit_progress(self, progress: ThumbnailContrastProgress) -> bool:
+        return _emit_if_alive(self.signals, "progress", progress)
+
+
+def _thumbnail_request_values(request: ThumbnailContrastLimitRequest) -> int:
+    try:
+        return max(int(np.asarray(request.data).size), 0)
+    except Exception:
+        return 0
 
 
 def _emit_if_alive(signals, name: str, payload: object) -> bool:

@@ -148,9 +148,29 @@ comfortable on very large OME-Zarr datasets, the next scale work should add:
 
 - operation capability declarations for eager, lazy-safe, memory-heavy, and
   scale-aware nodes;
-- optional preview-resolution controls for thumbnails while keeping operational
-  thresholds and inspector histograms exact and free of hidden sampling;
+- pyramid-aware thumbnail source selection beyond the current Low (90 × 55),
+  Standard (180 × 110), and High (360 × 220) backing-detail controls;
 - broader chunked execution beyond the bounded global-threshold and inspector
   histogram paths;
 - OME-Zarr pyramid generation and preview-level selection;
 - confirmation before eager-only nodes materialize very large lazy arrays.
+
+Thumbnail render detail and contrast work are separate budgets. Low, Standard,
+and High retain 90 × 55, 180 × 110, or 360 × 220 backing images for the fixed
+card viewport; High may improve HiDPI display or downsampling without making
+the card itself larger. Slice contrast normalizes this spatially sampled current
+view, so changing detail can slightly change Slice display limits. Stack
+Percentile/Min-max instead summarizes the complete node output, caches its
+limits independently of render detail, and reports its own progress. Native
+`uint8` and `uint16` Percentile calculations use an exact, bounded histogram
+on CPU or eligible CuPy GPU; Min-max uses an exact native reduction.
+Auto's conservative cold GPU crossover is 384 MiB for `uint8` and 512 MiB for
+`uint16`, becoming 32 MiB once the histogram path is warm. These measured
+defaults are heuristics rather than guarantees because hardware, distribution,
+startup, residency, and competing work can change the fastest backend. Prefer
+GPU is the explicit override. Other dtypes retain the exact NumPy-compatible CPU
+percentile path; it may allocate full-array conversion/filter temporaries and
+its active NumPy call may temporarily be non-interruptible. The GPU histogram
+uploads one complete eligible input and allocates a fixed count table; admission
+accounts for both plus conservative overhead. Slice contrast avoids the
+full-output scan.

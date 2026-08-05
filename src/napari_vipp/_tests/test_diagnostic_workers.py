@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 
 from napari_vipp.ui.diagnostic_workers import (
@@ -94,6 +96,201 @@ def test_thumbnail_worker_stops_if_widget_signals_were_destroyed():
     worker.run()
 
     assert calculations == []
+
+
+def test_thumbnail_worker_normalizes_progress_and_reports_cpu_fallback():
+    class FallbackEngine:
+        def select(self, _request):
+            return SimpleNamespace(
+                backend=SimpleNamespace(value="gpu-cupy"),
+                reason="Large exact histogram selected GPU.",
+            )
+
+        def calculate(self, _request, *, progress):
+            progress.report(0, 4, "Uploading thumbnail statistics to GPU")
+            progress.report(3, 4, "Returning thumbnail histogram from GPU")
+            progress.report(
+                750_000,
+                1_000_000,
+                "CPU fallback · Counting exact intensity levels",
+            )
+            progress.report(
+                875_000,
+                1_000_000,
+                "CPU fallback · Counting exact intensity levels",
+            )
+            return SimpleNamespace(
+                limits=(0.0, 1.0),
+                actual_backend=SimpleNamespace(value="cpu-numpy"),
+                used_fallback=True,
+            )
+
+    data = np.zeros(100, dtype=np.uint16)
+    worker = ThumbnailContrastLimitWorker(
+        8,
+        (
+            ThumbnailContrastLimitRequest(
+                ("scalar",),
+                "node-a",
+                data,
+                None,
+                "Percentile",
+                "image",
+            ),
+        ),
+        statistics_engine=FallbackEngine(),
+    )
+    updates = []
+    results = []
+    worker.signals.progress.connect(updates.append)
+    worker.signals.finished.connect(results.append)
+
+    worker.run()
+
+    node_updates = [update for update in updates if update.node_id == "node-a"]
+    overall = [update.overall_current for update in node_updates]
+    assert overall == sorted(overall)
+    assert 75 in overall
+    assert 88 in overall
+    assert overall[-1] == data.size
+    fallback_updates = [
+        update
+        for update in node_updates
+        if update.message.startswith("CPU fallback")
+    ]
+    assert fallback_updates
+    assert all(update.backend == "CPU fallback" for update in fallback_updates)
+    assert node_updates[-1].backend == "CPU fallback"
+    assert results[0].limits[("scalar",)] == (0.0, 1.0)
+
+
+def test_thumbnail_worker_weights_overall_progress_by_actual_scan_work():
+    class ScanAwareEngine:
+        def select(self, request):
+            scan_free = str(request.data_kind).casefold() == "mask"
+            return SimpleNamespace(
+                backend=SimpleNamespace(value="cpu-numpy"),
+                reason="scan free" if scan_free else "CPU scan",
+                scanned_values=0 if scan_free else np.asarray(request.data).size,
+            )
+
+        def calculate(self, request, *, progress):
+            size = np.asarray(request.data).size
+            if str(request.data_kind).casefold() != "mask":
+                progress.report(size // 2, size, "Scanning")
+            return SimpleNamespace(
+                limits=(0.0, 1.0),
+                actual_backend=SimpleNamespace(value="cpu-numpy"),
+                used_fallback=False,
+            )
+
+    worker = ThumbnailContrastLimitWorker(
+        9,
+        (
+            ThumbnailContrastLimitRequest(
+                ("mask",), "mask", np.zeros(10_000), None, "Percentile", "mask"
+            ),
+            ThumbnailContrastLimitRequest(
+                ("image",), "image", np.zeros(100), None, "Percentile", "image"
+            ),
+        ),
+        statistics_engine=ScanAwareEngine(),
+    )
+    updates = []
+    worker.signals.progress.connect(updates.append)
+
+    worker.run()
+
+    # The huge scan-free mask contributes one phase unit, not 99% of the bar.
+    image_half = next(
+        update
+        for update in updates
+        if update.node_id == "image" and update.message == "Scanning"
+    )
+    assert image_half.overall_total == 101
+    assert image_half.overall_current == 51
+
+
+def test_thumbnail_worker_marks_noninterruptible_inner_phase_indeterminate():
+    class ExactFloatEngine:
+        def select(self, request):
+            return SimpleNamespace(
+                backend=SimpleNamespace(value="cpu-numpy"),
+                reason="float CPU",
+                scanned_values=np.asarray(request.data).size,
+            )
+
+        def calculate(self, _request, *, progress):
+            progress.report(
+                9,
+                10,
+                "Exact NumPy percentile selection · cancel applies after this pass",
+            )
+            return SimpleNamespace(
+                limits=(0.0, 1.0),
+                actual_backend=SimpleNamespace(value="cpu-numpy"),
+                used_fallback=False,
+            )
+
+    worker = ThumbnailContrastLimitWorker(
+        10,
+        (
+            ThumbnailContrastLimitRequest(
+                ("float",), "float", np.arange(10.0), None, "Percentile", "image"
+            ),
+        ),
+        statistics_engine=ExactFloatEngine(),
+    )
+    updates = []
+    worker.signals.progress.connect(updates.append)
+
+    worker.run()
+
+    phase = next(
+        update
+        for update in updates
+        if "cancel applies" in update.message
+    )
+    assert phase.indeterminate
+
+
+def test_thumbnail_worker_completes_overall_progress_when_one_result_fails():
+    class FailingEngine:
+        def select(self, request):
+            return SimpleNamespace(
+                backend=SimpleNamespace(value="cpu-numpy"),
+                reason="CPU scan",
+                scanned_values=np.asarray(request.data).size,
+            )
+
+        def calculate(self, _request, *, progress):
+            progress.report(2, 10, "Scanning")
+            raise MemoryError("workspace admission rejected")
+
+    worker = ThumbnailContrastLimitWorker(
+        11,
+        (
+            ThumbnailContrastLimitRequest(
+                ("failure",),
+                "failure",
+                np.arange(10.0),
+                None,
+                "Percentile",
+                "image",
+            ),
+        ),
+        statistics_engine=FailingEngine(),
+    )
+    updates = []
+    results = []
+    worker.signals.progress.connect(updates.append)
+    worker.signals.finished.connect(results.append)
+
+    worker.run()
+
+    assert updates[-1].overall_current == updates[-1].overall_total == 10
+    assert "failed" in updates[-1].message.casefold()
+    assert ("failure",) in results[0].errors
 
 
 def test_histogram_worker_depends_on_narrow_injected_ports():
