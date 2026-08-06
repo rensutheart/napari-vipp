@@ -723,7 +723,8 @@ release while retaining CPU as the portable scientific reference path:
   Slice contrast,
   exact resolution-independent Stack Percentile histograms/native Min-max
   reductions, conservative adaptive CPU/CuPy presentation routing, separate
-  per-node Stats chips, and truthful progress/cooperative cancellation; and
+  per-node thumbnail-contrast footers, and truthful progress/cooperative
+  cancellation; and
 - ND2 ordered-axis metadata correction, Crop Stack type preservation, new
   Sigma Filter and ImageJ Auto Threshold nodes, plus substantial cache,
   optimizer, progress, cancellation, and publication hardening.

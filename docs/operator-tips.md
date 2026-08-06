@@ -82,13 +82,14 @@ other-dtype percentiles retain the exact NumPy-compatible CPU path. Main compute
 CPU always forces these statistics to CPU; main Prefer GPU biases presentation
 Auto toward GPU.
 
-Read the node's separate `Stats…`, `Stats · CPU`, `Stats · GPU`,
-`Stats · CPU fallback`, or `Stats · error` chip for presentation state; the
-ordinary compute badge still identifies what produced the scientific output.
-Stack statistics use the toolbar progress and Cancel surfaces and retain
-provisional thumbnails if cancelled. CPU integer work stops between bounded
-chunks. An active GPU kernel/synchronization or exact float/other-dtype NumPy
-percentile can have a non-interruptible inner pass; the progress message
+Read the slim footer below the thumbnail—`Contrast · Calculating…`,
+`Contrast · CPU`, `Contrast · GPU`, `Contrast · CPU fallback`, or
+`Contrast · error`—for presentation state. The ordinary title-row compute badge
+still identifies what produced the scientific output. Hover the footer or image
+for details. Stack statistics use the toolbar progress and Cancel surfaces and
+retain provisional thumbnails if cancelled. CPU integer work stops between
+bounded chunks. An active GPU kernel/synchronization or exact float/other-dtype
+NumPy percentile can have a non-interruptible inner pass; the progress message
 identifies the phase and cancellation takes effect after that pass returns.
 
 Large stack histograms and automatic-threshold markers are calculated in the

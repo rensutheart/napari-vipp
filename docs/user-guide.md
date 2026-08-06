@@ -420,15 +420,18 @@ without taking over the shared progress strip: at most 1 MiB in aggregate, with
 no more than eight requests or eight channel-statistics lanes. Larger work,
 high-channel data, and every selected GPU path remain asynchronous and
 cancellable. This scheduling boundary is separate from the CPU/GPU crossover
-and does not change the calculated limits or recorded Stats provenance.
+and does not change the calculated limits or recorded contrast provenance.
 
-Each node card reports this display work independently as `Stats…` (pending),
-`Stats · CPU`, `Stats · GPU`, `Stats · CPU fallback`, or `Stats · error`. These
-small Stats chips must not be confused with the scientific `CPU`, `GPU · CuPy`,
-`GPU · cuCIM`, and `CPU fallback` compute badges. Hover a Stats chip for render
-detail, scope, algorithm, processed bytes, elapsed time, selection reason,
-crossover, and any fallback or failure. Presentation statistics never change
-the node output or the implementation recorded for it.
+Each node card reports this display work independently in a slim footer below
+the image: `Contrast · Calculating…`, `Contrast · CPU`, `Contrast · GPU`,
+`Contrast · CPU fallback`, or `Contrast · error`. Ordinary success is muted;
+fallback and error use stronger warning colours without covering the thumbnail.
+This footer must not be confused with the scientific `CPU`, `GPU · CuPy`,
+`GPU · cuCIM`, and `CPU fallback` compute badges in the title row. Hover the
+footer or thumbnail for render detail, scope, algorithm, processed bytes,
+elapsed time, selection reason, crossover, and any fallback or failure.
+Presentation statistics never change the node output or the implementation
+recorded for it.
 
 ### Contrast And Contrast Range
 
@@ -464,10 +467,10 @@ non-interruptible inner pass; VIPP shows that phase honestly and applies
 `Cancel` at the next cooperative boundary. The GPU histogram uploads the full
 eligible input once, while the NumPy fallback may allocate full-array conversion
 or finite-filter temporaries. Completed exact limits are cached. Cancellation
-retains scan-free provisional thumbnails; a failed Prefer-GPU attempt is shown as
-`Stats · CPU fallback` when safe CPU fallback succeeds. A failure of both paths
-is `Stats · error`. Cleanup failure instead quarantines accelerator work until
-restart, just like a scientific GPU cleanup failure.
+retains scan-free provisional thumbnails; a failed Prefer-GPU attempt is shown
+as `Contrast · CPU fallback` when safe CPU fallback succeeds. A failure of both
+paths is `Contrast · error`. Cleanup failure instead quarantines accelerator
+work until restart, just like a scientific GPU cleanup failure.
 
 `Slice` avoids the full-output scan. It calculates CPU-local display
 normalization from the selected detail's spatially sampled current view and

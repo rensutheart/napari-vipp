@@ -1029,25 +1029,27 @@ Before worker submission, the same probe-free selector admits a deliberately
 small CPU-only fast path: no more than 1 MiB of aggregate scanned data, eight
 requests, and eight aggregate scalar/channel lanes, all with ordinary numeric
 dtypes. The existing worker executes directly from its queued GUI callback, so
-the normal result, cache, weak-identity, error, and Stats-provenance paths remain
-single-sourced. It does not claim the shared progress strip. Any GPU decision,
+the normal result, cache, weak-identity, error, and contrast-provenance paths
+remain single-sourced. It does not claim the shared progress strip. Any GPU decision,
 selection error, larger scan, high-channel histogram, or non-numeric dtype uses
 the normal background worker. This avoids thread-pool overhead and incidental
 UI blocking for micro-workloads without risking CUDA startup or a large
 per-channel histogram on the GUI thread.
 
 Exact limits and typed decision/result metadata are cached separately. Per-card
-`Stats…` (pending), `Stats · CPU`, `Stats · GPU`, `Stats · CPU fallback`, and
-`Stats · error` chips expose presentation backend, algorithm, byte count,
-timing, crossover, reason, and fallback without overwriting the scientific
-CPU/CuPy/cuCIM badge. The shared toolbar progress/cancel ownership covers
-thumbnail scans. CPU integer paths advance between bounded chunks. An active
-GPU kernel/synchronization or float/other-dtype NumPy percentile phase can be
-indeterminate and cannot be interrupted inside its current call. Cancellation
-takes effect at the next cooperative phase boundary, keeps provisional previews,
-and never publishes a partial limit; already completed exact node results may
-be retained when the whole statistics batch ends normally with a different node
-failure.
+`Contrast · Calculating…`, `Contrast · CPU`, `Contrast · GPU`,
+`Contrast · CPU fallback`, and `Contrast · error` status text appears in a slim
+reserved footer below the thumbnail. It exposes presentation backend,
+algorithm, byte count, timing, crossover, reason, and fallback through its
+tooltip without covering the image or overwriting the scientific CPU/CuPy/cuCIM
+badge. Ordinary success is muted; fallback and error remain emphasized. The
+shared toolbar progress/cancel ownership covers thumbnail scans. CPU integer
+paths advance between bounded chunks. An active GPU kernel/synchronization or
+float/other-dtype NumPy percentile phase can be indeterminate and cannot be
+interrupted inside its current call. Cancellation takes effect at the next
+cooperative phase boundary, keeps provisional previews, and never publishes a
+partial limit; already completed exact node results may be retained when the
+whole statistics batch ends normally with a different node failure.
 
 Scientific diagnostic reductions live in `core/diagnostics.py`; Qt plot widgets
 live in `ui/plots.py`. Typed request/result objects and Qt runnables for
