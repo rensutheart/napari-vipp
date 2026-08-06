@@ -179,26 +179,39 @@ prepare a new version if the tagged candidate needs code changes.
 
 ## 4. Build And Qualify Tagged Artifacts
 
-With `HEAD` still at the clean tagged commit, build into an empty
-version-specific directory. Do not use a broad root-level `dist/*` upload glob:
+With `HEAD` still at the clean tagged commit, build into a new directory named
+for both the version and tagged commit. Refuse to reuse an existing directory;
+old same-version artifacts can otherwise look uploadable even though they came
+from another commit. Do not use a broad root-level `dist/*` upload glob:
 
 ```powershell
 python -m pip install -U build twine
-python -m build --outdir "dist/<version>"
-python -m twine check "dist/<version>/*"
-Get-FileHash -Algorithm SHA256 "dist/<version>/*"
+$releaseVersion = "<version>"
+$taggedSha = (git rev-parse "v$releaseVersion^{}").Trim()
+$artifactDir = "dist/$releaseVersion-$($taggedSha.Substring(0, 12))"
+if (Test-Path -LiteralPath $artifactDir) {
+    throw "Artifact directory already exists; choose a clean checkout or inspect it without reusing it: $artifactDir"
+}
+New-Item -ItemType Directory -Path $artifactDir | Out-Null
+python -m build --outdir $artifactDir
+python -m twine check `
+  "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl" `
+  "$artifactDir/napari_vipp-$releaseVersion.tar.gz"
+Get-FileHash -Algorithm SHA256 `
+  "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl", `
+  "$artifactDir/napari_vipp-$releaseVersion.tar.gz"
 ```
 
 Expected output artifacts:
 
-- `dist/<version>/napari_vipp-<version>.tar.gz`
-- `dist/<version>/napari_vipp-<version>-py3-none-any.whl`
+- `dist/<version>-<tagged-short-sha>/napari_vipp-<version>.tar.gz`
+- `dist/<version>-<tagged-short-sha>/napari_vipp-<version>-py3-none-any.whl`
 
-Using a version-specific directory prevents an upload command from including
-artifacts from an older release. It does not make an existing same-version
-artifact safe: confirm both files were produced from the tagged commit, record
-their SHA-256 hashes, and repeat the clean-wheel CPU and CUDA acceptance smokes
-against these files rather than an editable checkout.
+Using a version-and-commit-specific directory prevents an upload command from
+including artifacts from an older release. It does not make an existing
+same-version artifact safe: confirm both files were produced from the tagged
+commit, record their SHA-256 hashes, and repeat the clean-wheel CPU and CUDA
+acceptance smokes against these files rather than an editable checkout.
 
 ## 5. Build And Publish Documentation
 
@@ -212,10 +225,13 @@ python -m mkdocs build --strict
 Review the rendered `0.13.0a1` release page, workflow-schema upgrade guidance,
 batch workspace instructions, architecture boundaries, Windows CUDA/cuCIM
 installation boundary, and known limitations.
-Commit and push the docs release before or alongside the package release, then
-confirm the hosted documentation resolves from the `Documentation` project URL.
+Commit and push the docs release before the package release. A push to the docs
+repository publishes only the `nightly` manual: confirm the nightly release
+page and Windows CUDA guide resolve. Do not mistake that for the numbered
+release snapshot. Step 6 explicitly publishes and verifies the numbered manual
+after the application tag is pushed and before PyPI upload.
 
-## 6. Publish Tag, Package, And GitHub Prerelease
+## 6. Publish Tag, Numbered Manual, Package, And GitHub Prerelease
 
 Push the already-qualified immutable tag first:
 
@@ -223,15 +239,32 @@ Push the already-qualified immutable tag first:
 git push origin "v<version>"
 ```
 
-Then publish exactly the two hash-recorded artifacts. PyPI uploads cannot be
+Next, dispatch the companion repository's numbered documentation deployment:
+
+```powershell
+gh workflow run docs-deploy.yml `
+  --repo rensutheart/vipp-mkdocs `
+  --ref main `
+  -f version="<version>" `
+  -f make_stable=true
+```
+
+Wait for that exact `workflow_dispatch` run to succeed. Before any package
+upload, open both of these URLs and confirm they show the target version rather
+than a 404 or `nightly` content:
+
+- `https://rensutheart.github.io/vipp-mkdocs/<version>/`
+- `https://rensutheart.github.io/vipp-mkdocs/<version>/getting-started/windows-cuda/`
+
+Only then publish exactly the two hash-recorded artifacts. PyPI uploads cannot be
 replaced, so recheck the directory, version, and explicit filenames before
 entering credentials. Pass only the token username on the command line and
 paste the API token into Twine's hidden password prompt:
 
 ```powershell
 python -m twine upload --username "__token__" `
-  "dist/<version>/napari_vipp-<version>-py3-none-any.whl" `
-  "dist/<version>/napari_vipp-<version>.tar.gz"
+  "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl" `
+  "$artifactDir/napari_vipp-$releaseVersion.tar.gz"
 ```
 
 Do not put the token in `TWINE_PASSWORD`, the command line, or a PowerShell
@@ -250,7 +283,10 @@ Prepare the release notes body below in a temporary file, then create the
 release with GitHub CLI (or use the equivalent GitHub UI fields):
 
 ```powershell
-gh release create v<version> --prerelease --verify-tag --notes-file release-notes.md "dist/<version>/napari_vipp-<version>.tar.gz" "dist/<version>/napari_vipp-<version>-py3-none-any.whl"
+gh release create "v$releaseVersion" --prerelease --verify-tag `
+  --notes-file release-notes.md `
+  "$artifactDir/napari_vipp-$releaseVersion.tar.gz" `
+  "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl"
 ```
 
 If using the GitHub UI:
@@ -331,6 +367,7 @@ If not updated after indexing delay:
       compute-policy-resource, and entry-point checks pass; SHA-256 hashes saved
 - [ ] Companion documentation strict build passes and release page is published
 - [ ] Git tag pushed
+- [ ] Numbered release manual and Windows CUDA guide resolve before package upload
 - [ ] Uploaded to PyPI
 - [ ] GitHub pre-release published with wheel and sdist attached
 - [ ] napari hub page shows latest version
