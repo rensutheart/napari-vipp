@@ -17396,6 +17396,14 @@ def test_save_image_node_writes_when_enabled(qtbot, tmp_path):
     widget.pipeline.set_param(node.id, "overwrite", "yes")
     widget.run_pipeline()
 
+    qtbot.waitUntil(
+        lambda: (
+            path.exists()
+            and widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+        ),
+        timeout=5_000,
+    )
     assert path.exists()
     np.testing.assert_array_equal(np.load(path), widget.pipeline.outputs["gaussian"])
 
@@ -17416,6 +17424,14 @@ def test_save_image_node_writes_imagej_tiff_with_metadata(qtbot, tmp_path):
     widget.pipeline.set_param(node.id, "overwrite", "yes")
     widget.run_pipeline()
 
+    qtbot.waitUntil(
+        lambda: (
+            path.exists()
+            and widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+        ),
+        timeout=5_000,
+    )
     with tifffile.TiffFile(path) as tif:
         metadata = tif.imagej_metadata
         series = tif.series[0]
@@ -17442,6 +17458,14 @@ def test_save_image_node_writes_png_for_2d_output(qtbot, tmp_path):
     widget.pipeline.set_param(node.id, "overwrite", "yes")
     widget.run_pipeline()
 
+    qtbot.waitUntil(
+        lambda: (
+            path.exists()
+            and widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+        ),
+        timeout=5_000,
+    )
     assert path.exists()
     assert iio.imread(path).shape == (6, 7)
 
@@ -18442,6 +18466,14 @@ def test_export_ome_dataset_dialog_writes_reference_and_labels(
     widget._connect_nodes("input", threshold.id)
     widget._connect_nodes(threshold.id, labels.id)
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget.pipeline.outputs.get(labels.id) is not None
+            and widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+        ),
+        timeout=5_000,
+    )
     path = tmp_path / "analysis.ome.zarr"
 
     def fake_get_save_file_name(_parent, title, default_name, filters):
