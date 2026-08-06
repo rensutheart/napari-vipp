@@ -8950,7 +8950,9 @@ def test_select_axis_slice_can_mix_ranges_and_removed_axes(qtbot):
     control = widget._parameter_widgets["axis_slice"]
     control.set_ranges({0: (1, 1)}, emit=False)
     control.set_removed_axes({1: 2})
+    assert widget._debounce_timer.isActive()
     widget.run_pipeline()
+    assert not widget._debounce_timer.isActive()
     widget.graph_view.select_node(node.id)
 
     assert widget.pipeline.nodes[node.id].params["ranges"] == "0:1:1"

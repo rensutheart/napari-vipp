@@ -17712,6 +17712,13 @@ class VippWidget(QWidget):
     ) -> None:
         if self._closing:
             return
+        if self._debounce_timer.isActive():
+            # An explicit calculation consumes the pending parameter-edit run.
+            # Otherwise the timer can fire while the synchronous worker's Qt
+            # event loop is active, discard that completed result as stale, and
+            # return before the queued replacement publishes its output.
+            self._debounce_timer.stop()
+            self._finish_debounced_parameter_history_group()
         if self._compute_runtime_quarantined_reason:
             self._set_status(
                 self._compute_runtime_quarantined_reason,
