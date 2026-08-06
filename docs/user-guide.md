@@ -372,6 +372,7 @@ The preview mode affects graph thumbnails, not the napari layer view.
 | `Low` | 90 × 55 | Fastest redraws while editing a large graph. |
 | `Standard` | 180 × 110 | Default balance of speed and spatial detail. |
 | `High` | 360 × 220 | Retain more backing detail for HiDPI display or downsampling. |
+| `Very High` | 720 × 440 | Maximum backing detail for graph zoom or high-density displays. |
 
 The card viewport remains the same size. Increasing detail retains a larger
 source image that can improve HiDPI display or downsampling; it does not
@@ -379,7 +380,9 @@ guarantee more physical screen pixels. It also does not change a pipeline result
 or rerun a node. Stack contrast always uses the complete output and remains
 resolution-independent. Slice contrast intentionally normalizes the selected
 detail's spatially sampled current view for responsiveness, so Low, Standard,
-and High can produce slightly different Slice display limits. Changing detail
+High, and Very High can produce slightly different Slice display limits. Very
+High uses four times the backing pixels of High and is best reserved for maximum
+graph zoom or displays where High still appears pixelated. Changing detail
 retains any exact Stack limits already cached.
 
 `Settings > Thumbnail statistics` controls where presentation-only Stack
@@ -405,7 +408,7 @@ GPU calculation. Both use 32 MiB once that path is warm. These conservative
 crossovers are measured default heuristics, not promises of the fastest backend:
 hardware, CUDA startup, data distribution, residency, and competing work can
 move the break-even point. The boundary uses the complete node output's native
-dtype and byte size—not the Low, Standard, or High render size. Choose Prefer
+dtype and byte size—not the Low, Standard, High, or Very High render size. Choose Prefer
 GPU when the explicit intent is to try every eligible CuPy path regardless of
 the heuristic. Float and other dtypes retain the exact NumPy-compatible CPU
 percentile calculation in this release. Min-max uses an exact native CPU
@@ -442,7 +445,7 @@ the node output or the implementation recorded for it.
 | Range | Meaning |
 | --- | --- |
 | `Stack` | Cache one range for the node output, then reuse it while moving through slices. Best for stable brightness across Z/T/C. |
-| `Slice` | Recompute display scaling from the spatially sampled current view at the selected detail. Fast and responsive when individual slices differ; Low/Standard/High can change display limits slightly. |
+| `Slice` | Recompute display scaling from the spatially sampled current view at the selected detail. Fast and responsive when individual slices differ; Low/Standard/High/Very High can change display limits slightly. |
 
 For large volumes, prefer `Stack` once the cache is built. VIPP calculates stack
 thumbnail limits in the background and reuses them while the node output remains

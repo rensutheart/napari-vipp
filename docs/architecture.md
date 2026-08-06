@@ -972,15 +972,16 @@ Toolbar thumbnail controls are global display settings. `Preview` chooses the
 thumbnail reduction (`Slice`, `MIP`, or `Off`); `Off` disables node-card
 thumbnail generation globally. The selected-node inspector checkbox still acts
 as a per-node opt-out when previews are enabled. `Thumbnail detail` selects a
-90 × 55, 180 × 110, or 360 × 220 render target while the card viewport remains
-180 × 110. The full source pixmap is retained and rescaled from that source on
-each paint, so High supplies 360 × 220 backing detail for HiDPI display or
-downsampling; it does not promise a physically larger card. Changing this local
+90 × 55, 180 × 110, 360 × 220, or 720 × 440 render target while the card viewport
+remains 180 × 110. The full source pixmap is retained and rescaled from that
+source on each paint, so High and Very High supply additional backing detail for
+HiDPI display, downsampling, or graph zoom; they do not promise a physically
+larger card. Changing this local
 `QSettings` preference rerenders cards without recalculating the graph or
 invalidating cached Stack contrast limits. Stack statistics summarize the
 complete output and are resolution-independent. Slice-scope normalization is
 deliberately calculated from the selected detail's spatially sampled current
-view for responsiveness, so Low/Standard/High may produce slightly different
+view for responsiveness, so Low/Standard/High/Very High may produce slightly different
 Slice display limits.
 `Contrast` chooses how scalar thumbnail intensities are mapped to display:
 `Percentile` uses the current

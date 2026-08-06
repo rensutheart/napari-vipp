@@ -60,8 +60,9 @@ the current napari dim position.
 For heavy scenes, these settings can help reduce UI churn:
 
 - set `Thumbnail detail` to `Low (90 × 55)` while authoring; use Standard
-  (180 × 110) or High (360 × 220) when more backing detail is useful on a HiDPI
-  display or during downsampling;
+  (180 × 110), High (360 × 220), or Very High (720 × 440) when more backing
+  detail is useful on a HiDPI display, during downsampling, or at maximum graph
+  zoom. Very High uses four times the thumbnail pixels of High;
 - set `Contrast Range` to `Slice` when you do not need stable brightness across
   the whole output;
 - set preview mode to `Off` when tuning non-visual parameters;
@@ -70,7 +71,7 @@ For heavy scenes, these settings can help reduce UI churn:
 Thumbnail detail changes only the backing image for the fixed card viewport. It
 does not change the full output read by Stack contrast. Slice contrast instead
 normalizes the spatially sampled current view, so its display limits may shift
-slightly between Low, Standard, and High. `Settings > Thumbnail statistics`
+slightly between Low, Standard, High, and Very High. `Settings > Thumbnail statistics`
 controls full-output Stack work. Auto uses eligible exact
 `uint8` Percentile histograms on CuPy from a conservative 384-MiB cold crossover
 and `uint16` histograms from 512 MiB; both use 32 MiB once warm. These measured

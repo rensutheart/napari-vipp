@@ -106,10 +106,11 @@ hardening accumulated since 0.12.0a3.
 - Added responsive high-resolution and pop-out colocalization scatter views,
   cached threshold-independent densities, exact full-ROI recounting, memory-
   bounded histogram construction, and export at the selected display size.
-- Added persistent Low (90 × 55), Standard (180 × 110), and High
-  (360 × 220) thumbnail render detail without changing card size or scientific
-  results. High retains a 360 × 220 backing image for HiDPI display or
-  downsampling rather than guaranteeing a larger on-screen card. Changing
+- Added persistent Low (90 × 55), Standard (180 × 110), High (360 × 220), and
+  Very High (720 × 440) thumbnail render detail without changing card size or
+  scientific results. High and Very High retain larger backing images for HiDPI
+  display, downsampling, or zoomed graph inspection rather than guaranteeing a
+  larger on-screen card. Changing
   detail rerenders cards while retaining cached exact Stack contrast limits.
   Stack statistics remain full-output and resolution-independent; responsive
   Slice contrast normalizes the spatially sampled current view, so its display

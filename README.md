@@ -719,7 +719,8 @@ release while retaining CPU as the portable scientific reference path:
 - independent workflow tabs, high-resolution colocalization scatter tools,
   live source subtitles, draggable tunnel rerouting, and retained napari
   camera/slice/display state during node tuning;
-- Low/Standard/High thumbnail backing detail, responsive sampled Slice contrast,
+- Low/Standard/High/Very High thumbnail backing detail, responsive sampled
+  Slice contrast,
   exact resolution-independent Stack Percentile histograms/native Min-max
   reductions, conservative adaptive CPU/CuPy presentation routing, separate
   per-node Stats chips, and truthful progress/cooperative cancellation; and

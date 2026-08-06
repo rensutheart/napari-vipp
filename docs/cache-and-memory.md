@@ -149,16 +149,19 @@ comfortable on very large OME-Zarr datasets, the next scale work should add:
 - operation capability declarations for eager, lazy-safe, memory-heavy, and
   scale-aware nodes;
 - pyramid-aware thumbnail source selection beyond the current Low (90 × 55),
-  Standard (180 × 110), and High (360 × 220) backing-detail controls;
+  Standard (180 × 110), High (360 × 220), and Very High (720 × 440)
+  backing-detail controls;
 - broader chunked execution beyond the bounded global-threshold and inspector
   histogram paths;
 - OME-Zarr pyramid generation and preview-level selection;
 - confirmation before eager-only nodes materialize very large lazy arrays.
 
 Thumbnail render detail and contrast work are separate budgets. Low, Standard,
-and High retain 90 × 55, 180 × 110, or 360 × 220 backing images for the fixed
-card viewport; High may improve HiDPI display or downsampling without making
-the card itself larger. Slice contrast normalizes this spatially sampled current
+High, and Very High retain 90 × 55, 180 × 110, 360 × 220, or 720 × 440 backing
+images for the fixed card viewport; High and Very High may improve HiDPI display,
+downsampling, or maximum graph zoom without making the card itself larger. Very
+High uses four times the backing pixels and approximately four times the pixmap
+memory of High. Slice contrast normalizes this spatially sampled current
 view, so changing detail can slightly change Slice display limits. Stack
 Percentile/Min-max instead summarizes the complete node output, caches its
 limits independently of render detail, and reports its own progress. Native

@@ -307,7 +307,8 @@ Deferred beyond this milestone:
 
 Already implemented: local OME-Zarr 0.4/0.5 image read/write, lazy reads,
 OME-Zarr image plus label analysis packages, cache modes, operation memory
-documentation, selectable 90 × 55 / 180 × 110 / 360 × 220 card-backing detail,
+documentation, selectable 90 × 55 / 180 × 110 / 360 × 220 / 720 × 440
+card-backing detail,
 and exact dtype-aware Stack thumbnail Percentile histograms/native Min-max
 reductions with conservative adaptive CPU/CuPy routing.
 
