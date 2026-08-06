@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt
-from qtpy.QtGui import QPainterPath
+from qtpy.QtGui import QImage, QPainter, QPainterPath
 
 from napari_vipp._graph import (
     STALE_EXECUTION_ACCENT,
@@ -445,16 +445,34 @@ def test_thumbnail_retains_full_render_detail_for_device_aware_painting(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
     card = view._cards["gaussian"]
-    thumbnail = np.full((220, 360, 3), 127, dtype=np.uint8)
+    card.preview.setFixedSize(180, 110)
+    thumbnail = np.zeros((440, 720, 3), dtype=np.uint8)
+    thumbnail[:, ::2] = 255
 
     view.set_thumbnail("gaussian", thumbnail)
 
     source = card.preview.source_pixmap()
+    assert (source.width(), source.height()) == (720, 440)
+    assert card.preview.has_source_pixmap()
+    # QLabel's built-in pixmap path is intentionally empty: it would reduce the
+    # source to the current screen size before QGraphicsView applies graph zoom.
     displayed = card.preview.pixmap()
-    assert (source.width(), source.height()) == (360, 220)
-    assert displayed is not None
-    assert not displayed.isNull()
-    assert displayed.devicePixelRatio() >= 1.0
+    assert displayed is None or displayed.isNull()
+
+    rendered = QImage(720, 440, QImage.Format_RGB888)
+    rendered.fill(Qt.black)
+    painter = QPainter(rendered)
+    painter.scale(4.0, 4.0)
+    card.preview.render(painter)
+    painter.end()
+    scanline = np.fromiter(
+        (rendered.pixelColor(x, 220).red() for x in range(720)),
+        dtype=np.uint8,
+        count=720,
+    )
+    # The alternating source pixels survive a 4x graph render. A copy first
+    # reduced to the 180-pixel card would lose these 719 transitions.
+    assert np.count_nonzero(np.diff(scanline.astype(np.int16))) == 719
 
 
 @pytest.mark.parametrize(

@@ -45,16 +45,19 @@ def test_thumbnail_resolution_presets_are_canonical_and_display_ready():
         "low",
         "standard",
         "high",
+        "very_high",
     ]
     assert [preset.size for preset in THUMBNAIL_RESOLUTION_PRESETS] == [
         (90, 55),
         (180, 110),
         (360, 220),
+        (720, 440),
     ]
     assert THUMBNAIL_RESOLUTION_CHOICES == (
         ("low", "Low (90 × 55)"),
         ("standard", "Standard (180 × 110)"),
         ("high", "High (360 × 220)"),
+        ("very_high", "Very High (720 × 440)"),
     )
 
 
@@ -86,6 +89,17 @@ def test_thumbnail_resolution_round_trip_writes_only_canonical_id():
     assert saved is THUMBNAIL_RESOLUTION_PRESETS[2]
     assert settings.values == {THUMBNAIL_RESOLUTION_SETTING: "high"}
     assert settings.sync_calls == 1
+    assert load_thumbnail_resolution(settings) is saved
+
+
+def test_very_high_thumbnail_resolution_round_trip_is_canonical():
+    settings = _MemorySettings()
+
+    saved = save_thumbnail_resolution("VERY_HIGH", settings)
+
+    assert saved is THUMBNAIL_RESOLUTION_PRESETS[3]
+    assert saved.size == (720, 440)
+    assert settings.values == {THUMBNAIL_RESOLUTION_SETTING: "very_high"}
     assert load_thumbnail_resolution(settings) is saved
 
 

@@ -43,6 +43,7 @@ THUMBNAIL_RESOLUTION_PRESETS = (
     ThumbnailResolutionPreset("low", "Low (90 × 55)", 90, 55),
     ThumbnailResolutionPreset("standard", "Standard (180 × 110)", 180, 110),
     ThumbnailResolutionPreset("high", "High (360 × 220)", 360, 220),
+    ThumbnailResolutionPreset("very_high", "Very High (720 × 440)", 720, 440),
 )
 DEFAULT_THUMBNAIL_RESOLUTION_ID = "standard"
 

@@ -293,8 +293,12 @@ def _sample_axes_for_preview(
         return arr
     y_indices = np.linspace(0, height - 1, sampled_height).astype(np.intp)
     x_indices = np.linspace(0, width - 1, sampled_width).astype(np.intp)
-    sampled = np.take(arr, y_indices, axis=y_axis)
-    return np.take(sampled, x_indices, axis=x_axis)
+    # Gather both spatial axes in one operation.  Sequential ``np.take`` calls
+    # briefly retain the full second spatial dimension, which becomes costly for
+    # large stacks, high channel counts, and the Very High thumbnail preset.
+    moved = np.moveaxis(arr, (y_axis, x_axis), (-2, -1))
+    sampled = moved[..., y_indices[:, None], x_indices[None, :]]
+    return np.moveaxis(sampled, (-2, -1), (y_axis, x_axis))
 
 
 def _preview_spatial_axes(

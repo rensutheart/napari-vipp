@@ -11,6 +11,7 @@ from napari_vipp.core.metadata import (
 )
 from napari_vipp.core.operations import composite_to_rgb, gaussian_blur, otsu_threshold
 from napari_vipp.core.preview import (
+    _sample_axes_for_preview,
     make_preview,
     normalize_thumbnail,
     normalize_thumbnail_with_colormap,
@@ -55,20 +56,17 @@ def test_preview_samples_spatial_axes_before_large_mip():
     assert np.array_equal(preview, expected)
 
 
-def test_slice_selects_tz_before_spatial_sampling(monkeypatch):
+def test_slice_selects_tz_before_bounded_spatial_sampling(monkeypatch):
     data = np.broadcast_to(
         np.asarray(7, dtype=np.uint16),
         (19, 9, 1150, 822),
     )
     state = image_state_from_array(data, layer_metadata={"axes": "TZYX"})
-    take_shapes = []
-    original_take = np.take
 
-    def recording_take(values, indices, *args, **kwargs):
-        take_shapes.append(np.asarray(values).shape)
-        return original_take(values, indices, *args, **kwargs)
+    def reject_sequential_take(*args, **kwargs):
+        raise AssertionError("spatial sampling must use one bounded gather")
 
-    monkeypatch.setattr("napari_vipp.core.preview.np.take", recording_take)
+    monkeypatch.setattr("napari_vipp.core.preview.np.take", reject_sequential_take)
 
     preview = make_preview(
         data,
@@ -80,9 +78,23 @@ def test_slice_selects_tz_before_spatial_sampling(monkeypatch):
     )
 
     assert preview.shape == (110, 79)
-    assert take_shapes
-    assert take_shapes[0] == (1150, 822)
-    assert all(len(shape) == 2 for shape in take_shapes)
+    assert np.all(preview == 7)
+
+
+def test_spatial_sampling_preserves_non_adjacent_axis_order_and_values():
+    data = np.arange(2 * 9 * 3 * 11, dtype=np.int32).reshape(2, 9, 3, 11)
+    sampled = _sample_axes_for_preview(data, 1, 3, (5, 4))
+
+    y_indices = np.linspace(0, 8, 4).astype(np.intp)
+    x_indices = np.linspace(0, 10, 5).astype(np.intp)
+    expected = np.empty((2, 4, 3, 5), dtype=data.dtype)
+    for time_index in range(2):
+        for channel_index in range(3):
+            expected[time_index, :, channel_index, :] = data[
+                time_index, :, channel_index, :
+            ][np.ix_(y_indices, x_indices)]
+    assert sampled.shape == (2, 4, 3, 5)
+    assert np.array_equal(sampled, expected)
 
 
 def test_shape_inferred_yxc_preview_is_reduced_as_scalar_data():

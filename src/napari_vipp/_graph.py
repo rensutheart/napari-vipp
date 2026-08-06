@@ -7,7 +7,7 @@ from enum import StrEnum
 from math import ceil
 
 import numpy as np
-from qtpy.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
     QFont,
@@ -177,9 +177,13 @@ class ClickablePreview(QLabel):
         self._source_pixmap = QPixmap()
 
     def set_source_pixmap(self, pixmap: QPixmap) -> None:
-        """Retain full render detail and derive a device-aware display copy."""
+        """Retain full render detail for zoom-aware custom painting."""
         self._source_pixmap = QPixmap(pixmap)
-        self._refresh_display_pixmap()
+        # QLabel normalizes a high-DPR pixmap to the widget's current physical
+        # size, losing detail that QGraphicsView could use when the graph zooms.
+        # Keep its ordinary content empty and paint the backing directly instead.
+        super().setPixmap(QPixmap())
+        self.update()
 
     def source_pixmap(self) -> QPixmap:
         """Return the retained full-detail thumbnail backing pixmap."""
@@ -188,28 +192,43 @@ class ClickablePreview(QLabel):
     def clear_source_pixmap(self) -> None:
         self._source_pixmap = QPixmap()
         super().setPixmap(QPixmap())
+        self.update()
+
+    def has_source_pixmap(self) -> bool:
+        """Return whether a custom-painted thumbnail backing is available."""
+        return not self._source_pixmap.isNull()
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         if not self._source_pixmap.isNull():
-            self._refresh_display_pixmap()
+            self.update()
 
-    def _refresh_display_pixmap(self) -> None:
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
         if self._source_pixmap.isNull() or self.width() < 1 or self.height() < 1:
-            super().setPixmap(QPixmap())
             return
-        ratio = max(float(self.devicePixelRatioF()), 1.0)
-        physical_size = QSize(
-            max(int(round(self.width() * ratio)), 1),
-            max(int(round(self.height() * ratio)), 1),
+        bounds = QRectF(self.contentsRect())
+        source_width = float(self._source_pixmap.width())
+        source_height = float(self._source_pixmap.height())
+        scale = min(
+            bounds.width() / source_width,
+            bounds.height() / source_height,
         )
-        displayed = self._source_pixmap.scaled(
-            physical_size,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
+        target = QRectF(
+            0.0,
+            0.0,
+            source_width * scale,
+            source_height * scale,
         )
-        displayed.setDevicePixelRatio(ratio)
-        super().setPixmap(displayed)
+        target.moveCenter(bounds.center())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(
+            target,
+            self._source_pixmap,
+            QRectF(self._source_pixmap.rect()),
+        )
+        painter.end()
 
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.LeftButton:
@@ -497,7 +516,7 @@ class NodeCard(QFrame):
             self._thumbnail_present = False
             self.preview.setText("")
             self.preview.clear_source_pixmap()
-        elif self.preview.pixmap() is None:
+        elif not self.preview.has_source_pixmap():
             self.preview.setText("No preview")
         self._refresh_thumbnail_stats_badge_visibility()
 

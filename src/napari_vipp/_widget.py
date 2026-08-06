@@ -1401,8 +1401,11 @@ class VippWidget(QWidget):
         )
         self.thumbnail_resolution_combo.setToolTip(
             "Choose thumbnail render detail. Low is faster, Standard is the "
-            "default, and High retains more spatial detail. This does not change "
-            "pipeline results or the cost of full-stack contrast statistics."
+            "default, and High or Very High retains progressively more spatial "
+            "detail when zooming into the graph. Very High uses four times the "
+            "backing pixels of High, so it takes more redraw time and memory. "
+            "This does not change pipeline results or the cost of full-stack "
+            "contrast statistics."
         )
         self.thumbnail_statistics_policy_combo.setToolTip(
             "Choose how presentation-only full-stack thumbnail statistics run. "

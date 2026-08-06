@@ -2321,8 +2321,9 @@ def test_example_workflow_selects_source_before_background_thumbnail_run(qtbot):
 
     for node_id, output in widget.pipeline.outputs.items():
         assert output is not None, node_id
-        pixmap = widget.graph_view._cards[node_id].preview.pixmap()
-        assert pixmap is not None, node_id
+        preview = widget.graph_view._cards[node_id].preview
+        pixmap = preview.source_pixmap()
+        assert preview.has_source_pixmap(), node_id
         assert not pixmap.isNull(), node_id
 
 
@@ -10249,8 +10250,8 @@ def test_failed_partial_clone_preserves_valid_outputs_thumbnails_and_badges(qtbo
     old_output = widget.pipeline.outputs["gaussian"]
     card = widget.graph_view._cards["gaussian"]
     old_badge = card.compute_badge.text()
-    assert card.preview.pixmap() is not None
-    assert not card.preview.pixmap().isNull()
+    assert card.preview.has_source_pixmap()
+    assert not card.preview.source_pixmap().isNull()
     partial = deepcopy(widget.pipeline)
     unreported_output = np.full_like(old_output, 77)
     partial.outputs["gaussian"] = unreported_output
@@ -10284,8 +10285,8 @@ def test_failed_partial_clone_preserves_valid_outputs_thumbnails_and_badges(qtbo
     )
 
     assert widget.pipeline.outputs["gaussian"] is old_output
-    assert card.preview.pixmap() is not None
-    assert not card.preview.pixmap().isNull()
+    assert card.preview.has_source_pixmap()
+    assert not card.preview.source_pixmap().isNull()
     assert card.compute_badge.text() == old_badge
     assert "Previous result (stale)" in card.compute_badge.toolTip()
     assert "gaussian" in widget._pending_dirty_node_ids
@@ -11022,7 +11023,7 @@ def test_thumbnail_controls_default_and_persist_between_widgets(qtbot):
     )
     first.preview_mode_combo.setCurrentText("Off")
     first.thumbnail_resolution_combo.setCurrentIndex(
-        first.thumbnail_resolution_combo.findData("high")
+        first.thumbnail_resolution_combo.findData("very_high")
     )
     first.thumbnail_statistics_policy_combo.setCurrentIndex(
         first.thumbnail_statistics_policy_combo.findData("prefer_gpu")
@@ -11031,8 +11032,8 @@ def test_thumbnail_controls_default_and_persist_between_widgets(qtbot):
     second = VippWidget(_Viewer(np.ones((4, 8, 8), dtype=np.uint16)))
     qtbot.addWidget(second)
 
-    assert second.thumbnail_resolution_combo.currentData() == "high"
-    assert second._thumbnail_render_size() == (360, 220)
+    assert second.thumbnail_resolution_combo.currentData() == "very_high"
+    assert second._thumbnail_render_size() == (720, 440)
     assert second.thumbnail_statistics_policy_combo.currentData() == "prefer_gpu"
     assert (
         second._thumbnail_statistics_policy
@@ -11098,13 +11099,13 @@ def test_thumbnail_detail_changes_render_size_without_recalculation_or_rescan(
     widget._thumbnail_contrast_statistics_cache.update(exact_statistics)
 
     widget.thumbnail_resolution_combo.setCurrentIndex(
-        widget.thumbnail_resolution_combo.findData("high")
+        widget.thumbnail_resolution_combo.findData("very_high")
     )
 
     assert preview_sizes
     assert normalize_sizes
-    assert set(preview_sizes) == {(360, 220)}
-    assert set(normalize_sizes) == {(360, 220)}
+    assert set(preview_sizes) == {(720, 440)}
+    assert set(normalize_sizes) == {(720, 440)}
     assert widget._thumbnail_contrast_limit_cache == exact_limits
     assert widget._thumbnail_contrast_statistics_cache == exact_statistics
     assert "cached full-stack contrast statistics were retained" in (
@@ -15242,8 +15243,8 @@ def test_collection_batch_demo_auto_loads_first_pair_without_rebinding(
         assert node.params["file_path"] == ""
         assert node.params["binding_mode"] == "collection"
         assert card.metadata_label.text() != "No output"
-        assert card.preview.pixmap() is not None
-        assert not card.preview.pixmap().isNull()
+        assert card.preview.has_source_pixmap()
+        assert not card.preview.source_pixmap().isNull()
 
     config = load_batch_config(demo.config_path)
     workflow = widget._batch_workflow_document()
