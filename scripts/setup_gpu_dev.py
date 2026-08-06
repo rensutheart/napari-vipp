@@ -83,10 +83,26 @@ CUCIM_BUILD_PINNED_PACKAGES = {
     "setuptools": "83.0.0",
     "wheel": "0.47.0",
     "build": "1.5.0",
+    "packaging": "26.3",
+    "pyproject-hooks": "1.2.0",
+    "colorama": "0.4.6",
     "rapids-build-backend": "0.4.1",
+    "rapids-dependency-file-generator": "1.22.0",
+    "jsonschema": "4.26.0",
+    "attrs": "26.1.0",
+    "jsonschema-specifications": "2025.9.1",
+    "referencing": "0.37.0",
+    "rpds-py": "2026.6.3",
+    "typing-extensions": "4.16.0",
+    "pyyaml": "6.0.3",
+    "tomlkit": "0.15.1",
     "numpy": "2.5.1",
     "scipy": "1.18.0",
     "scikit-image": "0.26.0",
+    "imageio": "2.37.4",
+    "networkx": "3.6.1",
+    "pillow": "12.3.0",
+    "tifffile": "2026.7.31",
     "lazy-loader": "0.5",
     "click": "8.4.2",
     "cupy-cuda13x": "14.1.1",
@@ -109,6 +125,7 @@ CUCIM_BUILD_ADAPTATIONS = (
     "materialize-upstream-symlinks-utf8-lf",
     "remove-unavailable-clara-console-entry-point",
     "exact-pin-qualified-scientific-cuda-build-stack",
+    "lock-complete-build-environment-no-deps",
     "pin-rapids-dependency-generator-input",
     "numpy-2.5-pad-reshape-compatibility",
 )
@@ -1313,6 +1330,7 @@ def _validate_cucim_build_manifest(
         "real_gpu_probe",
         "real_gpu_probe_output",
         "pip_check",
+        "exact_package_inventory",
     }:
         raise SetupError("The cuCIM builder manifest verification object is invalid.")
     verification_required = {
@@ -1321,6 +1339,7 @@ def _validate_cucim_build_manifest(
         "metadata_and_licenses": "passed",
         "real_gpu_probe": "passed",
         "pip_check": "passed",
+        "exact_package_inventory": "passed",
     }
     for key, expected in verification_required.items():
         if (

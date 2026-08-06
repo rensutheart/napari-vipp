@@ -30,12 +30,11 @@ VIPP does not coerce an authored numeric image to bool, change its spatial
 interpretation, or renumber an approximately equivalent GPU partition merely
 to make it eligible.
 
-The RTX 5090 record was source-current when it was captured on 2026-08-02 and
-passed every exact admission case plus the synchronized lifecycle and
-private-pool cleanup checks. Later shared policy/specification changes make its
-whole-file source fingerprint stale, so it is retained as historical evidence,
-not relabeled as a current-source run. It is not a released-package,
-cross-platform, or universal-performance claim.
+The full RTX 5090 study was rerun on 2026-08-06 after the release-source
+hardening. Its current-source record passed every exact admission case plus the
+synchronized lifecycle and private-pool cleanup checks. It remains
+machine-local evidence, not a released-package, cross-platform, or
+universal-performance claim.
 
 ## Frozen CPU scientific contract
 
@@ -202,10 +201,10 @@ can favor CuPyX; sparse masks with many isolated components can cross over at a
 different point. A size-only rule is therefore not justified.
 
 For the largest tested sparse volume (`64×512×512`), the case-cold CPU call was
-87.76 ms and the case-cold transfer-inclusive GPU call was 22.36 ms, a 3.92x
+87.56 ms and the case-cold transfer-inclusive GPU call was 42.66 ms, a 2.05x
 speedup after process-level CUDA warmup with an empty private allocator pool.
-Warm medians were 107.68 ms on CPU, 28.50 ms GPU transfer-inclusive (3.78x),
-and 1.22 ms for resident GPU compute. The large gap between resident and
+Warm medians were 89.01 ms on CPU, 30.19 ms GPU transfer-inclusive (2.95x),
+and 1.48 ms for resident GPU compute. The large gap between resident and
 transfer-inclusive timing is why complete-pipeline residency must remain part
 of selection. Among the tested plane extents, the first transfer-inclusive GPU
 crossover was 512² for dense/full and checkerboard/face masks, but 1024² for
@@ -219,20 +218,16 @@ environment, and complete pipeline, including transfers and neighboring-node
 residency. CPU remains a correct and expected Auto result for small or
 insufficiently decisive calls.
 
-### Historical evidence provenance note
+### Release-source evidence refresh
 
-The older RL and RL-TV evidence schemas fingerprint whole shared dispatch,
-policy, specification, registry, and operation files. Later additions and the
-0.13.0a1 cuCIM provenance hardening therefore make their current-source checks
-fail even where an operation-scoped diff audit finds no change to the RL/RL-TV
-CPU kernels, GPU providers, parity gates, admission region, or memory formula.
-The committed records retain the source fingerprints from the runs that
-produced their measurements; those hashes must not be refreshed without a new
-run. Treat the measurements as historical machine-local observations and rerun
-the generators before claiming current-source evidence. RL/RL-TV should adopt
-operation-owned CPU, parity, and compute-contract modules like Sigma Filter so
-unrelated registrations no longer create provenance churn while real RL
-changes still fail closed.
+Connected Components, ordinary RL, and RL-TV were all fully rerun on
+2026-08-06 after the 0.13.0a1 cuCIM provenance hardening changed shared policy,
+specification, and registry files. Each generator wrote new measurements and
+new source fingerprints together; all three standalone validators now pass.
+This avoids associating historical timings with newer source bytes. Longer
+term, RL/RL-TV should adopt operation-owned CPU, parity, and compute-contract
+modules like Sigma Filter so unrelated registrations create less provenance
+churn while real operation changes still fail closed.
 
 ## Packaged compute-policy artifact
 

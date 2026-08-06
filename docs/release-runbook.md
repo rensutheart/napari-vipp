@@ -18,15 +18,16 @@ napari hub.
 
 1. You have push/tag permission on GitHub for this repository.
 2. You have upload permission for the `napari-vipp` project on PyPI.
-3. You have either PyPI Trusted Publishing configured or a PyPI API token
-   available to paste into Twine's hidden password prompt.
+3. You have a PyPI API token available to paste into Twine's hidden password
+   prompt.
 4. You have a clean git working tree on the release commit.
 5. The companion `vipp-mkdocs` repository has a reviewed release page and a
    clean, pushed release commit.
 
-Never paste, print, commit, or place the PyPI token in a command, script, or
-shell environment variable. Prefer Trusted Publishing where configured;
-otherwise enter the token only at Twine's hidden password prompt.
+This repository does not currently contain a PyPI Trusted Publishing workflow,
+so this runbook documents the manual Twine route for 0.13.0a1. Never paste,
+print, commit, or place the PyPI token in a command, script, or shell
+environment variable. Enter it only at Twine's hidden password prompt.
 
 Recommended local tools:
 
@@ -224,9 +225,8 @@ git push origin "v<version>"
 
 Then publish exactly the two hash-recorded artifacts. PyPI uploads cannot be
 replaced, so recheck the directory, version, and explicit filenames before
-entering credentials. When Trusted Publishing is not configured, pass only the
-token username on the command line and paste the API token into Twine's hidden
-password prompt:
+entering credentials. Pass only the token username on the command line and
+paste the API token into Twine's hidden password prompt:
 
 ```powershell
 python -m twine upload --username "__token__" `

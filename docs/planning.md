@@ -192,13 +192,13 @@ native-Windows CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and
 RTX 5090 (compute capability 12.0) region. CUDA 12 is qualification-only and
 outside public admission; other driver/runtime versions and secondary NVIDIA
 hardware likewise require reviewed provider-qualification evidence.
-Machine-local large-stack timing now records 62.79x, 76.22x, and 88.26x paired
+Machine-local large-stack timing now records 45.03x, 85.06x, and 94.58x paired
 median speedups on the RTX 5090 for one real 8.51-million-voxel ND2 volume and
 16.78/67.11-million-voxel 3D shape stresses, respectively. Those short
 descriptive results are not a reusable optimizer record or cross-platform claim;
 see the
 [raw and readable timing evidence](benchmarks/rl-cupy-performance-windows-rtx5090.md).
-The matching positive-TV screen records 59.79x and 99.80x paired median
+The matching positive-TV screen records 78.61x and 83.02x paired median
 speedups for the private 8.51-million-voxel volume and a 16.78-million-voxel
 shape stress; see the
 [RL-TV timing evidence](benchmarks/rl-tv-cupy-performance-windows-rtx5090.md).

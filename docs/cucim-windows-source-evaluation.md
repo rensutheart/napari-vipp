@@ -131,6 +131,7 @@ source-built `skimage` experiment now that the pinned procedure is repeatable.
 | CUDA compiler/runtime/CRT/NVVM/nvJitLink build components | `13.2.86` |
 | nvImageCodec package | `nvidia-nvimgcodec-cu13 == 0.8.0.22` |
 | NumPy / SciPy / scikit-image | 2.5.1 / 1.18.0 / 0.26.0 |
+| Build environment | Complete 41-distribution input inventory, exact-version locked and installed with `--no-deps` |
 | Canonical payload SHA-256 | `d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667` |
 | Canonical payload files | 338 (`RECORD` excluded) |
 
@@ -149,7 +150,7 @@ Those bytes no longer exist and are not an installable release artifact.
 
 ### Required adaptations
 
-The fixed recipe makes five explicit adaptations:
+The fixed recipe makes six explicit adaptations and controls:
 
 1. Materialize all seven upstream repository symlinks as regular UTF-8/LF
    files, including the actual Apache and third-party licence texts,
@@ -158,9 +159,12 @@ The fixed recipe makes five explicit adaptations:
    Clara native library and does not claim that feature.
 3. Correct the wheel metadata to the exact Windows/CUDA 13 scientific stack and
    pin every qualified direct dependency.
-4. Pin the matching `dependencies.yaml` inputs because RAPIDS' build backend
+4. Install a complete exact-version build-environment lock with `--no-deps`,
+   reject missing, extra, duplicate, or changed distributions before and after
+   the build, and require the known canonical wheel payload.
+5. Pin the matching `dependencies.yaml` inputs because RAPIDS' build backend
    regenerates dependency metadata from that file during the build.
-5. Replace one deprecated NumPy 2.5 `ndarray.shape` assignment in vendored
+6. Replace one deprecated NumPy 2.5 `ndarray.shape` assignment in vendored
    padding code with the equivalent `reshape` call and include a prominent
    downstream adaptation notice.
 
@@ -177,9 +181,10 @@ $python312 = py -3.12 -c "import sys; print(sys.executable)"
 .\scripts\build_cucim_windows.ps1 -Python $python312
 ```
 
-The builder installs the exact local wheel with `--no-deps` so pip cannot
-silently re-resolve the qualified CUDA stack, then finishes with real-GPU probes
-and `pip check`. Installing nvImageCodec satisfies the upstream wheel metadata;
+The builder installs every build input and the exact local wheel with
+`--no-deps` so pip cannot silently resolve an undeclared transitive or change
+the qualified CUDA stack. It checks the full installed inventory, then finishes
+with real-GPU probes and `pip check`. Installing nvImageCodec satisfies the upstream wheel metadata;
 it does not create the absent native `cucim.clara/libcucim` extension.
 
 ## Verification
@@ -302,15 +307,6 @@ kernels.
 
 ## Reproduce the benchmark
 
-After the build script completes, use the isolated Python environment under the
-builder work directory to reproduce the benchmark:
-
-```powershell
-$python = Join-Path $env:TEMP "napari-vipp-cucim-windows\venv\Scripts\python.exe"
-& $python scripts\benchmark_cucim.py --profile smoke
-& $python scripts\benchmark_cucim.py --profile standard --output docs\benchmarks\cucim-source-windows-rtx5090-standard.json
-```
-
 For the supported 0.13.0a1 local-build route, keep the generated wheel beside
 its build manifest and install both into an existing, non-editable released
 VIPP environment through the provenance-verifying helper:
@@ -322,10 +318,20 @@ $python312 = py -3.12 -c "import sys; print(sys.executable)"
 
 $wheel = Join-Path $artifacts "cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl"
 $manifest = Join-Path $artifacts "cucim_cu13-26.6.0-cp312-cp312-win_amd64.build-manifest.json"
-python scripts\setup_gpu_dev.py --existing-environment --track cuda13 `
-  --python C:\path\to\vipp-venv\Scripts\python.exe `
+$vippPython = (Resolve-Path "C:\path\to\vipp-venv\Scripts\python.exe").Path
+& $vippPython scripts\setup_gpu_dev.py --existing-environment --track cuda13 `
+  --python $vippPython `
   --cucim-wheel $wheel `
   --cucim-manifest $manifest
+```
+
+After the helper succeeds, reproduce the benchmark in that same approved
+application environment. This avoids relying on the builder's run-specific
+working-directory layout:
+
+```powershell
+& $vippPython scripts\benchmark_cucim.py --profile smoke
+& $vippPython scripts\benchmark_cucim.py --profile standard --output docs\benchmarks\cucim-source-windows-rtx5090-standard.json
 ```
 
 The helper independently checks the archive hash, the policy-pinned canonical

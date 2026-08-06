@@ -56,6 +56,10 @@ def test_builder_is_pinned_to_the_qualified_local_recipe() -> None:
         '$BuildRecipeId = "napari-vipp-cucim-windows-v1"',
         '$ManifestSchemaVersion = 2',
         '$PayloadHashAlgorithm = "sha256-wheel-payload-length-prefix-v1"',
+        (
+            '$ExpectedWheelPayloadSha256 = "'
+            'd640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667"'
+        ),
         'distribution = "cucim-cu13"',
         'distribution_version = "26.6.0"',
         '"numpy" = "2.5.1"',
@@ -63,6 +67,22 @@ def test_builder_is_pinned_to_the_qualified_local_recipe() -> None:
         '"scikit-image" = "0.26.0"',
         '"cupy-cuda13x" = "14.1.1"',
         '"nvidia-nvimgcodec-cu13" = "0.8.0.22"',
+        '"attrs" = "26.1.0"',
+        '"colorama" = "0.4.6"',
+        '"imageio" = "2.37.4"',
+        '"jsonschema" = "4.26.0"',
+        '"jsonschema-specifications" = "2025.9.1"',
+        '"networkx" = "3.6.1"',
+        '"packaging" = "26.3"',
+        '"pillow" = "12.3.0"',
+        '"pyproject-hooks" = "1.2.0"',
+        '"pyyaml" = "6.0.3"',
+        '"rapids-dependency-file-generator" = "1.22.0"',
+        '"referencing" = "0.37.0"',
+        '"rpds-py" = "2026.6.3"',
+        '"tifffile" = "2026.7.31"',
+        '"tomlkit" = "0.15.1"',
+        '"typing-extensions" = "4.16.0"',
     )
     for fragment in expected_fragments:
         assert fragment in text
@@ -70,6 +90,9 @@ def test_builder_is_pinned_to_the_qualified_local_recipe() -> None:
     # The public Windows instructions invoke the inbox Windows PowerShell 5.1.
     # ``ConvertFrom-Json -AsHashtable`` exists only in newer PowerShell.
     assert "ConvertFrom-Json -AsHashtable" not in text
+    assert text.count("--no-deps") >= 3
+    assert "installed package inventory differs from the complete lock" in text
+    assert 'exact_package_inventory = "passed"' in text
 
 
 def test_canonical_payload_ignores_record_order_and_zip_timestamps(

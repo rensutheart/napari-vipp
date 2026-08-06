@@ -8,10 +8,9 @@
 Phase 2C has since implemented the RL-TV slice described in
 this record's former first next step. See the
 [Phase 2C implementation record](gpu-phase2c-rl-tv-implementation-report.md)
-for its current contracts and evidence. The Phase 2B measurements below retain
-the exact source fingerprints from their recorded run and are historical after
-later shared-registry changes; they have not been relabeled as current-source
-measurements.
+for its current contracts and evidence. The Phase 2B performance study below
+was fully rerun on 2026-08-06 after the release-source hardening; its generated
+JSON and Markdown retain the new measurements and current source fingerprints.
 
 ## Outcome
 
@@ -155,13 +154,13 @@ Disk I/O and input generation are excluded.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 25.512 s | 0.593 s | 0.549 s | 0.026 s | 43.05x |
-| Medium 3D shape stress | 16,777,216 | 36.138 s | 0.456 s | 0.394 s | 0.032 s | 79.36x |
-| Large 3D shape stress | 67,108,864 | 141.837 s | 1.448 s | 1.152 s | 0.124 s | 97.97x |
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 24.381 s | 0.551 s | 0.518 s | 0.025 s | 45.03x |
+| Medium 3D shape stress | 16,777,216 | 34.968 s | 0.411 s | 0.373 s | 0.029 s | 85.06x |
+| Large 3D shape stress | 67,108,864 | 144.137 s | 1.524 s | 1.284 s | 0.112 s | 94.58x |
 
 All three exact workloads passed production parity, synchronized execution,
 and terminal-zero private allocator cleanup. Observed device peaks were 0.697,
-1.098, and 4.500 GiB, within conservative admitted bounds of 1.361, 2.111, and
+1.098, and 4.502 GiB, within conservative admitted bounds of 1.361, 2.111, and
 7.720 GiB, respectively. These are machine-local RTX 5090 results and a short
 descriptive screen, not a portable speed promise or reusable optimizer record.
 The synthetic volumes deliberately
@@ -176,9 +175,8 @@ The [readable result](benchmarks/rl-cupy-performance-windows-rtx5090.md) and
 three paired samples, transfer/resident breakdown, memory observations, cleanup
 snapshots, environment, and source fingerprints. Re-run or validate them with
 [`scripts/benchmark_gpu_rl_performance.py`](../scripts/benchmark_gpu_rl_performance.py).
-Validation against the 0.13.0a1 release source is expected to report a stale
-whole-file fingerprint. A fresh current-source claim requires a complete new
-benchmark run, not a hash-only edit to this historical record.
+The standalone validator passes against the 0.13.0a1 release source and checks
+both current source fingerprints and canonical JSON-to-Markdown rendering.
 
 Progress is measured as `leading block count × iteration count`. A checkpoint
 is reported only after the completed GPU work is synchronized, and cancellation

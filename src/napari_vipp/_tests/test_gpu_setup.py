@@ -137,6 +137,7 @@ def _local_cucim_artifact(tmp_path, monkeypatch=None):
                     "real_gpu_probe": "passed",
                     "real_gpu_probe_output": "26.06.00 120",
                     "pip_check": "passed",
+                    "exact_package_inventory": "passed",
                 },
             }
         ),
@@ -508,6 +509,37 @@ def test_cucim_wheel_requires_pinned_manifest_and_exact_checksums(
     with pytest.raises(setup_gpu_dev.SetupError, match="CUDA 13 only"):
         setup_gpu_dev._validated_cucim_wheel(
             setup_gpu_dev.TRACKS["cuda12"],
+            wheel,
+            manifest,
+        )
+
+
+def test_cucim_manifest_rejects_transitive_lock_and_inventory_tampering(
+    tmp_path,
+    monkeypatch,
+):
+    wheel, manifest, _expected, _payload = _local_cucim_artifact(
+        tmp_path,
+        monkeypatch,
+    )
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["pinned_packages"]["attrs"] = "0.0.0"
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(setup_gpu_dev.SetupError, match="pinned recipe"):
+        setup_gpu_dev._validated_cucim_wheel(
+            setup_gpu_dev.TRACKS["cuda13"],
+            wheel,
+            manifest,
+        )
+
+    document["pinned_packages"] = dict(
+        setup_gpu_dev.CUCIM_BUILD_PINNED_PACKAGES
+    )
+    del document["verification"]["exact_package_inventory"]
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(setup_gpu_dev.SetupError, match="verification object"):
+        setup_gpu_dev._validated_cucim_wheel(
+            setup_gpu_dev.TRACKS["cuda13"],
             wheel,
             manifest,
         )

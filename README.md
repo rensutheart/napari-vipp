@@ -579,9 +579,9 @@ The machine-local
 [large-stack Richardson-Lucy timing summary](docs/benchmarks/rl-cupy-performance-windows-rtx5090.md)
 compares synchronized CPU and transfer-inclusive CuPy execution on the private
 representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses, with
-paired median speedups of 62.79x, 76.22x, and 88.26x, respectively. The
+paired median speedups of 45.03x, 85.06x, and 94.58x, respectively. The
 [Richardson-Lucy TV timing summary](docs/benchmarks/rl-tv-cupy-performance-windows-rtx5090.md)
-records 59.79x and 99.80x paired median speedups for the same private
+records 78.61x and 83.02x paired median speedups for the same private
 8.51-million-voxel volume and a 16.78-million-voxel shape stress at the exact
 positive shipped profile. The
 [Canny/Otsu timing summary](docs/benchmarks/canny-otsu-cupy-windows-rtx5090.md)

@@ -194,8 +194,8 @@ pixels, content hash, and content-derived workload identity are not published.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 42.085 s | 0.580 s | 0.519 s | 0.020 s | 72.58x |
-| Medium 3D shape stress | 16,777,216 | 62.970 s | 0.843 s | 0.745 s | 0.049 s | 74.67x |
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 34.862 s | 0.450 s | 0.414 s | 0.015 s | 78.61x |
+| Medium 3D shape stress | 16,777,216 | 56.817 s | 0.684 s | 0.623 s | 0.044 s | 83.02x |
 
 Both cases passed exact production parity and terminal-zero private allocator
 cleanup. Observed device peaks were 0.934 GiB and 1.873 GiB. The memory model
@@ -209,10 +209,9 @@ Results and raw paired samples are recorded in:
 - [raw timing evidence](benchmarks/rl-tv-cupy-performance-windows-rtx5090.json)
 
 These short RTX 5090 measurements are descriptive machine-local evidence, not
-a portable speed promise or durable optimizer record. They retain the source
-fingerprints from their recorded run; later shared-registry changes make the
-whole-file fingerprint stale for 0.13.0a1. A fresh current-source claim requires
-a complete new benchmark run, not a hash-only edit to this historical record.
+a portable speed promise or durable optimizer record. The study was fully rerun
+on 2026-08-06 after the release-source hardening, and its standalone validator
+passes the current source fingerprints and canonical Markdown rendering.
 
 ## UI and exact benchmarking
 

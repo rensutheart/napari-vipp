@@ -15,18 +15,36 @@ $BuildRecipeId = "napari-vipp-cucim-windows-v1"
 $ManifestSchema = "napari-vipp-cucim-windows-build"
 $ManifestSchemaVersion = 2
 $PayloadHashAlgorithm = "sha256-wheel-payload-length-prefix-v1"
+$ExpectedWheelPayloadSha256 = "d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667"
 
-# These are the direct scientific, CUDA, and build inputs used for the
-# napari-vipp 0.13.0a1 CUDA 13 qualification. Do not make this recipe float.
+# This is the complete package inventory used for the napari-vipp 0.13.0a1
+# CUDA 13 qualification, including transitive build/runtime inputs. Installs
+# use --no-deps and the script rejects any missing, extra, or changed package.
 $PinnedPackages = [ordered]@{
     "pip" = "26.1.2"
     "setuptools" = "83.0.0"
     "wheel" = "0.47.0"
     "build" = "1.5.0"
+    "packaging" = "26.3"
+    "pyproject-hooks" = "1.2.0"
+    "colorama" = "0.4.6"
     "rapids-build-backend" = "0.4.1"
+    "rapids-dependency-file-generator" = "1.22.0"
+    "jsonschema" = "4.26.0"
+    "attrs" = "26.1.0"
+    "jsonschema-specifications" = "2025.9.1"
+    "referencing" = "0.37.0"
+    "rpds-py" = "2026.6.3"
+    "typing-extensions" = "4.16.0"
+    "pyyaml" = "6.0.3"
+    "tomlkit" = "0.15.1"
     "numpy" = "2.5.1"
     "scipy" = "1.18.0"
     "scikit-image" = "0.26.0"
+    "imageio" = "2.37.4"
+    "networkx" = "3.6.1"
+    "pillow" = "12.3.0"
+    "tifffile" = "2026.7.31"
     "lazy-loader" = "0.5"
     "click" = "8.4.2"
     "cupy-cuda13x" = "14.1.1"
@@ -456,6 +474,7 @@ $venvReport = Invoke-PythonProbe -Executable $venvPython
 Assert-SupportedPython -Report $venvReport
 
 & $venvPython -m pip install --disable-pip-version-check --no-input `
+    --only-binary=:all: --no-deps `
     "pip==$($PinnedPackages['pip'])" `
     "setuptools==$($PinnedPackages['setuptools'])" `
     "wheel==$($PinnedPackages['wheel'])"
@@ -467,9 +486,95 @@ $installNames = @($PinnedPackages.Keys | Where-Object {
 })
 $requirements = @($installNames | ForEach-Object { "$_==$($PinnedPackages[$_])" })
 & $venvPython -m pip install --disable-pip-version-check --no-input `
-    --only-binary=:all: $requirements
+    --only-binary=:all: --no-deps $requirements
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install the pinned scientific, CUDA, and build inputs."
+}
+& $venvPython -m pip check
+if ($LASTEXITCODE -ne 0) {
+    throw "The complete pinned build environment has broken dependencies."
+}
+
+$packageInventoryProgram = @'
+import base64
+import importlib.metadata as metadata
+import json
+import re
+import sys
+
+
+def canonicalize(name):
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("distribution name is missing")
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+expected = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+additional_name = sys.argv[2] if len(sys.argv) > 2 else ""
+additional_version = sys.argv[3] if len(sys.argv) > 3 else ""
+expected_canonical = {}
+original_names = {}
+for name, version in expected.items():
+    canonical = canonicalize(name)
+    if canonical in expected_canonical:
+        raise ValueError(f"duplicate pinned distribution name: {name!r}")
+    expected_canonical[canonical] = version
+    original_names[canonical] = name
+if additional_name:
+    canonical = canonicalize(additional_name)
+    if canonical in expected_canonical:
+        raise ValueError(f"duplicate additional distribution name: {additional_name!r}")
+    expected_canonical[canonical] = additional_version
+
+actual = {}
+for distribution in metadata.distributions():
+    raw_name = distribution.metadata.get("Name")
+    canonical = canonicalize(raw_name)
+    if canonical in actual:
+        raise ValueError(f"duplicate installed distribution name: {raw_name!r}")
+    actual[canonical] = str(distribution.version)
+
+if actual != expected_canonical:
+    missing = sorted(set(expected_canonical) - set(actual))
+    extra = sorted(set(actual) - set(expected_canonical))
+    changed = sorted(
+        name
+        for name in set(actual) & set(expected_canonical)
+        if actual[name] != expected_canonical[name]
+    )
+    raise ValueError(
+        "installed package inventory differs from the complete lock; "
+        f"missing={missing}, extra={extra}, changed={changed}"
+    )
+
+resolved = {
+    original_names[canonical]: actual[canonical]
+    for canonical in original_names
+}
+print(json.dumps(resolved, sort_keys=True))
+'@
+$pinnedPackagesJson = $PinnedPackages | ConvertTo-Json -Compress
+$pinnedPackagesBase64 = [Convert]::ToBase64String(
+    [System.Text.Encoding]::UTF8.GetBytes($pinnedPackagesJson)
+)
+$resolvedVersionsJson = (
+    $packageInventoryProgram | & $venvPython - $pinnedPackagesBase64 "" ""
+) -join "`n"
+if ($LASTEXITCODE -ne 0) {
+    throw "The installed build environment does not match the complete package lock."
+}
+$resolvedVersionsObject = $resolvedVersionsJson | ConvertFrom-Json
+$resolvedProperties = @($resolvedVersionsObject.PSObject.Properties)
+if ($resolvedProperties.Count -ne $PinnedPackages.Count) {
+    throw "The resolved package report has an unexpected number of fields."
+}
+$resolvedVersions = [ordered]@{}
+foreach ($packageName in $PinnedPackages.Keys) {
+    $property = $resolvedVersionsObject.PSObject.Properties[$packageName]
+    if ($null -eq $property -or -not ($property.Value -is [string])) {
+        throw "The resolved package report is missing $packageName."
+    }
+    $resolvedVersions[$packageName] = $property.Value
 }
 
 # rapids-build-backend invokes the Unix `which` command. Git for Windows ships
@@ -512,6 +617,12 @@ if ($payload.sha256 -ne $firstPayload.sha256) {
     throw (
         "Two clean builds produced different canonical payloads: " +
         "$($firstPayload.sha256) versus $($payload.sha256)."
+    )
+}
+if ($payload.sha256 -ne $ExpectedWheelPayloadSha256) {
+    throw (
+        "The canonical payload does not match the approved recipe: expected " +
+        "$ExpectedWheelPayloadSha256, found $($payload.sha256)."
     )
 }
 $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $wheel.FullName).Hash.ToLowerInvariant()
@@ -601,37 +712,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "The isolated cuCIM build environment has broken dependencies."
 }
 
-$resolvedVersionsProgram = @'
-import base64
-import importlib.metadata as metadata
-import json
-import sys
-
-names = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
-print(json.dumps({name: metadata.version(name) for name in names}, sort_keys=True))
-'@
-$packageNamesJson = @($PinnedPackages.Keys) | ConvertTo-Json -Compress
-$packageNamesBase64 = [Convert]::ToBase64String(
-    [System.Text.Encoding]::UTF8.GetBytes($packageNamesJson)
-)
-$resolvedVersionsJson = (
-    $resolvedVersionsProgram | & $venvPython - $packageNamesBase64
+$postBuildInventoryJson = (
+    $packageInventoryProgram | & $venvPython - `
+        $pinnedPackagesBase64 "cucim-cu13" "26.6.0"
 ) -join "`n"
 if ($LASTEXITCODE -ne 0) {
-    throw "Could not record resolved package versions."
-}
-$resolvedVersionsObject = $resolvedVersionsJson | ConvertFrom-Json
-$resolvedProperties = @($resolvedVersionsObject.PSObject.Properties)
-if ($resolvedProperties.Count -ne $PinnedPackages.Count) {
-    throw "The resolved package report has an unexpected number of fields."
-}
-$resolvedVersions = [ordered]@{}
-foreach ($packageName in $PinnedPackages.Keys) {
-    $property = $resolvedVersionsObject.PSObject.Properties[$packageName]
-    if ($null -eq $property -or -not ($property.Value -is [string])) {
-        throw "The resolved package report is missing $packageName."
-    }
-    $resolvedVersions[$packageName] = $property.Value
+    throw "The post-build environment does not match the complete package lock."
 }
 
 $outputWheelPath = Join-Path $OutputDirectory $wheel.Name
@@ -695,6 +781,7 @@ $manifest = [ordered]@{
         "materialize-upstream-symlinks-utf8-lf",
         "remove-unavailable-clara-console-entry-point",
         "exact-pin-qualified-scientific-cuda-build-stack",
+        "lock-complete-build-environment-no-deps",
         "pin-rapids-dependency-generator-input",
         "numpy-2.5-pad-reshape-compatibility"
     )
@@ -706,6 +793,7 @@ $manifest = [ordered]@{
         real_gpu_probe = "passed"
         real_gpu_probe_output = $gpuProbeOutput.Trim()
         pip_check = "passed"
+        exact_package_inventory = "passed"
     }
 }
 $manifestJson = $manifest | ConvertTo-Json -Depth 8
