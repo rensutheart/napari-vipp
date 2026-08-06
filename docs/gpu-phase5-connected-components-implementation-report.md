@@ -30,9 +30,11 @@ VIPP does not coerce an authored numeric image to bool, change its spatial
 interpretation, or renumber an approximately equivalent GPU partition merely
 to make it eligible.
 
-The source-current RTX 5090 record passed every exact admission case plus the
-synchronized lifecycle and private-pool cleanup checks. That is sufficient for
-branch visibility in the validated region; it is not a released-package,
+The RTX 5090 record was source-current when it was captured on 2026-08-02 and
+passed every exact admission case plus the synchronized lifecycle and
+private-pool cleanup checks. Later shared policy/specification changes make its
+whole-file source fingerprint stale, so it is retained as historical evidence,
+not relabeled as a current-source run. It is not a released-package,
 cross-platform, or universal-performance claim.
 
 ## Frozen CPU scientific contract
@@ -220,15 +222,17 @@ insufficiently decisive calls.
 ### Historical evidence provenance note
 
 The older RL and RL-TV evidence schemas fingerprint whole shared dispatch,
-policy, specification, registry, and operation files. Additive Sigma Filter and
-Connected Components registration therefore made their current-source checks
-fail even though an operation-scoped diff audit found no change to the RL/RL-TV
+policy, specification, registry, and operation files. Later additions and the
+0.13.0a1 cuCIM provenance hardening therefore make their current-source checks
+fail even where an operation-scoped diff audit finds no change to the RL/RL-TV
 CPU kernels, GPU providers, parity gates, admission region, or memory formula.
-Their source fingerprints were refreshed without changing any scientific or
-timing samples, and their validators were rerun. Before the next shared compute
-family expands these files, RL/RL-TV should adopt operation-owned CPU, parity,
-and compute-contract modules like Sigma Filter so unrelated registrations no
-longer create provenance churn while real RL changes still fail closed.
+The committed records retain the source fingerprints from the runs that
+produced their measurements; those hashes must not be refreshed without a new
+run. Treat the measurements as historical machine-local observations and rerun
+the generators before claiming current-source evidence. RL/RL-TV should adopt
+operation-owned CPU, parity, and compute-contract modules like Sigma Filter so
+unrelated registrations no longer create provenance churn while real RL
+changes still fail closed.
 
 ## Packaged compute-policy artifact
 

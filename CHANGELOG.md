@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.13.0a1 - 2026-08-04
+## 0.13.0a1 - 2026-08-06
 
 ### Release Overview
 
@@ -69,6 +69,14 @@ hardening accumulated since 0.12.0a3.
   used by admission. Public GPU evidence in this alpha remains limited to the
   recorded native-Windows CPython 3.12 / CUDA 13 / RTX 5090 environment;
   installation on another system is not an acceleration claim.
+- The ordinary CUDA extra does not distribute or require cuCIM. Windows users
+  can optionally build the exact cuCIM 26.6.0 tag/commit with the release's
+  fixed local recipe, then use the manifest-verifying setup helper to install
+  and approve their own wheel in an existing released VIPP environment. Policy
+  pins the source, recipe, canonical payload, CUDA/scientific stack, and
+  workload while allowing each local ZIP archive to have its own verified
+  SHA-256. Without an approved build, background and basic-measurement
+  candidates remain on CPU.
 
 ### Durable Workflows, Batch, CLI, And Export
 
@@ -156,9 +164,9 @@ hardening accumulated since 0.12.0a3.
 - CPython 3.12 and 3.13 are the supported CPU interpreters. GPU extras and the
   reviewed CUDA environment remain CPython 3.12-only.
 - Linux GPU qualification, RTX 40-series evidence, Apple GPU acceleration,
-  general cuCIM/Clara packaging, remaining GPU nodes, semantic collection
-  iteration, HCS traversal, and scalable OME-Zarr previews remain post-alpha
-  work.
+  a hosted downstream cuCIM distribution, Clara support, remaining GPU nodes,
+  semantic collection iteration, HCS traversal, and scalable OME-Zarr previews
+  remain post-alpha work.
 
 ### Colocalization Correctness
 

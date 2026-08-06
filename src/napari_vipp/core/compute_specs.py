@@ -78,7 +78,7 @@ def _background_spec(operation_id: str) -> OperationComputeSpec:
         host_boundary=False,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
         ),
         input_ports=(_gpu_image_port(0, name="image", **port_values),),
         output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
@@ -601,7 +601,7 @@ def _measurements_spec(*, include_intensity: bool) -> OperationComputeSpec:
         host_boundary=False,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
         ),
         input_ports=inputs,
         output_ports=(

@@ -47,6 +47,12 @@ from napari_vipp.core.compute import (
 from napari_vipp.core.compute_benchmark_adapter import operation_parity
 from napari_vipp.core.compute_history import JsonPipelineTimingStore
 from napari_vipp.core.compute_planning import plan_compute_decisions
+from napari_vipp.core.compute_policy import (
+    PHASE1_CUCIM_BUILD_RECIPE_ID,
+    PHASE1_CUCIM_SOURCE_COMMIT,
+    PHASE1_CUCIM_SOURCE_TAG,
+    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
+)
 from napari_vipp.core.compute_registry import (
     ComputeRegistry,
     ImplementationLibraryProbeResult,
@@ -262,7 +268,7 @@ def _test_registry(
                 callable_ref=f"{function.__module__}:{function.__name__}",
                 implementation_library_id=("cucim" if uses_cucim else "cupyx"),
                 validated_environment_policy_id=(
-                    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
+                    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
                     if uses_cucim
                     else "cuda-cupy-14.1.1-cpython312-windows-native-v3"
                 ),
@@ -284,15 +290,22 @@ def _test_registry(
             version="26.06.00",
             metadata=(
                 ("environment_record_schema", "napari-vipp-gpu-environment"),
-                ("environment_record_schema_version", "1"),
+                ("environment_record_schema_version", "2"),
                 ("environment_track", "cuda13"),
                 ("cupy_distribution", "cupy-cuda13x"),
                 ("cucim_distribution", "cucim-cu13"),
                 ("cucim_distribution_version", "26.6.0"),
                 (
                     "cucim_artifact_sha256",
-                    "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8",
+                    "a" * 64,
                 ),
+                (
+                    "cucim_wheel_payload_sha256",
+                    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
+                ),
+                ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
+                ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
+                ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
             ),
         )
     return (
@@ -2052,6 +2065,13 @@ def test_real_prefer_gpu_runs_every_eligible_node_without_benchmark_evidence():
         cupy.zeros(1, dtype=cupy.float32).sum().item()
     except Exception as exc:
         pytest.skip(f"A working CUDA device is unavailable: {exc}")
+    registry = ComputeRegistry()
+    try:
+        cucim_probe = registry.probe_library("cucim", refresh=True)
+    finally:
+        registry.close()
+    if not cucim_probe.available:
+        pytest.skip(cucim_probe.message or "cuCIM is not policy-admitted.")
 
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()

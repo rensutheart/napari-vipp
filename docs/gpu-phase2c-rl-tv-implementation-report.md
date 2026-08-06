@@ -209,7 +209,10 @@ Results and raw paired samples are recorded in:
 - [raw timing evidence](benchmarks/rl-tv-cupy-performance-windows-rtx5090.json)
 
 These short RTX 5090 measurements are descriptive machine-local evidence, not
-a portable speed promise or durable optimizer record.
+a portable speed promise or durable optimizer record. They retain the source
+fingerprints from their recorded run; later shared-registry changes make the
+whole-file fingerprint stale for 0.13.0a1. A fresh current-source claim requires
+a complete new benchmark run, not a hash-only edit to this historical record.
 
 ## UI and exact benchmarking
 

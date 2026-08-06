@@ -35,14 +35,14 @@ VIPP 0.13.0a1 supports CPython 3.12 and 3.13. If napari is not already
 installed, install it with a Qt backend at the same time:
 
 ```bash
-python -m pip install "napari[pyqt6]"
-python -m pip install --pre napari-vipp
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a1"
 vipp
 ```
 
-The `--pre` flag is required while VIPP is published as an alpha release. It is
-kept on the VIPP command so napari itself can continue to resolve to a stable
-release.
+An exact alpha version does not need pip's `--pre` option. Use
+`python -m pip install --pre napari-vipp` only when asking pip to choose the
+latest unpinned VIPP alpha; `--pre` affects that command's dependency resolver
+globally.
 
 The optional CUDA providers are currently qualified on CPython 3.12 only. On a
 native Windows machine with a compatible NVIDIA driver, the self-contained
@@ -51,7 +51,7 @@ CUDA 13 route is:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --pre "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a1"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a1"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -62,9 +62,15 @@ alpha is intentionally narrower than package installation: the reviewed
 native-Windows evidence is for the recorded CUDA 13 / RTX 5090 environment.
 Other hardware, Linux, unsupported dtypes or parameters, and missing optional
 providers remain on the scientifically authoritative CPU path with a visible
-reason. macOS is CPU-only in this alpha. See
-[GPU scope and setup](#gpu-execution-and-development-environment) before using
-accelerated results.
+reason. Only the NVIDIA display driver is a machine-wide prerequisite; this
+standard route does not need a separate CUDA Toolkit, `nvcc`, Visual Studio, or
+CMake. macOS is CPU-only in this alpha. The standard extra also omits cuCIM;
+Windows users can optionally build the pinned cuCIM 26.6.0 source locally and
+approve that wheel in the same environment. Without it, the affected nodes
+remain on CPU. See the
+[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a1/getting-started/windows-cuda/)
+and [GPU scope and setup](#gpu-execution-and-development-environment) before
+using accelerated results.
 
 In napari, open:
 
@@ -156,7 +162,7 @@ current limitations.
 ## Documentation
 
 - [Published VIPP documentation](https://rensutheart.github.io/vipp-mkdocs/)
-- [Categorized 0.13.0a1 release notes](CHANGELOG.md#0130a1---2026-08-04)
+- [Categorized 0.13.0a1 release notes](CHANGELOG.md#0130a1---2026-08-06)
 - [Documentation index](docs/README.md)
 - [User guide](docs/user-guide.md)
 - [Image import and export](docs/io-user-guide.md)
@@ -611,7 +617,7 @@ bash scripts/setup_gpu_dev.sh --track cuda13
 ./.venv-gpu-cu13/bin/python -m napari_vipp.core.compute_diagnostics --track cuda13
 ```
 
-The current executable Phase 1/Phase 2B/Phase 2C policy admits only the validated
+The current executable public GPU policy admits only the validated
 native-Windows matrix. Linux preparation is available for the pending clean-host
 validation, but GPU execution intentionally fails closed there until that
 evidence is reviewed.
@@ -648,18 +654,27 @@ unavailable runtime, they print a copyable setup command; VIPP's CPU path remain
 usable.
 
 The scientifically validated cuCIM background provider is a normal public
-candidate in its exact admitted Windows environment. That provider status is
-separate from distribution: the pinned native-Windows cuCIM skimage
-source-built wheel and its installation route remain experimental. The current
-reproduction path is documented in the
-[cuCIM source evaluation](docs/cucim-windows-source-evaluation.md) and
-[`scripts/build_cucim_windows.ps1`](scripts/build_cucim_windows.ps1); it omits
-Clara I/O and is not yet a general user-facing install route. The builder uses
-its own temporary environment and reports the wheel path/hash; it does not
-install cuCIM into `.venv-gpu-cu13`. Install a reviewed local build explicitly with
-`--cucim-wheel <path> --cucim-sha256 <digest>`; both values are required and the
-helper verifies the file immediately before installing it. CUDA acceleration
-targets validated Windows systems first, with native Linux next. macOS
+candidate in its exact admitted Windows environment. That provider remains
+optional: VIPP neither distributes nor requires cuCIM, and CPU is authoritative
+when it is absent or rejected. Windows users may build the exact cuCIM 26.6.0
+tag/commit locally with VIPP's fixed recipe. The builder materializes the
+licences, removes the unusable Clara command, and emits both a per-build wheel
+SHA-256 and a canonical payload manifest. The setup helper verifies those bytes,
+installs them into an existing released VIPP environment, runs real probes, and
+writes the approval record without replacing VIPP with an editable checkout.
+When the remaining environment and workload gates pass, Subtract Background,
+Rolling-Ball Background, and the admitted basic measurements can use cuCIM;
+otherwise they visibly fall back to CPU. Follow the
+[Windows CUDA and local cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a1/getting-started/windows-cuda/);
+the [cuCIM source evaluation](docs/cucim-windows-source-evaluation.md) records
+the technical evidence, and
+[`scripts/build_cucim_windows.ps1`](scripts/build_cucim_windows.ps1) implements
+the fixed recipe. It omits
+Clara I/O, and each user keeps their locally built wheel private. The historical
+`586D...134CF8` artifact remains unavailable and must not be redistributed. A
+future hosted wheel would still need a distinct downstream identity and a
+separate distribution review. CUDA acceleration targets validated Windows
+systems first, with native Linux next. macOS
 continues to use VIPP's CPU path
 while an M1 Max Metal/MPS/MLX provider is investigated; Apple unified memory
 must be reported as one shared budget, not RAM plus VRAM.
@@ -734,7 +749,7 @@ and RTX 40-series qualification, Apple acceleration, general cuCIM packaging,
 and additional node providers remain planned. Colocalization and ImageJ
 compatibility work also changes some numerical results; review the scientific
 compatibility notes before comparing old and new analyses. See the categorized
-[0.13.0a1 release notes](CHANGELOG.md#0130a1---2026-08-04), the
+[0.13.0a1 release notes](CHANGELOG.md#0130a1---2026-08-06), the
 [upgrade and workflow contract](docs/user-guide.md#save-workflow-json), and
 [planning.md](docs/planning.md) for the remaining milestones.
 

@@ -2,8 +2,46 @@
 
 Initial evaluation: 2026-07-15
 Phase 1 checksum/install refresh: 2026-07-27
+Release-distribution/local-build audit: 2026-08-06
 Status: successful research build and public background candidate in the exact
-validated environment; ordinary installation and wider-platform gates remain open
+validated environment; **locally rebuildable from the pinned recipe, not
+distributed by VIPP**
+
+## 2026-08-06 distribution and local-build boundary
+
+The scientific results below remain evidence for the exact installed research
+artifact. They do not make that artifact publishable:
+
+- The historical policy admitted archive SHA-256 `586D...134CF8`, but those
+  exact wheel bytes are no longer retained. The earlier and refreshed builds
+  proved that ZIP bytes can differ between builds even when their installed
+  payload is equivalent. The current recipe therefore records each user's
+  archive SHA-256 while policy pins and independently verifies the canonical
+  installed payload, source tag/commit, and build-recipe identity.
+- The installed wheel's `licenses/LICENSE` is only the 13-byte text
+  `../../LICENSE`, and `licenses/LICENSE-3rdparty.md` is only the 25-byte text
+  `../../LICENSE-3rdparty.md`. Standard Windows Git materialized upstream
+  symlinks as text, and the builder repaired only `VERSION`. The archive does
+  not carry the required licence text and must not be hosted.
+- Its metadata still claims Linux, CUDA 12, NVIDIA/RAPIDS authorship/support,
+  and a CPython-specific impure wheel. The payload contains no `.pyd`, `.dll`,
+  or `.so`; the tag comes from upstream's unconditional native-extension flag.
+  The installed `cucim` console command also targets the omitted Clara extension
+  and fails.
+- The setup helper now has an explicit existing-environment mode. It installs
+  neither editable VIPP nor development dependencies in that mode: it verifies
+  the builder manifest and wheel, installs the exact Click, lazy-loader, and
+  nvImageCodec prerequisites plus cuCIM with `--no-deps` into the named released
+  VIPP environment, runs dependency and real-GPU probes, and only then writes
+  the approval record atomically.
+
+VIPP 0.13.0a1 deliberately chooses a local-build route rather than distribution.
+The fixed recipe pins cuCIM `v26.06.00` to commit
+`3c15781c207eab93a317dd9803a6e726fe01f7c4`, materializes licences and linked
+documentation, marks the compatibility patch, removes the broken Clara entry
+point, and emits a machine-readable manifest. Users must keep the resulting
+wheel private. Do not publish the historical wheel—or a new local build—on
+`rensu.co.za`, a package index, or elsewhere as a supported VIPP artifact.
 
 ## Bottom line
 
@@ -80,61 +118,69 @@ direct Windows users to WSL. The absence of a third-party binary should be
 rechecked before each pinned upgrade, but it is not a reason to defer the
 source-built `skimage` experiment now that the pinned procedure is repeatable.
 
-## What was built
+## What the release recipe builds
 
 | Item | Pinned value |
 |---|---|
 | cuCIM tag | `v26.06.00` |
 | cuCIM commit | `3c15781c207eab93a317dd9803a6e726fe01f7c4` |
-| Python | 3.12.9 |
-| CuPy | `cupy-cuda13x[ctk] == 14.1.1` |
+| VIPP build recipe | `napari-vipp-cucim-windows-v1` |
+| Python / wheel tag | CPython 3.12 / `cp312-cp312-win_amd64` |
+| CuPy | `cupy-cuda13x == 14.1.1` |
 | CUDA toolkit package | `cuda-toolkit == 13.2.2` |
 | CUDA compiler/runtime/CRT/NVVM/nvJitLink build components | `13.2.86` |
 | nvImageCodec package | `nvidia-nvimgcodec-cu13 == 0.8.0.22` |
-| CUDA driver/runtime APIs | 13.3 (`13030`) / 13.2 (`13020`) |
-| GPU | NVIDIA GeForce RTX 5090, compute capability 12.0, 32 GiB |
 | NumPy / SciPy / scikit-image | 2.5.1 / 1.18.0 / 0.26.0 |
-| Wheel size | 8,654,879 bytes |
-| Exact installed-artifact SHA-256 | `586D3443091EEA67CE2C697BE2C490CA51977A5DBDF894B9318B270977134CF8` |
+| Canonical payload SHA-256 | `d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667` |
+| Canonical payload files | 338 (`RECORD` excluded) |
 
-The wheel is intentionally not committed. It is a locally built research
-artifact without upstream Windows support. The machine-readable build record is
+The 2026-08-06 qualification run produced an 8,658,059-byte wheel with archive
+SHA-256 `33ac5cec0ee6ca9d82bfdc9be25978c5b7ca8785fb750dbb17c8ed34795cb004`.
+That archive digest is evidence for this run, not a value users copy into a
+command: every builder manifest records its own archive size and SHA-256. Two
+clean builds in the qualification run matched both canonically and byte for
+byte. Policy pins the container-independent canonical payload above, while the
+installer independently checks both identities and pip's installed provenance.
+
+The earlier 8,654,879-byte research wheel and its `586D...134CF8` archive
+digest are retained only as historical benchmark evidence in
 [`benchmarks/cucim-source-windows-rtx5090-build.json`](benchmarks/cucim-source-windows-rtx5090-build.json).
-
-The digest identifies this exact artifact; it is not yet a deterministic-build
-claim. The earlier July build had the same 8,654,879-byte size but a different
-digest. Wheel archive normalization and a byte-for-byte two-build comparison
-remain packaging work before publication.
+Those bytes no longer exist and are not an installable release artifact.
 
 ### Required adaptations
 
-The Python/skimage wheel required three small source adaptations:
+The fixed recipe makes five explicit adaptations:
 
-1. `rapids-build-backend 0.4.1` invokes Unix `which`. Put Git for Windows'
-   `usr/bin` directory on `PATH` during the build.
-2. `python/cucim/src/cucim/VERSION` is a relative symbolic link in Git. A
-   normal Windows checkout materializes the link target as text, so replace it
-   with the root `VERSION` contents and explicitly include it in `MANIFEST.in`.
-3. NumPy 2.5 deprecates assigning `ndarray.shape`. Replace the one occurrence
-   in cuCIM's vendored padding code with `reshape`; otherwise cuCIM's strict
-   pytest configuration reports 252 histogram-median failures because it turns
-   the deprecation warning into an error.
+1. Materialize all seven upstream repository symlinks as regular UTF-8/LF
+   files, including the actual Apache and third-party licence texts,
+   documentation, and both `VERSION` locations.
+2. Remove the unusable Clara console entry point; the local wheel contains no
+   Clara native library and does not claim that feature.
+3. Correct the wheel metadata to the exact Windows/CUDA 13 scientific stack and
+   pin every qualified direct dependency.
+4. Pin the matching `dependencies.yaml` inputs because RAPIDS' build backend
+   regenerates dependency metadata from that file during the build.
+5. Replace one deprecated NumPy 2.5 `ndarray.shape` assignment in vendored
+   padding code with the equivalent `reshape` call and include a prominent
+   downstream adaptation notice.
 
-No image-processing formula was changed. The reproducible implementation is
-[`scripts/build_cucim_windows.ps1`](../scripts/build_cucim_windows.ps1). A clean
-second build from a separate source checkout completed, installed the wheel, and
-passed Gaussian, rolling-ball, and labeling kernels:
+`rapids-build-backend 0.4.1` also invokes Unix `which`; the script locates the
+copy supplied by Git for Windows. No image-processing formula was changed. The
+implementation is
+[`scripts/build_cucim_windows.ps1`](../scripts/build_cucim_windows.ps1), which
+performs two clean builds, validates the manifest and licence payload, installs
+the second wheel into its isolated build environment, and runs real Gaussian,
+rolling-ball, and labeling kernels:
 
 ```powershell
-.\scripts\build_cucim_windows.ps1
+$python312 = py -3.12 -c "import sys; print(sys.executable)"
+.\scripts\build_cucim_windows.ps1 -Python $python312
 ```
 
-The refreshed builder also pins CUDA compiler, runtime, CRT, NVVM, and
-nvJitLink build components to 13.2.86 and installs nvImageCodec 0.8.0.22. It
-then installs the exact local wheel with `--no-deps` so pip cannot silently
-re-resolve the admitted CUDA stack, and finishes with a real-GPU probe and
-`pip check`. Installing nvImageCodec satisfies the upstream wheel metadata; it
-does not create the absent native `cucim.clara/libcucim` extension.
+The builder installs the exact local wheel with `--no-deps` so pip cannot
+silently re-resolve the qualified CUDA stack, then finishes with real-GPU probes
+and `pip check`. Installing nvImageCodec satisfies the upstream wheel metadata;
+it does not create the absent native `cucim.clara/libcucim` extension.
 
 ## Verification
 
@@ -256,8 +302,8 @@ kernels.
 
 ## Reproduce the benchmark
 
-After the build script completes, use the isolated Python path printed in its
-JSON result:
+After the build script completes, use the isolated Python environment under the
+builder work directory to reproduce the benchmark:
 
 ```powershell
 $python = Join-Path $env:TEMP "napari-vipp-cucim-windows\venv\Scripts\python.exe"
@@ -265,23 +311,32 @@ $python = Join-Path $env:TEMP "napari-vipp-cucim-windows\venv\Scripts\python.exe
 & $python scripts\benchmark_cucim.py --profile standard --output docs\benchmarks\cucim-source-windows-rtx5090-standard.json
 ```
 
-Install that exact local artifact into the dedicated application environment
-through the checksum-verifying helper (substitute the digest printed by the
-builder for every new artifact):
+For the supported 0.13.0a1 local-build route, keep the generated wheel beside
+its build manifest and install both into an existing, non-editable released
+VIPP environment through the provenance-verifying helper:
 
 ```powershell
-$wheel = Join-Path $env:TEMP "napari-vipp-cucim-windows\cucim-v26.06.00\python\cucim\dist\cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl"
-python scripts\setup_gpu_dev.py --track cuda13 --venv .venv-gpu-cu13 `
+$artifacts = Join-Path $env:TEMP "napari-vipp-cucim-artifacts"
+$python312 = py -3.12 -c "import sys; print(sys.executable)"
+.\scripts\build_cucim_windows.ps1 -Python $python312 -OutputDirectory $artifacts
+
+$wheel = Join-Path $artifacts "cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl"
+$manifest = Join-Path $artifacts "cucim_cu13-26.6.0-cp312-cp312-win_amd64.build-manifest.json"
+python scripts\setup_gpu_dev.py --existing-environment --track cuda13 `
+  --python C:\path\to\vipp-venv\Scripts\python.exe `
   --cucim-wheel $wheel `
-  --cucim-sha256 586D3443091EEA67CE2C697BE2C490CA51977A5DBDF894B9318B270977134CF8
+  --cucim-manifest $manifest
 ```
 
-That temporary interpreter validates the standalone build; it is not VIPP's
-dedicated GPU development environment. The 2026-07-27 refresh separately used
-the explicit setup-helper option to install the checksum-recorded wheel into
-`.venv-gpu-cu13` and run the background-adapter suite there. Every replacement
-artifact must repeat that separation and verification. The builder must never
-silently mutate the application environment.
+The helper independently checks the archive hash, the policy-pinned canonical
+wheel payload, source tag and commit, recipe ID, exact dependency pins, pip's
+installed archive provenance, and real kernels before it writes the approval
+record. Before VIPP admits the provider for use, the runtime independently
+recomputes the canonical payload from the installed files. A different source,
+recipe, payload, interpreter, environment, or qualified hardware/workload does
+not become approved by editing the manifest. The builder never mutates the
+application environment, and the locally generated wheel and manifest remain
+private user artifacts rather than VIPP release files.
 
 Clara remains explicitly outside Phase 1. The dedicated Windows port plan owns
 the investigate-soon feature-completeness/upstream review; the desired end state

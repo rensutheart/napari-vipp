@@ -1,6 +1,6 @@
 # VIPP Alpha Release Runbook
 
-Last reviewed: 2026-08-04
+Last reviewed: 2026-08-06
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 publishing the companion documentation site, and confirming discovery on
@@ -18,13 +18,15 @@ napari hub.
 
 1. You have push/tag permission on GitHub for this repository.
 2. You have upload permission for the `napari-vipp` project on PyPI.
-3. You have a PyPI API token available as `TWINE_PASSWORD`.
+3. You have either PyPI Trusted Publishing configured or a PyPI API token
+   available to paste into Twine's hidden password prompt.
 4. You have a clean git working tree on the release commit.
 5. The companion `vipp-mkdocs` repository has a reviewed release page and a
    clean, pushed release commit.
 
-Never paste, print, commit, or place the PyPI token in shell history. Load it
-into the process environment without echoing it and clear it after upload.
+Never paste, print, commit, or place the PyPI token in a command, script, or
+shell environment variable. Prefer Trusted Publishing where configured;
+otherwise enter the token only at Twine's hidden password prompt.
 
 Recommended local tools:
 
@@ -87,6 +89,33 @@ exercise visible one-retry OOM provenance, strict no-retry behavior, and
 cleanup-false publication blocking; do not induce a real OOM in an uncontrolled
 operator run.
 
+For any release whose policy declares cuCIM candidates, make one explicit
+distribution decision before freezing the commit:
+
+1. **Distributed and admitted:** retain the exact final downstream wheel,
+   inspect its full payload/metadata/licences, publish it at an immutable URL,
+   record its SHA-256/source/patch/toolchain manifest, expose a packaged
+   checksum-and-probe approval command, update the policy to that artifact, and
+   repeat clean-host background/measurement, durable-run, memory, cancellation,
+   cleanup, and licence/packaging qualification;
+2. **Pinned local build:** publish no wheel, but ship an exact source
+   tag/commit/recipe, complete local wheel licences/notices, a canonical payload
+   digest, a machine-readable build manifest, and an existing-environment
+   checksum/probe approval path; or
+3. **Unavailable:** state prominently in README, CHANGELOG, release notes,
+   installation, compute, and validation pages that ordinary users cannot
+   install cuCIM and that the affected providers normally remain on CPU.
+
+VIPP 0.13.0a1 uses option 2. Every user builds and keeps their own archive;
+policy allows a per-user archive SHA only when its installed payload, pinned
+source/recipe, environment, and workload pass the exact reviewed gates.
+
+Never publish the historical `586D...134CF8` research wheel. Its exact archive
+is no longer retained, and the installed copy contains Windows-materialized
+licence links rather than the actual Apache-2.0 and third-party licence text.
+The pinned local recipe replaces that historical build for self-use; it does
+not authorize hosting or redistribution.
+
 For a release that changes runtime or responsive UI code, also confirm the
 batch representative strip remains usable at a 420 px dock width on Windows
 and that macOS cache status reports RAM without launching a subprocess. The
@@ -111,6 +140,23 @@ changes the candidate source commit. Build the final wheel and source archive
 from the eventual immutable release commit and repeat all applicable CPU, CUDA,
 interactive, batch, generated-CLI, provenance, fallback, cancellation, and
 cleanup checks. The operator checklist below therefore remains unchecked.
+
+### Bounded 0.13.0a1 Windows Acceptance Evidence
+
+On 2026-08-06, a clean, non-editable, release-style Windows environment running
+VIPP 0.13.0a1 launched the synthetic-volume VIPP example in napari. The
+operator inspected the running example and confirmed that it looked correct.
+This records the example launch and visual acceptance only; it is not a pass
+for every manual UI scenario in the checklist.
+
+Separately on 2026-08-06, an automated headless run in that clean environment
+executed Subtract Background with `Prefer GPU`, selected
+`cucim-subtract_background-v2` through cuCIM without fallback, produced the
+expected `(31, 37)` `uint16` output, and reported successful cleanup. This is
+bounded evidence for that operation and environment. It does not qualify the
+final tagged artifacts, durable batch or generated-CLI replay, cancellation or
+OOM handling, the CPU-only path, other manual workflows, or another platform;
+those checklist items remain separate release gates.
 
 ## 3. Freeze And Tag The Exact Release Commit
 
@@ -163,7 +209,8 @@ python -m mkdocs build --strict
 ```
 
 Review the rendered `0.13.0a1` release page, workflow-schema upgrade guidance,
-batch workspace instructions, architecture boundaries, and known limitations.
+batch workspace instructions, architecture boundaries, Windows CUDA/cuCIM
+installation boundary, and known limitations.
 Commit and push the docs release before or alongside the package release, then
 confirm the hosted documentation resolves from the `Documentation` project URL.
 
@@ -176,15 +223,20 @@ git push origin "v<version>"
 ```
 
 Then publish exactly the two hash-recorded artifacts. PyPI uploads cannot be
-replaced, so recheck the directory and version before entering credentials:
-
-Set token in the shell (PowerShell):
+replaced, so recheck the directory, version, and explicit filenames before
+entering credentials. When Trusted Publishing is not configured, pass only the
+token username on the command line and paste the API token into Twine's hidden
+password prompt:
 
 ```powershell
-$env:TWINE_USERNAME = "__token__"
-$env:TWINE_PASSWORD = "<pypi-api-token>"
-python -m twine upload "dist/<version>/*"
+python -m twine upload --username "__token__" `
+  "dist/<version>/napari_vipp-<version>-py3-none-any.whl" `
+  "dist/<version>/napari_vipp-<version>.tar.gz"
 ```
+
+Do not put the token in `TWINE_PASSWORD`, the command line, or a PowerShell
+assignment. At the `Password:` prompt, paste the token; Twine does not echo the
+input or add it to shell history.
 
 Post-upload validation:
 
@@ -272,6 +324,9 @@ If not updated after indexing delay:
       placements, explained unsupported-node CPU decisions, dormant per-node
       preferences, visible-only fallback, and exact provenance
 - [ ] CPU-only import/generated/batch replay passed without optional GPU imports
+- [ ] cuCIM distribution decision is complete: distributed artifact, pinned
+      private local-build route, or unavailable; every public surface matches
+      that decision and the chosen provenance/approval path was requalified
 - [ ] Clean tagged wheel/sdist build, Twine, content, `pip check`, manifest,
       compute-policy-resource, and entry-point checks pass; SHA-256 hashes saved
 - [ ] Companion documentation strict build passes and release page is published

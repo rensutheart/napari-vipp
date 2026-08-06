@@ -709,7 +709,7 @@ Windows compatibility issue 454 remains open. The audit also found no Windows-
 named branch among the 83 current forks; that is supporting evidence, not a
 guarantee that no private or obscure build exists.
 
-The pinned source result was:
+The pinned historical research result was:
 
 | Build item | Evidence |
 | --- | --- |
@@ -726,16 +726,25 @@ The refreshed build removed the earlier NVCC 13.3/13.2-runtime mismatch: CUDA
 compiler, runtime, CRT, NVVM, and nvJitLink build components are now pinned to
 13.2.86, matching the admitted CuPy 14.1.1 CUDA-minor evidence. nvImageCodec
 0.8.0.22 is installed explicitly so the source wheel's declared dependencies
-pass `pip check`. The artifact checksum is an exact wheel identity, not yet a
-byte-for-byte reproducibility claim; archive normalization remains a packaging
-gate because an earlier same-size build produced a different digest.
+pass `pip check`. The table's archive checksum identifies only that now-missing
+historical wheel.
 
-The clean build required three downstream adaptations: put Git for Windows'
-`which.exe` on `PATH` for `rapids-build-backend`; replace the materialized
+The 2026-08-06 release recipe supersedes that installation procedure. It
+materializes the real licence files, corrects Windows/CUDA metadata, exact-pins
+the build-backend dependency source, removes the unusable Clara entry point,
+and emits a schema-v2 manifest. Two clean builds matched the policy-pinned
+canonical payload SHA-256
+`d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667`.
+Each user still builds and keeps their own wheel privately; the older archive
+digest is not an installer input or a hosted artifact.
+
+The historical clean build required three downstream adaptations: put Git for
+Windows' `which.exe` on `PATH` for `rapids-build-backend`; replace the materialized
 relative `VERSION` symlink and include it in the wheel; and replace one
 deprecated NumPy shape assignment in vendored padding code with `reshape` for
 strict NumPy 2.5 compatibility. These are packaging/build-compatibility changes,
-not image-processing formula changes. The reproducible builder is
+not image-processing formula changes. The fixed release builder now performs
+the broader five-adaptation procedure documented in the source evaluation:
 [`scripts/build_cucim_windows.ps1`](../scripts/build_cucim_windows.ps1).
 
 The synchronized RTX 5090 standard benchmark produced primitive-level

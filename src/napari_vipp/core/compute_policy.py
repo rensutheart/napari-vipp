@@ -8,6 +8,7 @@ becoming a second execution engine.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -348,7 +349,7 @@ CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID = (
     "cuda-cupy-14.1.1-cpython312-windows-native-v3"
 )
 CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID = (
-    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
+    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
 )
 CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID = (
     "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
@@ -376,8 +377,13 @@ _PHASE1_CPU_SCIENTIFIC_STACK = {
     "scikit-image": "0.26.0",
 }
 _PHASE1_CUCIM_VERSIONS = frozenset({"26.6.0", "26.06.00"})
-_PHASE1_CUCIM_ARTIFACT_SHA256 = (
-    "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8"
+PHASE1_CUCIM_SOURCE_TAG = "v26.06.00"
+PHASE1_CUCIM_SOURCE_COMMIT = "3c15781c207eab93a317dd9803a6e726fe01f7c4"
+PHASE1_CUCIM_BUILD_RECIPE_ID = "napari-vipp-cucim-windows-v1"
+# Unlike a wheel archive hash, this canonical, archive-metadata-independent
+# payload digest is identical across independent builds of the pinned recipe.
+PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256 = (
+    "d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667"
 )
 
 
@@ -714,11 +720,16 @@ def _evaluate_phase1_cuda_environment(
         )
         expected_metadata = {
             "environment_record_schema": "napari-vipp-gpu-environment",
-            "environment_record_schema_version": "1",
+            "environment_record_schema_version": "2",
             "environment_track": "cuda13",
             "cupy_distribution": "cupy-cuda13x",
             "cucim_distribution": "cucim-cu13",
-            "cucim_artifact_sha256": _PHASE1_CUCIM_ARTIFACT_SHA256,
+            "cucim_wheel_payload_sha256": (
+                PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256
+            ),
+            "cucim_source_tag": PHASE1_CUCIM_SOURCE_TAG,
+            "cucim_source_commit": PHASE1_CUCIM_SOURCE_COMMIT,
+            "cucim_build_recipe_id": PHASE1_CUCIM_BUILD_RECIPE_ID,
         }
         for key, expected in expected_metadata.items():
             if library_metadata.get(key) != expected:
@@ -726,6 +737,12 @@ def _evaluate_phase1_cuda_environment(
                     "The cuCIM environment record is missing or has unapproved "
                     f"{key!r} provenance."
                 )
+        artifact_sha256 = library_metadata.get("cucim_artifact_sha256", "")
+        if re.fullmatch(r"[0-9a-f]{64}", artifact_sha256) is None:
+            return rejected(
+                "The cuCIM environment record is missing a verified local wheel "
+                "SHA-256 provenance value."
+            )
         if library_metadata.get("cucim_distribution_version") not in (
             _PHASE1_CUCIM_VERSIONS
         ):
@@ -2396,6 +2413,10 @@ __all__ = [
     "FactCompleteness",
     "PerformanceDecision",
     "PerformanceEvidence",
+    "PHASE1_CUCIM_BUILD_RECIPE_ID",
+    "PHASE1_CUCIM_SOURCE_COMMIT",
+    "PHASE1_CUCIM_SOURCE_TAG",
+    "PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256",
     "PolicyCatalog",
     "PolicyKind",
     "RICHARDSON_LUCY_MAXIMUM_ITERATIONS",

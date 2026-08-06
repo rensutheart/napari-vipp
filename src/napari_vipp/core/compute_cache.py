@@ -103,6 +103,18 @@ _REQUIRED_DEPENDENCIES_BY_ENVIRONMENT_POLICY = MappingProxyType(
                 "cucim-artifact",
             }
         ),
+        "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4": frozenset(
+            {
+                "napari-vipp",
+                "numpy",
+                "scipy",
+                "scikit-image",
+                "cupy",
+                "cuda-runtime",
+                "cucim",
+                "cucim-artifact",
+            }
+        ),
     }
 )
 

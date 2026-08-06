@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import struct
 import subprocess
 import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import numpy as np
 import pytest
 
 import napari_vipp.core.compute_registry as registry_module
 from napari_vipp.core.accelerator_lease import AcceleratorLeaseManager
+from napari_vipp.core.compute_policy import (
+    PHASE1_CUCIM_BUILD_RECIPE_ID,
+    PHASE1_CUCIM_SOURCE_COMMIT,
+    PHASE1_CUCIM_SOURCE_TAG,
+    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
+)
 from napari_vipp.core.compute_registry import (
     ComputeRegistry,
     ComputeRegistryClosed,
@@ -548,6 +557,10 @@ def _cucim_environment_record(
     path: Path,
     *,
     digest: str = "a" * 64,
+    payload_digest: str = PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
+    source_tag: str = PHASE1_CUCIM_SOURCE_TAG,
+    source_commit: str = PHASE1_CUCIM_SOURCE_COMMIT,
+    build_recipe_id: str = PHASE1_CUCIM_BUILD_RECIPE_ID,
     cucim: bool = True,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -555,13 +568,17 @@ def _cucim_environment_record(
         json.dumps(
             {
                 "schema": "napari-vipp-gpu-environment",
-                "schema_version": 1,
+                "schema_version": 2,
                 "track": "cuda13",
                 "cupy_distribution": "cupy-cuda13x",
                 "cucim": (
                     {
                         "distribution": "cucim-cu13",
                         "wheel_sha256": digest,
+                        "wheel_payload_sha256": payload_digest,
+                        "source_tag": source_tag,
+                        "source_commit": source_commit,
+                        "build_recipe_id": build_recipe_id,
                     }
                     if cucim
                     else None
@@ -605,8 +622,10 @@ def _mock_installed_gpu_distributions(
     monkeypatch,
     *,
     cucim_digest: str = "a" * 64,
+    cucim_payload_digest: str = PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
     cupy_names: tuple[str, ...] = ("cupy-cuda13x",),
     cucim_direct_url: str | None = None,
+    cucim_runtime_versions: dict[str, str] | None = None,
 ) -> None:
     cupy_distributions = [_FakeDistribution(name) for name in cupy_names]
     cucim_distribution = _FakeDistribution(
@@ -614,6 +633,18 @@ def _mock_installed_gpu_distributions(
         archive_sha256=(cucim_digest if cucim_direct_url is None else None),
         direct_url_text=cucim_direct_url,
     )
+    runtime_versions = {
+        "click": "8.4.2",
+        "lazy-loader": "0.5",
+        "nvidia-nvimgcodec-cu13": "0.8.0.22",
+    }
+    if cucim_runtime_versions is not None:
+        runtime_versions.update(cucim_runtime_versions)
+    runtime_distributions = {
+        name: _FakeDistribution(name, version=version)
+        for name, version in runtime_versions.items()
+        if version
+    }
     monkeypatch.setattr(
         registry_module.importlib.metadata,
         "distributions",
@@ -625,10 +656,16 @@ def _mock_installed_gpu_distributions(
         lambda name: (
             cucim_distribution
             if name == "cucim-cu13"
-            else (_ for _ in ()).throw(
+            else runtime_distributions.get(name)
+            or (_ for _ in ()).throw(
                 registry_module.importlib.metadata.PackageNotFoundError(name)
             )
         ),
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "_installed_cucim_wheel_payload_sha256",
+        lambda distribution: cucim_payload_digest,
     )
 
 
@@ -787,12 +824,16 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
     assert cucim.available
     assert dict(cucim.metadata) == {
         "environment_record_schema": "napari-vipp-gpu-environment",
-        "environment_record_schema_version": "1",
+        "environment_record_schema_version": "2",
         "environment_track": "cuda13",
         "cupy_distribution": "cupy-cuda13x",
         "cucim_distribution": "cucim-cu13",
         "cucim_distribution_version": "26.6.0",
         "cucim_artifact_sha256": "a" * 64,
+        "cucim_wheel_payload_sha256": PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
+        "cucim_source_tag": PHASE1_CUCIM_SOURCE_TAG,
+        "cucim_source_commit": PHASE1_CUCIM_SOURCE_COMMIT,
+        "cucim_build_recipe_id": PHASE1_CUCIM_BUILD_RECIPE_ID,
     }
     assert events.count("pool-created") == 3
     assert events.count("allocator-enter") == 3
@@ -1003,8 +1044,65 @@ def test_builtin_gpu_library_probe_waits_for_process_device_lease(
         (
             '{"schema":"napari-vipp-gpu-environment",'
             '"schema":"napari-vipp-gpu-environment",'
-            '"schema_version":1,"track":"cuda13",'
+            '"schema_version":2,"track":"cuda13",'
             '"cupy_distribution":"cupy-cuda13x","cucim":null}',
+            "cucim_provenance_invalid",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema": "napari-vipp-gpu-environment",
+                    "schema_version": 1,
+                    "track": "cuda13",
+                    "cupy_distribution": "cupy-cuda13x",
+                    "cucim": None,
+                }
+            ),
+            "cucim_provenance_invalid",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema": "napari-vipp-gpu-environment",
+                    "schema_version": 2.0,
+                    "track": "cuda13",
+                    "cupy_distribution": "cupy-cuda13x",
+                    "cucim": None,
+                }
+            ),
+            "cucim_provenance_invalid",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema": "napari-vipp-gpu-environment",
+                    "schema_version": 2,
+                    "track": "cuda12",
+                    "cupy_distribution": "cupy-cuda12x",
+                    "cucim": {
+                        "distribution": "cucim-cu13",
+                        "wheel_sha256": "a" * 64,
+                        "wheel_payload_sha256": (
+                            PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256
+                        ),
+                        "source_tag": PHASE1_CUCIM_SOURCE_TAG,
+                        "source_commit": PHASE1_CUCIM_SOURCE_COMMIT,
+                        "build_recipe_id": PHASE1_CUCIM_BUILD_RECIPE_ID,
+                    },
+                }
+            ),
+            "cucim_provenance_invalid",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema": "napari-vipp-gpu-environment",
+                    "schema_version": 2,
+                    "track": "cuda13",
+                    "cupy_distribution": "cupy-cuda12x",
+                    "cucim": None,
+                }
+            ),
             "cucim_provenance_invalid",
         ),
         (
@@ -1014,60 +1112,15 @@ def test_builtin_gpu_library_probe_waits_for_process_device_lease(
                     "schema_version": 2,
                     "track": "cuda13",
                     "cupy_distribution": "cupy-cuda13x",
-                    "cucim": None,
-                }
-            ),
-            "cucim_provenance_invalid",
-        ),
-        (
-            json.dumps(
-                {
-                    "schema": "napari-vipp-gpu-environment",
-                    "schema_version": 1.0,
-                    "track": "cuda13",
-                    "cupy_distribution": "cupy-cuda13x",
-                    "cucim": None,
-                }
-            ),
-            "cucim_provenance_invalid",
-        ),
-        (
-            json.dumps(
-                {
-                    "schema": "napari-vipp-gpu-environment",
-                    "schema_version": 1,
-                    "track": "cuda12",
-                    "cupy_distribution": "cupy-cuda12x",
-                    "cucim": {
-                        "distribution": "cucim-cu13",
-                        "wheel_sha256": "a" * 64,
-                    },
-                }
-            ),
-            "cucim_provenance_invalid",
-        ),
-        (
-            json.dumps(
-                {
-                    "schema": "napari-vipp-gpu-environment",
-                    "schema_version": 1,
-                    "track": "cuda13",
-                    "cupy_distribution": "cupy-cuda12x",
-                    "cucim": None,
-                }
-            ),
-            "cucim_provenance_invalid",
-        ),
-        (
-            json.dumps(
-                {
-                    "schema": "napari-vipp-gpu-environment",
-                    "schema_version": 1,
-                    "track": "cuda13",
-                    "cupy_distribution": "cupy-cuda13x",
                     "cucim": {
                         "distribution": "cucim-cu13",
                         "wheel_sha256": "not-a-sha256",
+                        "wheel_payload_sha256": (
+                            PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256
+                        ),
+                        "source_tag": PHASE1_CUCIM_SOURCE_TAG,
+                        "source_commit": PHASE1_CUCIM_SOURCE_COMMIT,
+                        "build_recipe_id": PHASE1_CUCIM_BUILD_RECIPE_ID,
                     },
                 }
             ),
@@ -1077,7 +1130,7 @@ def test_builtin_gpu_library_probe_waits_for_process_device_lease(
             json.dumps(
                 {
                     "schema": "napari-vipp-gpu-environment",
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "track": "cuda13",
                     "cupy_distribution": "cupy-cuda13x",
                     "cucim": None,
@@ -1090,7 +1143,7 @@ def test_builtin_gpu_library_probe_waits_for_process_device_lease(
             json.dumps(
                 {
                     "schema": "napari-vipp-gpu-environment",
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "track": "cuda13",
                     "cupy_distribution": "cupy-cuda13x",
                     "cucim": None,
@@ -1123,6 +1176,39 @@ def test_cucim_probe_fails_closed_for_untrusted_records(
     assert not result.available
     assert result.reason_code == reason_code
     assert "setup_gpu_dev.py" in result.message
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("payload_digest", "f" * 64),
+        ("source_tag", "v0.0.0"),
+        ("source_commit", "f" * 40),
+        ("build_recipe_id", "other-recipe-v1"),
+    ),
+)
+def test_cucim_probe_rejects_unapproved_source_or_payload_provenance(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+):
+    path = _cucim_environment_record(
+        tmp_path / "gpu-environment.json",
+        **{field: value},
+    )
+    monkeypatch.setattr(
+        registry_module.importlib,
+        "import_module",
+        lambda name: (_ for _ in ()).throw(
+            AssertionError(f"unapproved provenance imported {name}")
+        ),
+    )
+
+    result = registry_module._probe_cucim_skimage_library(record_path=path)
+
+    assert not result.available
+    assert result.reason_code == "cucim_provenance_invalid"
 
 
 def test_cucim_probe_missing_and_stale_records_are_actionable(
@@ -1185,6 +1271,151 @@ def test_cucim_probe_rejects_same_version_reinstalled_from_another_wheel(
     assert result.reason_code == "cucim_artifact_mismatch"
     assert "expected " + "a" * 64 in result.message
     assert "found " + "b" * 64 in result.message
+
+
+def test_cucim_probe_rejects_changed_installed_payload(
+    tmp_path,
+    monkeypatch,
+):
+    path = _cucim_environment_record(tmp_path / "gpu-environment.json")
+    _mock_installed_gpu_distributions(
+        monkeypatch,
+        cucim_payload_digest="f" * 64,
+    )
+    monkeypatch.setattr(
+        registry_module.importlib,
+        "import_module",
+        lambda name: (_ for _ in ()).throw(
+            AssertionError(f"mismatched payload imported {name}")
+        ),
+    )
+
+    result = registry_module._probe_cucim_skimage_library(record_path=path)
+
+    assert not result.available
+    assert result.reason_code == "cucim_payload_mismatch"
+    assert "expected " + PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256 in result.message
+    assert "found " + "f" * 64 in result.message
+
+
+@pytest.mark.parametrize("digest", ("a" * 64, "b" * 64))
+def test_cucim_provenance_accepts_each_matching_local_wheel_hash(
+    tmp_path,
+    monkeypatch,
+    digest,
+):
+    path = _cucim_environment_record(
+        tmp_path / "gpu-environment.json",
+        digest=digest,
+    )
+    _mock_installed_gpu_distributions(monkeypatch, cucim_digest=digest)
+
+    provenance = registry_module._read_cucim_environment_provenance(path)
+
+    assert provenance is not None
+    assert provenance.wheel_sha256 == digest
+    assert registry_module._verify_installed_cucim_provenance(provenance) == "26.6.0"
+
+
+@pytest.mark.parametrize(
+    ("dependency", "version", "expected_text"),
+    [
+        ("click", "", "missing exact runtime dependency click==8.4.2"),
+        ("lazy-loader", "0.6", "lazy-loader==0.5; found 0.6"),
+        (
+            "nvidia-nvimgcodec-cu13",
+            "0.9.0",
+            "nvidia-nvimgcodec-cu13==0.8.0.22; found 0.9.0",
+        ),
+    ],
+)
+def test_cucim_provenance_rejects_changed_exact_runtime_dependency(
+    tmp_path,
+    monkeypatch,
+    dependency,
+    version,
+    expected_text,
+):
+    path = _cucim_environment_record(tmp_path / "gpu-environment.json")
+    _mock_installed_gpu_distributions(
+        monkeypatch,
+        cucim_runtime_versions={dependency: version},
+    )
+    provenance = registry_module._read_cucim_environment_provenance(path)
+
+    assert provenance is not None
+    with pytest.raises(
+        registry_module._InstalledProvenanceError,
+        match=re.escape(expected_text),
+    ) as error:
+        registry_module._verify_installed_cucim_provenance(provenance)
+    assert error.value.reason_code == "cucim_provenance_stale"
+
+
+def test_installed_cucim_payload_digest_matches_canonical_wheel_stream(tmp_path):
+    files = {
+        "cucim/core.py": b"payload",
+        "cucim_cu13-26.6.0.dist-info/METADATA": b"metadata",
+        "cucim_cu13-26.6.0.dist-info/RECORD": b"pip may rewrite this",
+        "cucim_cu13-26.6.0.dist-info/direct_url.json": b"pip-added",
+        "cucim_cu13-26.6.0.dist-info/INSTALLER": b"pip",
+        "cucim_cu13-26.6.0.dist-info/REQUESTED": b"",
+        "cucim/__pycache__/core.cpython-312.pyc": b"generated",
+    }
+    for name, content in files.items():
+        path = tmp_path.joinpath(*name.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    payload_paths = tuple(PurePosixPath(name) for name in files)
+
+    class Distribution:
+        files = payload_paths
+
+        @staticmethod
+        def locate_file(path):
+            return tmp_path.joinpath(*str(path).split("/"))
+
+    expected = hashlib.sha256()
+    for name in sorted(
+        ("cucim/core.py", "cucim_cu13-26.6.0.dist-info/METADATA"),
+        key=lambda value: value.encode("utf-8"),
+    ):
+        name_bytes = name.encode("utf-8")
+        content = files[name]
+        expected.update(struct.pack(">Q", len(name_bytes)))
+        expected.update(name_bytes)
+        expected.update(struct.pack(">Q", len(content)))
+        expected.update(content)
+
+    observed = registry_module._installed_cucim_wheel_payload_sha256(Distribution())
+
+    assert observed == expected.hexdigest()
+    (tmp_path / "cucim_cu13-26.6.0.dist-info" / "RECORD").write_bytes(b"changed")
+    assert (
+        registry_module._installed_cucim_wheel_payload_sha256(Distribution())
+        == observed
+    )
+    (tmp_path / "cucim" / "core.py").write_bytes(b"changed payload")
+    assert (
+        registry_module._installed_cucim_wheel_payload_sha256(Distribution())
+        != observed
+    )
+
+
+@pytest.mark.parametrize("name", ("../escape.py", "missing.py", "directory"))
+def test_installed_cucim_payload_digest_rejects_unsafe_or_nonfiles(tmp_path, name):
+    if name == "directory":
+        (tmp_path / name).mkdir()
+
+    class Distribution:
+        files = (PurePosixPath(name),)
+
+        @staticmethod
+        def locate_file(path):
+            return tmp_path.joinpath(*str(path).split("/"))
+
+    with pytest.raises(ValueError):
+        registry_module._installed_cucim_wheel_payload_sha256(Distribution())
 
 
 @pytest.mark.parametrize(
@@ -1412,6 +1643,10 @@ def test_real_cucim_probe_preserves_external_default_pool_allocation(tmp_path):
         result = registry_module._probe_cucim_skimage_library(record_path=record_path)
         after = (int(pool.used_bytes()), int(pool.total_bytes()))
 
+        if not result.available and result.reason_code.startswith(
+            ("cucim_provenance_", "cucim_artifact_", "cucim_payload_")
+        ):
+            pytest.skip(result.message)
         assert result.available
         assert after == before
         assert float(sentinel.sum().item()) == pytest.approx(19 * 1024)

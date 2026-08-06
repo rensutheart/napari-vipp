@@ -15,6 +15,10 @@ from napari_vipp.core.compute_policy import (
     CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_ENVIRONMENT_POLICIES,
+    PHASE1_CUCIM_BUILD_RECIPE_ID,
+    PHASE1_CUCIM_SOURCE_COMMIT,
+    PHASE1_CUCIM_SOURCE_TAG,
+    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
     ArrayFacts,
     ArrayFactsCache,
     ArrayFactsKey,
@@ -436,21 +440,36 @@ def _cucim_environment(**updates):
                         "environment_record_schema",
                         "napari-vipp-gpu-environment",
                     ),
-                    ("environment_record_schema_version", "1"),
+                    ("environment_record_schema_version", "2"),
                     ("environment_track", "cuda13"),
                     ("cupy_distribution", "cupy-cuda13x"),
                     ("cucim_distribution", "cucim-cu13"),
                     ("cucim_distribution_version", "26.6.0"),
                     (
                         "cucim_artifact_sha256",
-                        "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8",
+                        "a" * 64,
                     ),
+                    (
+                        "cucim_wheel_payload_sha256",
+                        PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
+                    ),
+                    ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
+                    ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
+                    ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
                 ),
             ),
         ),
     }
     values.update(updates)
     return _cuda_environment(**values)
+
+
+def _cucim_environment_with_metadata(**updates):
+    metadata = dict(dict(_cucim_environment().implementation_library_metadata)["cucim"])
+    metadata.update(updates)
+    return _cucim_environment(
+        implementation_library_metadata=(("cucim", tuple(metadata.items())),)
+    )
 
 
 def _background_workload():
@@ -478,11 +497,14 @@ def _cucim_spec():
 
 
 @pytest.mark.parametrize("version", ("26.6.0", "26.06.00"))
-def test_cucim_environment_policy_accepts_only_the_approved_windows_artifact(
+@pytest.mark.parametrize("artifact_sha256", ("a" * 64, "b" * 64))
+def test_cucim_environment_policy_accepts_local_artifacts_with_pinned_payload(
     version,
+    artifact_sha256,
 ):
     metadata = dict(dict(_cucim_environment().implementation_library_metadata)["cucim"])
     metadata["cucim_distribution_version"] = version
+    metadata["cucim_artifact_sha256"] = artifact_sha256
     environment = _cucim_environment(
         runtime_versions=(("cuda-cupy", "14.1.1"), ("cucim", version)),
         implementation_library_metadata=(("cucim", tuple(metadata.items())),),
@@ -511,20 +533,41 @@ def test_cucim_environment_policy_accepts_only_the_approved_windows_artifact(
                     "cucim",
                     (
                         ("environment_record_schema", "napari-vipp-gpu-environment"),
-                        ("environment_record_schema_version", "1"),
+                        ("environment_record_schema_version", "2"),
                         ("environment_track", "cuda13"),
                         ("cupy_distribution", "cupy-cuda13x"),
                         ("cucim_distribution", "cucim-cu13"),
                         ("cucim_distribution_version", "26.6.0"),
-                        ("cucim_artifact_sha256", "0" * 64),
+                        ("cucim_artifact_sha256", "not-a-sha256"),
+                        (
+                            "cucim_wheel_payload_sha256",
+                            PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
+                        ),
+                        ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
+                        ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
+                        ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
                     ),
                 ),
             )
         ),
         _cucim_environment(os_name="Linux"),
         _cucim_environment(os_name="Darwin"),
+        _cucim_environment_with_metadata(cucim_wheel_payload_sha256="f" * 64),
+        _cucim_environment_with_metadata(cucim_source_tag="v0.0.0"),
+        _cucim_environment_with_metadata(cucim_source_commit="f" * 40),
+        _cucim_environment_with_metadata(cucim_build_recipe_id="other-recipe-v1"),
     ],
-    ids=("version", "missing-metadata", "digest", "linux", "darwin"),
+    ids=(
+        "version",
+        "missing-metadata",
+        "artifact-digest",
+        "linux",
+        "darwin",
+        "payload-digest",
+        "source-tag",
+        "source-commit",
+        "build-recipe",
+    ),
 )
 def test_cucim_environment_policy_rejects_unapproved_provenance(environment):
     decision = evaluate_candidate_support(

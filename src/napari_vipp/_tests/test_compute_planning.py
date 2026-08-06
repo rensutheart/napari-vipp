@@ -22,6 +22,10 @@ from napari_vipp.core.compute_planning import (
     probe_compute_environment,
 )
 from napari_vipp.core.compute_policy import (
+    PHASE1_CUCIM_BUILD_RECIPE_ID,
+    PHASE1_CUCIM_SOURCE_COMMIT,
+    PHASE1_CUCIM_SOURCE_TAG,
+    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
     ArrayFacts,
     FactCompleteness,
     PerformanceEvidence,
@@ -889,15 +893,16 @@ def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatc
     device_metadata = (("compute_capability", "12.0"),)
     cucim_metadata = (
         ("environment_record_schema", "napari-vipp-gpu-environment"),
-        ("environment_record_schema_version", "1"),
+        ("environment_record_schema_version", "2"),
         ("environment_track", "cuda13"),
         ("cupy_distribution", "cupy-cuda13x"),
         ("cucim_distribution", "cucim-cu13"),
         ("cucim_distribution_version", "26.6.0"),
-        (
-            "cucim_artifact_sha256",
-            "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8",
-        ),
+        ("cucim_artifact_sha256", "a" * 64),
+        ("cucim_wheel_payload_sha256", PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256),
+        ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
+        ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
+        ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
     )
 
     def runtime_probe(_runtime_id):

@@ -8,8 +8,10 @@
 Phase 2C has since implemented the RL-TV slice described in
 this record's former first next step. See the
 [Phase 2C implementation record](gpu-phase2c-rl-tv-implementation-report.md)
-for its current contracts and evidence; the Phase 2B measurements below remain
-the ordinary-RL record refreshed against the current source revision.
+for its current contracts and evidence. The Phase 2B measurements below retain
+the exact source fingerprints from their recorded run and are historical after
+later shared-registry changes; they have not been relabeled as current-source
+measurements.
 
 ## Outcome
 
@@ -174,6 +176,9 @@ The [readable result](benchmarks/rl-cupy-performance-windows-rtx5090.md) and
 three paired samples, transfer/resident breakdown, memory observations, cleanup
 snapshots, environment, and source fingerprints. Re-run or validate them with
 [`scripts/benchmark_gpu_rl_performance.py`](../scripts/benchmark_gpu_rl_performance.py).
+Validation against the 0.13.0a1 release source is expected to report a stale
+whole-file fingerprint. A fresh current-source claim requires a complete new
+benchmark run, not a hash-only edit to this historical record.
 
 Progress is measured as `leading block count × iteration count`. A checkpoint
 is reported only after the completed GPU work is synchronized, and cancellation

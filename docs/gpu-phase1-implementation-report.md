@@ -111,12 +111,15 @@ cross-platform product:
 - CuPy and CuPyX 14.1.1 with the recorded CUDA runtime API 13.2 (`13020`) and
   driver API 13.3 (`13030`);
 - an NVIDIA GeForce RTX 5090 with compute capability 12.0;
-- for cuCIM, the CUDA 13 `cucim-cu13` 26.6.0 wheel with SHA-256
-  `586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8`;
+- for cuCIM, a local CUDA 13 `cucim-cu13` 26.6.0 build from tag
+  `v26.06.00`, commit `3c15781c207eab93a317dd9803a6e726fe01f7c4`,
+  recipe `napari-vipp-cucim-windows-v1`, and canonical payload SHA-256
+  `d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667`;
 - a strict environment record written only after the setup kernels and
-  `pip check` pass. Runtime admission re-verifies the installed CuPy
-  distribution and the cuCIM PEP 610 archive digest, so a later same-version
-  replacement invalidates the record.
+  `pip check` pass. Each local wheel has its own archive SHA-256. Runtime
+  admission re-verifies the installed CuPy distribution, that PEP 610 archive
+  digest, and the installed cuCIM canonical payload, so a later same-version
+  replacement or file change invalidates the record.
 
 Native Linux setup assets exist, but GPU admission fails closed until a clean
 host supplies the required evidence. macOS remains on the authoritative CPU
@@ -137,15 +140,20 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda1
 ```
 
 The CuPyX operations need no cuCIM wheel. To enable the public background
-candidates inside their exact validated environment, first build the reviewed wheel with
-`scripts/build_cucim_windows.ps1`, then supply the exact reported path and
-digest together:
+candidates inside their exact validated environment, build the reviewed source
+recipe and keep its wheel and manifest together:
 
 ```powershell
+$python312 = py -3.12 -c "import sys; print(sys.executable)"
+$artifactDir = Join-Path $env:USERPROFILE "vipp-cucim-local\0.13.0a1"
+powershell -ExecutionPolicy Bypass -File scripts/build_cucim_windows.ps1 `
+  -Python $python312 `
+  -OutputDirectory $artifactDir
+
 powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 `
   --track cuda13 `
-  --cucim-wheel C:\path\to\cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl `
-  --cucim-sha256 586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8
+  --cucim-wheel "$artifactDir\cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl" `
+  --cucim-manifest "$artifactDir\cucim_cu13-26.6.0-cp312-cp312-win_amd64.build-manifest.json"
 
 .\.venv-gpu-cu13\Scripts\python.exe -m napari_vipp.core.compute_diagnostics --track cuda13
 .\.venv-gpu-cu13\Scripts\python.exe scripts\benchmark_gpu_phase1.py `

@@ -44,7 +44,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     policy = load_phase1_compute_policy()
 
     assert policy.policy_id == PHASE1_POLICY_ID
-    assert policy.policy_version == 6
+    assert policy.policy_version == 7
     assert policy.content_sha256 == PHASE1_POLICY_SHA256
     assert policy.phase == "phase1"
     assert policy.status == "public-validated"
@@ -53,7 +53,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     assert not policy.exposure.developer_enablement_required
 
     with pytest.raises(FrozenInstanceError):
-        policy.policy_version = 6  # type: ignore[misc]
+        policy.policy_version = 7  # type: ignore[misc]
 
 
 def test_phase1_operation_ids_and_conservative_settings_are_exact():
@@ -122,16 +122,21 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
     assert platform.nvidia_compute_capabilities == ("12.0",)
     assert platform.cucim_versions == ("26.6.0", "26.06.00")
     assert platform.cucim_environment_record_schema == "napari-vipp-gpu-environment"
-    assert platform.cucim_environment_record_schema_version == 1
+    assert platform.cucim_environment_record_schema_version == 2
     assert platform.cucim_environment_track == "cuda13"
     assert platform.cupy_distribution == "cupy-cuda13x"
     assert platform.cucim_distribution == "cucim-cu13"
-    assert platform.cucim_artifact_sha256 == (
-        "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8"
+    assert platform.cucim_wheel_payload_sha256 == (
+        "d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667"
     )
+    assert platform.cucim_source_tag == "v26.06.00"
+    assert platform.cucim_source_commit == (
+        "3c15781c207eab93a317dd9803a6e726fe01f7c4"
+    )
+    assert platform.cucim_build_recipe_id == "napari-vipp-cucim-windows-v1"
     assert platform.validated_environment_policy_ids == (
         "cuda-cupy-14.1.1-cpython312-windows-native-v3",
-        "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3",
+        "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4",
         "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1",
     )
     assert platform.linux_policy == "pending-native-clean-host-evidence-v1"
@@ -268,7 +273,7 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
         assert operation.runtime_id == "cuda-cupy"
         assert operation.implementation_library_id == "cucim"
         assert operation.environment_policy_id == (
-            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
         )
         assert operation.parameter_policy_id == "basic-measurements-parameters-v1"
         assert operation.parity_policy_id == "basic-measurement-table-v1"
@@ -315,7 +320,7 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
     )
 
 
-def test_v6_is_a_strict_extension_of_v5_and_legacy_resources_are_byte_stable():
+def test_v7_revises_only_cucim_provenance_and_legacy_resources_are_byte_stable():
     package = resources.files("napari_vipp.compute_policies")
     historical_sha256 = {
         "phase1-gpu-developer-v1.json": (
@@ -333,6 +338,9 @@ def test_v6_is_a_strict_extension_of_v5_and_legacy_resources_are_byte_stable():
         "phase1-gpu-public-v5.json": (
             "d4bbd6728b3fe7028942d83efe4c2e6a64b052b1e6276eae6fdeaefeaa985070"
         ),
+        "phase1-gpu-public-v6.json": (
+            "e7822c096d2f4efeaaa745bfce1ae75c94f966af7582581f68a82586bc56139d"
+        ),
     }
     for name, expected_digest in historical_sha256.items():
         resource = package.joinpath(name)
@@ -342,7 +350,8 @@ def test_v6_is_a_strict_extension_of_v5_and_legacy_resources_are_byte_stable():
     v3 = json.loads(package.joinpath("phase1-gpu-public-v3.json").read_bytes())
     v4 = json.loads(package.joinpath("phase1-gpu-public-v4.json").read_bytes())
     v5 = json.loads(package.joinpath("phase1-gpu-public-v5.json").read_bytes())
-    v6 = _resource_document()
+    v6 = json.loads(package.joinpath("phase1-gpu-public-v6.json").read_bytes())
+    v7 = _resource_document()
     assert v4["policy"]["operations"][:-1] == v3["policy"]["operations"]
     sigma = v4["policy"]["operations"][-1]
     assert sigma["operation_id"] == "sigma_filter"
@@ -363,6 +372,27 @@ def test_v6_is_a_strict_extension_of_v5_and_legacy_resources_are_byte_stable():
         "measure_objects_intensity",
     ]
     assert all(operation["host_finalizer_ref"] for operation in measurements)
+
+    v7_as_v6 = json.loads(
+        json.dumps(v7).replace(
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4",
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3",
+        )
+    )
+    v7_as_v6["policy_id"] = v6["policy_id"]
+    v7_as_v6["policy_version"] = v6["policy_version"]
+    v7_as_v6["content_sha256"] = v6["content_sha256"]
+    v7_platform = v7_as_v6["policy"]["platform_admission"]
+    v6_platform = v6["policy"]["platform_admission"]
+    v7_platform["cucim_environment_record_schema_version"] = 1
+    del v7_platform["cucim_wheel_payload_sha256"]
+    del v7_platform["cucim_source_tag"]
+    del v7_platform["cucim_source_commit"]
+    del v7_platform["cucim_build_recipe_id"]
+    v7_platform["cucim_artifact_sha256"] = v6_platform[
+        "cucim_artifact_sha256"
+    ]
+    assert v7_as_v6 == v6
 
     v6_as_v5 = copy.deepcopy(v6)
     v6_as_v5["policy_id"] = v5["policy_id"]
@@ -409,23 +439,43 @@ def test_strict_schema_rejects_invalid_resigned_content():
         parse_compute_policy_artifact(_encoded(invalid))
 
 
-def test_loader_accepts_only_the_pinned_v6_identity_and_version():
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("cucim_wheel_payload_sha256", "not-a-digest", "payload_sha256"),
+        ("cucim_source_commit", "abc123", "full Git commit"),
+    ),
+)
+def test_strict_schema_rejects_malformed_cucim_build_provenance(
+    field,
+    value,
+    message,
+):
+    invalid = copy.deepcopy(_resource_document())
+    invalid["policy"]["platform_admission"][field] = value  # type: ignore[index]
+    _resign(invalid)
+
+    with pytest.raises(ComputePolicyArtifactError, match=message):
+        parse_compute_policy_artifact(_encoded(invalid))
+
+
+def test_loader_accepts_only_the_pinned_v7_identity_and_version():
     package = resources.files("napari_vipp.compute_policies")
-    signed_v5 = package.joinpath("phase1-gpu-public-v5.json").read_bytes()
+    signed_v6 = package.joinpath("phase1-gpu-public-v6.json").read_bytes()
     with pytest.raises(ComputePolicyArtifactError, match="Unsupported Phase 1 policy"):
-        parse_compute_policy_artifact(signed_v5)
+        parse_compute_policy_artifact(signed_v6)
 
     wrong_version = copy.deepcopy(_resource_document())
-    wrong_version["policy_version"] = 7
+    wrong_version["policy_version"] = 8
     _resign(wrong_version)
     with pytest.raises(
         ComputePolicyArtifactError,
-        match="Unsupported Phase 1 policy version 7",
+        match="Unsupported Phase 1 policy version 8",
     ):
         parse_compute_policy_artifact(_encoded(wrong_version))
 
 
-def test_valid_but_changed_v6_record_cannot_be_resigned_in_place():
+def test_valid_but_changed_v7_record_cannot_be_resigned_in_place():
     changed = copy.deepcopy(_resource_document())
     changed["policy"]["auto_selection"]["non_local_minimum_saving_ms"] = 21.0  # type: ignore[index]
     _resign(changed)

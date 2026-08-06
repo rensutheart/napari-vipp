@@ -18,13 +18,14 @@ from importlib import resources
 from typing import Any
 
 POLICY_SCHEMA_ID = "napari-vipp-compute-policy-artifact-v1"
-PHASE1_POLICY_ID = "phase1-gpu-public-v6"
-PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v6.json"
+PHASE1_POLICY_ID = "phase1-gpu-public-v7"
+PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v7.json"
 PHASE1_POLICY_SHA256 = (
-    "7aa497a41607e43e3d87677466ca7fb2a6d440dea027be2e5aabe6064b151057"
+    "a62854572b1bc7f4c1da526838b71492e4202c91f4723a37ea455c92893f2067"
 )
 _POLICY_PACKAGE = "napari_vipp.compute_policies"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _IDENTIFIER_RE = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
 
 
@@ -89,7 +90,10 @@ class PlatformAdmissionPolicy:
     cucim_environment_track: str
     cupy_distribution: str
     cucim_distribution: str
-    cucim_artifact_sha256: str
+    cucim_wheel_payload_sha256: str
+    cucim_source_tag: str
+    cucim_source_commit: str
+    cucim_build_recipe_id: str
     validated_environment_policy_ids: tuple[str, ...]
     linux_policy: str
     macos_policy: str
@@ -234,7 +238,7 @@ def parse_compute_policy_artifact(
     if policy_id != PHASE1_POLICY_ID:
         raise ComputePolicyArtifactError(f"Unsupported Phase 1 policy {policy_id!r}.")
     policy_version = _integer(root["policy_version"], "$.policy_version", minimum=1)
-    if policy_version != 6:
+    if policy_version != 7:
         raise ComputePolicyArtifactError(
             f"Unsupported Phase 1 policy version {policy_version}."
         )
@@ -465,20 +469,31 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
             "cucim_environment_track",
             "cupy_distribution",
             "cucim_distribution",
-            "cucim_artifact_sha256",
+            "cucim_wheel_payload_sha256",
+            "cucim_source_tag",
+            "cucim_source_commit",
+            "cucim_build_recipe_id",
             "validated_environment_policy_ids",
             "linux_policy",
             "macos_policy",
             "public_advertisement_enabled",
         },
     )
-    cucim_artifact_sha256 = _string(
-        record["cucim_artifact_sha256"],
-        f"{path}.cucim_artifact_sha256",
+    cucim_wheel_payload_sha256 = _string(
+        record["cucim_wheel_payload_sha256"],
+        f"{path}.cucim_wheel_payload_sha256",
     )
-    if not _SHA256_RE.fullmatch(cucim_artifact_sha256):
+    if not _SHA256_RE.fullmatch(cucim_wheel_payload_sha256):
         raise ComputePolicyArtifactError(
-            f"{path}.cucim_artifact_sha256 must be a lowercase SHA-256 digest."
+            f"{path}.cucim_wheel_payload_sha256 must be a lowercase SHA-256 "
+            "digest."
+        )
+    cucim_source_commit = _string(
+        record["cucim_source_commit"], f"{path}.cucim_source_commit"
+    )
+    if not _GIT_COMMIT_RE.fullmatch(cucim_source_commit):
+        raise ComputePolicyArtifactError(
+            f"{path}.cucim_source_commit must be a lowercase full Git commit."
         )
     return PlatformAdmissionPolicy(
         operating_systems=_string_tuple(
@@ -570,7 +585,14 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
         cucim_distribution=_identifier(
             record["cucim_distribution"], f"{path}.cucim_distribution"
         ),
-        cucim_artifact_sha256=cucim_artifact_sha256,
+        cucim_wheel_payload_sha256=cucim_wheel_payload_sha256,
+        cucim_source_tag=_identifier(
+            record["cucim_source_tag"], f"{path}.cucim_source_tag"
+        ),
+        cucim_source_commit=cucim_source_commit,
+        cucim_build_recipe_id=_identifier(
+            record["cucim_build_recipe_id"], f"{path}.cucim_build_recipe_id"
+        ),
         validated_environment_policy_ids=_identifier_tuple(
             record["validated_environment_policy_ids"],
             f"{path}.validated_environment_policy_ids",

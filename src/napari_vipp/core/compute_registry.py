@@ -9,17 +9,19 @@ callable is resolved only after an execution request explicitly asks for it.
 from __future__ import annotations
 
 import gc
+import hashlib
 import importlib
 import importlib.metadata
 import json
 import re
+import struct
 import sys
 import threading
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
@@ -27,7 +29,13 @@ import numpy as np
 
 from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import MemoryTopology
-from napari_vipp.core.compute_policy import validate_spec_policy_references
+from napari_vipp.core.compute_policy import (
+    PHASE1_CUCIM_BUILD_RECIPE_ID,
+    PHASE1_CUCIM_SOURCE_COMMIT,
+    PHASE1_CUCIM_SOURCE_TAG,
+    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
+    validate_spec_policy_references,
+)
 from napari_vipp.core.compute_specs import (
     AdmissionTier,
     OperationComputeSpec,
@@ -1168,8 +1176,9 @@ def _probe_cucim_skimage_library(
             reason_code="cucim_provenance_missing",
             message=(
                 f"The verified GPU environment record is missing at {path}. "
-                "Re-run scripts/setup_gpu_dev.py with --cucim-wheel and "
-                "--cucim-sha256."
+                "Use the pinned local-build workflow, then re-run "
+                "scripts/setup_gpu_dev.py with --existing-environment, "
+                "--cucim-wheel, and --cucim-manifest."
             ),
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
@@ -1179,7 +1188,8 @@ def _probe_cucim_skimage_library(
             reason_code="cucim_provenance_invalid",
             message=(
                 f"The GPU environment record at {path} is invalid: {exc}. "
-                "Re-run scripts/setup_gpu_dev.py with a verified cuCIM wheel."
+                "Re-run scripts/setup_gpu_dev.py with the verified local "
+                "cuCIM wheel and its build manifest."
             ),
         )
     if provenance is None:
@@ -1190,7 +1200,8 @@ def _probe_cucim_skimage_library(
             message=(
                 "The completed GPU setup did not approve a checksum-verified "
                 "cuCIM wheel. Re-run scripts/setup_gpu_dev.py with "
-                "--cucim-wheel and --cucim-sha256."
+                "--existing-environment, --cucim-wheel, and "
+                "--cucim-manifest."
             ),
         )
 
@@ -1217,6 +1228,10 @@ def _probe_cucim_skimage_library(
         ("cucim_distribution", provenance.distribution),
         ("cucim_distribution_version", distribution_version),
         ("cucim_artifact_sha256", provenance.wheel_sha256),
+        ("cucim_wheel_payload_sha256", provenance.wheel_payload_sha256),
+        ("cucim_source_tag", provenance.source_tag),
+        ("cucim_source_commit", provenance.source_commit),
+        ("cucim_build_recipe_id", provenance.build_recipe_id),
     )
 
     cucim = importlib.import_module("cucim")
@@ -1480,18 +1495,32 @@ def _cupy_current_device_id(cupy: object) -> str:
 
 
 _GPU_ENVIRONMENT_RECORD_SCHEMA = "napari-vipp-gpu-environment"
-_GPU_ENVIRONMENT_RECORD_SCHEMA_VERSION = 1
+_GPU_ENVIRONMENT_RECORD_SCHEMA_VERSION = 2
 _GPU_ENVIRONMENT_RECORD_RELATIVE_PATH = (
     Path("share") / "napari-vipp" / "gpu-environment.json"
 )
 _GPU_ENVIRONMENT_RECORD_KEYS = frozenset(
     {"schema", "schema_version", "track", "cupy_distribution", "cucim"}
 )
-_CUCIM_RECORD_KEYS = frozenset({"distribution", "wheel_sha256"})
+_CUCIM_RECORD_KEYS = frozenset(
+    {
+        "distribution",
+        "wheel_sha256",
+        "wheel_payload_sha256",
+        "source_tag",
+        "source_commit",
+        "build_recipe_id",
+    }
+)
 _TRACK_DISTRIBUTIONS = {
     "cuda12": "cupy-cuda12x",
     "cuda13": "cupy-cuda13x",
 }
+_CUCIM_RUNTIME_DISTRIBUTION_VERSIONS = (
+    ("click", "8.4.2"),
+    ("lazy-loader", "0.5"),
+    ("nvidia-nvimgcodec-cu13", "0.8.0.22"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1500,6 +1529,10 @@ class _CucimEnvironmentProvenance:
     cupy_distribution: str
     distribution: str
     wheel_sha256: str
+    wheel_payload_sha256: str
+    source_tag: str
+    source_commit: str
+    build_recipe_id: str
 
 
 class _InstalledProvenanceError(ValueError):
@@ -1529,12 +1562,12 @@ def _read_cucim_environment_provenance(
     if not isinstance(document, dict):
         raise ValueError("record root must be a JSON object")
     if set(document) != _GPU_ENVIRONMENT_RECORD_KEYS:
-        raise ValueError("record fields do not match schema version 1")
+        raise ValueError("record fields do not match schema version 2")
     if document["schema"] != _GPU_ENVIRONMENT_RECORD_SCHEMA:
         raise ValueError("record schema identifier is not supported")
     schema_version = document["schema_version"]
-    if type(schema_version) is not int or schema_version != 1:
-        raise ValueError("record schema_version must be integer 1")
+    if type(schema_version) is not int or schema_version != 2:
+        raise ValueError("record schema_version must be integer 2")
     track = document["track"]
     cupy_distribution = document["cupy_distribution"]
     if not isinstance(track, str) or track not in _TRACK_DISTRIBUTIONS:
@@ -1548,7 +1581,7 @@ def _read_cucim_environment_provenance(
     if track != "cuda13":
         raise ValueError("verified cuCIM provenance is valid only for cuda13")
     if not isinstance(cucim, dict) or set(cucim) != _CUCIM_RECORD_KEYS:
-        raise ValueError("record cucim fields do not match schema version 1")
+        raise ValueError("record cucim fields do not match schema version 2")
     distribution = cucim["distribution"]
     if distribution != "cucim-cu13":
         raise ValueError("record cuCIM distribution must be cucim-cu13")
@@ -1562,11 +1595,34 @@ def _read_cucim_environment_provenance(
         is None
     ):
         raise ValueError("record cuCIM wheel_sha256 must be 64 hexadecimal digits")
+    payload_digest = cucim["wheel_payload_sha256"]
+    if (
+        not isinstance(payload_digest, str)
+        or re.fullmatch(r"[0-9a-fA-F]{64}", payload_digest) is None
+    ):
+        raise ValueError(
+            "record cuCIM wheel_payload_sha256 must be 64 hexadecimal digits"
+        )
+    source_tag = cucim["source_tag"]
+    source_commit = cucim["source_commit"]
+    build_recipe_id = cucim["build_recipe_id"]
+    if source_tag != PHASE1_CUCIM_SOURCE_TAG:
+        raise ValueError("record cuCIM source_tag is not approved")
+    if source_commit != PHASE1_CUCIM_SOURCE_COMMIT:
+        raise ValueError("record cuCIM source_commit is not approved")
+    if build_recipe_id != PHASE1_CUCIM_BUILD_RECIPE_ID:
+        raise ValueError("record cuCIM build_recipe_id is not approved")
+    if payload_digest.lower() != PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256:
+        raise ValueError("record cuCIM wheel_payload_sha256 is not approved")
     return _CucimEnvironmentProvenance(
         track=track,
         cupy_distribution=cupy_distribution,
         distribution=distribution,
         wheel_sha256=digest.lower(),
+        wheel_payload_sha256=payload_digest.lower(),
+        source_tag=source_tag,
+        source_commit=source_commit,
+        build_recipe_id=build_recipe_id,
     )
 
 
@@ -1653,7 +1709,171 @@ def _verify_installed_cucim_provenance(
             "The installed cuCIM archive SHA-256 does not match the approved wheel "
             f"(expected {provenance.wheel_sha256}, found {installed_digest}).",
         )
+    try:
+        installed_payload_digest = _installed_cucim_wheel_payload_sha256(
+            distribution
+        )
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        raise _InstalledProvenanceError(
+            "cucim_payload_unverified",
+            f"Could not verify the installed cuCIM wheel payload: {exc}.",
+        ) from exc
+    if installed_payload_digest != provenance.wheel_payload_sha256:
+        raise _InstalledProvenanceError(
+            "cucim_payload_mismatch",
+            "The installed cuCIM payload SHA-256 does not match the approved "
+            "canonical payload "
+            f"(expected {provenance.wheel_payload_sha256}, "
+            f"found {installed_payload_digest}).",
+        )
+    for dependency_name, expected_version in (
+        _CUCIM_RUNTIME_DISTRIBUTION_VERSIONS
+    ):
+        try:
+            dependency = importlib.metadata.distribution(dependency_name)
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise _InstalledProvenanceError(
+                "cucim_provenance_stale",
+                "The approved local cuCIM environment is missing exact runtime "
+                f"dependency {dependency_name}=={expected_version}.",
+            ) from exc
+        except Exception as exc:
+            raise _InstalledProvenanceError(
+                "cucim_provenance_stale",
+                f"Could not inspect cuCIM runtime dependency {dependency_name}: "
+                f"{exc}.",
+            ) from exc
+        installed_version = str(dependency.version).strip()
+        if installed_version != expected_version:
+            raise _InstalledProvenanceError(
+                "cucim_provenance_stale",
+                "The approved local cuCIM environment requires "
+                f"{dependency_name}=={expected_version}; found "
+                f"{installed_version or 'unknown'}.",
+            )
     return version
+
+
+_PIP_ADDED_DIST_INFO_FILES = frozenset(
+    {"RECORD", "direct_url.json", "INSTALLER", "REQUESTED"}
+)
+
+
+def _installed_cucim_wheel_payload_sha256(
+    distribution: importlib.metadata.Distribution,
+) -> str:
+    """Hash installed wheel payload bytes independently of ZIP metadata.
+
+    The canonical stream matches the local builder manifest: sorted UTF-8
+    wheel paths, each prefixed by its path and content lengths, followed by
+    file bytes.  ``RECORD`` and files created by pip during installation are
+    excluded, as are generated bytecode caches.
+    """
+
+    raw_files = distribution.files
+    if raw_files is None:
+        raise ValueError("installed distribution has no RECORD file list")
+    files = tuple(raw_files)
+    if not files:
+        raise ValueError("installed distribution has an empty RECORD file list")
+    if len(files) > 100_000:
+        raise ValueError("installed distribution RECORD has too many entries")
+
+    root = Path(distribution.locate_file(""))
+    try:
+        resolved_root = root.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("installed distribution root cannot be resolved") from exc
+    if not resolved_root.is_dir():
+        raise ValueError("installed distribution root is not a directory")
+
+    entries: list[tuple[str, Path, int]] = []
+    names: set[str] = set()
+    for raw_path in files:
+        name = str(raw_path)
+        parts = _validated_installed_payload_path(name)
+        if name in names:
+            raise ValueError(f"installed distribution has duplicate path {name!r}")
+        names.add(name)
+
+        located = Path(distribution.locate_file(raw_path))
+        try:
+            resolved = located.resolve(strict=True)
+            resolved.relative_to(resolved_root)
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"installed distribution path escapes its root: {name!r}"
+            ) from exc
+        _reject_linked_installed_payload_path(resolved_root, parts)
+        if not resolved.is_file():
+            raise ValueError(
+                f"installed distribution payload is not a file: {name!r}"
+            )
+        if _excluded_installed_payload_path(parts):
+            continue
+        size = resolved.stat().st_size
+        entries.append((name, resolved, size))
+
+    if not entries:
+        raise ValueError("installed distribution has no canonical payload files")
+    entries.sort(key=lambda item: item[0].encode("utf-8"))
+
+    digest = hashlib.sha256()
+    for name, path, size in entries:
+        name_bytes = name.encode("utf-8")
+        digest.update(struct.pack(">Q", len(name_bytes)))
+        digest.update(name_bytes)
+        digest.update(struct.pack(">Q", size))
+        observed_size = 0
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                observed_size += len(chunk)
+                digest.update(chunk)
+        if observed_size != size:
+            raise RuntimeError(
+                f"installed payload length changed while reading: {name!r}"
+            )
+    return digest.hexdigest()
+
+
+def _validated_installed_payload_path(name: str) -> tuple[str, ...]:
+    if not name or len(name) > 4096 or "\\" in name or "\0" in name:
+        raise ValueError(f"installed distribution has unsafe path {name!r}")
+    path = PurePosixPath(name)
+    parts = path.parts
+    if (
+        path.is_absolute()
+        or path.as_posix() != name
+        or not parts
+        or any(part in {"", ".", ".."} for part in parts)
+        or ":" in parts[0]
+    ):
+        raise ValueError(f"installed distribution has unsafe path {name!r}")
+    return parts
+
+
+def _excluded_installed_payload_path(parts: tuple[str, ...]) -> bool:
+    if "__pycache__" in parts and parts[-1].endswith(".pyc"):
+        return True
+    return bool(
+        len(parts) >= 2
+        and parts[-2].endswith(".dist-info")
+        and parts[-1] in _PIP_ADDED_DIST_INFO_FILES
+    )
+
+
+def _reject_linked_installed_payload_path(
+    root: Path,
+    parts: tuple[str, ...],
+) -> None:
+    current = root
+    for part in parts:
+        current /= part
+        is_junction = getattr(current, "is_junction", None)
+        if current.is_symlink() or bool(is_junction is not None and is_junction()):
+            raise ValueError(
+                f"installed distribution payload traverses a link: {parts!r}"
+            )
 
 
 def _installed_cupy_distribution_names() -> tuple[str, ...]:
