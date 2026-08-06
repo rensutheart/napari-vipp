@@ -81,22 +81,6 @@ _COMPUTE_BADGE_LABELS = {
     ComputeBadgeKind.CPU_FALLBACK: "CPU fallback",
 }
 
-_THUMBNAIL_STATS_BADGE_LABELS = {
-    ThumbnailStatsBadgeKind.PENDING: "Contrast · Calculating…",
-    ThumbnailStatsBadgeKind.CPU: "Contrast · CPU",
-    ThumbnailStatsBadgeKind.GPU: "Contrast · GPU",
-    ThumbnailStatsBadgeKind.CPU_FALLBACK: "Contrast · CPU fallback",
-    ThumbnailStatsBadgeKind.ERROR: "Contrast · error",
-}
-
-_THUMBNAIL_STATS_STATUS_COLORS = {
-    ThumbnailStatsBadgeKind.PENDING: "#94a3b8",
-    ThumbnailStatsBadgeKind.CPU: "#9ca3af",
-    ThumbnailStatsBadgeKind.GPU: "#93c5fd",
-    ThumbnailStatsBadgeKind.CPU_FALLBACK: "#fbbf24",
-    ThumbnailStatsBadgeKind.ERROR: "#f87171",
-}
-
 _COMPUTE_BADGE_COLORS = {
     ComputeBadgeKind.CPU: ("#334155", "#e2e8f0", "#64748b"),
     ComputeBadgeKind.CUPY: ("#1e3a5f", "#bfdbfe", "#3b82f6"),
@@ -128,30 +112,6 @@ def _coerce_compute_badge_kind(
         choices = ", ".join(kind.value for kind in ComputeBadgeKind)
         raise ValueError(
             f"Unknown compute badge kind {value!r}; expected one of: {choices}."
-        ) from exc
-
-
-def _coerce_thumbnail_stats_badge_kind(
-    value: ThumbnailStatsBadgeKind | str,
-) -> ThumbnailStatsBadgeKind:
-    if isinstance(value, ThumbnailStatsBadgeKind):
-        return value
-    normalized = str(value).strip().casefold().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "calculating": ThumbnailStatsBadgeKind.PENDING,
-        "cpu_fallback": ThumbnailStatsBadgeKind.CPU_FALLBACK,
-        "fallback_cpu": ThumbnailStatsBadgeKind.CPU_FALLBACK,
-        "failed": ThumbnailStatsBadgeKind.ERROR,
-    }
-    if normalized in aliases:
-        return aliases[normalized]
-    try:
-        return ThumbnailStatsBadgeKind(normalized)
-    except ValueError as exc:
-        choices = ", ".join(kind.value for kind in ThumbnailStatsBadgeKind)
-        raise ValueError(
-            "Unknown thumbnail statistics badge kind "
-            f"{value!r}; expected one of: {choices}."
         ) from exc
 
 
@@ -331,7 +291,7 @@ class NodeCard(QFrame):
         self._pinned = False
         self._search_highlight = False
         self._preview_enabled = True
-        self._thumbnail_present = False
+        self._thumbnail_stats_tooltip = ""
         self._processing = False
         self._processing_queued = False
         self._processing_angle = 0
@@ -403,36 +363,6 @@ class NodeCard(QFrame):
         self.pin_button = QPushButton("Pin", self)
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
         self.pin_button.setVisible(False)
-        self.thumbnail_stats_row = QWidget(self)
-        self.thumbnail_stats_row.setObjectName("NodeThumbnailStatsRow")
-        self.thumbnail_stats_row.setFixedHeight(17)
-        self.thumbnail_stats_row.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Fixed,
-        )
-        self.thumbnail_stats_row_layout = QHBoxLayout(self.thumbnail_stats_row)
-        self.thumbnail_stats_row_layout.setContentsMargins(0, 0, 2, 0)
-        self.thumbnail_stats_row_layout.setSpacing(0)
-        self.thumbnail_stats_row_layout.addStretch(1)
-        self.thumbnail_stats_badge = QLabel("", self.thumbnail_stats_row)
-        self.thumbnail_stats_badge.setObjectName("NodeThumbnailStatsStatus")
-        self.thumbnail_stats_badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.thumbnail_stats_badge.setSizePolicy(
-            QSizePolicy.Fixed,
-            QSizePolicy.Fixed,
-        )
-        # The label remains transparent to clicks so the footer continues to
-        # behave like the rest of the node card. Its parent row owns the tooltip.
-        self.thumbnail_stats_badge.setAttribute(
-            Qt.WA_TransparentForMouseEvents,
-            True,
-        )
-        self.thumbnail_stats_row_layout.addWidget(self.thumbnail_stats_badge)
-        self.thumbnail_stats_badge.hide()
-        self.thumbnail_stats_row.hide()
-        self._thumbnail_stats_badge_kind: ThumbnailStatsBadgeKind | None = None
-        self._thumbnail_stats_badge_tooltip = ""
-        self._thumbnail_stats_accessible_description = ""
         self.processing_badge = ProcessingBadge(self)
 
         self.card_layout = QVBoxLayout(self)
@@ -442,7 +372,6 @@ class NodeCard(QFrame):
         self.card_layout.addWidget(self.title_row)
         self.card_layout.addWidget(self.subtitle_label)
         self.card_layout.addWidget(self.preview)
-        self.card_layout.addWidget(self.thumbnail_stats_row)
         self.card_layout.addWidget(self.metadata_label)
         self.card_layout.addWidget(self.execution_label)
         self.card_layout.addWidget(self.calculate_button)
@@ -526,12 +455,11 @@ class NodeCard(QFrame):
         self._preview_enabled = enabled
         self.preview.setVisible(enabled)
         if not enabled:
-            self._thumbnail_present = False
             self.preview.setText("")
             self.preview.clear_source_pixmap()
+            self.set_thumbnail_stats_tooltip("")
         elif not self.preview.has_source_pixmap():
             self.preview.setText("No preview")
-        self._refresh_thumbnail_stats_badge_visibility()
 
     def set_processing(self, processing: bool, *, queued: bool = False) -> None:
         self._processing = processing
@@ -648,93 +576,27 @@ class NodeCard(QFrame):
         if not self._preview_enabled:
             return
         if thumbnail is None:
-            self._thumbnail_present = False
             self.preview.setText("Preview off")
             self.preview.clear_source_pixmap()
-            self._refresh_thumbnail_stats_badge_visibility()
             return
 
-        self._thumbnail_present = True
         thumb = np.ascontiguousarray(thumbnail[..., :3].astype(np.uint8, copy=False))
         h, w = thumb.shape[:2]
         qimage = QImage(thumb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimage)
         self.preview.setText("")
         self.preview.set_source_pixmap(pixmap)
-        self._refresh_thumbnail_stats_badge_visibility()
 
-    def set_thumbnail_stats_badge(
-        self,
-        kind: ThumbnailStatsBadgeKind | str | None,
-        *,
-        tooltip: str = "",
-        accessible_description: str = "",
-    ) -> bool:
-        """Present non-scientific thumbnail statistics below the preview.
-
-        The widget owner supplies the complete presentation-only explanation.
-        The footer row and preview share its tooltip, while the status label owns
-        the accessible description. Passing ``None`` clears the state.
-        """
-        if kind is None:
-            if (
-                self._thumbnail_stats_badge_kind is None
-                and not self._thumbnail_stats_badge_tooltip
-                and not self._thumbnail_stats_accessible_description
-            ):
-                return False
-            self._thumbnail_stats_badge_kind = None
-            self._thumbnail_stats_badge_tooltip = ""
-            self._thumbnail_stats_accessible_description = ""
-            self.thumbnail_stats_badge.clear()
-            self.thumbnail_stats_badge.setToolTip("")
-            self.thumbnail_stats_badge.setAccessibleName("")
-            self.thumbnail_stats_badge.setAccessibleDescription("")
-            self.thumbnail_stats_row.setToolTip("")
-            self.preview.setToolTip("")
-            self.preview.setAccessibleDescription("")
-            self.thumbnail_stats_badge.hide()
-            self._refresh_thumbnail_stats_badge_visibility()
-            return True
-
-        resolved = _coerce_thumbnail_stats_badge_kind(kind)
+    def set_thumbnail_stats_tooltip(self, tooltip: str = "") -> bool:
+        """Keep detailed presentation provenance discoverable without card chrome."""
         detail = str(tooltip or "").strip()
-        accessible_detail = str(accessible_description or detail).strip()
-        if (
-            self._thumbnail_stats_badge_kind is resolved
-            and self._thumbnail_stats_badge_tooltip == detail
-            and self._thumbnail_stats_accessible_description == accessible_detail
-        ):
-            self._refresh_thumbnail_stats_badge_visibility()
+        if detail == self._thumbnail_stats_tooltip:
             return False
-
-        label = _THUMBNAIL_STATS_BADGE_LABELS[resolved]
-        foreground = _THUMBNAIL_STATS_STATUS_COLORS[resolved]
-        font_weight = (
-            650
-            if resolved
-            in {ThumbnailStatsBadgeKind.CPU_FALLBACK, ThumbnailStatsBadgeKind.ERROR}
-            else 500
-        )
-        self._thumbnail_stats_badge_kind = resolved
-        self._thumbnail_stats_badge_tooltip = detail
-        self._thumbnail_stats_accessible_description = accessible_detail
-        self.thumbnail_stats_badge.setText(label)
-        self.thumbnail_stats_badge.setToolTip(detail)
-        self.thumbnail_stats_row.setToolTip(detail)
-        self.thumbnail_stats_badge.setAccessibleName(
-            f"Thumbnail contrast statistics: {label}"
-        )
-        self.thumbnail_stats_badge.setAccessibleDescription(accessible_detail)
-        self.thumbnail_stats_badge.setStyleSheet(
-            "QLabel#NodeThumbnailStatsStatus {"
-            " background: transparent; border: none;"
-            f" color: {foreground}; font-size: 9px; font-weight: {font_weight};"
-            " padding: 0 2px;"
-            "}"
-        )
-        self.thumbnail_stats_badge.adjustSize()
-        self._refresh_thumbnail_stats_badge_visibility()
+        self._thumbnail_stats_tooltip = detail
+        self.preview.setToolTip(detail)
+        # The selected-node inspector owns the accessible status description.
+        # Avoid announcing the same provenance again when focus visits the image.
+        self.preview.setAccessibleDescription("")
         return True
 
     def set_metadata_summary(self, text: str) -> None:
@@ -975,19 +837,6 @@ class NodeCard(QFrame):
             y = 10
         self.processing_badge.move(max(0, x), max(0, y))
         self.processing_badge.raise_()
-
-    def _refresh_thumbnail_stats_badge_visibility(self) -> None:
-        row_visible = bool(self._preview_enabled and self._thumbnail_present)
-        status_visible = bool(
-            row_visible and self._thumbnail_stats_badge_kind is not None
-        )
-        self.thumbnail_stats_row.setVisible(row_visible)
-        self.thumbnail_stats_badge.setVisible(status_visible)
-        if status_visible:
-            self.preview.setToolTip(self._thumbnail_stats_badge_tooltip)
-            return
-        self.preview.setToolTip("")
-        self.preview.setAccessibleDescription("")
 
 
 class TunnelBadgeItem(QGraphicsItem):
@@ -3133,23 +2982,16 @@ class PipelineGraphView(QGraphicsView):
         for node_id in selected:
             self.clear_node_compute_badge(str(node_id))
 
-    def set_node_thumbnail_stats_badge(
+    def set_node_thumbnail_stats_tooltip(
         self,
         node_id: str,
-        kind: ThumbnailStatsBadgeKind | str | None,
-        *,
         tooltip: str = "",
-        accessible_description: str = "",
     ) -> None:
-        """Set one node's presentation-only thumbnail-statistics identity."""
+        """Expose thumbnail-statistics detail on a card without visible chrome."""
         card = self._cards.get(node_id)
         if card is None:
             return
-        if not card.set_thumbnail_stats_badge(
-            kind,
-            tooltip=tooltip,
-            accessible_description=accessible_description,
-        ):
+        if not card.set_thumbnail_stats_tooltip(tooltip):
             return
         card.update()
         proxy = self._proxies.get(node_id)
@@ -3158,15 +3000,16 @@ class PipelineGraphView(QGraphicsView):
         if self.scene is not None:
             self.scene.update()
 
-    def clear_node_thumbnail_stats_badge(self, node_id: str) -> None:
-        """Hide one node's thumbnail-statistics presentation."""
-        self.set_node_thumbnail_stats_badge(node_id, None)
+    def node_has_thumbnail(self, node_id: str) -> bool:
+        """Return whether a card currently presents a rendered thumbnail."""
+        card = self._cards.get(str(node_id))
+        return bool(card is not None and card.preview.has_source_pixmap())
 
-    def clear_node_thumbnail_stats_badges(self, node_ids=None) -> None:
-        """Hide thumbnail-statistics presentation for selected or all nodes."""
+    def clear_node_thumbnail_stats_tooltips(self, node_ids=None) -> None:
+        """Clear thumbnail-statistics details for selected or all cards."""
         selected = tuple(self._cards) if node_ids is None else tuple(node_ids)
         for node_id in selected:
-            self.clear_node_thumbnail_stats_badge(str(node_id))
+            self.set_node_thumbnail_stats_tooltip(str(node_id), "")
 
     def set_pinned_node(self, node_id: str | None) -> None:
         for card_id, card in self._cards.items():

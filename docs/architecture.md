@@ -1036,14 +1036,15 @@ the normal background worker. This avoids thread-pool overhead and incidental
 UI blocking for micro-workloads without risking CUDA startup or a large
 per-channel histogram on the GUI thread.
 
-Exact limits and typed decision/result metadata are cached separately. Per-card
-`Contrast · Calculating…`, `Contrast · CPU`, `Contrast · GPU`,
-`Contrast · CPU fallback`, and `Contrast · error` status text appears in a slim
-reserved footer below the thumbnail. It exposes presentation backend,
-algorithm, byte count, timing, crossover, reason, and fallback through its
-tooltip without covering the image or overwriting the scientific CPU/CuPy/cuCIM
-badge. Ordinary success is muted; fallback and error remain emphasized. The
-shared toolbar progress/cancel ownership covers thumbnail scans. CPU integer
+Exact limits and typed decision/result metadata are cached separately. The
+selected node's compact inspector row shows `Calculating…`, `CPU · NumPy`,
+`GPU · CuPy`, `CPU fallback`, or `Error`. It exposes presentation backend,
+algorithm, byte count, timing, crossover, reason, and fallback through hover,
+keyboard What's This help, and its accessibility description without enlarging
+the card or overwriting the scientific CPU/CuPy/cuCIM badge in the node title
+row. Ordinary success is muted; fallback and error remain emphasized. The
+preview retains the same hover detail for quick graph discovery. The shared
+toolbar progress/cancel ownership covers thumbnail scans. CPU integer
 paths advance between bounded chunks. An active GPU kernel/synchronization or
 float/other-dtype NumPy percentile phase can be indeterminate and cannot be
 interrupted inside its current call. Cancellation takes effect at the next

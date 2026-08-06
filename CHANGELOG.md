@@ -123,10 +123,11 @@ hardening accumulated since 0.12.0a3.
   then 32 MiB after the GPU path is warm. These measured heuristics are not a
   universal fastest guarantee; CPU and Prefer GPU remain explicit controls, and
   float/other dtypes retain exact NumPy-compatible CPU percentile behavior.
-- Added separate per-node `Contrast` pending/backend/fallback/error status in a
-  slim footer below each thumbnail, plus shared progress and cooperative
-  cancellation for thumbnail statistics. Ordinary CPU/GPU success is muted;
-  fallback and error remain emphasized without covering the image. CPU integer
+- Added separate per-node thumbnail-contrast pending/backend/fallback/error
+  status in a compact selected-node inspector row, plus shared progress and
+  cooperative cancellation for thumbnail statistics. Scientific CPU/GPU
+  badges remain on cards; presentation success is muted, while fallback and
+  error remain emphasized. CPU integer
   histogram and min-max work stop between bounded chunks; an active GPU
   kernel/synchronization or exact NumPy percentile for another dtype may have a
   non-interruptible inner pass. Main compute CPU hard-forces presentation CPU,

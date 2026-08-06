@@ -704,12 +704,33 @@ DEFAULT_CACHE_MEMORY_LIMIT_PERCENT = 90
 MEMORY_GUARD_MIN_FREE_BYTES = 512 * 1024 * 1024
 EXPLICIT_OUTPUT_OPERATIONS = {"batch_output", "save_output"}
 SMART_CACHE_RECENT_LIMIT = 6
+THUMBNAIL_STATS_INSPECTOR_LABELS = {
+    ThumbnailStatsBadgeKind.PENDING: "Calculating…",
+    ThumbnailStatsBadgeKind.CPU: "CPU · NumPy",
+    ThumbnailStatsBadgeKind.GPU: "GPU · CuPy",
+    ThumbnailStatsBadgeKind.CPU_FALLBACK: "CPU fallback",
+    ThumbnailStatsBadgeKind.ERROR: "Error",
+}
+THUMBNAIL_STATS_INSPECTOR_COLORS = {
+    ThumbnailStatsBadgeKind.PENDING: "#94a3b8",
+    ThumbnailStatsBadgeKind.CPU: "#cbd5e1",
+    ThumbnailStatsBadgeKind.GPU: "#93c5fd",
+    ThumbnailStatsBadgeKind.CPU_FALLBACK: "#fbbf24",
+    ThumbnailStatsBadgeKind.ERROR: "#f87171",
+}
 COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS = {
     "richardson_lucy_deconvolution",
     "richardson_lucy_tv_deconvolution",
 }
 
 
+@dataclass(frozen=True, slots=True)
+class _ThumbnailStatisticsPresentation:
+    """Inspector-facing identity for presentation-only thumbnail work."""
+
+    kind: ThumbnailStatsBadgeKind
+    detail: str
+    accessible_description: str
 
 
 def _toolbar_icon(kind: str) -> QIcon:
@@ -1130,6 +1151,7 @@ class VippWidget(QWidget):
         "_thumbnail_contrast_statistics_cache",
         "_thumbnail_contrast_failure_cache",
         "_thumbnail_contrast_identity_refs",
+        "_thumbnail_statistics_presentations",
         "_input_histogram_cache",
         "_input_histogram_distribution_cache",
         "_label_volume_cache",
@@ -1235,6 +1257,10 @@ class VippWidget(QWidget):
         self._thumbnail_contrast_identity_refs: dict[
             tuple,
             weakref.ReferenceType,
+        ] = {}
+        self._thumbnail_statistics_presentations: dict[
+            str,
+            _ThumbnailStatisticsPresentation,
         ] = {}
         self._queued_thumbnail_contrast_limit_requests: dict[
             tuple,
@@ -1727,6 +1753,35 @@ class VippWidget(QWidget):
         self.reset_inspect_display_button.setVisible(False)
         self.thumbnail_checkbox = QCheckBox("Show thumbnail preview")
         self.thumbnail_checkbox.setChecked(True)
+        self.thumbnail_contrast_status_panel = QFrame()
+        self.thumbnail_contrast_status_panel.setObjectName(
+            "ThumbnailContrastStatusPanel"
+        )
+        self.thumbnail_contrast_status_panel.setFocusPolicy(Qt.StrongFocus)
+        self.thumbnail_contrast_status_panel.setAccessibleName(
+            "Thumbnail contrast status for selected node"
+        )
+        self.thumbnail_contrast_status_panel.setStyleSheet(
+            "QFrame#ThumbnailContrastStatusPanel {"
+            " background: #181d25; border: 1px solid #374151;"
+            " border-radius: 4px;"
+            "}"
+            "QFrame#ThumbnailContrastStatusPanel:focus {"
+            " border-color: #60a5fa;"
+            "}"
+        )
+        self.thumbnail_contrast_status_title = QLabel("Thumbnail contrast")
+        self.thumbnail_contrast_status_title.setStyleSheet(
+            "color: #cbd5e1; font-size: 10px; border: none;"
+        )
+        self.thumbnail_contrast_status_value = QLabel("")
+        self.thumbnail_contrast_status_value.setAlignment(
+            Qt.AlignRight | Qt.AlignVCenter
+        )
+        self.thumbnail_contrast_status_value.setAccessibleName(
+            "Thumbnail contrast backend"
+        )
+        self.thumbnail_contrast_status_panel.hide()
         self.keep_cached_checkbox = QCheckBox("Keep output cached")
         self.keep_cached_checkbox.setToolTip(
             "Retain this node output in Smart and Low-memory cache modes. "
@@ -2776,6 +2831,21 @@ class VippWidget(QWidget):
         inspector_header.addWidget(self.reset_inspect_display_button)
         layout.addLayout(inspector_header)
         layout.addWidget(self.thumbnail_checkbox)
+        thumbnail_contrast_status_layout = QHBoxLayout(
+            self.thumbnail_contrast_status_panel
+        )
+        thumbnail_contrast_status_layout.setContentsMargins(8, 4, 8, 4)
+        thumbnail_contrast_status_layout.setSpacing(8)
+        thumbnail_contrast_status_layout.addWidget(
+            self.thumbnail_contrast_status_title,
+            1,
+        )
+        thumbnail_contrast_status_layout.addWidget(
+            self.thumbnail_contrast_status_value,
+            0,
+            Qt.AlignRight | Qt.AlignVCenter,
+        )
+        layout.addWidget(self.thumbnail_contrast_status_panel)
         layout.addWidget(self.keep_cached_checkbox)
         layout.addWidget(self.isolated_tuning_checkbox)
         isolated_tuning_layout = QVBoxLayout(self.isolated_tuning_panel)
@@ -5100,6 +5170,7 @@ class VippWidget(QWidget):
             "_thumbnail_contrast_statistics_cache": {},
             "_thumbnail_contrast_failure_cache": {},
             "_thumbnail_contrast_identity_refs": {},
+            "_thumbnail_statistics_presentations": {},
             "_input_histogram_cache": {},
             "_input_histogram_distribution_cache": {},
             "_label_volume_cache": {},
@@ -5588,6 +5659,7 @@ class VippWidget(QWidget):
         self._sync_all_input_ports()
         self._sync_all_output_ports()
         self._sync_all_compute_badges()
+        self._sync_all_thumbnail_statistics_presentations()
         self._refresh_graph_search_matches(reset_index=True)
 
         # These are presentation-only generations. Unsafe workers are blocked
@@ -5812,6 +5884,7 @@ class VippWidget(QWidget):
             workflow = snapshot.workflow
             self._remember_current_inspect_display_profiles()
             self._discard_inspect_layers()
+            self._clear_thumbnail_statistics_presentations()
             pinned_layer = self._active_pinned_layer()
             if pinned_layer is not None:
                 self._remove_layer(pinned_layer)
@@ -5876,6 +5949,7 @@ class VippWidget(QWidget):
             )
             self._sync_all_input_ports()
             self._sync_all_output_ports()
+            self._sync_all_thumbnail_statistics_presentations()
             self._refresh_graph_search_matches(reset_index=True)
             self._sync_pin_ui()
             self._invalidate_pipeline_cache()
@@ -7293,6 +7367,7 @@ class VippWidget(QWidget):
         self._sync_all_input_ports()
         self._sync_all_output_ports()
         self._sync_all_compute_badges()
+        self._sync_all_thumbnail_statistics_presentations()
         self._refresh_graph_search_matches(reset_index=True)
 
     def _workflow_metadata(self) -> dict:
@@ -7655,6 +7730,7 @@ class VippWidget(QWidget):
         workflow = load_workflow(source)
         self._discard_inspect_layers()
         self._inspect_display_profiles.clear()
+        self._clear_thumbnail_statistics_presentations()
         self.pipeline.restore_graph(
             workflow["nodes"],
             workflow["connections"],
@@ -11608,6 +11684,7 @@ class VippWidget(QWidget):
         }
         if not self.pipeline.remove_node(node_id):
             return
+        self._clear_node_thumbnail_statistics_presentation(node_id)
         self._compute_node_preferences.pop(node_id, None)
         self._compute_optimizer_locked_node_ids.discard(node_id)
         self._accepted_compute_decisions.pop(node_id, None)
@@ -11682,6 +11759,7 @@ class VippWidget(QWidget):
     def _clear_empty_inspector(self) -> None:
         self.execution_group.setHidden(True)
         self.compute_group.setHidden(True)
+        self._sync_thumbnail_statistics_inspector()
         self.metadata_table.setRowCount(0)
         self.table_group.setHidden(True)
         self.table_preview.setRowCount(0)
@@ -15923,6 +16001,7 @@ class VippWidget(QWidget):
         self._thumbnail_contrast_statistics_cache.clear()
         self._thumbnail_contrast_failure_cache.clear()
         self._thumbnail_contrast_identity_refs.clear()
+        self._clear_thumbnail_statistics_presentations()
         self._discard_pending_thumbnail_contrast_limit_requests()
 
     def _register_thumbnail_contrast_identity(
@@ -16091,7 +16170,7 @@ class VippWidget(QWidget):
                 self._thumbnail_contrast_identity_refs.pop(key, None)
         run_id = self._active_thumbnail_contrast_run_id
         for node_id in unfinished_node_ids:
-            self.graph_view.clear_node_thumbnail_stats_badge(node_id)
+            self._clear_node_thumbnail_statistics_presentation(node_id)
         if run_id is not None:
             if self._active_thumbnail_contrast_cancel_event is not None:
                 self._active_thumbnail_contrast_cancel_event.set()
@@ -16327,7 +16406,10 @@ class VippWidget(QWidget):
             backend = ""
             message = ""
             indeterminate = False
-        if run_id != self._active_thumbnail_contrast_run_id:
+        if (
+            run_id != self._active_thumbnail_contrast_run_id
+            or run_id in self._thumbnail_contrast_discarded_run_ids
+        ):
             return
         if not self._thumbnail_contrast_busy_visible:
             return
@@ -16356,10 +16438,10 @@ class VippWidget(QWidget):
             self.pipeline_busy_label.setText(
                 f"Thumbnail stats: {title}{backend_note}{phase}{node_note}"
             )
-            self.graph_view.set_node_thumbnail_stats_badge(
+            self._set_node_thumbnail_statistics_presentation(
                 node_id,
                 ThumbnailStatsBadgeKind.PENDING,
-                tooltip=(
+                detail=(
                     "Thumbnail presentation only.\n"
                     f"{backend or 'CPU/GPU'} statistics in progress: "
                     f"{message or 'calculating exact contrast limits'}.\n"
@@ -16439,22 +16521,39 @@ class VippWidget(QWidget):
         elif discarded:
             pass
         elif result.errors or result.error:
+            affected = self._thumbnail_statistics_node_summary(result.errors)
+            affected_note = (
+                f" Affected nodes: {affected}." if affected else ""
+            )
             self._set_status(
                 "Some thumbnail statistics could not be completed; provisional "
-                "previews were retained. Hover the affected Contrast footers for "
-                "details.",
+                f"previews were retained.{affected_note} Select an affected "
+                "node and inspect Thumbnail contrast for details.",
                 severity=MessageSeverity.WARNING,
             )
         else:
-            fallback_count = sum(
-                bool(getattr(item, "used_fallback", False))
-                for item in result.statistics.values()
+            fallback_keys = tuple(
+                key
+                for key, item in result.statistics.items()
+                if bool(getattr(item, "used_fallback", False))
             )
-            if fallback_count:
+            fallback_nodes = self._thumbnail_statistics_node_summary(fallback_keys)
+            if fallback_keys:
+                fallback_count = len(
+                    {
+                        str(key[1])
+                        for key in fallback_keys
+                        if isinstance(key, tuple) and len(key) > 1
+                    }
+                ) or len(fallback_keys)
+                fallback_note = (
+                    f": {fallback_nodes}" if fallback_nodes else ""
+                )
                 self._set_status(
                     f"Thumbnail statistics used a visible CPU fallback for "
-                    f"{fallback_count} node{'s' if fallback_count != 1 else ''}. "
-                    "Hover the affected node's Contrast footer for details.",
+                    f"{fallback_count} node{'s' if fallback_count != 1 else ''}"
+                    f"{fallback_note}. Select an affected node and inspect "
+                    "Thumbnail contrast for details.",
                     severity=MessageSeverity.WARNING,
                 )
         if not discarded and not result.cancelled and not self._closing:
@@ -16469,6 +16568,7 @@ class VippWidget(QWidget):
                     "scientific graph calculation is waiting to run."
                 )
             QTimer.singleShot(0, self.run_pipeline)
+
             return
         pending_batch = self._pending_collection_batch_start
         if pending_batch is not None:
@@ -16494,6 +16594,23 @@ class VippWidget(QWidget):
             return
         if self._queued_thumbnail_contrast_limit_requests and not self._closing:
             QTimer.singleShot(0, self._start_thumbnail_contrast_limit_run)
+
+    def _thumbnail_statistics_node_summary(self, keys: Iterable[tuple]) -> str:
+        """Return a compact, deterministic title list for result-key nodes."""
+        node_ids = sorted(
+            {
+                str(key[1])
+                for key in keys
+                if isinstance(key, tuple)
+                and len(key) > 1
+                and str(key[1]) in self.pipeline.nodes
+            },
+            key=lambda node_id: self._node_title(node_id).casefold(),
+        )
+        titles = [self._node_title(node_id) for node_id in node_ids]
+        shown = titles[:3]
+        suffix = "" if len(titles) <= 3 else f" and {len(titles) - 3} more"
+        return ", ".join(shown) + suffix
 
     def _thumbnail_channel_axis_for_contrast(
         self,
@@ -19476,9 +19593,9 @@ class VippWidget(QWidget):
             self._update_thumbnails()
         self._set_status(
             f"Thumbnail statistics set to {policy.label}. Existing exact limits "
-            "remain cached, and each Contrast footer continues to show the "
-            "backend that produced its cached result. This choice applies to "
-            "new results.",
+            "remain cached, and the selected node's Thumbnail contrast inspector "
+            "row continues to show the backend that produced its cached result. "
+            "This choice applies to new results.",
             severity=MessageSeverity.INFO,
         )
 
@@ -19558,7 +19675,7 @@ class VippWidget(QWidget):
         self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
         if not preview_enabled:
             self.graph_view.set_thumbnail(node_id, None)
-            self.graph_view.clear_node_thumbnail_stats_badge(node_id)
+            self._clear_node_thumbnail_statistics_presentation(node_id)
             return
 
         contrast_limits = None
@@ -19611,6 +19728,9 @@ class VippWidget(QWidget):
             data_kind=node_output_type,
         )
         self.graph_view.set_thumbnail(node_id, thumbnail)
+        if not self.graph_view.node_has_thumbnail(node_id):
+            self._clear_node_thumbnail_statistics_presentation(node_id)
+            return
         self._sync_node_thumbnail_statistics_presentation(
             node_id,
             preview_data,
@@ -19645,10 +19765,10 @@ class VippWidget(QWidget):
                     "provenance.",
                 ]
             )
-            self.graph_view.set_node_thumbnail_stats_badge(
+            self._set_node_thumbnail_statistics_presentation(
                 node_id,
                 ThumbnailStatsBadgeKind.CPU,
-                tooltip=detail,
+                detail=detail,
                 accessible_description=detail,
             )
             return
@@ -19670,10 +19790,10 @@ class VippWidget(QWidget):
                     "provenance.",
                 ]
             )
-            self.graph_view.set_node_thumbnail_stats_badge(
+            self._set_node_thumbnail_statistics_presentation(
                 node_id,
                 ThumbnailStatsBadgeKind.CPU,
-                tooltip=detail,
+                detail=detail,
                 accessible_description=detail,
             )
             return
@@ -19693,16 +19813,16 @@ class VippWidget(QWidget):
                     "provenance.",
                 ]
             )
-            self.graph_view.set_node_thumbnail_stats_badge(
+            self._set_node_thumbnail_statistics_presentation(
                 node_id,
                 ThumbnailStatsBadgeKind.ERROR,
-                tooltip=detail,
+                detail=detail,
                 accessible_description=detail,
             )
             return
         if result is None:
             if self._thumbnail_statistics_dispatch_blocked():
-                self.graph_view.clear_node_thumbnail_stats_badge(node_id)
+                self._clear_node_thumbnail_statistics_presentation(node_id)
                 return
             effective = self._effective_thumbnail_statistics_compute_mode()
             policy_label = {
@@ -19723,10 +19843,10 @@ class VippWidget(QWidget):
                     "provenance.",
                 ]
             )
-            self.graph_view.set_node_thumbnail_stats_badge(
+            self._set_node_thumbnail_statistics_presentation(
                 node_id,
                 ThumbnailStatsBadgeKind.PENDING,
-                tooltip=detail,
+                detail=detail,
                 accessible_description=detail,
             )
             return
@@ -19804,10 +19924,10 @@ class VippWidget(QWidget):
             "This does not affect pipeline data or scientific compute provenance."
         )
         detail = "\n".join(details)
-        self.graph_view.set_node_thumbnail_stats_badge(
+        self._set_node_thumbnail_statistics_presentation(
             node_id,
             badge_kind,
-            tooltip=detail,
+            detail=detail,
             accessible_description=detail,
         )
 
@@ -23235,6 +23355,147 @@ class VippWidget(QWidget):
         button.setVisible(matching_layer)
         button.setEnabled(matching_layer)
 
+    def _set_node_thumbnail_statistics_presentation(
+        self,
+        node_id: str,
+        kind: ThumbnailStatsBadgeKind,
+        *,
+        detail: str = "",
+        accessible_description: str = "",
+    ) -> None:
+        """Record thumbnail-only provenance and refresh the selected inspector."""
+        node_id = str(node_id)
+        if node_id not in self.pipeline.nodes:
+            return
+        if not isinstance(kind, ThumbnailStatsBadgeKind):
+            kind = ThumbnailStatsBadgeKind(str(kind).strip().casefold())
+        normalized_detail = str(detail or "").strip()
+        normalized_accessible = str(
+            accessible_description or normalized_detail
+        ).strip()
+        self._thumbnail_statistics_presentations[node_id] = (
+            _ThumbnailStatisticsPresentation(
+                kind=kind,
+                detail=normalized_detail,
+                accessible_description=normalized_accessible,
+            )
+        )
+        self.graph_view.set_node_thumbnail_stats_tooltip(
+            node_id,
+            (
+                normalized_detail
+                if self.graph_view.node_has_thumbnail(node_id)
+                else ""
+            ),
+        )
+        if node_id == self._selected_node_id:
+            self._sync_thumbnail_statistics_inspector()
+
+    def _clear_node_thumbnail_statistics_presentation(self, node_id: str) -> None:
+        node_id = str(node_id)
+        self._thumbnail_statistics_presentations.pop(node_id, None)
+        self.graph_view.set_node_thumbnail_stats_tooltip(node_id, "")
+        if node_id == self._selected_node_id:
+            self._sync_thumbnail_statistics_inspector()
+
+    def _clear_thumbnail_statistics_presentations(
+        self,
+        node_ids: Iterable[str] | None = None,
+    ) -> None:
+        clear_all = node_ids is None
+        selected = (
+            tuple(self._thumbnail_statistics_presentations)
+            if clear_all
+            else tuple(str(node_id) for node_id in node_ids)
+        )
+        for node_id in selected:
+            self._thumbnail_statistics_presentations.pop(node_id, None)
+        self.graph_view.clear_node_thumbnail_stats_tooltips(
+            None if clear_all else selected
+        )
+        self._sync_thumbnail_statistics_inspector()
+
+    def _sync_all_thumbnail_statistics_presentations(self) -> None:
+        """Restore hover details after graph cards are rebuilt."""
+        self.graph_view.clear_node_thumbnail_stats_tooltips()
+        valid_node_ids = set(self.pipeline.nodes)
+        for node_id in tuple(self._thumbnail_statistics_presentations):
+            if node_id not in valid_node_ids:
+                self._thumbnail_statistics_presentations.pop(node_id, None)
+                continue
+            presentation = self._thumbnail_statistics_presentations[node_id]
+            self.graph_view.set_node_thumbnail_stats_tooltip(
+                node_id,
+                (
+                    presentation.detail
+                    if self.graph_view.node_has_thumbnail(node_id)
+                    else ""
+                ),
+            )
+        self._sync_thumbnail_statistics_inspector()
+
+    def _sync_thumbnail_statistics_inspector(self) -> None:
+        panel = self.thumbnail_contrast_status_panel
+        value_label = self.thumbnail_contrast_status_value
+        node_id = self._selected_node_id
+        presentation = self._thumbnail_statistics_presentations.get(node_id)
+        visible = bool(
+            presentation is not None
+            and node_id in self.pipeline.nodes
+            and self._node_preview_enabled(node_id)
+            and self.graph_view.node_has_thumbnail(node_id)
+        )
+        if not visible:
+            panel.hide()
+            panel.setToolTip("")
+            panel.setStatusTip("")
+            panel.setWhatsThis("")
+            panel.setAccessibleName(
+                "Thumbnail contrast status for selected node"
+            )
+            panel.setAccessibleDescription("")
+            self.thumbnail_contrast_status_title.setToolTip("")
+            value_label.clear()
+            value_label.setToolTip("")
+            value_label.setAccessibleName("Thumbnail contrast backend")
+            value_label.setAccessibleDescription("")
+            return
+
+        assert presentation is not None
+        label = THUMBNAIL_STATS_INSPECTOR_LABELS[presentation.kind]
+        foreground = THUMBNAIL_STATS_INSPECTOR_COLORS[presentation.kind]
+        weight = (
+            650
+            if presentation.kind
+            in {ThumbnailStatsBadgeKind.CPU_FALLBACK, ThumbnailStatsBadgeKind.ERROR}
+            else 600
+        )
+        detail = presentation.detail
+        accessible_detail = presentation.accessible_description
+        value_label.setText(label)
+        value_label.setStyleSheet(
+            f"color: {foreground}; font-size: 10px; font-weight: {weight}; "
+            "border: none;"
+        )
+        node_title = self._node_title(node_id)
+        panel.setAccessibleName(
+            f"Thumbnail contrast backend for {node_title}: {label}"
+        )
+        value_label.setAccessibleName(
+            f"Thumbnail contrast backend for {node_title}: {label}"
+        )
+        value_label.setAccessibleDescription(accessible_detail)
+        for widget in (
+            panel,
+            self.thumbnail_contrast_status_title,
+            value_label,
+        ):
+            widget.setToolTip(detail)
+        panel.setStatusTip(detail)
+        panel.setWhatsThis(detail)
+        panel.setAccessibleDescription(accessible_detail)
+        panel.show()
+
     def _sync_preview_ui(self) -> None:
         previewable = self._node_output_type(self._selected_node_id) != "table"
         self.thumbnail_checkbox.setVisible(previewable)
@@ -23243,6 +23504,7 @@ class VippWidget(QWidget):
             self.thumbnail_checkbox.setChecked(
                 previewable and self._node_preview_enabled(self._selected_node_id)
             )
+        self._sync_thumbnail_statistics_inspector()
 
     def _sync_keep_cached_ui(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)

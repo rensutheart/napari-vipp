@@ -104,9 +104,10 @@ run never publishes uncomputed or provenance-unknown processing data over an
 earlier valid result. A verified source boundary may be accepted; a completed
 processing node may additionally be accepted from a cleanup-failed result, and
 only with its matching actual-implementation decision. Prior outputs,
-thumbnails, and truthful backend badges remain for all
-other affected work while it is requeued. A cleanup failure additionally
-quarantines new compute in that VIPP process until restart.
+  thumbnails, scientific compute badges, and selected-node thumbnail contrast
+  status remain truthful for all other affected work while it is requeued. A
+  cleanup failure additionally quarantines new compute in that VIPP process
+  until restart.
 
 ## Per-Node Keep Cached
 

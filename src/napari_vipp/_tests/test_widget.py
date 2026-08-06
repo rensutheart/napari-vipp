@@ -11048,7 +11048,11 @@ def test_thumbnail_detail_changes_render_size_without_recalculation_or_rescan(
     widget = VippWidget(_Viewer(np.ones((4, 8, 8), dtype=np.uint16)))
     qtbot.addWidget(widget)
     qtbot.waitUntil(
-        lambda: widget._active_thumbnail_contrast_run_id is None,
+        lambda: (
+            widget._active_thumbnail_contrast_run_id is None
+            and not widget._queued_thumbnail_contrast_limit_requests
+            and not widget._pending_thumbnail_contrast_limit_keys
+        ),
         timeout=5_000,
     )
     widget.thumbnail_scope_combo.setCurrentText("Slice")
@@ -11095,6 +11099,10 @@ def test_thumbnail_detail_changes_render_size_without_recalculation_or_rescan(
     )
     exact_limits = {("limits",): (0.0, 1.0)}
     exact_statistics = {("statistics",): object()}
+    # The initial preview may have populated legitimate exact Stack entries
+    # before this test switches to Slice. Establish the cache baseline here.
+    widget._thumbnail_contrast_limit_cache.clear()
+    widget._thumbnail_contrast_statistics_cache.clear()
     widget._thumbnail_contrast_limit_cache.update(exact_limits)
     widget._thumbnail_contrast_statistics_cache.update(exact_statistics)
 
@@ -11385,6 +11393,7 @@ def test_thumbnail_statistics_progress_and_cancel_use_shared_toolbar(qtbot):
     widget._active_thumbnail_contrast_run_id = run_id
     widget._active_thumbnail_contrast_cancel_event = cancel_event
     widget._show_thumbnail_contrast_busy(2, 100)
+    widget.graph_view.select_node("input")
 
     assert widget.pipeline_cancel_button.text() == "Cancel thumbnails"
     assert widget.pipeline_cancel_button.isEnabled()
@@ -11407,9 +11416,11 @@ def test_thumbnail_statistics_progress_and_cancel_use_shared_toolbar(qtbot):
     assert widget.pipeline_busy_bar.format() == "Overall 40%"
     assert "Image Source" in widget.pipeline_busy_label.text()
     assert "GPU" in widget.pipeline_busy_label.text()
-    card = widget.graph_view._cards["input"]
-    assert card._thumbnail_stats_badge_kind is ThumbnailStatsBadgeKind.PENDING
-    assert "in progress" in card.thumbnail_stats_badge.toolTip()
+    presentation = widget._thumbnail_statistics_presentations["input"]
+    assert presentation.kind is ThumbnailStatsBadgeKind.PENDING
+    assert not widget.thumbnail_contrast_status_panel.isHidden()
+    assert widget.thumbnail_contrast_status_value.text() == "Calculating…"
+    assert "in progress" in widget.thumbnail_contrast_status_panel.toolTip()
     queued_data = np.arange(64, dtype=np.uint16).reshape(8, 8)
     queued_request = widget._thumbnail_contrast_limit_request(
         "input",
@@ -11432,6 +11443,25 @@ def test_thumbnail_statistics_progress_and_cancel_use_shared_toolbar(qtbot):
     assert queued_request.key not in widget._thumbnail_contrast_identity_refs
     assert widget.pipeline_cancel_button.isHidden()
     assert widget._active_thumbnail_contrast_run_id == run_id
+
+    # A worker may have emitted progress immediately before it observed the
+    # cancellation flag. Discarded runs must not resurrect inspector status.
+    widget._on_thumbnail_contrast_limit_progress(
+        ThumbnailContrastProgress(
+            run_id,
+            "input",
+            1,
+            2,
+            41,
+            50,
+            41,
+            100,
+            "GPU",
+            "Synchronizing a discarded result",
+        )
+    )
+    assert "input" not in widget._thumbnail_statistics_presentations
+    assert widget.thumbnail_contrast_status_panel.isHidden()
 
     widget._on_thumbnail_contrast_limit_finished(
         ThumbnailContrastLimitResult(
@@ -11464,7 +11494,7 @@ def test_full_batch_preempts_thumbnail_statistics_then_resumes_once(
     cancel_event = threading.Event()
     widget._active_thumbnail_contrast_run_id = run_id
     widget._active_thumbnail_contrast_cancel_event = cancel_event
-    widget.graph_view.set_node_thumbnail_stats_badge(
+    widget._set_node_thumbnail_statistics_presentation(
         "input",
         ThumbnailStatsBadgeKind.PENDING,
     )
@@ -11479,9 +11509,7 @@ def test_full_batch_preempts_thumbnail_statistics_then_resumes_once(
     assert run_id in widget._thumbnail_contrast_discarded_run_ids
     assert widget.pipeline_cancel_button.text() == "Cancel queued batch"
     assert widget.pipeline_cancel_button.isEnabled()
-    assert (
-        widget.graph_view._cards["input"]._thumbnail_stats_badge_kind is None
-    )
+    assert "input" not in widget._thumbnail_statistics_presentations
 
     latest_values = {"collection": "edited while queued"}
     monkeypatch.setattr(dialog, "values", lambda: latest_values)
@@ -11804,7 +11832,7 @@ def test_batch_completion_requeues_thumbnail_statistics_only_when_safe(
         ),
     ),
 )
-def test_thumbnail_statistics_badge_reports_actual_backend_and_provenance(
+def test_thumbnail_statistics_inspector_reports_actual_backend_and_provenance(
     qtbot,
     actual_backend,
     fallback_code,
@@ -11818,6 +11846,7 @@ def test_thumbnail_statistics_badge_reports_actual_backend_and_provenance(
         lambda: widget._active_thumbnail_contrast_run_id is None,
         timeout=5_000,
     )
+    widget.graph_view.select_node("input")
     state = widget.pipeline.output_states["input"]
     request = widget._thumbnail_contrast_limit_request(
         "input",
@@ -11848,16 +11877,113 @@ def test_thumbnail_statistics_badge_reports_actual_backend_and_provenance(
     )
 
     card = widget.graph_view._cards["input"]
-    assert card._thumbnail_stats_badge_kind is badge_kind
-    assert "Processed 128 B in 0.125 s" in card.thumbnail_stats_badge.toolTip()
-    assert "exact limits cached" in card.thumbnail_stats_badge.toolTip()
-    assert "scientific compute provenance" in card.thumbnail_stats_badge.toolTip()
+    presentation = widget._thumbnail_statistics_presentations["input"]
+    detail = widget.thumbnail_contrast_status_panel.toolTip()
+    assert presentation.kind is badge_kind
+    assert not widget.thumbnail_contrast_status_panel.isHidden()
+    assert "Processed 128 B in 0.125 s" in detail
+    assert "exact limits cached" in detail
+    assert "scientific compute provenance" in detail
+    assert widget.thumbnail_contrast_status_value.accessibleDescription() == detail
+    assert "Image Source" in (
+        widget.thumbnail_contrast_status_value.accessibleName()
+    )
     assert card.compute_badge.text() == before_compute_badge
+    assert not hasattr(card, "thumbnail_stats_badge")
     if fallback_message:
-        assert fallback_message in card.thumbnail_stats_badge.toolTip()
-        assert "Attempted runtime: cuda-cupy" in card.thumbnail_stats_badge.toolTip()
+        assert widget.thumbnail_contrast_status_value.text() == "CPU fallback"
+        assert fallback_message in detail
+        assert "Attempted runtime: cuda-cupy" in detail
     else:
-        assert "GPU · CuPy" in card.thumbnail_stats_badge.toolTip()
+        assert widget.thumbnail_contrast_status_value.text() == "GPU · CuPy"
+        assert "GPU · CuPy" in detail
+
+
+def test_thumbnail_statistics_inspector_follows_selection_without_cross_talk(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget._clear_thumbnail_statistics_presentations()
+    widget.graph_view.select_node("input")
+    input_detail = "Thumbnail presentation only. Input used GPU statistics."
+    gaussian_detail = "Thumbnail presentation only. Gaussian used CPU fallback."
+
+    widget._set_node_thumbnail_statistics_presentation(
+        "input",
+        ThumbnailStatsBadgeKind.GPU,
+        detail=input_detail,
+    )
+    assert widget.thumbnail_contrast_status_value.text() == "GPU · CuPy"
+    assert widget.thumbnail_contrast_status_panel.toolTip() == input_detail
+    assert widget.thumbnail_contrast_status_panel.accessibleName() == (
+        "Thumbnail contrast backend for Image Source: GPU · CuPy"
+    )
+
+    # A background completion for another node must not overwrite the selected
+    # node's inspector. Its status appears only when that node is selected.
+    widget._set_node_thumbnail_statistics_presentation(
+        "gaussian",
+        ThumbnailStatsBadgeKind.CPU_FALLBACK,
+        detail=gaussian_detail,
+    )
+    assert widget.thumbnail_contrast_status_value.text() == "GPU · CuPy"
+    assert widget.thumbnail_contrast_status_panel.toolTip() == input_detail
+
+    widget.graph_view.select_node("gaussian")
+    assert widget.thumbnail_contrast_status_value.text() == "CPU fallback"
+    assert widget.thumbnail_contrast_status_panel.toolTip() == gaussian_detail
+
+    widget._clear_node_thumbnail_statistics_presentation("gaussian")
+    assert widget.thumbnail_contrast_status_panel.isHidden()
+    assert widget.thumbnail_contrast_status_value.text() == ""
+    assert widget.thumbnail_contrast_status_panel.toolTip() == ""
+    assert widget.thumbnail_contrast_status_panel.accessibleDescription() == ""
+    assert widget.thumbnail_contrast_status_panel.accessibleName() == (
+        "Thumbnail contrast status for selected node"
+    )
+
+    widget.graph_view.select_node("input")
+    assert widget.thumbnail_contrast_status_value.text() == "GPU · CuPy"
+    assert widget.thumbnail_contrast_status_panel.toolTip() == input_detail
+
+
+def test_thumbnail_statistics_inspector_requires_a_rendered_thumbnail(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+    widget.graph_view.select_node("input")
+    widget.pipeline.outputs["input"] = None
+    widget.pipeline.output_states["input"] = None
+
+    widget._update_node_thumbnail(
+        "input",
+        None,
+        None,
+        0,
+        queue_stack_contrast=False,
+    )
+
+    assert not widget.graph_view.node_has_thumbnail("input")
+    assert "input" not in widget._thumbnail_statistics_presentations
+    assert widget.thumbnail_contrast_status_panel.isHidden()
+    assert widget.graph_view._cards["input"].preview.toolTip() == ""
+
+    # Even a stale presentation record cannot become visible when global
+    # previews are Off or the selected card has no rendered image.
+    widget.preview_mode_combo.setCurrentText("Off")
+    widget._set_node_thumbnail_statistics_presentation(
+        "input",
+        ThumbnailStatsBadgeKind.GPU,
+        detail="Stale presentation detail.",
+    )
+    assert widget.thumbnail_contrast_status_panel.isHidden()
+    assert widget.graph_view._cards["input"].preview.toolTip() == ""
 
 
 def test_thumbnail_statistics_failure_keeps_partial_results_and_explains_preview(
@@ -11871,8 +11997,8 @@ def test_thumbnail_statistics_failure_keeps_partial_results_and_explains_preview
         timeout=5_000,
     )
     widget.preview_mode_combo.setCurrentText("Off")
-    successful_key = ("successful",)
-    failed_key = ("failed",)
+    successful_key = ("scalar", "input", 408, "successful")
+    failed_key = ("scalar", "input", 408, "failed")
     statistics = _thumbnail_statistics_result(data)
     widget._thumbnail_contrast_identity_refs.update(
         {
@@ -11901,6 +12027,7 @@ def test_thumbnail_statistics_failure_keeps_partial_results_and_explains_preview
     )
     assert widget.status_label.property("messageSeverity") == "warning"
     assert "provisional previews were retained" in widget.status_label.text()
+    assert "Affected nodes: Image Source" in widget.status_label.text()
 
     widget.preview_mode_combo.setCurrentText("Slice")
     state = widget.pipeline.output_states["input"]
@@ -11914,6 +12041,7 @@ def test_thumbnail_statistics_failure_keeps_partial_results_and_explains_preview
     )
     assert request is not None
     widget._thumbnail_contrast_failure_cache[request.key] = "exact scan failed"
+    widget.graph_view.select_node("input")
     widget._sync_node_thumbnail_statistics_presentation(
         "input",
         data,
@@ -11922,10 +12050,11 @@ def test_thumbnail_statistics_failure_keeps_partial_results_and_explains_preview
         "Stack",
         "image",
     )
-    card = widget.graph_view._cards["input"]
-    assert card._thumbnail_stats_badge_kind is ThumbnailStatsBadgeKind.ERROR
-    assert "exact scan failed" in card.thumbnail_stats_badge.toolTip()
-    assert "Slice contrast" in card.thumbnail_stats_badge.toolTip()
+    presentation = widget._thumbnail_statistics_presentations["input"]
+    assert presentation.kind is ThumbnailStatsBadgeKind.ERROR
+    assert widget.thumbnail_contrast_status_value.text() == "Error"
+    assert "exact scan failed" in widget.thumbnail_contrast_status_panel.toolTip()
+    assert "Slice contrast" in widget.thumbnail_contrast_status_panel.toolTip()
 
 
 def test_thumbnail_statistics_cleanup_failure_quarantines_accelerator(qtbot):
@@ -17536,7 +17665,23 @@ def test_workflow_tabs_restore_pipeline_cache_and_history_without_recompute(
 ):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_thumbnail_contrast_run_id is None
+            and not widget._queued_thumbnail_contrast_limit_requests
+            and not widget._pending_thumbnail_contrast_limit_keys
+        ),
+        timeout=5_000,
+    )
     widget.graph_view.select_node("input")
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_thumbnail_contrast_run_id is None
+            and not widget._queued_thumbnail_contrast_limit_requests
+            and not widget._pending_thumbnail_contrast_limit_keys
+        ),
+        timeout=5_000,
+    )
     pipeline_a = widget.pipeline
     history_a = widget._history
     cached = np.arange(9, dtype=np.float32).reshape(3, 3)
@@ -17554,6 +17699,19 @@ def test_workflow_tabs_restore_pipeline_cache_and_history_without_recompute(
         "display_ndim": 2,
         "settings": {"opacity": 0.42},
     }
+    # Isolate tab-runtime persistence from the asynchronous thumbnail renderer;
+    # backend derivation itself is covered by the focused statistics tests.
+    monkeypatch.setattr(
+        widget,
+        "_sync_node_thumbnail_statistics_presentation",
+        lambda *args, **kwargs: widget._sync_thumbnail_statistics_inspector(),
+    )
+    widget._clear_thumbnail_statistics_presentations()
+    widget._set_node_thumbnail_statistics_presentation(
+        "input",
+        ThumbnailStatsBadgeKind.GPU,
+        detail="First workflow thumbnail statistics used GPU.",
+    )
     before = widget._current_history_snapshot()
     pipeline_a.set_param("gaussian", "sigma", 3.25)
     widget._push_undo_snapshot(before)
@@ -17565,6 +17723,28 @@ def test_workflow_tabs_restore_pipeline_cache_and_history_without_recompute(
     assert pipeline_b is not pipeline_a
     assert history_b is not history_a
     assert not widget.inspector_panel.isHidden()
+    input_data = pipeline_a.outputs["input"]
+    input_state = pipeline_a.output_states["input"]
+    pipeline_b.outputs["input"] = input_data
+    pipeline_b.output_states["input"] = input_state
+    pipeline_b.node_outputs["input"] = [input_data]
+    pipeline_b.node_output_states["input"] = [input_state]
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
+    widget._update_thumbnails()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_thumbnail_contrast_run_id is None
+            and not widget._queued_thumbnail_contrast_limit_requests
+            and not widget._pending_thumbnail_contrast_limit_keys
+        ),
+        timeout=5_000,
+    )
+    widget._clear_thumbnail_statistics_presentations()
+    widget._set_node_thumbnail_statistics_presentation(
+        "input",
+        ThumbnailStatsBadgeKind.CPU,
+        detail="Second workflow thumbnail statistics used CPU.",
+    )
 
     monkeypatch.setattr(
         widget,
@@ -17595,6 +17775,11 @@ def test_workflow_tabs_restore_pipeline_cache_and_history_without_recompute(
     assert widget._undo_stack is history_a.undo_stack
     assert widget._redo_stack is history_a.redo_stack
     assert widget._history.can_undo
+    assert widget._thumbnail_statistics_presentations["input"].kind is (
+        ThumbnailStatsBadgeKind.GPU
+    )
+    assert widget.thumbnail_contrast_status_value.text() == "GPU · CuPy"
+    assert "First workflow" in widget.thumbnail_contrast_status_panel.toolTip()
 
     second_id = next(
         session.session_id
@@ -17610,6 +17795,11 @@ def test_workflow_tabs_restore_pipeline_cache_and_history_without_recompute(
     assert widget.pipeline is pipeline_b
     assert widget._history is history_b
     assert not widget.inspector_panel.isHidden()
+    assert widget._thumbnail_statistics_presentations["input"].kind is (
+        ThumbnailStatsBadgeKind.CPU
+    )
+    assert widget.thumbnail_contrast_status_value.text() == "CPU · NumPy"
+    assert "Second workflow" in widget.thumbnail_contrast_status_panel.toolTip()
 
 
 def test_loading_workflow_opens_new_tab_and_retains_previous_session(
