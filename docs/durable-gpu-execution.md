@@ -81,13 +81,16 @@ was skipped rather than risking an avoidable host OOM.
 ## Saved And Effective Compute Requests
 
 Workflow schema 4 stores portable authored intent, including the serialized
-`prefer_gpu` mode. Batch configuration schema 2 adds a full `compute` object so
-a saved collection run also retains the runtime, device, memory, and
-experimental settings selected for that run. Batch config version 1 had no
-compute contract and is migrated to an explicit CPU request; VIPP never guesses
-that an old batch intended to use an accelerator. Per-node preferences are
-preserved when another global mode is active but remain dormant unless the mode
-is `custom`.
+`prefer_gpu` mode. Batch configuration schema 3 retains the full `compute`
+object and adds guarded source-axis declarations, so a saved collection run
+also retains its source interpretation, runtime, device, memory, and
+experimental settings. Batch config version 1 had no compute contract and is
+migrated to an explicit CPU request; version 2 keeps its saved compute request.
+Both older versions load without axis declarations and become version 3 only
+when reviewed and saved. VIPP never guesses that an old batch intended to use
+an accelerator or that a generic TIFF page axis meant Z. Per-node preferences
+are preserved when another global mode is active but remain dormant unless the
+mode is `custom`.
 
 The precedence rules are deliberate:
 
@@ -253,12 +256,15 @@ A generated `PipelineResults` exposes `execution_report`,
 specific output node and port and includes its own digest. `save_image()` uses
 this output-specific document for the atomic `.vipp-provenance.json` sidecar.
 
-Batch manifest schema 2 stores the full execution document and its SHA-256 on
-each item. Every published output record has `provenance_status: produced` and
-an `execution_provenance_sha256` link to that exact item execution. The run's
-checkpoint sidecars contain the same item link; separate output provenance
-files are unnecessary because the authoritative batch manifest already binds
-each output path and status to the digest.
+Batch manifest schema 3 stores the full execution document and its SHA-256 on
+each item. A source successfully read during item execution also records its
+raw axes, effective axes, and optional declaration; the embedded config retains
+the intended declaration for sources skipped or failed before reading. Every
+published output record has `provenance_status: produced`
+and an `execution_provenance_sha256` link to that exact item execution. The
+run's checkpoint sidecars contain the same item link; separate output
+provenance files are unnecessary because the authoritative batch manifest
+already binds each output path and status to the digest.
 
 An implementation identity can be marked `identity_complete: false` for a
 custom or external planner that did not supply a matching versioned

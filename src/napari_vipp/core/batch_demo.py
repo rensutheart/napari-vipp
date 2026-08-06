@@ -522,6 +522,11 @@ def validate_synthetic_batch_demo(
                 "modified_ns": stat.st_mtime_ns,
                 **capture_local_source_identity(path).to_dict(),
             }
+            expected_axis_semantics = {
+                "raw_axes": "YX",
+                "effective_axes": "YX",
+                "declaration": None,
+            }
             _require(
                 source.get("node_id") == node_id
                 and source.get("title") == source_titles[node_id]
@@ -532,7 +537,17 @@ def validate_synthetic_batch_demo(
                 and source.get("series", {}).get("dtype") == "uint16"
                 and source.get("series", {}).get("axes") == "YX"
                 and source.get("series", {}).get("kind") == "image"
-                and source.get("provenance") == {},
+                and source.get("raw_axes") == "YX"
+                and source.get("effective_axes") == "YX"
+                and source.get("axis_declaration") is None
+                and source.get("axis_semantics") == expected_axis_semantics
+                and [
+                    axis.get("name")
+                    for axis in source.get("image_state", {}).get("axes", [])
+                ]
+                == ["y", "x"]
+                and source.get("provenance")
+                == {"axis_semantics": expected_axis_semantics},
                 f"Manifest source provenance differs for {node_id}.",
             )
     _require(
@@ -544,7 +559,9 @@ def validate_synthetic_batch_demo(
         "Manifest source identities are incomplete.",
     )
     checks.append("manifest output paths and runtime versions are complete")
-    checks.append("hashes, source identities, archive, and sidecars are complete")
+    checks.append(
+        "hashes, source identities, axis semantics, archive, and sidecars are complete"
+    )
     return SyntheticBatchValidation(demo, result, tuple(checks))
 
 

@@ -95,6 +95,7 @@ from napari_vipp.core.batch import (
     BatchExecutionProgress,
     BatchItemPlan,
     BatchRunResult,
+    BatchScientificPreflightError,
     ExistingFilePolicy,
     atomic_write_json,
     atomic_write_text,
@@ -202,6 +203,7 @@ from napari_vipp.core.io import (
 from napari_vipp.core.metadata import (
     ImageState,
     MetadataRow,
+    apply_axis_declaration,
     format_compact_metadata,
     image_state_from_array,
     metadata_history_items,
@@ -8190,25 +8192,45 @@ class VippWidget(QWidget):
             )
             self._sync_compute_policy_editability()
             return
-        try:
-            fresh_preview = self._collection_batch_controller.preview(
-                **values,
-                preview_limit=25,
-            )
-        except Exception as exc:
-            dialog.show_run_error(f"Batch preflight failed: {exc}")
-            self._set_status(
-                f"Batch preflight failed: {exc}",
-                severity=MessageSeverity.ERROR,
-                actionable=True,
-            )
+        fresh_preview = None
+        for attempt in range(2):
+            try:
+                fresh_preview = self._collection_batch_controller.preview(
+                    **values,
+                    preview_limit=25,
+                )
+                break
+            except BatchScientificPreflightError as exc:
+                if attempt == 0 and dialog.apply_axis_suggestion(exc):
+                    values = dialog.values()
+                    continue
+                dialog.show_preflight_error(
+                    exc.user_message,
+                    technical_detail=exc.technical_detail,
+                )
+                self._set_status(
+                    exc.user_message,
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+                return
+            except Exception as exc:
+                message = f"Batch could not be prepared: {exc}"
+                dialog.show_preflight_error(message)
+                self._set_status(
+                    message,
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+                return
+        if fresh_preview is None:
             return
 
         preview = dialog._preview_result
         if preview is None:
-            # Run owns a pure, plan-only preflight. The optional Preview action
-            # remains the only path that calculates a representative through the
-            # live graph, so an unreviewed setup can execute with one click.
+            # Run owns path planning plus a metadata-only scientific preflight.
+            # The optional Preview action remains the only path that calculates
+            # representative pixels through the live graph.
             dialog.apply_preview_result(
                 fresh_preview,
                 preview_representative=False,
@@ -8227,7 +8249,7 @@ class VippWidget(QWidget):
                 )
                 dialog.show_plan_refresh_required(
                     "The workflow changed, so VIPP rebuilt the displayed plan "
-                    "without calculating a representative. Review it, then "
+                    "without calculating representative pixels. Review it, then "
                     "click Run batch again."
                 )
                 return
@@ -8261,7 +8283,7 @@ class VippWidget(QWidget):
                 dialog.show_plan_refresh_required(
                     "Batch inputs, destinations, or preflight statuses changed "
                     "since the displayed plan. VIPP refreshed the table without "
-                    "calculating a representative; review it, then click Run "
+                    "calculating representative pixels; review it, then click Run "
                     "batch again."
                 )
                 return
@@ -8303,6 +8325,18 @@ class VippWidget(QWidget):
                 total=total,
                 expected_items=preview.items,
                 **values,
+            )
+        except BatchScientificPreflightError as exc:
+            dialog.show_preflight_error(
+                exc.user_message,
+                technical_detail=exc.technical_detail,
+            )
+            self.batch_navigator.set_navigation_enabled(True)
+            self.batch_navigator.fail_batch_progress(exc.user_message)
+            self._set_status(
+                exc.user_message,
+                severity=MessageSeverity.ERROR,
+                actionable=True,
             )
         except Exception as exc:
             dialog.show_run_error(str(exc))
@@ -8849,6 +8883,22 @@ class VippWidget(QWidget):
             node_id: Path(path).expanduser().resolve()
             for node_id, path in planned_items[index].source_paths.items()
         }
+        previous_declarations = tuple(
+            sorted(
+                (source.node_id, source.axis_declaration)
+                for source in (
+                    self._interactive_collection_batch_config.sources
+                    if self._interactive_collection_batch_config is not None
+                    else ()
+                )
+            )
+        )
+        current_declarations = tuple(
+            sorted(
+                (source.node_id, source.axis_declaration)
+                for source in config.sources
+            )
+        )
         reuse_representative = bool(
             self._interactive_collection_batch_items
             and self._interactive_collection_batch_requested_index < 0
@@ -8857,6 +8907,7 @@ class VippWidget(QWidget):
             and self._active_source_load_id is None
             and not self._pipeline_run_pending
             and representative_paths == self._interactive_collection_source_paths
+            and previous_declarations == current_declarations
             and scientific_workflow_hash(self._batch_workflow_document())
             == config.workflow_sha256
         )
@@ -10907,7 +10958,7 @@ class VippWidget(QWidget):
                 return SourcePayload(None, {}, ""), None
             cached = self._cached_file_source_payload(node)
             if cached is not None:
-                return cached, None
+                return self._declared_interactive_batch_payload(node.id, cached), None
             if self._file_source_should_load_async(node):
                 return None, None
             resolved_path = str(source_path)
@@ -10921,7 +10972,8 @@ class VippWidget(QWidget):
             )
             self._cache_file_source_snapshot(key, snapshot)
             self._prune_file_source_payload_cache()
-            return self._viewer_aligned_source_payload(snapshot.payload), None
+            payload = self._viewer_aligned_source_payload(snapshot.payload)
+            return self._declared_interactive_batch_payload(node.id, payload), None
         if mode == "sample":
             sample_name = str(node.params.get("sample_name", "")).strip()
             payloads = self._sample_payloads()
@@ -10955,6 +11007,51 @@ class VippWidget(QWidget):
                 snapshot.token,
             ),
             layer,
+        )
+
+    def _declared_interactive_batch_payload(
+        self,
+        node_id: str,
+        payload: SourcePayload,
+    ) -> SourcePayload:
+        """Apply the active batch binding's reviewed axes to a raw cache view."""
+        config = self._interactive_collection_batch_config
+        if config is None:
+            return payload
+        binding = next(
+            (source for source in config.sources if source.node_id == node_id),
+            None,
+        )
+        if binding is None or binding.axis_declaration is None:
+            return payload
+        raw_state = payload.image_state or image_state_from_array(
+            payload.data,
+            layer_metadata=payload.metadata,
+            source_name=payload.name,
+        )
+        effective_state = apply_axis_declaration(
+            raw_state,
+            binding.axis_declaration,
+            declaration_source="batch config",
+        )
+        declaration = {
+            **binding.axis_declaration.to_dict(),
+            "source": "batch config",
+            "applied": True,
+            "data_order_changed": False,
+        }
+        metadata = dict(payload.metadata or {})
+        metadata["vipp_axis_semantics"] = {
+            "raw_axes": raw_state.axis_order,
+            "effective_axes": effective_state.axis_order,
+            "declaration": declaration,
+        }
+        return SourcePayload(
+            payload.data,
+            metadata,
+            payload.name,
+            effective_state,
+            payload.revision_token,
         )
 
     @contextmanager

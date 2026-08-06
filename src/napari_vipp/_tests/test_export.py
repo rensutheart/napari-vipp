@@ -12,6 +12,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from napari_vipp.core.batch import (
+    BATCH_CONFIG_FILENAME,
+    BATCH_WORKFLOW_FILENAME,
+    BatchConfig,
+    BatchOutputConfig,
+    BatchSourceConfig,
+    save_batch_config,
+    scientific_workflow_hash,
+)
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.export import (
     export_batch_runner_to_python,
@@ -20,6 +29,7 @@ from napari_vipp.core.export import (
 from napari_vipp.core.io import ImageDataset, ImageSeriesInfo, SourceInspection
 from napari_vipp.core.metadata import (
     AmbiguousAxisError,
+    AxisDeclaration,
     ChannelMetadata,
     image_state_from_array,
 )
@@ -133,6 +143,96 @@ def test_exported_batch_runner_uses_sibling_defaults_and_prints_summary(
         "3 completed, 0 partial, 2 skipped, 0 cancelled, 0 failed; "
         f"2 outputs saved; manifest: {manifest_path}\n"
     )
+
+
+def test_exported_batch_runner_loads_persisted_source_axis_declaration(
+    monkeypatch,
+    tmp_path,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    output = pipeline.add_node("batch_output")
+    pipeline.set_param(output.id, "tag", "result")
+    pipeline.set_param(output.id, "format", "npy")
+    assert pipeline.connect("input", output.id).success
+    workflow = serialize_workflow(pipeline)
+    workflow_path = tmp_path / BATCH_WORKFLOW_FILENAME
+    workflow_path.write_text(json.dumps(workflow), encoding="utf-8")
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    config_path = tmp_path / BATCH_CONFIG_FILENAME
+    save_batch_config(
+        config_path,
+        BatchConfig(
+            workflow_file=Path(BATCH_WORKFLOW_FILENAME),
+            workflow_sha256=scientific_workflow_hash(workflow),
+            output_dir=tmp_path / "outputs",
+            sources=(
+                BatchSourceConfig(
+                    "input",
+                    "Image Source",
+                    input_dir,
+                    "*.tif",
+                    AxisDeclaration("QYX", "ZYX"),
+                ),
+            ),
+            outputs=(
+                BatchOutputConfig(
+                    output.id,
+                    output.title,
+                    "result",
+                    "image",
+                    "npy",
+                    "",
+                    "{source_stem}__{tag}",
+                ),
+            ),
+            default_image_format="npy",
+            save_python_script=False,
+        ),
+    )
+    captured = []
+    result = SimpleNamespace(
+        summary={
+            "completed": 1,
+            "partial": 0,
+            "skipped": 0,
+            "cancelled": 0,
+            "failed": 0,
+        },
+        saved_paths=(),
+        manifest_path=tmp_path / "manifest.json",
+        has_failures=False,
+        cancelled=False,
+    )
+
+    def fake_run_batch(_workflow, config, **_kwargs):
+        captured.append(config)
+        return result
+
+    monkeypatch.setattr("napari_vipp.core.batch.run_batch", fake_run_batch)
+    namespace: dict[str, object] = {
+        "__name__": "exported_batch_runner",
+        "__file__": str(tmp_path / "vipp_batch_pipeline.py"),
+    }
+    exec(
+        compile(
+            export_batch_runner_to_python(),
+            "<exported-batch-runner>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    assert namespace["main"]([]) == 0
+    assert len(captured) == 1
+    declaration = captured[0].sources[0].axis_declaration
+    assert declaration == AxisDeclaration("QYX", "ZYX")
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    assert document["sources"][0]["axis_declaration"] == {
+        "source_axes": "QYX",
+        "effective_axes": "ZYX",
+    }
 
 
 def test_exported_batch_runner_passes_cli_overrides_and_reports_failure(

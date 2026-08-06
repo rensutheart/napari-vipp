@@ -22,6 +22,7 @@ from napari_vipp.core.batch import (
     validate_batch_config,
 )
 from napari_vipp.core.compute import ComputeRequest
+from napari_vipp.core.metadata import AxisDeclaration
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import deserialize_workflow
 
@@ -179,6 +180,9 @@ def _batch_source_configs(
                     title=str(row.get("title", node.title) or node.title),
                     input_dir=Path(raw_dir).expanduser().resolve(),
                     pattern=str(row.get("pattern", "") or pattern or "*.tif"),
+                    axis_declaration=AxisDeclaration.from_value(
+                        row.get("axis_declaration")
+                    ),
                 )
             )
     if configs:

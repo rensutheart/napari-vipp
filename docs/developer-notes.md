@@ -188,8 +188,10 @@ for the exact owning modules and limitations.
   bump or explicitly reject the old schema, update golden tests and bundled
   examples, and avoid an implicit migration that changes scientific meaning.
 - Batch configuration must retain the exact scientific workflow hash and
-  deterministic source/output plan. Batch config schema 2 also retains the full
-  effective `ComputeRequest`; schema 1 migrates to explicit CPU.
+  deterministic source/output plan. Batch config schema 3 retains the full
+  effective `ComputeRequest` and guarded source-axis declarations; schema 1
+  migrates to explicit CPU, while schema 2 keeps its compute request and loads
+  without a declaration.
 - Never publish a batch output before all source-dependent bytes are staged and
   every source identity has been reverified. Preserve collision policy and
   per-item/output provenance. Cleanup proof is an additional publication gate.

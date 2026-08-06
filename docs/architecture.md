@@ -131,7 +131,7 @@ quietly changing a scientific result.
 | --- | --- | --- |
 | Local file/store revisions | `core/source_identity.py`, `core/file_sources.py`, `ui/file_sources.py` | VIPP hashes every regular-file path and byte in a file or directory store before inspection/materialization and verifies the same identity afterward. The selected series is copied to an owned, read-only NumPy array. A path-and-series revision stays pinned until explicit `Refresh`; stale in-flight loads cannot repopulate the cache. |
 | Live napari revisions | `ui/source_adapter.py`, `_widget.py` | In-memory NumPy layer data and metadata are detached on the GUI thread and tagged with a revision token. Relevant layer events invalidate the token; a background result from an older revision is discarded. Live data that cannot be detached, including lazy arrays, is rejected with an instruction to materialize it or use an immutable file source. Non-axis-aligned napari transforms are rejected rather than ignored. |
-| Axis semantics | `core/metadata.py`, `core/pipeline.py` | Every axis carries `explicit` or `shape-inferred` confidence, with `mixed` available at the image-state level. Operations that need semantic auto-selection of spatial rank, channel axis, projection axes, or PSF parameters reject inferred-only axes with `AmbiguousAxisError`; callers must supply explicit metadata or an explicit supported mode/index. Positional kernels also reject explicit noncanonical layouts instead of treating a `ZX` suffix as `YX`; semantic-capable crop, projection, rescaling, and measurement paths resolve named axes directly. Array shape alone never establishes RGB or Z/Y/X meaning. Malformed declared axes, stale carried shapes, and non-finite or non-positive calibration fail instead of being replaced by inferred/default metadata. |
+| Axis semantics | `core/metadata.py`, `core/pipeline.py` | Every axis carries `explicit` or `shape-inferred` confidence, with `mixed` available at the image-state level. Operations that need semantic auto-selection of spatial rank, channel axis, projection axes, or PSF parameters reject inferred-only axes with `AmbiguousAxisError`; callers must supply explicit metadata or an explicit supported mode/index. Positional kernels also reject explicit noncanonical layouts instead of treating a `ZX` suffix as `YX`; semantic-capable crop, projection, rescaling, and measurement paths resolve named axes directly. Array shape alone never establishes RGB or Z/Y/X meaning. A batch source may apply an exact raw-to-effective `AxisDeclaration`, but it is provenance-recorded, never transposes pixels, and never manufactures calibration. Malformed declared axes, stale carried shapes, and non-finite or non-positive calibration fail instead of being replaced by inferred/default metadata. |
 | Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. A typed `PipelineNodeResult` may expose one completed node's transient execution-display state immediately, so its card and sampled thumbnail can advance while later nodes run. When the active cache policy already retains that node, its run-scoped presentation payload also keeps inspection, pinning, tables, and metadata synchronized without defeating Low-memory pruning. Normal success replaces the live scientific cache and execution state with the accepted final result. Cancellation or supersession discards transient presentation state. On failure, a verified source boundary may be merged. A cleanup-failed result may additionally merge completed processing output only with matching actual-implementation provenance; otherwise the coherent earlier value is restored. Source ownership remains an explicit upstream responsibility. |
 | Physical grids | `core/grid.py`, `core/pipeline.py` | Registered multi-image operations compare axis semantics, sizes, scale, unit, and origin for same-shaped inputs. A lower-rank mask is broadcast only through a unique explicit semantic/calibration mapping; coincident dimension sizes are never used to guess omitted axes. Deconvolution separately requires image/PSF axis semantics and sampling to agree while allowing a different PSF extent. Unit aliases are normalized for comparison. VIPP never resamples, reorders, or registers an input implicitly to make grids agree. |
 | Diagnostic calculations | `core/diagnostics.py` | Finite statistics, percentiles, histograms, generated-layer extrema, and label-volume summaries use the complete declared population. Chunking bounds temporary memory but is not sampling. Wide integer histogram placement avoids lossy float conversion, and multichannel behavior requires an explicit `channel_axis` rather than a trailing-size RGB guess. |
@@ -454,7 +454,8 @@ morphology operations: users must be told that the node works on semantic `YX`
 planes. With explicit metadata, positional kernels require a canonical `YX`
 suffix (or `ZYX` suffix for 3D) and fail clearly otherwise. `Reorder Axes` can
 restore canonical storage order, but does not relabel `ZX` as `YX`; such a
-reinterpretation would need its own explicit, provenance-recorded operation.
+reinterpretation requires an explicit, provenance-recorded source
+`AxisDeclaration` where that source is bound for batch execution.
 
 ### Sigma Filter scientific contract
 
@@ -812,6 +813,17 @@ Source metadata comes from, in order of preference:
 3. explicit layer axis hints such as `axes`, `axis_order`, or `vipp_axis_order`;
 4. inferred axes from shape, explicitly labelled as inferred.
 
+At the collection-source boundary, `AxisDeclaration` adds one deliberately
+separate repair mechanism for a reader label that is known to be incomplete or
+wrong. It stores an exact raw order and an effective order, for example `QYX ->
+ZYX`. `apply_axis_declaration()` first requires the raw names and rank to match,
+then replaces semantic names/types/confidence without changing array shape or
+order. The original and effective axes and the declaration are retained in
+provenance. Existing scale, unit, translation, and `source_axis` fields remain
+attached to their positions; relabelling Q as Z therefore does not establish a
+correct Z spacing or unit. Calibration repair remains the job of `Set Pixel
+Size / Units`.
+
 Shape inference is descriptive fallback metadata, not authority to choose a
 scientific interpretation. Before operations use names/types to resolve an
 automatic spatial mode, channel axis, named projection, or automatic PSF
@@ -874,7 +886,9 @@ It never reinterprets original Z samples as Y merely because Z was moved into a
 formerly Y-shaped position. State-aware thumbnails keep following the same
 napari source sliders. Operations that support arbitrary layouts resolve the
 moved names; positional kernels reject a noncanonical explicit suffix instead
-of silently processing the wrong plane or volume.
+of silently processing the wrong plane or volume. Conversely, a batch source
+`AxisDeclaration` changes semantic names in place and performs no transpose;
+the two mechanisms are not substitutes.
 
 Napari also right-aligns layers with fewer dimensions than the current viewer.
 For example, a `CZYX` layer displayed in a 5D viewer is controlled by global
@@ -1473,10 +1487,11 @@ Collection batch UI:
 - The batch workspace is retained and modeless so the graph remains visible.
   Preview-table selection and the full-plan navigator stay synchronized;
   explicit Preview planning activates one representative, while Run uses a
-  separate plan-only preflight and can execute without that representative.
-  Execution compares fresh preflight with any reviewed full plan and revalidates
-  pinned representative source identities, stopping for review when either
-  changes unexpectedly. It reports overall item progress plus nested
+  separate fresh plan plus representative scientific-contract preflight and can
+  execute without a previously activated representative. Execution compares
+  fresh planning with any reviewed full plan and revalidates pinned
+  representative source identities, stopping for review when either changes
+  unexpectedly. It reports overall item progress plus nested
   node/operation checkpoints, final manifest statuses, validation, and the
   manifest path in the workspace. Cancellation uses one shared token through
   execution, staging, source verification, and item boundaries.
@@ -1487,15 +1502,24 @@ Collection batch UI:
   A blank row is accepted only for an existing fixed file-path source;
   napari-layer and sample sources must be collection-bound.
 - `core.batch.BatchSourceConfig`, `BatchItemPlan`, and `BatchOutputPlan` are the
-  Qt-free source, item, and output contracts. `BatchPreviewResult` exposes a
-  limited row sample plus full-plan item and collision totals to the dialog.
+  Qt-free source, item, and output contracts. A source config optionally carries
+  an `AxisDeclaration`; a blank value trusts reader metadata. `BatchPreviewResult`
+  exposes a limited row sample plus full-plan item and collision totals to the
+  dialog.
 - When several sources are bound, matched paths are sorted per source and paired
   by position. All bound sources must match the same number of files. The first
   bound source becomes the primary source for default naming.
 - Batch planning is deterministic and separate from graph execution. Preview
   and execution use the same planner instead of calculating names through
-  separate UI paths. Execution performs a fresh preflight, then passes that
-  exact plan into the runner so changes since an earlier preview are detected.
+  separate UI paths. Execution performs fresh planning, then inspects the first
+  representative source set, applies the same declarations used by interactive
+  representative loading, and calls the graph's scientific axis-contract
+  preflight before output-directory/artifact creation or compute-device setup.
+  Deterministic contract errors are fatal regardless of `continue_on_error`.
+  An unreadable representative remains an item-level failure, and the preflight
+  does not claim to scan every collection file; every later source is still
+  checked against its declaration during execution. The exact plan is then
+  passed into the runner so changes since an earlier preview are detected.
 - `Batch Output` nodes are the authoritative save markers. They pass data
   through during normal graph execution and provide tag, format, subfolder,
   filename-template, and overwrite controls for batch saves.
@@ -1512,8 +1536,11 @@ Collection batch UI:
   schema. It persists source bindings and patterns, output location and
   default format, existing-file policy, the required workflow companion, the
   optional runner choice, the workflow hash, resolved output declarations, and
-  the full effective `ComputeRequest` in schema version 2. Version 1 migrates to
-  explicit CPU because it had no compute field.
+  the full effective `ComputeRequest` plus guarded source-axis declarations in
+  schema version 3. Versions 1 and 2 remain loadable. Version 1 migrates to
+  explicit CPU because it had no compute field; version 2 retains its saved
+  compute request. Both load without declarations and are emitted as version 3
+  only after review/save.
   Load validates the workflow hash so a configuration cannot silently select
   outputs from a different graph.
 - An active workspace may attach the exact versioned config as optional
@@ -1547,7 +1574,11 @@ Collection batch UI:
   while a run-id sidecar directory atomically records each item as it runs and
   after every output. The final manifest contains hashes, software versions,
   input identity and available source metadata, output policy/path/status,
-  errors, and summary counts. Output statuses are `pending`, `completed`,
+  errors, and summary counts. Successfully read source records additionally
+  contain raw and effective axes plus the applied declaration; the embedded
+  config retains intended declarations for pre-read skips or failures. New runs
+  emit manifest schema 3; earlier manifests remain historical
+  records rather than being rewritten. Output statuses are `pending`, `completed`,
   `skipped`, `cancelled`, and `failed`; item statuses additionally include
   `running` and `partial`. Published output records link to the item's canonical
   execution document with `execution_provenance_sha256`. After an interrupted

@@ -815,11 +815,16 @@ example remains available there through `Open batch demo...`.
 The graph commits a new representative label only after its matching source
 load and calculation succeed. If batch settings or scientific graph parameters
 change, the old pairing remains browsable but the runnable plan is marked stale.
-Run performs a fresh plan-only preflight without requiring a representative. It
-executes immediately when no reviewed plan is current, but refreshes and stops
-for review when files or destinations unexpectedly diverge from an already
-displayed plan. Completed preflight rows remain visible as historical evidence
-until the next plan or run.
+Run performs fresh planning and inspects one representative source set through
+the same source-axis declarations and scientific axis contract used by
+execution. When an exact `QYX` TIFF reaches a 3D operation that requires `ZYX`,
+the Batch workspace can visibly select `Pages are depth slices (Z stack)` and
+retry with that guarded interpretation. Other deterministic mismatches stop
+before output directories, run artifacts, or GPU setup are created. Run
+executes immediately when no reviewed plan is current, but
+refreshes and stops for review when files or destinations unexpectedly diverge
+from an already displayed plan. Completed preflight rows remain visible as
+historical evidence until the next plan or run.
 
 Loading the demo replaces the current graph, so VIPP asks for confirmation
 first; save any graph changes you want to keep. The working copy is kept in the
@@ -854,17 +859,39 @@ colocalization_metrics
 ```
 
 The batch workspace supports local folder bindings and sorted positional pairing
-of multiple sources. `Preview batch` is optional: it plans the collection
-without saving batch outputs, then calculates one selected item as the graph
-representative. `Run batch` performs a fresh plan-only preflight and starts the
-full collection directly when no reviewed plan is current.
+of multiple sources. For a new unsaved source, `Image stack` starts at
+`Automatic (recommended)`. When the representative is exactly `QYX` and the
+workflow demonstrates that it needs `ZYX`, VIPP selects
+`Pages are depth slices (Z stack)`, shows a short notice, and retries. The
+notice makes clear that pixel order is unchanged and that the concrete choice
+will be saved with the batch. Keep it only when the pages really are depth
+slices. Selecting
+`Use the file's labels unchanged` is an explicit opt-out and prevents the
+same suggestion from being reapplied to that source. Uncommon manual mappings
+remain under `Something else (advanced)...` rather than in the normal setup
+path.
+
+`Preview batch` is optional: it plans the collection without saving batch
+outputs, then calculates one selected item as the graph representative. `Run
+batch` performs fresh planning plus a representative scientific-contract
+preflight and starts the full collection directly when no reviewed plan is
+current. That preflight is deliberately representative-only, not a scan of
+every file header. Each later item must still match the declaration exactly
+when it is read. A representative that cannot be read remains an item-specific
+failure governed by the continuation policy. If inspection succeeds but the
+saved series index or normalized metadata contract is invalid, preflight blocks
+the run as a deterministic configuration error. A deterministic axis-contract
+failure likewise blocks the run even when `Continue on error` is selected.
+
 The single `Batch workspace...` action is visually separated between workflow
 loading and the export actions in the main toolbar. `Save config...` writes a
-versioned `vipp_batch_config.json`. Current config version 2 also records the
-complete effective compute request: mode, fallback, per-node choices,
-runtime/device, memory limits, policy IDs, and experimental admission. Version
-1 loads as explicit CPU because it predates accelerator execution. `Load
-config...` restores its source
+versioned `vipp_batch_config.json`. Current config version 3 records the
+complete effective compute request and any guarded source-axis declarations.
+Version 1 loads as explicit CPU because it predates accelerator execution;
+version 2 retains its saved compute request. Both older versions load without
+axis declarations and become version 3 only when reviewed and saved. Their blank
+declarations are shown as `Use the file's labels unchanged`, not the
+automatic policy used for a new unsaved row. `Load config...` restores source
 bindings, output folder, default format, existing-file policy, continuation
 behavior, required workflow companion, and optional runner choice, and validates
 the resolved output declarations against the current graph. The saved workflow
@@ -896,18 +923,23 @@ Choose the existing-file policy deliberately:
 An explicit overwrite choice on a `Batch Output` node takes precedence over
 the batch default. `Preview batch` uses the same deterministic pairing and
 output-planning rules as execution and shows existing-path collisions before
-expensive processing starts. `Run` performs that preflight itself, so Preview is
-not a prerequisite. If a displayed plan exists, Run detects unexpected changes
-since it was reviewed before processing starts.
+expensive processing starts. `Run` performs planning and its representative
+scientific preflight itself, so Preview is not a prerequisite. If a displayed
+plan exists, Run detects unexpected changes since it was reviewed before
+processing starts.
 
 A dialog-started run writes `vipp_batch_config.json` beside the outputs; a
 headless replay uses its existing config and workflow paths. Every execution
 writes `vipp_batch_manifest.json` beside the outputs. The manifest records the
 workflow and config hashes, VIPP and runtime package versions, input identity
 and available source metadata, every planned output path/policy, and
-per-item/output status. It also records the actual CPU/CuPy/cuCIM identity and
-version selected for every completed node, the environment and decision
-reasons, structured OOM/CPU-retry records, warnings, and cleanup evidence. It
+per-item/output status. For sources successfully read during item execution,
+version-3 manifests record the reader-reported raw axes, effective axes, and
+applied declaration, so `QYX -> ZYX` remains auditable. The embedded config
+retains the intended declaration for an item skipped or failed before reading.
+They also record the actual CPU/CuPy/cuCIM identity and version
+selected for every completed node, the environment and decision reasons,
+structured OOM/CPU-retry records, warnings, and cleanup evidence. The manifest
 embeds the canonical config and scientific graph;
 run-id archives preserve prior runs, while small per-item sidecars are updated
 during execution. Output records use `pending`,
@@ -1211,6 +1243,63 @@ automatically a scientifically better reconstruction.
 
 ## Axis And Channel Workflows
 
+### Interpret TIFF Pages And Reorder Axes
+
+Some conventional TIFF readers use `Q` for a page dimension whose scientific
+meaning is not encoded in the file. VIPP does not blindly assume that `Q` is Z.
+For a new unsaved source, `Image stack` initially says
+`Automatic (recommended)`. Only when an exact `QYX` representative reaches a
+workflow step that explicitly requires `ZYX` does VIPP select
+`Pages are depth slices (Z stack)` and retry. A visible notice says why the
+choice changed, that it will be saved, and that pixel order is unchanged. The
+workflow requirement makes the suggestion useful; it does not prove that the
+acquisition really contains depth slices.
+Review the choice against the acquisition or the images themselves.
+
+Choosing `Pages are depth slices (Z stack)` records this declaration:
+
+```text
+QYX -> ZYX
+```
+
+This is a guarded reinterpretation. `QYX` must match the reader-reported axes
+exactly, including order and rank, and `ZYX` is the meaning VIPP will use in the
+representative graph and full batch. If a file reports something else, that
+item fails rather than receiving the declaration accidentally. Only make a
+declaration when you have independent knowledge of what every position means.
+To reject VIPP's suggestion, choose `Use the file's labels unchanged`; the
+workspace respects that opt-out. `Something else (advanced)...` exposes the
+original text form only for an uncommon reviewed mapping.
+
+Page interpretation and `Reorder Axes` solve different problems:
+
+- `Image stack` changes semantic names in place. It does not move pixels or
+  change the array shape.
+- `Reorder Axes` transposes pixels and moves each complete axis/calibration
+  record with them. It does not rename or reinterpret an axis, so moving `Q`
+  cannot turn it into `Z`.
+
+Calibration is preserved positionally when axes are declared. A `QYX -> ZYX`
+declaration therefore does not discover or correct the physical Z step, unit,
+or origin. Review `Output Metadata` after declaring axes. If the source did not
+carry a trustworthy Z calibration, use `Set Pixel Size / Units` explicitly
+before calibrated measurements, rescaling, projections, or deconvolution.
+
+The menu is a friendly front end to the durable source declaration. A headless
+Python configuration can state the same decision with
+`AxisDeclaration("QYX", "ZYX")`; serialized config version 3 stores exact
+`source_axes` and `effective_axes` values. Without that explicit saved
+declaration, headless execution remains strict and does not apply the GUI
+suggestion implicitly.
+
+The recommended mode is deliberately UI-only until it resolves. Saving it
+before any suggestion is needed writes no source declaration, and reloading
+shows `Use the file's labels unchanged`. Historic and headless configs
+with a blank declaration are represented the same way, so opening them can
+never silently activate automatic reinterpretation. After VIPP applies the
+guarded suggestion, saving writes the concrete `QYX -> ZYX` declaration and
+reloading restores the Z-stack choice.
+
 ### Composite → RGB
 
 `Composite → RGB` converts one explicitly identified source-channel axis into a
@@ -1441,6 +1530,7 @@ unnecessary full-volume branches.
 | Structures remain blurred or disappear | Follow the ordered PSF/TV/convergence/RL comparison checklist in `Blurred Or Missing Structures`; do not start with numerical guards. |
 | Edges look unreliable after deconvolution | Crop margins or interpret borders cautiously. |
 | Batch saves the wrong output | Add explicit `Batch Output` nodes with clear tags. |
+| A 3D batch stops because TIFF axes are `QYX`, not `ZYX` | Review the source's `Image stack` choice. Use `Pages are depth slices (Z stack)` only when the pages really are depth slices; use `Use the file's labels unchanged` to reject that interpretation. Do not use `Reorder Axes` to rename Q, and verify Z calibration separately. |
 
 ## Related Guides
 

@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
+import tifffile
 
-from napari_vipp.core.batch import BATCH_WORKFLOW_FILENAME
+from napari_vipp.core.batch import (
+    BATCH_WORKFLOW_FILENAME,
+    BatchScientificPreflightError,
+)
 from napari_vipp.core.compute import ComputeMode, ComputeRequest
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
@@ -19,6 +24,21 @@ def _explicit_batch_pipeline() -> tuple[PrototypePipeline, str]:
     output.params.update(tag="result", format="npy")
     assert pipeline.connect("input", output.id).success
     return pipeline, output.id
+
+
+def _axis_sensitive_batch_pipeline() -> PrototypePipeline:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.nodes["input"].params["binding_mode"] = "collection"
+    background = pipeline.add_node("subtract_background")
+    pipeline.set_param(background.id, "radius", 1.0)
+    pipeline.set_param(background.id, "spatial_mode", "3D ZYX")
+    output = pipeline.add_node("batch_output")
+    pipeline.set_param(output.id, "tag", "result")
+    pipeline.set_param(output.id, "format", "npy")
+    assert pipeline.connect("input", background.id).success
+    assert pipeline.connect(background.id, output.id).success
+    return pipeline
 
 
 def test_controller_previews_one_workflow_snapshot_and_current_pipeline(
@@ -166,3 +186,52 @@ def test_controller_preserves_full_machine_execution_request(tmp_path):
     assert config.compute_request.accelerator_memory_cap_bytes == 4_000_000_000
     assert config.compute_request.accelerator_safety_reserve_bytes == 500_000_000
     assert config.compute_request.allow_experimental is True
+
+
+def test_controller_preview_requires_reviewed_axes_for_generic_tiff_stack(tmp_path):
+    pipeline = _axis_sensitive_batch_pipeline()
+    workflow = serialize_workflow(pipeline)
+    controller = CollectionBatchController(
+        workflow_document_provider=lambda: workflow,
+        pipeline_provider=lambda: pipeline,
+    )
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    source_path = input_dir / "ordinary-stack.tif"
+    tifffile.imwrite(
+        source_path,
+        np.arange(3 * 8 * 9, dtype=np.uint16).reshape(3, 8, 9),
+        photometric="minisblack",
+    )
+
+    values = {
+        "input_dir": input_dir,
+        "output_dir": tmp_path / "outputs",
+        "pattern": "*.tif",
+        "image_format": "npy",
+    }
+    with pytest.raises(
+        BatchScientificPreflightError,
+        match=r"raw QYX, effective QYX",
+    ):
+        controller.preview(**values)
+
+    assert not values["output_dir"].exists()
+    preview = controller.preview(
+        **values,
+        source_bindings=[
+            {
+                "node_id": "input",
+                "title": "Image Source",
+                "input_dir": input_dir,
+                "pattern": "*.tif",
+                "axis_declaration": "QYX -> ZYX",
+            }
+        ],
+    )
+
+    assert preview.total_items == 1
+    declaration = preview.config.sources[0].axis_declaration
+    assert declaration is not None
+    assert declaration.display_text == "QYX -> ZYX"
+    assert not values["output_dir"].exists()

@@ -55,6 +55,7 @@ def test_build_collection_batch_config_maps_explicit_sources_and_outputs(tmp_pat
                 "title": "Primary source",
                 "input_dir": first_dir,
                 "pattern": "*.npy",
+                "axis_declaration": "QYX -> ZYX",
             },
             {
                 "node_id": second.id,
@@ -73,6 +74,16 @@ def test_build_collection_batch_config_maps_explicit_sources_and_outputs(tmp_pat
         second_dir.resolve(),
     ]
     assert [source.pattern for source in config.sources] == ["*.npy", "*.ome.tif"]
+    assert config.sources[0].axis_declaration is not None
+    assert config.sources[0].axis_declaration.to_dict() == {
+        "source_axes": "QYX",
+        "effective_axes": "ZYX",
+    }
+    assert config.sources[1].axis_declaration is None
+    assert config.to_dict()["sources"][0]["axis_declaration"] == {
+        "source_axes": "QYX",
+        "effective_axes": "ZYX",
+    }
     assert len(config.outputs) == 1
     output = config.outputs[0]
     assert output.node_id == output_id

@@ -23,11 +23,16 @@ from napari_vipp.core.io.model import (
     ImageSeriesInfo,
     SourceInspection,
 )
-from napari_vipp.core.io.tiff import inspect_tiff, read_tiff
+from napari_vipp.core.io.tiff import (
+    image_state_from_tiff_inspection,
+    inspect_tiff,
+    read_tiff,
+)
 from napari_vipp.core.metadata import (
     AcquisitionMetadata,
     AxisMetadata,
     ChannelMetadata,
+    ImageState,
     SourceMetadata,
     image_state_from_array,
 )
@@ -212,6 +217,56 @@ def read_microscope(path: Path, series_index: int = 0) -> ImageDataset:
     if suffix in _BIOIO_FALLBACK_SUFFIXES:
         return _read_bioio(path, series_index, microscope_format_for_path(path))
     raise ValueError(f"Unsupported microscope source: {path}")
+
+
+def image_state_from_microscope_inspection(
+    path: Path,
+    inspection: SourceInspection,
+    series_index: int = 0,
+) -> ImageState:
+    """Build axis-safe microscope metadata without loading image pixels."""
+    selected = _selected_series(inspection, series_index)
+    if path.suffix.lower() == ".lsm":
+        tiff_inspection = inspect_tiff(path)
+        state = image_state_from_tiff_inspection(
+            path,
+            tiff_inspection,
+            selected.index,
+        )
+        return replace(
+            state,
+            metadata_source="Zeiss LSM TIFF metadata",
+            source=replace(state.source, format="zeiss-lsm"),
+        )
+
+    state = image_state_from_array(
+        _MetadataOnlyMicroscopeArray(selected.shape, selected.dtype),
+        source_name=selected.name or path.name,
+        axes=_axes_from_order(selected.axes, selected.shape),
+        metadata_source=f"{inspection.format} source inspection",
+        source=SourceMetadata(
+            uri=str(path),
+            format=inspection.format,
+            series_index=selected.index,
+            series_name=selected.name,
+        ),
+    )
+    if state is None:
+        raise ValueError(f"Could not build image metadata for {path}")
+    if selected.kind == "labels":
+        state = replace(state, kind="label image")
+    return state
+
+
+class _MetadataOnlyMicroscopeArray:
+    """Lazy shape/dtype carrier for microscope inspection metadata."""
+
+    def __init__(self, shape: tuple[int, ...], dtype: str) -> None:
+        self.shape = tuple(int(size) for size in shape)
+        self.dtype = np.dtype(dtype)
+
+    def compute(self):
+        raise RuntimeError("A microscope metadata-only image cannot load pixels.")
 
 
 def detect_deconvolution_metadata(metadata: Any) -> tuple[bool | None, str]:

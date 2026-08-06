@@ -6,13 +6,14 @@ from types import MappingProxyType, SimpleNamespace
 import imageio.v3 as iio
 import numpy as np
 import pytest
-from tifffile import TiffFile, TiffWriter
+from tifffile import TiffFile, TiffWriter, imwrite
 
 import napari_vipp.core.io.microscope as microscope_io
 from napari_vipp.core.io import (
     AnalysisLabel,
     detect_deconvolution_metadata,
     inspect_image_source,
+    inspect_image_state,
     read_image,
     write_image,
     write_ome_zarr_analysis_dataset,
@@ -130,6 +131,78 @@ def test_tiff_inspection_and_reader_select_independent_series(tmp_path):
     assert inspection.series[1].shape == (7, 8)
     assert loaded.selected_series.index == 1
     assert np.array_equal(loaded.data, second)
+
+
+def test_tiff_axis_detection_distinguishes_generic_qyx_from_tagged_zyx(
+    tmp_path,
+):
+    data = np.arange(4 * 7 * 9, dtype=np.uint16).reshape(4, 7, 9)
+    generic_path = tmp_path / "generic.tif"
+    imagej_path = tmp_path / "imagej.tif"
+    ome_path = tmp_path / "tagged.ome.tif"
+    imwrite(generic_path, data, photometric="minisblack")
+    imwrite(
+        imagej_path,
+        data,
+        imagej=True,
+        metadata={"axes": "ZYX"},
+        photometric="minisblack",
+    )
+    imwrite(
+        ome_path,
+        data,
+        ome=True,
+        metadata={"axes": "ZYX"},
+        photometric="minisblack",
+    )
+
+    for path, expected_format, expected_axes in (
+        (generic_path, "tiff", "QYX"),
+        (imagej_path, "imagej-tiff", "ZYX"),
+        (ome_path, "ome-tiff", "ZYX"),
+    ):
+        inspection = inspect_image_source(path)
+        loaded = read_image(path)
+
+        assert inspection.format == expected_format
+        assert inspection.series[0].axes == expected_axes
+        assert loaded.image_state.axis_order == expected_axes
+        np.testing.assert_array_equal(loaded.data, data)
+
+
+def test_tiff_metadata_only_state_matches_reader_rgb_axis_normalization(tmp_path):
+    data = np.zeros((7, 9, 3), dtype=np.uint8)
+    data[..., 0] = 255
+    path = tmp_path / "rgb.tif"
+    imwrite(path, data, photometric="rgb")
+
+    inspection = inspect_image_source(path)
+    inspected_state = inspect_image_state(path, inspection=inspection)
+    loaded = read_image(path)
+
+    assert inspection.series[0].axes == "YXS"
+    assert inspected_state.axis_order == "Y,X,rgb"
+    assert inspected_state.axis_order == loaded.image_state.axis_order
+    assert inspected_state.kind == loaded.image_state.kind == "RGB image"
+    assert inspected_state.value_range == "not computed (lazy)"
+
+
+def test_lsm_metadata_only_state_matches_tiff_backed_rgb_reader(tmp_path):
+    data = np.zeros((7, 9, 3), dtype=np.uint8)
+    data[..., 1] = 255
+    path = tmp_path / "rgb.lsm"
+    imwrite(path, data, photometric="rgb")
+
+    inspection = inspect_image_source(path)
+    inspected_state = inspect_image_state(path, inspection=inspection)
+    loaded = read_image(path)
+
+    assert inspection.format == "zeiss-lsm"
+    assert inspection.series[0].axes == "YXS"
+    assert inspected_state.axis_order == loaded.image_state.axis_order == "Y,X,rgb"
+    assert inspected_state.kind == loaded.image_state.kind == "RGB image"
+    assert inspected_state.source.format == "zeiss-lsm"
+    assert inspected_state.value_range == "not computed (lazy)"
 
 
 def test_common_raster_sources_read_png_and_jpeg(tmp_path):
@@ -261,6 +334,40 @@ def test_ome_zarr_round_trip_is_lazy_and_preserves_scale(
         0.4,
     ]
     assert np.array_equal(loaded.data.compute(), data)
+
+
+def test_ome_zarr_metadata_only_state_preserves_multi_letter_axis_names(tmp_path):
+    from ome_zarr.format import FormatV04
+    from ome_zarr.writer import write_image as write_ome_zarr_image
+
+    data = np.zeros((3, 5, 7), dtype=np.uint16)
+    path = tmp_path / "multi-letter.ome.zarr"
+    write_ome_zarr_image(
+        data,
+        str(path),
+        fmt=FormatV04(),
+        axes=(
+            {"name": "depth", "type": "space", "unit": "micrometer"},
+            {"name": "y", "type": "space", "unit": "micrometer"},
+            {"name": "x", "type": "space", "unit": "micrometer"},
+        ),
+        scale={"depth": 0.8, "y": 0.2, "x": 0.2},
+        scale_factors=(),
+    )
+
+    inspection = inspect_image_source(path)
+    inspected_state = inspect_image_state(path, inspection=inspection)
+    loaded = read_image(path)
+
+    assert inspection.series[0].axes == "DEPTHYX"
+    assert tuple(axis.name for axis in inspected_state.axes) == (
+        "depth",
+        "y",
+        "x",
+    )
+    assert inspected_state.axes == loaded.image_state.axes
+    assert inspected_state.shape == loaded.image_state.shape == data.shape
+    assert inspected_state.value_range == "not computed (lazy)"
 
 
 def test_ome_zarr_analysis_dataset_round_trip_includes_label_group(tmp_path):

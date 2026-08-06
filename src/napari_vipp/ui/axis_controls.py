@@ -613,9 +613,10 @@ class ReorderAxesControl(QWidget):
         layout.addWidget(hint)
 
         warning = QLabel(
-            "This transposes the data and redefines spatial axes for downstream "
-            "nodes. Treat it like rotating a volume: physical scale follows the "
-            "moved data axis."
+            "This transposes pixels together with their existing axis records "
+            "and calibration. It does not rename or reinterpret axes (for "
+            "example, Q remains Q). Use Declare axes on a batch source when the "
+            "file's reported axis names need an explicit interpretation."
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color: #fbbf24;")

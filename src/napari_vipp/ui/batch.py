@@ -33,13 +33,16 @@ from qtpy.QtWidgets import (
 
 from napari_vipp.core.batch import (
     BATCH_CONFIG_FILENAME,
+    BatchAxisSuggestion,
     BatchConfig,
     BatchItemPlan,
     BatchRunResult,
+    BatchScientificPreflightError,
     ExistingFilePolicy,
 )
 from napari_vipp.core.batch_demo import SyntheticBatchDemo
 from napari_vipp.core.compute import ComputeRequest
+from napari_vipp.core.metadata import AxisDeclaration
 from napari_vipp.ui import recent_paths
 
 
@@ -49,6 +52,7 @@ class BatchSourceBinding:
     title: str
     input_dir: Path | None
     pattern: str
+    axis_declaration: str = ""
 
 
 @dataclass(frozen=True)
@@ -102,6 +106,240 @@ class CollectionBatchActions:
     load_config: LoadBatchConfigAction
     save_config: SaveBatchConfigAction
     preview_item: PreviewBatchItemAction | None = None
+
+
+class AxisInterpretationControl(QWidget):
+    """Novice-facing axis choice with a compatible declaration value."""
+
+    textChanged = Signal(str)
+
+    AUTOMATIC = "automatic"
+    FILE_METADATA = "file"
+    Z_STACK = "z_stack"
+    CUSTOM = "custom"
+    Z_STACK_DECLARATION = "QYX -> ZYX"
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._updating = False
+        self._last_text = ""
+        self._suggestion_seen = False
+        self._suggestion_declined = False
+        self._auto_suggestion_active = False
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem(
+            "Automatic (recommended)",
+            self.AUTOMATIC,
+        )
+        self.mode_combo.addItem(
+            "Use the file's labels unchanged",
+            self.FILE_METADATA,
+        )
+        self.mode_combo.addItem("Pages are depth slices (Z stack)", self.Z_STACK)
+        self.mode_combo.addItem("Something else (advanced)...", self.CUSTOM)
+        self.mode_combo.setAccessibleName("How VIPP should interpret the image stack")
+
+        self.advanced_edit = QLineEdit()
+        self.advanced_edit.setPlaceholderText("Advanced: source axes -> intended axes")
+        self.advanced_edit.hide()
+
+        self.notice_label = QLabel("")
+        self.notice_label.setWordWrap(True)
+        self.notice_label.setMinimumWidth(0)
+        self.notice_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.notice_label.setStyleSheet(
+            "QLabel { color: #fbbf24; background: #422006; "
+            "border: 1px solid #92400e; border-radius: 4px; padding: 5px; }"
+        )
+        self.notice_label.hide()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self.mode_combo)
+        layout.addWidget(self.advanced_edit)
+        layout.addWidget(self.notice_label)
+
+        guidance = (
+            "VIPP normally trusts the file. For an ordinary TIFF whose pages "
+            "are depth slices, choose Z stack. This changes axis labels only; "
+            "it does not transpose pixels."
+        )
+        self.setToolTip(guidance)
+        self.setAccessibleDescription(guidance)
+        self.mode_combo.setToolTip(guidance)
+        self.advanced_edit.setToolTip(
+            "Advanced compatibility option for a reviewed source-to-result "
+            "axis declaration."
+        )
+
+        self.mode_combo.currentIndexChanged.connect(self._mode_changed)
+        self.advanced_edit.textChanged.connect(self._advanced_changed)
+
+    def text(self) -> str:
+        mode = self.mode_combo.currentData()
+        if mode == self.Z_STACK:
+            return self.Z_STACK_DECLARATION
+        if mode == self.CUSTOM:
+            return self.advanced_edit.text().strip()
+        return ""
+
+    def setText(self, value: str) -> None:  # noqa: N802 - QLineEdit compatibility
+        old_text = self.text()
+        raw_value = str(value or "").strip()
+        try:
+            declaration = AxisDeclaration.from_value(raw_value)
+        except ValueError:
+            declaration = None
+        is_z_stack = (
+            declaration is not None
+            and declaration.source_axes == "QYX"
+            and declaration.effective_axes == "ZYX"
+        )
+
+        self._updating = True
+        try:
+            if not raw_value:
+                self.mode_combo.setCurrentIndex(
+                    self.mode_combo.findData(self.FILE_METADATA)
+                )
+                self.advanced_edit.clear()
+            elif is_z_stack:
+                self.mode_combo.setCurrentIndex(self.mode_combo.findData(self.Z_STACK))
+                self.advanced_edit.clear()
+            else:
+                self.mode_combo.setCurrentIndex(self.mode_combo.findData(self.CUSTOM))
+                self.advanced_edit.setText(raw_value)
+            self.advanced_edit.setVisible(
+                self.mode_combo.currentData() == self.CUSTOM
+            )
+        finally:
+            self._updating = False
+
+        self._suggestion_seen = False
+        self._suggestion_declined = False
+        self._auto_suggestion_active = False
+        if is_z_stack:
+            self._show_notice(
+                "Saved choice: treat these TIFF pages as depth slices (Z). "
+                "Pixel order is unchanged."
+            )
+        elif raw_value:
+            self._show_notice(
+                "Using a saved advanced axis interpretation. Pixel order is "
+                "unchanged."
+            )
+        else:
+            self._hide_notice()
+        self._last_text = old_text
+        self._emit_if_changed()
+
+    def apply_z_stack_suggestion(self, suggestion: BatchAxisSuggestion) -> bool:
+        """Apply only VIPP's exact, guarded QYX-to-ZYX recommendation once."""
+        declaration = suggestion.declaration
+        if (
+            declaration.source_axes != "QYX"
+            or declaration.effective_axes != "ZYX"
+            or self.mode_combo.currentData() != self.AUTOMATIC
+            or self._suggestion_declined
+        ):
+            return False
+        self._suggestion_seen = True
+        self._auto_suggestion_active = True
+        self._updating = True
+        try:
+            self.mode_combo.setCurrentIndex(self.mode_combo.findData(self.Z_STACK))
+            self.advanced_edit.hide()
+        finally:
+            self._updating = False
+        self._show_notice(
+            "VIPP selected Z stack because this workflow uses 3D processing. "
+            "Pixel order is unchanged, and this choice will be saved with the "
+            "batch."
+        )
+        self.notice_label.setToolTip(
+            "File labels: QYX; VIPP labels for this batch: ZYX. Verify the Z "
+            "spacing separately."
+        )
+        self._emit_if_changed()
+        return True
+
+    @property
+    def suggestion_declined(self) -> bool:
+        return self._suggestion_declined
+
+    def source_binding_changed(self) -> None:
+        """Discard only an inference made for the previous file collection."""
+        if not self._auto_suggestion_active:
+            return
+        self._updating = True
+        try:
+            self.mode_combo.setCurrentIndex(
+                self.mode_combo.findData(self.AUTOMATIC)
+            )
+            self.advanced_edit.hide()
+        finally:
+            self._updating = False
+        self._auto_suggestion_active = False
+        self._suggestion_seen = False
+        self._suggestion_declined = False
+        self._hide_notice()
+        self._emit_if_changed()
+
+    def _mode_changed(self, _index: int) -> None:
+        if self._updating:
+            return
+        mode = self.mode_combo.currentData()
+        self._auto_suggestion_active = False
+        self.advanced_edit.setVisible(mode == self.CUSTOM)
+        if mode == self.AUTOMATIC:
+            self._suggestion_declined = False
+            self._show_notice(
+                "VIPP will change this only if the workflow proves that it "
+                "needs a Z stack."
+            )
+        elif mode == self.FILE_METADATA:
+            if self._suggestion_seen:
+                self._suggestion_declined = True
+                self._show_notice(
+                    "Using the file's labels unchanged. VIPP will not "
+                    "choose Z stack again for this source."
+                )
+            else:
+                self._hide_notice()
+        elif mode == self.Z_STACK:
+            self._suggestion_declined = False
+            self._show_notice(
+                "Treating these TIFF pages as depth slices (Z). Pixel order is "
+                "unchanged, and this choice will be saved with the batch."
+            )
+        else:
+            self._show_notice(
+                "Advanced axis labels are used exactly as entered. Pixel order "
+                "is unchanged."
+            )
+        self._emit_if_changed()
+
+    def _advanced_changed(self, _text: str) -> None:
+        if not self._updating and self.mode_combo.currentData() == self.CUSTOM:
+            self._emit_if_changed()
+
+    def _emit_if_changed(self) -> None:
+        value = self.text()
+        if value == self._last_text:
+            return
+        self._last_text = value
+        self.textChanged.emit(value)
+
+    def _show_notice(self, text: str) -> None:
+        self.notice_label.setText(text)
+        self.notice_label.show()
+
+    def _hide_notice(self) -> None:
+        self.notice_label.clear()
+        self.notice_label.setToolTip("")
+        self.notice_label.hide()
 
 
 class CollectionBatchDialog(QDialog):
@@ -270,15 +508,8 @@ class CollectionBatchDialog(QDialog):
         config_layout.addStretch(1)
 
         help_label = QLabel(
-            "Bind each Image Source that should change per batch item to a "
-            "folder and file pattern. VIPP zips bound sources by sorted file "
-            "order and assigns each row a stable batch ID. Preview batch is "
-            "optional: it plans the complete collection and calculates the "
-            "first row only as a representative graph view. Preview selected "
-            "in graph changes that single representative. Run batch performs a "
-            "fresh preflight, processes the full plan immediately, and saves "
-            "only Batch Output nodes when present. Without Batch Output nodes, "
-            "terminal graph outputs are saved as a compatibility fallback."
+            "Choose the source and output folders. Preview checks a sample "
+            "before anything is saved."
         )
         help_label.setWordWrap(True)
         help_label.setMinimumWidth(0)
@@ -422,9 +653,8 @@ class CollectionBatchDialog(QDialog):
         self.script_checkbox.toggled.connect(self._invalidate_preview_plan)
         self.continue_checkbox.toggled.connect(self._invalidate_preview_plan)
         self.preview_status.setText(
-            "Configure the collections, then Run batch. Preview batch is optional "
-            "and lets you inspect the full plan plus one graph representative "
-            "without saving batch outputs."
+            "Ready. Preview checks one sample; Run batch checks again before "
+            "saving."
         )
 
         screen = self.screen()
@@ -522,6 +752,7 @@ class CollectionBatchDialog(QDialog):
     ) -> QWidget:
         folder_edit = QLineEdit()
         pattern_edit = QLineEdit("*.tif;*.tiff;*.ome.tif;*.ome.tiff")
+        axis_declaration_edit = AxisInterpretationControl()
         browse_button = QPushButton("Folder...")
         browse_button.clicked.connect(
             lambda _checked=False, edit=folder_edit: self._browse_source_input(edit)
@@ -529,15 +760,19 @@ class CollectionBatchDialog(QDialog):
         folder_edit.textChanged.connect(
             lambda text, edit=folder_edit: self._source_folder_changed(edit, text)
         )
-        pattern_edit.textChanged.connect(self._invalidate_preview_plan)
+        pattern_edit.textChanged.connect(
+            lambda _text, control=axis_declaration_edit: self._source_pattern_changed(
+                control
+            )
+        )
+        axis_declaration_edit.textChanged.connect(self._invalidate_preview_plan)
         title_label = QLabel(
-            f"{title} ({node_id})"
-            + ("  - collection" if binding_mode == "collection" else "")
+            title + ("  - collection" if binding_mode == "collection" else "")
         )
         title_label.setWordWrap(True)
         title_label.setMinimumWidth(0)
         title_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        title_label.setToolTip(title_label.text())
+        title_label.setToolTip(f"Workflow source: {title} ({node_id})")
         title_label.setStyleSheet("font-weight: 650;")
 
         folder_row = QWidget()
@@ -553,6 +788,17 @@ class CollectionBatchDialog(QDialog):
         pattern_layout.addWidget(QLabel("Pattern"))
         pattern_layout.addWidget(pattern_edit, 1)
 
+        declaration_row = QWidget()
+        declaration_layout = QHBoxLayout(declaration_row)
+        declaration_layout.setContentsMargins(0, 0, 0, 0)
+        declaration_label = QLabel("Image stack")
+        declaration_label.setToolTip(
+            "VIPP normally trusts the file and visibly suggests Z stack only "
+            "when this workflow proves that it needs one."
+        )
+        declaration_layout.addWidget(declaration_label)
+        declaration_layout.addWidget(axis_declaration_edit, 1)
+
         row = QFrame()
         row.setFrameShape(QFrame.StyledPanel)
         row.setStyleSheet(
@@ -565,12 +811,14 @@ class CollectionBatchDialog(QDialog):
         row_layout.addWidget(title_label)
         row_layout.addWidget(folder_row)
         row_layout.addWidget(pattern_row)
+        row_layout.addWidget(declaration_row)
         self._source_rows.append(
             {
                 "node_id": node_id,
                 "title": title,
                 "folder": folder_edit,
                 "pattern": pattern_edit,
+                "axis_declaration": axis_declaration_edit,
                 "browse_button": browse_button,
                 "index": index,
                 "widget": row,
@@ -581,10 +829,21 @@ class CollectionBatchDialog(QDialog):
         return row
 
     def _source_folder_changed(self, edit: QLineEdit, _text: str) -> None:
-        if self._output_path_is_suggested and any(
-            edit is row["folder"] for row in self._source_rows
-        ):
+        matching_row = next(
+            (row for row in self._source_rows if edit is row["folder"]),
+            None,
+        )
+        if self._output_path_is_suggested and matching_row is not None:
             self._refresh_suggested_output_path()
+        if matching_row is not None:
+            matching_row["axis_declaration"].source_binding_changed()
+        self._invalidate_preview_plan()
+
+    def _source_pattern_changed(
+        self,
+        control: AxisInterpretationControl,
+    ) -> None:
+        control.source_binding_changed()
         self._invalidate_preview_plan()
 
     def _refresh_suggested_output_path(self) -> None:
@@ -650,6 +909,7 @@ class CollectionBatchDialog(QDialog):
                     "title": row["title"],
                     "input_dir": row["folder"].text(),
                     "pattern": row["pattern"].text(),
+                    "axis_declaration": row["axis_declaration"].text(),
                 }
             )
         return {
@@ -681,12 +941,14 @@ class CollectionBatchDialog(QDialog):
         self.preview_table.setRowCount(0)
         self.preview_item_button.setEnabled(False)
         self.preview_status.setText(
-            "Batch settings changed. Run batch will build a fresh plan, or use "
-            "Preview batch to inspect it first."
+            "Settings changed. Preview again, or run when ready."
         )
         self.graph_preview_status.setText(
-            "Use Preview batch to select a representative graph item if desired."
+            "Preview the batch to inspect a sample in the graph."
         )
+        run_button = getattr(self, "run_button", None)
+        if run_button is not None:
+            run_button.setEnabled(self._actions is not None)
         self.previewInvalidated.emit()
 
     def invalidate_for_workflow_change(self) -> None:
@@ -881,22 +1143,70 @@ class CollectionBatchDialog(QDialog):
         if self._actions is None:
             self.preview_status.setText("Preview is available from the VIPP widget.")
             return False
-        try:
-            result = self._actions.preview_batch(self.values(), 25)
-        except Exception as exc:
-            self.clear_demo_context()
-            self._preview_result = None
-            self._preview_table_rows.clear()
-            self.preview_table.setRowCount(0)
-            self.preview_status.setText(f"Preview failed: {exc}")
-            self.graph_preview_status.setText(
-                "Representative graph preview requires a valid batch plan."
-            )
-            self.preview_item_button.setEnabled(False)
-            self.previewInvalidated.emit()
+        result = None
+        for attempt in range(2):
+            try:
+                result = self._actions.preview_batch(self.values(), 25)
+                break
+            except BatchScientificPreflightError as exc:
+                if attempt == 0 and self.apply_axis_suggestion(exc):
+                    continue
+                self._show_preview_failure(
+                    exc.user_message,
+                    technical_detail=exc.technical_detail,
+                )
+                return False
+            except Exception as exc:
+                self._show_preview_failure(
+                    f"Preview could not be prepared: {exc}",
+                )
+                return False
+        if result is None:
             return False
         self.apply_preview_result(result, preview_representative=True)
         return True
+
+    def apply_axis_suggestion(self, error: BatchScientificPreflightError) -> bool:
+        """Apply one exact UI suggestion and make the change visible."""
+        suggestion = error.axis_suggestion
+        if suggestion is None:
+            return False
+        row = next(
+            (
+                item
+                for item in self._source_rows
+                if item["node_id"] == suggestion.source_node_id
+            ),
+            None,
+        )
+        if row is None:
+            return False
+        control = row["axis_declaration"]
+        if not control.apply_z_stack_suggestion(suggestion):
+            return False
+        self.content_scroll.ensureWidgetVisible(row["widget"])
+        return True
+
+    def _show_preview_failure(
+        self,
+        message: str,
+        *,
+        technical_detail: str = "",
+    ) -> None:
+        """Show one actionable issue while retaining detail in a tooltip."""
+        self.clear_demo_context()
+        self._preview_result = None
+        self._preview_table_rows.clear()
+        self.preview_table.setRowCount(0)
+        concise = str(message).strip() or "Preview could not be prepared."
+        self.preview_status.setText(concise)
+        self.preview_status.setToolTip(str(technical_detail).strip())
+        self.graph_preview_status.setText(
+            "Change the highlighted setting, then preview again."
+        )
+        self.preview_item_button.setEnabled(False)
+        self.run_button.setEnabled(False)
+        self.previewInvalidated.emit()
 
     def apply_preview_result(
         self,
@@ -944,34 +1254,25 @@ class CollectionBatchDialog(QDialog):
         collision_count = result.collision_count
         explicit_outputs = result.explicit_outputs
         messages = [
-            f"Showing {len(result)} of {total_items} planned batch item(s). "
-            "Planning has not saved any batch outputs."
+            f"Ready: {total_items} batch item(s) checked. Nothing was saved."
         ]
-        if preview_representative:
-            messages.append(
-                "The first row is calculated only as a graph representative; "
-                "the full batch has not run."
-            )
-        else:
-            messages.append(
-                "No graph representative was calculated; this fresh plan is "
-                "ready for the requested full run."
-            )
         if collision_count:
-            messages.append(f"{collision_count} collision(s) need attention.")
+            messages.append(
+                f"{collision_count} existing output collision(s) need attention."
+            )
         if not explicit_outputs:
             messages.append(
-                "Compatibility fallback: terminal graph outputs will be saved; "
-                "add Batch Output nodes to make the selection explicit."
+                "VIPP will save the final graph results because no Batch Output "
+                "node was added."
             )
         if self._demo is not None:
             planned_outputs = sum(len(row.outputs) for row in result)
             messages.append(
-                "Demo ready - click Run demo batch to process "
-                f"{total_items} paired items, write {planned_outputs} outputs, "
-                "and validate the results and provenance."
+                f"Demo ready: {total_items} paired items will write "
+                f"{planned_outputs} outputs."
             )
         self.preview_status.setText(" ".join(messages))
+        self.preview_status.setToolTip("")
         if result.rows:
             self.select_preview_item(0)
             if (
@@ -1199,6 +1500,32 @@ class CollectionBatchDialog(QDialog):
                 item.setText("Not run")
         self._finish_run_interaction(defer_control_restore)
 
+    def show_preflight_error(
+        self,
+        message: str,
+        *,
+        technical_detail: str = "",
+    ) -> None:
+        """Show one deterministic setup issue without runtime-failure noise."""
+        concise = str(message).strip() or "The batch needs one setting changed."
+        self.run_group.show()
+        self.run_progress_label.setText("Batch not started.")
+        self.run_result_label.setText(concise)
+        self.run_result_label.setToolTip(str(technical_detail).strip())
+        self.run_progress_bar.setRange(0, 1)
+        self.run_progress_bar.setValue(0)
+        self.run_progress_bar.setFormat("Needs attention")
+        self.operation_progress_bar.setRange(0, 1)
+        self.operation_progress_bar.setValue(0)
+        self.operation_progress_bar.setFormat("")
+        self.operation_progress_label.setText(
+            "Change the highlighted setting, then preview or run again."
+        )
+        self._finish_run_interaction(False)
+        self.preview_status.setText(concise)
+        self.preview_status.setToolTip(str(technical_detail).strip())
+        self.run_button.setEnabled(False)
+
     def _finish_run_interaction(self, defer_control_restore: bool) -> None:
         """Consume queued run clicks before restoring setup controls."""
         self.cancel_run_button.hide()
@@ -1349,6 +1676,7 @@ class CollectionBatchDialog(QDialog):
         self._source_rows = ordered_rows
         for row in self._source_rows:
             row["folder"].clear()
+            row["axis_declaration"].setText("")
             self.source_layout.removeWidget(row["widget"])
             self.source_layout.addWidget(row["widget"])
         for source in config.sources:
@@ -1357,11 +1685,17 @@ class CollectionBatchDialog(QDialog):
             suffix = (
                 "  - collection" if row["binding_mode"] == "collection" else ""
             )
-            row["title_label"].setText(
-                f"{source.title} ({source.node_id}){suffix}"
+            row["title_label"].setText(f"{source.title}{suffix}")
+            row["title_label"].setToolTip(
+                f"Workflow source: {source.title} ({source.node_id})"
             )
             row["folder"].setText(str(config.resolve_path(source.input_dir)))
             row["pattern"].setText(source.pattern)
+            row["axis_declaration"].setText(
+                ""
+                if source.axis_declaration is None
+                else source.axis_declaration.display_text
+            )
         if self._source_rows:
             self.input_edit = self._source_rows[0]["folder"]
             self.pattern_edit = self._source_rows[0]["pattern"]

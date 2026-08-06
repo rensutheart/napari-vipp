@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from qtpy.QtWidgets import QLabel
+
 from napari_vipp.ui import recent_paths
+from napari_vipp.ui.axis_controls import AxisSliceOption, ReorderAxesControl
 from napari_vipp.ui.controls import ImageSourceControl
 
 
@@ -10,6 +13,21 @@ def _image_source_control():
         layer_names=[],
         sample_names=[],
     )
+
+
+def test_reorder_axes_guidance_distinguishes_transpose_from_declaration(qtbot):
+    control = ReorderAxesControl(
+        [
+            AxisSliceOption(0, "q", "unknown", 3),
+            AxisSliceOption(1, "y", "space", 8),
+            AxisSliceOption(2, "x", "space", 9),
+        ]
+    )
+    qtbot.addWidget(control)
+
+    guidance = " ".join(label.text() for label in control.findChildren(QLabel))
+    assert "does not rename or reinterpret axes" in guidance
+    assert "Declare axes" in guidance
 
 
 def test_image_source_choosers_share_recent_input_directory(

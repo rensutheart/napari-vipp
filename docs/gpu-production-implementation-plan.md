@@ -2875,6 +2875,10 @@ cancelled status, item cleanup, and fail-closed publication are integrated.
 Schema-1 configs migrate to CPU. The saved runner supports one-run CLI
 overrides, both progress levels, SIGINT cleanup, and exit code 130.
 
+**Superseded schema note (2026-08-06):** release 0.13.0a1 advances batch configs
+and manifests to schema 3 for guarded per-source axis declarations and raw versus
+effective axis provenance. Schema-1 and schema-2 configs remain readable.
+
 **Depends on:** Pass 4.
 **Owns:** `core/batch.py`, `core/batch_setup.py`, batch manifest/config versions,
 `ui/batch.py`, `ui/batch_controller.py`, `ui/batch_navigator.py`, and focused

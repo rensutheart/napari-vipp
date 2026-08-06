@@ -16,6 +16,7 @@ from napari_vipp.core.io.ome_zarr import write_ome_zarr_analysis_dataset
 from napari_vipp.core.io.registry import (
     WRITE_FORMATS,
     inspect_image_source,
+    inspect_image_state,
     read_image,
     write_image,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "OptionalMicroscopeReaderError",
     "SourceInspection",
     "detect_deconvolution_metadata",
+    "inspect_image_state",
     "inspect_image_source",
     "read_image",
     "write_image",

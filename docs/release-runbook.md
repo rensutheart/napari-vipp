@@ -66,13 +66,24 @@ latest manifest, archive, and three item sidecars.
 
 For a release containing durable GPU execution, repeat the batch smoke with a
 mixed admitted CPU/GPU pipeline and inspect the manifest rather than relying on
-badges alone. Confirm BatchConfig/manifest schema 2, configured and effective
+badges alone. Confirm BatchConfig/manifest schema 3, configured and effective
 requests/hashes, exact implementation version/parity identity for every
 computed node, per-output execution digest links, and true cleanup. Run the
 saved `vipp_batch_pipeline.py --progress` once with its recorded request and
 once with an explicit mode or node override. Confirm both item and operation
 progress, then cancel a third run and verify cancelled status, no unpublished
 output, finalized manifests/checkpoints, and exit code 130.
+
+For 0.13.0a1 and later, include a conventional-TIFF axis smoke. Use a fixture
+that the reader reports as `QYX` but whose acquisition record establishes that
+Q is Z. First leave `Declare axes` blank and confirm a workflow requiring `ZYX`
+is stopped by representative scientific preflight before the output directory,
+run artifacts, or GPU setup appear. Then set `QYX -> ZYX`, preview and run, and
+confirm both paths use `ZYX`. Inspect the schema-3 config and manifest for the
+exact declaration plus raw `QYX` and effective `ZYX`. Confirm `Reorder Axes`
+still transposes without renaming Q, a later item whose raw axes do not match the
+declaration fails at that item, and the declared Z calibration is not presented
+as newly measured or corrected.
 
 Also replay the same graph with `Prefer GPU`. Confirm every scientifically
 eligible reviewed public provider is used without requiring a CPU-speed win,
@@ -356,6 +367,9 @@ If not updated after indexing delay:
 - [ ] Durable CPU/GPU replay verified configured/effective requests, exact node
       identities, output digest links, both progress levels, cancellation 130,
       structured OOM policy, and cleanup-gated publication
+- [ ] Conventional-TIFF `QYX` batch is blocked before output/GPU setup without a
+      declaration, succeeds as `ZYX` with `QYX -> ZYX`, records raw/effective
+      axes in schema 3, and keeps declaration distinct from reorder/calibration
 - [ ] Prefer-GPU UI and durable replay verified all eligible reviewed GPU
       placements, explained unsupported-node CPU decisions, dormant per-node
       preferences, visible-only fallback, and exact provenance

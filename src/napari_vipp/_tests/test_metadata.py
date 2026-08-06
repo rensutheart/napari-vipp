@@ -8,9 +8,11 @@ from napari_vipp.core.metadata import (
     AXIS_CONFIDENCE_INFERRED,
     AXIS_CONFIDENCE_MIXED,
     DEFERRED_VALUE_RANGE,
+    AxisDeclaration,
     AxisMetadata,
     ChannelMetadata,
     ImageState,
+    apply_axis_declaration,
     image_state_from_array,
     infer_axis_metadata_from_shape,
     transform_image_state,
@@ -441,6 +443,85 @@ def test_reorder_axes_moves_semantics_and_source_mapping_with_pixels():
     assert reordered.shape == (4, 2, 3)
     assert reordered.axis_order == "XZY"
     assert [axis.source_axis for axis in reordered.axes] == [2, 0, 1]
+
+
+def test_axis_declaration_relabels_semantics_without_reordering_data_axes():
+    data = np.zeros((2, 3, 4), dtype=np.float32)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata(
+                "q",
+                "unknown",
+                unit="um",
+                scale=2.0,
+                translation=10.0,
+                source_axis=2,
+            ),
+            AxisMetadata(
+                "y",
+                "space",
+                unit="um",
+                scale=0.5,
+                translation=20.0,
+                source_axis=3,
+            ),
+            AxisMetadata(
+                "x",
+                "space",
+                unit="um",
+                scale=0.25,
+                translation=30.0,
+                source_axis=4,
+            ),
+        ),
+    )
+
+    declared = apply_axis_declaration(
+        state,
+        AxisDeclaration("qyx", "zyx"),
+        declaration_source="test config",
+    )
+
+    assert state.axis_order == "QYX"
+    assert declared.shape == data.shape
+    assert declared.axis_order == "ZYX"
+    assert [axis.source_axis for axis in declared.axes] == [2, 3, 4]
+    assert [axis.scale for axis in declared.axes] == [2.0, 0.5, 0.25]
+    assert [axis.translation for axis in declared.axes] == [10.0, 20.0, 30.0]
+    assert [axis.unit for axis in declared.axes] == ["um", "um", "um"]
+    assert declared.axes_explicit
+    assert "QYX interpreted as ZYX; data order unchanged" in declared.history[-1]
+
+    reordered = transform_image_state(
+        np.transpose(data, (1, 0, 2)),
+        state,
+        operation_id="reorder_axes",
+        operation_title="Reorder Axes",
+        params={"order": "YQX"},
+    )
+    assert reordered.axis_order == "YQX"
+    assert "Q" in reordered.axis_order
+
+    with pytest.raises(ValueError, match="expects QYX.*reports ZYX"):
+        apply_axis_declaration(
+            declared,
+            AxisDeclaration("QYX", "ZYX"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    (
+        ("ZYX", "reviewed mapping"),
+        ({"source_axes": "QYX"}, "both source and effective"),
+        ({"source_axes": "QYX", "effective_axes": "ZZX"}, "duplicate"),
+        ({"source_axes": "QYX", "effective_axes": "YX"}, "same number"),
+    ),
+)
+def test_axis_declaration_rejects_incomplete_or_ambiguous_mappings(value, message):
+    with pytest.raises(ValueError, match=message):
+        AxisDeclaration.from_value(value)
 
 
 def test_split_axis_metadata_normalizes_a_valid_negative_axis_once():

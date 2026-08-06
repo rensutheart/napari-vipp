@@ -3,18 +3,23 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QFormLayout, QScrollArea, QSizePolicy
 
 from napari_vipp.core.batch import (
+    BatchAxisSuggestion,
     BatchConfig,
     BatchItemPlan,
     BatchOutputConfig,
+    BatchScientificPreflightError,
     BatchSourceConfig,
     BatchStatus,
 )
+from napari_vipp.core.metadata import AxisDeclaration
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.batch import (
+    AxisInterpretationControl,
     BatchPreviewResult,
     BatchPreviewRow,
     CollectionBatchActions,
@@ -290,6 +295,267 @@ def test_loaded_batch_output_is_custom_and_does_not_follow_source(qtbot, tmp_pat
     assert dialog.output_edit.text() == configured_output
 
 
+def test_batch_source_axis_declaration_roundtrips_through_dialog_values(
+    qtbot,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    declared_source = replace(
+        result.config.sources[0],
+        axis_declaration=AxisDeclaration("QYX", "ZYX"),
+    )
+    config = replace(result.config, sources=(declared_source,))
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+
+    dialog._apply_config(config)
+
+    control = dialog._source_rows[0]["axis_declaration"]
+    assert control.mode_combo.currentData() == "z_stack"
+    assert "Z stack" in control.mode_combo.currentText()
+    assert control.text() == "QYX -> ZYX"
+    assert dialog.values()["source_bindings"][0]["axis_declaration"] == (
+        "QYX -> ZYX"
+    )
+    assert "does not transpose pixels" in control.toolTip()
+
+    dialog._apply_config(result.config)
+
+    assert control.mode_combo.currentData() == "file"
+    assert "file" in control.mode_combo.currentText().lower()
+    assert control.text() == ""
+    assert dialog.values()["source_bindings"][0]["axis_declaration"] == ""
+
+
+def test_loaded_blank_axis_choice_is_strict_file_metadata_opt_out(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+
+    dialog._apply_config(result.config)
+
+    control = dialog._source_rows[0]["axis_declaration"]
+    assert control.mode_combo.currentData() == AxisInterpretationControl.FILE_METADATA
+    assert control.text() == ""
+    assert not control.apply_z_stack_suggestion(_qyx_z_stack_suggestion())
+
+
+@pytest.mark.parametrize("changed_field", ["folder", "pattern"])
+def test_source_change_resets_auto_axis_choice_but_retains_manual_z_stack(
+    qtbot,
+    tmp_path,
+    changed_field,
+):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    row = dialog._source_rows[0]
+    control = row["axis_declaration"]
+    suggestion = _qyx_z_stack_suggestion()
+
+    assert control.mode_combo.currentData() == AxisInterpretationControl.AUTOMATIC
+    assert control.apply_z_stack_suggestion(suggestion)
+    assert control.mode_combo.currentData() == AxisInterpretationControl.Z_STACK
+
+    if changed_field == "folder":
+        row["folder"].setText(str(tmp_path / "replacement"))
+    else:
+        row["pattern"].setText("*.replacement.tif")
+
+    assert control.mode_combo.currentData() == AxisInterpretationControl.AUTOMATIC
+    assert control.text() == ""
+
+    z_stack_index = control.mode_combo.findData(AxisInterpretationControl.Z_STACK)
+    control.mode_combo.setCurrentIndex(z_stack_index)
+    assert control.mode_combo.currentData() == AxisInterpretationControl.Z_STACK
+
+    if changed_field == "folder":
+        row["folder"].setText(str(tmp_path / "manual-replacement"))
+    else:
+        row["pattern"].setText("*.manual.tif")
+
+    assert control.mode_combo.currentData() == AxisInterpretationControl.Z_STACK
+    assert control.text() == AxisInterpretationControl.Z_STACK_DECLARATION
+
+
+def test_loading_config_clears_axis_choice_from_omitted_source_row(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(
+        source_nodes=[
+            {"node_id": "input", "title": "Primary"},
+            {"node_id": "omitted", "title": "Omitted"},
+        ],
+        actions=_actions(result, []),
+    )
+    qtbot.addWidget(dialog)
+    omitted = dialog._source_rows[1]
+    omitted["folder"].setText(str(tmp_path / "old-source"))
+    omitted["axis_declaration"].setText("QYX -> ZYX")
+    assert omitted["axis_declaration"].text() == "QYX -> ZYX"
+
+    dialog._apply_config(result.config)
+
+    control = omitted["axis_declaration"]
+    assert omitted["folder"].text() == ""
+    assert control.mode_combo.currentData() == AxisInterpretationControl.FILE_METADATA
+    assert control.text() == ""
+
+
+def test_scientific_preflight_error_disables_run_until_settings_change(
+    qtbot,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+
+    dialog.show_preflight_error("QYX needs a reviewed declaration.")
+
+    assert not dialog.run_button.isEnabled()
+    assert "QYX" in dialog.run_result_label.text()
+    dialog._source_rows[0]["axis_declaration"].setText("QYX -> ZYX")
+    assert dialog.run_button.isEnabled()
+
+
+def _qyx_z_stack_suggestion() -> BatchAxisSuggestion:
+    return BatchAxisSuggestion(
+        source_node_id="input",
+        source_title="Image Source",
+        declaration=AxisDeclaration("QYX", "ZYX"),
+    )
+
+
+def _qyx_preflight_error() -> BatchScientificPreflightError:
+    return BatchScientificPreflightError(
+        "Batch scientific preflight failed before item processing, output "
+        "creation, or CPU/GPU device setup. Representative source axes: "
+        "Image Source: raw QYX, effective QYX (no declaration). Subtract "
+        "Background, Gaussian Blur 3D, and Reorder Axes cannot continue.",
+        user_message=(
+            "This TIFF looks like a Z stack, but its first dimension is "
+            "labelled Q. VIPP can treat it as Z for this batch."
+        ),
+        axis_suggestion=_qyx_z_stack_suggestion(),
+    )
+
+
+def test_qyx_preview_applies_visible_z_stack_default_without_typing(qtbot, tmp_path):
+    raw_result = _preview_result(tmp_path)
+    declared_source = replace(
+        raw_result.config.sources[0],
+        axis_declaration=AxisDeclaration("QYX", "ZYX"),
+    )
+    declared_result = replace(
+        raw_result,
+        config=replace(raw_result.config, sources=(declared_source,)),
+    )
+    calls: list[dict[str, object]] = []
+
+    def preview(values, _limit):
+        calls.append(values)
+        declaration = values["source_bindings"][0]["axis_declaration"]
+        if len(calls) == 1:
+            assert declaration == ""
+            raise _qyx_preflight_error()
+        assert declaration == "QYX -> ZYX"
+        return declared_result
+
+    actions = replace(_actions(raw_result, []), preview_batch=preview)
+    dialog = CollectionBatchDialog(actions=actions)
+    qtbot.addWidget(dialog)
+
+    assert dialog._preview_batch()
+
+    assert len(calls) == 2
+    control = dialog._source_rows[0]["axis_declaration"]
+    assert control.mode_combo.currentData() == "z_stack"
+    assert "Z stack" in control.mode_combo.currentText()
+    assert control.text() == "QYX -> ZYX"
+    assert dialog.values()["source_bindings"][0]["axis_declaration"] == (
+        "QYX -> ZYX"
+    )
+    assert not control.notice_label.isHidden()
+    notice = control.notice_label.text().lower()
+    assert "z stack" in notice
+    assert "pixel" in notice
+    assert "unchanged" in notice or "not" in notice
+
+
+def test_explicit_file_metadata_opt_out_is_not_auto_overridden(qtbot, tmp_path):
+    raw_result = _preview_result(tmp_path)
+    declared_source = replace(
+        raw_result.config.sources[0],
+        axis_declaration=AxisDeclaration("QYX", "ZYX"),
+    )
+    declared_result = replace(
+        raw_result,
+        config=replace(raw_result.config, sources=(declared_source,)),
+    )
+    calls: list[dict[str, object]] = []
+
+    def initial_preview(values, _limit):
+        calls.append(values)
+        if len(calls) == 1:
+            raise _qyx_preflight_error()
+        return declared_result
+
+    actions = replace(_actions(raw_result, []), preview_batch=initial_preview)
+    dialog = CollectionBatchDialog(actions=actions)
+    qtbot.addWidget(dialog)
+    assert dialog._preview_batch()
+
+    control = dialog._source_rows[0]["axis_declaration"]
+    file_index = control.mode_combo.findData("file")
+    assert file_index >= 0
+    control.mode_combo.setCurrentIndex(file_index)
+    assert control.text() == ""
+    assert dialog.values()["source_bindings"][0]["axis_declaration"] == ""
+
+    retry_calls: list[dict[str, object]] = []
+
+    def rejected_preview(values, _limit):
+        retry_calls.append(values)
+        raise _qyx_preflight_error()
+
+    dialog._actions = replace(actions, preview_batch=rejected_preview)
+
+    assert not dialog._preview_batch()
+    assert len(retry_calls) == 1
+    assert control.mode_combo.currentData() == "file"
+    assert control.text() == ""
+
+
+def test_qyx_preview_failure_shows_one_concise_issue(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    error = _qyx_preflight_error()
+
+    def fail_preview(_values, _limit):
+        raise error
+
+    actions = replace(_actions(result, []), preview_batch=fail_preview)
+    dialog = CollectionBatchDialog(actions=actions)
+    qtbot.addWidget(dialog)
+    control = dialog._source_rows[0]["axis_declaration"]
+    suggestion = error.axis_suggestion
+    assert suggestion is not None
+    assert control.apply_z_stack_suggestion(suggestion)
+    file_index = control.mode_combo.findData("file")
+    assert file_index >= 0
+    control.mode_combo.setCurrentIndex(file_index)
+
+    assert not dialog._preview_batch()
+
+    message = dialog.preview_status.text()
+    assert error.user_message in message
+    assert message.count(error.user_message) == 1
+    assert len(message) < 240
+    assert "Representative source axes" not in message
+    assert "CPU/GPU device setup" not in message
+    assert "Subtract Background" not in message
+    assert "Gaussian Blur 3D" not in message
+    assert "Reorder Axes" not in message
+
+
 def test_batch_dialog_run_request_does_not_accept_workspace(qtbot, tmp_path):
     result = _preview_result(tmp_path)
     dialog = CollectionBatchDialog(actions=_actions(result, []))
@@ -345,7 +611,9 @@ def test_plan_only_result_does_not_calculate_a_graph_representative(
     assert dialog._preview_result is result
     assert previewed == []
     assert dialog.preview_table.rowCount() == 3
-    assert "No graph representative was calculated" in dialog.preview_status.text()
+    assert dialog.preview_status.text() == (
+        "Ready: 3 batch item(s) checked. Nothing was saved."
+    )
     assert "No representative was loaded" in dialog.graph_preview_status.text()
     assert dialog.preview_item_button.isEnabled()
 

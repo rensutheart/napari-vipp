@@ -128,14 +128,22 @@ still needs validation against a broader corpus of real acquisition files.
 6. Save the graph with `Save workflow...`.
 7. Add `Batch Output` nodes before `Batch workspace...` when exact saved outputs
    matter.
-8. Optionally click `Preview batch` to inspect the complete plan and use the
+8. Review `Image stack` for each collection source. A new unsaved row starts at
+   `Automatic (recommended)`. If an exact `QYX` TIFF reaches a workflow step
+   that requires `ZYX`, VIPP selects `Pages are depth slices (Z stack)`, shows
+   the change, and retries. Keep that choice only when the pages really are
+   depth slices; choose `Use the file's labels unchanged` to opt out.
+   Interpretation changes labels, not pixel order, and does not invent a Z
+   spacing.
+9. Optionally click `Preview batch` to inspect the complete plan and use the
    representative slider or a preview-table row without running or saving the
-   full batch. Preview is not required: `Run batch` performs its own preflight.
-9. Run the collection from the retained workspace with one click, where
+   full batch. Preview is not required: `Run batch` performs its own planning
+   and representative scientific-contract preflight.
+10. Run the collection from the retained workspace with one click, where
    overall-item and current-operation progress, cancellation, final statuses,
    validation, and the
    `vipp_batch_manifest.json` path remain available for inspection.
-10. To validate the complete batch path without your own files, choose
+11. To validate the complete batch path without your own files, choose
    `Open example...` -> `Deterministic Batch & Provenance` -> `Open batch
    demo...`. Choose where to save its small working copy, review the populated
    graph, move through all three paired fields with the representative slider,
@@ -151,10 +159,14 @@ portable compute intent under `execution.compute`: mode, fallback policy,
 per-node preferences, precision policy, and workload policy. Machine-local
 runtime/device choices, memory limits, experimental admission, and benchmark
 evidence are deliberately excluded. Schema-3 workflows load with an explicit
-CPU policy. Collection batch config version 2 and generated Python now execute
-that intent through the same CPU/GPU service as interactive VIPP, support
-explicit run overrides, and record the exact implementation actually used.
-Version-1 batch configs migrate to CPU. See the
+CPU policy. Collection batch config version 3 adds guarded source-axis
+declarations and executes portable compute intent through the same CPU/GPU
+service as interactive VIPP. Version-1 configs load with explicit CPU intent;
+version-2 configs keep their saved compute request. Neither older version gains
+an axis declaration unless it is reviewed and saved as version 3. A loaded blank
+declaration is shown as `Use the file's labels unchanged`, never as the
+automatic policy for a new row. New manifests are version 3 and record raw and
+effective source axes. See the
 [durable GPU execution guide](docs/durable-gpu-execution.md) for request
 precedence, provenance, OOM fallback, progress, cancellation, CLI commands, and
 current limitations.
@@ -273,9 +285,10 @@ the scientific workflow hash. Legacy workflow-v3 files load in CPU mode and
 with every node unlocked until the user explicitly opts into Auto, Prefer GPU,
 or Custom.
 Machine-local runtime/device selection, memory limits, provider admission,
-and benchmark evidence are not copied between machines. Batch config version 2
-captures the full effective run request, while generated Python embeds the
-portable workflow request. Both use the shared execution service, preserve
+and benchmark evidence are not copied between machines. Batch config version 3
+captures the full effective run request plus guarded source-axis declarations,
+while generated Python embeds the portable workflow request. Both use the
+shared execution service, preserve
 per-node choices, report exact actual implementations, and remain import-safe
 on a CPU-only installation. The saved batch runner and exported CLI add
 compute/fallback/node overrides, nested or operation progress, cooperative
@@ -728,9 +741,10 @@ release while retaining CPU as the portable scientific reference path:
   batch, generated Python/CLI, and export, including exact implementation
   provenance, nested progress, cooperative cancellation, memory admission,
   structured OOM fallback, cleanup, and atomic publication;
-- workflow schema 4 and batch-config/manifest schema 2 for portable compute
-  intent, with schema-3 workflows and version-1 batch configs migrating to
-  explicit CPU;
+- workflow schema 4 and batch-config/manifest schema 3 for portable compute
+  intent and guarded source-axis declarations, with schema-3 workflows and
+  version-1 batch configs migrating to explicit CPU and version-2 batch configs
+  retaining their saved compute request;
 - independent workflow tabs, high-resolution colocalization scatter tools,
   live source subtitles, draggable tunnel rerouting, and retained napari
   camera/slice/display state during node tuning;
@@ -740,8 +754,9 @@ release while retaining CPU as the portable scientific reference path:
   reductions, conservative adaptive CPU/CuPy presentation routing, separate
   selected-node thumbnail-contrast status in the inspector, and truthful
   progress/cooperative cancellation; and
-- ND2 ordered-axis metadata correction, Crop Stack type preservation, new
-  Sigma Filter and ImageJ Auto Threshold nodes, plus substantial cache,
+- ND2 ordered-axis metadata correction, a novice-facing `Image stack` choice
+  with guarded `QYX -> ZYX` batch suggestions, Crop Stack type preservation,
+  new Sigma Filter and ImageJ Auto Threshold nodes, plus substantial cache,
   optimizer, progress, cancellation, and publication hardening.
 
 GPU support is not complete or generally cross-platform in this alpha. Linux

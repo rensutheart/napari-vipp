@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from napari_vipp.core import metadata as _metadata
+from napari_vipp.core import operations as _operations
 from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
 from napari_vipp.core.grid import (
     validate_aligned_image_states,
@@ -1272,6 +1273,22 @@ _POSITIONAL_RESOLVED_SPATIAL_OPERATIONS = frozenset(
         "label_skeleton_branches",
         "skeleton_graph_overlay",
         "prune_skeleton_branches",
+    }
+)
+_AXIS_CONTRACT_RANK_CHANGING_OPERATIONS = frozenset(
+    {
+        "born_wolf_psf",
+        "combine_channels",
+        "composite_to_rgb",
+        "extract_channel",
+        "mip",
+        "orthogonal_projection",
+        "project_image",
+        "select_axis_slice",
+        "skeleton_graph_overlay",
+        "skeleton_keypoints",
+        "split_axis",
+        "split_channels",
     }
 )
 SCALAR_DEFAULT_CHANNEL_AXIS_OPERATIONS = frozenset(
@@ -6951,6 +6968,643 @@ class PrototypePipeline:
                     node_finished_callback(node_id)
         return self.finish_execution(execution)
 
+    def preflight_axis_contract(
+        self,
+        source_payloads: Mapping[str, SourcePayload],
+    ) -> None:
+        """Validate deterministic source/axis contracts without pixel kernels.
+
+        The walk uses the same node preparation and axis guards as CPU and GPU
+        execution. Axis-preserving image nodes carry metadata forward lazily,
+        and deterministic axis/rank transforms update only zero-copy proxies plus
+        their axis records. A branch stops conservatively only when an image
+        contract cannot be derived without pixel values (for example, after a
+        table-producing node).
+        """
+        execution = self.prepare_execution(
+            manual_node_ids=self.manual_node_ids(),
+        )
+        remaining = execution.remaining_node_ids
+        completed = execution.completed_node_ids
+        while remaining:
+            runnable = [
+                node_id
+                for node_id in self.topological_order()
+                if node_id in remaining
+                and all(source in completed for source in self._input_sources(node_id))
+            ]
+            if not runnable:
+                break
+            for node_id in runnable:
+                node = self.nodes[node_id]
+                spec = self.operation_spec(node.operation_id)
+                if not spec.has_input:
+                    results = self.source_node_results(
+                        node_id,
+                        None,
+                        None,
+                        "",
+                        source_payloads,
+                    )
+                else:
+                    call = self.prepare_node_call(
+                        node_id,
+                        axis_contract_only=True,
+                    )
+                    results = self._axis_contract_preflight_results(call)
+                self.commit_node_results(execution, node_id, results)
+
+    def _axis_contract_preflight_results(
+        self,
+        call: PreparedNodeCall | None,
+    ) -> list[tuple[Any, ImageState | TableState | None]]:
+        if call is None:
+            return [(None, None)]
+        node = self.nodes[call.node_id]
+        spec = self.operation_spec(node.operation_id)
+        if node.operation_id == "reorder_axes":
+            state = call.input_states[0] if call.input_states else None
+            if not isinstance(state, ImageState):
+                return [(call.inputs[0], state)]
+            indices = _metadata._axis_order_indices(
+                call.kwargs.get("order", ""),
+                len(state.axes),
+                [axis.name for axis in state.axes],
+            )
+            if indices is None:
+                raise ValueError(
+                    "Reorder Axes order must be a complete numeric permutation "
+                    "or a complete set of declared axis names."
+                )
+            output = np.transpose(call.inputs[0], indices)
+            reordered_state = replace(
+                state,
+                shape=tuple(state.shape[index] for index in indices),
+                axes=tuple(state.axes[index] for index in indices),
+            )
+            return [(output, reordered_state)]
+        if node.operation_id == "batch_output":
+            state = call.input_states[0] if call.input_states else None
+            return [(call.inputs[0], state)]
+        transformed = self._axis_contract_transform_results(call)
+        if transformed is not None:
+            return transformed
+        if spec.is_multi_output:
+            ports = self.output_ports(node.id)
+            if any(port.output_type != "table" for port in ports):
+                raise ValueError(
+                    "Scientific axis preflight cannot safely propagate "
+                    f"unhandled multi-output image operation {node.title!r}."
+                )
+            return [(None, None)] * max(call.output_port_count, 1)
+        if spec.output_type == "table":
+            return [(None, None)] * max(call.output_port_count, 1)
+        try:
+            dtype_policies = (
+                (f"fixed:{call.kwargs.get('output_dtype', 'uint8')}",)
+                if node.operation_id == "convert_dtype"
+                else ("dtype-same-v1",)
+            )
+            predicted = self.predict_shape_preserving_node_states(
+                call,
+                output_dtype_policy_ids=dtype_policies,
+            )
+        except (TypeError, ValueError):
+            return [(None, None)] * max(call.output_port_count, 1)
+        proxy = call.inputs[0] if call.inputs else None
+        return [(proxy, state) for state in predicted]
+
+    def _axis_contract_transform_results(
+        self,
+        call: PreparedNodeCall,
+    ) -> list[tuple[Any, ImageState | TableState | None]] | None:
+        """Project deterministic image shape/axis transforms without kernels."""
+        node = self.nodes[call.node_id]
+        operation_id = call.operation_id
+        input_state = call.input_states[0] if call.input_states else None
+        channel_collapse = (
+            operation_id in _metadata.CHANNEL_COLLAPSE_OPERATIONS
+            and call.kwargs.get("channel_axis") is not None
+        )
+        if (
+            operation_id not in _AXIS_CONTRACT_RANK_CHANGING_OPERATIONS
+            and not channel_collapse
+        ):
+            return None
+        if operation_id == "combine_channels":
+            return self._axis_contract_combine_channels_results(call)
+        if not isinstance(input_state, ImageState):
+            return [(None, None)] * max(call.output_port_count, 1)
+
+        shape = tuple(int(size) for size in input_state.shape)
+        params = dict(call.kwargs)
+        dtype = np.dtype(input_state.dtype)
+        output_shape = shape
+        output_dtype = dtype
+        output_axes = None
+        output_channels = None
+
+        if operation_id == "select_axis_slice":
+            if not shape:
+                return self._axis_contract_unary_result(
+                    call,
+                    output_shape,
+                    params=params,
+                    output_dtype=output_dtype,
+                )
+            input_proxy = self._axis_contract_proxy(shape, dtype)
+            if bool(params.get("range_mode", False)):
+                ranges = _operations._parse_axis_ranges(
+                    params.get("ranges", ""),
+                    shape,
+                )
+                ranged_shape = list(shape)
+                for axis, (start, end) in ranges.items():
+                    ranged_shape[axis] = end - start + 1
+                ranged_proxy = self._axis_contract_proxy(tuple(ranged_shape), dtype)
+                selections = _operations._slice_selections(
+                    ranged_proxy,
+                    0,
+                    0,
+                    params.get("remove_axes", ""),
+                    params.get("remove_indices", ""),
+                    use_default=False,
+                )
+                output_shape = tuple(
+                    size
+                    for index, size in enumerate(ranged_shape)
+                    if index not in selections
+                )
+            else:
+                selections = _operations._slice_selections(
+                    input_proxy,
+                    params.get("axis", 0),
+                    params.get("index", 0),
+                    params.get("axes", ""),
+                    params.get("indices", ""),
+                )
+                output_shape = tuple(
+                    size
+                    for index, size in enumerate(shape)
+                    if index not in selections
+                )
+        elif operation_id == "mip":
+            axis = _operations._validated_axis_index(
+                params.get("axis", 0),
+                len(shape),
+                operation="Maximum Projection",
+            )
+            if len(shape) > 2:
+                output_shape = tuple(
+                    size for index, size in enumerate(shape) if index != axis
+                )
+        elif operation_id == "project_image":
+            projected = _operations._projection_axis_indices(
+                len(shape),
+                params.get("axes", "auto"),
+                axis_names=tuple(axis.name for axis in input_state.axes),
+                axis_types=tuple(axis.type for axis in input_state.axes),
+                shape=shape,
+            )
+            output_shape = tuple(
+                size for index, size in enumerate(shape) if index not in projected
+            )
+            output_axes = tuple(
+                axis
+                for index, axis in enumerate(input_state.axes)
+                if index not in projected
+            )
+            channel_axis = _image_state_channel_axis(input_state)
+            output_channels = (
+                ()
+                if channel_axis is not None and channel_axis in projected
+                else input_state.channels
+            )
+            method = _operations._normalized_projection_method(
+                params.get("method", "Maximum")
+            )
+            if method not in {"maximum", "max", "minimum", "min"} and not np.issubdtype(
+                dtype,
+                np.floating,
+            ):
+                output_dtype = np.dtype(np.float32)
+        elif operation_id == "orthogonal_projection":
+            spatial_axes = _operations._orthogonal_spatial_axis_indices(
+                len(shape),
+                axis_names=tuple(axis.name for axis in input_state.axes),
+                axis_types=tuple(axis.type for axis in input_state.axes),
+                shape=shape,
+            )
+            if len(spatial_axes) >= 3:
+                z_axis, y_axis, x_axis = spatial_axes[-3:]
+                display_scales = _operations._orthogonal_display_scales(
+                    spatial_axes[-3:],
+                    use_physical_scale=bool(params.get("use_physical_scale", True)),
+                    axis_scales=tuple(axis.scale for axis in input_state.axes),
+                    axis_units=tuple(axis.unit for axis in input_state.axes),
+                )
+                display_z_y, display_z_x, display_y, display_x = (
+                    _operations._orthogonal_display_sizes(
+                        (shape[z_axis], shape[y_axis], shape[x_axis]),
+                        display_scales,
+                    )
+                )
+                spatial_set = set(spatial_axes)
+                first_spatial = min(spatial_axes)
+                projected_shape: list[int] = []
+                inserted = False
+                for index, size in enumerate(shape):
+                    if index in spatial_set:
+                        if not inserted and index == first_spatial:
+                            projected_shape.extend(
+                                (display_y + display_z_y, display_x + display_z_x)
+                            )
+                            inserted = True
+                        continue
+                    projected_shape.append(size)
+                if not inserted:
+                    projected_shape.extend(
+                        (display_y + display_z_y, display_x + display_z_x)
+                    )
+                output_shape = tuple(projected_shape)
+                method = _operations._normalized_projection_method(
+                    params.get("method", "Maximum")
+                )
+                if method not in {
+                    "maximum",
+                    "max",
+                    "minimum",
+                    "min",
+                } and not np.issubdtype(dtype, np.floating):
+                    output_dtype = np.dtype(np.float32)
+        elif operation_id == "extract_channel":
+            channel_axis = _image_state_channel_axis(input_state)
+            if channel_axis is None:
+                raise ValueError(
+                    "Extract Channel requires an explicitly declared channel axis."
+                )
+            channel = params.get("channel", 0)
+            if isinstance(channel, (bool, np.bool_)) or not isinstance(
+                channel,
+                Integral,
+            ):
+                raise ValueError("Extract Channel channel index must be an integer.")
+            channel = int(channel)
+            channel_count = int(shape[channel_axis])
+            if channel < 0:
+                channel += channel_count
+            if channel < 0 or channel >= channel_count:
+                raise ValueError(
+                    f"Extract Channel channel index {channel!r} is out of range "
+                    f"for {channel_count} channels."
+                )
+            output_shape = tuple(
+                size
+                for index, size in enumerate(shape)
+                if index != channel_axis
+            )
+        elif operation_id == "composite_to_rgb":
+            channel_axis_mode = _resolved_composite_channel_axis_mode(params)
+            if channel_axis_mode == COMPOSITE_RGB_AUTO:
+                channel_axis = _image_state_channel_axis(input_state)
+            else:
+                channel_axis = params.get("channel_axis", -1)
+            channel_axis = _operations._validated_composite_channel_axis(
+                channel_axis,
+                len(shape),
+            )
+            if shape[channel_axis] < 1:
+                raise ValueError("Composite → RGB channel axis must not be empty.")
+            params["resolved_channel_axis"] = channel_axis
+            output_shape = tuple(
+                size
+                for index, size in enumerate(shape)
+                if index != channel_axis
+            ) + (3,)
+            mapping = _operations._validated_composite_intensity_mapping(
+                params.get("intensity_mapping", COMPOSITE_RGB_PRESERVE_VALUES)
+            )
+            output_dtype = _operations._composite_output_dtype(
+                self._axis_contract_proxy(shape, dtype),
+                mapping,
+            )
+        elif operation_id == "skeleton_graph_overlay":
+            output_shape = shape + (3,)
+            output_dtype = np.dtype(np.float32)
+        elif operation_id in {
+            "split_axis",
+            "split_channels",
+            "born_wolf_psf",
+            "skeleton_keypoints",
+        }:
+            return self._axis_contract_split_results(call, input_state)
+        elif channel_collapse:
+            channel_axis = _operations._validated_luma_channel_axis(
+                self._axis_contract_proxy(shape, dtype),
+                call.kwargs.get("channel_axis"),
+                operation=node.title,
+            )
+            assert channel_axis is not None
+            output_shape = tuple(
+                size
+                for index, size in enumerate(shape)
+                if index != channel_axis
+            )
+            output_axes = tuple(
+                axis
+                for index, axis in enumerate(input_state.axes)
+                if index != channel_axis
+            )
+            output_channels = ()
+            if operation_id == "sobel_filter":
+                output_dtype = dtype
+            elif operation_id == "laplace_filter":
+                output_dtype = (
+                    dtype
+                    if np.issubdtype(dtype, np.floating)
+                    else np.dtype(np.float32)
+                )
+            else:
+                output_dtype = np.dtype(bool)
+        else:
+            return [(None, None)] * max(call.output_port_count, 1)
+
+        return self._axis_contract_unary_result(
+            call,
+            output_shape,
+            params=params,
+            output_dtype=output_dtype,
+            output_axes=output_axes,
+            output_channels=output_channels,
+        )
+
+    @staticmethod
+    def _axis_contract_proxy(
+        shape: tuple[int, ...],
+        dtype: np.dtype,
+    ) -> np.ndarray:
+        """Return an exact-shape, constant-memory array used only for metadata."""
+        if not shape:
+            return np.empty((), dtype=dtype)
+        base = np.empty((1,), dtype=dtype)
+        return np.lib.stride_tricks.as_strided(
+            base,
+            shape=shape,
+            strides=(0,) * len(shape),
+            writeable=False,
+        )
+
+    def _axis_contract_unary_result(
+        self,
+        call: PreparedNodeCall,
+        output_shape: tuple[int, ...],
+        *,
+        params: dict[str, Any],
+        output_dtype: np.dtype,
+        output_axes: tuple[Any, ...] | None = None,
+        output_channels: tuple[Any, ...] | None = None,
+    ) -> list[tuple[Any, ImageState | None]]:
+        input_state = call.input_states[0] if call.input_states else None
+        if not isinstance(input_state, ImageState):
+            return [(None, None)]
+        node = self.nodes[call.node_id]
+        output = self._axis_contract_proxy(output_shape, output_dtype)
+        axes = (
+            output_axes
+            if output_axes is not None
+            else _metadata._transformed_axes(
+                input_state,
+                output,
+                operation_id=node.operation_id,
+                params=params,
+            )
+        )
+        channels = (
+            output_channels
+            if output_channels is not None
+            else _metadata._transformed_channels(
+                input_state,
+                node.operation_id,
+                params,
+            )
+        )
+        history_item = _metadata._operation_history(
+            input_state,
+            node.operation_id,
+            node.title,
+            params,
+        )
+        state = self._axis_contract_replaced_state(
+            input_state,
+            output_shape,
+            axes,
+            output_dtype,
+            operation_id=node.operation_id,
+            history_item=history_item,
+            channels=channels,
+        )
+        return [(output, state)]
+
+    def _axis_contract_split_results(
+        self,
+        call: PreparedNodeCall,
+        input_state: ImageState,
+    ) -> list[tuple[Any, ImageState | None]]:
+        node = self.nodes[call.node_id]
+        operation_id = node.operation_id
+        input_shape = tuple(int(size) for size in input_state.shape)
+        output_dtype = np.dtype(input_state.dtype)
+        params = dict(call.kwargs)
+        if operation_id == "split_axis":
+            axis = _operations._axis_index_from_token(
+                params.get("axis", "axis:0"),
+                len(input_shape),
+            )
+            output_shape = tuple(
+                size for index, size in enumerate(input_shape) if index != axis
+            )
+            expected_count = input_shape[axis]
+        elif operation_id == "split_channels":
+            channel_axis = _image_state_channel_axis(input_state)
+            if channel_axis is None:
+                raise ValueError("Split Channels needs an explicit channel axis.")
+            output_shape = tuple(
+                size
+                for index, size in enumerate(input_shape)
+                if index != channel_axis
+            )
+            expected_count = input_shape[channel_axis]
+        elif operation_id == "skeleton_keypoints":
+            output_shape = input_shape
+            output_dtype = np.dtype(bool)
+            expected_count = 3
+        else:
+            resolved_ndim = int(params.get("resolved_spatial_ndim", 2))
+            xy_size = _operations._odd_size(
+                params.get("xy_size", 65),
+                minimum=9,
+                maximum=1025,
+            )
+            z_size = _operations._odd_size(
+                params.get("z_size", 33),
+                minimum=1,
+                maximum=1025,
+            )
+            output_shape = (
+                (z_size, xy_size, xy_size)
+                if resolved_ndim >= 3
+                else (xy_size, xy_size)
+            )
+            output_dtype = np.dtype(np.float32)
+            expected_count = call.output_port_count
+
+        if expected_count != call.output_port_count:
+            raise ValueError(
+                f"{node.title} metadata predicts {expected_count} output(s), "
+                f"but the graph exposes {call.output_port_count}."
+            )
+        ports = self.output_ports(node.id)
+        results: list[tuple[Any, ImageState | None]] = []
+        for index in range(call.output_port_count):
+            port_name = (
+                ports[index].label
+                if index < len(ports)
+                else f"Output {index + 1}"
+            )
+            output_params = (
+                self._born_wolf_output_transform_params(node, index)
+                if operation_id == "born_wolf_psf"
+                else self._public_params(node.params)
+            )
+            if operation_id == "born_wolf_psf":
+                output_params = {**params, **output_params}
+            output = self._axis_contract_proxy(output_shape, output_dtype)
+            axes = _metadata._split_output_axes(
+                input_state.axes,
+                len(output_shape),
+                operation_id=operation_id,
+                params=output_params,
+            )
+            channels = _metadata._split_output_channels(
+                input_state.axes,
+                input_state.channels,
+                operation_id,
+                output_params,
+                port_name,
+            )
+            history_item = (
+                _metadata._operation_history(
+                    input_state,
+                    operation_id,
+                    f"{node.title} ({port_name})",
+                    output_params,
+                )
+                if operation_id == "born_wolf_psf"
+                else f"{node.title} ({port_name}): extracted {port_name}"
+            )
+            state = self._axis_contract_replaced_state(
+                input_state,
+                output_shape,
+                axes,
+                output_dtype,
+                operation_id=operation_id,
+                history_item=history_item,
+                channels=channels,
+            )
+            results.append((output, state))
+        return results
+
+    def _axis_contract_combine_channels_results(
+        self,
+        call: PreparedNodeCall,
+    ) -> list[tuple[Any, ImageState | None]]:
+        states = [
+            state for state in call.input_states if isinstance(state, ImageState)
+        ]
+        if len(states) != len(call.inputs) or not states:
+            return [(None, None)]
+        first = states[0]
+        if any(state.shape != first.shape for state in states[1:]):
+            raise ValueError("Combine Channels inputs must have matching shapes.")
+        node = self.nodes[call.node_id]
+        params = dict(call.kwargs)
+        channel_axis = _default_combined_channel_axis(first)
+        params["channel_axis"] = channel_axis
+        output_shape = list(first.shape)
+        output_shape.insert(channel_axis, len(states))
+        output_shape_tuple = tuple(output_shape)
+        output_dtype = np.dtype(np.result_type(*(state.dtype for state in states)))
+        output = self._axis_contract_proxy(output_shape_tuple, output_dtype)
+        axes = _metadata._multi_input_axes(
+            first.axes,
+            output,
+            operation_id=node.operation_id,
+            params=params,
+        )
+        channels = _metadata._multi_input_channels(
+            states,
+            node.operation_id,
+            params,
+        )
+        history_item = _metadata._multi_input_history(
+            states,
+            node.operation_id,
+            node.title,
+            params,
+        )
+        state = self._axis_contract_replaced_state(
+            first,
+            output_shape_tuple,
+            axes,
+            output_dtype,
+            operation_id=node.operation_id,
+            history_item=history_item,
+            channels=channels,
+        )
+        return [(output, state)]
+
+    @staticmethod
+    def _axis_contract_replaced_state(
+        input_state: ImageState,
+        output_shape: tuple[int, ...],
+        output_axes: tuple[Any, ...],
+        output_dtype: np.dtype,
+        *,
+        operation_id: str,
+        history_item: str,
+        channels: tuple[Any, ...],
+    ) -> ImageState:
+        if len(output_axes) != len(output_shape):
+            raise ValueError(
+                f"{operation_id} metadata produced {len(output_axes)} axes for "
+                f"a {len(output_shape)}D output."
+            )
+        if output_axes and all(axis.source_axis is None for axis in output_axes):
+            output_axes = _metadata._with_default_source_axes(output_axes)
+        kind = _metadata._lazy_kind_label(
+            output_dtype,
+            output_shape,
+            output_axes,
+        )
+        state = replace(
+            input_state,
+            shape=output_shape,
+            dtype=output_dtype.name,
+            kind=kind,
+            axes=output_axes,
+            bit_depth=_metadata._bit_depth_label(output_dtype),
+            value_range=DEFERRED_VALUE_RANGE,
+            value_pattern="",
+            memory=_metadata._memory_label(
+                int(np.prod(output_shape, dtype=np.int64)) * output_dtype.itemsize
+            ),
+            history=input_state.history + (history_item,),
+            channels=channels,
+        )
+        if operation_id in _metadata.KIND_PRESERVING_OPERATIONS:
+            state = replace(state, kind=input_state.kind)
+        return _metadata._with_operation_kind(state, operation_id)
+
     def prune_cached_outputs(self, retain_node_ids: Iterable[str]) -> None:
         """Drop cached output data for nodes outside ``retain_node_ids``."""
         retained = {node_id for node_id in retain_node_ids if node_id in self.nodes}
@@ -7144,6 +7798,7 @@ class PrototypePipeline:
         *,
         progress_callback: Callable[[str, int, int, str], None] | None = None,
         cancel_callback: Callable[[], bool] | None = None,
+        axis_contract_only: bool = False,
     ) -> PreparedNodeCall | None:
         """Build the canonical Qt-free call used by CPU and device execution.
 
@@ -7229,6 +7884,67 @@ class PrototypePipeline:
             kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
             node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
         _validate_positional_spatial_layout(node, primary_state, kwargs)
+
+        if axis_contract_only:
+            if multiple_inputs:
+                self._validate_multi_input_grids(
+                    node,
+                    list(resolved_states),
+                    kwargs,
+                )
+            if node.operation_id == "born_wolf_psf" and isinstance(
+                primary_state,
+                ImageState,
+            ):
+                kwargs["axis_names"] = tuple(
+                    axis.name for axis in primary_state.axes
+                )
+                kwargs["axis_types"] = tuple(
+                    axis.type for axis in primary_state.axes
+                )
+                kwargs["axis_scales"] = tuple(
+                    axis.scale for axis in primary_state.axes
+                )
+                kwargs["axis_units"] = tuple(
+                    axis.unit for axis in primary_state.axes
+                )
+                kwargs["channel_emission_wavelengths"] = tuple(
+                    channel.emission_wavelength for channel in primary_state.channels
+                )
+                kwargs["channel_emission_wavelength_units"] = tuple(
+                    channel.emission_wavelength_unit
+                    for channel in primary_state.channels
+                )
+                kwargs["channel_excitation_wavelengths"] = tuple(
+                    channel.excitation_wavelength
+                    for channel in primary_state.channels
+                )
+                kwargs["channel_excitation_wavelength_units"] = tuple(
+                    channel.excitation_wavelength_unit
+                    for channel in primary_state.channels
+                )
+                kwargs["objective_lens_na"] = primary_state.acquisition.objective_na
+                kwargs["objective_refractive_index"] = (
+                    primary_state.acquisition.refractive_index
+                )
+                self._sync_born_wolf_psf_resolution(node, primary_input, kwargs)
+            if node.operation_id == "reorder_axes" and isinstance(
+                primary_state,
+                ImageState,
+            ):
+                kwargs["axis_names"] = tuple(
+                    axis.name for axis in primary_state.axes
+                )
+            return PreparedNodeCall(
+                node_id=node_id,
+                operation_id=node.operation_id,
+                cpu_function=spec.function,
+                inputs=resolved_inputs,
+                input_states=resolved_states,
+                kwargs=kwargs,
+                multiple_inputs=multiple_inputs,
+                output_port_count=len(self.output_ports(node_id)),
+            )
 
         if multiple_inputs:
             self._prepare_multi_input_kwargs(
@@ -8059,9 +8775,16 @@ def _validate_positional_spatial_layout(
     required = "".join(name.upper() for name in required_names)
     raise AmbiguousAxisError(
         f"{node.title} uses positional {required} processing, but the explicit "
-        f"effective axis order is {detected}. Reorder the data so its final "
-        f"{required_rank} axes are {required}; VIPP will not reinterpret "
-        "differently named axes by position."
+        f"effective axis order is {detected}. If the source reports a generic "
+        "or incorrect name, use Declare axes on that batch source to record a "
+        f"reviewed mapping such as {detected} -> {required}. Reorder Axes only "
+        "transposes pixels with their existing axis records; it cannot rename "
+        "an axis such as Q to Z. VIPP will not reinterpret differently named "
+        "axes by position without that explicit declaration.",
+        code="positional_spatial_layout",
+        detected_axes=detected,
+        required_axes=required,
+        failing_node_id=node.id,
     )
 
 

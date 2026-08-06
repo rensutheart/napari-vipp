@@ -75,25 +75,13 @@ def read_ome_zarr(path: Path, series_index: int = 0) -> ImageDataset:
     selected = _selected_series(inspection, series_index)
     node = nodes[selected.index]
     data = node.data[0]
-    axes = _node_axes(node)
-    channels = _node_channels(node, location.root_attrs)
-    state = image_state_from_array(
-        data,
-        source_name=selected.name,
-        axes=axes,
-        metadata_source=f"OME-Zarr {location.version} metadata",
-        channels=channels,
-        source=SourceMetadata(
-            uri=str(path),
-            format=inspection.format,
-            series_index=selected.index,
-            series_name=selected.name,
-        ),
+    state = _ome_zarr_image_state(
+        path,
+        location,
+        inspection,
+        selected,
+        node,
     )
-    if state is None:
-        raise ValueError(f"Could not build image metadata for {path}")
-    if selected.kind == "labels":
-        state = replace(state, kind="label image")
     labels = tuple(
         item.name for item in inspection.series if item.kind == "labels"
     )
@@ -107,6 +95,56 @@ def read_ome_zarr(path: Path, series_index: int = 0) -> ImageDataset:
         associated_labels=labels,
         provenance={"reader": "napari-vipp", "source_uri": str(path)},
     )
+
+
+def image_state_from_ome_zarr_inspection(
+    path: Path,
+    inspection: SourceInspection,
+    series_index: int = 0,
+) -> ImageState:
+    """Build reader-equivalent OME-Zarr metadata without computing pixels."""
+    location, nodes = _readable_nodes(path)
+    selected = _selected_series(inspection, series_index)
+    if selected.index >= len(nodes):
+        raise IndexError(
+            f"Series index {selected.index} is outside 0..{len(nodes) - 1}"
+        )
+    return _ome_zarr_image_state(
+        path,
+        location,
+        inspection,
+        selected,
+        nodes[selected.index],
+    )
+
+
+def _ome_zarr_image_state(
+    path: Path,
+    location,
+    inspection: SourceInspection,
+    selected: ImageSeriesInfo,
+    node,
+) -> ImageState:
+    """Normalize one OME-Zarr node through the shared reader/preflight seam."""
+    data = node.data[0]
+    state = image_state_from_array(
+        data,
+        source_name=selected.name,
+        axes=_node_axes(node),
+        metadata_source=f"OME-Zarr {location.version} metadata",
+        channels=_node_channels(node, location.root_attrs),
+        source=SourceMetadata(
+            uri=str(path),
+            format=inspection.format,
+            series_index=selected.index,
+            series_name=selected.name,
+        ),
+    )
+    if state is None:
+        raise ValueError(f"Could not build image metadata for {path}")
+    if selected.kind == "labels":
+        state = replace(state, kind="label image")
+    return state
 
 
 def write_ome_zarr(

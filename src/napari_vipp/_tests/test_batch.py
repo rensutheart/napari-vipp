@@ -21,6 +21,7 @@ from napari_vipp.core.batch import (
     BATCH_MANIFEST_VERSION,
     BatchConfig,
     BatchOutputConfig,
+    BatchScientificPreflightError,
     BatchSourceConfig,
     BatchStatus,
     ExistingFilePolicy,
@@ -28,6 +29,7 @@ from napari_vipp.core.batch import (
     batch_config_hash,
     build_batch_plan,
     load_batch_config,
+    preflight_batch,
     run_batch,
     run_batch_from_files,
     safe_batch_filename,
@@ -37,6 +39,7 @@ from napari_vipp.core.batch import (
 )
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.io import write_image
+from napari_vipp.core.metadata import AmbiguousAxisError, AxisDeclaration
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
 
@@ -62,6 +65,20 @@ def _batch_workflow(
             pipeline.set_param(output.id, name, value)
         output_ids.append(output.id)
     return serialize_workflow(pipeline), tuple(output_ids)
+
+
+def _zyx_processing_batch_workflow() -> tuple[dict[str, object], tuple[str, ...]]:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    subtract = pipeline.add_node("subtract_background")
+    pipeline.set_param(subtract.id, "spatial_mode", "3D ZYX")
+    pipeline.set_param(subtract.id, "radius", 1.0)
+    assert pipeline.connect("input", subtract.id).success
+    blur = pipeline.add_node("gaussian_blur_3d")
+    assert pipeline.connect(subtract.id, blur.id).success
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(blur.id, output.id).success
+    return serialize_workflow(pipeline), (output.id,)
 
 
 def _batch_config(
@@ -147,6 +164,67 @@ def test_batch_config_roundtrip_preserves_schema_and_resolves_relative_paths(
     document = json.loads(path.read_text(encoding="utf-8"))
     assert document["type"] == BATCH_CONFIG_TYPE
     assert document["version"] == BATCH_CONFIG_VERSION
+
+
+def test_batch_config_roundtrip_preserves_axis_declaration_and_legacy_default(
+    tmp_path,
+):
+    workflow, output_ids = _batch_workflow()
+    config = _batch_config(
+        workflow,
+        tmp_path / "inputs",
+        tmp_path / "outputs",
+        output_ids,
+    )
+    config = replace(
+        config,
+        sources=(
+            replace(
+                config.sources[0],
+                axis_declaration=AxisDeclaration("QYX", "ZYX"),
+            ),
+        ),
+    )
+
+    document = config.to_dict()
+    restored = BatchConfig.from_dict(document)
+
+    assert document["version"] == BATCH_CONFIG_VERSION
+    assert document["sources"][0]["axis_declaration"] == {
+        "source_axes": "QYX",
+        "effective_axes": "ZYX",
+    }
+    assert restored.sources[0].axis_declaration == AxisDeclaration("QYX", "ZYX")
+
+    legacy = deepcopy(document)
+    legacy["version"] = 2
+    legacy["sources"][0].pop("axis_declaration")
+    assert BatchConfig.from_dict(legacy).sources[0].axis_declaration is None
+
+
+@pytest.mark.parametrize("legacy_version", (1, 2))
+def test_legacy_batch_config_cannot_activate_v3_axis_declaration(
+    tmp_path,
+    legacy_version,
+):
+    workflow, output_ids = _batch_workflow()
+    config = _batch_config(
+        workflow,
+        tmp_path / "inputs",
+        tmp_path / "outputs",
+        output_ids,
+    )
+    document = config.to_dict()
+    document["version"] = legacy_version
+    document["sources"][0]["axis_declaration"] = {
+        "source_axes": "QYX",
+        "effective_axes": "ZYX",
+    }
+    if legacy_version == 1:
+        document.pop("compute")
+
+    with pytest.raises(ValueError, match="axis_declaration"):
+        BatchConfig.from_dict(document)
 
 
 def test_atomic_json_write_retries_transient_windows_replace_lock(
@@ -675,6 +753,332 @@ def test_run_batch_writes_output_and_complete_provenance_manifest(tmp_path):
     assert output["overwrote_existing"] is False
     item_records_dir = result.manifest_path.parent / document["item_records_dir"]
     assert len(list(item_records_dir.glob("*.json"))) == 1
+
+
+def test_qyx_scientific_preflight_stops_before_any_batch_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.arange(3 * 8 * 9, dtype=np.uint16).reshape(3, 8, 9)
+    tifffile.imwrite(inputs / "generic.tif", source, photometric="minisblack")
+    workflow, output_ids = _zyx_processing_batch_workflow()
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, output_ids)
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.tif"),),
+        continue_on_error=True,
+    )
+
+    with pytest.raises(BatchScientificPreflightError) as error:
+        preflight_batch(workflow, config)
+
+    message = str(error.value)
+    assert "before item processing, output creation, or CPU/GPU device setup" in message
+    assert "raw QYX, effective QYX" in message
+    assert "QYX -> ZYX" in message
+    assert "Reorder Axes" in message
+    assert "Z stack" in error.value.user_message
+    assert "labelled Q" in error.value.user_message
+    assert "treat it as Z" in error.value.user_message
+    assert len(error.value.user_message) < 160
+    suggestion = error.value.axis_suggestion
+    assert suggestion is not None
+    assert suggestion.source_node_id == "input"
+    assert suggestion.source_title == "Image Source"
+    assert suggestion.declaration == AxisDeclaration("QYX", "ZYX")
+    assert not output_dir.exists()
+
+    def unexpected_execution(*_args, **_kwargs):
+        raise AssertionError("pixel execution must not start after failed preflight")
+
+    monkeypatch.setattr(
+        batch_module,
+        "execute_pipeline_request",
+        unexpected_execution,
+    )
+    with pytest.raises(BatchScientificPreflightError):
+        run_batch(workflow, config)
+
+    assert not output_dir.exists()
+
+
+def test_non_tiff_qyx_contract_never_offers_automatic_z_suggestion():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    blur = pipeline.add_node("gaussian_blur_3d")
+    assert pipeline.connect("input", blur.id).success
+    contract_error = AmbiguousAxisError(
+        "3D processing requires ZYX.",
+        code="positional_spatial_layout",
+        detected_axes="QYX",
+        required_axes="ZYX",
+        failing_node_id=blur.id,
+    )
+
+    with pytest.raises(BatchScientificPreflightError) as error:
+        batch_module._raise_batch_scientific_preflight_error(
+            contract_error,
+            ["OME-Zarr source: raw QYX, effective QYX (no declaration)"],
+            [("input", "OME-Zarr source", "QYX", "ome-zarr")],
+            pipeline,
+        )
+
+    assert error.value.axis_suggestion is None
+    assert "axis information" in error.value.user_message
+
+
+def test_multi_input_axis_failure_does_not_suggest_unrelated_secondary_source():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    secondary = pipeline.add_node("input")
+    ratio = pipeline.add_node("ratio_image")
+    assert pipeline.connect("input", ratio.id, target_port=0).success
+    assert pipeline.connect(secondary.id, ratio.id, target_port=1).success
+    contract_error = AmbiguousAxisError(
+        "The primary input requires ZYX.",
+        code="positional_spatial_layout",
+        detected_axes="QYX",
+        required_axes="ZYX",
+        failing_node_id=ratio.id,
+    )
+
+    with pytest.raises(BatchScientificPreflightError) as error:
+        batch_module._raise_batch_scientific_preflight_error(
+            contract_error,
+            ["Secondary: raw QYX, effective QYX (no declaration)"],
+            [(secondary.id, "Secondary", "QYX", "tiff")],
+            pipeline,
+        )
+
+    assert error.value.axis_suggestion is None
+
+
+def test_unbound_fixed_qyx_source_does_not_offer_unusable_axis_suggestion(tmp_path):
+    inputs = tmp_path / "inputs"
+    _write_arrays(inputs, field=np.zeros((8, 9), dtype=np.uint16))
+    fixed_path = tmp_path / "fixed.tif"
+    tifffile.imwrite(
+        fixed_path,
+        np.zeros((3, 8, 9), dtype=np.uint16),
+        photometric="minisblack",
+    )
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    fixed = pipeline.add_node("input")
+    pipeline.set_param(fixed.id, "source_mode", "file path")
+    pipeline.set_param(fixed.id, "file_path", str(fixed_path))
+    subtract = pipeline.add_node("subtract_background")
+    pipeline.set_param(subtract.id, "spatial_mode", "3D ZYX")
+    assert pipeline.connect(fixed.id, subtract.id).success
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(subtract.id, output.id).success
+    workflow = serialize_workflow(pipeline)
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, (output.id,))
+
+    with pytest.raises(BatchScientificPreflightError) as error:
+        preflight_batch(workflow, config)
+
+    assert error.value.axis_suggestion is None
+    assert not output_dir.exists()
+
+
+def test_qyx_scientific_preflight_crosses_multi_output_image_nodes(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.zeros((3, 8, 9), dtype=np.uint8)
+    tifffile.imwrite(inputs / "generic.tif", source, photometric="minisblack")
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    assert pipeline.connect("input", threshold.id).success
+    keypoints = pipeline.add_node("skeleton_keypoints")
+    pipeline.set_param(keypoints.id, "spatial_mode", "2D YX")
+    assert pipeline.connect(threshold.id, keypoints.id).success
+    blur = pipeline.add_node("gaussian_blur_3d")
+    assert pipeline.connect(keypoints.id, blur.id, source_port=0).success
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(blur.id, output.id).success
+    workflow = serialize_workflow(pipeline)
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, (output.id,))
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.tif"),),
+        continue_on_error=True,
+    )
+
+    with pytest.raises(BatchScientificPreflightError, match="raw QYX"):
+        run_batch(workflow, config)
+
+    assert not output_dir.exists()
+
+
+def test_declared_qyx_batch_runs_and_records_raw_and_effective_axes(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.arange(3 * 8 * 9, dtype=np.uint16).reshape(3, 8, 9)
+    tifffile.imwrite(inputs / "generic.tif", source, photometric="minisblack")
+    workflow, output_ids = _zyx_processing_batch_workflow()
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, output_ids)
+    config = replace(
+        config,
+        sources=(
+            replace(
+                config.sources[0],
+                pattern="*.tif",
+                axis_declaration=AxisDeclaration("QYX", "ZYX"),
+            ),
+        ),
+    )
+
+    plan = preflight_batch(workflow, config)
+
+    assert len(plan.items) == 1
+    assert not output_dir.exists()
+
+    result = run_batch(workflow, config, plan=plan)
+    output_path = output_dir / "generic__output.npy"
+    document = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    source_record = document["items"][0]["sources"][0]
+
+    assert result.summary["completed"] == 1
+    assert output_path in result.saved_paths
+    assert np.load(output_path).shape == source.shape
+    assert source_record["series"]["axes"] == "QYX"
+    assert source_record["raw_axes"] == "QYX"
+    assert source_record["effective_axes"] == "ZYX"
+    assert source_record["axis_declaration"] == {
+        "source_axes": "QYX",
+        "effective_axes": "ZYX",
+        "source": "batch config",
+        "applied": True,
+        "data_order_changed": False,
+    }
+    assert source_record["axis_semantics"] == {
+        "raw_axes": "QYX",
+        "effective_axes": "ZYX",
+        "declaration": source_record["axis_declaration"],
+    }
+    assert source_record["provenance"]["axis_semantics"] == source_record[
+        "axis_semantics"
+    ]
+    assert [axis["name"] for axis in source_record["image_state"]["axes"]] == [
+        "z",
+        "y",
+        "x",
+    ]
+    assert any(
+        "QYX interpreted as ZYX; data order unchanged" in entry
+        for entry in source_record["image_state"]["history"]
+    )
+
+
+def test_multi_letter_ome_zarr_axes_fail_scientific_preflight_before_outputs(
+    tmp_path,
+):
+    from ome_zarr.format import FormatV04
+    from ome_zarr.writer import write_image as write_ome_zarr_image
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.zeros((3, 5, 7), dtype=np.uint16)
+    write_ome_zarr_image(
+        source,
+        str(inputs / "depth.ome.zarr"),
+        fmt=FormatV04(),
+        axes=(
+            {"name": "depth", "type": "space", "unit": "micrometer"},
+            {"name": "y", "type": "space", "unit": "micrometer"},
+            {"name": "x", "type": "space", "unit": "micrometer"},
+        ),
+        scale={"depth": 0.8, "y": 0.2, "x": 0.2},
+        scale_factors=(),
+    )
+    workflow, output_ids = _zyx_processing_batch_workflow()
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, output_ids)
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.zarr"),),
+    )
+
+    with pytest.raises(BatchScientificPreflightError, match="Declare axes"):
+        preflight_batch(workflow, config)
+
+    assert not output_dir.exists()
+
+
+def test_invalid_representative_series_index_fails_before_outputs(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    tifffile.imwrite(
+        inputs / "single.tif",
+        np.zeros((5, 7), dtype=np.uint8),
+        photometric="minisblack",
+    )
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "series_index", 1)
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect("input", output.id).success
+    workflow = serialize_workflow(pipeline)
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, (output.id,))
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.tif"),),
+        continue_on_error=True,
+    )
+
+    with pytest.raises(BatchScientificPreflightError, match="Series index 1"):
+        preflight_batch(workflow, config)
+
+    assert not output_dir.exists()
+
+
+@pytest.mark.parametrize("suffix", ("tif", "lsm"))
+def test_rgb_tiff_preflight_uses_same_sample_axis_semantics_as_execution(
+    tmp_path,
+    suffix,
+):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.zeros((8, 9, 3), dtype=np.uint8)
+    source[..., 0] = 17
+    source[..., 1] = 31
+    source[..., 2] = 47
+    tifffile.imwrite(inputs / f"rgb.{suffix}", source, photometric="rgb")
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    split = pipeline.add_node("split_channels")
+    assert pipeline.connect("input", split.id).success
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(split.id, output.id, source_port=0).success
+    workflow = serialize_workflow(pipeline)
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, (output.id,))
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern=f"*.{suffix}"),),
+    )
+
+    plan = preflight_batch(workflow, config)
+    result = run_batch(workflow, config, plan=plan)
+    source_record = result.manifest.items[0].sources[0]
+
+    np.testing.assert_array_equal(
+        np.load(output_dir / "rgb__output.npy"),
+        source[..., 0],
+    )
+    assert source_record["series"]["axes"] == "YXS"
+    assert source_record["raw_axes"] == "Y,X,rgb"
+    assert source_record["effective_axes"] == "Y,X,rgb"
 
 
 def test_zarr_chunk_change_fails_item_before_any_output_is_published(
@@ -1268,6 +1672,65 @@ def test_run_batch_existing_file_policies(
         np.testing.assert_array_equal(np.load(destination), source)
     else:
         np.testing.assert_array_equal(np.load(destination), original)
+
+
+@pytest.mark.parametrize(
+    ("skipped_is_zyx", "runnable_is_zyx", "should_fail"),
+    ((False, True, False), (True, False, True)),
+)
+def test_scientific_preflight_selects_first_runnable_item_in_mixed_skip_plan(
+    tmp_path,
+    skipped_is_zyx,
+    runnable_is_zyx,
+    should_fail,
+):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.arange(3 * 8 * 9, dtype=np.uint16).reshape(3, 8, 9)
+
+    def write_stack(path, *, is_zyx):
+        if is_zyx:
+            tifffile.imwrite(
+                path,
+                source,
+                imagej=True,
+                metadata={"axes": "ZYX"},
+                photometric="minisblack",
+            )
+        else:
+            tifffile.imwrite(path, source, photometric="minisblack")
+
+    write_stack(inputs / "a_skipped.tif", is_zyx=skipped_is_zyx)
+    write_stack(inputs / "b_runnable.tif", is_zyx=runnable_is_zyx)
+    workflow, output_ids = _zyx_processing_batch_workflow()
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(
+        workflow,
+        inputs,
+        output_dir,
+        output_ids,
+        policy=ExistingFilePolicy.SKIP,
+    )
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.tif"),),
+    )
+    output_dir.mkdir()
+    np.save(output_dir / "a_skipped__output.npy", np.zeros((1,), dtype=np.uint8))
+
+    if should_fail:
+        with pytest.raises(BatchScientificPreflightError, match="raw QYX"):
+            preflight_batch(workflow, config)
+        assert not (output_dir / BATCH_MANIFEST_FILENAME).exists()
+        return
+
+    plan = preflight_batch(workflow, config)
+    result = run_batch(workflow, config, plan=plan)
+
+    assert [item.status for item in result.manifest.items] == [
+        BatchStatus.SKIPPED,
+        BatchStatus.COMPLETED,
+    ]
 
 
 def test_skip_rechecks_all_destinations_before_loading_or_calculating(

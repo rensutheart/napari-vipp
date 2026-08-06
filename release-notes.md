@@ -41,9 +41,10 @@ CMake.
 When moving from 0.12.0a3, preserve the old environment and workflow, then open
 a duplicate in 0.13.0a1. Older schema-3 workflows deliberately open in CPU mode
 and become schema 4 only when saved. Version-1 batch configurations likewise
-load with explicit CPU intent and become version 2 when reviewed and saved.
-Regenerate exported Python and saved batch runners because generated programs
-are locked to the exact VIPP version that created them.
+load with explicit CPU intent; version-2 configurations keep their saved compute
+request. Both load without source-axis declarations and become version 3 when
+reviewed and saved. Regenerate exported Python and saved batch runners because
+generated programs are locked to the exact VIPP version that created them.
 
 ## Features added
 
@@ -92,7 +93,7 @@ ran, its decision reason, progress, fallback or OOM details, cleanup state, and
 environment identity.
 
 Workflow persistence advances to schema 4, and collection batch configurations
-and manifests advance to schema 2. Saved runners accept compute overrides and
+and manifests advance to schema 3. Saved runners accept compute overrides and
 report both item-level and operation-level progress. Cooperative cancellation
 finishes the relevant checkpoint and manifest state, returns exit code 130 from
 the CLI, and prevents unpublished output from escaping.
@@ -104,6 +105,51 @@ For production collection processing, the saved batch runner remains the
 durable choice; the generated `batch_process()` folder loop is a simpler
 convenience and does not provide the same pairing, checkpoint, manifest, or
 replay guarantees.
+
+### Clear TIFF page interpretation for batches
+
+Some ordinary TIFF files describe their page dimension as the generic `Q`
+rather than saying what the pages mean. The Batch workspace now presents the
+source-specific `Image stack` setting with plain-language choices. It begins at
+`Automatic (recommended)` for a new unsaved source;
+`Something else (advanced)...` stays hidden unless someone deliberately
+chooses it.
+
+VIPP does not blindly turn Q into Z. If an exact `QYX` representative reaches a
+workflow step that explicitly requires `ZYX`, the workspace selects
+`Pages are depth slices (Z stack)`, retries the check, and displays a short
+notice. The notice explains why the choice changed, that it will be saved, and
+that pixel order is unchanged. Users can select `Use the file's labels unchanged`
+to opt out,
+and VIPP respects that decision instead of suggesting Z again for the same
+source.
+
+The automatic choice is UI-only until it resolves. Saving before any change is
+needed stores no declaration and reloads as file-information-unchanged. Loaded
+historic or headless configs with no declaration behave the same way, so they
+are never automatically reinterpreted. After the guarded suggestion is applied,
+saving records the concrete `QYX -> ZYX` declaration and loading restores the
+Z-stack choice.
+
+The declaration is guarded: the left side must match the axes reported by the
+reader exactly. It changes their meaning in place and does not move pixels.
+`Reorder Axes`, by contrast, moves pixels and their complete metadata records
+but never turns Q into Z. Before a run creates its output folder, artifacts, or
+GPU context, VIPP inspects a representative source set and checks the
+workflow's scientific axis contract through deterministic image-axis and rank
+changes such as slicing, projection, channel extraction, and splitting. This
+includes every image output of multi-output analysis nodes; an unsupported
+image transform now fails closed instead of ending the check silently. This
+catches a deterministic `QYX`/`ZYX` mistake before a large collection is
+attempted. Every later item is still checked as it is read, so the
+representative check is not presented as proof that every file is uniform.
+
+For every source that is successfully read, version-3 manifests preserve the
+reader's raw axes, the effective axes, and the declaration used. The embedded
+config still preserves the intended declaration when an item is skipped or
+fails before reading. Versions 1 and 2 of the batch configuration remain
+loadable, but contain no declaration unless the user reviews and saves them in
+the new format.
 
 ### Several workflows can stay open at once
 
@@ -175,6 +221,12 @@ native populated ranges, and optional symmetric percentile clipping.
 
 ## Bug fixes
 
+- **A generic TIFF page axis no longer fails once for every batch item.** A
+  `QYX` input that reaches a demonstrated `ZYX` requirement receives one exact,
+  visible Z-stack suggestion instead of a wall of node errors. Preview and
+  execution apply the same saved declaration, respect an opt-out, and stop other
+  deterministic errors before output or GPU setup rather than after attempting
+  the collection.
 - **ND2 navigation follows the file's real dimension order.** Metadata
   normalization now respects the reader's ordered dimensions, restoring the
   correct T, Z, and C sliders and slice updates for affected files.
@@ -232,6 +284,12 @@ Review upgraded workflows before saving them. In particular, compare decisive
 intermediate and final results around colocalization, cropped mask ports, ND2
 axis order, and any node for which GPU execution is enabled. Do not combine
 0.12 and 0.13 numerical results without that review.
+
+An axis declaration is not a calibration measurement. `QYX -> ZYX` preserves
+the scale, unit, and origin already attached to the leading position; it cannot
+discover the physical Z step that the TIFF failed to describe. Verify Output
+Metadata and use `Set Pixel Size / Units` before any analysis that depends on
+physical Z distance.
 
 ## GPU and cuCIM boundaries
 

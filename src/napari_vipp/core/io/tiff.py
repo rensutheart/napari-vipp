@@ -56,35 +56,12 @@ def read_tiff(path: Path, series_index: int = 0) -> ImageDataset:
     with TiffFile(path) as tif:
         tif_series = tif.series[selected.index]
         data = tif_series.asarray()
-        ome_xml = tif.ome_metadata if inspection.format == "ome-tiff" else None
-        ome = _parse_ome(ome_xml)
-        imagej = dict(tif.imagej_metadata or {})
-        resolution = _tiff_resolution(tif, imagej)
-        axes = _axis_metadata(
-            selected.axes,
-            data.shape,
-            ome=ome,
-            series_index=selected.index,
-            imagej=imagej,
-            resolution=resolution,
-        )
-        channels = _channel_metadata(ome, selected.index)
-        acquisition = _acquisition_metadata(ome, selected.index)
-        source = SourceMetadata(
-            uri=str(path),
-            format=inspection.format,
-            series_index=selected.index,
-            series_name=selected.name,
-            source_uuid=str(getattr(ome, "uuid", "") or ""),
-        )
-        state = image_state_from_array(
+        state = _tiff_image_state(
+            path,
+            inspection,
+            selected,
             data,
-            source_name=selected.name or path.name,
-            axes=axes,
-            metadata_source=_metadata_source_label(inspection.format),
-            channels=channels,
-            acquisition=acquisition,
-            source=source,
+            tif,
         )
     if state is None:
         raise ValueError(f"Could not build image metadata for {path}")
@@ -96,6 +73,75 @@ def read_tiff(path: Path, series_index: int = 0) -> ImageDataset:
         original_metadata=inspection.original_metadata,
         provenance={"reader": "napari-vipp", "source_uri": str(path)},
     )
+
+
+def image_state_from_tiff_inspection(
+    path: Path,
+    inspection: SourceInspection,
+    series_index: int = 0,
+) -> ImageState:
+    """Build reader-equivalent TIFF metadata without loading pixel values."""
+    selected = _selected_series(inspection, series_index)
+    proxy = _MetadataOnlyArray(selected.shape, selected.dtype)
+    with TiffFile(path) as tif:
+        state = _tiff_image_state(
+            path,
+            inspection,
+            selected,
+            proxy,
+            tif,
+        )
+    if state is None:
+        raise ValueError(f"Could not build image metadata for {path}")
+    return state
+
+
+def _tiff_image_state(
+    path: Path,
+    inspection: SourceInspection,
+    selected: ImageSeriesInfo,
+    data,
+    tif: TiffFile,
+) -> ImageState | None:
+    """Normalize TIFF metadata through the one reader/preflight seam."""
+    ome_xml = tif.ome_metadata if inspection.format == "ome-tiff" else None
+    ome = _parse_ome(ome_xml)
+    imagej = dict(tif.imagej_metadata or {})
+    resolution = _tiff_resolution(tif, imagej)
+    axes = _axis_metadata(
+        selected.axes,
+        selected.shape,
+        ome=ome,
+        series_index=selected.index,
+        imagej=imagej,
+        resolution=resolution,
+    )
+    return image_state_from_array(
+        data,
+        source_name=selected.name or path.name,
+        axes=axes,
+        metadata_source=_metadata_source_label(inspection.format),
+        channels=_channel_metadata(ome, selected.index),
+        acquisition=_acquisition_metadata(ome, selected.index),
+        source=SourceMetadata(
+            uri=str(path),
+            format=inspection.format,
+            series_index=selected.index,
+            series_name=selected.name,
+            source_uuid=str(getattr(ome, "uuid", "") or ""),
+        ),
+    )
+
+
+class _MetadataOnlyArray:
+    """Shape/dtype carrier recognized as lazy by metadata normalization."""
+
+    def __init__(self, shape: tuple[int, ...], dtype: str) -> None:
+        self.shape = tuple(int(size) for size in shape)
+        self.dtype = np.dtype(dtype)
+
+    def compute(self):
+        raise RuntimeError("A TIFF metadata-only array cannot load pixels.")
 
 
 def write_tiff(

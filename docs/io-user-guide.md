@@ -122,6 +122,23 @@ second file from every bound source, and so on. The first bound source is the
 primary source used for default naming. Each item gets a stable batch index
 (`0001`, `0002`, ...) and a stable batch id such as `0001_field_a`.
 
+Each collection source has an `Image stack` choice. A new unsaved source row
+starts at `Automatic (recommended)`. If a representative reports exactly `QYX`
+and then reaches a workflow step that explicitly requires `ZYX`, VIPP selects
+`Pages are depth slices (Z stack)`, retries the check, and shows a notice
+explaining that the concrete choice will be saved. This is a narrow
+workflow-based suggestion, not evidence that every TIFF page is scientifically
+a depth slice. Select `Use the file's labels unchanged` to opt out; VIPP respects
+that decision rather than selecting Z again for that source.
+
+The resulting `QYX -> ZYX` declaration is guarded: the raw side must match
+exactly for every item. It changes semantic names in place and never transposes
+pixels. It also does not discover a missing Z calibration.
+`Something else (advanced)...` keeps uncommon mappings out of the normal
+workflow and reveals its text field only when selected. `Reorder Axes` performs
+the opposite kind of change: it transposes pixels with their complete axis
+records but never renames Q as Z.
+
 `Preview batch` is optional. Use it when you want to inspect item ids, bound
 source files, planned output filenames, existing-path collision state, and one
 representative graph calculation before execution. Planning itself does not
@@ -131,14 +148,20 @@ M`, the batch ID, and every paired filename. Moving its slider calculates only
 the selected representative
 through the live graph. It does not create batch outputs. The workspace table
 shows up to the first 25 plan rows, while the slider covers the complete plan.
-`Run batch` always performs a fresh, plan-only preflight and does not require a
-representative preview. If there is no displayed plan, it immediately executes
-that fresh plan in the same click. If an already displayed plan changed
-unexpectedly through files, destinations, collision states, or the scientific
-graph, VIPP refreshes the table and stops so you can review it before clicking
-Run again. Editing batch settings or the graph deliberately invalidates the
-old runnable plan, but the slider stays available as an explicitly labelled
-view of the previous source pairing and Run can build and execute a new plan.
+`Run batch` always performs fresh planning and a representative scientific-axis
+preflight, and does not require a representative preview. It applies source
+declarations and checks the first item's graph contract before creating the
+output directory, run artifacts, or a CPU/GPU device context. A deterministic
+contract error stops the run even under `Continue on error`; an unreadable
+representative remains an ordinary item-level failure. This is not a scan of
+every file, so each later item still has to match its declaration when read. If
+there is no displayed plan, Run immediately executes that fresh plan in the
+same click. If an already displayed plan changed unexpectedly through files,
+destinations, collision states, or the scientific graph, VIPP refreshes the
+table and stops so you can review it before clicking Run again. Editing batch
+settings or the graph deliberately invalidates the old runnable plan, but the
+slider stays available as an explicitly labelled view of the previous source
+pairing and Run can build and execute a new plan.
 Files opened as representatives are pinned to their verified revision. If one
 is overwritten in place after review, Run stops and asks you to refresh while
 the graph keeps showing the earlier verified bytes rather than silently mixing
@@ -187,14 +210,29 @@ Use `Save config...` to write a versioned `vipp_batch_config.json`, and `Load
 config...` to restore it. The configuration records the source-node bindings,
 folders and patterns, output folder, default image format, existing-file
 policy, required workflow companion, optional runner choice, workflow hash, and
-resolved declarations for the selected outputs. Config schema version 2 also
-stores the full effective compute request, including
+resolved declarations for the selected outputs. Config schema version 3 also
+stores guarded source-axis declarations and the full effective compute request,
+including
 CPU/Auto/Prefer-GPU/Custom mode,
 fallback policy, per-node preferences, runtime/device, memory cap/reserve,
 policy IDs, and experimental admission. Version-1 configs migrate to explicit
-CPU because they had no accelerator intent. Loading a config against a different
-workflow reports the hash mismatch instead of silently using stale output
-selections.
+CPU because they had no accelerator intent; version-2 configs retain their
+saved compute request. Both older versions load without source-axis
+declarations and become version 3 when reviewed and saved. Loading a config
+against a different workflow reports the hash mismatch instead of silently
+using stale output selections.
+
+The friendly GUI choice is saved as the same explicit declaration used by
+headless runs. Code that constructs a source binding directly can use
+`AxisDeclaration("QYX", "ZYX")`; a JSON config stores the corresponding
+`"source_axes": "QYX"` and `"effective_axes": "ZYX"`. Headless execution does not
+invent that declaration when it is absent. Saving while the recommended choice
+has not needed to change anything conservatively stores no declaration; loading
+that config shows `Use the file's labels unchanged`, not automatic mode.
+The same is true for historic or headless configs with no declaration. Once the
+guarded Z-stack suggestion has been applied, saving records the concrete
+`QYX -> ZYX` declaration and loading restores
+`Pages are depth slices (Z stack)`.
 
 In the GUI, the loaded config's compute request remains effective while the
 toolbar compute request is unchanged from load time. Changing any toolbar
@@ -246,7 +284,10 @@ locations rather than copying them into the output folder.
 The manifest identifies the workflow/config hashes, embeds the canonical config
 and scientific graph, records VIPP and relevant runtime package versions, each
 input and available source metadata, every planned output policy/path, and
-errors. Manifest schema version 2 additionally records the effective compute
+errors. Manifest schema version 3 additionally records raw axes, effective
+axes, and the applied declaration for each source successfully read during item
+execution; the embedded config retains intended declarations for sources
+skipped or failed before reading. It also records the effective compute
 request/environment, exact actual implementation identity for every completed
 computed node, decision and fallback reasons, structured OOM retry/memory
 records, warnings, and cleanup proof. A run-id manifest preserves each finished

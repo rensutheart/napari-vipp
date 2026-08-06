@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import tifffile
 
 import napari_vipp.core.batch as batch_module
 from napari_vipp.core.batch import (
@@ -14,6 +15,7 @@ from napari_vipp.core.batch import (
     BATCH_CONFIG_VERSION,
     BatchConfig,
     BatchOutputConfig,
+    BatchScientificPreflightError,
     BatchSourceConfig,
     BatchStatus,
     ExistingFilePolicy,
@@ -42,6 +44,7 @@ from napari_vipp.core.execution import (
     PipelineRunResult,
 )
 from napari_vipp.core.execution_provenance import serialize_execution_provenance
+from napari_vipp.core.metadata import AxisDeclaration
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
 
@@ -83,7 +86,60 @@ def _image_batch(tmp_path, *, item_count: int = 1):
     return workflow, config, output.id
 
 
-def test_batch_config_v2_roundtrip_and_v1_migration_preserve_cpu_replay(tmp_path):
+def _generic_stack_batch(
+    tmp_path,
+    *,
+    mode: ComputeMode,
+    continue_on_error: bool,
+):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source_path = inputs / "ordinary-stack.tif"
+    tifffile.imwrite(
+        source_path,
+        np.arange(3 * 8 * 9, dtype=np.uint16).reshape(3, 8, 9),
+        photometric="minisblack",
+    )
+    with tifffile.TiffFile(source_path) as tif:
+        assert tif.series[0].axes == "QYX"
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.nodes["input"].params["binding_mode"] = "collection"
+    background = pipeline.add_node("subtract_background")
+    pipeline.set_param(background.id, "radius", 1.0)
+    pipeline.set_param(background.id, "spatial_mode", "3D ZYX")
+    output = pipeline.add_node("batch_output")
+    pipeline.set_param(output.id, "tag", "result")
+    pipeline.set_param(output.id, "format", "npy")
+    assert pipeline.connect("input", background.id).success
+    assert pipeline.connect(background.id, output.id).success
+    workflow = serialize_workflow(pipeline)
+    config = BatchConfig(
+        workflow_file=Path("workflow.json"),
+        workflow_sha256=scientific_workflow_hash(workflow),
+        output_dir=tmp_path / "outputs",
+        sources=(BatchSourceConfig("input", "Input", inputs, "*.tif"),),
+        outputs=(
+            BatchOutputConfig(
+                output.id,
+                output.title,
+                "result",
+                "image",
+                "npy",
+                "",
+                "{source_stem}__{tag}",
+            ),
+        ),
+        default_image_format="npy",
+        save_python_script=False,
+        continue_on_error=continue_on_error,
+        compute_request=ComputeRequest(mode=mode),
+    )
+    return workflow, config
+
+
+def test_batch_config_v3_roundtrip_and_v1_v2_migration_preserve_replay(tmp_path):
     workflow, config, _output_id = _image_batch(tmp_path)
     auto = ComputeRequest(
         mode=ComputeMode.AUTO,
@@ -93,7 +149,16 @@ def test_batch_config_v2_roundtrip_and_v1_migration_preserve_cpu_replay(tmp_path
         accelerator_safety_reserve_bytes=250_000_000,
         allow_experimental=True,
     )
-    current = replace(config, compute_request=auto)
+    current = replace(
+        config,
+        sources=(
+            replace(
+                config.sources[0],
+                axis_declaration=AxisDeclaration("QYX", "ZYX"),
+            ),
+        ),
+        compute_request=auto,
+    )
     path = tmp_path / BATCH_CONFIG_FILENAME
 
     save_batch_config(path, current)
@@ -102,17 +167,84 @@ def test_batch_config_v2_roundtrip_and_v1_migration_preserve_cpu_replay(tmp_path
     assert loaded.compute_request == auto
     assert loaded.to_dict()["version"] == BATCH_CONFIG_VERSION
     assert loaded.to_dict()["compute"] == auto.as_dict()
+    assert loaded.sources[0].axis_declaration == AxisDeclaration("QYX", "ZYX")
+    assert loaded.to_dict()["sources"][0]["axis_declaration"] == {
+        "source_axes": "QYX",
+        "effective_axes": "ZYX",
+    }
 
-    legacy_document = config.to_dict()
-    legacy_document["version"] = 1
-    legacy_document.pop("compute")
-    path.write_text(json.dumps(legacy_document), encoding="utf-8")
+    version_two_document = current.to_dict()
+    version_two_document["version"] = 2
+    version_two_document["sources"][0].pop("axis_declaration")
+    path.write_text(json.dumps(version_two_document), encoding="utf-8")
 
-    migrated = load_batch_config(path)
+    migrated_v2 = load_batch_config(path)
 
-    assert migrated.compute_request.mode is ComputeMode.CPU
-    assert migrated.to_dict()["version"] == BATCH_CONFIG_VERSION
-    assert migrated.workflow_sha256 == scientific_workflow_hash(workflow)
+    assert migrated_v2.compute_request == auto
+    assert migrated_v2.sources[0].axis_declaration is None
+    assert migrated_v2.to_dict()["version"] == BATCH_CONFIG_VERSION
+
+    version_one_document = dict(version_two_document)
+    version_one_document["version"] = 1
+    version_one_document.pop("compute")
+    path.write_text(json.dumps(version_one_document), encoding="utf-8")
+
+    migrated_v1 = load_batch_config(path)
+
+    assert migrated_v1.compute_request.mode is ComputeMode.CPU
+    assert migrated_v1.sources[0].axis_declaration is None
+    assert migrated_v1.to_dict()["version"] == BATCH_CONFIG_VERSION
+    assert migrated_v1.workflow_sha256 == scientific_workflow_hash(workflow)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    (ComputeMode.CPU, ComputeMode.AUTO, ComputeMode.PREFER_GPU),
+)
+@pytest.mark.parametrize("continue_on_error", (False, True))
+def test_axis_preflight_precedes_executor_registry_and_item_failure_policy(
+    tmp_path,
+    monkeypatch,
+    mode,
+    continue_on_error,
+):
+    workflow, config = _generic_stack_batch(
+        tmp_path,
+        mode=mode,
+        continue_on_error=continue_on_error,
+    )
+    progress = []
+
+    def forbidden_execute(*_args, **_kwargs):
+        raise AssertionError("scientific preflight reached item execution")
+
+    def forbidden_registry(*_args, **_kwargs):
+        raise AssertionError("scientific preflight allocated a GPU registry")
+
+    monkeypatch.setattr(
+        batch_module,
+        "execute_pipeline_request",
+        forbidden_execute,
+    )
+    import napari_vipp.core.compute_registry as registry_module
+
+    monkeypatch.setattr(registry_module, "ComputeRegistry", forbidden_registry)
+
+    with pytest.raises(
+        BatchScientificPreflightError,
+        match=r"before item processing, output creation, or CPU/GPU device setup",
+    ) as caught:
+        run_batch(
+            workflow,
+            config,
+            progress_callback=lambda *update: progress.append(update),
+        )
+
+    message = str(caught.value)
+    assert "raw QYX, effective QYX" in message
+    assert "QYX -> ZYX" in message
+    assert progress == []
+    assert not config.output_dir.exists()
 
 
 def test_prefer_gpu_batch_config_and_provenance_preserve_global_policy(tmp_path):

@@ -27,6 +27,8 @@ from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp.core.atomic_io import (
     atomic_replace as _replace_with_retry,
@@ -47,7 +49,12 @@ from napari_vipp.core.execution_provenance import (
     execution_provenance_digest,
     serialize_execution_provenance,
 )
-from napari_vipp.core.io import read_image
+from napari_vipp.core.io import inspect_image_source, inspect_image_state, read_image
+from napari_vipp.core.metadata import (
+    AmbiguousAxisError,
+    AxisDeclaration,
+    apply_axis_declaration,
+)
 from napari_vipp.core.operations import save_array_output
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
 from napari_vipp.core.progress import OperationCancelled
@@ -65,9 +72,9 @@ if TYPE_CHECKING:
     from napari_vipp.core.execution import ComputePlanner
 
 BATCH_CONFIG_TYPE = "napari-vipp-batch-config"
-BATCH_CONFIG_VERSION = 2
+BATCH_CONFIG_VERSION = 3
 BATCH_MANIFEST_TYPE = "napari-vipp-batch-manifest"
-BATCH_MANIFEST_VERSION = 2
+BATCH_MANIFEST_VERSION = 3
 
 BATCH_CONFIG_FILENAME = "vipp_batch_config.json"
 BATCH_MANIFEST_FILENAME = "vipp_batch_manifest.json"
@@ -150,6 +157,31 @@ class BatchRuntimeCleanupError(RuntimeError):
     """A batch item could not prove accelerator cleanup before publication."""
 
 
+@dataclass(frozen=True, slots=True)
+class BatchAxisSuggestion:
+    """One safe, UI-actionable interpretation for a generic source axis."""
+
+    source_node_id: str
+    source_title: str
+    declaration: AxisDeclaration
+
+
+class BatchScientificPreflightError(ValueError):
+    """A representative source cannot satisfy the workflow contract."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        user_message: str | None = None,
+        axis_suggestion: BatchAxisSuggestion | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.technical_detail = str(message)
+        self.user_message = str(user_message or message)
+        self.axis_suggestion = axis_suggestion
+
+
 @dataclass(frozen=True)
 class BatchSourceConfig:
     """One workflow source bound to a local file collection."""
@@ -158,27 +190,45 @@ class BatchSourceConfig:
     title: str
     input_dir: Path
     pattern: str
+    axis_declaration: AxisDeclaration | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.node_id, "Batch source node_id")
         _require_text(self.title, "Batch source title")
         _require_text(str(self.input_dir), "Batch source input_dir")
         _require_text(self.pattern, "Batch source pattern")
+        object.__setattr__(
+            self,
+            "axis_declaration",
+            AxisDeclaration.from_value(self.axis_declaration),
+        )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "node_id": self.node_id,
             "title": self.title,
             "input_dir": _config_path_text(self.input_dir),
             "pattern": self.pattern,
         }
+        if self.axis_declaration is not None:
+            result["axis_declaration"] = self.axis_declaration.to_dict()
+        return result
 
     @classmethod
-    def from_dict(cls, value: object, *, index: int) -> BatchSourceConfig:
+    def from_dict(
+        cls,
+        value: object,
+        *,
+        index: int,
+        config_version: int = BATCH_CONFIG_VERSION,
+    ) -> BatchSourceConfig:
         data = _require_object(value, f"Batch source {index}")
+        allowed = {"node_id", "title", "input_dir", "pattern"}
+        if config_version >= 3:
+            allowed.add("axis_declaration")
         _reject_unknown_keys(
             data,
-            {"node_id", "title", "input_dir", "pattern"},
+            allowed,
             f"Batch source {index}",
         )
         return cls(
@@ -186,6 +236,11 @@ class BatchSourceConfig:
             title=_required_text(data, "title", f"batch source {index}"),
             input_dir=Path(_required_text(data, "input_dir", f"batch source {index}")),
             pattern=_required_text(data, "pattern", f"batch source {index}"),
+            axis_declaration=(
+                AxisDeclaration.from_value(data.get("axis_declaration"))
+                if config_version >= 3
+                else None
+            ),
         )
 
 
@@ -369,11 +424,12 @@ class BatchConfig:
         raw_version = data.get("version")
         if type(raw_version) is not int or raw_version not in {
             1,
+            2,
             BATCH_CONFIG_VERSION,
         }:
             raise ValueError(
                 f"Unsupported batch config version: {raw_version!r}. "
-                f"Expected version 1 or {BATCH_CONFIG_VERSION}."
+                f"Expected version 1, 2, or {BATCH_CONFIG_VERSION}."
             )
         if raw_version == 1:
             allowed.remove("compute")
@@ -425,7 +481,11 @@ class BatchConfig:
             workflow_sha256=_required_text(workflow, "sha256", "batch config workflow"),
             output_dir=Path(_required_text(data, "output_dir", "batch config")),
             sources=tuple(
-                BatchSourceConfig.from_dict(item, index=index)
+                BatchSourceConfig.from_dict(
+                    item,
+                    index=index,
+                    config_version=raw_version,
+                )
                 for index, item in enumerate(raw_sources)
             ),
             outputs=tuple(
@@ -1255,6 +1315,12 @@ def run_batch(
         raise FileExistsError(
             "Batch preflight found output collisions: " + preview + suffix
         )
+    _preflight_representative_scientific_contract(
+        pipeline,
+        plan,
+        config,
+        fixed_source_paths,
+    )
     plan.output_dir.mkdir(parents=True, exist_ok=True)
 
     workflow_label = str(workflow_path or config.workflow_file)
@@ -2038,16 +2104,33 @@ def preflight_batch(
     config: BatchConfig,
     *,
     workflow_path: str | Path | None = None,
+    allow_collisions: bool = False,
 ) -> BatchPlan:
     """Validate and plan a batch, raising before any artifact is modified."""
-    plan = plan_batch(workflow, config, workflow_path=workflow_path)
-    if plan.has_collisions:
+    workflow_sha256 = scientific_workflow_hash(workflow)
+    pipeline, fixed_source_paths = _validated_batch_pipeline(
+        workflow,
+        config,
+        workflow_sha256,
+        workflow_path=workflow_path,
+    )
+    plan = _with_fixed_source_collisions(
+        build_batch_plan(config),
+        fixed_source_paths.values(),
+    )
+    if plan.has_collisions and not allow_collisions:
         collisions = _collision_paths(plan)
         preview = ", ".join(collisions[:3])
         suffix = "" if len(collisions) <= 3 else f" (+{len(collisions) - 3} more)"
         raise FileExistsError(
             "Batch preflight found output collisions: " + preview + suffix
         )
+    _preflight_representative_scientific_contract(
+        pipeline,
+        plan,
+        config,
+        fixed_source_paths,
+    )
     return plan
 
 
@@ -2372,6 +2455,223 @@ def _fixed_source_base_dir(
     return path.resolve(strict=False).parent
 
 
+def _preflight_representative_scientific_contract(
+    pipeline: PrototypePipeline,
+    plan: BatchPlan,
+    config: BatchConfig,
+    fixed_source_paths: dict[str, Path],
+) -> None:
+    """Validate one representative's axis contract before any run artifacts."""
+    if not plan.items:
+        return
+    item = next(
+        (
+            planned_item
+            for planned_item in plan.items
+            if any(
+                output.existing_file_policy is not ExistingFilePolicy.SKIP
+                or not output.path.exists()
+                for output in planned_item.outputs
+            )
+        ),
+        None,
+    )
+    if item is None:
+        return
+    source_paths = _item_source_paths(pipeline, item, fixed_source_paths)
+    bindings = {source.node_id: source for source in config.sources}
+    payloads: dict[str, SourcePayload] = {}
+    summaries: list[str] = []
+    generic_undeclared: list[tuple[str, str, str, str]] = []
+    contract_pipeline = PrototypePipeline()
+    contract_pipeline.restore_graph(
+        pipeline.nodes.values(),
+        pipeline.connections,
+        pipeline.output_tunnels.values(),
+    )
+    for node_id, node in contract_pipeline.nodes.items():
+        if node.operation_id != "input":
+            continue
+        path = source_paths[node_id]
+        binding = bindings.get(node_id)
+        title = binding.title if binding is not None else node.title
+        try:
+            inspection = inspect_image_source(path)
+        except Exception:
+            # A source that cannot be inspected at all remains an item-specific
+            # read failure governed by continue_on_error.
+            return
+        try:
+            series_index = int(node.params.get("series_index", 0))
+            if series_index < 0 or series_index >= len(inspection.series):
+                raise IndexError(
+                    f"Series index {series_index} is outside 0.."
+                    f"{len(inspection.series) - 1}"
+                )
+            selected = inspection.series[series_index]
+            raw_state = inspect_image_state(
+                path,
+                inspection=inspection,
+                series_index=series_index,
+            )
+            base = np.empty((1,), dtype=np.dtype(selected.dtype))
+            proxy = np.lib.stride_tricks.as_strided(
+                base,
+                shape=selected.shape,
+                strides=(0,) * len(selected.shape),
+                writeable=False,
+            )
+        except Exception as exc:
+            summaries.append(f"{title}: metadata contract unavailable")
+            _raise_batch_scientific_preflight_error(
+                exc,
+                summaries,
+                generic_undeclared,
+            )
+        declaration = None if binding is None else binding.axis_declaration
+        try:
+            effective_state, axis_semantics = _declared_batch_source_state(
+                raw_state,
+                binding,
+            )
+            summaries.append(
+                f"{title}: raw {axis_semantics['raw_axes']}, effective "
+                f"{axis_semantics['effective_axes']}"
+                + (
+                    " (no declaration)"
+                    if declaration is None
+                    else f" ({declaration.display_text})"
+                )
+            )
+            if binding is not None and declaration is None and any(
+                axis.type == "unknown" for axis in raw_state.axes
+            ):
+                generic_undeclared.append(
+                    (node_id, title, raw_state.axis_order, inspection.format)
+                )
+        except Exception as exc:
+            summaries.append(
+                f"{title}: raw {raw_state.axis_order}"
+                + (
+                    " (no declaration)"
+                    if declaration is None
+                    else f" ({declaration.display_text})"
+                )
+            )
+            _raise_batch_scientific_preflight_error(
+                exc,
+                summaries,
+                generic_undeclared,
+            )
+        payloads[node_id] = SourcePayload(
+            proxy,
+            {
+                "vipp_source_path": str(path),
+                "vipp_axis_semantics": axis_semantics,
+            },
+            selected.name or path.name,
+            effective_state,
+        )
+    try:
+        contract_pipeline.preflight_axis_contract(payloads)
+    except Exception as exc:
+        _raise_batch_scientific_preflight_error(
+            exc,
+            summaries,
+            generic_undeclared,
+            contract_pipeline,
+        )
+
+
+def _raise_batch_scientific_preflight_error(
+    exc: Exception,
+    summaries: list[str],
+    generic_undeclared: list[tuple[str, str, str, str]],
+    pipeline: PrototypePipeline | None = None,
+) -> None:
+    if isinstance(exc, BatchScientificPreflightError):
+        raise exc
+    source_summary = "; ".join(summaries) or "unavailable"
+    guidance = ""
+    axis_suggestion = None
+    user_message = "The batch images do not match this workflow."
+    candidates = list(generic_undeclared)
+    if (
+        pipeline is not None
+        and isinstance(exc, AmbiguousAxisError)
+        and exc.failing_node_id
+    ):
+        primary_sources = _primary_source_node_ids(
+            pipeline,
+            exc.failing_node_id,
+        )
+        candidates = [item for item in candidates if item[0] in primary_sources]
+    if candidates:
+        node_id, title, raw_axes, source_format = candidates[0]
+        guidance = (
+            f" Review '{title}' and, only if it is truly a Z stack, set "
+            f"Declare axes to {raw_axes} -> ZYX."
+        )
+        if (
+            len(candidates) == 1
+            and raw_axes == "QYX"
+            and source_format == "tiff"
+            and isinstance(exc, AmbiguousAxisError)
+            and exc.code == "positional_spatial_layout"
+            and exc.detected_axes == "QYX"
+            and exc.required_axes == "ZYX"
+        ):
+            axis_suggestion = BatchAxisSuggestion(
+                source_node_id=node_id,
+                source_title=title,
+                declaration=AxisDeclaration("QYX", "ZYX"),
+            )
+            user_message = (
+                "This TIFF looks like a Z stack, but its first dimension is "
+                "labelled Q. VIPP can treat it as Z for this batch."
+            )
+        else:
+            user_message = (
+                "This workflow needs image-axis information that the source "
+                "does not provide."
+            )
+    raise BatchScientificPreflightError(
+        "Batch scientific preflight failed before item processing, output "
+        "creation, or CPU/GPU device setup. Representative source axes: "
+        f"{source_summary}.{guidance} {exc}",
+        user_message=user_message,
+        axis_suggestion=axis_suggestion,
+    ) from exc
+
+
+def _primary_source_node_ids(
+    pipeline: PrototypePipeline,
+    failing_node_id: str,
+) -> set[str]:
+    """Trace the axis-bearing primary input back to its workflow source."""
+    current = str(failing_node_id)
+    visited: set[str] = set()
+    while current and current not in visited:
+        visited.add(current)
+        node = pipeline.nodes.get(current)
+        if node is None:
+            return set()
+        if node.operation_id == "input":
+            return {current}
+        connections = sorted(
+            (
+                connection
+                for connection in pipeline.connections
+                if connection.target_id == current
+            ),
+            key=lambda connection: connection.target_port,
+        )
+        if not connections:
+            return set()
+        current = connections[0].source_id
+    return set()
+
+
 def _source_payloads_for_item(
     pipeline: PrototypePipeline,
     item: BatchItemPlan,
@@ -2399,15 +2699,29 @@ def _source_payloads_for_item(
             path,
             series_index=int(node.params.get("series_index", 0)),
         )
+        raw_state = dataset.image_state
+        effective_state, axis_semantics = _declared_batch_source_state(
+            raw_state,
+            binding,
+        )
         provenance = _json_safe(dataset.provenance)
+        effective_provenance = (
+            {**provenance, "axis_semantics": axis_semantics}
+            if isinstance(provenance, dict)
+            else {
+                "reader_provenance": provenance,
+                "axis_semantics": axis_semantics,
+            }
+        )
         payloads[node_id] = SourcePayload(
             dataset.data,
             {
                 "vipp_source_path": str(path),
-                "vipp_source_provenance": provenance,
+                "vipp_source_provenance": effective_provenance,
+                "vipp_axis_semantics": axis_semantics,
             },
             dataset.selected_series.name or path.name,
-            dataset.image_state,
+            effective_state,
         )
         identity = {
             **_path_identity(path),
@@ -2429,11 +2743,46 @@ def _source_payloads_for_item(
                     "axes": dataset.selected_series.axes,
                     "kind": dataset.selected_series.kind,
                 },
-                "image_state": dataset.image_state.to_dict(),
-                "provenance": provenance,
+                "raw_axes": axis_semantics["raw_axes"],
+                "effective_axes": axis_semantics["effective_axes"],
+                "axis_declaration": axis_semantics["declaration"],
+                "axis_semantics": axis_semantics,
+                "image_state": effective_state.to_dict(),
+                "provenance": effective_provenance,
             }
         )
     return payloads, records
+
+
+def _declared_batch_source_state(
+    raw_state,
+    binding: BatchSourceConfig | None,
+):
+    declaration = None if binding is None else binding.axis_declaration
+    effective_state = (
+        raw_state
+        if declaration is None
+        else apply_axis_declaration(
+            raw_state,
+            declaration,
+            declaration_source="batch config",
+        )
+    )
+    declaration_record = (
+        None
+        if declaration is None
+        else {
+            **declaration.to_dict(),
+            "source": "batch config",
+            "applied": True,
+            "data_order_changed": False,
+        }
+    )
+    return effective_state, {
+        "raw_axes": raw_state.axis_order,
+        "effective_axes": effective_state.axis_order,
+        "declaration": declaration_record,
+    }
 
 
 def _item_source_paths(
@@ -3174,6 +3523,7 @@ __all__ = [
     "BATCH_MANIFEST_VERSION",
     "BATCH_SCRIPT_FILENAME",
     "BATCH_WORKFLOW_FILENAME",
+    "BatchAxisSuggestion",
     "BatchConfig",
     "BatchExecutionError",
     "BatchExecutionProgress",
@@ -3188,6 +3538,7 @@ __all__ = [
     "BatchSourceConfig",
     "BatchStatus",
     "BatchRuntimeCleanupError",
+    "BatchScientificPreflightError",
     "ExistingFilePolicy",
     "atomic_write_json",
     "atomic_write_text",

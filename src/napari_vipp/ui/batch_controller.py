@@ -12,7 +12,7 @@ from napari_vipp.core.batch import (
     ExistingFilePolicy,
     atomic_write_json,
     load_batch_config,
-    plan_batch,
+    preflight_batch,
     save_batch_config,
     validate_batch_config,
 )
@@ -149,10 +149,11 @@ class CollectionBatchController:
             workflow=workflow,
             compute_request=compute_request,
         )
-        plan = plan_batch(
+        plan = preflight_batch(
             workflow,
             config,
             workflow_path=config.output_dir / BATCH_WORKFLOW_FILENAME,
+            allow_collisions=True,
         )
         explicit = bool(batch_output_node_ids(self._pipeline_provider()))
         rows = tuple(

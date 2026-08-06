@@ -86,7 +86,7 @@ authoring remain later milestones.
 Current alpha release: `0.13.0a1`.
 
 The 0.13 alpha adds evidence-gated GPU execution, portable compute intent,
-durable implementation provenance, workflow schema 4, batch schema 2,
+durable implementation provenance, workflow schema 4, batch schema 3,
 independent workflow tabs, and new scientific/UI capabilities on top of the
 0.12 deterministic batch and reproducibility foundation.
 Implemented and documented work includes:
@@ -101,10 +101,11 @@ Implemented and documented work includes:
 - workflow JSON schema 4 with canvas positions, named tunnels, graph notes, selected
   inspector state, optional per-node thumbnail visibility, strict loading, and
   portable compute intent; schema 3 migrates to explicit CPU;
-- Python/CLI export and retained collection batch schema 2 share the interactive
+- Python/CLI export and retained collection batch schema 3 share the interactive
   executor, with explicit outputs, deterministic plan review, representative
-  navigation, multi-source bindings, nested progress, cancellation, exact
-  implementation provenance, OOM fallback records, and saved artifacts;
+  navigation and scientific preflight, guarded source-axis declarations,
+  multi-source bindings, nested progress, cancellation, exact implementation
+  provenance, OOM fallback records, and saved artifacts;
 - background execution, stale-result rejection, cooperative cancellation where
   supported, manual/cached measurement nodes, branch-local dirty reruns, cache
   modes, auto memory guard, and per-node `Keep output cached`;

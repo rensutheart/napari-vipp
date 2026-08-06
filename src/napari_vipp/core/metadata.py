@@ -78,6 +78,21 @@ KIND_PRESERVING_OPERATIONS = {
 class AmbiguousAxisError(ValueError):
     """Raised when an operation needs semantics supplied only by a shape guess."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        detected_axes: str | None = None,
+        required_axes: str | None = None,
+        failing_node_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.detected_axes = detected_axes
+        self.required_axes = required_axes
+        self.failing_node_id = failing_node_id
+
 
 @dataclass(frozen=True)
 class AxisMetadata:
@@ -154,6 +169,66 @@ class AxisMetadata:
                 default=default_confidence,
             ),
         )
+
+
+@dataclass(frozen=True)
+class AxisDeclaration:
+    """Reviewed positional reinterpretation of one source axis order."""
+
+    source_axes: str
+    effective_axes: str
+
+    def __post_init__(self) -> None:
+        source = normalize_axis_declaration(self.source_axes)
+        effective = normalize_axis_declaration(self.effective_axes)
+        if not source or not effective:
+            raise ValueError(
+                "An axis declaration needs both source and effective axes, "
+                "for example QYX -> ZYX."
+            )
+        if len(_split_axis_order(source)) != len(_split_axis_order(effective)):
+            raise ValueError(
+                "Axis declaration source and effective orders must have the "
+                "same number of dimensions."
+            )
+        object.__setattr__(self, "source_axes", source)
+        object.__setattr__(self, "effective_axes", effective)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "source_axes": self.source_axes,
+            "effective_axes": self.effective_axes,
+        }
+
+    @classmethod
+    def from_value(cls, value: object) -> AxisDeclaration | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, dict):
+            unknown = set(value) - {"source_axes", "effective_axes"}
+            if unknown:
+                raise ValueError(
+                    "Axis declaration contains unknown fields: "
+                    + ", ".join(sorted(str(key) for key in unknown))
+                    + "."
+                )
+            return cls(
+                source_axes=str(value.get("source_axes", "")),
+                effective_axes=str(value.get("effective_axes", "")),
+            )
+        text = str(value).strip()
+        match = re.fullmatch(r"(.+?)\s*(?:->|→)\s*(.+)", text)
+        if match is None:
+            raise ValueError(
+                "Declare batch axes as a reviewed mapping such as QYX -> ZYX."
+            )
+        return cls(match.group(1), match.group(2))
+
+    @property
+    def display_text(self) -> str:
+        return f"{self.source_axes} -> {self.effective_axes}"
 
 
 @dataclass(frozen=True)
@@ -852,6 +927,101 @@ def infer_axis_metadata_from_shape(shape: tuple[int, ...]) -> tuple[AxisMetadata
     return _axis_metadata_from_order(names)
 
 
+def normalize_axis_declaration(value: object) -> str:
+    """Return one canonical, complete axis declaration.
+
+    Single-letter axes use the compact ``ZYX`` form. Longer names use a
+    comma-separated form.  A declaration assigns semantics by position; it
+    never changes array order or shape.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    names = _split_axis_order(text)
+    if not names or any(
+        re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name) is None for name in names
+    ):
+        raise ValueError(
+            "An axis declaration must contain axis names such as ZYX or "
+            "time,z,y,x."
+        )
+    normalized = tuple(name.casefold() for name in names)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("An axis declaration cannot contain duplicate axis names.")
+    if all(len(name) == 1 for name in normalized):
+        return "".join(name.upper() for name in normalized)
+    return ",".join(normalized)
+
+
+def apply_axis_declaration(
+    state: ImageState,
+    declaration: AxisDeclaration | object,
+    *,
+    declaration_source: str = "batch config",
+) -> ImageState:
+    """Apply a reviewed positional axis declaration without moving pixels.
+
+    Existing calibration and viewer-axis provenance stay attached to their
+    array dimensions. Only each record's semantic name/type/confidence changes.
+    The action is appended to history so an explicit reinterpretation remains
+    auditable after downstream processing.
+    """
+    resolved = AxisDeclaration.from_value(declaration)
+    if resolved is None:
+        return state
+    raw_axes = normalize_axis_declaration(state.axis_order)
+    if raw_axes != resolved.source_axes:
+        raise ValueError(
+            f"Axis declaration expects {resolved.source_axes}, but this source "
+            f"reports {raw_axes}. Review the batch source declaration."
+        )
+    names = tuple(
+        name.casefold() for name in _split_axis_order(resolved.effective_axes)
+    )
+    if len(names) != len(state.axes):
+        raise ValueError(
+            f"Axis declaration {resolved.effective_axes} describes {len(names)} "
+            "dimensions, "
+            f"but the source has {len(state.axes)} ({state.axis_order})."
+        )
+    axes = tuple(
+        replace(
+            axis,
+            name=name,
+            type=_axis_type_for_name(name),
+            confidence=AXIS_CONFIDENCE_EXPLICIT,
+        )
+        for axis, name in zip(state.axes, names, strict=True)
+    )
+    source = str(declaration_source).strip() or "explicit declaration"
+    metadata_source = state.metadata_source
+    marker = f"explicit axis declaration from {source}"
+    if marker.casefold() not in metadata_source.casefold():
+        metadata_source = f"{metadata_source}; {marker}"
+    has_channel_axis = any(axis.type == "channel" for axis in axes)
+    kind = state.kind
+    if kind in {
+        "array",
+        "intensity image",
+        "multi-channel image",
+        "RGB image",
+        "RGBA image",
+    }:
+        kind = _lazy_kind_label(np.dtype(state.dtype), state.shape, axes)
+    return replace(
+        state,
+        axes=axes,
+        kind=kind,
+        metadata_source=metadata_source,
+        history=state.history
+        + (
+            f"Axis declaration ({source}): {raw_axes} interpreted as "
+            f"{resolved.effective_axes}; data order unchanged",
+        ),
+        channels=state.channels if has_channel_axis else (),
+    )
+
+
 def _axis_metadata_from_order(names: str) -> tuple[AxisMetadata, ...]:
     if names == "scalar":
         return ()
@@ -1106,7 +1276,13 @@ def _transformed_axes(
     if operation_id == "composite_to_rgb":
         return _composite_to_rgb_axes(axes, arr.ndim, params=params)
     if operation_id == "skeleton_graph_overlay":
-        return _composite_to_rgb_axes(axes, arr.ndim)
+        return axes + (
+            AxisMetadata(
+                name="rgb",
+                type="channel",
+                confidence=AXIS_CONFIDENCE_EXPLICIT,
+            ),
+        )
     if operation_id == "orthogonal_projection":
         return _orthogonal_projection_axes(axes, arr.ndim, params)
     if operation_id == "set_pixel_size":
@@ -1378,6 +1554,17 @@ def _transformed_channels(
             return ()
         index = int(np.clip(int(params.get("channel", -1)), 0, len(channels) - 1))
         return (channels[index],)
+    if operation_id == "mip":
+        channel_index = _channel_axis_index(input_state.axes)
+        if (
+            len(input_state.axes) > 2
+            and channel_index is not None
+            and channel_index
+            == _clamped_axis(params.get("axis", 0), len(input_state.axes))
+        ):
+            return ()
+    if operation_id == "select_axis_slice":
+        return _selected_axis_channels(input_state, params)
     if operation_id == "assign_channel_colors":
         return _channels_with_colors(
             channels,
@@ -1394,6 +1581,47 @@ def _transformed_channels(
     ):
         return ()
     return channels
+
+
+def _selected_axis_channels(
+    input_state: ImageState,
+    params: dict[str, Any],
+) -> tuple[ChannelMetadata, ...]:
+    """Carry only channel records retained by Select Axis Slice."""
+    channels = input_state.channels
+    channel_axis = _channel_axis_index(input_state.axes)
+    if channel_axis is None or not channels:
+        return channels
+
+    if bool(params.get("range_mode", False)):
+        retained = channels
+        ranges = _parse_axis_ranges(params.get("ranges"), len(input_state.axes))
+        if channel_axis in ranges:
+            start, end = ranges[channel_axis]
+            retained = channels[start : end + 1]
+        removals = _selected_axis_index_pairs(
+            input_state.axes,
+            params,
+            axes_key="remove_axes",
+            indices_key="remove_indices",
+            default_axis=False,
+        )
+        selected = next(
+            (index for axis, index in removals if axis == channel_axis),
+            None,
+        )
+        if selected is None:
+            return retained
+        return (retained[selected],) if 0 <= selected < len(retained) else ()
+
+    selections = _selected_axis_index_pairs(input_state.axes, params)
+    selected = next(
+        (index for axis, index in selections if axis == channel_axis),
+        None,
+    )
+    if selected is None:
+        return channels
+    return (channels[selected],) if 0 <= selected < len(channels) else ()
 
 
 def _explicit_channel_axis_parameter(
@@ -1502,6 +1730,8 @@ def _split_output_channels(
 ) -> tuple[ChannelMetadata, ...]:
     if not channels:
         return ()
+    if operation_id == "skeleton_keypoints":
+        return channels
     if operation_id == "born_wolf_psf" and "channel" in params:
         index = int(np.clip(int(params.get("channel", 0)), 0, len(channels) - 1))
         return (channels[index],)

@@ -15,9 +15,9 @@ shapes, and workloads remain on CPU with a visible reason.
 
 The release also unifies interactive, batch, generated-Python/CLI, and exported
 execution; adds independent workflow tabs and new colocalization tools; fixes
-ordered ND2 axis metadata and napari viewport resets; and includes extensive
-cache, optimizer, progress, cancellation, memory, provenance, and atomic-output
-hardening accumulated since 0.12.0a3.
+ordered ND2 axis metadata, the batch `QYX`/`ZYX` ambiguity, and napari viewport
+resets; and includes extensive cache, optimizer, progress, cancellation,
+memory, provenance, and atomic-output hardening accumulated since 0.12.0a3.
 
 ### Compute Policy And GPU Execution
 
@@ -85,8 +85,31 @@ hardening accumulated since 0.12.0a3.
   including the serialized/CLI `prefer_gpu` value, while excluding
   machine-local devices, memory limits, runtime state, and benchmark evidence.
   Schema-3 workflows load with explicit CPU intent.
-- Advanced collection batch configs and manifests to schema 2. Version-1
-  configs migrate to CPU because they carried no accelerator intent.
+- Advanced collection batch configs and manifests to schema 3. Source bindings
+  can now carry a guarded raw-to-effective axis declaration such as `QYX ->
+  ZYX`. Successfully read source records include the raw axes, effective axes,
+  and declaration; the embedded config retains declarations for items skipped
+  or failed before source reading.
+  Version-1 and version-2 configs remain loadable: version 1 migrates to CPU
+  because it carried no accelerator intent, while version 2 keeps its saved
+  compute request. Both older versions contain no declaration until reviewed
+  and saved as version 3.
+- Added the novice-facing `Image stack` choice. A new unsaved row starts at
+  `Automatic (recommended)`; when an exact `QYX` representative reaches a
+  demonstrated `ZYX` workflow requirement, VIPP visibly selects
+  `Pages are depth slices (Z stack)` and retries with the guarded declaration.
+  `Use the file's labels unchanged` is an explicit opt-out, and uncommon
+  mappings remain under `Something else (advanced)...`.
+- Kept automatic page interpretation UI-only until it resolves. Saving an
+  unresolved automatic row stores no declaration and reloads as file-unchanged,
+  as do historic/headless blank configs. A resolved suggestion saves concrete
+  `QYX -> ZYX`, so later GUI and headless runs reproduce the reviewed choice.
+- Added a representative scientific-contract preflight before output-directory
+  creation, run artifacts, or compute-device setup. It applies the same source
+  declarations used by interactive representative loading and stops
+  deterministic axis failures regardless of `continue_on_error`. The check is
+  representative-only; unreadable or differently shaped later files retain
+  normal item-level failure handling and every item revalidates its declaration.
 - Routed interactive calculation, saved batch runners, generated Python/CLI,
   and standalone export through the same execution service. All paths now carry
   the configured and effective request, exact per-node implementation
@@ -102,6 +125,12 @@ hardening accumulated since 0.12.0a3.
 
 ### Image I/O, Execution, And Interface Fixes
 
+- Fixed the collection-batch `QYX`/`ZYX` bug without blindly treating every
+  generic TIFF page axis as Z. An exact `QYX` source receives one visible,
+  guarded Z-stack suggestion only after the workflow demonstrates a `ZYX`
+  requirement. The saved declaration relabels semantics in place, while
+  `Reorder Axes` remains a pure pixel-and-metadata transpose and cannot rename Q
+  to Z.
 - Corrected ND2 metadata normalization to follow the reader's actual ordered
   dimensions, restoring the proper T/Z/C sliders and slice updates for affected
   files.
@@ -161,6 +190,9 @@ hardening accumulated since 0.12.0a3.
 - Generated Python is exact-version locked and should be regenerated for
   0.13.0a1. The generated `batch_process()` folder loop remains a warned,
   non-durable convenience; use the saved batch runner for production work.
+- A source-axis declaration preserves existing calibration positionally; it
+  does not discover a missing Z step, unit, or origin. Verify Output Metadata
+  and use `Set Pixel Size / Units` before calibration-dependent analysis.
 - CPython 3.12 and 3.13 are the supported CPU interpreters. GPU extras and the
   reviewed CUDA environment remain CPython 3.12-only.
 - Linux GPU qualification, RTX 40-series evidence, Apple GPU acceleration,

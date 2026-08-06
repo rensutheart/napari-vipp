@@ -87,8 +87,12 @@ from napari_vipp.core.batch import (
     BATCH_MANIFEST_TYPE,
     BATCH_SCRIPT_FILENAME,
     BATCH_WORKFLOW_FILENAME,
+    BatchAxisSuggestion,
     BatchConfig,
     BatchExecutionProgress,
+    BatchOutputConfig,
+    BatchScientificPreflightError,
+    BatchSourceConfig,
     BatchStatus,
     ExistingFilePolicy,
     load_batch_config,
@@ -128,6 +132,7 @@ from napari_vipp.core.io import (
 )
 from napari_vipp.core.metadata import (
     AcquisitionMetadata,
+    AxisDeclaration,
     AxisMetadata,
     ChannelMetadata,
     image_state_from_array,
@@ -2933,6 +2938,115 @@ def test_file_source_is_one_owned_read_only_snapshot_until_refresh(
     assert len(read_calls) == 1
     assert widget.pipeline.outputs["input"] is frozen
     np.testing.assert_array_equal(frozen, expected)
+
+
+def test_interactive_batch_payload_uses_same_explicit_axis_declaration(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    raw_state = image_state_from_array(
+        data,
+        layer_metadata={"axes": "QYX"},
+        source_name="generic stack",
+    )
+    assert raw_state is not None
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._interactive_collection_batch_config = BatchConfig(
+        workflow_file=Path("workflow.json"),
+        workflow_sha256="a" * 64,
+        output_dir=Path("outputs"),
+        sources=(
+            BatchSourceConfig(
+                "input",
+                "Image Source",
+                Path("inputs"),
+                "*.tif",
+                AxisDeclaration("QYX", "ZYX"),
+            ),
+        ),
+        outputs=(
+            BatchOutputConfig(
+                "output",
+                "Batch Output",
+                "result",
+                "image",
+                "npy",
+                "",
+                "{source_stem}__{tag}",
+            ),
+        ),
+        save_python_script=False,
+    )
+    raw_payload = SourcePayload(data, {}, "generic stack", raw_state)
+
+    effective = widget._declared_interactive_batch_payload("input", raw_payload)
+
+    assert raw_payload.image_state.axis_order == "QYX"
+    assert effective.image_state.axis_order == "ZYX"
+    assert effective.metadata["vipp_axis_semantics"] == {
+        "raw_axes": "QYX",
+        "effective_axes": "ZYX",
+        "declaration": {
+            "source_axes": "QYX",
+            "effective_axes": "ZYX",
+            "source": "batch config",
+            "applied": True,
+            "data_order_changed": False,
+        },
+    }
+    np.testing.assert_array_equal(effective.data, data)
+
+
+def test_interactive_batch_recalculates_when_axis_declaration_changes(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    qtbot.waitUntil(
+        lambda: (
+            widget._interactive_collection_batch_requested_index == -1
+            and widget._active_pipeline_run_id is None
+            and widget._active_source_load_id is None
+        ),
+        timeout=5_000,
+    )
+    config = widget._interactive_collection_batch_config
+    assert config is not None
+    changed = replace(
+        config,
+        sources=(
+            replace(
+                config.sources[0],
+                axis_declaration=AxisDeclaration("YX", "YX"),
+            ),
+            *config.sources[1:],
+        ),
+    )
+    recalculated: list[int] = []
+
+    def record_preview(index, *, force_sync=False):
+        del force_sync
+        recalculated.append(index)
+        return True
+
+    monkeypatch.setattr(
+        widget,
+        "_preview_interactive_collection_batch_item",
+        record_preview,
+    )
+
+    widget._activate_interactive_collection_batch(
+        widget._interactive_collection_batch_items,
+        changed,
+        initial_index=0,
+        force_sync=True,
+    )
+
+    assert recalculated == [0]
+    assert widget._interactive_collection_batch_config is changed
 
 
 def test_zarr_file_source_materializes_in_background(
@@ -15897,6 +16011,155 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
     assert "3 completed" in dialog.run_progress_label.text()
 
 
+def test_direct_run_applies_qyx_z_stack_suggestion_and_retries_once(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    config = widget._load_collection_batch_config(demo.config_path)
+    dialog = widget._batch_collection_dialog()
+    assert dialog is not None
+    assert dialog._preview_result is None
+    source_rows = {str(row["node_id"]): row for row in dialog._source_rows}
+    for source in config.sources:
+        row = source_rows[source.node_id]
+        row["folder"].setText(str(config.resolve_path(source.input_dir)))
+        row["pattern"].setText(source.pattern)
+        assert row["axis_declaration"].mode_combo.currentData() == "automatic"
+    dialog.output_edit.setText(str(config.resolve_path(config.output_dir)))
+    dialog.format_combo.setCurrentText(config.default_image_format)
+    policy_index = dialog.existing_policy_combo.findData(
+        config.existing_file_policy.value
+    )
+    assert policy_index >= 0
+    dialog.existing_policy_combo.setCurrentIndex(policy_index)
+
+    initial_values = dialog.values()
+    original_preview = widget._collection_batch_controller.preview
+    successful_preview = original_preview(**initial_values, preview_limit=25)
+    source_id = successful_preview.config.sources[0].node_id
+    declaration = AxisDeclaration("QYX", "ZYX")
+    successful_preview = replace(
+        successful_preview,
+        config=replace(
+            successful_preview.config,
+            sources=tuple(
+                replace(source, axis_declaration=declaration)
+                if source.node_id == source_id
+                else source
+                for source in successful_preview.config.sources
+            ),
+        ),
+    )
+    error = BatchScientificPreflightError(
+        "Batch scientific preflight failed before item processing, output "
+        "creation, or CPU/GPU device setup. Representative source axes: "
+        "raw QYX, effective QYX. Subtract Background, Gaussian Blur 3D, and "
+        "Reorder Axes cannot continue.",
+        user_message=(
+            "This TIFF looks like a Z stack, but its first dimension is "
+            "labelled Q. VIPP can treat it as Z for this batch."
+        ),
+        axis_suggestion=BatchAxisSuggestion(
+            source_node_id=source_id,
+            source_title=successful_preview.config.sources[0].title,
+            declaration=declaration,
+        ),
+    )
+    preview_calls: list[dict[str, object]] = []
+
+    def suggested_preview(**values):
+        preview_calls.append(values)
+        binding = next(
+            item
+            for item in values["source_bindings"]
+            if item["node_id"] == source_id
+        )
+        if len(preview_calls) == 1:
+            assert binding["axis_declaration"] == ""
+            raise error
+        assert binding["axis_declaration"] == "QYX -> ZYX"
+        return successful_preview
+
+    started: list[tuple[CollectionBatchDialog, dict[str, object]]] = []
+
+    def record_start(active_dialog, **values):
+        started.append((active_dialog, values))
+
+    monkeypatch.setattr(
+        widget._collection_batch_controller,
+        "preview",
+        suggested_preview,
+    )
+    monkeypatch.setattr(widget, "_start_collection_batch_worker", record_start)
+    suggestion_applications = []
+    original_apply_suggestion = dialog.apply_axis_suggestion
+
+    def tracked_apply_suggestion(preflight_error):
+        source_control = next(
+            row["axis_declaration"]
+            for row in dialog._source_rows
+            if row["node_id"] == source_id
+        )
+        before = (
+            source_control.mode_combo.currentData(),
+            source_control.suggestion_declined,
+            source_control.text(),
+        )
+        outcome = original_apply_suggestion(preflight_error)
+        suggestion_applications.append((before, outcome))
+        return outcome
+
+    monkeypatch.setattr(
+        dialog,
+        "apply_axis_suggestion",
+        tracked_apply_suggestion,
+    )
+    monkeypatch.setattr(
+        dialog,
+        "_preview_batch",
+        lambda: pytest.fail("Direct Run must not invoke Preview batch."),
+    )
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert suggestion_applications == [(("automatic", False, ""), True)]
+    assert len(preview_calls) == 2
+    control = next(
+        row["axis_declaration"]
+        for row in dialog._source_rows
+        if row["node_id"] == source_id
+    )
+    assert control.mode_combo.currentData() == "z_stack"
+    assert control.text() == "QYX -> ZYX"
+    assert not control.notice_label.isHidden()
+    assert "VIPP selected Z stack" in control.notice_label.text()
+    assert len(started) == 1
+    active_dialog, run_values = started[0]
+    assert active_dialog is dialog
+    run_binding = next(
+        item
+        for item in run_values["source_bindings"]
+        if item["node_id"] == source_id
+    )
+    assert run_binding["axis_declaration"] == "QYX -> ZYX"
+    visible_text = " ".join(
+        (
+            dialog.preview_status.text(),
+            dialog.run_result_label.text(),
+            widget.status_label.text(),
+        )
+    )
+    assert "Representative source axes" not in visible_text
+    assert "CPU/GPU device setup" not in visible_text
+    assert "Subtract Background" not in visible_text
+    assert "Gaussian Blur 3D" not in visible_text
+    assert "Reorder Axes" not in visible_text
+
+
 def test_batch_worker_nested_progress_and_safe_cancel_reach_retained_dialog(
     qtbot,
     monkeypatch,
@@ -17183,7 +17446,7 @@ def test_collection_batch_preview_reports_new_collision_and_terminal_fallback(
     assert dialog.preview_table.rowCount() == 1
     assert "exists; collision" in dialog.preview_table.item(0, 3).text()
     assert "collision" in dialog.preview_status.text().lower()
-    assert "Compatibility fallback" in dialog.preview_status.text()
+    assert "save the final graph results" in dialog.preview_status.text()
 
 
 def test_collection_batch_config_clears_omitted_fixed_source_binding(

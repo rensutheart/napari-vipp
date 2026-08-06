@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from napari_vipp.core.io.microscope import (
     MICROSCOPE_SUFFIXES,
+    image_state_from_microscope_inspection,
     inspect_microscope,
     read_microscope,
 )
 from napari_vipp.core.io.model import ImageDataset, SourceInspection
 from napari_vipp.core.io.numpy_io import inspect_numpy, read_numpy, write_numpy
 from napari_vipp.core.io.ome_zarr import (
+    image_state_from_ome_zarr_inspection,
     inspect_ome_zarr,
     read_ome_zarr,
     write_ome_zarr,
@@ -26,8 +31,17 @@ from napari_vipp.core.io.raster import (
     read_raster,
     write_raster,
 )
-from napari_vipp.core.io.tiff import inspect_tiff, read_tiff, write_tiff
-from napari_vipp.core.metadata import ImageState
+from napari_vipp.core.io.tiff import (
+    image_state_from_tiff_inspection,
+    inspect_tiff,
+    read_tiff,
+    write_tiff,
+)
+from napari_vipp.core.metadata import (
+    ImageState,
+    SourceMetadata,
+    image_state_from_array,
+)
 
 WRITE_FORMATS = (
     "auto",
@@ -64,6 +78,65 @@ def inspect_image_source(path: str | Path) -> SourceInspection:
     raise ValueError(f"Unsupported image source: {source_path}")
 
 
+def inspect_image_state(
+    path: str | Path,
+    *,
+    inspection: SourceInspection | None = None,
+    series_index: int = 0,
+) -> ImageState:
+    """Normalize one series' metadata without loading its pixel values."""
+    source_path = _source_path(path)
+    resolved_inspection = inspection or inspect_image_source(source_path)
+    index = int(series_index)
+    if index < 0 or index >= len(resolved_inspection.series):
+        raise IndexError(
+            f"Series index {index} is outside 0.."
+            f"{len(resolved_inspection.series) - 1}"
+        )
+    if source_path.suffix.lower() == ".zarr":
+        return image_state_from_ome_zarr_inspection(
+            source_path,
+            resolved_inspection,
+            index,
+        )
+    if source_path.suffix.lower() in MICROSCOPE_SUFFIXES:
+        return image_state_from_microscope_inspection(
+            source_path,
+            resolved_inspection,
+            index,
+        )
+    if source_path.suffix.lower() in {".tif", ".tiff"}:
+        return image_state_from_tiff_inspection(
+            source_path,
+            resolved_inspection,
+            index,
+        )
+
+    selected = resolved_inspection.series[index]
+    metadata = (
+        None
+        if resolved_inspection.format in {"npy", "npz"}
+        else {"axes": selected.axes}
+    )
+    state = image_state_from_array(
+        _MetadataOnlyArray(selected.shape, selected.dtype),
+        layer_metadata=metadata,
+        source_name=selected.name or source_path.name,
+        metadata_source=f"{resolved_inspection.format} source inspection",
+        source=SourceMetadata(
+            uri=str(source_path),
+            format=resolved_inspection.format,
+            series_index=selected.index,
+            series_name=selected.name,
+        ),
+    )
+    if state is None:
+        raise ValueError(f"Could not build image metadata for {source_path}")
+    if selected.kind == "labels":
+        state = replace(state, kind="label image")
+    return state
+
+
 def read_image(
     path: str | Path,
     *,
@@ -83,6 +156,17 @@ def read_image(
     if suffix in RASTER_SUFFIXES:
         return read_raster(source_path, series_index)
     raise ValueError(f"Unsupported image source: {source_path}")
+
+
+class _MetadataOnlyArray:
+    """Shape/dtype carrier recognized as lazy by metadata normalization."""
+
+    def __init__(self, shape: tuple[int, ...], dtype: str) -> None:
+        self.shape = tuple(int(size) for size in shape)
+        self.dtype = np.dtype(dtype)
+
+    def compute(self):
+        raise RuntimeError("A metadata-only image cannot load pixels.")
 
 
 def write_image(
