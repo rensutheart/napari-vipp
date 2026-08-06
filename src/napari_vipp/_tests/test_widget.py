@@ -8953,6 +8953,13 @@ def test_select_axis_slice_can_mix_ranges_and_removed_axes(qtbot):
     assert widget._debounce_timer.isActive()
     widget.run_pipeline()
     assert not widget._debounce_timer.isActive()
+    qtbot.waitUntil(
+        lambda: (
+            widget.pipeline.outputs.get(node.id) is not None
+            and widget.pipeline.outputs[node.id].shape == (1, 4, 5, 6)
+        ),
+        timeout=5_000,
+    )
     widget.graph_view.select_node(node.id)
 
     assert widget.pipeline.nodes[node.id].params["ranges"] == "0:1:1"
