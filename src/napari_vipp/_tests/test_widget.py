@@ -3942,6 +3942,14 @@ def test_label_volume_controls_use_observed_object_sizes(qtbot):
     filtered = widget.add_node_from_palette("filter_labels_by_volume")
     widget._connect_nodes("threshold", labels.id)
     widget._connect_nodes(labels.id, filtered.id)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(filtered.id) is not None
+        ),
+        timeout=5_000,
+    )
 
     minimum_control = widget._parameter_widgets["min_volume"]
     maximum_control = widget._parameter_widgets["max_volume"]
@@ -3962,6 +3970,15 @@ def test_label_volume_controls_use_observed_object_sizes(qtbot):
     widget.pipeline.set_param(filtered.id, "spatial_mode", "2D YX")
     widget.run_pipeline()
     largest_2d = widget._largest_label_volume(incoming_labels, 2)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and minimum_control._bounds.maximum == largest_2d
+            and maximum_control._bounds.maximum == largest_2d
+        ),
+        timeout=5_000,
+    )
 
     assert largest_2d < largest_3d
     assert minimum_control._bounds.maximum == largest_2d
@@ -4279,6 +4296,14 @@ def test_set_pixel_size_inspection_applies_napari_layer_scale(qtbot):
     widget.pipeline.set_param(node.id, "y_size", 1.0)
     widget.pipeline.set_param(node.id, "z_size", 1.0)
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(node.id) is not None
+        ),
+        timeout=5_000,
+    )
     widget.inspect_node(node.id)
 
     inspect = viewer.layers["VIPP Inspect"]
@@ -4289,6 +4314,16 @@ def test_set_pixel_size_inspection_applies_napari_layer_scale(qtbot):
 
     widget.pipeline.set_param(node.id, "z_size", 10.0)
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and viewer.layers["VIPP Inspect"].scale == (10.0, 1.0, 1.0)
+            and viewer.layers["VIPP Pinned: Set Pixel Size / Units"].scale
+            == (10.0, 1.0, 1.0)
+        ),
+        timeout=5_000,
+    )
 
     refreshed = viewer.layers["VIPP Inspect"]
     assert refreshed is inspect
@@ -8878,12 +8913,30 @@ def test_select_axis_slice_updates_metadata_axes(qtbot):
     node = widget.add_node_from_palette("select_axis_slice")
     widget._connect_nodes("input", node.id)
     control = widget._parameter_widgets["axis_slice"]
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(node.id) is not None
+            and widget.pipeline.outputs[node.id].shape == data.shape
+        ),
+        timeout=5_000,
+    )
 
     assert widget.pipeline.outputs[node.id].shape == data.shape
     assert control.value()["ranges"] == ""
 
     control.set_ranges({1: (2, 2)})
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(node.id) is not None
+            and widget.pipeline.outputs[node.id].shape == (2, 1, 4, 5, 6)
+        ),
+        timeout=5_000,
+    )
 
     widget.graph_view.select_node(node.id)
 
@@ -8904,6 +8957,15 @@ def test_select_axis_slice_can_slice_multiple_metadata_axes(qtbot):
     control = widget._parameter_widgets["axis_slice"]
     control.set_ranges({0: (1, 1), 1: (2, 2)})
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(node.id) is not None
+            and widget.pipeline.outputs[node.id].shape == (1, 1, 4, 5, 6)
+        ),
+        timeout=5_000,
+    )
     widget.graph_view.select_node(node.id)
 
     assert widget.pipeline.nodes[node.id].params["axes"] == ""
@@ -8929,6 +8991,15 @@ def test_select_axis_slice_can_remove_metadata_axis(qtbot):
     control = widget._parameter_widgets["axis_slice"]
     control.set_removed_axes({1: 2})
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(node.id) is not None
+            and widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6)
+        ),
+        timeout=5_000,
+    )
     widget.graph_view.select_node(node.id)
 
     assert widget.pipeline.nodes[node.id].params["remove_axes"] == "1"
@@ -8955,7 +9026,9 @@ def test_select_axis_slice_can_mix_ranges_and_removed_axes(qtbot):
     assert not widget._debounce_timer.isActive()
     qtbot.waitUntil(
         lambda: (
-            widget.pipeline.outputs.get(node.id) is not None
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(node.id) is not None
             and widget.pipeline.outputs[node.id].shape == (1, 4, 5, 6)
         ),
         timeout=5_000,
