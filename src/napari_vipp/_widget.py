@@ -16441,7 +16441,7 @@ class VippWidget(QWidget):
         elif result.errors or result.error:
             self._set_status(
                 "Some thumbnail statistics could not be completed; provisional "
-                "previews were retained. Hover the thumbnail Stats badges for "
+                "previews were retained. Hover the affected Contrast footers for "
                 "details.",
                 severity=MessageSeverity.WARNING,
             )
@@ -16454,7 +16454,7 @@ class VippWidget(QWidget):
                 self._set_status(
                     f"Thumbnail statistics used a visible CPU fallback for "
                     f"{fallback_count} node{'s' if fallback_count != 1 else ''}. "
-                    "Hover its Stats badge for details.",
+                    "Hover the affected node's Contrast footer for details.",
                     severity=MessageSeverity.WARNING,
                 )
         if not discarded and not result.cancelled and not self._closing:
@@ -19476,8 +19476,9 @@ class VippWidget(QWidget):
             self._update_thumbnails()
         self._set_status(
             f"Thumbnail statistics set to {policy.label}. Existing exact limits "
-            "remain cached, and each Stats badge continues to show the backend "
-            "that produced its cached result. This choice applies to new results.",
+            "remain cached, and each Contrast footer continues to show the "
+            "backend that produced its cached result. This choice applies to "
+            "new results.",
             severity=MessageSeverity.INFO,
         )
 

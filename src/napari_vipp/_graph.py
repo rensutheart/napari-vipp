@@ -82,19 +82,19 @@ _COMPUTE_BADGE_LABELS = {
 }
 
 _THUMBNAIL_STATS_BADGE_LABELS = {
-    ThumbnailStatsBadgeKind.PENDING: "Stats…",
-    ThumbnailStatsBadgeKind.CPU: "Stats · CPU",
-    ThumbnailStatsBadgeKind.GPU: "Stats · GPU",
-    ThumbnailStatsBadgeKind.CPU_FALLBACK: "Stats · CPU fallback",
-    ThumbnailStatsBadgeKind.ERROR: "Stats · error",
+    ThumbnailStatsBadgeKind.PENDING: "Contrast · Calculating…",
+    ThumbnailStatsBadgeKind.CPU: "Contrast · CPU",
+    ThumbnailStatsBadgeKind.GPU: "Contrast · GPU",
+    ThumbnailStatsBadgeKind.CPU_FALLBACK: "Contrast · CPU fallback",
+    ThumbnailStatsBadgeKind.ERROR: "Contrast · error",
 }
 
-_THUMBNAIL_STATS_BADGE_COLORS = {
-    ThumbnailStatsBadgeKind.PENDING: ("#1f2937", "#cbd5e1", "#64748b"),
-    ThumbnailStatsBadgeKind.CPU: ("#1f2937", "#d1d5db", "#4b5563"),
-    ThumbnailStatsBadgeKind.GPU: ("#172033", "#bfdbfe", "#475569"),
-    ThumbnailStatsBadgeKind.CPU_FALLBACK: ("#292524", "#fde68a", "#78716c"),
-    ThumbnailStatsBadgeKind.ERROR: ("#2b1719", "#fecaca", "#991b1b"),
+_THUMBNAIL_STATS_STATUS_COLORS = {
+    ThumbnailStatsBadgeKind.PENDING: "#94a3b8",
+    ThumbnailStatsBadgeKind.CPU: "#9ca3af",
+    ThumbnailStatsBadgeKind.GPU: "#93c5fd",
+    ThumbnailStatsBadgeKind.CPU_FALLBACK: "#fbbf24",
+    ThumbnailStatsBadgeKind.ERROR: "#f87171",
 }
 
 _COMPUTE_BADGE_COLORS = {
@@ -403,20 +403,33 @@ class NodeCard(QFrame):
         self.pin_button = QPushButton("Pin", self)
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
         self.pin_button.setVisible(False)
-        self.thumbnail_stats_badge = QLabel("", self)
-        self.thumbnail_stats_badge.setObjectName("NodeThumbnailStatsBadge")
-        self.thumbnail_stats_badge.setAlignment(Qt.AlignCenter)
+        self.thumbnail_stats_row = QWidget(self)
+        self.thumbnail_stats_row.setObjectName("NodeThumbnailStatsRow")
+        self.thumbnail_stats_row.setFixedHeight(17)
+        self.thumbnail_stats_row.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Fixed,
+        )
+        self.thumbnail_stats_row_layout = QHBoxLayout(self.thumbnail_stats_row)
+        self.thumbnail_stats_row_layout.setContentsMargins(0, 0, 2, 0)
+        self.thumbnail_stats_row_layout.setSpacing(0)
+        self.thumbnail_stats_row_layout.addStretch(1)
+        self.thumbnail_stats_badge = QLabel("", self.thumbnail_stats_row)
+        self.thumbnail_stats_badge.setObjectName("NodeThumbnailStatsStatus")
+        self.thumbnail_stats_badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.thumbnail_stats_badge.setSizePolicy(
             QSizePolicy.Fixed,
             QSizePolicy.Fixed,
         )
-        # The preview remains the click target. Details are mirrored onto the
-        # preview itself so this overlay never intercepts selection/inspection.
+        # The label remains transparent to clicks so the footer continues to
+        # behave like the rest of the node card. Its parent row owns the tooltip.
         self.thumbnail_stats_badge.setAttribute(
             Qt.WA_TransparentForMouseEvents,
             True,
         )
+        self.thumbnail_stats_row_layout.addWidget(self.thumbnail_stats_badge)
         self.thumbnail_stats_badge.hide()
+        self.thumbnail_stats_row.hide()
         self._thumbnail_stats_badge_kind: ThumbnailStatsBadgeKind | None = None
         self._thumbnail_stats_badge_tooltip = ""
         self._thumbnail_stats_accessible_description = ""
@@ -429,6 +442,7 @@ class NodeCard(QFrame):
         self.card_layout.addWidget(self.title_row)
         self.card_layout.addWidget(self.subtitle_label)
         self.card_layout.addWidget(self.preview)
+        self.card_layout.addWidget(self.thumbnail_stats_row)
         self.card_layout.addWidget(self.metadata_label)
         self.card_layout.addWidget(self.execution_label)
         self.card_layout.addWidget(self.calculate_button)
@@ -474,7 +488,6 @@ class NodeCard(QFrame):
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._position_processing_badge()
-        self._position_thumbnail_stats_badge()
 
     def set_selected(self, selected: bool) -> None:
         selected = bool(selected)
@@ -657,11 +670,11 @@ class NodeCard(QFrame):
         tooltip: str = "",
         accessible_description: str = "",
     ) -> bool:
-        """Present non-scientific thumbnail-statistics state over the preview.
+        """Present non-scientific thumbnail statistics below the preview.
 
         The widget owner supplies the complete presentation-only explanation.
-        It is mirrored onto the preview so the mouse-transparent chip preserves
-        thumbnail click behavior. Passing ``None`` clears the state.
+        The footer row and preview share its tooltip, while the status label owns
+        the accessible description. Passing ``None`` clears the state.
         """
         if kind is None:
             if (
@@ -677,9 +690,11 @@ class NodeCard(QFrame):
             self.thumbnail_stats_badge.setToolTip("")
             self.thumbnail_stats_badge.setAccessibleName("")
             self.thumbnail_stats_badge.setAccessibleDescription("")
+            self.thumbnail_stats_row.setToolTip("")
             self.preview.setToolTip("")
             self.preview.setAccessibleDescription("")
             self.thumbnail_stats_badge.hide()
+            self._refresh_thumbnail_stats_badge_visibility()
             return True
 
         resolved = _coerce_thumbnail_stats_badge_kind(kind)
@@ -694,21 +709,28 @@ class NodeCard(QFrame):
             return False
 
         label = _THUMBNAIL_STATS_BADGE_LABELS[resolved]
-        background, foreground, border = _THUMBNAIL_STATS_BADGE_COLORS[resolved]
+        foreground = _THUMBNAIL_STATS_STATUS_COLORS[resolved]
+        font_weight = (
+            650
+            if resolved
+            in {ThumbnailStatsBadgeKind.CPU_FALLBACK, ThumbnailStatsBadgeKind.ERROR}
+            else 500
+        )
         self._thumbnail_stats_badge_kind = resolved
         self._thumbnail_stats_badge_tooltip = detail
         self._thumbnail_stats_accessible_description = accessible_detail
         self.thumbnail_stats_badge.setText(label)
         self.thumbnail_stats_badge.setToolTip(detail)
+        self.thumbnail_stats_row.setToolTip(detail)
         self.thumbnail_stats_badge.setAccessibleName(
-            f"Thumbnail statistics: {label}"
+            f"Thumbnail contrast statistics: {label}"
         )
         self.thumbnail_stats_badge.setAccessibleDescription(accessible_detail)
         self.thumbnail_stats_badge.setStyleSheet(
-            "QLabel#NodeThumbnailStatsBadge {"
-            f" background: {background}; color: {foreground};"
-            f" border: 1px solid {border}; border-radius: 6px;"
-            " font-size: 9px; font-weight: 600; padding: 1px 5px;"
+            "QLabel#NodeThumbnailStatsStatus {"
+            " background: transparent; border: none;"
+            f" color: {foreground}; font-size: 9px; font-weight: {font_weight};"
+            " padding: 0 2px;"
             "}"
         )
         self.thumbnail_stats_badge.adjustSize()
@@ -915,7 +937,6 @@ class NodeCard(QFrame):
             """
         )
         self.pin_button.setVisible(False)
-        self.thumbnail_stats_badge.raise_()
         self.processing_badge.raise_()
 
     def _execution_summary(self) -> str:
@@ -956,34 +977,17 @@ class NodeCard(QFrame):
         self.processing_badge.raise_()
 
     def _refresh_thumbnail_stats_badge_visibility(self) -> None:
-        visible = bool(
-            self._preview_enabled
-            and self._thumbnail_present
-            and self._thumbnail_stats_badge_kind is not None
+        row_visible = bool(self._preview_enabled and self._thumbnail_present)
+        status_visible = bool(
+            row_visible and self._thumbnail_stats_badge_kind is not None
         )
-        self.thumbnail_stats_badge.setVisible(visible)
-        if visible:
+        self.thumbnail_stats_row.setVisible(row_visible)
+        self.thumbnail_stats_badge.setVisible(status_visible)
+        if status_visible:
             self.preview.setToolTip(self._thumbnail_stats_badge_tooltip)
-            self.preview.setAccessibleDescription(
-                self._thumbnail_stats_accessible_description
-            )
-            self._position_thumbnail_stats_badge()
             return
         self.preview.setToolTip("")
         self.preview.setAccessibleDescription("")
-
-    def _position_thumbnail_stats_badge(self) -> None:
-        if self.thumbnail_stats_badge.isHidden():
-            return
-        badge_size = self.thumbnail_stats_badge.sizeHint()
-        preview_rect = self.preview.geometry()
-        if not self.preview.isVisible() or not preview_rect.isValid():
-            self.thumbnail_stats_badge.hide()
-            return
-        x = preview_rect.left() + 8
-        y = preview_rect.bottom() - badge_size.height() - 8
-        self.thumbnail_stats_badge.move(max(0, x), max(0, y))
-        self.thumbnail_stats_badge.raise_()
 
 
 class TunnelBadgeItem(QGraphicsItem):
