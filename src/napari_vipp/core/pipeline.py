@@ -7414,6 +7414,13 @@ class PrototypePipeline:
         operation_id = node.operation_id
         input_shape = tuple(int(size) for size in input_state.shape)
         output_dtype = np.dtype(input_state.dtype)
+        if operation_id == "split_channels" and call.inputs:
+            # This operation only takes copied views from the input array, so
+            # byte order is preserved exactly even though ImageState exposes a
+            # user-facing dtype name without endian information.
+            concrete_dtype = getattr(call.inputs[0], "dtype", None)
+            if concrete_dtype is not None:
+                output_dtype = np.dtype(concrete_dtype)
         params = dict(call.kwargs)
         if operation_id == "split_axis":
             axis = _operations._axis_index_from_token(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ import numpy as np
 import pytest
 
 import napari_vipp.core.execution as execution_module
+from napari_vipp._sample_data import make_sample_data
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
@@ -20,8 +22,12 @@ from napari_vipp.core.compute import (
     FallbackReason,
     NodeExecutionDecision,
     OutputPortKey,
+    WorkloadDescriptor,
 )
-from napari_vipp.core.compute_planning import plan_compute_decisions
+from napari_vipp.core.compute_planning import (
+    plan_compute_decisions,
+    probe_compute_environment,
+)
 from napari_vipp.core.compute_policy import (
     PHASE1_CUCIM_BUILD_RECIPE_ID,
     PHASE1_CUCIM_SOURCE_COMMIT,
@@ -44,8 +50,12 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.metadata import AxisMetadata, image_state_from_array
 from napari_vipp.core.operations import canny_edges as cpu_canny_edges
 from napari_vipp.core.operations import otsu_threshold as cpu_otsu_threshold
-from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
-from napari_vipp.core.workflow import serialize_workflow
+from napari_vipp.core.pipeline import (
+    MANUAL_RUN_SKIP,
+    PrototypePipeline,
+    SourcePayload,
+)
+from napari_vipp.core.workflow import load_workflow, serialize_workflow
 
 
 @dataclass(frozen=True)
@@ -111,6 +121,7 @@ class _ProbeRegistry(ComputeRegistry):
         self.library_available = library_available
         self.runtime_probe_count = 0
         self.library_probe_count = 0
+        self.library_probe_ids: list[str] = []
 
     def probe_runtime(self, runtime_id, *, refresh=False):
         del refresh
@@ -151,6 +162,7 @@ class _ProbeRegistry(ComputeRegistry):
     def probe_library(self, library_id, *, refresh=False):
         del refresh
         self.library_probe_count += 1
+        self.library_probe_ids.append(library_id)
         return ImplementationLibraryProbeResult(
             library_id,
             self.library_available,
@@ -1455,7 +1467,7 @@ def test_segmentation_luma_planning_projects_shape_dtype_and_metadata(operation_
     assert state is not None
     call = pipeline.prepare_node_call(node.id, (data,), (state,))
 
-    projected = execution_module._project_host_planning_output(
+    projected = execution_module._project_host_planning_outputs(
         pipeline,
         operation_id,
         call,
@@ -1464,7 +1476,7 @@ def test_segmentation_luma_planning_projects_shape_dtype_and_metadata(operation_
     )
 
     assert projected is not None
-    description, output_state = projected
+    ((description, output_state),) = projected
     assert description.shape == (2, 9, 11)
     assert description.dtype == np.dtype(bool)
     assert output_state is not None
@@ -1494,3 +1506,432 @@ def test_segmentation_luma_planning_projects_shape_dtype_and_metadata(operation_
             implementation,
             (np.zeros(data.shape, dtype=bool),),
         )
+
+
+_INTENSITY_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "red-channel-object-intensity-measurements.json"
+)
+
+
+def _restored_intensity_example() -> PrototypePipeline:
+    workflow = load_workflow(_INTENSITY_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(
+        workflow["nodes"],
+        workflow["connections"],
+        workflow.get("output_tunnels", ()),
+    )
+    return pipeline
+
+
+@pytest.fixture(scope="module")
+def intensity_example_sample():
+    data, layer_kwargs, _layer_type = make_sample_data()[1]
+    return data, layer_kwargs
+
+
+def _fresh_example_workloads(
+    pipeline: PrototypePipeline,
+    data: np.ndarray,
+    layer_kwargs: dict,
+):
+    assert not pipeline.completed_node_ids
+    assert not any(
+        value is not None
+        for outputs in pipeline.node_outputs.values()
+        for value in outputs
+    )
+    request = PipelineRunRequest(
+        run_id=101,
+        workflow=serialize_workflow(pipeline),
+        input_data=data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+        source_payloads={},
+        compute_request=ComputeRequest(mode=ComputeMode.PREFER_GPU),
+        manual_node_ids=frozenset(pipeline.manual_node_ids()),
+    )
+    runnable = pipeline.plan_execution(
+        request.dirty_node_ids,
+        manual_mode=MANUAL_RUN_SKIP,
+        manual_node_ids=request.manual_node_ids,
+        target_node_ids=request.target_node_ids,
+    ).runnable_node_ids
+    host_values, states, _source_results = (
+        execution_module._initial_transaction_values(
+            pipeline,
+            request,
+            runnable,
+        )
+    )
+    with ComputeRegistry() as registry:
+        workloads, _facts, _lineage = execution_module._assemble_workloads(
+            pipeline,
+            runnable,
+            host_values,
+            states,
+            registry,
+            False,
+            seed_facts_by_port={},
+        )
+    return workloads
+
+
+@pytest.mark.parametrize(
+    ("dtype", "is_native"),
+    (
+        (np.dtype(np.uint16), True),
+        (np.dtype(np.uint16).newbyteorder("S"), False),
+    ),
+)
+def test_split_channels_planning_projects_every_exact_output_port(
+    dtype,
+    is_native,
+):
+    assert dtype.isnative is is_native
+    pipeline = _restored_intensity_example()
+    data = np.arange(4 * 2 * 4 * 5, dtype=np.uint16).reshape(4, 2, 4, 5)
+    data = data.astype(dtype)
+    source_results = pipeline.source_node_results(
+        "input",
+        data,
+        {"vipp_axis_order": "CZYX"},
+        "four-channel source",
+        {},
+    )
+    ((source_value, source_state),) = source_results
+    execution = pipeline.prepare_execution()
+    pipeline.commit_node_results(execution, "input", source_results)
+    assert len(pipeline.output_ports("split_channels_1")) == 4
+    call = pipeline.prepare_node_call(
+        "split_channels_1",
+        (source_value,),
+        (source_state,),
+    )
+    assert call is not None
+    input_dtype = dtype.name if dtype.isnative else dtype.str
+
+    def forbidden_kernel(*_args, **_kwargs):
+        raise AssertionError("Planning must not run the Split Channels kernel.")
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "split_channels",
+        replace(call, cpu_function=forbidden_kernel),
+        (data.shape,),
+        (input_dtype,),
+    )
+    actual = call.cpu_function(source_value, **call.kwargs)
+
+    assert projected is not None
+    assert len(projected) == 4
+    descriptions = tuple(item[0] for item in projected)
+    states = tuple(item[1] for item in projected)
+    assert len(actual) == 4
+    assert all(item.shape == (2, 4, 5) for item in descriptions)
+    assert all(item.dtype == dtype for item in descriptions)
+    assert tuple((value.shape, value.dtype) for value in actual) == tuple(
+        (item.shape, item.dtype) for item in descriptions
+    )
+    assert all(state is not None for state in states)
+    assert all(state.shape == (2, 4, 5) for state in states)
+    assert all(state.dtype == "uint16" for state in states)
+    assert all(
+        tuple(axis.name for axis in state.axes) == ("z", "y", "x")
+        for state in states
+    )
+    assert [state.channels[0].name for state in states] == [
+        channel.name for channel in source_state.channels
+    ]
+    assert any(
+        connection.source_id == "split_channels_1"
+        and connection.source_port == 2
+        and connection.target_id == "gaussian_blur_1"
+        for connection in pipeline.connections
+    )
+
+
+def test_split_channels_projection_ignores_none_dtype_attribute():
+    class _ArrayLikeWithNoDtype:
+        dtype = None
+
+        def __init__(self, data):
+            self._data = data
+
+        def __array__(self, dtype=None, copy=None):
+            array = np.asarray(self._data, dtype=dtype)
+            return array.copy() if copy else array
+
+    pipeline = _restored_intensity_example()
+    data = np.arange(3 * 2 * 4 * 5, dtype=np.uint16).reshape(3, 2, 4, 5)
+    ((source_value, source_state),) = pipeline.source_node_results(
+        "input",
+        data,
+        {"vipp_axis_order": "CZYX"},
+        "three-channel source",
+        {},
+    )
+    call = pipeline.prepare_node_call(
+        "split_channels_1",
+        (source_value,),
+        (source_state,),
+    )
+    assert call is not None
+    array_like = _ArrayLikeWithNoDtype(source_value)
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "split_channels",
+        replace(call, inputs=(array_like,)),
+        (data.shape,),
+        (data.dtype.name,),
+    )
+    actual = call.cpu_function(array_like, **call.kwargs)
+
+    assert projected is not None
+    assert all(description.dtype == np.dtype(np.uint16) for description, _ in projected)
+    assert all(value.dtype == np.dtype(np.uint16) for value in actual)
+
+
+def test_workload_assembly_publishes_every_split_channels_port():
+    pipeline = _restored_intensity_example()
+    data = np.arange(4 * 2 * 4 * 5, dtype=np.uint16).reshape(4, 2, 4, 5)
+    source_results = pipeline.source_node_results(
+        "input",
+        data,
+        {"vipp_axis_order": "CZYX"},
+        "four-channel source",
+        {},
+    )
+    ((source_value, source_state),) = source_results
+    execution = pipeline.prepare_execution()
+    pipeline.commit_node_results(execution, "input", source_results)
+    assert len(pipeline.output_ports("split_channels_1")) == 4
+    consumers = []
+    for source_port in range(4):
+        gaussian = pipeline.add_node("gaussian_blur")
+        assert pipeline.connect(
+            "split_channels_1",
+            gaussian.id,
+            source_port=source_port,
+        ).success
+        consumers.append(gaussian.id)
+
+    with ComputeRegistry() as registry:
+        workloads, _facts, _lineage = execution_module._assemble_workloads(
+            pipeline,
+            frozenset(pipeline.nodes),
+            {OutputPortKey("input", 0): source_value},
+            {OutputPortKey("input", 0): source_state},
+            registry,
+            False,
+            seed_facts_by_port={},
+        )
+
+    by_node = {workload.node_id: workload for workload in workloads}
+    for node_id in consumers:
+        workload = by_node[node_id]
+        assert workload.inputs_resolved is True
+        assert workload.input_shapes == ((2, 4, 5),)
+        assert workload.input_dtypes == ("uint16",)
+
+
+def test_fresh_intensity_example_builds_exact_numeric_downstream_workloads(
+    intensity_example_sample,
+):
+    pipeline = _restored_intensity_example()
+    data, layer_kwargs = intensity_example_sample
+
+    workloads = _fresh_example_workloads(pipeline, data, layer_kwargs)
+
+    by_node = {workload.node_id: workload for workload in workloads}
+    gaussian = by_node["gaussian_blur_1"]
+    otsu = by_node["otsu_threshold_1"]
+    assert gaussian.inputs_resolved is True
+    assert gaussian.input_shapes == ((12, 96, 128),)
+    assert gaussian.input_dtypes == ("uint16",)
+    assert otsu.inputs_resolved is True
+    assert otsu.input_shapes == ((12, 96, 128),)
+    assert otsu.input_dtypes == ("uint16",)
+    assert "object" not in gaussian.input_dtypes + otsu.input_dtypes
+
+
+def test_unresolved_host_shape_keeps_all_transitive_workloads_unresolved():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    prepare_psf = pipeline.add_node("prepare_validate_psf")
+    gaussian = pipeline.add_node("gaussian_blur")
+    otsu = pipeline.add_node("otsu_threshold")
+    pipeline.set_param(prepare_psf.id, "crop_empty_border", True)
+    assert pipeline.connect("input", prepare_psf.id).success
+    assert pipeline.connect(prepare_psf.id, gaussian.id).success
+    assert pipeline.connect(gaussian.id, otsu.id).success
+    data = np.ones((9, 11), dtype=np.float32)
+    state = image_state_from_array(data)
+    assert state is not None
+
+    with ComputeRegistry() as registry:
+        workloads, _facts, _lineage = execution_module._assemble_workloads(
+            pipeline,
+            frozenset(pipeline.nodes),
+            {OutputPortKey("input", 0): data},
+            {OutputPortKey("input", 0): state},
+            registry,
+            False,
+            seed_facts_by_port={},
+        )
+        planning = plan_compute_decisions(
+            ComputeRequest(mode=ComputeMode.PREFER_GPU),
+            workloads,
+            registry=registry,
+            environment=ComputeEnvironment(),
+        )
+
+    by_node = {workload.node_id: workload for workload in workloads}
+    assert by_node[prepare_psf.id].inputs_resolved is True
+    for node_id in (gaussian.id, otsu.id):
+        assert by_node[node_id].inputs_resolved is False
+        assert by_node[node_id].input_shapes == ((),)
+        assert by_node[node_id].input_dtypes == ("object",)
+        assert planning.decisions_by_node[node_id].runtime_id == "cpu-numpy"
+        assert (
+            planning.decisions_by_node[node_id].reason
+            is DecisionReason.WORKLOAD_UNSUPPORTED
+        )
+
+
+def test_fresh_intensity_example_prefer_gpu_completes_without_cucim(
+    intensity_example_sample,
+):
+    pipeline = _restored_intensity_example()
+    data, layer_kwargs = intensity_example_sample
+    request = PipelineRunRequest(
+        run_id=102,
+        workflow=serialize_workflow(pipeline),
+        input_data=data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+        source_payloads={},
+        compute_request=ComputeRequest(mode=ComputeMode.PREFER_GPU),
+        manual_node_ids=frozenset(pipeline.manual_node_ids()),
+    )
+    accelerator_without_libraries = ComputeEnvironment(
+        os_name="Windows",
+        os_release="test",
+        execution_mode="native",
+        python_implementation="CPython",
+        python_version="3.12",
+        python_abi="cpython-312",
+        runtime_ids=("cpu-numpy", "cuda-cupy"),
+        implementation_libraries=("cpu",),
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
+        device_id="cuda:0",
+        device_name="Fake CUDA device",
+        device_class="nvidia-cuda",
+        total_accelerator_memory_bytes=8 * 1024**3,
+        probe_status="available",
+    )
+
+    with (
+        _ProbeRegistry(
+            runtime_available=True,
+            library_available=False,
+        ) as registry,
+        patch(
+            "napari_vipp.core.compute_planning.ComputeEnvironment",
+            return_value=accelerator_without_libraries,
+        ),
+    ):
+        result = execute_pipeline_request(
+            request,
+            compute_registry=registry,
+        )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    table = result.pipeline.outputs["measure_objects_intensity_1"]
+    assert table.row_count > 0
+    assert result.execution_report is not None
+    measurement = next(
+        decision
+        for decision in result.execution_report.actual_decisions
+        if decision.node_id == "measure_objects_intensity_1"
+    )
+    assert measurement.runtime_id == "cpu-numpy"
+    assert measurement.implementation_library_id == "cpu"
+    assert measurement.reason_text
+
+
+def test_resolved_measurement_planning_explains_missing_cucim():
+    workload = WorkloadDescriptor(
+        node_id="measurement",
+        operation_id="measure_objects_intensity",
+        input_shapes=((9, 11), (9, 11)),
+        input_dtypes=("int32", "uint16"),
+        parameters=(
+            ("spatial_mode", "Auto from axes"),
+            ("axis_names", ("y", "x")),
+            ("axis_types", ("space", "space")),
+            ("axis_scales", (1.0, 1.0)),
+            ("axis_units", ("", "")),
+            ("include_shape_descriptors", False),
+            ("include_axis_descriptors", False),
+            ("include_2d_boundary_descriptors", False),
+            ("include_derived_shape_ratios", False),
+            ("include_2d_shape_moments", False),
+        ),
+        resolved_spatial_ndim=2,
+    )
+    request = ComputeRequest(mode=ComputeMode.PREFER_GPU)
+    validated_host = ComputeEnvironment(
+        os_name="Windows",
+        os_release="test",
+        execution_mode="native",
+        python_implementation="CPython",
+        python_version="3.12",
+        python_abi="cpython-312",
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
+    )
+
+    with (
+        _ProbeRegistry(
+            runtime_available=True,
+            library_available=False,
+        ) as registry,
+        patch(
+            "napari_vipp.core.compute_planning.ComputeEnvironment",
+            return_value=validated_host,
+        ),
+    ):
+        specs = registry.implementations_for_operation(
+            workload.operation_id,
+            allow_experimental=False,
+        )
+        environment, _warnings = probe_compute_environment(
+            registry,
+            request,
+            specs,
+        )
+        planning = plan_compute_decisions(
+            request,
+            (workload,),
+            registry=registry,
+            environment=environment,
+        )
+
+    assert "cucim" in registry.library_probe_ids
+    decision = planning.decisions_by_node[workload.node_id]
+    assert decision.runtime_id == "cpu-numpy"
+    assert decision.decision_kind is DecisionKind.POLICY_CPU
+    assert decision.reason is DecisionReason.DEPENDENCY_UNAVAILABLE
+    assert "cucim" in decision.reason_text.casefold()

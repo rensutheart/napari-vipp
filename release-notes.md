@@ -1,11 +1,17 @@
-# VIPP 0.13.0a1
+# VIPP 0.13.0a2
 
-VIPP 0.13.0a1 is the first substantial GPU-acceleration release. It is also
-much more than a performance update: this release brings interactive work,
-batch processing, generated Python, and command-line execution onto the same
-execution path; adds independent workflow tabs and several new scientific
-tools; and makes progress, cancellation, memory use, fallback, and output
-publication considerably safer.
+VIPP 0.13.0a2 is a focused compute-planning correctness release on the 0.13
+GPU alpha. Fresh workflows whose dynamic multi-output host operations feed
+accelerator-capable nodes now receive exact per-port planning descriptors
+without requiring a preliminary CPU calculation. Unresolved placeholders can
+no longer be promoted into apparently resolved downstream values.
+
+In particular, the bundled red-channel object-intensity example now plans and
+runs under **Prefer GPU** from a fresh session. If cuCIM is not installed, its
+measurement node receives an explained CPU decision instead of the workflow
+aborting at Otsu's scientifically correct dtype validation. The release retains
+the unified execution, GPU admission, workflow, batch, interface, and
+scientific-tool improvements introduced in 0.13.0a1.
 
 CPU remains the portable scientific reference implementation. GPU support is
 deliberately selective in this alpha: VIPP accelerates only the combinations of
@@ -14,12 +20,24 @@ environment that have been reviewed. When a call does not qualify, VIPP keeps
 the data on CPU and explains why instead of silently changing its type or
 parameters.
 
+## Fixed in 0.13.0a2
+
+- Planning now publishes exact shape, dtype, axes, and channel metadata for
+  every exposed `Split Channels` output, including nonzero source ports.
+- An unresolved host transform can no longer become falsely resolved through
+  a downstream shape-preserving accelerator projection. Its descendants remain
+  unresolved and safely defer to CPU until an exact contract or concrete value
+  is available.
+- **Prefer GPU** can run the fresh red-channel object-intensity example without
+  a CPU warm-up. Missing cuCIM produces the intended explained CPU decision for
+  measurement instead of a preflight failure at Otsu.
+
 ## Install or upgrade
 
 VIPP supports CPython 3.12 and 3.13 for CPU use:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a1"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a2"
 vipp
 ```
 
@@ -29,7 +47,7 @@ with a compatible NVIDIA driver, install the pinned CUDA 13 environment with:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a1"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a2"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -38,15 +56,16 @@ Only the NVIDIA display driver is a machine-wide prerequisite for this standard
 route. It does not require a separate CUDA Toolkit, `nvcc`, Visual Studio, or
 CMake.
 
-When moving from 0.12.0a3, preserve the old environment and workflow, then open
-a duplicate in 0.13.0a1. Older schema-3 workflows deliberately open in CPU mode
-and become schema 4 only when saved. Version-1 batch configurations likewise
-load with explicit CPU intent; version-2 configurations keep their saved compute
-request. Both load without source-axis declarations and become version 3 when
-reviewed and saved. Regenerate exported Python and saved batch runners because
-generated programs are locked to the exact VIPP version that created them.
+When moving from 0.12.0a3 or 0.13.0a1, preserve the old environment and
+workflow, then open a duplicate in 0.13.0a2. Older schema-3 workflows
+deliberately open in CPU mode and become schema 4 only when saved. Version-1
+batch configurations likewise load with explicit CPU intent; version-2
+configurations keep their saved compute request. Both load without source-axis
+declarations and become version 3 when reviewed and saved. Regenerate exported
+Python and saved batch runners because generated programs are locked to the
+exact VIPP version that created them.
 
-## Features added
+## Features retained from 0.13.0a1
 
 ### GPU acceleration that stays under your control
 
@@ -219,7 +238,7 @@ bounded chunks. Interactive views are capped at 1,024 bins per axis; graph
 nodes can request up to 4,096 bins and preserve their configured output size,
 native populated ranges, and optional symmetric percentile clipping.
 
-## Bug fixes
+## Other fixes retained from 0.13.0a1
 
 - **A generic TIFF page axis no longer fails once for every batch item.** A
   `QYX` input that reaches a demonstrated `ZYX` requirement receives one exact,
@@ -309,7 +328,7 @@ install their private wheel through the manifest-verifying helper. VIPP does
 not host that wheel, and the local build omits Clara whole-slide I/O. Without
 an approved local cuCIM build, those affected regions remain on CPU while
 independently eligible CuPy and CuPyX regions can still use the GPU. See the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a1/getting-started/windows-cuda/)
+[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a2/getting-started/windows-cuda/)
 for the complete procedure and exact provenance pin.
 
 VIPP remains alpha software. For consequential work, record the application

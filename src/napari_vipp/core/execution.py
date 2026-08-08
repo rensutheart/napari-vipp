@@ -109,6 +109,11 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "richardson_lucy_tv_deconvolution",
     }
 )
+_EXACT_HOST_AXIS_CONTRACT_OPERATIONS = frozenset(
+    {
+        "split_channels",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -1885,39 +1890,47 @@ def _assemble_workloads(
             inputs_resolved=inputs_resolved,
         )
         workloads.append(workload)
+        if not inputs_resolved:
+            # A descriptor projected from placeholders is not exact.  Keep the
+            # entire unresolved branch absent from ``values`` so every
+            # descendant remains unresolved and compute planning defers it to
+            # CPU until authoritative upstream execution supplies real data.
+            continue
 
-        projected_output = _project_host_planning_output(
+        projected_outputs = _project_host_planning_outputs(
             pipeline,
             node.operation_id,
             planning_call,
             input_shapes,
             input_dtypes,
         )
-        if projected_output is not None:
-            projected_value, projected_state = projected_output
-            port = OutputPortKey(node_id, 0)
-            values[port] = projected_value
-            states[port] = projected_state
-            if (
-                node.operation_id in _PHASE_ONE_FACT_OPERATIONS
-                and len(connections) == 1
+        if projected_outputs is not None:
+            for port_index, (projected_value, projected_state) in enumerate(
+                projected_outputs
             ):
-                connection = connections[0]
-                fact_lineage[port] = OutputPortKey(
-                    connection.source_id,
-                    connection.source_port,
-                )
-            if complete_input_facts := facts_by_node.get(node_id):
-                propagated = _propagate_shape_preserving_facts(
-                    node.operation_id,
-                    complete_input_facts[0],
-                    dict(parameters),
-                    output_port=port,
-                    output_shape=projected_value.shape,
-                    output_dtype=projected_value.dtype.name,
-                )
-                if propagated is not None:
-                    facts_by_port[port] = propagated
+                port = OutputPortKey(node_id, port_index)
+                values[port] = projected_value
+                states[port] = projected_state
+                if (
+                    node.operation_id in _PHASE_ONE_FACT_OPERATIONS
+                    and len(connections) == 1
+                ):
+                    connection = connections[0]
+                    fact_lineage[port] = OutputPortKey(
+                        connection.source_id,
+                        connection.source_port,
+                    )
+                if complete_input_facts := facts_by_node.get(node_id):
+                    propagated = _propagate_shape_preserving_facts(
+                        node.operation_id,
+                        complete_input_facts[0],
+                        dict(parameters),
+                        output_port=port,
+                        output_shape=projected_value.shape,
+                        output_dtype=projected_value.dtype.name,
+                    )
+                    if propagated is not None:
+                        facts_by_port[port] = propagated
         elif planning_call is not None and (
             projection_spec := _shape_preserving_device_projection(
                 registry,
@@ -1981,24 +1994,62 @@ def _assemble_workloads(
     )
 
 
-def _project_host_planning_output(
+def _project_host_planning_outputs(
     pipeline: PrototypePipeline,
     operation_id: str,
     planning_call: PreparedNodeCall | None,
     input_shapes: Sequence[tuple[int, ...]],
     input_dtypes: Sequence[str],
-) -> tuple[_ArrayDescription, object | None] | None:
-    """Describe deterministic host transforms needed by downstream planning.
+) -> tuple[tuple[_ArrayDescription, object | None], ...] | None:
+    """Describe exact deterministic host outputs for downstream planning.
 
     Compute planning happens before any runnable CPU node executes.  A host
     transform that changes rank therefore needs an explicit shape/dtype
-    projection when a later node may run on an accelerator.  Keep this list
-    deliberately narrow: every projection must be exact and independently
-    validated by the authoritative CPU operation at execution time.
+    projection when a later node may run on an accelerator.  Reuse the
+    pipeline's constant-memory axis contracts, including dynamic multi-output
+    transforms, before considering the deliberately narrow explicit contracts
+    below.  Every published port must be exact and is independently validated
+    by the authoritative CPU operation at execution time.
     """
+    if planning_call is None:
+        return None
+
+    contract_results = None
+    if operation_id in _EXACT_HOST_AXIS_CONTRACT_OPERATIONS:
+        try:
+            contract_results = pipeline._axis_contract_transform_results(
+                planning_call
+            )
+        except (TypeError, ValueError):
+            return None
+        if contract_results is None:
+            return None
+        if len(contract_results) != planning_call.output_port_count:
+            return None
+        projected: list[tuple[_ArrayDescription, object | None]] = []
+        for value, state in contract_results:
+            raw_shape = getattr(value, "shape", None)
+            raw_dtype = getattr(value, "dtype", None)
+            if raw_shape is None or raw_dtype is None:
+                return None
+            try:
+                shape = tuple(int(size) for size in raw_shape)
+                dtype = np.dtype(raw_dtype)
+            except (TypeError, ValueError):
+                return None
+            state_shape = getattr(state, "shape", None)
+            if state_shape is not None:
+                try:
+                    exact_state_shape = tuple(int(size) for size in state_shape)
+                except (TypeError, ValueError):
+                    return None
+                if exact_state_shape != shape:
+                    return None
+            projected.append((_ArrayDescription(shape, dtype), state))
+        return tuple(projected)
+
     if (
-        planning_call is None
-        or planning_call.multiple_inputs
+        planning_call.multiple_inputs
         or planning_call.output_port_count != 1
         or len(input_shapes) != 1
         or len(input_dtypes) != 1
@@ -2036,7 +2087,7 @@ def _project_host_planning_output(
                         * np.dtype(np.float32).itemsize
                     ),
                 )
-        return description, projected_state
+        return ((description, projected_state),)
     if operation_id in {"canny_edges", "otsu_threshold"}:
         projection = _scalar_plane_luma_output_shape(
             input_shape,
@@ -2070,7 +2121,7 @@ def _project_host_planning_output(
                     ),
                     value_pattern="",
                 )
-        return description, projected_state
+        return ((description, projected_state),)
     if operation_id != "extract_channel":
         return None
     axis_types = tuple(planning_call.kwargs.get("axis_types", ()))
@@ -2131,7 +2182,7 @@ def _project_host_planning_output(
             kind="intensity image",
             value_pattern="",
         )
-    return description, projected_state
+    return ((description, projected_state),)
 
 
 def _scalar_plane_luma_output_shape(

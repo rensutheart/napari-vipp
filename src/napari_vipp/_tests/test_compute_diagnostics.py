@@ -153,7 +153,7 @@ def test_installed_windows_repair_command_builds_launchable_exact_environment(
     monkeypatch.setattr(Path, "is_file", lambda _path: False)
     monkeypatch.setattr(
         "napari_vipp.core.compute_diagnostics.importlib.metadata.version",
-        lambda name: "0.13.0a1" if name == "napari-vipp" else "",
+        lambda name: "0.13.0a2" if name == "napari-vipp" else "",
     )
 
     command = _repair_command("win32", "cuda13")
@@ -161,7 +161,7 @@ def test_installed_windows_repair_command_builds_launchable_exact_environment(
     assert "py -3.12 -m venv" in command
     assert "pip install --upgrade pip" in command
     assert 'pip install --pre "napari[pyqt6]>=0.6"' in command
-    assert '"napari-vipp[gpu-cuda13]==0.13.0a1"' in command
+    assert '"napari-vipp[gpu-cuda13]==0.13.0a2"' in command
     assert "compute_diagnostics --track cuda13" in command
 
 
@@ -171,7 +171,7 @@ def test_installed_linux_repair_command_builds_launchable_exact_environment(
     monkeypatch.setattr(Path, "is_file", lambda _path: False)
     monkeypatch.setattr(
         "napari_vipp.core.compute_diagnostics.importlib.metadata.version",
-        lambda name: "0.13.0a1" if name == "napari-vipp" else "",
+        lambda name: "0.13.0a2" if name == "napari-vipp" else "",
     )
 
     command = _repair_command("linux", "cuda13")
@@ -179,7 +179,7 @@ def test_installed_linux_repair_command_builds_launchable_exact_environment(
     assert "python3.12 -m venv" in command
     assert "pip install --upgrade pip" in command
     assert 'pip install --pre "napari[pyqt6]>=0.6"' in command
-    assert '"napari-vipp[gpu-cuda13]==0.13.0a1"' in command
+    assert '"napari-vipp[gpu-cuda13]==0.13.0a2"' in command
     assert "compute_diagnostics --track cuda13" in command
 
 

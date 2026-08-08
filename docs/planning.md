@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-29
+Last reviewed: 2026-08-08
 
 This is the concise planning source of truth. It records the current public
 baseline, the work that is still genuinely open, and the intended order for the
@@ -83,7 +83,7 @@ authoring remain later milestones.
 
 ## Current Public Baseline
 
-Current alpha release: `0.13.0a1`.
+Current alpha release: `0.13.0a2`.
 
 The 0.13 alpha adds evidence-gated GPU execution, portable compute intent,
 durable implementation provenance, workflow schema 4, batch schema 3,

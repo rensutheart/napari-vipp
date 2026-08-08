@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 0.13.0a2 - 2026-08-08
+
+### Release Overview
+
+This second 0.13 alpha fixes compute preflight for fresh workflows whose
+dynamic multi-output host operations feed accelerator-capable nodes. Such
+workflows no longer need a preliminary CPU calculation to establish exact
+planning descriptors. The release does not change workflow schemas or weaken
+scientific input validation.
+
+### Compute Planning
+
+- Fresh planning now projects an exact descriptor for every exposed output of
+  `Split Channels`, including the selected source port's shape, dtype, axes,
+  and channel metadata.
+- Shape-preserving accelerator projections no longer turn unresolved
+  `shape=()` / `dtype=object` placeholders into apparently resolved values.
+  When no exact deterministic projection is available, transitive descendants
+  remain unresolved so compute planning safely defers them to CPU.
+- The bundled red-channel object-intensity example now plans and runs under
+  `Prefer GPU` without a CPU warm-up. When cuCIM is absent, its measurement
+  node receives the normal explained CPU decision instead of preflight
+  aborting at the downstream Otsu dtype guard.
+
 ## 0.13.0a1 - 2026-08-06
 
 ### Release Overview

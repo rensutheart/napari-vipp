@@ -31,11 +31,11 @@ and the contributor [scientific behavior requirements](CONTRIBUTING.md#scientifi
 
 ## Install And Open
 
-VIPP 0.13.0a1 supports CPython 3.12 and 3.13. If napari is not already
+VIPP 0.13.0a2 supports CPython 3.12 and 3.13. If napari is not already
 installed, install it with a Qt backend at the same time:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a1"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a2"
 vipp
 ```
 
@@ -51,7 +51,7 @@ CUDA 13 route is:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a1"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a2"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -68,7 +68,7 @@ CMake. macOS is CPU-only in this alpha. The standard extra also omits cuCIM;
 Windows users can optionally build the pinned cuCIM 26.6.0 source locally and
 approve that wheel in the same environment. Without it, the affected nodes
 remain on CPU. See the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a1/getting-started/windows-cuda/)
+[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a2/getting-started/windows-cuda/)
 and [GPU scope and setup](#gpu-execution-and-development-environment) before
 using accelerated results.
 
@@ -174,7 +174,7 @@ current limitations.
 ## Documentation
 
 - [Published VIPP documentation](https://rensutheart.github.io/vipp-mkdocs/)
-- [Categorized 0.13.0a1 release notes](CHANGELOG.md#0130a1---2026-08-06)
+- [Categorized 0.13.0a2 release notes](CHANGELOG.md#0130a2---2026-08-08)
 - [Documentation index](docs/README.md)
 - [User guide](docs/user-guide.md)
 - [Image import and export](docs/io-user-guide.md)
@@ -678,7 +678,7 @@ writes the approval record without replacing VIPP with an editable checkout.
 When the remaining environment and workload gates pass, Subtract Background,
 Rolling-Ball Background, and the admitted basic measurements can use cuCIM;
 otherwise they visibly fall back to CPU. Follow the
-[Windows CUDA and local cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a1/getting-started/windows-cuda/);
+[Windows CUDA and local cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a2/getting-started/windows-cuda/);
 the [cuCIM source evaluation](docs/cucim-windows-source-evaluation.md) records
 the technical evidence, and
 [`scripts/build_cucim_windows.ps1`](scripts/build_cucim_windows.ps1) implements
@@ -727,9 +727,13 @@ guidance, and report suspected vulnerabilities privately through
 
 ## 0.13 Alpha Highlights
 
-`0.13.0a1` is the current alpha. It is VIPP's first usable, evidence-gated GPU
-release while retaining CPU as the portable scientific reference path:
+`0.13.0a2` is the current alpha. It fixes fresh-graph compute preflight for
+dynamic multi-output workflows while retaining the evidence-gated GPU release
+and portable scientific CPU reference path introduced in `0.13.0a1`:
 
+- exact per-port planning descriptors for `Split Channels`, with unresolved
+  downstream projections kept unresolved until a deterministic contract or
+  concrete value is available;
 - toolbar `CPU`/`Auto`/`Prefer GPU`/`Custom` policy, per-node
   CPU/CuPy/cuCIM choices and
   actual-run badges, setup diagnostics, RAM/VRAM reporting, node benchmarking,
@@ -764,7 +768,7 @@ and RTX 40-series qualification, Apple acceleration, general cuCIM packaging,
 and additional node providers remain planned. Colocalization and ImageJ
 compatibility work also changes some numerical results; review the scientific
 compatibility notes before comparing old and new analyses. See the categorized
-[0.13.0a1 release notes](CHANGELOG.md#0130a1---2026-08-06), the
+[0.13.0a2 release notes](CHANGELOG.md#0130a2---2026-08-08), the
 [upgrade and workflow contract](docs/user-guide.md#save-workflow-json), and
 [planning.md](docs/planning.md) for the remaining milestones.
 
