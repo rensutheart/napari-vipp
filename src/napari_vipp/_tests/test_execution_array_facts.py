@@ -115,10 +115,14 @@ class _ProbeRegistry(ComputeRegistry):
         *,
         runtime_available: bool = True,
         library_available: bool = True,
+        device_name: str = "NVIDIA GeForce RTX 5090",
+        compute_capability: str = "12.0",
     ) -> None:
         super().__init__()
         self.runtime_available = runtime_available
         self.library_available = library_available
+        self.device_name = device_name
+        self.compute_capability = compute_capability
         self.runtime_probe_count = 0
         self.library_probe_count = 0
         self.library_probe_ids: list[str] = []
@@ -130,9 +134,9 @@ class _ProbeRegistry(ComputeRegistry):
             (
                 RuntimeDevice(
                     "cuda:0",
-                    "NVIDIA GeForce RTX 5090",
+                    self.device_name,
                     8 * 1024**3,
-                    metadata=(("compute_capability", "12.0"),),
+                    metadata=(("compute_capability", self.compute_capability),),
                 ),
             )
             if self.runtime_available
@@ -679,6 +683,38 @@ def test_float32_finite_only_candidates_scan_once(
     assert facts.all_finite is True
     assert facts.minimum == 0.0
     assert facts.maximum == 80.0
+
+
+def test_secondary_device_custom_candidate_scans_required_facts_once(monkeypatch):
+    calls = _scan_spy(monkeypatch)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 1.0)
+    assert pipeline.connect("input", gaussian.id).success
+    data = np.arange(81, dtype=np.float32).reshape(9, 9)
+    planner = _CapturingPlanner()
+    registry = _ProbeRegistry(
+        device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
+        compute_capability="8.9",
+    )
+
+    result = _execute_accelerated(
+        _accelerated_request(
+            pipeline,
+            data,
+            compute_request=ComputeRequest(
+                mode=ComputeMode.CUSTOM,
+                node_preferences={gaussian.id: "library:cupyx"},
+            ),
+        ),
+        planner,
+        registry=registry,
+    )
+
+    assert result.error == ""
+    assert len(calls) == 1
+    assert planner.array_facts[gaussian.id][0].all_finite is True
 
 
 @pytest.mark.parametrize("dtype", (np.int32, np.uint32, np.int64, np.uint64))

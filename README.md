@@ -31,11 +31,11 @@ and the contributor [scientific behavior requirements](CONTRIBUTING.md#scientifi
 
 ## Install And Open
 
-VIPP 0.13.0a2 supports CPython 3.12 and 3.13. If napari is not already
+VIPP 0.13.0a3 supports CPython 3.12 and 3.13. If napari is not already
 installed, install it with a Qt backend at the same time:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a2"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a3"
 vipp
 ```
 
@@ -51,24 +51,27 @@ CUDA 13 route is:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a2"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a3"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
 
 This installs the exact NumPy, SciPy, scikit-image, CuPy, and CUDA package
-versions used by the public admission policy. Public GPU admission in this
-alpha is intentionally narrower than package installation: the reviewed
-native-Windows evidence is for the recorded CUDA 13 / RTX 5090 environment.
-Other hardware, Linux, unsupported dtypes or parameters, and missing optional
-providers remain on the scientifically authoritative CPU path with a visible
-reason. Only the NVIDIA display driver is a machine-wide prerequisite; this
-standard route does not need a separate CUDA Toolkit, `nvcc`, Visual Studio, or
-CMake. macOS is CPU-only in this alpha. The standard extra also omits cuCIM;
+versions used by the public admission policy. Auto and Prefer-GPU admission in
+this alpha are intentionally narrower than package installation: their
+reviewed native-Windows evidence is for the recorded CUDA 13 / RTX 5090
+environment. On another compatible NVIDIA GPU, Custom mode can make an
+explicit expert choice or use **Find fastest pipeline…** to require exact local
+parity before applying a measured proposal. Linux, unsupported dtypes or
+parameters, and missing optional providers remain on the scientifically
+authoritative CPU path with a visible reason. Only the NVIDIA display driver is
+a machine-wide prerequisite; this standard route does not need a separate CUDA
+Toolkit, `nvcc`, Visual Studio, or CMake. macOS is CPU-only in this alpha. The
+standard extra also omits cuCIM;
 Windows users can optionally build the pinned cuCIM 26.6.0 source locally and
 approve that wheel in the same environment. Without it, the affected nodes
 remain on CPU. See the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a2/getting-started/windows-cuda/)
+[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a3/getting-started/windows-cuda/)
 and [GPU scope and setup](#gpu-execution-and-development-environment) before
 using accelerated results.
 
@@ -174,7 +177,7 @@ current limitations.
 ## Documentation
 
 - [Published VIPP documentation](https://rensutheart.github.io/vipp-mkdocs/)
-- [Categorized 0.13.0a2 release notes](CHANGELOG.md#0130a2---2026-08-08)
+- [Categorized 0.13.0a3 release notes](CHANGELOG.md#0130a3---2026-08-08)
 - [Documentation index](docs/README.md)
 - [User guide](docs/user-guide.md)
 - [Image import and export](docs/io-user-guide.md)
@@ -377,10 +380,11 @@ threshold decision. GPU progress advances only after each 64-row tile is
 synchronized; cancellation occurs between tiles. Calls outside the reviewed
 region, missing CUDA/CuPy, and unqualified platforms visibly remain on CPU.
 
-The source-current full-profile RTX 5090 record passed all 10 exact admission
-cases, all 10 matched rejection cases, cancellation/cleanup, and bitwise parity
-for all 18 timed workloads. Representative transfer-inclusive speedups were
-23.57x for a 512² radius-0.5 plane, 55.23x for a 512² radius-2 plane, 170.95x
+The historical pre-0.13.0a3 full-profile RTX 5090 record passed all 10 exact
+admission cases, all 10 matched rejection cases, cancellation/cleanup, and
+bitwise parity for all 18 timed workloads. Representative transfer-inclusive
+speedups were 23.57x for a 512² radius-0.5 plane, 55.23x for a 512² radius-2
+plane, 170.95x
 for a 2048² radius-10 plane, and 93.62x for an 8×512² radius-2 stack. On this
 host, radius 0.5 first cleared both Auto gates at 512²: its 20.13-ms absolute
 saving just exceeded the 20-ms gate, while its paired 95% speedup lower bound
@@ -648,12 +652,30 @@ fingerprint and visibly keeps nodes on CPU if any are missing or different;
 broader dependency versions require their own parity matrix rather than an
 implicit compatibility claim.
 
-Public admission currently matches the recorded native-Windows host exactly:
-CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), CuPy/CuPyX 14.1.1,
-and an NVIDIA GeForce RTX 5090 with compute capability 12.0. A different CUDA
-runtime, driver, model, or compute capability visibly keeps the node on CPU
-until that environment has its own reviewed evidence. Provider-level developer
-qualification can still run directly outside this public gate.
+Portable Auto and Prefer-GPU admission currently match the recorded native-
+Windows host exactly: CUDA runtime API 13.2 (`13020`), driver API 13.3
+(`13030`), CuPy/CuPyX 14.1.1, and an NVIDIA GeForce RTX 5090 with compute
+capability 12.0. A different model therefore remains on CPU in those modes.
+Custom mode's **Find fastest pipeline…** action can locally qualify another
+NVIDIA GPU instead of rejecting it before parity: the pinned Windows/CUDA 13
+stack and synchronized provider probes must pass, the device must report a
+numeric CUDA-13-supported compute capability (Turing/7.5 or newer), and the
+exact node plus changed whole-pipeline outputs must pass parity before a
+proposal is offered. Applying
+that proposal writes an explicit Custom choice. Users can also set the same
+Custom choice manually as an expert override without running parity first.
+Either form is durable user intent, not portable validation evidence; rerun
+Find Fastest after changing the device, driver, environment, data, or workload.
+
+Source-current validation on a native-Windows NVIDIA GeForce RTX 4050 Laptop
+GPU (compute capability 8.9) passed the pinned CUDA 13 probes, 87 real provider
+cases, the corrected Sigma compile/parity case, two real Find-Fastest pipeline
+transactions, and 39 bundled-example CPU/Prefer-GPU/Custom executions. One
+separate chained proposal was correctly rejected when a downstream bitwise
+parity boundary failed. Device cleanup was complete. This is bounded evidence
+for that source revision and host; it neither relabels the historical RTX 5090
+records as current nor qualifies portable performance or an as-yet-unbuilt
+tagged wheel.
 
 The machine still needs a compatible NVIDIA driver. Select `--track cuda12` for
 the separate `.venv-gpu-cu12` qualification-only environment; CUDA 12 is
@@ -678,7 +700,7 @@ writes the approval record without replacing VIPP with an editable checkout.
 When the remaining environment and workload gates pass, Subtract Background,
 Rolling-Ball Background, and the admitted basic measurements can use cuCIM;
 otherwise they visibly fall back to CPU. Follow the
-[Windows CUDA and local cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a2/getting-started/windows-cuda/);
+[Windows CUDA and local cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a3/getting-started/windows-cuda/);
 the [cuCIM source evaluation](docs/cucim-windows-source-evaluation.md) records
 the technical evidence, and
 [`scripts/build_cucim_windows.ps1`](scripts/build_cucim_windows.ps1) implements
@@ -727,13 +749,18 @@ guidance, and report suspected vulnerabilities privately through
 
 ## 0.13 Alpha Highlights
 
-`0.13.0a2` is the current alpha. It fixes fresh-graph compute preflight for
-dynamic multi-output workflows while retaining the evidence-gated GPU release
-and portable scientific CPU reference path introduced in `0.13.0a1`:
+`0.13.0a3` is the current alpha. It adds parity-gated local qualification for
+compatible secondary NVIDIA GPUs and fixes Sigma compilation with CuPy 14.1.1,
+while retaining the fresh-graph compute corrections from `0.13.0a2`, the
+evidence-gated GPU release, and the portable scientific CPU reference path
+introduced in `0.13.0a1`:
 
 - exact per-port planning descriptors for `Split Channels`, with unresolved
   downstream projections kept unresolved until a deterministic contract or
   concrete value is available;
+- local Find-Fastest qualification for secondary NVIDIA GPUs that pass the
+  pinned CUDA 13/provider gates and exact parity, plus a CuPy 14.1.1 Sigma
+  kernel compile fix;
 - toolbar `CPU`/`Auto`/`Prefer GPU`/`Custom` policy, per-node
   CPU/CuPy/cuCIM choices and
   actual-run badges, setup diagnostics, RAM/VRAM reporting, node benchmarking,
@@ -763,12 +790,13 @@ and portable scientific CPU reference path introduced in `0.13.0a1`:
   new Sigma Filter and ImageJ Auto Threshold nodes, plus substantial cache,
   optimizer, progress, cancellation, and publication hardening.
 
-GPU support is not complete or generally cross-platform in this alpha. Linux
-and RTX 40-series qualification, Apple acceleration, general cuCIM packaging,
-and additional node providers remain planned. Colocalization and ImageJ
+GPU support is not complete or generally cross-platform in this alpha. Native
+Linux qualification, portable Auto/Prefer-GPU evidence for RTX 40-series
+hardware, Apple acceleration, general cuCIM packaging, and additional node
+providers remain planned. Colocalization and ImageJ
 compatibility work also changes some numerical results; review the scientific
 compatibility notes before comparing old and new analyses. See the categorized
-[0.13.0a2 release notes](CHANGELOG.md#0130a2---2026-08-08), the
+[0.13.0a3 release notes](CHANGELOG.md#0130a3---2026-08-08), the
 [upgrade and workflow contract](docs/user-guide.md#save-workflow-json), and
 [planning.md](docs/planning.md) for the remaining milestones.
 

@@ -367,6 +367,81 @@ def test_public_gpu_environment_is_exactly_the_recorded_host_region(
         assert "cpu remains authoritative" in decision.reason_text.lower()
 
 
+def test_local_qualification_accepts_a_probed_secondary_nvidia_device():
+    environment = _cuda_environment(
+        device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
+        device_metadata=(("compute_capability", "8.9"),),
+    )
+
+    default = evaluate_candidate_support(
+        _gpu_spec(),
+        _workload(),
+        environment,
+        allow_experimental=False,
+    )
+    qualifying = evaluate_candidate_support(
+        _gpu_spec(),
+        _workload(),
+        environment,
+        allow_experimental=False,
+        allow_compatible_device=True,
+    )
+
+    assert not default.supported
+    assert qualifying.supported
+    assert qualifying.reason is DecisionReason.SELECTED_IMPLEMENTATION
+
+
+def test_local_qualification_accepts_a_newer_compatible_driver():
+    environment = _cuda_environment(
+        runtime_metadata=(
+            (
+                "cuda-cupy",
+                (
+                    ("cuda_runtime_version", "13020"),
+                    ("driver_version", "13040"),
+                ),
+            ),
+        ),
+        driver_version="13040",
+        device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
+        device_metadata=(("compute_capability", "8.9"),),
+    )
+
+    decision = evaluate_candidate_support(
+        _gpu_spec(),
+        _workload(),
+        environment,
+        allow_experimental=False,
+        allow_compatible_device=True,
+    )
+
+    assert decision.supported
+
+
+@pytest.mark.parametrize(
+    "device_metadata",
+    ((), (("compute_capability", "not-numeric"),), (("compute_capability", "7.0"),)),
+    ids=("missing", "malformed", "below-cuda13-minimum"),
+)
+def test_local_qualification_still_rejects_incompatible_device_metadata(
+    device_metadata,
+):
+    decision = evaluate_candidate_support(
+        _gpu_spec(),
+        _workload(),
+        _cuda_environment(
+            device_name="Other NVIDIA GPU",
+            device_metadata=device_metadata,
+        ),
+        allow_experimental=False,
+        allow_compatible_device=True,
+    )
+
+    assert not decision.supported
+    assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+
+
 @pytest.mark.parametrize(
     ("scientific_stack_versions", "reason_fragment"),
     [
@@ -494,6 +569,56 @@ def _cucim_spec():
         == CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID
     )
     return spec
+
+
+def test_local_qualification_preserves_cupy_and_cucim_provider_provenance():
+    compatible_updates = {
+        "device_name": "NVIDIA GeForce RTX 4050 Laptop GPU",
+        "device_metadata": (("compute_capability", "8.9"),),
+    }
+    raw_spec = compute_specs_for(
+        "sigma_filter",
+        include_cpu=False,
+        allow_experimental=True,
+    )[0]
+    raw_workload = WorkloadDescriptor(
+        node_id="sigma",
+        operation_id="sigma_filter",
+        input_shapes=((31, 37),),
+        input_dtypes=("uint16",),
+        parameters=(
+            ("minimum_pixel_fraction", 0.2),
+            ("outlier_aware", True),
+            ("radius", 2.0),
+            ("sigma_width", 2.0),
+        ),
+        resolved_spatial_ndim=2,
+    )
+    raw_environment = _cuda_environment(
+        **compatible_updates,
+        implementation_libraries=("cpu", "cupy"),
+        runtime_versions=(("cuda-cupy", "14.1.1"), ("cupy", "14.1.1")),
+    )
+    cucim_environment = _cucim_environment(**compatible_updates)
+
+    decisions = (
+        evaluate_candidate_support(
+            raw_spec,
+            raw_workload,
+            raw_environment,
+            allow_experimental=True,
+            allow_compatible_device=True,
+        ),
+        evaluate_candidate_support(
+            _cucim_spec(),
+            _background_workload(),
+            cucim_environment,
+            allow_experimental=True,
+            allow_compatible_device=True,
+        ),
+    )
+
+    assert all(decision.supported for decision in decisions)
 
 
 @pytest.mark.parametrize("version", ("26.6.0", "26.06.00"))

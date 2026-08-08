@@ -102,8 +102,8 @@ and benchmark the exact converted pipeline before accepting the tradeoff.
 
 ## Exact Phase 1 environment admission
 
-The executable Phase 1 policy is deliberately narrower than the eventual
-cross-platform product:
+The recorded Phase 1 Auto/Prefer-GPU policy is deliberately narrower than the
+eventual cross-platform product:
 
 - native Windows, CPython 3.12 with the `cpython-312` ABI;
 - NumPy 2.5.1, SciPy 1.18.0, and scikit-image 0.26.0 as the authoritative CPU
@@ -125,9 +125,11 @@ Native Linux setup assets exist, but GPU admission fails closed until a clean
 host supplies the required evidence. macOS remains on the authoritative CPU
 path while a separate Metal/MPS/MLX provider and unified-memory accounting are
 investigated. WSL2 is not treated as native-Windows evidence.
-CUDA 12 and secondary NVIDIA devices remain qualification-only tracks outside
-public admission; their setup assets do not make them normal Auto/Custom
-candidates.
+CUDA 12 remains a qualification-only track outside public admission. Starting
+in 0.13.0a3, a secondary NVIDIA device under the exact supported CUDA 13 stack
+can enter explicit Custom execution or parity-gated local Find-Fastest
+qualification. It does not become a normal Auto/Prefer-GPU candidate, and the
+saved Custom choice is user intent rather than portable validation evidence.
 
 ## Recreate the validated development environment
 

@@ -16,13 +16,14 @@ regions for all of these providers are normal public
 Auto/Prefer-GPU/Custom candidates
 on this branch; unsupported regions visibly use CPU. Phase 4 adds the public
 CPU Sigma Filter and a clean-room CuPy RawKernel provider whose exact reviewed
-region is also a normal public Auto/Prefer-GPU/Custom candidate. Its source-current
-RTX 5090 record passed 10 exact admission cases, 10 matched rejections, 18
-bitwise-exact timed workloads, cancellation, and cleanup. Canonical Canny/Otsu
+region is also a normal public Auto/Prefer-GPU/Custom candidate. Its historical
+pre-0.13.0a3 RTX 5090 record passed 10 exact admission cases, 10 matched
+rejections, 18 bitwise-exact timed workloads, cancellation, and cleanup.
+Canonical Canny/Otsu
 numerical evidence for this source revision records 28/28 exact admission cases,
 memory/lifecycle proof, and separate synthetic/real-acquisition timings.
 Phase 5 adds exact CuPyX Connected Components for boolean 2D/3D masks. Its
-source-current record passed 16/16 exact native-`int32` admission cases,
+historical pre-0.13.0a3 record passed 16/16 exact native-`int32` admission cases,
 deterministic leading-block resets, synchronized block-boundary cancellation,
 cleanup, and conservative memory coverage. The strict v5 packaged policy
 artifact appends this public candidate without changing historical v1-v4 bytes.
@@ -488,11 +489,12 @@ Memory admission includes resident input/output, complete float32 staging, a
 worst-case typed axis-restoration buffer, the bounded 325-offset table, status,
 and uncertainty; there is no image-sized neighborhood expansion. Optional CUDA
 imports remain lazy, runtime cleanup is transactional, and missing packages or
-out-of-region calls retain a visible CPU decision/fallback. The source-current
-full-profile RTX 5090 record passed all 10 exact admission cases, 10 matched
-rejections, 18 bitwise-exact timed workloads, synchronized cancellation, and
-zero-residue cleanup. The implementation and immutable v4 policy artifact both
-declared `public_auto_candidate`; current artifact v5 retains that record. The
+out-of-region calls retain a visible CPU decision/fallback. The historical
+pre-0.13.0a3 full-profile RTX 5090 record passed all 10 exact admission cases,
+10 matched rejections, 18 bitwise-exact timed workloads, synchronized
+cancellation, and zero-residue cleanup. The implementation and immutable v4
+policy artifact both
+declared `public_auto_candidate`; current artifact v7 retains that record. The
 exact region is visible in ordinary Custom pipelines and can participate in
 Auto. Representative end-to-end
 speedups were 23.57x at 512²/radius 0.5, 55.23x at 512²/radius 2, 170.95x at
@@ -536,7 +538,7 @@ call: it cannot truthfully report intermediate completion or cancel mid-volume.
 A chunked implementation would need new seam-merging and exact label-order
 evidence.
 
-The source-current RTX 5090 record passed all 16 exact admission cases across
+The historical pre-0.13.0a3 RTX 5090 record passed all 16 exact admission cases across
 2D/3D, face/full connectivity, patterns, leading blocks, deterministic repeats,
 and `int32` ID resets. Its timing matrix demonstrates workload-dependent CPU/
 GPU choices rather than a size-only rule. The table's faster-median label is
@@ -2725,10 +2727,13 @@ workloads visibly remain on CPU.
 scientific, memory, cleanup, cancellation, and provenance gates. That exact
 region is now `public_auto_candidate`; packaging and broader platform support
 remain separate claims, and Auto-performance evidence never bypasses the exact
-environment gate. The current public gate is the recorded native-Windows CUDA
-runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and RTX 5090 (compute
-capability 12.0) host. CUDA 12 is qualification-only and outside public
-admission; secondary NVIDIA models remain provider-level qualification targets.
+environment gate. The portable Auto/Prefer-GPU gate is the recorded native-
+Windows CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and RTX 5090
+(compute capability 12.0) host. CUDA 12 is qualification-only and outside
+public admission. Starting in 0.13.0a3, a secondary NVIDIA model can enter
+explicit Custom execution or parity-gated local Find-Fastest qualification
+under the exact supported CUDA 13 software stack. That machine-local opt-in
+does not promote the model into the portable reviewed-host region.
 Rollback removes only the
 background declarations/adapter. The production-adapter tests must run from the
 same dedicated VIPP environment into which the recorded wheel was installed,

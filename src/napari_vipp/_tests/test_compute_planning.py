@@ -267,6 +267,42 @@ def test_custom_exact_and_library_preferences_bypass_auto_threshold():
     assert library.decisions[0].decision_kind is DecisionKind.SELECTED
 
 
+def test_secondary_nvidia_device_requires_explicit_gpu_intent():
+    workload = _workload()
+    facts = {"node": _facts(workload)}
+    secondary = replace(
+        _environment(),
+        device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
+        device_metadata=(("compute_capability", "8.9"),),
+    )
+
+    automatic = plan_compute_decisions(
+        ComputeRequest(mode="auto"),
+        (workload,),
+        environment=secondary,
+        array_facts=facts,
+    )
+    preferred = plan_compute_decisions(
+        ComputeRequest(mode="prefer_gpu"),
+        (workload,),
+        environment=secondary,
+        array_facts=facts,
+    )
+    pinned = plan_compute_decisions(
+        _request("library:cupyx"),
+        (workload,),
+        environment=secondary,
+        array_facts=facts,
+    )
+
+    assert automatic.decisions[0].decision_kind is DecisionKind.POLICY_CPU
+    assert automatic.decisions[0].reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+    assert preferred.decisions[0].decision_kind is DecisionKind.POLICY_CPU
+    assert preferred.decisions[0].reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+    assert pinned.decisions[0].decision_kind is DecisionKind.SELECTED
+    assert pinned.decisions[0].runtime_id == "cuda-cupy"
+
+
 def test_public_custom_candidate_requires_explicit_custom_choice():
     base = compute_specs_for("gaussian_blur", include_cpu=False)[0]
     custom = replace(base, admission_tier=AdmissionTier.PUBLIC_CUSTOM)

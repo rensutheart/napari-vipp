@@ -285,7 +285,7 @@ def test_fake_provider_uses_exact_cuda_arithmetic_options(fake_cupy) -> None:
     }
     for kernel in fake_cupy.kernels:
         assert "--fmad=false" in kernel.options
-        assert "--ftz=false" in kernel.options
+        assert "--ftz=false" not in kernel.options
         assert "--prec-div=true" in kernel.options
         assert "--prec-sqrt=true" in kernel.options
 

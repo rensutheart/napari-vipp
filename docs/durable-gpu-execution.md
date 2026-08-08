@@ -375,9 +375,12 @@ are finalized on the normal cooperative-cancellation path, and the CLI exits
   supply any source identity they want recorded. The saved batch runner remains
   the durable surface for multi-source capture, a final source recheck before
   publication, collision planning, checkpoints, manifests, and replay.
-- Native Linux, secondary RTX 40-series Windows hardware, Apple M1 Max
-  provider feasibility, and feature-complete cuCIM/Clara packaging remain
-  release work. CPU execution remains the portable Windows/macOS/Linux path.
+- Native Linux, portable Auto/Prefer-GPU evidence for secondary RTX 40-series
+  Windows hardware, Apple M1 Max provider feasibility, and feature-complete
+  cuCIM/Clara packaging remain release work. Compatible secondary NVIDIA GPUs
+  can be used only through explicit Custom intent or local parity-gated
+  Find-Fastest qualification. CPU execution remains the portable
+  Windows/macOS/Linux path.
 
 For the owning module boundaries, see [Architecture](architecture.md). For
 operation-specific admitted regions and setup constraints, see the

@@ -214,14 +214,24 @@ def test_mask_generators_are_deterministic_readonly_and_reset_leading_ids(
     assert [int(block.sum()) for block in leading] == [2, 2, 2]
 
 
-def test_checked_in_artifact_is_current_canonical_and_fully_covered(
+def test_checked_in_artifact_is_historical_canonical_and_fully_covered(
     evidence_script,
 ) -> None:
-    assert evidence_script.validate_existing(ARTIFACT_PATH) == ARTIFACT_PATH.resolve()
     raw = ARTIFACT_PATH.read_text(encoding="utf-8")
     document = json.loads(raw)
+    current_source_document = deepcopy(document)
+    current_source_document["source_provenance"] = (
+        evidence_script._source_provenance()
+    )
+
+    with pytest.raises(evidence_script.EvidenceError, match="fingerprints are stale"):
+        evidence_script.validate_existing(ARTIFACT_PATH)
+    evidence_script._validate_document_contract(current_source_document)
 
     assert raw == evidence_script._canonical_json(document)
+    assert ARTIFACT_PATH.with_suffix(".md").read_text(encoding="utf-8") == (
+        evidence_script.render_markdown(document)
+    )
     assert document["profile"] == "full"
     assert document["admission"]["case_count"] == 16
     assert document["lifecycle"]["status"] == "pass"
@@ -260,8 +270,9 @@ def test_existing_validation_is_cuda_safe_in_a_fresh_process() -> None:
         timeout=30,
     )
 
-    assert completed.returncode == 0, completed.stderr
-    assert "evidence is current" in completed.stdout
+    assert completed.returncode == 2, completed.stderr
+    assert "Source provenance fingerprints are stale" in completed.stderr
+    assert "validation imported CUDA libraries" not in completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -304,7 +315,9 @@ def test_validator_rejects_schema_provenance_parity_timing_and_memory_tampering(
     mutation,
     message,
 ) -> None:
-    document = json.loads(ARTIFACT_PATH.read_text(encoding="utf-8"))
+    historical_document = json.loads(ARTIFACT_PATH.read_text(encoding="utf-8"))
+    document = deepcopy(historical_document)
+    document["source_provenance"] = evidence_script._source_provenance()
     mutated = deepcopy(document)
     mutation(mutated)
 
@@ -316,7 +329,9 @@ def test_validate_existing_rejects_noncanonical_json_and_edited_markdown(
     evidence_script,
     tmp_path: Path,
 ) -> None:
-    document = json.loads(ARTIFACT_PATH.read_text(encoding="utf-8"))
+    historical_document = json.loads(ARTIFACT_PATH.read_text(encoding="utf-8"))
+    document = deepcopy(historical_document)
+    document["source_provenance"] = evidence_script._source_provenance()
     output = tmp_path / "evidence.json"
     markdown = output.with_suffix(".md")
     evidence_script._atomic_write_artifacts(output, markdown, document)

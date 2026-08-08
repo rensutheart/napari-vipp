@@ -281,15 +281,32 @@ def test_contract_rejects_private_source_digest(performance_script):
         performance_script._validate_document_contract(document)
 
 
-def test_checked_in_artifact_is_current_and_rendered(performance_script):
+def test_checked_in_artifact_is_historical_and_internally_valid(
+    performance_script,
+):
     artifact = (
         PROJECT_ROOT
         / "docs"
         / "benchmarks"
         / "rl-cupy-performance-windows-rtx5090.json"
     )
+    raw = artifact.read_text(encoding="utf-8")
+    document = json.loads(raw)
+    current_source_document = deepcopy(document)
+    current_source_document["source_provenance"] = (
+        performance_script._source_provenance()
+    )
 
-    assert performance_script.validate_existing(artifact) == artifact.resolve()
+    with pytest.raises(
+        performance_script.PerformanceBenchmarkError,
+        match="source fingerprints",
+    ):
+        performance_script.validate_existing(artifact)
+    performance_script._validate_document_contract(current_source_document)
+    assert raw == json.dumps(document, indent=2, sort_keys=True) + "\n"
+    assert artifact.with_suffix(".md").read_text(encoding="utf-8") == (
+        performance_script.render_markdown(document)
+    )
 
 
 def _example_document(performance_script):

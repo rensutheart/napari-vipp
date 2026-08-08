@@ -18,6 +18,8 @@ from napari_vipp._tests.test_compute_benchmark_adapter import (
 from napari_vipp.core.compute import (
     BenchmarkCandidateFailureKind,
     ComputeEnvironment,
+    ComputeRequest,
+    DecisionKind,
     NodePreferenceKind,
 )
 from napari_vipp.core.compute_benchmark import (
@@ -29,6 +31,7 @@ from napari_vipp.core.compute_benchmark import (
 )
 from napari_vipp.core.compute_benchmark_adapter import (
     build_registered_node_benchmark,
+    workload_from_prepared_node_call,
 )
 from napari_vipp.core.compute_benchmark_coordinator import (
     ApplicationNodeBenchmarkCoordinator,
@@ -36,6 +39,10 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     NodeBenchmarkUnavailable,
     benchmark_environment_fingerprint,
     stable_preference_for_benchmark_winner,
+)
+from napari_vipp.core.compute_planning import (
+    plan_compute_decisions,
+    probe_compute_environment,
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
 from napari_vipp.core.operations import (
@@ -45,17 +52,17 @@ from napari_vipp.core.operations import (
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
 
 
-def _environment() -> ComputeEnvironment:
-    return ComputeEnvironment(
-        os_name="Windows",
-        python_implementation="CPython",
-        python_version="3.12",
-        python_abi="cpython-312",
-        runtime_ids=("cpu-numpy", "cuda-cupy"),
-        implementation_libraries=("cpu", "cupyx"),
-        runtime_versions=(("cuda-cupy", "14.1.1"), ("cupyx", "14.1.1")),
-        runtime_probe_fingerprints=(("cuda-cupy", "fake-runtime-fingerprint"),),
-        runtime_metadata=(
+def _environment(**updates) -> ComputeEnvironment:
+    values = {
+        "os_name": "Windows",
+        "python_implementation": "CPython",
+        "python_version": "3.12",
+        "python_abi": "cpython-312",
+        "runtime_ids": ("cpu-numpy", "cuda-cupy"),
+        "implementation_libraries": ("cpu", "cupyx"),
+        "runtime_versions": (("cuda-cupy", "14.1.1"), ("cupyx", "14.1.1")),
+        "runtime_probe_fingerprints": (("cuda-cupy", "fake-runtime-fingerprint"),),
+        "runtime_metadata": (
             (
                 "cuda-cupy",
                 (
@@ -64,15 +71,17 @@ def _environment() -> ComputeEnvironment:
                 ),
             ),
         ),
-        driver_version="13030",
-        device_id="cuda:0",
-        device_name="NVIDIA GeForce RTX 5090",
-        device_class="nvidia-cuda",
-        device_metadata=(("compute_capability", "12.0"),),
-        memory_topology="discrete",
-        total_accelerator_memory_bytes=16 * 1024**3,
-        probe_status="available",
-    )
+        "driver_version": "13030",
+        "device_id": "cuda:0",
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "device_class": "nvidia-cuda",
+        "device_metadata": (("compute_capability", "12.0"),),
+        "memory_topology": "discrete",
+        "total_accelerator_memory_bytes": 16 * 1024**3,
+        "probe_status": "available",
+    }
+    values.update(updates)
+    return ComputeEnvironment(**values)
 
 
 def _median_pipeline(values: np.ndarray) -> tuple[PrototypePipeline, str, str]:
@@ -333,6 +342,117 @@ def test_selected_node_benchmark_is_detached_persisted_and_parity_gated(
     assert pipeline.completed_node_ids == completed_before
     np.testing.assert_array_equal(pipeline.outputs[source_id], source_before)
     np.testing.assert_array_equal(pipeline.outputs[node_id], node_output_before)
+
+
+def test_selected_node_benchmark_qualifies_secondary_nvidia_hardware(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, runtime = _coordinator_with_fake_runtime(
+        tmp_path,
+        monkeypatch,
+        clock,
+    )
+    pipeline, _source_id, node_id = _median_pipeline(
+        np.arange(31 * 37, dtype=np.uint16).reshape(31, 37)
+    )
+    environment = _environment(
+        device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
+        device_metadata=(("compute_capability", "8.9"),),
+        total_accelerator_memory_bytes=6 * 1024**3,
+    )
+
+    plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=environment,
+        allow_experimental=True,
+        paired_bootstrap_samples=200,
+        time_budget_seconds=10.0,
+    )
+    result = coordinator.run(plan)
+
+    assert plan.environment == environment
+    assert [spec.implementation_id for spec in plan.admitted_specs] == [
+        "cupyx-median-filter-v1"
+    ]
+    assert result.record.accepted_implementation_id == "cupyx-median-filter-v1"
+    candidate = next(
+        item
+        for item in result.record.candidates
+        if item.implementation_id == "cupyx-median-filter-v1"
+    )
+    assert candidate.parity_passed
+    replanned = plan_compute_decisions(
+        ComputeRequest(
+            mode="custom",
+            node_preferences={node_id: result.winner_preference},
+            allow_experimental=True,
+        ),
+        (workload_from_prepared_node_call(plan.registered.detached_call),),
+        registry=coordinator.registry,
+        environment=environment,
+    )
+    assert replanned.decisions[0].decision_kind is DecisionKind.SELECTED
+    assert replanned.decisions[0].runtime_id == "cuda-cupy"
+    assert not replanned.decisions[0].fallback_used
+    assert runtime.live == {}
+
+
+@pytest.mark.real_cuda
+def test_real_node_benchmark_parity_on_current_compatible_cuda_device(tmp_path):
+    registry = ComputeRegistry()
+    try:
+        values = np.arange(256 * 320, dtype=np.uint16).reshape(256, 320)
+        pipeline, _source_id, node_id = _median_pipeline(values)
+        specs = registry.implementations_for_operation(
+            "median_filter",
+            allow_experimental=True,
+        )
+        request = ComputeRequest(
+            mode="custom",
+            node_preferences={node_id: "library:cupyx"},
+            allow_experimental=True,
+        )
+        environment, _warnings = probe_compute_environment(
+            registry,
+            request,
+            specs,
+        )
+        if "cuda-cupy" not in environment.runtime_ids:
+            pytest.skip(environment.probe_reason or "CUDA/CuPy is unavailable.")
+        if "cupyx" not in environment.implementation_libraries:
+            pytest.skip(environment.probe_reason or "CuPyX is unavailable.")
+
+        coordinator = ApplicationNodeBenchmarkCoordinator(
+            registry,
+            tmp_path / "real-compatible-device-benchmarks.json",
+        )
+        plan = coordinator.prepare(
+            pipeline,
+            node_id,
+            environment=environment,
+            allow_experimental=True,
+            time_budget_seconds=180.0,
+        )
+        result = coordinator.run(plan)
+
+        assert [spec.implementation_id for spec in plan.admitted_specs] == [
+            "cupyx-median-filter-v1"
+        ]
+        candidate = next(
+            item
+            for item in result.record.candidates
+            if item.implementation_id == "cupyx-median-filter-v1"
+        )
+        assert candidate.parity_passed, candidate.error
+        assert candidate.synchronized
+        assert result.record.key.environment_fingerprint == (
+            benchmark_environment_fingerprint(environment)
+        )
+    finally:
+        registry.close()
 
 
 def test_run_owns_transaction_lease_and_charges_wait_against_budget(

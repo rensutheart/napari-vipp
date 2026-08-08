@@ -215,6 +215,16 @@ class ComputeRequest:
     def preference_for(self, node_id: str) -> NodeComputePreference:
         return self.node_preferences.get(str(node_id), NodeComputePreference())
 
+    def allows_compatible_device_for(self, node_id: str) -> bool:
+        """Return whether this request explicitly opts one node into local GPU use."""
+
+        preference = self.preference_for(node_id)
+        return self.mode is ComputeMode.CUSTOM and preference.kind in {
+            NodePreferenceKind.BEST_GPU,
+            NodePreferenceKind.LIBRARY,
+            NodePreferenceKind.IMPLEMENTATION,
+        }
+
     def as_dict(self) -> dict[str, object]:
         return {
             "mode": self.mode.value,

@@ -119,8 +119,9 @@ def test_validate_existing_is_cpu_safe_in_a_fresh_process():
         timeout=30,
     )
 
-    assert completed.returncode == 0, completed.stderr
-    assert "RL-TV performance evidence is current" in completed.stdout
+    assert completed.returncode == 2, completed.stderr
+    assert "source fingerprints do not match" in completed.stderr
+    assert "validation imported CuPy" not in completed.stderr
 
 
 def test_small_generator_and_psf_are_deterministic(performance_script):
@@ -313,9 +314,25 @@ def test_contract_rejects_private_source_digest(performance_script):
         performance_script._validate_document_contract(document)
 
 
-def test_checked_in_artifact_is_current_and_rendered(performance_script):
-    assert performance_script.validate_existing(ARTIFACT_PATH) == (
-        ARTIFACT_PATH.resolve()
+def test_checked_in_artifact_is_historical_and_internally_valid(
+    performance_script,
+):
+    raw = ARTIFACT_PATH.read_text(encoding="utf-8")
+    document = json.loads(raw)
+    current_source_document = deepcopy(document)
+    current_source_document["source_provenance"] = (
+        performance_script._source_provenance()
+    )
+
+    with pytest.raises(
+        performance_script.PerformanceBenchmarkError,
+        match="source fingerprints",
+    ):
+        performance_script.validate_existing(ARTIFACT_PATH)
+    performance_script._validate_document_contract(current_source_document)
+    assert raw == json.dumps(document, indent=2, sort_keys=True) + "\n"
+    assert ARTIFACT_PATH.with_suffix(".md").read_text(encoding="utf-8") == (
+        performance_script.render_markdown(document)
     )
 
 

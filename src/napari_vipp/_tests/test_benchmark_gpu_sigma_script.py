@@ -289,12 +289,33 @@ def test_validate_existing_rejects_stale_source_and_markdown(
         evidence_script.validate_existing(valid)
 
 
-def test_checked_in_artifact_is_current_and_rendered(evidence_script) -> None:
+def test_checked_in_artifact_is_historical_and_internally_valid(
+    evidence_script,
+    monkeypatch,
+) -> None:
     artifact = (
         PROJECT_ROOT / "docs" / "benchmarks" / "sigma-filter-cupy-windows-rtx5090.json"
     )
+    raw = artifact.read_text(encoding="utf-8")
+    document = json.loads(raw)
+    current_source_document = deepcopy(document)
+    current_source_document["source_provenance"] = (
+        evidence_script._source_provenance()
+    )
 
-    assert evidence_script.validate_existing(artifact) == artifact.resolve()
+    with pytest.raises(evidence_script.EvidenceError, match="fingerprints are stale"):
+        evidence_script.validate_existing(artifact)
+    evidence_script._validate_document_contract(current_source_document)
+    assert raw == json.dumps(document, indent=2, sort_keys=True) + "\n"
+    historical_source_provenance = deepcopy(document["source_provenance"])
+    monkeypatch.setattr(
+        evidence_script,
+        "_source_provenance",
+        lambda: historical_source_provenance,
+    )
+    assert artifact.with_suffix(".md").read_text(encoding="utf-8") == (
+        evidence_script.render_markdown(document)
+    )
 
 
 def _example_document(evidence_script):

@@ -2389,6 +2389,9 @@ def _candidate_required_fact_indexes(
             environment,
             allow_experimental=request.allow_experimental,
             array_facts=(),
+            allow_compatible_device=request.allows_compatible_device_for(
+                workload.node_id
+            ),
         )
         if not support.supported and not support.requires_complete_facts:
             continue

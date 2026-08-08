@@ -83,7 +83,7 @@ authoring remain later milestones.
 
 ## Current Public Baseline
 
-Current alpha release: `0.13.0a2`.
+Current alpha release: `0.13.0a3`.
 
 The 0.13 alpha adds evidence-gated GPU execution, portable compute intent,
 durable implementation provenance, workflow schema 4, batch schema 3,
@@ -191,8 +191,14 @@ deterministic provenance. Other measurement profiles remain visibly on CPU.
 Normal public admission currently fails closed to the exact recorded
 native-Windows CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and
 RTX 5090 (compute capability 12.0) region. CUDA 12 is qualification-only and
-outside public admission; other driver/runtime versions and secondary NVIDIA
-hardware likewise require reviewed provider-qualification evidence.
+outside public admission. Auto and Prefer GPU retain that portable reviewed
+region. In Custom mode, `Find fastest pipeline…` may now admit a secondary
+NVIDIA device through the pinned CUDA 13 runtime/provider probes, then require
+exact node parity and changed-boundary whole-pipeline parity before proposing a
+forced preference. The applied preference is an explicit machine-local opt-in,
+not reusable cross-device evidence. A manually authored forced Custom
+preference is the same expert opt-in without attached parity proof, so users
+should rerun Find Fastest after any environment or workload change.
 Machine-local large-stack timing now records 45.03x, 85.06x, and 94.58x paired
 median speedups on the RTX 5090 for one real 8.51-million-voxel ND2 volume and
 16.78/67.11-million-voxel 3D shape stresses, respectively. Those short
@@ -219,10 +225,10 @@ severity-classified. Optimizer UI
 lifecycle/snapshot hardening continues alongside the maintained next order.
 RL/RL-TV evidence ownership is isolated from broad shared-file hashes;
 Measurements and durable batch/generated/export execution are implemented.
-The maintained next order is native-Linux and RTX 40-series evidence, M1 Max
-CPU qualification followed by an Apple-provider study, general cuCIM/Clara
-packaging, explicit Convert Dtype/residency bridges, and additional reasonable
-GPU node regions. See the
+The maintained next order is native-Linux evidence, portable Auto/Prefer-GPU
+evidence for RTX 40-series hardware, M1 Max CPU qualification followed by an
+Apple-provider study, general cuCIM/Clara packaging, explicit Convert
+Dtype/residency bridges, and additional reasonable GPU node regions. See the
 [GPU production plan](gpu-production-implementation-plan.md) and
 [Phase 5 record](gpu-phase5-connected-components-implementation-report.md).
 

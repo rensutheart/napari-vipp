@@ -517,9 +517,10 @@ footprint twice per output thread without an image-sized sliding-window tensor.
 The memory model includes resident input/output, the complete float32 staging
 copy, a worst-case typed axis-restoration buffer, the radius-10 offset table,
 and validation status. `--fmad=false`, precise divide/square-root, and explicit
-bit-level float32 conversion preserve CPU arithmetic boundaries. The bit path
-also preserves subnormal inputs, squares, and outputs if NVRTC appends
-flush-to-zero despite the requested `--ftz=false` option.
+bit-level float32 conversion preserve CPU arithmetic boundaries. CuPy 14.1.1
+appends `--ftz=true`; VIPP does not also request the contradictory
+`--ftz=false` option. The bit path preserves subnormal inputs, squares, and
+outputs under the resulting flush-to-zero compilation mode.
 
 CPU work validates and calculates in bounded 64-row blocks with cancellation
 checks during footprint scans. GPU work launches 64-row tiles; it synchronizes
@@ -532,12 +533,13 @@ within the float32-square-safe magnitude. Unsigned parity is bitwise exact;
 float32 uses the tight versioned aggregate gate plus separate adversarial branch
 tests. No CPU/GPU cache-equivalence group is claimed.
 
-GPU visibility is evidence-driven and region-specific. Sigma's source-current
-RTX 5090 record passed exact parity, matched rejection, synchronized progress,
+GPU visibility is evidence-driven and region-specific. Sigma's historical
+pre-0.13.0a3 RTX 5090 record passed exact parity, matched rejection,
+synchronized progress,
 cancellation, cleanup, runtime, and timing review. Its declared region is
 therefore a normal public `Custom` candidate and a reviewed Auto default; the
 implementation entered immutable artifact v4
-as `public_auto_candidate`, and current artifact v5 retains it unchanged. Auto
+as `public_auto_candidate`, and current artifact v7 retains it unchanged. Auto
 uses the reviewed default with no compatible history. Accelerated-only history
 causes the next global Auto run to measure CPU once on the same execution
 surface; a later run uses the completed pair under the 1.20x/20-ms gate. It
@@ -596,9 +598,9 @@ after a CUDA stream synchronization and cancellation is checked between blocks.
 One plane/volume is therefore an indivisible CuPyX call with no truthful
 mid-volume progress or cancellation boundary.
 
-The source-current exact-label, lifecycle, memory, and timing matrix makes this
-region a normal public Custom/Auto candidate in the pinned environment and
-is recorded in the
+The historical pre-0.13.0a3 exact-label, lifecycle, memory, and timing matrix
+made this region a normal public Custom/Auto candidate in the pinned
+environment and is recorded in the
 [Phase 5 implementation report](gpu-phase5-connected-components-implementation-report.md).
 Packaged compute-policy artifact v5 appends this declaration while preserving
 historical v1-v4 resources. Machine-local timing evidence is not itself a
@@ -1379,6 +1381,11 @@ Workflow persistence:
   memory cap/reserve, experimental admission, provider probes, device/runtime
   metadata, and benchmark measurements remain machine-local and are excluded
   from workflow JSON.
+- A saved explicit Custom GPU preference can execute on another compatible
+  device, but it is not cryptographically bound to the local parity record that
+  may have motivated it. Find Fastest must be rerun after changing the device,
+  environment, data, or workload; Auto and Prefer GPU retain their reviewed-
+  host admission policy.
 - Inspector metadata is always written when saving through the widget and
   records the selected node plus right-panel visibility. Per-node thumbnail
   visibility is written only when `Save thumbnail visibility in workflows` is
@@ -1439,16 +1446,19 @@ Selected-node benchmarking:
 
 - `core/compute_benchmark_coordinator.py` clones the graph, captures the exact
   resolved one-input/one-output node call, performs static scientific and
-  memory admission before runtime probing, then delegates parity-qualified
-  paired timing to the benchmark service.
+  memory admission before runtime probing, and can admit a compatible secondary
+  NVIDIA device under the exact pinned Windows/CUDA 13 stack. It then delegates
+  parity-qualified paired timing to the benchmark service. This local
+  qualification path does not widen Auto or Prefer-GPU admission.
 - `ui/compute_benchmark_dialog.py` owns the cancelable Qt worker and evidence
   review. It never mutates the live graph. The widget applies the narrowest
   stable CPU/library/exact preference in one undoable edit only after explicit
   acceptance.
 - Complete records are atomically stored in a machine-local JSON file. Raw
   isolated-node measurements are not supplied to `Auto` planning and are not
-  serialized in workflow JSON; only an explicitly accepted portable preference
-  changes execution intent.
+  serialized in workflow JSON; only an explicitly accepted Custom preference
+  changes execution intent. The preference records user intent, not reusable
+  benchmark proof.
 - Workflows with several independent sources require an unambiguous binding for
   every source. Missing, duplicate, and unknown bindings fail before execution.
 - Generated programs are locked to the VIPP version that created them and fail

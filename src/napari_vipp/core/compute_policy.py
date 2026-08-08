@@ -371,6 +371,7 @@ _PHASE1_CUDA_RUNTIME_VERSION = "13020"
 _PHASE1_CUDA_DRIVER_VERSION = "13030"
 _PHASE1_CUDA_DEVICE_NAME = "NVIDIA GeForce RTX 5090"
 _PHASE1_CUDA_COMPUTE_CAPABILITY = "12.0"
+_MINIMUM_CUDA13_COMPUTE_CAPABILITY = (7, 5)
 _PHASE1_CPU_SCIENTIFIC_STACK = {
     "numpy": "2.5.1",
     "scipy": "1.18.0",
@@ -394,8 +395,12 @@ def evaluate_candidate_support(
     *,
     allow_experimental: bool,
     array_facts: tuple[ArrayFacts, ...] = (),
+    allow_compatible_device: bool = False,
 ) -> SupportDecision:
     """Evaluate declared scientific/environment support without timing."""
+
+    if not isinstance(allow_compatible_device, bool):
+        raise TypeError("allow_compatible_device must be a boolean.")
 
     if not spec.visible_for(allow_experimental=allow_experimental):
         return SupportDecision(
@@ -411,7 +416,11 @@ def evaluate_candidate_support(
             DecisionReason.ENVIRONMENT_UNSUPPORTED,
             "No executable environment policy is registered.",
         )
-    environment_decision = _evaluate_phase1_cuda_environment(spec, environment)
+    environment_decision = _evaluate_phase1_cuda_environment(
+        spec,
+        environment,
+        allow_compatible_device=allow_compatible_device,
+    )
     if environment_decision is not None:
         return environment_decision
     return evaluate_candidate_workload_support(
@@ -607,6 +616,8 @@ def _evaluate_phase1_cuda_host_environment(
 def _evaluate_phase1_cuda_environment(
     spec: OperationComputeSpec,
     environment: ComputeEnvironment,
+    *,
+    allow_compatible_device: bool = False,
 ) -> SupportDecision | None:
     def rejected(reason: str) -> SupportDecision:
         return SupportDecision(
@@ -670,7 +681,20 @@ def _evaluate_phase1_cuda_environment(
         return rejected(
             "The CUDA probe must preserve matching numeric driver-version metadata."
         )
-    if metadata_driver != _PHASE1_CUDA_DRIVER_VERSION:
+    if (
+        allow_compatible_device
+        and int(metadata_driver) < int(_PHASE1_CUDA_DRIVER_VERSION)
+    ):
+        return rejected(
+            "Local GPU qualification requires a CUDA driver API at least as "
+            "new as the validated 13.3 baseline "
+            f"({_PHASE1_CUDA_DRIVER_VERSION}); found {metadata_driver}. CPU "
+            "remains authoritative."
+        )
+    if (
+        not allow_compatible_device
+        and metadata_driver != _PHASE1_CUDA_DRIVER_VERSION
+    ):
         return rejected(
             "Public GPU admission requires the validated CUDA driver API 13.3 "
             f"({_PHASE1_CUDA_DRIVER_VERSION}); found {metadata_driver}. Other "
@@ -682,7 +706,9 @@ def _evaluate_phase1_cuda_environment(
         or not environment.device_name
     ):
         return rejected("Phase-1 admission requires a selected NVIDIA CUDA device.")
-    if environment.device_name != _PHASE1_CUDA_DEVICE_NAME:
+    if not allow_compatible_device and environment.device_name != (
+        _PHASE1_CUDA_DEVICE_NAME
+    ):
         return rejected(
             "Public GPU admission is currently validated only for "
             f"{_PHASE1_CUDA_DEVICE_NAME}; found "
@@ -697,7 +723,18 @@ def _evaluate_phase1_cuda_environment(
         return rejected(
             "The selected NVIDIA device is missing numeric compute-capability metadata."
         )
-    if compute_capability != _PHASE1_CUDA_COMPUTE_CAPABILITY:
+    if _compute_capability_tuple(compute_capability) < (
+        _MINIMUM_CUDA13_COMPUTE_CAPABILITY
+    ):
+        return rejected(
+            "Local GPU qualification on the pinned CUDA 13 track requires a "
+            "Turing-or-newer NVIDIA compute capability of at least 7.5; found "
+            f"{compute_capability}. CPU remains authoritative."
+        )
+    if (
+        not allow_compatible_device
+        and compute_capability != _PHASE1_CUDA_COMPUTE_CAPABILITY
+    ):
         return rejected(
             "Public GPU admission requires the validated NVIDIA compute capability "
             f"{_PHASE1_CUDA_COMPUTE_CAPABILITY}; found {compute_capability}. "
@@ -775,6 +812,13 @@ def _valid_compute_capability(value: str) -> bool:
         and minor.isdecimal()
         and int(major) > 0
     )
+
+
+def _compute_capability_tuple(value: str) -> tuple[int, int]:
+    if not _valid_compute_capability(value):
+        raise ValueError("compute capability must be a numeric major.minor value.")
+    major, _separator, minor = value.partition(".")
+    return int(major), int(minor)
 
 
 def estimate_candidate_memory(

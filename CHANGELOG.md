@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+## 0.13.0a3 - 2026-08-08
+
+### Release Overview
+
+This third 0.13 alpha fixes local GPU qualification on compatible secondary
+NVIDIA hardware without widening the portable reviewed-host policy used by
+Auto and Prefer GPU. It also fixes Sigma Filter compilation with CuPy 14.1.1.
+CPU remains the authoritative scientific reference, and this release does not
+change workflow or batch schemas.
+
+### GPU Qualification And Execution
+
+- Node benchmarking and `Find fastest pipeline…` can now test a secondary
+  NVIDIA GPU after the exact supported native-Windows, CPython 3.12, CUDA 13,
+  and scientific stack passes its probes. The device must report compute
+  capability 7.5 or newer, the driver API must be at least 13.3, and the exact
+  workload must still pass provider, memory, and scientific admission.
+- `Find fastest pipeline…` still requires exact node parity and changed-output
+  whole-pipeline parity before it offers a proposal. Accepting the proposal
+  writes an explicit Custom implementation choice. A manually authored Custom
+  GPU choice remains an expert override rather than proof that parity was run;
+  users should requalify after changing the device, environment, data, or
+  workload.
+- Auto and Prefer GPU retain the narrower recorded native-Windows RTX 5090
+  gate. Local qualification is not reusable performance or scientific evidence
+  for a different machine.
+- Sigma Filter no longer supplies an `--ftz=false` NVRTC option that conflicts
+  with the option appended by CuPy 14.1.1. Its bit-level subnormal handling is
+  retained without the duplicate compiler flag.
+
+### Validation
+
+- Source-current validation passed on native Windows with an NVIDIA GeForce
+  RTX 4050 Laptop GPU (compute capability 8.9), CUDA runtime API 13.2, driver
+  API 13.3, CPython 3.12.10, CuPy 14.1.1, and the pinned scientific stack. This
+  complements rather than relabels the retained historical RTX 5090 records
+  and is not a portable performance claim or final tagged-artifact
+  qualification.
+- Eighty-seven real-device provider cases passed, followed by the formerly
+  failing Sigma compile/parity case. Real median and Canny-to-Otsu Find-Fastest
+  transactions passed node parity, whole-pipeline validation, application,
+  fallback, and cleanup checks; the optimizer retained CPU Otsu when it was
+  faster.
+- All 39 bundled-example executions passed: 13 CPU, 13 actual Prefer GPU, and
+  13 explicit Custom attempts. A separate chained cuCIM/Gaussian/median trial
+  was correctly rejected when tolerated upstream float differences produced a
+  downstream bitwise mismatch. Every terminal device-memory snapshot was
+  clean.
+
 ## 0.13.0a2 - 2026-08-08
 
 ### Release Overview

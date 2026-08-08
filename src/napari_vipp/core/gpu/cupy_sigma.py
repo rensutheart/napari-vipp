@@ -27,7 +27,6 @@ _FLOAT32_SQUARE_LIMIT = np.float32(math.sqrt(float(np.finfo(np.float32).max)))
 _KERNEL_OPTIONS = (
     "--std=c++11",
     "--fmad=false",
-    "--ftz=false",
     "--prec-div=true",
     "--prec-sqrt=true",
 )
@@ -119,9 +118,9 @@ def _sigma_filter_kernel(cupy: ModuleType, dtype_name: str):
             const double magnitude = fabs(value);
             if (magnitude > 0.0
                 && magnitude < 1.17549435082228750796873653722224568e-38) {{
-                // CuPy/NVRTC may append --ftz=true even when the caller asks
-                // for --ftz=false. Construct subnormal float32 results by bits
-                // so a scientifically valid value cannot be silently flushed.
+                // CuPy/NVRTC appends --ftz=true. Construct subnormal float32
+                // results by bits so a scientifically valid value cannot be
+                // silently flushed.
                 unsigned int mantissa =
                     __double2uint_rn(ldexp(magnitude, 149));
                 if (mantissa > 0x00800000U) {{

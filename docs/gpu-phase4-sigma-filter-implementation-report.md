@@ -28,11 +28,12 @@ unfinished or unvalidated candidates remain
 platforms outside the reviewed region visibly use CPU; VIPP does not change
 authored data or parameters to make them eligible.
 
-The source-current full-profile RTX 5090 record passed exact parity, matched
-rejection, cancellation, cleanup, and timing review. The implementation entered
-the immutable v4 policy artifact as `public_auto_candidate`, and current v5
-retains that record unchanged: the exact region appears in ordinary Custom
-pipelines and is a reviewed Auto default wherever its current gates pass.
+The retained pre-0.13.0a3 full-profile RTX 5090 record passed exact parity,
+matched rejection, cancellation, cleanup, and timing review. The implementation
+entered the immutable v4 policy artifact as `public_auto_candidate`, and current
+v7 retains that recorded-host policy unchanged: the exact region appears in
+ordinary Custom pipelines and is a reviewed Auto default wherever its current
+gates pass.
 The completed-run exploration sequence may later select CPU or an accelerated
 assignment under Auto's conservative gate. This does not wait for
 every CPU dtype or operating system to gain a GPU implementation, and branch
@@ -200,18 +201,18 @@ The kernel is compiled with:
 
 ```text
 --fmad=false
---ftz=false
 --prec-div=true
 --prec-sqrt=true
 ```
 
 Fused multiply-add is disabled so GPU accumulation does not silently cross a
 CPU rounding boundary. Precise division and square root support the branch-
-sensitive interval. CuPy/NVRTC may append `--ftz=true` despite the explicit
-request. The kernel therefore converts float32 samples to double from their
-bits and constructs subnormal float32 squares/results by bits. That preserves
-subnormal signs and magnitudes instead of silently flushing them to zero and
-changing a selection or fallback decision.
+sensitive interval. CuPy 14.1.1 appends `--ftz=true`; VIPP no longer requests
+the contradictory `--ftz=false` option because the duplicate flags can make
+NVRTC compilation fail. The kernel converts float32 samples to double from
+their bits and constructs subnormal float32 squares/results by bits. That
+preserves subnormal signs and magnitudes instead of silently flushing them to
+zero and changing a selection or fallback decision.
 
 The provider uses 64-row tiles. This limits radius-10 kernel duration on a
 Windows display GPU, permits truthful synchronized progress, and provides an
@@ -361,17 +362,23 @@ workload and environment, and CPU remains a correct outcome for small calls.
 
 The first executable CUDA policy is the branch's exact native-Windows CPython
 3.12 environment with CuPy 14.1.1 and the reviewed NumPy 2.5.1, SciPy 1.18.0,
-and scikit-image 0.26.0 CPU reference stack. The canonical development host is
-an RTX 5090 with the recorded CUDA runtime/driver APIs and compute capability.
-Different package versions, runtime, driver, GPU model, compute capability, or
-Python ABI fail closed until their own evidence is admitted.
+and scikit-image 0.26.0 CPU reference stack. The canonical Auto/Prefer-GPU host
+is an RTX 5090 with the recorded CUDA runtime/driver APIs and compute capability.
+Different package versions, runtime, or Python ABI fail closed. Starting in
+0.13.0a3, a compatible secondary NVIDIA device can enter explicit Custom
+execution or local parity-gated Find-Fastest qualification under the exact
+supported software stack; that local result is not portable evidence.
 
-Native Linux and RTX 40-series Windows laptops remain named validation targets;
-WSL2 is secondary evidence. Current CUDA has no macOS target, so this provider
-is CPU-only on macOS. The separate M1 Max Metal/MPS/MLX study can add a future
-provider only after operation-level scientific and lifecycle gates pass. CuPy
-and CUDA remain optional: base installation, plugin discovery, workflow loading,
-and CPU execution must not import them.
+Source-current 0.13.0a3 validation fixed the CuPy 14.1.1 compile failure and
+passed Sigma parity on an RTX 4050 Laptop GPU at compute capability 8.9. This
+bounded result complements rather than replaces the historical RTX 5090 record.
+Native Linux and portable Auto/Prefer-GPU evidence for RTX 40-series Windows
+laptops remain named validation targets; WSL2 is secondary evidence. Current
+CUDA has no macOS target, so this provider is CPU-only on macOS. The separate M1
+Max Metal/MPS/MLX study can add a future provider only after operation-level
+scientific and lifecycle gates pass. CuPy and CUDA remain optional: base
+installation, plugin discovery, workflow loading, and CPU execution must not
+import them.
 
 ## Deferred scope
 

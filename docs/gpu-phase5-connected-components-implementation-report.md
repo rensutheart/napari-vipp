@@ -223,8 +223,11 @@ insufficiently decisive calls.
 Connected Components, ordinary RL, and RL-TV were all fully rerun on
 2026-08-06 after the 0.13.0a1 cuCIM provenance hardening changed shared policy,
 specification, and registry files. Each generator wrote new measurements and
-new source fingerprints together; all three standalone validators now pass.
-This avoids associating historical timings with newer source bytes. Longer
+new source fingerprints together, and all three standalone validators passed
+against that release source. Shared policy/planning changes in 0.13.0a3 make
+those retained RTX 5090 files historical again; strict current-source
+validation rejects them until the corresponding workloads are rerun on that
+host. This avoids associating historical timings with newer source bytes. Longer
 term, RL/RL-TV should adopt operation-owned CPU, parity, and compute-contract
 modules like Sigma Filter so unrelated registrations create less provenance
 churn while real operation changes still fail closed.
