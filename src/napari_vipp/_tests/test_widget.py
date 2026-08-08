@@ -8893,6 +8893,14 @@ def test_split_threshold_channel_drag_connects_to_label_node(qtbot):
         and connection.target_id == labels.id
         for connection in widget.pipeline.connections
     )
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(labels.id) is not None
+        ),
+        timeout=30_000,
+    )
     assert widget.pipeline.outputs[labels.id] is not None
     assert widget.pipeline.outputs[labels.id].dtype == np.int32
 
