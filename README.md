@@ -80,6 +80,33 @@ In napari, open:
 Plugins > VIPP Workflow (napari-vipp)
 ```
 
+### Source-Current Startup Experience
+
+The next installer-facing startup layer is implemented under `Unreleased`; it
+is not part of the already published `0.13.0a4` wheel. A wheel built from this
+source provides three clickable GUI entry points with the same branded,
+real-milestone splash:
+
+```text
+vipp-app          Automatic
+vipp-cpu          CPU only
+vipp-prefer-gpu   Prefer scientifically eligible GPU implementations
+```
+
+The source-current `app` extra supplies napari with PyQt6 for a standalone
+environment; users installing the plugin into an existing napari environment
+do not need that extra.
+
+The ordinary `vipp` command also shows the splash and accepts `--profile`; use
+`vipp --no-splash` when direct terminal output is preferred. Opening VIPP from
+napari's Plugins menu paints a lightweight branded loading panel before the
+large scientific modules and full workflow editor are constructed. Python
+entry points do not themselves create a Windows desktop shortcut, Linux
+`.desktop` file, or macOS app bundle; those are the next installer layer. See
+the [desktop startup and installer plan](docs/desktop-startup-and-installer-plan.md)
+for the cross-platform path and the existing-napari versus managed-environment
+boundary.
+
 Use `Open example...` for a runnable workflow with synthetic data. A good first
 choice is `Red-Channel Label Cleanup`; select nodes from left to right to review
 their parameters, thumbnails, metadata, and outputs. To explore collection

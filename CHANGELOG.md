@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Desktop Startup And Installation Foundation
+
+- Added a lightweight packaged launcher with a branded splash, elapsed time,
+  retained diagnostics, and progress tied to real napari/VIPP startup
+  milestones. Installed GUI entry points provide Automatic, CPU-only, and
+  Prefer-GPU sessions without claiming that every eligible workflow node will
+  execute on an accelerator.
+- Opening VIPP from napari now returns a branded loading host before importing
+  the full scientific composition root. The real editor is constructed on the
+  GUI thread, the initial workflow runs exactly once, and import/construction
+  failures are visible and retryable.
+- Packaged the canonical VIPP wordmark/mark in the wheel and added wheel smoke
+  coverage for branding and the new console/GUI entry points.
+- Added a separate Windows cuCIM installer coordinator and deterministic
+  no-wheel ZIP bundle. It asks for an existing released VIPP CUDA environment,
+  performs the pinned verified build locally, delegates artifact and
+  environment admission to the existing reviewed helpers, and retains logs,
+  manifests, artifacts, and resumable run state.
+
 ## 0.13.0a4 - 2026-08-09
 
 ### Release Overview

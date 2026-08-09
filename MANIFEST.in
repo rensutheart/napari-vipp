@@ -8,4 +8,4 @@ include SUPPORT.md
 recursive-include constraints *.txt
 recursive-include docs *.csv *.json *.md *.png *.svg
 recursive-include examples *.json *.md
-recursive-include scripts *.java *.py *.ps1 *.sh
+recursive-include scripts *.cmd *.java *.md *.py *.ps1 *.sh

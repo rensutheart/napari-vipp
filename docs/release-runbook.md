@@ -214,10 +214,26 @@ Get-FileHash -Algorithm SHA256 `
   "$artifactDir/napari_vipp-$releaseVersion.tar.gz"
 ```
 
+For a release that publishes the separate Windows cuCIM local-build installer,
+create it from this same clean tagged checkout and artifact directory:
+
+```powershell
+$cucimInstaller = "$artifactDir/napari-vipp-cucim-installer-$releaseVersion-windows.zip"
+python scripts/package_cucim_windows_installer.py --output $cucimInstaller
+Get-FileHash -Algorithm SHA256 $cucimInstaller
+```
+
+The packager refuses a dirty tree. Inspect `bundle-manifest.json` inside the ZIP
+and confirm its VIPP version and source commit equal `$releaseVersion` and
+`$taggedSha`; the archive must contain no wheel. Publish its SHA-256 alongside
+the download.
+
 Expected output artifacts:
 
 - `dist/<version>-<tagged-short-sha>/napari_vipp-<version>.tar.gz`
 - `dist/<version>-<tagged-short-sha>/napari_vipp-<version>-py3-none-any.whl`
+- when selected for the release,
+  `dist/<version>-<tagged-short-sha>/napari-vipp-cucim-installer-<version>-windows.zip`
 
 Using a version-and-commit-specific directory prevents an upload command from
 including artifacts from an older release. It does not make an existing
@@ -378,6 +394,9 @@ If not updated after indexing delay:
 - [ ] cuCIM distribution decision is complete: distributed artifact, pinned
       private local-build route, or unavailable; every public surface matches
       that decision and the chosen provenance/approval path was requalified
+- [ ] If published, the separate cuCIM installer ZIP came from the clean tagged
+      commit, contains no wheel, and its source commit/file hashes plus archive
+      SHA-256 were verified and recorded
 - [ ] Clean tagged wheel/sdist build, Twine, content, `pip check`, manifest,
       compute-policy-resource, and entry-point checks pass; SHA-256 hashes saved
 - [ ] Companion documentation strict build passes and release page is published

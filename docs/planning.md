@@ -80,6 +80,9 @@ authoring remain later milestones.
 - [durable-gpu-execution.md](durable-gpu-execution.md): the shared interactive,
   batch, generated-Python/CLI, and export compute contract, including request
   precedence, provenance, progress, cancellation, OOM fallback, and cleanup.
+- [desktop-startup-and-installer-plan.md](desktop-startup-and-installer-plan.md):
+  branded launch profiles, the in-napari loading host, the separate local-build
+  cuCIM bundle, and the staged Windows/Linux/macOS installer plan.
 
 ## Current Public Baseline
 
@@ -152,6 +155,22 @@ Known constraints:
 
 These are the items that should guide near-term work. Items not listed here are
 either already implemented enough to build on or intentionally deferred.
+
+### Desktop Startup And Installation
+
+The source-current launcher foundation provides branded Automatic, CPU-only,
+and Prefer-GPU graphical entry points with real startup milestones, plus a
+lightweight loading host when the plugin is opened inside napari. A separate
+deterministic Windows cuCIM bundle performs the verified pinned build locally
+and contains no redistributable cuCIM wheel.
+
+The next delivery slice is a signed per-user Windows bootstrapper that can
+create a managed CPU or CUDA environment, or validate an explicitly selected
+existing napari environment, before creating the appropriate shortcuts. Linux
+and macOS installers should reuse the same headless environment-plan contract;
+Linux GPU and Apple acceleration remain gated by their independent platform
+qualification. See the
+[desktop startup and installer plan](desktop-startup-and-installer-plan.md).
 
 ### GPU Completion And Platform Qualification
 

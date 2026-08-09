@@ -627,6 +627,48 @@ def test_widget_builds_graph_and_inspects_node(qtbot):
     assert not viewer.layers["input volume"].visible
 
 
+def test_widget_can_defer_initial_pipeline_and_run_it_exactly_once(
+    qtbot,
+    monkeypatch,
+):
+    runs = []
+    monkeypatch.setattr(
+        VippWidget,
+        "run_pipeline",
+        lambda self, *args, **kwargs: runs.append((args, kwargs)),
+    )
+
+    widget = VippWidget(
+        _Viewer(),
+        defer_initial_run=True,
+        initial_compute_mode="prefer_gpu",
+    )
+    qtbot.addWidget(widget)
+
+    assert runs == []
+    assert widget.compute_mode_combo.currentData() == "prefer_gpu"
+    assert widget.run_initial_pipeline_once()
+    assert len(runs) == 1
+    assert not widget.run_initial_pipeline_once()
+    assert len(runs) == 1
+
+
+def test_widget_direct_construction_still_runs_initial_pipeline(qtbot, monkeypatch):
+    runs = []
+    monkeypatch.setattr(
+        VippWidget,
+        "run_pipeline",
+        lambda self, *args, **kwargs: runs.append((args, kwargs)),
+    )
+
+    widget = VippWidget(_Viewer(), initial_compute_mode=ComputeMode.CPU)
+    qtbot.addWidget(widget)
+
+    assert len(runs) == 1
+    assert widget.compute_mode_combo.currentData() == "cpu"
+    assert not widget.run_initial_pipeline_once()
+
+
 def test_compute_toolbar_defaults_to_auto_and_shows_actual_compute_badges(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)

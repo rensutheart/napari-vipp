@@ -1175,11 +1175,44 @@ class VippWidget(QWidget):
         "_tunnel_manager_dialog",
     )
 
-    def __init__(self, viewer: napari.viewer.Viewer, parent=None):
+    def __init__(
+        self,
+        viewer: napari.viewer.Viewer,
+        parent=None,
+        *,
+        defer_initial_run: bool = False,
+        initial_compute_mode: ComputeMode | str | None = None,
+    ):
+        """Build the workflow editor.
+
+        Parameters
+        ----------
+        viewer:
+            The napari viewer that owns workflow inputs and output layers.
+        parent:
+            Optional Qt parent.  This remains positional for compatibility with
+            existing integrations.
+        defer_initial_run:
+            When true, build the interface without evaluating its initial
+            workflow.  Call :meth:`run_initial_pipeline_once` after any startup
+            configuration has been applied.  The default preserves the historic
+            direct-construction behaviour.
+        initial_compute_mode:
+            Optional session-scoped compute policy to select before any work is
+            evaluated.  ``None`` retains the normal Automatic policy.
+        """
+        resolved_compute_mode = (
+            ComputeMode.AUTO
+            if initial_compute_mode is None
+            else ComputeMode.parse(initial_compute_mode)
+        )
         super().__init__(parent)
         self.viewer = viewer
         self._closing = False
         self._was_ever_visible = False
+        self._initial_pipeline_run_started = False
+        self._initial_pipeline_run_completed = False
+        self._discard_incomplete_startup_on_close = False
         self._lifecycle = WidgetLifecycle(self)
         self._live_source_adapter = LiveLayerSourceAdapter(
             self._on_live_source_invalidated
@@ -1342,7 +1375,7 @@ class VippWidget(QWidget):
         # Ordinary UI and headless execution expose the same reviewed provider
         # tiers. Optional packages remain lazy and are imported only after an
         # admitted execution request selects them.
-        self._compute_mode = ComputeMode.AUTO
+        self._compute_mode = resolved_compute_mode
         self._compute_fallback_policy = FallbackPolicy.VISIBLE
         self._compute_node_preferences: dict[str, NodeComputePreference] = {}
         self._compute_optimizer_locked_node_ids: set[str] = set()
@@ -1582,7 +1615,7 @@ class VippWidget(QWidget):
                 index, option.description, Qt.ToolTipRole
             )
         self.compute_mode_combo.setCurrentIndex(
-            self.compute_mode_combo.findData(ComputeMode.AUTO.value)
+            self.compute_mode_combo.findData(self._compute_mode.value)
         )
         self.compute_mode_combo.setToolTip(
             "Choose CPU for host execution; Auto to learn from exact compatible "
@@ -1975,6 +2008,21 @@ class VippWidget(QWidget):
             compute_request_provider=self._current_compute_request,
         )
         self._select_node(self._selected_node_id)
+        if not defer_initial_run:
+            self.run_initial_pipeline_once()
+
+    def run_initial_pipeline_once(self) -> bool:
+        """Evaluate and record the initial workflow at most once.
+
+        Launchers can construct the editor with ``defer_initial_run=True``,
+        apply a startup profile or source selection, and then call this method.
+        Returning a boolean makes duplicate startup callbacks harmless and easy
+        to detect.  Normal interactive recalculation continues to use
+        :meth:`run_pipeline` directly.
+        """
+        if self._initial_pipeline_run_started or self._closing:
+            return False
+        self._initial_pipeline_run_started = True
         self.run_pipeline()
         self._sync_history_actions()
         initial_session = self._workflow_tabs.current
@@ -1985,6 +2033,17 @@ class VippWidget(QWidget):
             )
             self._store_workflow_tab_runtime(initial_session)
             self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        self._initial_pipeline_run_completed = True
+        return True
+
+    def _permit_incomplete_startup_discard(self) -> None:
+        """Let the staged host dispose an editor that startup never exposed.
+
+        This is deliberately narrower than testing whether a deferred run has
+        completed. Other callers may expose a deferred editor to users and must
+        retain the normal dirty-workflow close protection.
+        """
+        self._discard_incomplete_startup_on_close = True
 
     def closeEvent(self, event):  # noqa: N802
         if self._closing:
@@ -2008,6 +2067,7 @@ class VippWidget(QWidget):
         if not self._confirm_close_dirty_workflow_tabs():
             event.ignore()
             return
+        self._closing = True
         if self._colocalization_scatter_dialog is not None:
             self._colocalization_scatter_dialog.close()
         for session in self._workflow_tabs:
@@ -2020,6 +2080,11 @@ class VippWidget(QWidget):
 
     def _confirm_close_dirty_workflow_tabs(self) -> bool:
         """Resolve every unsaved tab before allowing terminal widget shutdown."""
+        if self._discard_incomplete_startup_on_close:
+            # A staged launcher may need to dispose a partially built editor
+            # after startup fails.  No initial workflow has been handed to the
+            # user yet, so there is no user-authored session to protect.
+            return True
         current = self._workflow_tabs.current
         if current is not None and current.pipeline is self.pipeline:
             self._finish_parameter_history_group()

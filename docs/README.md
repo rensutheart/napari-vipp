@@ -53,6 +53,9 @@ reviewing VIPP itself.
 
 - [Planning and roadmap](planning.md) is the source of truth for release order
   and active priorities.
+- [Desktop startup and installer plan](desktop-startup-and-installer-plan.md)
+  defines the branded launch profiles, napari loading host, separate local-build
+  cuCIM bundle, and staged Windows/Linux/macOS installer path.
 - [Production GPU implementation plan](gpu-production-implementation-plan.md)
   defines CPU/Auto/Prefer-GPU/Custom behavior, per-node and graph-global
   benchmarking,
