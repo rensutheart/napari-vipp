@@ -1084,7 +1084,7 @@ def _execute_device_segment_under_lease(
                     )
                     raw = implementation_callable(
                         call.positional_input(),
-                        **call.keyword_arguments(),
+                        **_provider_keyword_arguments(call),
                     )
                     try:
                         outputs = _normalized_outputs(raw, call.output_port_count)
@@ -1505,6 +1505,15 @@ def _validate_prepared_call(
         raise ValueError(
             "Prepared call output count does not match the scheduled pipeline node."
         )
+
+
+def _provider_keyword_arguments(call: PreparedNodeCall) -> dict[str, object]:
+    """Detach the public operation contract for an external provider."""
+    return {
+        name: value
+        for name, value in call.keyword_arguments().items()
+        if not name.startswith("_vipp_")
+    }
 
 
 def _normalized_outputs(raw: object, output_count: int) -> tuple[object, ...]:

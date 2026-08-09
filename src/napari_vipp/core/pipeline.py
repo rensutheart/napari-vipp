@@ -61,9 +61,9 @@ from napari_vipp.core.operations import (
     clear_border_objects,
     clip_intensity,
     closing,
+    colocalization_costes_threshold_result,
     colocalization_metrics,
     colocalization_scatter_plot,
-    colocalization_threshold_values,
     colocalized_voxels,
     combine_channels,
     composite_to_rgb,
@@ -113,6 +113,7 @@ from napari_vipp.core.operations import (
     niblack_threshold,
     non_local_means_filter,
     normalize_image,
+    object_colocalization_costes_threshold_result,
     object_colocalization_metrics,
     opening,
     orthogonal_projection,
@@ -5170,6 +5171,7 @@ class PrototypePipeline:
         self.node_compute_provenance: dict[str, CachedNodeComputeProvenance] = {}
         self.node_execution_states: dict[str, str] = {}
         self.node_execution_messages: dict[str, str] = {}
+        self._colocalization_costes_cache: dict[tuple, dict[str, float]] = {}
         self._counters: Counter[str] = Counter()
         self.reset_starter_graph()
 
@@ -5187,6 +5189,7 @@ class PrototypePipeline:
             node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
         }
         self.node_execution_messages = {node_id: "" for node_id in self.nodes}
+        self._colocalization_costes_cache = {}
         self._counters = Counter()
         for node in self.nodes.values():
             self._counters[node.operation_id] += 1
@@ -5218,6 +5221,7 @@ class PrototypePipeline:
             node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
         }
         self.node_execution_messages = {node_id: "" for node_id in self.nodes}
+        self._colocalization_costes_cache = {}
         self._counters = Counter({input_node.operation_id: 1})
 
     def restore_graph(
@@ -5326,6 +5330,7 @@ class PrototypePipeline:
         self.node_compute_provenance = restored.node_compute_provenance
         self.node_execution_states = restored.node_execution_states
         self.node_execution_messages = restored.node_execution_messages
+        self._colocalization_costes_cache = {}
         self._counters = restored._counters
 
     def topological_order(self) -> list[str]:
@@ -6719,17 +6724,65 @@ class PrototypePipeline:
             return
         if not str(kwargs.get("threshold_mode", "Manual")).lower().startswith("costes"):
             return
-        threshold_1, threshold_2 = colocalization_threshold_values(
+        intensity_max = float(kwargs.get("intensity_max", 255.0))
+        cache_key = self._colocalization_costes_cache_key(
             inputs,
-            threshold_mode=kwargs.get("threshold_mode", "Costes auto"),
-            channel_1_threshold=kwargs.get("channel_1_threshold", 25.0),
-            channel_2_threshold=kwargs.get("channel_2_threshold", 25.0),
-            intensity_max=kwargs.get("intensity_max", 255.0),
+            intensity_max=intensity_max,
+            analysis_kind=(
+                "object"
+                if node.operation_id == "object_colocalization_metrics"
+                else "pixel"
+            ),
         )
+        progress = kwargs.get("progress")
+        if progress is not None:
+            progress.check_cancelled()
+        costes = self._colocalization_costes_cache.get(cache_key)
+        if costes is None:
+            costes = (
+                object_colocalization_costes_threshold_result(
+                    inputs,
+                    intensity_max=intensity_max,
+                    progress=progress,
+                )
+                if node.operation_id == "object_colocalization_metrics"
+                else colocalization_costes_threshold_result(
+                    inputs,
+                    intensity_max=intensity_max,
+                    progress=progress,
+                )
+            )
+            if costes is None:
+                return
+            self._colocalization_costes_cache[cache_key] = costes
+        threshold_1 = float(costes["threshold_1"])
+        threshold_2 = float(costes["threshold_2"])
         kwargs["channel_1_threshold"] = float(threshold_1)
         kwargs["channel_2_threshold"] = float(threshold_2)
+        kwargs["_vipp_resolved_costes"] = costes
         node.params["channel_1_threshold"] = float(threshold_1)
         node.params["channel_2_threshold"] = float(threshold_2)
+
+    @staticmethod
+    def _colocalization_costes_cache_key(
+        inputs: list[Any],
+        *,
+        intensity_max: float,
+        analysis_kind: str = "pixel",
+    ) -> tuple:
+        """Identify one run-local Costes analysis domain by input objects."""
+        return (
+            str(analysis_kind),
+            tuple(
+                (
+                    id(value),
+                    tuple(getattr(value, "shape", ())),
+                    str(getattr(value, "dtype", "")),
+                )
+                for value in inputs
+            ),
+            float(intensity_max),
+        )
 
     def prepare_execution(
         self,
@@ -6742,6 +6795,10 @@ class PrototypePipeline:
         prune_unretained: bool = False,
     ) -> PipelineRunState:
         """Initialize graph/cache state without executing a scientific node."""
+        # Costes fits are safe to share among sibling nodes within this execution.
+        # Clear at the execution boundary so in-place source edits can never reuse
+        # a fit derived from an earlier run merely because object identities match.
+        self._colocalization_costes_cache.clear()
         retained_nodes = {
             node_id for node_id in (retain_node_ids or ()) if node_id in self.nodes
         }
@@ -8159,7 +8216,7 @@ class PrototypePipeline:
                 input_states,
                 operation_id=node.operation_id,
                 operation_title=node.title,
-                params=dict(call.kwargs),
+                params=self._public_params(dict(call.kwargs)),
             )
             return [(output, state)]
 

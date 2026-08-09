@@ -1676,6 +1676,7 @@ def _build_workloads(
         registry,
         request.compute_request.allow_experimental,
         seed_facts_by_port={},
+        cancel_callback=cancel_callback,
     )
     potential_specs = _potential_accelerator_specs(
         registry,
@@ -1745,6 +1746,7 @@ def _build_workloads(
         registry,
         request.compute_request.allow_experimental,
         seed_facts_by_port=facts_by_port,
+        cancel_callback=cancel_callback,
     )
     return workloads, facts_by_node, preflight_environment
 
@@ -1758,6 +1760,7 @@ def _assemble_workloads(
     allow_experimental: bool,
     *,
     seed_facts_by_port: Mapping[OutputPortKey, ArrayFacts],
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> tuple[
     tuple[WorkloadDescriptor, ...],
     Mapping[str, tuple[ArrayFacts, ...]],
@@ -1846,6 +1849,7 @@ def _assemble_workloads(
                     node_id,
                     tuple(input_values),
                     tuple(input_states),
+                    cancel_callback=cancel_callback,
                 )
             except (TypeError, ValueError):
                 planning_call = None
@@ -3200,7 +3204,7 @@ def _workload_parameters(
     )
     parameters: list[tuple[str, object]] = []
     for name, value in raw.items():
-        if name in {"progress", "image_state"}:
+        if name in {"progress", "image_state"} or name.startswith("_vipp_"):
             continue
         try:
             parameters.append((name, _json_contract_value(value)))

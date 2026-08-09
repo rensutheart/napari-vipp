@@ -16199,7 +16199,6 @@ class VippWidget(QWidget):
         )
         bins, range_percentile = self._colocalization_scatter_display_settings(node)
         density_key = self._colocalization_scatter_density_key(
-            node.id,
             inputs,
             intensity_max=intensity_max,
             bins=bins,
@@ -17533,11 +17532,6 @@ class VippWidget(QWidget):
                 )
             self._sync_node_output_ports(self._selected_node_id)
         if node.operation_id in COLOCALIZATION_THRESHOLD_OPERATIONS:
-            if name == "threshold_mode" and str(value).lower().startswith("costes"):
-                self._sync_colocalization_costes_thresholds(
-                    self._selected_node_id,
-                    update_controls=True,
-                )
             if name in {
                 "threshold_mode",
                 "channel_1_threshold",
@@ -18627,6 +18621,11 @@ class VippWidget(QWidget):
             performance_history_path=default_pipeline_timing_history_path(),
         )
         self._active_pipeline_run_id = run_id
+        if self._active_colocalization_scatter_run_id is not None:
+            # A cold Costes inspector request may have started while a graph
+            # edit was waiting for the debounce timer.  Once the authoritative
+            # pipeline owns the calculation, cancel/defer that duplicate work.
+            self._update_colocalization_scatter()
         self._pipeline_cancel_events[run_id] = cancel_event
         self._begin_pipeline_dispatch(dirty_node_ids)
         self._pipeline_run_context[run_id] = (
@@ -20280,9 +20279,16 @@ class VippWidget(QWidget):
             _safe_float(node.params.get("intensity_max"), 255.0),
             1.0,
         )
+        resolved_thresholds = self._colocalization_resolved_costes_thresholds(
+            node,
+            inputs,
+            intensity_max=intensity_max,
+        )
+        thresholds_resolved = resolved_thresholds is not None
+        if resolved_thresholds is not None:
+            threshold_1, threshold_2 = resolved_thresholds
         bins, range_percentile = self._colocalization_scatter_display_settings(node)
         key = self._colocalization_scatter_key(
-            node.id,
             inputs,
             threshold_mode=mode,
             threshold_1=threshold_1,
@@ -20292,7 +20298,6 @@ class VippWidget(QWidget):
             range_percentile=range_percentile,
         )
         density_key = self._colocalization_scatter_density_key(
-            node.id,
             inputs,
             intensity_max=intensity_max,
             bins=bins,
@@ -20304,8 +20309,16 @@ class VippWidget(QWidget):
             self._apply_colocalization_scatter_result(cached)
             return
 
-        if colocalization_scatter_requires_background(bins) or any(
-            _should_auto_background_data(value) for value in inputs
+        unresolved_costes = (
+            mode.lower().startswith("costes") and not thresholds_resolved
+        )
+        if unresolved_costes and self._active_pipeline_run_id is not None:
+            self._defer_unresolved_colocalization_scatter(density_key)
+            return
+        if (
+            unresolved_costes
+            or colocalization_scatter_requires_background(bins)
+            or any(_should_auto_background_data(value) for value in inputs)
         ):
             self._queue_colocalization_scatter(
                 ColocalizationScatterRequest(
@@ -20320,6 +20333,7 @@ class VippWidget(QWidget):
                     bins=bins,
                     range_percentile=range_percentile,
                     density_key=density_key,
+                    thresholds_resolved=thresholds_resolved,
                 )
             )
             return
@@ -20329,19 +20343,6 @@ class VippWidget(QWidget):
                 inputs,
                 intensity_max=intensity_max,
             )
-            if mode.lower().startswith("costes"):
-                self._sync_colocalization_costes_thresholds(
-                    node.id,
-                    update_controls=True,
-                )
-                threshold_1 = _safe_float(
-                    node.params.get("channel_1_threshold"),
-                    threshold_1,
-                )
-                threshold_2 = _safe_float(
-                    node.params.get("channel_2_threshold"),
-                    threshold_2,
-                )
             reusable = self._colocalization_scatter_density_cache.get(density_key)
             density_reused = reusable is not None
             if reusable is None:
@@ -20417,7 +20418,6 @@ class VippWidget(QWidget):
 
     @staticmethod
     def _colocalization_scatter_key(
-        node_id: str,
         inputs: list[object],
         *,
         threshold_mode: str,
@@ -20427,21 +20427,14 @@ class VippWidget(QWidget):
         bins: int,
         range_percentile: float,
     ) -> tuple:
-        identities = tuple(
-            (
-                id(value),
-                tuple(getattr(value, "shape", ())),
-                str(getattr(value, "dtype", "")),
-            )
-            for value in inputs
-        )
+        """Identify a scatter analysis independently from its graph consumer."""
+        identities = VippWidget._colocalization_scatter_input_identities(inputs)
         thresholds = (
             (None, None)
             if str(threshold_mode).lower().startswith("costes")
             else (float(threshold_1), float(threshold_2))
         )
         return (
-            node_id,
             identities,
             str(threshold_mode).strip().lower(),
             thresholds,
@@ -20452,15 +20445,27 @@ class VippWidget(QWidget):
 
     @staticmethod
     def _colocalization_scatter_density_key(
-        node_id: str,
         inputs: list[object] | tuple[object, ...],
         *,
         intensity_max: float,
         bins: int,
         range_percentile: float,
     ) -> tuple:
-        """Identify density data independently from movable thresholds."""
-        identities = tuple(
+        """Identify density data independently from node and thresholds."""
+        identities = VippWidget._colocalization_scatter_input_identities(inputs)
+        return (
+            identities,
+            float(intensity_max),
+            int(bins),
+            float(range_percentile),
+        )
+
+    @staticmethod
+    def _colocalization_scatter_input_identities(
+        inputs: list[object] | tuple[object, ...],
+    ) -> tuple:
+        """Return stable identities for resolved channel and ROI objects."""
+        return tuple(
             (
                 id(value),
                 tuple(getattr(value, "shape", ())),
@@ -20468,13 +20473,58 @@ class VippWidget(QWidget):
             )
             for value in inputs
         )
-        return (
-            str(node_id),
-            identities,
-            float(intensity_max),
-            int(bins),
-            float(range_percentile),
+
+    def _colocalization_resolved_costes_thresholds(
+        self,
+        node,
+        inputs: list[object],
+        *,
+        intensity_max: float,
+    ) -> tuple[float, float] | None:
+        """Reuse persisted Costes cutoffs from a compatible READY sibling."""
+        if not str(node.params.get("threshold_mode", "Manual")).lower().startswith(
+            "costes"
+        ):
+            return None
+        identities = self._colocalization_scatter_input_identities(inputs)
+        candidates = [node]
+        candidates.extend(
+            candidate
+            for candidate in self.pipeline.nodes.values()
+            if candidate.id != node.id
         )
+        for candidate in candidates:
+            if (
+                candidate.operation_id not in COLOCALIZATION_THRESHOLD_OPERATIONS
+                or self.pipeline.node_execution_states.get(candidate.id)
+                != EXECUTION_READY
+                or not str(candidate.params.get("threshold_mode", "Manual"))
+                .lower()
+                .startswith("costes")
+            ):
+                continue
+            candidate_intensity_max = max(
+                _safe_float(candidate.params.get("intensity_max"), 255.0),
+                1.0,
+            )
+            if candidate_intensity_max != float(intensity_max):
+                continue
+            candidate_inputs = self._colocalization_inputs_for_node(candidate.id)
+            if candidate_inputs is None or (
+                self._colocalization_scatter_input_identities(candidate_inputs)
+                != identities
+            ):
+                continue
+            try:
+                thresholds = (
+                    float(candidate.params["channel_1_threshold"]),
+                    float(candidate.params["channel_2_threshold"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if all(np.isfinite(value) for value in thresholds):
+                return thresholds
+        return None
 
     @staticmethod
     def _colocalization_scatter_display_settings(node) -> tuple[int, float]:
@@ -20585,6 +20635,35 @@ class VippWidget(QWidget):
             return
         self._start_colocalization_scatter_request(request)
 
+    def _defer_unresolved_colocalization_scatter(
+        self,
+        density_key: tuple,
+    ) -> None:
+        """Wait for the active pipeline to resolve Costes thresholds once."""
+        if self._active_colocalization_scatter_cancel_event is not None:
+            self._active_colocalization_scatter_cancel_event.set()
+        self._colocalization_scatter_serial += 1
+        self._active_colocalization_scatter_run_id = None
+        self._active_colocalization_scatter_key = None
+        self._active_colocalization_scatter_density_key = None
+        self._active_colocalization_scatter_cancel_event = None
+        self._pending_colocalization_scatter_request = None
+        message = (
+            "Waiting for the active pipeline calculation to resolve Costes "
+            "thresholds..."
+        )
+        self.colocalization_scatter_summary.setText(message)
+        self.colocalization_scatter_summary.setToolTip(
+            "The inspector will refresh from the pipeline's resolved Costes "
+            "thresholds when the current calculation finishes."
+        )
+        if self._displayed_colocalization_scatter_density_key != density_key:
+            self.colocalization_scatter_plot.clear(message)
+            self._displayed_colocalization_scatter_density_key = None
+            self.colocalization_scatter_popout_button.setEnabled(False)
+            if self._colocalization_scatter_dialog is not None:
+                self._colocalization_scatter_dialog.close()
+
     def _start_colocalization_scatter_request(
         self,
         request: ColocalizationScatterRequest,
@@ -20625,10 +20704,7 @@ class VippWidget(QWidget):
         self._active_colocalization_scatter_cancel_event = None
         if not result.error:
             result = self._cache_colocalization_scatter_result(result)
-        if (
-            result.key == self._current_colocalization_scatter_key
-            and result.node_id == self._selected_node_id
-        ):
+        if result.key == self._current_colocalization_scatter_key:
             self._apply_colocalization_scatter_result(result)
 
         pending = self._pending_colocalization_scatter_request
@@ -20713,8 +20789,18 @@ class VippWidget(QWidget):
     ) -> None:
         if result.key != self._current_colocalization_scatter_key:
             return
+        # Analysis-domain keys let compatible sibling nodes share cached or
+        # in-flight inspector work while keeping presentation and write-back
+        # bound to the node that is selected now.
+        result = self._rebind_colocalization_scatter_result(
+            result,
+            self._selected_node_id,
+        )
         node = self.pipeline.nodes.get(result.node_id)
-        if node is None or result.node_id != self._selected_node_id:
+        if (
+            node is None
+            or node.operation_id not in COLOCALIZATION_SCATTER_OPERATIONS
+        ):
             return
         if result.error:
             message = f"Scatter unavailable: {result.error}"
@@ -20732,6 +20818,7 @@ class VippWidget(QWidget):
             and str(node.params.get("threshold_mode", "")).lower().startswith(
                 "costes"
             )
+            and self._active_pipeline_run_id is None
         ):
             for name, value in (
                 ("channel_1_threshold", result.threshold_1),
@@ -20810,6 +20897,16 @@ class VippWidget(QWidget):
         self.colocalization_scatter_plot.setToolTip(tooltip)
         if self._colocalization_scatter_dialog is not None:
             self._sync_colocalization_scatter_dialog(result, node)
+
+    @staticmethod
+    def _rebind_colocalization_scatter_result(
+        result: ColocalizationScatterResult,
+        node_id: str,
+    ) -> ColocalizationScatterResult:
+        """Bind shared analysis data to its current graph presentation node."""
+        if result.node_id == node_id:
+            return result
+        return replace(result, node_id=node_id)
 
     @staticmethod
     def _scatter_result_axis_ranges(
@@ -20908,44 +21005,6 @@ class VippWidget(QWidget):
         if any(value is None for value in inputs):
             return None
         return inputs
-
-    def _sync_colocalization_costes_thresholds(
-        self,
-        node_id: str,
-        *,
-        update_controls: bool,
-    ) -> bool:
-        node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id not in COLOCALIZATION_THRESHOLD_OPERATIONS:
-            return False
-        if not str(node.params.get("threshold_mode", "Manual")).lower().startswith(
-            "costes"
-        ):
-            return False
-        inputs = self._colocalization_inputs_for_node(node_id)
-        if inputs is None:
-            return False
-        try:
-            threshold_1, threshold_2 = colocalization_threshold_values(
-                inputs,
-                threshold_mode=node.params.get("threshold_mode", "Costes auto"),
-                channel_1_threshold=node.params.get("channel_1_threshold", 25.0),
-                channel_2_threshold=node.params.get("channel_2_threshold", 25.0),
-            )
-        except Exception:
-            return False
-        changed = False
-        for name, value in (
-            ("channel_1_threshold", threshold_1),
-            ("channel_2_threshold", threshold_2),
-        ):
-            value = float(value)
-            if not np.isclose(float(node.params.get(name, np.nan)), value):
-                node.params[name] = value
-                changed = True
-            if update_controls:
-                self._set_parameter_control_value(node_id, name, value)
-        return changed
 
     def _set_parameter_control_value(
         self,

@@ -1136,13 +1136,25 @@ density by accumulating a 255 x 255 histogram over every ROI voxel in bounded
 chunks. A Scatter Plot node with a populated-range percentile below 100 can
 omit tail voxels from this visible histogram only; its exact ROI and
 colocalized counts still use the full population. Histogram memory cost as well
-as input size selects the stale-safe background worker. Threshold-only requests
-share the compatible density and run a counts-only full-ROI scan; a 192 MiB
-byte budget bounds the density cache. Interactive preparation and the Qt render
-conversion are capped at 1024 bins per axis, while the graph operation retains
-its independent 4096-bin limit. There is no sampled source population. These
-exact computational helpers still reside in `ui/plots.py`, rather than the
-Qt-free diagnostics module, and remain a known boundary seam.
+as input size selects the stale-safe background worker, and an unresolved Costes
+search always uses that worker because iteration count is not predicted by array
+size. Scatter results and densities are keyed by channel/ROI input identity, so
+sibling metric, overlay, and RACC nodes share one compatible analysis domain.
+Threshold-only requests reuse the compatible density and run a counts-only
+full-ROI scan; a 192 MiB byte budget bounds the density cache. READY Costes
+results supply their already-resolved thresholds, while inspector work never
+writes derived thresholds into the live workflow during an active pipeline run.
+Interactive preparation and the Qt render conversion are capped at 1024 bins per
+axis, while the graph operation retains its independent 4096-bin limit. There is
+no sampled source population. These exact computational helpers still reside in
+`ui/plots.py`, rather than the Qt-free diagnostics module, and remain a known
+boundary seam.
+
+Pipeline execution also keeps a run-scoped Costes fit cache keyed by the exact
+channel/ROI input objects and intensity domain. Compatible metrics, overlay,
+scatter, and RACC nodes consume the same complete fit (not just copied threshold
+values); masked and unmasked populations remain separate. The cache is cleared at
+every execution boundary so in-place source edits cannot reuse an earlier fit.
 
 Fiji-related metric arithmetic in this alpha is an experimental,
 source-aligned target for Coloc2 3.1.0; independent Fiji-generated golden

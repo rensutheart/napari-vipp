@@ -8,6 +8,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+import napari_vipp.core.device_execution as device_execution_module
 from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import (
     ComputeMode,
@@ -516,6 +517,23 @@ def _request(
         device_id="fake:0",
         accelerator_memory_cap_bytes=memory_cap,
     )
+
+
+def test_provider_keyword_arguments_omit_runtime_private_parameters():
+    call = PreparedNodeCall(
+        node_id="coloc",
+        operation_id="colocalized_voxels",
+        cpu_function=lambda value, **_kwargs: value,
+        inputs=(np.zeros((2, 2), dtype=np.float32),),
+        kwargs={
+            "threshold_mode": "Costes auto",
+            "_vipp_resolved_costes": {"pearson_below": float("nan")},
+        },
+    )
+
+    assert device_execution_module._provider_keyword_arguments(call) == {
+        "threshold_mode": "Costes auto"
+    }
 
 
 def test_linear_segment_keeps_intermediate_on_device_and_returns_host_only():

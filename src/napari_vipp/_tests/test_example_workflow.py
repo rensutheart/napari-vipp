@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from napari_vipp._sample_data import make_sample_data
+from napari_vipp.core import operations as operations_module
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
 from napari_vipp.core.workflow import load_workflow
 
@@ -561,7 +562,7 @@ def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
     assert all(record["physical_unit"] == "micrometer" for record in summary_records)
 
 
-def test_synthetic_colocalization_workflow_loads_and_runs():
+def test_synthetic_colocalization_workflow_loads_and_runs(monkeypatch):
     workflow = load_workflow(COLOCALIZATION_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
     _restore_workflow(pipeline, workflow)
@@ -583,6 +584,19 @@ def test_synthetic_colocalization_workflow_loads_and_runs():
         for sample in make_sample_data()
         if sample[1]["name"] == "VIPP synthetic colocalization"
     )
+    costes_calls = 0
+    real_costes_thresholds = operations_module._costes_thresholds
+
+    def counted_costes_thresholds(channel_1, channel_2, **kwargs):
+        nonlocal costes_calls
+        costes_calls += 1
+        return real_costes_thresholds(channel_1, channel_2, **kwargs)
+
+    monkeypatch.setattr(
+        operations_module,
+        "_costes_thresholds",
+        counted_costes_thresholds,
+    )
     outputs = pipeline.run(
         data,
         input_metadata=layer_kwargs["metadata"],
@@ -598,6 +612,9 @@ def test_synthetic_colocalization_workflow_loads_and_runs():
     masked_racc = outputs["masked_racc_index_1"]
     record = metrics.records()[0]
     masked_record = masked_metrics.records()[0]
+
+    # Six Costes nodes collapse to one full-image and one ROI-restricted fit.
+    assert costes_calls == 2
 
     assert (
         pipeline.input_ports("colocalization_metrics_1")[0].label

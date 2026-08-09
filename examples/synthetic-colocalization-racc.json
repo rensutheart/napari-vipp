@@ -42,7 +42,7 @@
       "id": "colocalized_voxels_1",
       "operation_id": "colocalized_voxels",
       "params": {
-        "threshold_mode": "Manual",
+        "threshold_mode": "Costes auto",
         "channel_1_threshold": 35,
         "channel_2_threshold": 35,
         "display_mode": "White overlay on channels",
@@ -63,7 +63,7 @@
       "id": "racc_index_1",
       "operation_id": "racc_index",
       "params": {
-        "threshold_mode": "Manual",
+        "threshold_mode": "Costes auto",
         "channel_1_threshold": 35,
         "channel_2_threshold": 35,
         "theta_degrees": 45,
@@ -75,7 +75,7 @@
       "id": "masked_colocalized_voxels_1",
       "operation_id": "masked_colocalized_voxels",
       "params": {
-        "threshold_mode": "Manual",
+        "threshold_mode": "Costes auto",
         "channel_1_threshold": 35,
         "channel_2_threshold": 35,
         "display_mode": "White overlay on channels",
@@ -96,7 +96,7 @@
       "id": "masked_racc_index_1",
       "operation_id": "masked_racc_index",
       "params": {
-        "threshold_mode": "Manual",
+        "threshold_mode": "Costes auto",
         "channel_1_threshold": 35,
         "channel_2_threshold": 35,
         "theta_degrees": 45,

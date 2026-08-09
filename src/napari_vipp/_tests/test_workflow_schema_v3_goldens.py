@@ -34,7 +34,7 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
         "5d2ba1a07eab4197c41e153e52bb9ae652c3ac4634c44ac2d33de601143fba1f"
     ),
     "synthetic-colocalization-racc.json": (
-        "fda14842ee0e51144586143117050967fc7c287c75ee2d0457463ae0d6127336"
+        "38a5d9785b708833e6cba0ee544ca490735900fa307230ea4cf85e016ec4c4a6"
     ),
     "synthetic-deconvolution-rl-tv.json": (
         "0b71434287cdbb12204c65e64dc565adf104e7b13b1da81e175f089d7cde310f"
@@ -152,3 +152,22 @@ def test_schema_v3_scientific_hash_is_independent_of_record_and_mapping_order():
     reordered["tunnels"].reverse()
 
     assert scientific_workflow_hash(reordered) == scientific_workflow_hash(document)
+
+
+def test_synthetic_colocalization_example_uses_costes_for_every_threshold_node():
+    document = _load_example("synthetic-colocalization-racc.json")
+
+    threshold_modes = {
+        node["id"]: node["params"]["threshold_mode"]
+        for node in document["nodes"]
+        if "threshold_mode" in node["params"]
+    }
+
+    assert threshold_modes == {
+        "colocalized_voxels_1": "Costes auto",
+        "colocalization_metrics_1": "Costes auto",
+        "racc_index_1": "Costes auto",
+        "masked_colocalized_voxels_1": "Costes auto",
+        "masked_colocalization_metrics_1": "Costes auto",
+        "masked_racc_index_1": "Costes auto",
+    }

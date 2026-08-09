@@ -147,6 +147,7 @@ class ColocalizationScatterRequest:
     cancel_event: threading.Event | None = None
     density_key: tuple = ()
     reusable_density: ColocalizationScatterDensity | None = None
+    thresholds_resolved: bool = False
 
 
 @dataclass(frozen=True)
@@ -699,13 +700,17 @@ class ColocalizationScatterWorker(QRunnable):
         try:
             if progress is not None:
                 progress.check_cancelled()
-            if str(request.threshold_mode).lower().startswith("costes"):
+            if (
+                str(request.threshold_mode).lower().startswith("costes")
+                and not request.thresholds_resolved
+            ):
                 threshold_1, threshold_2 = self._threshold_values(
                     request.inputs,
                     threshold_mode=request.threshold_mode,
                     channel_1_threshold=threshold_1,
                     channel_2_threshold=threshold_2,
                     intensity_max=request.intensity_max,
+                    progress=progress,
                 )
             if progress is not None:
                 progress.check_cancelled()
