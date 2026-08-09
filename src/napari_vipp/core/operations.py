@@ -3946,6 +3946,7 @@ def colocalization_threshold_values(
     channel_1_threshold: float = 25.0,
     channel_2_threshold: float = 25.0,
     intensity_max: float = 255.0,
+    progress=None,
 ) -> tuple[float, float]:
     """Return the native-intensity threshold pair used by a colocalization node."""
     ch1, ch2, roi_mask, _warnings = _coloc_normalized_inputs_and_mask(
@@ -3960,8 +3961,77 @@ def colocalization_threshold_values(
         channel_2_threshold=channel_2_threshold,
         intensity_max=intensity_max,
         roi_mask=roi_mask,
+        progress=progress,
     )
     return threshold_1, threshold_2
+
+
+def colocalization_costes_threshold_result(
+    inputs,
+    intensity_max: float = 255.0,
+    progress=None,
+) -> dict[str, float]:
+    """Return one reusable Costes fit for a channel pair and optional ROI.
+
+    Pipeline execution uses this result to share the expensive automatic fit
+    across sibling colocalization operations that receive the same input
+    objects.  Standalone operation calls continue to calculate their own fit.
+    """
+    ch1, ch2, roi_mask, _warnings = _coloc_normalized_inputs_and_mask(
+        inputs,
+        intensity_max=intensity_max,
+    )
+    _threshold_1, _threshold_2, costes = _coloc_thresholds(
+        ch1,
+        ch2,
+        threshold_mode="Costes auto",
+        channel_1_threshold=0.0,
+        channel_2_threshold=0.0,
+        intensity_max=intensity_max,
+        roi_mask=roi_mask,
+        progress=progress,
+    )
+    if costes is None:  # pragma: no cover - guarded by the fixed mode above
+        raise RuntimeError("Costes threshold calculation did not return a fit.")
+    return dict(costes)
+
+
+def object_colocalization_costes_threshold_result(
+    inputs,
+    intensity_max: float = 255.0,
+    progress=None,
+) -> dict[str, float] | None:
+    """Return the Costes fit for an object-label foreground population."""
+    values = list(inputs)
+    if len(values) < 3:
+        raise ValueError(
+            "Object colocalization requires labels plus two channel image inputs."
+        )
+    labels = np.asarray(values[0])
+    ch1_raw = _coloc_reduce_to_intensity(values[1])
+    ch2_raw = _coloc_reduce_to_intensity(values[2])
+    if labels.shape != ch1_raw.shape or labels.shape != ch2_raw.shape:
+        raise ValueError(
+            "Object colocalization requires labels and channels with matching "
+            f"shapes; got {labels.shape}, {ch1_raw.shape}, and {ch2_raw.shape}."
+        )
+    ch1, ch2, _warnings = _prepare_coloc_channels(ch1_raw, ch2_raw)
+    foreground = labels > 0
+    if not np.any(foreground):
+        return None
+    _threshold_1, _threshold_2, costes = _coloc_thresholds(
+        ch1,
+        ch2,
+        threshold_mode="Costes auto",
+        channel_1_threshold=0.0,
+        channel_2_threshold=0.0,
+        intensity_max=intensity_max,
+        roi_mask=foreground,
+        progress=progress,
+    )
+    if costes is None:  # pragma: no cover - guarded by the fixed mode above
+        raise RuntimeError("Costes threshold calculation did not return a fit.")
+    return dict(costes)
 
 
 def colocalization_normalized_inputs(
@@ -4122,6 +4192,8 @@ def colocalization_metrics(
     channel_1_threshold: float = 25.0,
     channel_2_threshold: float = 25.0,
     intensity_max: float = 255.0,
+    _vipp_resolved_costes: dict[str, float] | None = None,
+    progress=None,
 ) -> TableData:
     """Measure two-channel colocalization against an experimental Coloc2 target."""
     ch1, ch2, roi_mask, warnings = _coloc_normalized_inputs_and_mask(
@@ -4136,6 +4208,8 @@ def colocalization_metrics(
         channel_2_threshold=channel_2_threshold,
         intensity_max=intensity_max,
         roi_mask=roi_mask,
+        resolved_costes=_vipp_resolved_costes,
+        progress=progress,
     )
     mask_supplied = roi_mask is not None
     if roi_mask is None:
@@ -4196,6 +4270,8 @@ def object_colocalization_metrics(
     axis_scales: tuple[float, ...] | None = None,
     axis_units: tuple[str | None, ...] | None = None,
     source_name: str = "",
+    _vipp_resolved_costes: dict[str, float] | None = None,
+    progress=None,
 ) -> TableData:
     """Measure two-channel colocalization for each labeled object."""
     values = list(inputs)
@@ -4233,6 +4309,8 @@ def object_colocalization_metrics(
             channel_2_threshold=channel_2_threshold,
             intensity_max=intensity_max,
             roi_mask=foreground,
+            resolved_costes=_vipp_resolved_costes,
+            progress=progress,
         )
     else:
         # No rows will be emitted, so an automatic fit has no population.
@@ -4534,6 +4612,8 @@ def colocalized_voxels(
     channel_1_color: str = "Red",
     channel_2_color: str = "Green",
     intensity_max: float = 255.0,
+    _vipp_resolved_costes: dict[str, float] | None = None,
+    progress=None,
 ) -> np.ndarray:
     """Render threshold-colocalized voxels as a channel-last RGB image."""
     ch1, ch2, roi_mask, _warnings = _coloc_normalized_inputs_and_mask(
@@ -4548,6 +4628,8 @@ def colocalized_voxels(
         channel_2_threshold=channel_2_threshold,
         intensity_max=intensity_max,
         roi_mask=roi_mask,
+        resolved_costes=_vipp_resolved_costes,
+        progress=progress,
     )
     return _coloc_voxel_overlay(
         ch1,
@@ -4572,6 +4654,8 @@ def colocalization_scatter_plot(
     range_percentile: float = 100.0,
     log_counts: bool = True,
     intensity_max: float = 255.0,
+    _vipp_resolved_costes: dict[str, float] | None = None,
+    progress=None,
 ) -> np.ndarray:
     """Render an export-ready two-channel scatter-density image.
 
@@ -4591,6 +4675,8 @@ def colocalization_scatter_plot(
         channel_2_threshold=channel_2_threshold,
         intensity_max=intensity_max,
         roi_mask=roi_mask,
+        resolved_costes=_vipp_resolved_costes,
+        progress=progress,
     )
     return _coloc_scatter_plot_image(
         ch1,
@@ -4615,6 +4701,8 @@ def racc_index(
     include_percentile: float = 99.0,
     intensity_max: float = 255.0,
     output_dtype: str = "float32",
+    _vipp_resolved_costes: dict[str, float] | None = None,
+    progress=None,
 ) -> np.ndarray:
     """Compute a RACC-like index image from two thresholded channels.
 
@@ -4634,6 +4722,8 @@ def racc_index(
         channel_2_threshold=channel_2_threshold,
         intensity_max=intensity_max,
         roi_mask=roi_mask,
+        resolved_costes=_vipp_resolved_costes,
+        progress=progress,
     )
     output = _racc_index_image(
         ch1,
@@ -11790,15 +11880,27 @@ def _coloc_thresholds(
     channel_2_threshold: float,
     intensity_max: float,
     roi_mask: np.ndarray | None = None,
+    resolved_costes: dict[str, float] | None = None,
+    progress=None,
 ) -> tuple[float, float, dict[str, float] | None]:
+    if progress is not None:
+        progress.check_cancelled()
     mode = str(threshold_mode).strip().lower()
     if mode.startswith("costes"):
-        threshold_ch1 = ch1[roi_mask] if roi_mask is not None else ch1
-        threshold_ch2 = ch2[roi_mask] if roi_mask is not None else ch2
-        costes = _costes_thresholds(
-            threshold_ch1,
-            threshold_ch2,
-        )
+        if resolved_costes is None:
+            threshold_ch1 = ch1[roi_mask] if roi_mask is not None else ch1
+            threshold_ch2 = ch2[roi_mask] if roi_mask is not None else ch2
+            costes = (
+                _costes_thresholds(threshold_ch1, threshold_ch2)
+                if progress is None
+                else _costes_thresholds(
+                    threshold_ch1,
+                    threshold_ch2,
+                    progress=progress,
+                )
+            )
+        else:
+            costes = dict(resolved_costes)
         return costes["threshold_1"], costes["threshold_2"], costes
     del intensity_max
     return (
@@ -12410,6 +12512,8 @@ def _label_centroids(block: np.ndarray) -> dict[int, np.ndarray]:
 def _costes_thresholds(
     channel_1: np.ndarray,
     channel_2: np.ndarray,
+    *,
+    progress=None,
 ) -> dict[str, float]:
     """Return source-aligned Coloc2 3.1.0 Costes/SimpleStepper thresholds.
 
@@ -12456,6 +12560,8 @@ def _costes_thresholds(
     iterations = 0
     threshold_1 = threshold_2 = 0.0
     while True:
+        if progress is not None:
+            progress.check_cancelled()
         mapped_1, mapped_2 = map_threshold(working_threshold)
         threshold_1 = _typed_java_rounded_threshold(
             mapped_1,

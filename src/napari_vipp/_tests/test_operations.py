@@ -1134,6 +1134,30 @@ def test_colocalization_metrics_overlay_scatter_and_racc_outputs():
     assert masked_index[3, 4] == 0.0
 
 
+def test_costes_threshold_search_is_cooperatively_cancellable():
+    channel_1 = np.arange(256, dtype=np.uint16).reshape(16, 16)
+    channel_2 = np.roll(channel_1, 3, axis=0)
+    progress = ProgressContext(cancelled=lambda: True)
+
+    with pytest.raises(OperationCancelled):
+        colocalization_threshold_values(
+            [channel_1, channel_2],
+            threshold_mode="Costes auto",
+            progress=progress,
+        )
+
+    with pytest.raises(OperationCancelled):
+        colocalized_voxels(
+            [channel_1, channel_2],
+            threshold_mode="Costes auto",
+            _vipp_resolved_costes={
+                "threshold_1": 42.0,
+                "threshold_2": 43.0,
+            },
+            progress=progress,
+        )
+
+
 def test_colocalization_metrics_use_source_aligned_domains_and_manders():
     channel_1 = np.asarray([[0, 2, 4], [6, 8, 10]], dtype=np.float32)
     channel_2 = np.asarray([[1, 0, 5], [2, 9, 3]], dtype=np.float32)

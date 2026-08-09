@@ -1116,7 +1116,7 @@ def _execute_cpu_reference(private_call: object) -> object:
         raise TypeError("private benchmark input must be a PreparedNodeCall.")
     raw = private_call.cpu_function(
         private_call.positional_input(),
-        **_provider_keyword_arguments(private_call),
+        **_cpu_reference_keyword_arguments(private_call),
     )
     outputs = _normalized_outputs(raw, private_call.output_port_count)
     return outputs[0] if private_call.output_port_count == 1 else outputs
@@ -1134,6 +1134,18 @@ def _benchmark_abort_callback(
 
 
 def _provider_keyword_arguments(call: PreparedNodeCall) -> dict[str, object]:
+    kwargs = {
+        name: value
+        for name, value in call.keyword_arguments().items()
+        if not name.startswith("_vipp_")
+    }
+    kwargs.pop(_BENCHMARK_ABORT_CALLBACK_KWARG, None)
+    return kwargs
+
+
+def _cpu_reference_keyword_arguments(
+    call: PreparedNodeCall,
+) -> dict[str, object]:
     kwargs = call.keyword_arguments()
     kwargs.pop(_BENCHMARK_ABORT_CALLBACK_KWARG, None)
     return kwargs
@@ -1189,7 +1201,7 @@ def workload_from_prepared_node_call(
     parameters = tuple(
         (name, _json_parameter(value))
         for name, value in call.kwargs.items()
-        if name != "progress"
+        if name != "progress" and not name.startswith("_vipp_")
     )
     resolved = call.kwargs.get("resolved_spatial_ndim")
     if isinstance(resolved, bool) or resolved not in {1, 2, 3}:

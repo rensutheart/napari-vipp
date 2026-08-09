@@ -6710,6 +6710,261 @@ def test_colocalization_scatter_a_b_a_requeues_cancelled_request(qtbot, monkeypa
     assert widget._pending_colocalization_scatter_request.key == first.key
 
 
+def test_colocalization_scatter_reuses_ready_sibling_analysis(qtbot, monkeypatch):
+    data = np.arange(256, dtype=np.float32).reshape(16, 16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    first = widget.add_node_from_palette("colocalized_voxels")
+    second = widget.add_node_from_palette("colocalized_voxels")
+    for node in (first, second):
+        widget._connect_nodes("input", node.id, target_port=0)
+        widget._connect_nodes("input", node.id, target_port=1)
+        widget.pipeline.set_param(node.id, "threshold_mode", "Costes auto")
+    widget.pipeline.set_param(first.id, "channel_1_threshold", 40.0)
+    widget.pipeline.set_param(first.id, "channel_2_threshold", 50.0)
+    widget.pipeline.node_execution_states[first.id] = EXECUTION_READY
+    widget.pipeline.node_execution_states[second.id] = EXECUTION_STALE
+    widget.pipeline.set_param(second.id, "channel_1_threshold", -101.0)
+    widget.pipeline.set_param(second.id, "channel_2_threshold", -202.0)
+    widget.pipeline.set_param(second.id, "channel_1_color", "Blue")
+    widget.pipeline.set_param(second.id, "channel_2_color", "Yellow")
+    widget.graph_view.select_node("input")
+    widget._clear_colocalization_scatter_cache()
+
+    import napari_vipp._widget as widget_module
+
+    density_calls = 0
+    real_density = widget_module._prepare_colocalization_scatter_density
+
+    def tracked_density(*args, **kwargs):
+        nonlocal density_calls
+        density_calls += 1
+        return real_density(*args, **kwargs)
+
+    monkeypatch.setattr(
+        widget_module,
+        "_prepare_colocalization_scatter_density",
+        tracked_density,
+    )
+    monkeypatch.setattr(
+        widget_module,
+        "colocalization_threshold_values",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("READY Costes thresholds must be reused")
+        ),
+    )
+
+    widget.graph_view.select_node(first.id)
+    shared_key = widget._current_colocalization_scatter_key
+    cached = widget._colocalization_scatter_cache[shared_key]
+    widget.graph_view.select_node(second.id)
+
+    assert widget._current_colocalization_scatter_key == shared_key
+    assert widget._colocalization_scatter_cache[shared_key] is cached
+    assert density_calls == 1
+    assert widget.pipeline.nodes[second.id].params["channel_1_threshold"] == 40.0
+    assert widget.pipeline.nodes[second.id].params["channel_2_threshold"] == 50.0
+    assert widget.colocalization_scatter_plot._channel_1_color.name() == "#0000ff"
+    assert widget.colocalization_scatter_plot._channel_2_color.name() == "#ffff00"
+
+
+def test_unresolved_costes_scatter_queues_once_and_hands_off(qtbot, monkeypatch):
+    data = np.arange(256, dtype=np.float32).reshape(16, 16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    first = widget.add_node_from_palette("colocalized_voxels")
+    second = widget.add_node_from_palette("colocalized_voxels")
+    for node in (first, second):
+        widget._connect_nodes("input", node.id, target_port=0)
+        widget._connect_nodes("input", node.id, target_port=1)
+        widget.pipeline.set_param(node.id, "threshold_mode", "Costes auto")
+        widget.pipeline.node_execution_states[node.id] = EXECUTION_STALE
+    widget._clear_colocalization_scatter_cache()
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    progress_values = []
+
+    def resolved_in_worker(*_args, progress=None, **_kwargs):
+        progress_values.append(progress)
+        return 41.0, 51.0
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.colocalization_threshold_values",
+        resolved_in_worker,
+    )
+    widget._selected_node_id = first.id
+    widget._update_colocalization_scatter()
+    shared_key = widget._current_colocalization_scatter_key
+    run_id = widget._active_colocalization_scatter_run_id
+    assert len(pool.workers) == 1
+    assert not pool.workers[0].request.thresholds_resolved
+
+    widget._selected_node_id = second.id
+    widget._update_colocalization_scatter()
+
+    assert widget._current_colocalization_scatter_key == shared_key
+    assert widget._active_colocalization_scatter_run_id == run_id
+    assert widget._pending_colocalization_scatter_request is None
+    assert len(pool.workers) == 1
+
+    pool.workers[0].run()
+
+    assert progress_values and progress_values[0] is not None
+    assert widget._active_colocalization_scatter_run_id is None
+    assert widget.pipeline.nodes[second.id].params["channel_1_threshold"] == 41.0
+    assert widget.pipeline.nodes[second.id].params["channel_2_threshold"] == 51.0
+    assert widget.colocalization_scatter_plot._image is not None
+
+
+def test_ready_costes_sibling_marks_background_request_resolved(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.arange(16).reshape(4, 4)))
+    qtbot.addWidget(widget)
+    ready = widget.add_node_from_palette("colocalized_voxels")
+    selected = widget.add_node_from_palette("racc_index")
+    for node in (ready, selected):
+        widget._connect_nodes("input", node.id, target_port=0)
+        widget._connect_nodes("input", node.id, target_port=1)
+        widget.pipeline.set_param(node.id, "threshold_mode", "Costes auto")
+    widget.pipeline.set_param(ready.id, "channel_1_threshold", 61.0)
+    widget.pipeline.set_param(ready.id, "channel_2_threshold", 71.0)
+    widget.pipeline.node_execution_states[ready.id] = EXECUTION_READY
+    widget.pipeline.node_execution_states[selected.id] = EXECUTION_NOT_CALCULATED
+    widget._clear_colocalization_scatter_cache()
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    monkeypatch.setattr(
+        "napari_vipp._widget.colocalization_scatter_requires_background",
+        lambda _bins: True,
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.colocalization_threshold_values",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("compatible READY sibling must skip Costes")
+        ),
+    )
+
+    widget._selected_node_id = selected.id
+    widget._update_colocalization_scatter()
+
+    assert len(pool.workers) == 1
+    request = pool.workers[0].request
+    assert request.thresholds_resolved
+    assert (request.threshold_1, request.threshold_2) == (61.0, 71.0)
+
+    pool.workers[0].run()
+
+    result = widget._colocalization_scatter_cache[
+        widget._current_colocalization_scatter_key
+    ]
+    assert (result.threshold_1, result.threshold_2) == (61.0, 71.0)
+
+
+def test_active_pipeline_defers_unresolved_costes_and_blocks_writeback(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.arange(16).reshape(4, 4)))
+    qtbot.addWidget(widget)
+    coloc = widget.add_node_from_palette("colocalized_voxels")
+    widget._connect_nodes("input", coloc.id, target_port=0)
+    widget._connect_nodes("input", coloc.id, target_port=1)
+    widget.pipeline.set_param(coloc.id, "threshold_mode", "Costes auto")
+    widget.pipeline.set_param(coloc.id, "channel_1_threshold", 12.0)
+    widget.pipeline.set_param(coloc.id, "channel_2_threshold", 13.0)
+    widget.pipeline.node_execution_states[coloc.id] = EXECUTION_RUNNING
+    widget._clear_colocalization_scatter_cache()
+    widget._selected_node_id = coloc.id
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    control_updates = []
+    monkeypatch.setattr(
+        widget,
+        "_set_parameter_control_value",
+        lambda *args: control_updates.append(args),
+    )
+    workflow = serialize_workflow(
+        widget.pipeline,
+        compute_request=widget._current_compute_request(),
+    )
+
+    widget._update_colocalization_scatter()
+
+    assert len(pool.workers) == 1
+    cancel_event = pool.workers[0].request.cancel_event
+    assert cancel_event is not None and not cancel_event.is_set()
+
+    widget._active_pipeline_run_id = 99
+    widget._update_colocalization_scatter()
+
+    assert cancel_event.is_set()
+    assert widget._active_colocalization_scatter_run_id is None
+    assert "Waiting for the active pipeline" in (
+        widget.colocalization_scatter_summary.text()
+    )
+    key = widget._current_colocalization_scatter_key
+    widget._apply_colocalization_scatter_result(
+        ColocalizationScatterResult(
+            0,
+            key,
+            coloc.id,
+            "Costes auto",
+            80.0,
+            90.0,
+            density_counts=np.ones((32, 32), dtype=np.float64),
+            roi_voxels=16,
+            colocalized_voxels=4,
+        )
+    )
+
+    assert widget.pipeline.nodes[coloc.id].params["channel_1_threshold"] == 12.0
+    assert widget.pipeline.nodes[coloc.id].params["channel_2_threshold"] == 13.0
+    assert control_updates == []
+    assert widget._workflow_matches_current_pipeline(workflow)
+    assert widget.colocalization_scatter_plot._threshold_1 == 80.0
+    assert widget.colocalization_scatter_plot._threshold_2 == 90.0
+
+
+def test_colocalization_scatter_keys_separate_masked_domain(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    channel_1 = np.zeros((4, 4), dtype=np.float32)
+    channel_2 = np.ones((4, 4), dtype=np.float32)
+    roi_mask = np.eye(4, dtype=bool)
+    common = {
+        "threshold_mode": "Costes auto",
+        "threshold_1": 25.0,
+        "threshold_2": 25.0,
+        "intensity_max": 255.0,
+        "bins": 64,
+        "range_percentile": 100.0,
+    }
+    unmasked = widget._colocalization_scatter_key(
+        [channel_1, channel_2],
+        **common,
+    )
+    masked = widget._colocalization_scatter_key(
+        [channel_1, channel_2, roi_mask],
+        **common,
+    )
+    unmasked_density = widget._colocalization_scatter_density_key(
+        [channel_1, channel_2],
+        intensity_max=255.0,
+        bins=64,
+        range_percentile=100.0,
+    )
+    masked_density = widget._colocalization_scatter_density_key(
+        [channel_1, channel_2, roi_mask],
+        intensity_max=255.0,
+        bins=64,
+        range_percentile=100.0,
+    )
+
+    assert masked != unmasked
+    assert masked_density != unmasked_density
+
+
 def test_pipeline_edit_invalidates_colocalization_scatter_cache(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)

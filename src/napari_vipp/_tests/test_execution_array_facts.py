@@ -877,6 +877,109 @@ def test_background_to_gaussian_scans_source_once_and_propagates(monkeypatch):
     assert propagated.scan_seconds == source_facts.scan_seconds
 
 
+def test_accelerated_workload_preparation_forwards_costes_cancellation(
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    second_source = pipeline.add_node("input")
+    overlay = pipeline.add_node("colocalized_voxels")
+    pipeline.set_param(overlay.id, "threshold_mode", "Costes auto")
+    assert pipeline.connect("input", overlay.id, target_port=0).success
+    assert pipeline.connect(second_source.id, overlay.id, target_port=1).success
+    channel_1 = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    channel_2 = np.roll(channel_1, 2, axis=0)
+    cancelled = threading.Event()
+    entered_threshold_search = []
+    continued_after_cancel = []
+
+    def cancelling_costes_thresholds(channel_1, channel_2, *, progress=None):
+        del channel_1, channel_2
+        entered_threshold_search.append(True)
+        assert progress is not None
+        cancelled.set()
+        progress.check_cancelled()
+        continued_after_cancel.append(True)
+        raise AssertionError("Costes preparation continued after cancellation.")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.operations._costes_thresholds",
+        cancelling_costes_thresholds,
+    )
+    planner = _CapturingPlanner()
+
+    result = _execute_accelerated(
+        _accelerated_request(
+            pipeline,
+            channel_1,
+            cancel_event=cancelled,
+            source_payloads={
+                "input": SourcePayload(
+                    channel_1,
+                    {"axes": "YX"},
+                    "channel 1",
+                    revision_token="channel-1-revision",
+                ),
+                second_source.id: SourcePayload(
+                    channel_2,
+                    {"axes": "YX"},
+                    "channel 2",
+                    revision_token="channel-2-revision",
+                ),
+            },
+        ),
+        planner,
+    )
+
+    assert result.cancelled
+    assert entered_threshold_search == [True]
+    assert continued_after_cancel == []
+    assert planner.calls == 0
+
+
+def test_accelerated_workload_omits_runtime_costes_diagnostics(monkeypatch):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    second_source = pipeline.add_node("input")
+    overlay = pipeline.add_node("colocalized_voxels")
+    pipeline.set_param(overlay.id, "threshold_mode", "Costes auto")
+    assert pipeline.connect("input", overlay.id, target_port=0).success
+    assert pipeline.connect(second_source.id, overlay.id, target_port=1).success
+    channel_1 = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    channel_2 = np.roll(channel_1, 2, axis=0)
+
+    monkeypatch.setattr(
+        "napari_vipp.core.operations._costes_thresholds",
+        lambda *_args, **_kwargs: {
+            "threshold_1": 12.0,
+            "threshold_2": 13.0,
+            "pearson_below": float("nan"),
+        },
+    )
+    planner = _CapturingPlanner()
+
+    result = _execute_accelerated(
+        _accelerated_request(
+            pipeline,
+            channel_1,
+            source_payloads={
+                "input": SourcePayload(channel_1, {"axes": "YX"}, "channel 1"),
+                second_source.id: SourcePayload(
+                    channel_2,
+                    {"axes": "YX"},
+                    "channel 2",
+                ),
+            },
+        ),
+        planner,
+    )
+
+    assert result.error == ""
+    assert planner.calls == 1
+    workload = next(item for item in planner.workloads if item.node_id == overlay.id)
+    assert "_vipp_resolved_costes" not in dict(workload.parameters)
+
+
 def test_cancellation_interrupts_chunked_scan_without_cache_publication(
     monkeypatch,
 ):

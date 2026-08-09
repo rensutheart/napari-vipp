@@ -388,6 +388,35 @@ def test_workload_identity_preserves_non_native_byte_order(dtype: str) -> None:
     assert workload.input_dtypes == (np.dtype(dtype).str,)
 
 
+def test_workload_identity_omits_runtime_private_parameters() -> None:
+    values = np.arange(25, dtype=np.float32).reshape(5, 5)
+    cpu_kwargs = {}
+
+    def cpu_reference(value, **kwargs):
+        cpu_kwargs.update(kwargs)
+        return np.array(value, copy=True)
+
+    call = PreparedNodeCall(
+        "coloc-node",
+        "colocalized_voxels",
+        cpu_reference,
+        (values,),
+        kwargs={
+            "threshold_mode": "Costes auto",
+            "_vipp_resolved_costes": {"pearson_below": float("nan")},
+        },
+    )
+
+    workload = workload_from_prepared_node_call(call)
+
+    assert dict(workload.parameters) == {"threshold_mode": "Costes auto"}
+    assert adapter_module._provider_keyword_arguments(call) == {
+        "threshold_mode": "Costes auto"
+    }
+    adapter_module._execute_cpu_reference(call)
+    assert "_vipp_resolved_costes" in cpu_kwargs
+
+
 def test_detached_capture_and_hash_are_read_only_and_promptly_abortable():
     values = np.arange(2_000_000, dtype=np.uint16).reshape(1000, 2000)
     call = PreparedNodeCall(
