@@ -91,6 +91,23 @@ advanced request explicitly enables experimental admission; doing so is not a
 public support claim. Node-card badges always report what the accepted run
 actually used: CPU, CuPy, cuCIM, or an amber CPU fallback.
 
+On native Windows, all three GPU-using policies accept a successfully probed
+NVIDIA CUDA device with compute capability 7.5 or newer and a matching numeric
+driver API of at least `13030`, provided the exact supported Python, scientific
+stack, CUDA runtime, CuPy/provider, and cuCIM provenance checks also pass. The
+GPU model is recorded in provenance; it is not restricted to one exact model.
+Auto and Prefer GPU do not perform a local parity benchmark on first use of a
+qualifying model. Use `Benchmark node…` or `Find fastest pipeline…` in Custom
+mode when you want a local CPU/GPU parity and timing comparison.
+
+Floating-point calculations may differ slightly between GPU models or
+driver/JIT combinations while remaining within the operation's documented
+parity tolerance. Bitwise-contract integer operations remain exact. For a
+reproducible paper or methods report, record the VIPP version, GPU model,
+compute capability, driver API, CUDA runtime, CuPy/cuCIM and NumPy/SciPy/
+scikit-image versions, workflow parameters, and the actual per-node
+implementations from the execution provenance.
+
 Entering `Custom` while VIPP is idle does not recalculate or relabel the last
 valid result. Its thumbnails, values, and actual CPU/GPU provenance remain
 available. If those actual decisions do not satisfy the saved Custom choices,

@@ -18,10 +18,10 @@ from importlib import resources
 from typing import Any
 
 POLICY_SCHEMA_ID = "napari-vipp-compute-policy-artifact-v1"
-PHASE1_POLICY_ID = "phase1-gpu-public-v7"
-PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v7.json"
+PHASE1_POLICY_ID = "phase1-gpu-public-v8"
+PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v8.json"
 PHASE1_POLICY_SHA256 = (
-    "a62854572b1bc7f4c1da526838b71492e4202c91f4723a37ea455c92893f2067"
+    "ad8c1e30373e85735b7e9e01b67e7961cd055c4e28d8d031f876eefb8f351021"
 )
 _POLICY_PACKAGE = "napari_vipp.compute_policies"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -76,14 +76,15 @@ class PlatformAdmissionPolicy:
     scikit_image_versions: tuple[str, ...]
     cuda_major_versions: tuple[int, ...]
     cuda_runtime_versions: tuple[str, ...]
-    driver_versions: tuple[str, ...]
+    minimum_driver_version: str
     cupy_versions: tuple[str, ...]
     cupyx_versions: tuple[str, ...]
     runtime_probe_fingerprint_required: bool
     driver_version_metadata_required: bool
     nvidia_compute_capability_required: bool
-    nvidia_device_names: tuple[str, ...]
-    nvidia_compute_capabilities: tuple[str, ...]
+    nvidia_device_class: str
+    minimum_nvidia_compute_capability: str
+    reference_validation_devices: tuple[str, ...]
     cucim_versions: tuple[str, ...]
     cucim_environment_record_schema: str
     cucim_environment_record_schema_version: int
@@ -238,7 +239,7 @@ def parse_compute_policy_artifact(
     if policy_id != PHASE1_POLICY_ID:
         raise ComputePolicyArtifactError(f"Unsupported Phase 1 policy {policy_id!r}.")
     policy_version = _integer(root["policy_version"], "$.policy_version", minimum=1)
-    if policy_version != 7:
+    if policy_version != 8:
         raise ComputePolicyArtifactError(
             f"Unsupported Phase 1 policy version {policy_version}."
         )
@@ -455,14 +456,15 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
             "scikit_image_versions",
             "cuda_major_versions",
             "cuda_runtime_versions",
-            "driver_versions",
+            "minimum_driver_version",
             "cupy_versions",
             "cupyx_versions",
             "runtime_probe_fingerprint_required",
             "driver_version_metadata_required",
             "nvidia_compute_capability_required",
-            "nvidia_device_names",
-            "nvidia_compute_capabilities",
+            "nvidia_device_class",
+            "minimum_nvidia_compute_capability",
+            "reference_validation_devices",
             "cucim_versions",
             "cucim_environment_record_schema",
             "cucim_environment_record_schema_version",
@@ -532,8 +534,8 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
             f"{path}.cuda_runtime_versions",
             nonempty=True,
         ),
-        driver_versions=_string_tuple(
-            record["driver_versions"], f"{path}.driver_versions", nonempty=True
+        minimum_driver_version=_decimal_string(
+            record["minimum_driver_version"], f"{path}.minimum_driver_version"
         ),
         cupy_versions=_string_tuple(
             record["cupy_versions"], f"{path}.cupy_versions", nonempty=True
@@ -553,14 +555,16 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
             record["nvidia_compute_capability_required"],
             f"{path}.nvidia_compute_capability_required",
         ),
-        nvidia_device_names=_string_tuple(
-            record["nvidia_device_names"],
-            f"{path}.nvidia_device_names",
-            nonempty=True,
+        nvidia_device_class=_identifier(
+            record["nvidia_device_class"], f"{path}.nvidia_device_class"
         ),
-        nvidia_compute_capabilities=_string_tuple(
-            record["nvidia_compute_capabilities"],
-            f"{path}.nvidia_compute_capabilities",
+        minimum_nvidia_compute_capability=_compute_capability_string(
+            record["minimum_nvidia_compute_capability"],
+            f"{path}.minimum_nvidia_compute_capability",
+        ),
+        reference_validation_devices=_string_tuple(
+            record["reference_validation_devices"],
+            f"{path}.reference_validation_devices",
             nonempty=True,
         ),
         cucim_versions=_string_tuple(
@@ -814,6 +818,30 @@ def _identifier(value: object, path: str) -> str:
     if not _IDENTIFIER_RE.fullmatch(result):
         raise ComputePolicyArtifactError(
             f"{path} must be a lowercase policy identifier."
+        )
+    return result
+
+
+def _decimal_string(value: object, path: str) -> str:
+    result = _string(value, path)
+    if not result.isascii() or not result.isdecimal() or int(result) <= 0:
+        raise ComputePolicyArtifactError(f"{path} must be a positive decimal string.")
+    return result
+
+
+def _compute_capability_string(value: object, path: str) -> str:
+    result = _string(value, path)
+    major, separator, minor = result.partition(".")
+    if (
+        separator != "."
+        or not major.isascii()
+        or not major.isdecimal()
+        or not minor.isascii()
+        or not minor.isdecimal()
+        or int(major) <= 0
+    ):
+        raise ComputePolicyArtifactError(
+            f"{path} must be a numeric compute capability such as '7.5'."
         )
     return result
 

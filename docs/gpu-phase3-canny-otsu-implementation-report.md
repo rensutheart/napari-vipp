@@ -192,17 +192,20 @@ benefit evidence is absent or inconclusive.
 ## Platform and packaging limits
 
 The initial runtime is CUDA through CuPy on the branch's exact reviewed
-native-Windows gate: CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`),
-and an NVIDIA GeForce RTX 5090 with compute capability 12.0. CUDA 12 remains a
-qualification-only track outside public admission. Exact comparison-defined
+native-Windows software gate: CUDA runtime API 13.2 (`13020`), CuPy 14.1.1,
+and the pinned provider provenance. Auto, Prefer GPU, and Custom admit any
+successfully probed NVIDIA CUDA device with numeric compute capability at least
+7.5 and a matching numeric driver API at least 13.3 (`13030`). CUDA 12 remains
+a qualification-only track outside public admission. Exact comparison-defined
 admission also requires the reviewed CPU reference versions: NumPy 2.5.1, SciPy
 1.18.0, and scikit-image 0.26.0. Missing or changed scientific-stack provenance
 produces a typed visible CPU decision before CUDA probing. CPU-only plugin
 discovery and execution remain import-safe.
-Supported native Linux, secondary RTX 40-series Windows laptops, and clean
-environment recreation still require their named evidence runs. WSL2 remains
-secondary evidence. NVIDIA CUDA has no macOS target, so macOS remains CPU-only
-for these providers while the separate M1 Max Metal/MPS/MLX study is pending.
+Supported native Linux and clean-environment recreation still require their
+named evidence runs; broader Windows-device measurements remain performance
+characterization rather than a model allowlist. WSL2 remains secondary
+evidence. NVIDIA CUDA has no macOS target, so macOS remains CPU-only for these
+providers while the separate M1 Max Metal/MPS/MLX study is pending.
 
 The raw cuCIM Canny rejection is a scientific-parity result, not merely a
 Windows packaging limitation. The broader cuCIM/Clara feature-complete

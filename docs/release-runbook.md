@@ -1,6 +1,6 @@
 # VIPP Alpha Release Runbook
 
-Last reviewed: 2026-08-08
+Last reviewed: 2026-08-09
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 publishing the companion documentation site, and confirming discovery on
@@ -10,7 +10,7 @@ napari hub.
 
 - Target package version: set `<version>` from the release milestone before
   starting; do not reuse the current package version by accident.
-- Current prepared target: `0.13.0a3`.
+- Current prepared target: `0.13.0a4`.
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -25,7 +25,7 @@ napari hub.
    clean, pushed release commit.
 
 This repository does not currently contain a PyPI Trusted Publishing workflow,
-so this runbook documents the manual Twine route for 0.13.0a3. Never paste,
+so this runbook documents the manual Twine route for 0.13.0a4. Never paste,
 print, commit, or place the PyPI token in a command, script, or shell
 environment variable. Enter it only at Twine's hidden password prompt.
 
@@ -118,7 +118,7 @@ distribution decision before freezing the commit:
    installation, compute, and validation pages that ordinary users cannot
    install cuCIM and that the affected providers normally remain on CPU.
 
-VIPP 0.13.0a1 through 0.13.0a3 use option 2. Every user builds and keeps their
+VIPP 0.13.0a1 through 0.13.0a4 use option 2. Every user builds and keeps their
 own archive; policy allows a per-user archive SHA only when its installed
 payload, pinned source/recipe, environment, and workload pass the exact
 reviewed gates.
@@ -234,7 +234,7 @@ python -m pip install -r requirements.txt
 python -m mkdocs build --strict
 ```
 
-Review the rendered `0.13.0a3` release page, workflow-schema upgrade guidance,
+Review the rendered `0.13.0a4` release page, workflow-schema upgrade guidance,
 batch workspace instructions, architecture boundaries, Windows CUDA/cuCIM
 installation boundary, and known limitations.
 Commit and push the docs release before the package release. A push to the docs

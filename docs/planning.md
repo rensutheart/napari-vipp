@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-08-08
+Last reviewed: 2026-08-09
 
 This is the concise planning source of truth. It records the current public
 baseline, the work that is still genuinely open, and the intended order for the
@@ -83,7 +83,7 @@ authoring remain later milestones.
 
 ## Current Public Baseline
 
-Current alpha release: `0.13.0a3`.
+Current alpha release: `0.13.0a4`.
 
 The 0.13 alpha adds evidence-gated GPU execution, portable compute intent,
 durable implementation provenance, workflow schema 4, batch schema 3,
@@ -188,17 +188,26 @@ Phase 6 adds cuCIM candidates for the exact basic schemas of `Measure Objects`
 and `Measure Objects + Intensity`, followed by an exact typed host-table
 finalizer that preserves schema, order, units, missing-value behavior, and
 deterministic provenance. Other measurement profiles remain visibly on CPU.
-Normal public admission currently fails closed to the exact recorded
-native-Windows CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and
-RTX 5090 (compute capability 12.0) region. CUDA 12 is qualification-only and
-outside public admission. Auto and Prefer GPU retain that portable reviewed
-region. In Custom mode, `Find fastest pipeline…` may now admit a secondary
-NVIDIA device through the pinned CUDA 13 runtime/provider probes, then require
-exact node parity and changed-boundary whole-pipeline parity before proposing a
-forced preference. The applied preference is an explicit machine-local opt-in,
-not reusable cross-device evidence. A manually authored forced Custom
-preference is the same expert opt-in without attached parity proof, so users
-should rerun Find Fastest after any environment or workload change.
+Normal public admission fails closed to native Windows, CUDA runtime API 13.2
+(`13020`), a matching numeric driver API at least 13.3 (`13030`), an NVIDIA
+CUDA device with compute capability at least 7.5, and the exact pinned Python,
+scientific-stack, CuPy, provider, and cuCIM provenance gates. CUDA 12 remains
+qualification-only and outside public admission. Auto, Prefer GPU, and Custom
+use this same qualifying-device policy; the GPU model is recorded provenance,
+not an exact-model admission gate. `Find fastest pipeline…` additionally
+requires node parity and changed-boundary whole-pipeline parity before
+proposing a forced preference. The applied preference is machine-local intent,
+not reusable cross-device performance evidence, and a manually authored Custom
+preference has no attached parity proof. Users should rerun Find Fastest after
+any environment or workload change.
+
+Floating-point results can vary slightly across GPU models and driver/JIT
+combinations within an operation's declared tolerance; integer operations with
+a bitwise parity contract remain exact. Reproducible publications should report
+the VIPP version, GPU model, compute capability, driver API, CUDA runtime,
+CuPy/cuCIM versions, authoritative CPU scientific-stack versions, workflow,
+parameters, and actual per-node implementations recorded by execution
+provenance.
 Machine-local large-stack timing now records 45.03x, 85.06x, and 94.58x paired
 median speedups on the RTX 5090 for one real 8.51-million-voxel ND2 volume and
 16.78/67.11-million-voxel 3D shape stresses, respectively. Those short
@@ -225,8 +234,8 @@ severity-classified. Optimizer UI
 lifecycle/snapshot hardening continues alongside the maintained next order.
 RL/RL-TV evidence ownership is isolated from broad shared-file hashes;
 Measurements and durable batch/generated/export execution are implemented.
-The maintained next order is native-Linux evidence, portable Auto/Prefer-GPU
-evidence for RTX 40-series hardware, M1 Max CPU qualification followed by an
+The maintained next order is native-Linux evidence, broader multi-device
+performance characterization, M1 Max CPU qualification followed by an
 Apple-provider study, general cuCIM/Clara packaging, explicit Convert
 Dtype/residency bridges, and additional reasonable GPU node regions. See the
 [GPU production plan](gpu-production-implementation-plan.md) and

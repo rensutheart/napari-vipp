@@ -30,10 +30,10 @@ authored data or parameters to make them eligible.
 
 The retained pre-0.13.0a3 full-profile RTX 5090 record passed exact parity,
 matched rejection, cancellation, cleanup, and timing review. The implementation
-entered the immutable v4 policy artifact as `public_auto_candidate`, and current
-v7 retains that recorded-host policy unchanged: the exact region appears in
-ordinary Custom pipelines and is a reviewed Auto default wherever its current
-gates pass.
+entered the immutable v4 policy artifact as `public_auto_candidate`, and v7
+retains that historical recorded-host policy unchanged. The current policy
+keeps the same scientific region and admits it through Auto, Prefer GPU, and
+Custom on any qualifying NVIDIA CUDA device.
 The completed-run exploration sequence may later select CPU or an accelerated
 assignment under Auto's conservative gate. This does not wait for
 every CPU dtype or operating system to gain a GPU implementation, and branch
@@ -360,23 +360,23 @@ workload and environment, and CPU remains a correct outcome for small calls.
 
 ## Platform and packaging limits
 
-The first executable CUDA policy is the branch's exact native-Windows CPython
-3.12 environment with CuPy 14.1.1 and the reviewed NumPy 2.5.1, SciPy 1.18.0,
-and scikit-image 0.26.0 CPU reference stack. The canonical Auto/Prefer-GPU host
-is an RTX 5090 with the recorded CUDA runtime/driver APIs and compute capability.
-Different package versions, runtime, or Python ABI fail closed. Starting in
-0.13.0a3, a compatible secondary NVIDIA device can enter explicit Custom
-execution or local parity-gated Find-Fastest qualification under the exact
-supported software stack; that local result is not portable evidence.
+The executable CUDA policy is the branch's exact native-Windows CPython 3.12
+environment with CuPy 14.1.1, CUDA runtime API 13.2 (`13020`), and the reviewed
+NumPy 2.5.1, SciPy 1.18.0, and scikit-image 0.26.0 CPU reference stack.
+Different package versions, runtime, or Python ABI fail closed. Auto, Prefer
+GPU, and Custom admit any successfully probed NVIDIA CUDA device with numeric
+compute capability at least 7.5 and a matching numeric driver API at least 13.3
+(`13030`). Find Fastest adds local parity and timing, but its result is not
+portable performance evidence.
 
 Source-current 0.13.0a3 validation fixed the CuPy 14.1.1 compile failure and
 passed Sigma parity on an RTX 4050 Laptop GPU at compute capability 8.9. This
 bounded result complements rather than replaces the historical RTX 5090 record.
-Native Linux and portable Auto/Prefer-GPU evidence for RTX 40-series Windows
-laptops remain named validation targets; WSL2 is secondary evidence. Current
-CUDA has no macOS target, so this provider is CPU-only on macOS. The separate M1
-Max Metal/MPS/MLX study can add a future provider only after operation-level
-scientific and lifecycle gates pass. CuPy and CUDA remain optional: base
+Native Linux and broader multi-device performance characterization remain named
+validation targets; WSL2 is secondary evidence. Current CUDA has no macOS
+target, so this provider is CPU-only on macOS. The separate M1 Max Metal/MPS/MLX
+study can add a future provider only after operation-level scientific and
+lifecycle gates pass. CuPy and CUDA remain optional: base
 installation, plugin discovery, workflow loading, and CPU execution must not
 import them.
 

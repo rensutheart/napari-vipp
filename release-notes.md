@@ -1,18 +1,19 @@
-# VIPP 0.13.0a3
+# VIPP 0.13.0a4
 
-VIPP 0.13.0a3 is a focused GPU-qualification bugfix release on the 0.13 alpha.
-Node benchmarking and **Find fastest pipeline…** can now parity-test compatible
-secondary NVIDIA GPUs instead of rejecting every model except the recorded RTX
-5090 before measurement starts. Auto and Prefer GPU retain that narrower
-reviewed-host policy; applying a measured proposal writes an explicit Custom
-choice for the locally qualified implementation.
+VIPP 0.13.0a4 broadens normal public GPU admission across compatible NVIDIA
+CUDA 13 devices. Auto, Prefer GPU, and explicit Custom GPU choices no longer
+require the device name and compute capability of the reference RTX 5090 host.
+Instead, the exact supported native-Windows, CPython 3.12, CUDA runtime,
+scientific-stack, provider, memory, and workload gates must pass, together with
+a minimum NVIDIA compute capability and driver API.
 
-The release also fixes Sigma Filter compilation with CuPy 14.1.1, whose NVRTC
-path supplies a flush-to-zero option that conflicted with VIPP's previous
-explicit option. The bit-level subnormal safeguards remain in place. This
-release retains the fresh-workflow compute-planning corrections introduced in
-0.13.0a2 and the unified GPU, workflow, batch, interface, and scientific-tool
-improvements introduced in 0.13.0a1.
+Immutable compute-policy artifact v8 records the compatible-device rule and
+keeps the RTX 5090 and RTX 4050 Laptop GPU systems as reference validation
+devices rather than an allowlist. This release retains the local Find-Fastest
+and Sigma fixes introduced in 0.13.0a3, the fresh-workflow compute-planning
+corrections from 0.13.0a2, and the unified GPU, workflow, batch, interface, and
+scientific-tool improvements introduced in 0.13.0a1. Workflow and batch schemas
+do not change.
 
 CPU remains the portable scientific reference implementation. GPU support is
 deliberately selective in this alpha: VIPP accelerates only the combinations of
@@ -21,52 +22,57 @@ environment that have been reviewed. When a call does not qualify, VIPP keeps
 the data on CPU and explains why instead of silently changing its type or
 parameters.
 
-## Fixed in 0.13.0a3
+## Changed in 0.13.0a4
 
-- **Find fastest pipeline…** now admits a secondary NVIDIA GPU to its local
-  parity and timing transaction when the pinned Windows/CUDA 13 runtime,
-  dependency, provenance, compute-capability, memory, and workload checks pass.
-  The device must report compute capability 7.5 or newer and a driver API at
-  least 13.3. Exact node and changed-output whole-pipeline parity are still
-  mandatory before a proposal is offered.
-- An accepted proposal is applied as an explicit Custom implementation choice.
-  The same compatible-device path is available to a manually authored Custom
-  GPU choice as expert intent, but that choice is not proof that parity ran.
-  Auto and Prefer GPU remain on the narrower recorded RTX 5090 policy.
-- Sigma Filter's CuPy kernel now compiles under CuPy 14.1.1 without passing a
-  duplicate, conflicting NVRTC flush-to-zero option.
+- Public GPU admission requires native Windows, CPython 3.12, CUDA runtime API
+  13.2, driver API 13.3 or newer, an NVIDIA CUDA device with compute capability
+  7.5 or newer, CuPy/CuPyX 14.1.1, and the pinned NumPy, SciPy, and scikit-image
+  versions. cuCIM-backed regions retain their additional exact provenance and
+  approval requirements.
+- Auto may use any compatible device but remains evidence- and workload-driven;
+  CPU is still a correct result when the reviewed performance gates do not
+  clear. Prefer GPU requests every scientifically and operationally eligible
+  public GPU implementation even when CPU is faster. Explicit Custom choices
+  retain normal visible/strict fallback behavior.
+- Device names and compute capabilities are recorded in execution provenance
+  rather than used as a model allowlist. Unsupported workloads, insufficient
+  memory, failed providers, and changed scientific dependencies remain on CPU
+  with a visible reason.
+- **Find fastest pipeline…** remains the review-before-apply path for exact node
+  parity, paired timing, changed-output whole-pipeline parity, and a measured
+  Custom assignment on the current device and workload.
 
-## Source-current RTX 4050 validation
+## Cross-device reproducibility
 
-The corrected source passed bounded validation on native Windows with an
-NVIDIA GeForce RTX 4050 Laptop GPU (compute capability 8.9), CUDA runtime API
-13.2, driver API 13.3, CPython 3.12.10, CuPy 14.1.1, cuCIM 26.6.0, and the
-pinned NumPy, SciPy, and scikit-image stack. Package consistency, CUDA, CuPyX,
-cuCIM, and compute-doctor probes passed.
+Compatible does not mean bit-for-bit identical across GPU models. VIPP still
+enforces each implementation's declared parity contract—bitwise where promised
+and bounded tolerance for reviewed floating-point regions—but CUDA hardware,
+drivers, compiler paths, and reduction order can produce minor device-dependent
+floating-point differences.
 
-- Eighty-seven real-device provider cases passed, followed by the formerly
-  failing Sigma compile/parity case.
-- A median pipeline and a Canny-to-Otsu pipeline passed real Find-Fastest node
-  parity, paired timing, changed-output whole-pipeline validation, applied
-  execution, fallback, and cleanup checks. The optimizer retained CPU Otsu
-  when it was faster.
-- All 39 bundled-example executions passed: 13 CPU, 13 actual Prefer GPU, and
-  13 explicit Custom attempts. CPU and Prefer-GPU outputs matched exactly;
-  three eligible Custom Otsu nodes used CUDA with bitwise parity.
-- A separate cuCIM-background-to-Gaussian-to-median proposal was correctly
-  rejected when tolerated upstream float differences caused a downstream
-  bitwise mismatch. All terminal device-memory snapshots were clean.
+For reproducibility, retain the VIPP version, workflow and input identities,
+actual implementation IDs and versions, exact GPU model and compute capability,
+NVIDIA driver, CUDA driver/runtime and toolkit-package versions, Python,
+CuPy/CuPyX/cuCIM, NumPy, SciPy, and scikit-image. Validate consequential
+analyses against the CPU reference and review results before combining runs
+from different environments.
 
-These results describe the tested source revision and RTX 4050 host. They
-complement rather than relabel the retained historical RTX 5090 records, do not
-establish portable performance, and are not final tagged-wheel qualification.
+The retained RTX 5090 matrices remain bounded reference evidence. On an RTX
+4050 Laptop GPU, source-current 0.13.0a4 validation passed real Auto and Prefer
+GPU execution and all 13 bundled workflows in independent CPU, Auto, and
+Prefer-GPU runs. Both accelerated modes selected CUDA nodes; every selected
+node passed its declared parity contract, no fallback record was emitted, and
+cleanup succeeded. Separately, the exact 0.13.0a3 tagged wheel passed end-to-end
+local qualification, Find Fastest, applied CuPyX median execution, bitwise CPU
+parity, no-fallback execution, cleanup, and terminal-memory checks on the same
+system. These records are not portable performance promises.
 
 ## Install or upgrade
 
 VIPP supports CPython 3.12 and 3.13 for CPU use:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a3"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a4"
 vipp
 ```
 
@@ -76,7 +82,7 @@ with a compatible NVIDIA driver, install the pinned CUDA 13 environment with:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a3"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a4"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -85,14 +91,25 @@ Only the NVIDIA display driver is a machine-wide prerequisite for this standard
 route. It does not require a separate CUDA Toolkit, `nvcc`, Visual Studio, or
 CMake.
 
-When moving from 0.12.0a3, 0.13.0a1, or 0.13.0a2, preserve the old environment
-and workflow, then open a duplicate in 0.13.0a3. Older schema-3 workflows
-deliberately open in CPU mode and become schema 4 only when saved. Version-1
-batch configurations likewise load with explicit CPU intent; version-2
-configurations keep their saved compute request. Both load without source-axis
-declarations and become version 3 when reviewed and saved. Regenerate exported
-Python and saved batch runners because generated programs are locked to the
-exact VIPP version that created them.
+When moving from 0.12.0a3 or any earlier 0.13 alpha, preserve the old
+environment and workflow, then open a duplicate in 0.13.0a4. Older schema-3
+workflows deliberately open in CPU mode and become schema 4 only when saved.
+Version-1 batch configurations likewise load with explicit CPU intent;
+version-2 configurations keep their saved compute request. Both load without
+source-axis declarations and become version 3 when reviewed and saved.
+Regenerate exported Python and saved batch runners because generated programs
+are locked to the exact VIPP version that created them.
+
+## Retained from 0.13.0a3
+
+- Node benchmarking and **Find fastest pipeline…** can parity-test compatible
+  secondary NVIDIA GPUs under the pinned CUDA 13 stack before proposing an
+  explicit Custom implementation choice.
+- Sigma Filter compiles under CuPy 14.1.1 without passing a duplicate,
+  conflicting NVRTC flush-to-zero option; its bit-level subnormal safeguards
+  remain in place.
+- The exact tagged a3 wheel passed end-to-end local qualification and applied
+  Find-Fastest execution on the RTX 4050 Laptop GPU reference system.
 
 ## Retained from 0.13.0a2
 
@@ -354,20 +371,14 @@ physical Z distance.
 ## GPU and cuCIM boundaries
 
 The `gpu-cuda13` extra installs the pinned NumPy, SciPy, scikit-image, CuPy,
-and CUDA package track. Portable Auto/Prefer-GPU evidence for this alpha remains
-limited to the recorded native-Windows, 64-bit CPython 3.12, CUDA 13, RTX 5090
-environment. On another NVIDIA GPU, installation alone is not an acceleration
-claim: use Custom mode's **Find fastest pipeline…** action to run exact local
-node and whole-pipeline parity before reviewing and applying its proposal.
-That route requires the pinned stack, successful synchronized provider probes,
-a CUDA-13-supported Turing-or-newer compute capability (7.5+), admitted
-memory/workload bounds, and clean execution. Its resulting Custom preference is
-an explicit local opt-in, not portable evidence for a different GPU or
-environment. The same Custom choice remains available as a manual expert
-override and does not claim that Find Fastest was run; rerun the optimizer
-whenever the device, environment, data, or workload changes. Native Linux
-qualification, portable
-Auto/Prefer-GPU evidence for RTX 40-series hardware, and Apple GPU acceleration
+and CUDA package track. Public GPU admission remains native-Windows and 64-bit
+CPython 3.12 only, but it accepts any NVIDIA CUDA device meeting the compute-
+capability 7.5 minimum when the pinned CUDA runtime, minimum driver, scientific
+stack, provider, memory, and workload checks pass. Auto and Prefer GPU use that
+same compatible-device gate; a model name is provenance rather than an
+allowlist. Find Fastest remains available for exact local parity and timing,
+but is no longer required merely because the compatible GPU model differs from
+a reference device. Native Linux qualification and Apple GPU acceleration
 remain future work; macOS uses CPU in this alpha.
 
 The ordinary CUDA extra neither distributes nor requires cuCIM. Windows users
@@ -378,10 +389,10 @@ install their private wheel through the manifest-verifying helper. VIPP does
 not host that wheel, and the local build omits Clara whole-slide I/O. Without
 an approved local cuCIM build, those affected regions remain on CPU while
 independently eligible CuPy and CuPyX regions can still use the GPU. See the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a3/getting-started/windows-cuda/)
+[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a4/getting-started/windows-cuda/)
 for the complete procedure and exact provenance pin.
 
-VIPP remains alpha software. For consequential work, record the application
-version, workflow, compute request, implementations that actually ran,
-environment, inputs, batch configuration, manifests, fallbacks, and validation
-evidence.
+VIPP remains alpha software. For consequential work, retain the exact GPU,
+driver, CUDA and scientific-package environment alongside the application
+version, workflow, compute request, implementations that actually ran, inputs,
+batch configuration, manifests, fallbacks, and validation evidence.

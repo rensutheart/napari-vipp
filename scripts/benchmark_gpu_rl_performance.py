@@ -48,6 +48,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = (
     PROJECT_ROOT / "docs/benchmarks/rl-cupy-performance-windows-rtx5090.json"
 )
+# This script fingerprint also marks release-policy changes that intentionally
+# make an older performance record historical; keep shared registries out of
+# the operation-owner file list below.
 SOURCE_PROVENANCE_PATHS = (
     "scripts/benchmark_gpu_rl_performance.py",
     "src/napari_vipp/core/compute.py",

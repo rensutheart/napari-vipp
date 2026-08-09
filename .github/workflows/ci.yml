@@ -57,7 +57,7 @@ jobs:
           python -m pip install --force-reinstall --no-deps dist/*.whl
           python -m pip check
           python -m npe2 validate napari-vipp
-          python -c "from importlib.metadata import version; from importlib.resources import files; import napari_vipp; root = files('napari_vipp'); assert napari_vipp.__version__ == version('napari-vipp'); assert root.joinpath('napari.yaml').is_file(); assert root.joinpath('compute_policies', 'phase1-gpu-public-v7.json').is_file(); assert any(root.joinpath('examples').iterdir())"
+          python -c "from importlib.metadata import version; from importlib.resources import files; import napari_vipp; root = files('napari_vipp'); assert napari_vipp.__version__ == version('napari-vipp'); assert root.joinpath('napari.yaml').is_file(); assert root.joinpath('compute_policies', 'phase1-gpu-public-v8.json').is_file(); assert any(root.joinpath('examples').iterdir())"
 
   tests:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})

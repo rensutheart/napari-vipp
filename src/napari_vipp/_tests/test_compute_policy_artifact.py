@@ -44,7 +44,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     policy = load_phase1_compute_policy()
 
     assert policy.policy_id == PHASE1_POLICY_ID
-    assert policy.policy_version == 7
+    assert policy.policy_version == 8
     assert policy.content_sha256 == PHASE1_POLICY_SHA256
     assert policy.phase == "phase1"
     assert policy.status == "public-validated"
@@ -53,7 +53,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     assert not policy.exposure.developer_enablement_required
 
     with pytest.raises(FrozenInstanceError):
-        policy.policy_version = 7  # type: ignore[misc]
+        policy.policy_version = 8  # type: ignore[misc]
 
 
 def test_phase1_operation_ids_and_conservative_settings_are_exact():
@@ -84,7 +84,11 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
     assert policy.auto_selection.local_noise_relative_fraction == 0.05
     assert policy.auto_selection.local_noise_absolute_ms == 10.0
     assert policy.auto_selection.tie_breaker == "retain-current-else-cpu-v1"
-    assert "rtx40-series-secondary-v1" in policy.auto_selection.pending_evidence
+    assert "rtx40-series-secondary-v1" not in policy.auto_selection.pending_evidence
+    assert (
+        "multi-architecture-reproducibility-v1"
+        in policy.auto_selection.pending_evidence
+    )
     assert policy.local_benchmark.initial_warm_rounds == 7
     assert policy.local_benchmark.adaptive_warm_rounds == (15, 21)
     assert policy.local_benchmark.confidence_level == 0.95
@@ -112,14 +116,18 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
     assert platform.scikit_image_versions == ("0.26.0",)
     assert policy.platform_admission.cuda_major_versions == (13,)
     assert platform.cuda_runtime_versions == ("13020",)
-    assert platform.driver_versions == ("13030",)
+    assert platform.minimum_driver_version == "13030"
     assert platform.cupy_versions == ("14.1.1",)
     assert platform.cupyx_versions == ("14.1.1",)
     assert platform.runtime_probe_fingerprint_required
     assert platform.driver_version_metadata_required
     assert platform.nvidia_compute_capability_required
-    assert platform.nvidia_device_names == ("NVIDIA GeForce RTX 5090",)
-    assert platform.nvidia_compute_capabilities == ("12.0",)
+    assert platform.nvidia_device_class == "nvidia-cuda"
+    assert platform.minimum_nvidia_compute_capability == "7.5"
+    assert platform.reference_validation_devices == (
+        "NVIDIA GeForce RTX 5090 / compute capability 12.0",
+        "NVIDIA GeForce RTX 4050 Laptop GPU / compute capability 8.9",
+    )
     assert platform.cucim_versions == ("26.6.0", "26.06.00")
     assert platform.cucim_environment_record_schema == "napari-vipp-gpu-environment"
     assert platform.cucim_environment_record_schema_version == 2
@@ -320,7 +328,7 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
     )
 
 
-def test_v7_revises_only_cucim_provenance_and_legacy_resources_are_byte_stable():
+def test_v8_broadens_hardware_and_legacy_resources_are_byte_stable():
     package = resources.files("napari_vipp.compute_policies")
     historical_sha256 = {
         "phase1-gpu-developer-v1.json": (
@@ -341,6 +349,9 @@ def test_v7_revises_only_cucim_provenance_and_legacy_resources_are_byte_stable()
         "phase1-gpu-public-v6.json": (
             "e7822c096d2f4efeaaa745bfce1ae75c94f966af7582581f68a82586bc56139d"
         ),
+        "phase1-gpu-public-v7.json": (
+            "c921c49bc1993dabb71c440af8f08e739bf2d7a8808e0a0a6975082a23530877"
+        ),
     }
     for name, expected_digest in historical_sha256.items():
         resource = package.joinpath(name)
@@ -351,7 +362,14 @@ def test_v7_revises_only_cucim_provenance_and_legacy_resources_are_byte_stable()
     v4 = json.loads(package.joinpath("phase1-gpu-public-v4.json").read_bytes())
     v5 = json.loads(package.joinpath("phase1-gpu-public-v5.json").read_bytes())
     v6 = json.loads(package.joinpath("phase1-gpu-public-v6.json").read_bytes())
-    v7 = _resource_document()
+    v7 = json.loads(package.joinpath("phase1-gpu-public-v7.json").read_bytes())
+    v8 = _resource_document()
+    assert v8["policy"]["operations"] == v7["policy"]["operations"]
+    v8_platform = v8["policy"]["platform_admission"]
+    assert v8_platform["minimum_driver_version"] == "13030"
+    assert v8_platform["nvidia_device_class"] == "nvidia-cuda"
+    assert v8_platform["minimum_nvidia_compute_capability"] == "7.5"
+    assert len(v8_platform["reference_validation_devices"]) == 2
     assert v4["policy"]["operations"][:-1] == v3["policy"]["operations"]
     sigma = v4["policy"]["operations"][-1]
     assert sigma["operation_id"] == "sigma_filter"
@@ -444,9 +462,20 @@ def test_strict_schema_rejects_invalid_resigned_content():
     (
         ("cucim_wheel_payload_sha256", "not-a-digest", "payload_sha256"),
         ("cucim_source_commit", "abc123", "full Git commit"),
+        ("minimum_driver_version", "13.3", "positive decimal string"),
+        (
+            "minimum_nvidia_compute_capability",
+            "Turing",
+            "numeric compute capability",
+        ),
+        (
+            "minimum_nvidia_compute_capability",
+            "0.0",
+            "numeric compute capability",
+        ),
     ),
 )
-def test_strict_schema_rejects_malformed_cucim_build_provenance(
+def test_strict_schema_rejects_malformed_platform_provenance(
     field,
     value,
     message,
@@ -459,23 +488,23 @@ def test_strict_schema_rejects_malformed_cucim_build_provenance(
         parse_compute_policy_artifact(_encoded(invalid))
 
 
-def test_loader_accepts_only_the_pinned_v7_identity_and_version():
+def test_loader_accepts_only_the_pinned_v8_identity_and_version():
     package = resources.files("napari_vipp.compute_policies")
     signed_v6 = package.joinpath("phase1-gpu-public-v6.json").read_bytes()
     with pytest.raises(ComputePolicyArtifactError, match="Unsupported Phase 1 policy"):
         parse_compute_policy_artifact(signed_v6)
 
     wrong_version = copy.deepcopy(_resource_document())
-    wrong_version["policy_version"] = 8
+    wrong_version["policy_version"] = 9
     _resign(wrong_version)
     with pytest.raises(
         ComputePolicyArtifactError,
-        match="Unsupported Phase 1 policy version 8",
+        match="Unsupported Phase 1 policy version 9",
     ):
         parse_compute_policy_artifact(_encoded(wrong_version))
 
 
-def test_valid_but_changed_v7_record_cannot_be_resigned_in_place():
+def test_valid_but_changed_v8_record_cannot_be_resigned_in_place():
     changed = copy.deepcopy(_resource_document())
     changed["policy"]["auto_selection"]["non_local_minimum_saving_ms"] = 21.0  # type: ignore[index]
     _resign(changed)

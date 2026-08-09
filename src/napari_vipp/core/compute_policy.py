@@ -369,8 +369,6 @@ _PHASE1_CUDA_POLICY_PROVIDER = {
 _PHASE1_CUPY_VERSION = "14.1.1"
 _PHASE1_CUDA_RUNTIME_VERSION = "13020"
 _PHASE1_CUDA_DRIVER_VERSION = "13030"
-_PHASE1_CUDA_DEVICE_NAME = "NVIDIA GeForce RTX 5090"
-_PHASE1_CUDA_COMPUTE_CAPABILITY = "12.0"
 _MINIMUM_CUDA13_COMPUTE_CAPABILITY = (7, 5)
 _PHASE1_CPU_SCIENTIFIC_STACK = {
     "numpy": "2.5.1",
@@ -395,12 +393,8 @@ def evaluate_candidate_support(
     *,
     allow_experimental: bool,
     array_facts: tuple[ArrayFacts, ...] = (),
-    allow_compatible_device: bool = False,
 ) -> SupportDecision:
     """Evaluate declared scientific/environment support without timing."""
-
-    if not isinstance(allow_compatible_device, bool):
-        raise TypeError("allow_compatible_device must be a boolean.")
 
     if not spec.visible_for(allow_experimental=allow_experimental):
         return SupportDecision(
@@ -416,11 +410,7 @@ def evaluate_candidate_support(
             DecisionReason.ENVIRONMENT_UNSUPPORTED,
             "No executable environment policy is registered.",
         )
-    environment_decision = _evaluate_phase1_cuda_environment(
-        spec,
-        environment,
-        allow_compatible_device=allow_compatible_device,
-    )
+    environment_decision = _evaluate_phase1_cuda_environment(spec, environment)
     if environment_decision is not None:
         return environment_decision
     return evaluate_candidate_workload_support(
@@ -616,8 +606,6 @@ def _evaluate_phase1_cuda_host_environment(
 def _evaluate_phase1_cuda_environment(
     spec: OperationComputeSpec,
     environment: ComputeEnvironment,
-    *,
-    allow_compatible_device: bool = False,
 ) -> SupportDecision | None:
     def rejected(reason: str) -> SupportDecision:
         return SupportDecision(
@@ -681,24 +669,12 @@ def _evaluate_phase1_cuda_environment(
         return rejected(
             "The CUDA probe must preserve matching numeric driver-version metadata."
         )
-    if (
-        allow_compatible_device
-        and int(metadata_driver) < int(_PHASE1_CUDA_DRIVER_VERSION)
-    ):
+    if int(metadata_driver) < int(_PHASE1_CUDA_DRIVER_VERSION):
         return rejected(
-            "Local GPU qualification requires a CUDA driver API at least as "
+            "Public GPU admission requires a CUDA driver API at least as "
             "new as the validated 13.3 baseline "
             f"({_PHASE1_CUDA_DRIVER_VERSION}); found {metadata_driver}. CPU "
             "remains authoritative."
-        )
-    if (
-        not allow_compatible_device
-        and metadata_driver != _PHASE1_CUDA_DRIVER_VERSION
-    ):
-        return rejected(
-            "Public GPU admission requires the validated CUDA driver API 13.3 "
-            f"({_PHASE1_CUDA_DRIVER_VERSION}); found {metadata_driver}. Other "
-            "driver versions require renewed evidence, so CPU remains authoritative."
         )
     if (
         not environment.device_id.startswith("cuda:")
@@ -706,15 +682,6 @@ def _evaluate_phase1_cuda_environment(
         or not environment.device_name
     ):
         return rejected("Phase-1 admission requires a selected NVIDIA CUDA device.")
-    if not allow_compatible_device and environment.device_name != (
-        _PHASE1_CUDA_DEVICE_NAME
-    ):
-        return rejected(
-            "Public GPU admission is currently validated only for "
-            f"{_PHASE1_CUDA_DEVICE_NAME}; found "
-            f"{environment.device_name or 'an unnamed device'}. Secondary NVIDIA "
-            "hardware remains a qualification track, so CPU remains authoritative."
-        )
     compute_capability = dict(environment.device_metadata).get(
         "compute_capability",
         "",
@@ -727,19 +694,9 @@ def _evaluate_phase1_cuda_environment(
         _MINIMUM_CUDA13_COMPUTE_CAPABILITY
     ):
         return rejected(
-            "Local GPU qualification on the pinned CUDA 13 track requires a "
+            "Public GPU admission on the pinned CUDA 13 track requires a "
             "Turing-or-newer NVIDIA compute capability of at least 7.5; found "
             f"{compute_capability}. CPU remains authoritative."
-        )
-    if (
-        not allow_compatible_device
-        and compute_capability != _PHASE1_CUDA_COMPUTE_CAPABILITY
-    ):
-        return rejected(
-            "Public GPU admission requires the validated NVIDIA compute capability "
-            f"{_PHASE1_CUDA_COMPUTE_CAPABILITY}; found {compute_capability}. "
-            "Secondary hardware requires its own evidence, so CPU remains "
-            "authoritative."
         )
 
     if spec.validated_environment_policy_id == (

@@ -384,19 +384,26 @@ def test_selected_node_benchmark_qualifies_secondary_nvidia_hardware(
         if item.implementation_id == "cupyx-median-filter-v1"
     )
     assert candidate.parity_passed
-    replanned = plan_compute_decisions(
+    workload = workload_from_prepared_node_call(plan.registered.detached_call)
+    requests = (
+        ComputeRequest(mode="auto", allow_experimental=True),
+        ComputeRequest(mode="prefer_gpu", allow_experimental=True),
         ComputeRequest(
             mode="custom",
             node_preferences={node_id: result.winner_preference},
             allow_experimental=True,
         ),
-        (workload_from_prepared_node_call(plan.registered.detached_call),),
-        registry=coordinator.registry,
-        environment=environment,
     )
-    assert replanned.decisions[0].decision_kind is DecisionKind.SELECTED
-    assert replanned.decisions[0].runtime_id == "cuda-cupy"
-    assert not replanned.decisions[0].fallback_used
+    for request in requests:
+        replanned = plan_compute_decisions(
+            request,
+            (workload,),
+            registry=coordinator.registry,
+            environment=environment,
+        )
+        assert replanned.decisions[0].decision_kind is DecisionKind.SELECTED
+        assert replanned.decisions[0].runtime_id == "cuda-cupy"
+        assert not replanned.decisions[0].fallback_used
     assert runtime.live == {}
 
 

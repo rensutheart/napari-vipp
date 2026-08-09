@@ -156,6 +156,9 @@ def test_environment_fingerprint_includes_python_abi_and_is_json_safe():
         ),
         implementation_library_metadata=(("cupyx", (("build", "reviewed"),)),),
         driver_version="13030",
+        device_id="cuda:0",
+        device_name="NVIDIA GeForce RTX 5090",
+        device_class="nvidia-cuda",
         device_metadata=(("compute_capability", "12.0"),),
         memory_topology="discrete",
         total_accelerator_memory_bytes=8_000_000_000,
@@ -186,6 +189,14 @@ def test_environment_fingerprint_includes_python_abi_and_is_json_safe():
         != replace(
             environment,
             device_metadata=(("compute_capability", "11.0"),),
+        ).fingerprint
+    )
+    assert (
+        environment.fingerprint
+        != replace(
+            environment,
+            device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
+            device_metadata=(("compute_capability", "8.9"),),
         ).fingerprint
     )
     assert (

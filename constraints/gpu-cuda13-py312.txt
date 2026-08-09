@@ -3,10 +3,11 @@
 # CuPy 14.1.1 currently documents CUDA support through 13.2. Pinning the
 # toolkit meta-package is necessary because its unconstrained 13.x resolver can
 # otherwise select a newer, not-yet-admitted CUDA minor.
-# Portable Auto/Prefer-GPU admission also requires the recorded CUDA runtime
-# API 13.2, driver API 13.3, RTX 5090, and compute capability 12.0 environment.
-# Custom Find Fastest may locally qualify another successfully probed NVIDIA
-# device without changing these exact software pins.
+# Public Auto, Prefer-GPU, and Custom admission requires CUDA runtime API 13.2,
+# a matching numeric driver API at least 13.3 (13030), and a successfully
+# probed NVIDIA CUDA device with compute capability at least 7.5. The exact
+# Python, scientific-stack, CuPy, CUDA-runtime, and provider provenance pins
+# below remain mandatory on every admitted device.
 numpy==2.5.1
 scipy==1.18.0
 scikit-image==0.26.0

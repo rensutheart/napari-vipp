@@ -1381,11 +1381,14 @@ Workflow persistence:
   memory cap/reserve, experimental admission, provider probes, device/runtime
   metadata, and benchmark measurements remain machine-local and are excluded
   from workflow JSON.
-- A saved explicit Custom GPU preference can execute on another compatible
+- A saved explicit Custom GPU preference can execute on another qualifying
   device, but it is not cryptographically bound to the local parity record that
-  may have motivated it. Find Fastest must be rerun after changing the device,
-  environment, data, or workload; Auto and Prefer GPU retain their reviewed-
-  host admission policy.
+  may have motivated it. Auto, Prefer GPU, and Custom share the native-Windows
+  CUDA 13 device gate: exact pinned runtime/software/provider provenance, a
+  matching numeric driver API at least `13030`, and an NVIDIA CUDA compute
+  capability of at least 7.5. Find Fastest must be rerun after changing the
+  device, environment, data, or workload when local parity and performance
+  evidence are required.
 - Inspector metadata is always written when saving through the widget and
   records the selected node plus right-panel visibility. Per-node thumbnail
   visibility is written only when `Save thumbnail visibility in workflows` is
@@ -1446,10 +1449,10 @@ Selected-node benchmarking:
 
 - `core/compute_benchmark_coordinator.py` clones the graph, captures the exact
   resolved one-input/one-output node call, performs static scientific and
-  memory admission before runtime probing, and can admit a compatible secondary
-  NVIDIA device under the exact pinned Windows/CUDA 13 stack. It then delegates
-  parity-qualified paired timing to the benchmark service. This local
-  qualification path does not widen Auto or Prefer-GPU admission.
+  memory admission before runtime probing, and admits the same qualifying
+  NVIDIA CUDA devices as Auto, Prefer GPU, and Custom under the exact pinned
+  Windows/CUDA 13 software and provenance gates. It then delegates
+  parity-qualified paired timing to the benchmark service.
 - `ui/compute_benchmark_dialog.py` owns the cancelable Qt worker and evidence
   review. It never mutates the live graph. The widget applies the narrowest
   stable CPU/library/exact preference in one undoable edit only after explicit

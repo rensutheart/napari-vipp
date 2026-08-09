@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+## 0.13.0a4 - 2026-08-09
+
+### Release Overview
+
+This fourth 0.13 alpha removes the RTX-5090 model allowlist from normal public
+GPU admission. Auto, Prefer GPU, and explicit Custom GPU choices can now use a
+compatible NVIDIA CUDA device when the exact supported native-Windows,
+CPython 3.12, CUDA 13, scientific-stack, provider, memory, and workload gates
+pass. CPU remains the authoritative scientific reference, and this release
+does not change workflow or batch schemas.
+
+### Compatible CUDA 13 Admission
+
+- Public GPU admission now requires an NVIDIA CUDA device with compute
+  capability 7.5 or newer, CUDA runtime API 13.2, driver API 13.3 or newer,
+  CuPy/CuPyX 14.1.1, and the pinned NumPy, SciPy, and scikit-image versions.
+  Device model names are recorded for provenance rather than used as an
+  allowlist.
+- Auto remains workload- and evidence-driven and may correctly select CPU.
+  Prefer GPU requests every scientifically and operationally eligible public
+  GPU implementation even when CPU is faster. Unsupported calls remain on CPU
+  with an explained decision, and no mode silently changes authored data or
+  parameters.
+- Immutable compute-policy artifact v8 records the compatible-device rule,
+  minimum driver and compute capability, and the RTX 5090 and RTX 4050 Laptop
+  GPU systems as reference validation devices rather than exclusive targets.
+
+### Validation
+
+- Source-current validation on an NVIDIA GeForce RTX 4050 Laptop GPU (compute
+  capability 8.9) passed real Auto and Prefer-GPU execution through cuCIM and
+  CuPyX with CPU parity, no runtime fallback, successful cleanup, and zero
+  retained VIPP-owned device memory.
+- All 13 bundled workflows then completed independently in CPU, Auto, and
+  Prefer-GPU modes. Both accelerated modes selected real CUDA nodes, every
+  selected node passed its declared production parity contract against the
+  fresh CPU run, no fallback record was emitted, and every graph completed
+  with ready outputs and successful cleanup.
+
+### Cross-device Reproducibility
+
+- Compatible does not imply bit-for-bit identity across GPU models. VIPP still
+  enforces each implementation's declared parity contract, but reviewed
+  floating-point regions can show minor device-dependent differences from
+  CUDA hardware, drivers, compiler paths, or reduction order.
+- Consequential work should retain the exact GPU model and compute capability,
+  NVIDIA driver, CUDA driver/runtime and toolkit-package versions, Python,
+  CuPy/CuPyX/cuCIM, NumPy, SciPy, scikit-image, actual implementation IDs,
+  workflow, and input identities. Validate important results against the CPU
+  reference and review results before combining runs from different
+  environments.
+
 ## 0.13.0a3 - 2026-08-08
 
 ### Release Overview

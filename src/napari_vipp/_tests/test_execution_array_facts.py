@@ -685,7 +685,20 @@ def test_float32_finite_only_candidates_scan_once(
     assert facts.maximum == 80.0
 
 
-def test_secondary_device_custom_candidate_scans_required_facts_once(monkeypatch):
+@pytest.mark.parametrize(
+    ("mode", "preference"),
+    (
+        (ComputeMode.AUTO, None),
+        (ComputeMode.PREFER_GPU, None),
+        (ComputeMode.CUSTOM, "auto"),
+        (ComputeMode.CUSTOM, "library:cupyx"),
+    ),
+)
+def test_compatible_device_candidate_scans_required_facts_once(
+    monkeypatch,
+    mode,
+    preference,
+):
     calls = _scan_spy(monkeypatch)
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
@@ -698,14 +711,15 @@ def test_secondary_device_custom_candidate_scans_required_facts_once(monkeypatch
         device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
         compute_capability="8.9",
     )
+    preferences = {} if preference is None else {gaussian.id: preference}
 
     result = _execute_accelerated(
         _accelerated_request(
             pipeline,
             data,
             compute_request=ComputeRequest(
-                mode=ComputeMode.CUSTOM,
-                node_preferences={gaussian.id: "library:cupyx"},
+                mode=mode,
+                node_preferences=preferences,
             ),
         ),
         planner,

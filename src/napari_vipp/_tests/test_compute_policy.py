@@ -320,36 +320,13 @@ def test_cupyx_environment_policy_fails_closed_on_unproven_provenance(
             },
             "cuda runtime api 13.2",
         ),
-        (
-            {
-                "runtime_metadata": (
-                    (
-                        "cuda-cupy",
-                        (
-                            ("cuda_runtime_version", "13020"),
-                            ("driver_version", "13040"),
-                        ),
-                    ),
-                ),
-                "driver_version": "13040",
-            },
-            "cuda driver api 13.3",
-        ),
-        ({"device_name": "NVIDIA GeForce RTX 5080"}, "rtx 5090"),
-        (
-            {"device_metadata": (("compute_capability", "8.9"),)},
-            "compute capability 12.0",
-        ),
     ],
     ids=(
         "cuda12",
         "other-cuda13-runtime",
-        "other-driver",
-        "secondary-device-same-vendor",
-        "secondary-compute-capability",
     ),
 )
-def test_public_gpu_environment_is_exactly_the_recorded_host_region(
+def test_public_gpu_environment_requires_the_pinned_cuda_runtime(
     environment_updates,
     reason_fragment,
 ):
@@ -367,32 +344,35 @@ def test_public_gpu_environment_is_exactly_the_recorded_host_region(
         assert "cpu remains authoritative" in decision.reason_text.lower()
 
 
-def test_local_qualification_accepts_a_probed_secondary_nvidia_device():
+@pytest.mark.parametrize(
+    ("device_name", "compute_capability"),
+    (
+        ("NVIDIA GeForce RTX 5080", "12.0"),
+        ("NVIDIA GeForce RTX 4050 Laptop GPU", "8.9"),
+        ("NVIDIA T4", "7.5"),
+    ),
+)
+def test_public_admission_accepts_a_probed_compatible_nvidia_device(
+    device_name,
+    compute_capability,
+):
     environment = _cuda_environment(
-        device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
-        device_metadata=(("compute_capability", "8.9"),),
+        device_name=device_name,
+        device_metadata=(("compute_capability", compute_capability),),
     )
 
-    default = evaluate_candidate_support(
+    decision = evaluate_candidate_support(
         _gpu_spec(),
         _workload(),
         environment,
         allow_experimental=False,
     )
-    qualifying = evaluate_candidate_support(
-        _gpu_spec(),
-        _workload(),
-        environment,
-        allow_experimental=False,
-        allow_compatible_device=True,
-    )
 
-    assert not default.supported
-    assert qualifying.supported
-    assert qualifying.reason is DecisionReason.SELECTED_IMPLEMENTATION
+    assert decision.supported
+    assert decision.reason is DecisionReason.SELECTED_IMPLEMENTATION
 
 
-def test_local_qualification_accepts_a_newer_compatible_driver():
+def test_public_admission_accepts_a_newer_compatible_driver():
     environment = _cuda_environment(
         runtime_metadata=(
             (
@@ -413,10 +393,37 @@ def test_local_qualification_accepts_a_newer_compatible_driver():
         _workload(),
         environment,
         allow_experimental=False,
-        allow_compatible_device=True,
     )
 
     assert decision.supported
+
+
+def test_public_admission_rejects_a_driver_older_than_the_cuda13_baseline():
+    environment = _cuda_environment(
+        runtime_metadata=(
+            (
+                "cuda-cupy",
+                (
+                    ("cuda_runtime_version", "13020"),
+                    ("driver_version", "13020"),
+                ),
+            ),
+        ),
+        driver_version="13020",
+        device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
+        device_metadata=(("compute_capability", "8.9"),),
+    )
+
+    decision = evaluate_candidate_support(
+        _gpu_spec(),
+        _workload(),
+        environment,
+        allow_experimental=False,
+    )
+
+    assert not decision.supported
+    assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+    assert "at least" in decision.reason_text.lower()
 
 
 @pytest.mark.parametrize(
@@ -424,7 +431,7 @@ def test_local_qualification_accepts_a_newer_compatible_driver():
     ((), (("compute_capability", "not-numeric"),), (("compute_capability", "7.0"),)),
     ids=("missing", "malformed", "below-cuda13-minimum"),
 )
-def test_local_qualification_still_rejects_incompatible_device_metadata(
+def test_public_admission_rejects_incompatible_device_metadata(
     device_metadata,
 ):
     decision = evaluate_candidate_support(
@@ -435,7 +442,6 @@ def test_local_qualification_still_rejects_incompatible_device_metadata(
             device_metadata=device_metadata,
         ),
         allow_experimental=False,
-        allow_compatible_device=True,
     )
 
     assert not decision.supported
@@ -571,7 +577,7 @@ def _cucim_spec():
     return spec
 
 
-def test_local_qualification_preserves_cupy_and_cucim_provider_provenance():
+def test_compatible_device_admission_preserves_cupy_and_cucim_provenance():
     compatible_updates = {
         "device_name": "NVIDIA GeForce RTX 4050 Laptop GPU",
         "device_metadata": (("compute_capability", "8.9"),),
@@ -607,14 +613,12 @@ def test_local_qualification_preserves_cupy_and_cucim_provider_provenance():
             raw_workload,
             raw_environment,
             allow_experimental=True,
-            allow_compatible_device=True,
         ),
         evaluate_candidate_support(
             _cucim_spec(),
             _background_workload(),
             cucim_environment,
             allow_experimental=True,
-            allow_compatible_device=True,
         ),
     )
 

@@ -2052,7 +2052,8 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
     )
 
 
-def test_real_prefer_gpu_runs_every_eligible_node_without_benchmark_evidence():
+@pytest.mark.parametrize("mode", (ComputeMode.AUTO, ComputeMode.PREFER_GPU))
+def test_real_gpu_modes_run_every_eligible_node_without_benchmark_evidence(mode):
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
     if importlib.util.find_spec("cucim") is None:
@@ -2097,7 +2098,7 @@ def test_real_prefer_gpu_runs_every_eligible_node_without_benchmark_evidence():
     )
     pipeline.run(data, input_metadata={"axes": "CYX"})
     expected = pipeline.outputs[median.id].copy()
-    compute_request = ComputeRequest(mode=ComputeMode.PREFER_GPU)
+    compute_request = ComputeRequest(mode=mode)
     request = replace(
         _accelerated_request(pipeline, data, compute_request),
         input_metadata={"axes": "CYX"},
@@ -2108,7 +2109,7 @@ def test_real_prefer_gpu_runs_every_eligible_node_without_benchmark_evidence():
     assert result.error == ""
     assert result.pipeline is not None
     assert result.execution_report is not None
-    assert result.execution_report.request.mode is ComputeMode.PREFER_GPU
+    assert result.execution_report.request.mode is mode
     assert result.execution_report.cleanup_succeeded
     decisions = {
         decision.node_id: decision

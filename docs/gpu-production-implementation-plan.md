@@ -384,10 +384,10 @@ retains paired samples, transfer/resident timing, memory, cleanup, environment,
 and source-currentness context.
 
 Current limits remain explicit: RL and RL-TV expose only their exact validated
-regions; portable broad Auto admission is not claimed; exact benchmarking still requires one output and
-excludes writers; pipeline optimization still supports
-one accelerator runtime; native Linux and secondary Windows hardware evidence
-is pending; and the UI's separately captured optimizer inputs have not yet been
+scientific regions; cross-device performance is not claimed; exact benchmarking
+still requires one output and excludes writers; pipeline optimization still
+supports one accelerator runtime; native Linux evidence and broader Windows
+device characterization are pending; and the UI's separately captured optimizer inputs have not yet been
 replaced with one immutable application snapshot. Batch, generated Python/CLI,
 and standalone export now use the same admitted CPU/GPU implementations and
 durable execution contract as the interactive service.
@@ -2727,13 +2727,22 @@ workloads visibly remain on CPU.
 scientific, memory, cleanup, cancellation, and provenance gates. That exact
 region is now `public_auto_candidate`; packaging and broader platform support
 remain separate claims, and Auto-performance evidence never bypasses the exact
-environment gate. The portable Auto/Prefer-GPU gate is the recorded native-
-Windows CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and RTX 5090
-(compute capability 12.0) host. CUDA 12 is qualification-only and outside
-public admission. Starting in 0.13.0a3, a secondary NVIDIA model can enter
-explicit Custom execution or parity-gated local Find-Fastest qualification
-under the exact supported CUDA 13 software stack. That machine-local opt-in
-does not promote the model into the portable reviewed-host region.
+environment gate. Auto, Prefer GPU, and Custom share the native-Windows CUDA
+device policy: runtime API 13.2 (`13020`), exact pinned Python/scientific-stack/
+CuPy/provider/cuCIM provenance, a matching numeric driver API at least 13.3
+(`13030`), and a successfully probed NVIDIA CUDA device with numeric compute
+capability at least 7.5. CUDA 12 is qualification-only and outside public
+admission. The GPU model is recorded in environment and execution provenance,
+not used as an exact-model allowlist. Find Fastest additionally runs local node
+and changed-boundary whole-pipeline parity before proposing a preference; that
+result remains machine-local performance evidence.
+
+Floating-point results may vary slightly between GPU models or driver/JIT
+combinations while remaining within each operation's declared tolerance;
+bitwise integer contracts remain exact. Reproducible publications should report
+the VIPP version, GPU model, compute capability, driver API, CUDA runtime,
+CuPy/cuCIM and authoritative CPU scientific-stack versions, workflow
+parameters, and actual per-node implementation provenance.
 Rollback removes only the
 background declarations/adapter. The production-adapter tests must run from the
 same dedicated VIPP environment into which the recorded wheel was installed,
@@ -3267,7 +3276,7 @@ not reasons to redesign Phase 1.
 | D4 | Persistence | Workflow v4 stores global intent, fallback, and authored node preferences; v3 migrates to CPU. Separate validated VIPP UI metadata stores optimizer-locked node IDs without changing the scientific workflow hash. Pass 4 atomically updates the canonical workflow hash for compute intent. Batch config v2 stores its full effective request and v1 migrates to CPU; generated/batch/export surfaces execute that intent and record configured/effective hashes plus actual provenance. Resolved hardware and timings remain outside portable workflow JSON. | Implemented across interactive, batch, generated Python/CLI, and export; cross-platform replay evidence remains a release gate. |
 | D5 | Installation UX | Start with provider-aware diagnostics and a safe copyable command. A later in-app installer requires explicit consent, an isolated supported environment, progress, verification, and restart; never mutate an arbitrary napari environment silently. | Validate CUDA-13 and CUDA-12 packages before publishing extras or commands. |
 | D6 | Result caching | Key results by actual implementation/version and scientific semantics. Identical actual CPU execution may be reused across Auto/Prefer-GPU/Custom; different implementations remain separate unless a reviewed bitwise-equivalence group exists. | Prove stale-run and exact-pin behavior in Pass 4. |
-| D7 | Initial hardware | CUDA acceleration targets validated native Windows and Linux first, including RTX 5090 and RTX 40-series laptops. WSL2 is a separate Linux deployment. macOS uses CPU initially while M1 Max Metal/MPS/MLX support is investigated. | Name public OS/Python/CUDA/device tiers only after clean-host evidence. |
+| D7 | Initial hardware | Native-Windows CUDA admission accepts qualifying NVIDIA devices at compute capability 7.5 or newer under the exact pinned software/provenance gates; the recorded RTX 5090 and RTX 4050 hosts remain named validation evidence. WSL2 is a separate Linux deployment. macOS uses CPU initially while M1 Max Metal/MPS/MLX support is investigated. | Validate native Linux separately and extend multi-device performance characterization without turning named benchmark hosts into a model allowlist. |
 | D8 | Performance | Custom admission is scientific/operational. A reviewed Auto default requires a lower-confidence 1.20x end-to-end prediction and 20-ms saving. With no compatible history, Auto uses that default; accelerated-only history schedules one same-surface CPU measurement; a later matching run applies the same 1.20x/20-ms gate to the pair. Incompatible interactive, batch, and registry-lifecycle surfaces are never mixed. Raw Custom benchmark winners follow their separate review threshold and never teach Auto. | Recalibrate only from reviewed multi-device production-adapter evidence. |
 | D9 | CI | Every PR keeps CPU/package checks on Windows, macOS, and Linux. Scheduled real-GPU jobs cover Windows CUDA 13 and native Linux CUDA 12/13; releases expand the matrix. | Secure stable GPU hosts and define maintenance ownership before public promotion. |
 | D10 | Device identity | Exact device/driver/runtime belongs in local benchmark identity and run provenance, not scientific result identity unless it changes semantics. Portable artifacts use descriptive tiers and privacy-preserving identifiers. | Review the provenance schema in Pass 4. |

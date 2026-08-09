@@ -250,18 +250,20 @@ The v5 canonical content digest is:
 
 ## Platform and packaging limits
 
-The first admitted environment is native Windows, CPython 3.12, NumPy 2.5.1,
-SciPy 1.18.0, CuPy/CuPyX 14.1.1, CUDA runtime API 13.2, driver API 13.3, and the
-recorded RTX 5090/compute-capability-12.0 device. Changed scientific packages,
-runtime, driver, GPU, compute capability, Python ABI, OS, or execution mode fail
-closed until their own evidence is reviewed.
+The admitted environment is native Windows, CPython 3.12, NumPy 2.5.1, SciPy
+1.18.0, CuPy/CuPyX 14.1.1, CUDA runtime API 13.2 (`13020`), and the exact pinned
+provider provenance. Auto, Prefer GPU, and Custom accept any successfully probed
+NVIDIA CUDA device with numeric compute capability at least 7.5 and a matching
+numeric driver API at least 13.3 (`13030`). Changed scientific packages,
+runtime, Python ABI, OS, execution mode, a lower driver, or an older/malformed
+compute capability fail closed.
 
-Native Linux and RTX 40-series Windows laptops remain named validation targets;
-WSL2 is secondary evidence. CUDA has no macOS target, so this provider is CPU-
-only on macOS. The Apple M1 Max Metal/MPS/MLX study may introduce a different
-provider only after the same operation-level scientific and lifecycle gates
-pass. Base installation, plugin discovery, workflow loading, and CPU execution
-must continue to work without CuPy.
+Native Linux and broader multi-device performance characterization remain named
+validation targets; WSL2 is secondary evidence. CUDA has no macOS target, so
+this provider is CPU-only on macOS. The Apple M1 Max Metal/MPS/MLX study may
+introduce a different provider only after the same operation-level scientific
+and lifecycle gates pass. Base installation, plugin discovery, workflow
+loading, and CPU execution must continue to work without CuPy.
 
 ## Deferred scope
 

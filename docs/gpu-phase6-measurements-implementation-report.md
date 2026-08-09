@@ -25,6 +25,12 @@ CPU remains a normal possible result. In particular, GPU setup and host-table
 construction can dominate a small measurement, and the measured float32 plane
 stack did not benefit on the qualification host.
 
+The shared native-Windows policy admits this region through Auto, Prefer GPU,
+and Custom on any successfully probed NVIDIA CUDA device with numeric compute
+capability at least 7.5 and a matching numeric driver API at least 13.3
+(`13030`), provided the exact pinned Python, scientific-stack, CUDA runtime,
+CuPy, and cuCIM provenance gates pass.
+
 ## Exact public region
 
 The promoted region accepts:
@@ -139,8 +145,9 @@ and its [reproduction protocol](benchmarks/measurements-cucim-evidence-protocol.
 - Add the extended measurement-column groups only after their complete public
   schema, missing-value behavior, units, parity, memory, and lifecycle gates
   pass; do not substitute a convenient `regionprops_table` subset.
-- Qualify native Linux and additional Windows NVIDIA devices before making
-  portable platform or crossover claims.
+- Qualify native Linux before making a Linux platform claim, and collect
+  additional Windows NVIDIA measurements before making portable crossover or
+  speed claims.
 - Keep generated Python/CLI, batch, and export execution on their tracked
   durable-surface path rather than implying that this interactive/headless
   provider already activates every surface.

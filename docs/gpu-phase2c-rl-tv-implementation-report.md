@@ -248,11 +248,13 @@ phantom validator, machine-readable evidence, and validation CSVs are included.
 - The study does not yet cover calibrated biological volumes, denominator-floor
   activation as a scientifically useful regime, alternative TV stencils,
   physical-spacing-aware TV, reflect padding, or observed initialization.
-- Public admission remains the exact native-Windows CUDA runtime API 13.2
-  (`13020`), driver API 13.3 (`13030`), and RTX 5090 compute capability 12.0
-  region. CUDA 12 is qualification-only. Native Linux, RTX 40-series laptop,
-  clean-environment, and Apple M1 Max provider studies remain open; WSL2 is
-  secondary evidence.
+- Public admission remains exact about the native-Windows CUDA runtime API 13.2
+  (`13020`) and pinned software/provenance stack. Auto, Prefer GPU, and Custom
+  admit any successfully probed NVIDIA CUDA device at compute capability 7.5
+  or newer with a matching numeric driver API at least 13.3 (`13030`). CUDA 12
+  is qualification-only. Native Linux, clean-environment, broader multi-device
+  performance, and Apple M1 Max provider studies remain open; WSL2 is secondary
+  evidence.
 - Exact node benchmarking still requires one output; writers, multi-output
   operations, multiple accelerator runtimes, batch, generated Python/CLI, and
   export GPU execution remain outside this slice.

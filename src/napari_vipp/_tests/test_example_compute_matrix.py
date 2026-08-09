@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import fields, is_dataclass
@@ -25,6 +26,7 @@ from napari_vipp.core.compute import (
     DecisionReason,
     FallbackReason,
 )
+from napari_vipp.core.compute_benchmark_adapter import operation_parity
 from napari_vipp.core.compute_registry import (
     ComputeRegistry,
     ImplementationLibraryProbeResult,
@@ -330,6 +332,85 @@ def _assert_equivalent(actual, expected, *, path: str) -> None:
     assert actual == expected, path
 
 
+def _execute_real_cuda_example(spec, sample_catalog, mode: ComputeMode):
+    pipeline = _restore_example(spec)
+    manual_node_ids = frozenset(pipeline.manual_node_ids())
+    request = PipelineRunRequest(
+        run_id=3 if mode is ComputeMode.AUTO else 4,
+        workflow=serialize_workflow(pipeline),
+        input_data=None,
+        input_metadata={},
+        input_name="",
+        source_payloads=_source_payloads(spec, pipeline, sample_catalog),
+        compute_request=ComputeRequest(mode=mode),
+        manual_node_ids=manual_node_ids,
+    )
+
+    result = execute_pipeline_request(request)
+
+    assert result.error == ""
+    assert result.cancelled is False
+    assert result.failure is None
+    assert result.pipeline is not None
+    assert result.execution_report is not None
+    assert result.execution_report.cleanup_succeeded
+    assert result.execution_report.fallback_records == ()
+    assert result.pipeline.completed_node_ids == frozenset(result.pipeline.nodes)
+    assert all(
+        state == EXECUTION_READY
+        for state in result.pipeline.node_execution_states.values()
+    )
+    assert all(
+        not decision.fallback_used
+        for decision in result.execution_report.actual_decisions
+    )
+    return result.pipeline, result.execution_report
+
+
+def _node_cpu_inputs(pipeline: PrototypePipeline, node_id: str) -> tuple[object, ...]:
+    connections = sorted(
+        (
+            connection
+            for connection in pipeline.connections
+            if connection.target_id == node_id
+        ),
+        key=lambda connection: connection.target_port,
+    )
+    return tuple(
+        pipeline.node_outputs[connection.source_id][connection.source_port]
+        for connection in connections
+    )
+
+
+def _assert_gpu_node_parity(
+    cpu_pipeline: PrototypePipeline,
+    gpu_pipeline: PrototypePipeline,
+    node_id: str,
+) -> None:
+    node = cpu_pipeline.nodes[node_id]
+    inputs = _node_cpu_inputs(cpu_pipeline, node_id)
+    array_inputs = tuple(value for value in inputs if isinstance(value, np.ndarray))
+    input_peak = (
+        max(float(np.max(np.abs(value))) for value in array_inputs)
+        if array_inputs
+        else None
+    )
+    parity = operation_parity(
+        node.operation_id,
+        cpu_pipeline.outputs[node_id],
+        gpu_pipeline.outputs[node_id],
+        input_peak=input_peak,
+        input_dtypes=tuple(value.dtype for value in array_inputs),
+        parameters=node.params,
+    )
+    assert parity.passed, f"{node_id}/{node.operation_id}: {parity.message}"
+    _assert_equivalent(
+        gpu_pipeline.node_output_states[node_id],
+        cpu_pipeline.node_output_states[node_id],
+        path=f"{node_id}.states",
+    )
+
+
 @pytest.mark.parametrize(
     "spec",
     EXAMPLE_WORKFLOWS,
@@ -373,6 +454,44 @@ def test_compute_matrix_covers_every_bundled_example():
     assert set(filenames) == {
         path.name for path in example_directory.glob("*.json")
     }
+
+
+@pytest.mark.real_cuda
+def test_real_cuda_all_examples_complete_in_auto_and_prefer_gpu(sample_catalog):
+    if os.environ.get("VIPP_RUN_REAL_CUDA_EXAMPLES") != "1":
+        pytest.skip(
+            "Set VIPP_RUN_REAL_CUDA_EXAMPLES=1 to run the real CUDA example matrix."
+        )
+    with ComputeRegistry() as registry:
+        runtime = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not runtime.available:
+            pytest.skip(runtime.message or "The CUDA runtime is unavailable.")
+        for library_id in ("cupy", "cupyx", "cucim"):
+            library = registry.probe_library(library_id, refresh=True)
+            if not library.available:
+                pytest.skip(library.message or f"{library_id} is unavailable.")
+
+    selected_gpu_nodes = {ComputeMode.AUTO: 0, ComputeMode.PREFER_GPU: 0}
+    for spec in EXAMPLE_WORKFLOWS:
+        cpu_pipeline = _execute_example(spec, sample_catalog, ComputeMode.CPU)
+        for mode in selected_gpu_nodes:
+            gpu_pipeline, report = _execute_real_cuda_example(
+                spec,
+                sample_catalog,
+                mode,
+            )
+            assert cpu_pipeline.topological_order() == gpu_pipeline.topological_order()
+            for decision in report.actual_decisions:
+                if decision.runtime_id != "cuda-cupy":
+                    continue
+                selected_gpu_nodes[mode] += 1
+                _assert_gpu_node_parity(
+                    cpu_pipeline,
+                    gpu_pipeline,
+                    decision.node_id,
+                )
+
+    assert all(count > 0 for count in selected_gpu_nodes.values())
 
 
 @pytest.mark.parametrize(

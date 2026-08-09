@@ -100,17 +100,18 @@ behavior, cache identity, and memory footprint all change. In particular,
 `float32` uses twice the RAM/VRAM of `uint16`. Users should review those effects
 and benchmark the exact converted pipeline before accepting the tradeoff.
 
-## Exact Phase 1 environment admission
+## Phase 1 environment admission
 
-The recorded Phase 1 Auto/Prefer-GPU policy is deliberately narrower than the
-eventual cross-platform product:
+The public Phase 1 Auto/Prefer-GPU/Custom policy remains exact about its
+supported software and platform while admitting qualifying NVIDIA hardware:
 
 - native Windows, CPython 3.12 with the `cpython-312` ABI;
 - NumPy 2.5.1, SciPy 1.18.0, and scikit-image 0.26.0 as the authoritative CPU
   scientific stack;
-- CuPy and CuPyX 14.1.1 with the recorded CUDA runtime API 13.2 (`13020`) and
-  driver API 13.3 (`13030`);
-- an NVIDIA GeForce RTX 5090 with compute capability 12.0;
+- CuPy and CuPyX 14.1.1 with CUDA runtime API 13.2 (`13020`) and a matching
+  numeric driver API at least 13.3 (`13030`);
+- a successfully probed NVIDIA CUDA device with numeric compute capability at
+  least 7.5;
 - for cuCIM, a local CUDA 13 `cucim-cu13` 26.6.0 build from tag
   `v26.06.00`, commit `3c15781c207eab93a317dd9803a6e726fe01f7c4`,
   recipe `napari-vipp-cucim-windows-v1`, and canonical payload SHA-256
@@ -125,11 +126,17 @@ Native Linux setup assets exist, but GPU admission fails closed until a clean
 host supplies the required evidence. macOS remains on the authoritative CPU
 path while a separate Metal/MPS/MLX provider and unified-memory accounting are
 investigated. WSL2 is not treated as native-Windows evidence.
-CUDA 12 remains a qualification-only track outside public admission. Starting
-in 0.13.0a3, a secondary NVIDIA device under the exact supported CUDA 13 stack
-can enter explicit Custom execution or parity-gated local Find-Fastest
-qualification. It does not become a normal Auto/Prefer-GPU candidate, and the
-saved Custom choice is user intent rather than portable validation evidence.
+CUDA 12 remains a qualification-only track outside public admission. Under the
+broadened device policy, Auto, Prefer GPU, and Custom share the same
+qualifying-device gate. Find Fastest still adds local node and whole-pipeline
+parity plus timing; a saved Custom choice is user intent rather than portable
+performance evidence.
+
+Floating-point results can differ slightly across GPU models and driver/JIT
+combinations while remaining within their declared tolerance; bitwise integer
+contracts remain exact. Reproducible reports should include VIPP, GPU model,
+compute capability, driver API, CUDA runtime, CuPy/cuCIM, NumPy/SciPy/
+scikit-image, workflow parameters, and actual implementation provenance.
 
 ## Recreate the validated development environment
 

@@ -1,6 +1,6 @@
 # Native Windows/Linux CUDA 12 qualification runtime for CPython 3.12.
 # This track remains useful for developer evidence but is not admitted by the
-# current public Windows/CUDA 13/RTX 5090 compute policy.
+# current public native-Windows CUDA 13 compute policy.
 numpy==2.5.1
 scipy==1.18.0
 scikit-image==0.26.0

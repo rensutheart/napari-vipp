@@ -267,7 +267,7 @@ def test_custom_exact_and_library_preferences_bypass_auto_threshold():
     assert library.decisions[0].decision_kind is DecisionKind.SELECTED
 
 
-def test_secondary_nvidia_device_requires_explicit_gpu_intent():
+def test_compatible_secondary_nvidia_device_is_admitted_in_every_gpu_mode():
     workload = _workload()
     facts = {"node": _facts(workload)}
     secondary = replace(
@@ -288,6 +288,12 @@ def test_secondary_nvidia_device_requires_explicit_gpu_intent():
         environment=secondary,
         array_facts=facts,
     )
+    custom_auto = plan_compute_decisions(
+        _request("auto"),
+        (workload,),
+        environment=secondary,
+        array_facts=facts,
+    )
     pinned = plan_compute_decisions(
         _request("library:cupyx"),
         (workload,),
@@ -295,12 +301,79 @@ def test_secondary_nvidia_device_requires_explicit_gpu_intent():
         array_facts=facts,
     )
 
-    assert automatic.decisions[0].decision_kind is DecisionKind.POLICY_CPU
-    assert automatic.decisions[0].reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
-    assert preferred.decisions[0].decision_kind is DecisionKind.POLICY_CPU
-    assert preferred.decisions[0].reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+    decisions = (
+        automatic.decisions[0],
+        preferred.decisions[0],
+        custom_auto.decisions[0],
+        pinned.decisions[0],
+    )
+    assert all(
+        decision.decision_kind is DecisionKind.SELECTED for decision in decisions
+    )
+    assert all(decision.runtime_id == "cuda-cupy" for decision in decisions)
+    assert all(
+        decision.reason is DecisionReason.SELECTED_IMPLEMENTATION
+        for decision in decisions
+    )
+
+
+def test_compatible_device_keeps_auto_performance_semantics():
+    workload = _workload()
+    facts = {"node": _facts(workload)}
+    environment = replace(
+        _environment(),
+        device_name="NVIDIA GeForce RTX 4050 Laptop GPU",
+        device_metadata=(("compute_capability", "8.9"),),
+    )
+    slow = {
+        ("node", "cupyx-gaussian-blur-v1"): PerformanceEvidence(
+            0.2,
+            0.19,
+            lower_confidence_speedup=1.01,
+        )
+    }
+    fast = {
+        ("node", "cupyx-gaussian-blur-v1"): PerformanceEvidence(
+            0.2,
+            0.1,
+            lower_confidence_speedup=1.5,
+        )
+    }
+
+    automatic_slow = plan_compute_decisions(
+        ComputeRequest(mode="auto"),
+        (workload,),
+        environment=environment,
+        array_facts=facts,
+        performance_evidence=slow,
+    )
+    automatic_fast = plan_compute_decisions(
+        ComputeRequest(mode="auto"),
+        (workload,),
+        environment=environment,
+        array_facts=facts,
+        performance_evidence=fast,
+    )
+    preferred = plan_compute_decisions(
+        ComputeRequest(mode="prefer_gpu"),
+        (workload,),
+        environment=environment,
+        array_facts=facts,
+        performance_evidence=slow,
+    )
+    pinned = plan_compute_decisions(
+        _request("library:cupyx"),
+        (workload,),
+        environment=environment,
+        array_facts=facts,
+        performance_evidence=slow,
+    )
+
+    assert automatic_slow.decisions[0].decision_kind is DecisionKind.POLICY_CPU
+    assert automatic_slow.decisions[0].reason is DecisionReason.PERFORMANCE_GATE
+    assert automatic_fast.decisions[0].decision_kind is DecisionKind.SELECTED
+    assert preferred.decisions[0].decision_kind is DecisionKind.SELECTED
     assert pinned.decisions[0].decision_kind is DecisionKind.SELECTED
-    assert pinned.decisions[0].runtime_id == "cuda-cupy"
 
 
 def test_public_custom_candidate_requires_explicit_custom_choice():

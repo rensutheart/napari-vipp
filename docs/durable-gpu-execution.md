@@ -49,6 +49,16 @@ eligible GPU candidate has complete comparable timing evidence, Prefer GPU
 selects the fastest GPU; otherwise it selects deterministically by stable
 implementation ID. Missing timing evidence is not itself a reason to use CPU.
 
+On native Windows, Auto, Prefer GPU, and Custom use the same CUDA-device
+admission rule: the exact pinned Python, scientific-stack, CUDA runtime,
+CuPy/provider, and cuCIM provenance gates must pass; the matching numeric driver
+API must be at least `13030`; and the selected NVIDIA CUDA device must report a
+numeric compute capability of at least 7.5. The GPU model itself is recorded as
+provenance rather than used as an exact-model allowlist. Auto and Prefer GPU do
+not run a local parity benchmark merely because a new qualifying model is
+encountered; the explicit Custom benchmark and Find-Fastest actions provide
+that local comparison when wanted.
+
 A Prefer-GPU request requires `fallback_policy: visible`; `strict` is invalid.
 An unsupported node receives an explained ordinary CPU planning decision,
 because “GPU wherever possible” deliberately includes CPU elsewhere. A
@@ -357,6 +367,13 @@ are finalized on the normal cooperative-cancellation path, and the CLI exits
 - `Auto` is hardware- and workload-dependent. Reproduction requires the
   recorded environment and actual implementation provenance, not only the
   authored request.
+- Floating-point implementations can differ slightly across GPU models and
+  driver/JIT combinations while remaining inside their declared parity
+  tolerances; integer operations with a bitwise parity contract remain exact.
+  Publications should report the VIPP version, GPU model, compute capability,
+  driver API, CUDA runtime, CuPy/cuCIM and CPU scientific-stack versions,
+  workflow parameters, and actual per-node implementations from the execution
+  provenance.
 - `Prefer GPU` is an accelerator-placement preference, not a performance
   promise. It can deliberately choose a GPU that is equal to or slower than
   CPU, while still refusing scientifically or operationally inadmissible
@@ -375,11 +392,10 @@ are finalized on the normal cooperative-cancellation path, and the CLI exits
   supply any source identity they want recorded. The saved batch runner remains
   the durable surface for multi-source capture, a final source recheck before
   publication, collision planning, checkpoints, manifests, and replay.
-- Native Linux, portable Auto/Prefer-GPU evidence for secondary RTX 40-series
-  Windows hardware, Apple M1 Max provider feasibility, and feature-complete
-  cuCIM/Clara packaging remain release work. Compatible secondary NVIDIA GPUs
-  can be used only through explicit Custom intent or local parity-gated
-  Find-Fastest qualification. CPU execution remains the portable
+- Native Linux, broader multi-device performance characterization, Apple M1 Max
+  provider feasibility, and feature-complete cuCIM/Clara packaging remain
+  release work. Qualifying native-Windows NVIDIA CUDA devices are available to
+  Auto, Prefer GPU, and Custom; CPU execution remains the portable
   Windows/macOS/Linux path.
 
 For the owning module boundaries, see [Architecture](architecture.md). For

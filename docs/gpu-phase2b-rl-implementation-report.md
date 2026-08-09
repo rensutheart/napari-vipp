@@ -279,10 +279,12 @@ separate gates and must not be inferred from this development-host result.
   application snapshot under a coherent capture boundary remains required; this
   lifecycle hardening is not complete.
 - The public environment remains the exact validated native-Windows CPython
-  3.12 matrix with CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`),
-  and an RTX 5090 at compute capability 12.0. CUDA 12 is qualification-only;
-  native Linux, RTX 40-series laptop, Apple accelerator, and wider
-  clean-install evidence remain open.
+  3.12 and software/provenance matrix with CUDA runtime API 13.2 (`13020`). It
+  admits any successfully probed NVIDIA CUDA device at compute capability 7.5
+  or newer with a matching numeric driver API at least 13.3 (`13030`) across
+  Auto, Prefer GPU, and Custom. CUDA 12 is qualification-only; native Linux,
+  Apple accelerator, broader multi-device performance characterization, and
+  wider clean-install evidence remain open.
 - The current Windows cuCIM research wheel is skimage-focused and omits Clara
   I/O. That temporary limitation is not the desired final cuCIM scope.
 

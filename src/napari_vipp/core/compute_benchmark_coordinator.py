@@ -488,7 +488,6 @@ class ApplicationNodeBenchmarkCoordinator:
                 selected_environment,
                 allow_experimental=allow_experimental,
                 array_facts=facts,
-                allow_compatible_device=True,
             )
             if support.supported:
                 estimate = estimate_candidate_memory(spec, workload)
