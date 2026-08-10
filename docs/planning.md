@@ -27,10 +27,15 @@ The core workflow families are:
 
 PSF generation, deconvolution foundations, and optional microscope-reader
 routing are part of the 0.11 baseline; explicit batch configuration and
-provenance are part of 0.12. Version 0.13.0a1 brings the first usable,
-evidence-gated GPU regions into the ordinary product and carries compute intent
-and exact implementation provenance through interactive, batch, generated
-Python/CLI, and export execution. Near-term work is broader GPU/platform
+provenance are part of 0.12. Version 0.13.0a1 brought the first usable,
+evidence-gated GPU regions into the ordinary product; a2 corrected fresh-graph
+GPU planning, a3 enabled local qualification on compatible secondary NVIDIA
+hardware, and a4 replaced the device-model allowlist with the current
+architecture and environment gates. Compute intent and exact implementation
+provenance now span interactive, batch, generated Python/CLI, and export
+execution. Source-current work adds branded launchers and the non-mutating
+Windows installer planner. The immediate product priority is the transactional
+apply engine and signed installer `.exe`, followed by broader platform
 qualification, validation on real data, scalable OME-Zarr previews, and safe
 graph/parameter copy and paste.
 Registration, model-backed segmentation, stitching, and AI-assisted graph
@@ -151,7 +156,7 @@ Known constraints:
   colocalization, watershed, skeleton/network, batch/provenance, and OME-Zarr
   round-tripping.
 
-## Active TODOs After 0.13.0a1
+## Active TODOs After 0.13.0a4
 
 These are the items that should guide near-term work. Items not listed here are
 either already implemented enough to build on or intentionally deferred.
@@ -164,13 +169,30 @@ lightweight loading host when the plugin is opened inside napari. A separate
 deterministic Windows cuCIM bundle performs the verified pinned build locally
 and contains no redistributable cuCIM wheel.
 
-The next delivery slice is a signed per-user Windows bootstrapper that can
-create a managed CPU or CUDA environment, or validate an explicitly selected
-existing napari environment, before creating the appropriate shortcuts. Linux
-and macOS installers should reuse the same headless environment-plan contract;
+The source-current headless Windows planner now inspects managed CPU/CUDA and
+explicitly selected existing-napari routes without changing packages, files,
+shortcuts, or the registry. It records the interpreter, target, conservative
+disk reserve, stable validation issues, top-level release requirement,
+acceptance commands, shortcuts, and rollback boundary in deterministic schema
+v1 JSON. The next delivery slice is its transactional apply engine followed by
+the signed per-user Windows bootstrapper. Linux and macOS installers should
+reuse the same headless environment-plan contract. The signed Windows `.exe`
+must become the first installation route in the README, quick start, release
+notes, and versioned manual; existing-napari, planner, and raw pip instructions
+remain advanced routes. Until that artifact exists, every quick-start surface
+must label it as not yet published and retain the current manual fallback.
 Linux GPU and Apple acceleration remain gated by their independent platform
-qualification. See the
+qualification. See the [quick start](quick-start.md) and
 [desktop startup and installer plan](desktop-startup-and-installer-plan.md).
+
+The primary installer persona is a physiologist with no assumed knowledge of
+Python, napari environments, CUDA packages, or dependency management. The
+managed path must automatically recommend the safe CPU or qualified GPU setup,
+describe only its practical effect, and use one **Install VIPP** confirmation.
+Interpreter paths, package-resolution details, rollback boundaries,
+existing-napari mutation, and manual compute selection belong under
+**Advanced details**. Internal safety checks remain strict, but they must not
+be presented as a chain of technical approvals the user has to understand.
 
 ### GPU Completion And Platform Qualification
 
@@ -687,7 +709,33 @@ Delivered:
 Workflow schema remains version 3 and batch-config schema remains version 1.
 The optional attached config is excluded from the scientific workflow hash.
 
-### Next Alpha - OME-Zarr Scale And Preview Strategy
+### Next Alpha - Signed Windows Installer
+
+Goal: make the safe path for an ordinary Windows microscopy user one download
+and one double-click, without requiring napari, Python-environment, or terminal
+expertise.
+
+Release gate:
+
+- a tagged, Authenticode-signed
+  `VIPP-Setup-<version>-Windows-x86_64.exe` is attached to the official GitHub
+  release with verified signer guidance and SHA-256;
+- managed CPU is the default portable route, while eligible NVIDIA hardware
+  can choose managed CUDA 13 and receive Automatic, CPU, and Prefer-GPU
+  shortcuts;
+- existing napari installation is clearly Advanced and cannot proceed until
+  the selected environment and exact dependency changes pass review;
+- dependency resolution is non-mutating, the user reviews location and package
+  changes before Apply, and execution has progress, logs, cancellation,
+  ownership, acceptance, and bounded rollback;
+- the README, quick start, release notes, and versioned manual lead with the
+  exact installer asset; terminal and planner commands remain secondary;
+- clean CPU and real qualified-GPU installs pass from the tagged artifact on
+  fresh Windows accounts, including spaces and Unicode paths; and
+- cuCIM remains a separately downloaded optional local-build add-on after the
+  standard CUDA environment passes acceptance.
+
+### Following Alpha - OME-Zarr Scale And Preview Strategy
 
 Goal: make large, multidimensional OME datasets feel deliberate rather than
 accidental, while making graph fragments and proven parameter settings easy to

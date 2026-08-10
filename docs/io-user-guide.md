@@ -1,6 +1,6 @@
 # Image Import And Export
 
-Last reviewed: 2026-07-08
+Last reviewed: 2026-08-09
 
 VIPP uses one headless I/O layer for interactive sources, quick saves, Save
 Image nodes, and exported Python scripts. The explicit format choice matters:
@@ -26,15 +26,19 @@ Supported file sources:
 Microscope acquisition formats use optional reader packages so the base VIPP
 install stays lighter and avoids forcing proprietary-format dependencies onto
 every user. If a required reader is missing, VIPP shows an optional-reader
-dialog with a copyable install command. Restart napari after installing a new
-reader, then reopen the file.
+dialog with the required extra and a generic pip suggestion. Use the safer
+environment-bound commands below with the Python interpreter from the
+environment that launches VIPP, never a global/base Python. Keep the VIPP
+release pinned, restart napari after installing a new reader, then reopen the
+file. The signed installer should eventually expose these as Add/Repair
+components rather than terminal steps.
 
 | Format family | Extensions | Install command |
 | --- | --- | --- |
-| Zeiss CZI | `.czi` | `pip install "napari-vipp[czi]"` |
-| Nikon ND2 | `.nd2` | `pip install "napari-vipp[nd2]"` |
-| Broad microscope reader set | `.czi`, `.nd2`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `pip install "napari-vipp[microscope]"` |
-| BioIO/Bio-Formats fallback | Leica/Olympus/Bio-Formats-backed sources | `pip install "napari-vipp[bioformats]"` |
+| Zeiss CZI | `.czi` | `python -m pip install "napari-vipp[czi]==0.13.0a4"` |
+| Nikon ND2 | `.nd2` | `python -m pip install "napari-vipp[nd2]==0.13.0a4"` |
+| Broad microscope reader set | `.czi`, `.nd2`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `python -m pip install "napari-vipp[microscope]==0.13.0a4"` |
+| BioIO/Bio-Formats fallback | Leica/Olympus/Bio-Formats-backed sources | `python -m pip install "napari-vipp[bioformats]==0.13.0a4"` |
 
 Use the format-specific extra when you know what you need. Use
 `napari-vipp[microscope]` on a workstation intended to open mixed acquisition

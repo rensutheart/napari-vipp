@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "napari-vipp"
 version = "0.13.0a4"
-description = "Visual workflows for reproducible bioimage analysis"
+description = "Visual image processing made approachable"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 authors = [
@@ -51,6 +51,7 @@ dependencies = [
 [project.scripts]
 vipp = "napari_vipp.__main__:main"
 vipp-compute-doctor = "napari_vipp.core.compute_diagnostics:main"
+vipp-install-plan = "napari_vipp.installer.cli:main"
 
 [project.gui-scripts]
 vipp-app = "napari_vipp.launcher:main_auto"
@@ -112,6 +113,19 @@ dev = [
     "pytest>=8",
     "pytest-qt>=4.4",
     "ruff>=0.12",
+]
+installer-build = [
+    "altgraph==0.17.5",
+    "build==1.5.0",
+    "pefile==2024.8.26",
+    "pyinstaller==6.21.0",
+    "pyinstaller-hooks-contrib==2026.6",
+    "PyQt6==6.11.0",
+    "PyQt6-Qt6==6.11.0",
+    "PyQt6-sip==13.11.1",
+    "pywin32-ctypes==0.2.3",
+    "setuptools==82.0.1",
+    "wheel==0.47.0",
 ]
 bioformats = [
     "bioio>=3.4",

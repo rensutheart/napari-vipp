@@ -27,6 +27,10 @@ def test_packaged_commands_expose_console_and_clickable_profile_launchers():
         project = tomllib.load(stream)["project"]
 
     assert project["scripts"]["vipp"] == "napari_vipp.__main__:main"
+    assert (
+        project["scripts"]["vipp-install-plan"]
+        == "napari_vipp.installer.cli:main"
+    )
     assert project["gui-scripts"] == {
         "vipp-app": "napari_vipp.launcher:main_auto",
         "vipp-cpu": "napari_vipp.launcher:main_cpu",

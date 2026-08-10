@@ -1,6 +1,6 @@
 # VIPP User Guide
 
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-09
 
 This guide is written for people building visual image-processing workflows in
 VIPP. It focuses on how to use the graph, how to choose the right controls, and
@@ -10,7 +10,18 @@ VIPP is still alpha software. Treat results as inspectable analysis outputs,
 not publication-ready measurements, until the workflow has been validated for
 your data and acquisition settings.
 
-## Quick Start
+## Start VIPP
+
+Begin with the [installer-first quick start](quick-start.md). The signed Windows
+`.exe` is the prioritized ordinary-user route but is not yet published; that
+page therefore keeps the current `0.13.0a4` manual fallback immediately below
+the planned installer flow. Installing into an existing napari environment,
+raw planner commands, and environment repair are advanced routes.
+
+Once VIPP is installed, start **VIPP Automatic** from its launcher or open
+**Plugins > VIPP Workflow (napari-vipp)** inside napari.
+
+## First Workflow
 
 The fastest way to understand VIPP is to open a bundled example. The examples
 use packaged synthetic data, so they do not require external files.
@@ -62,7 +73,7 @@ their complete name as a tooltip. Changing the mode preserves manual node
 positions. If wider cards overlap, VIPP reports it in the status line; use
 `Auto structure graph` to reflow the graph using the new card sizes.
 
-### Compute Policy And Benchmarking (Development Branch)
+### Compute Policy And Benchmarking
 
 The compute selector in the main toolbar has four policies. New sessions use
 `Auto` by default.

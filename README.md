@@ -7,835 +7,205 @@
 
 # VIPP — Visual Image Processing Platform
 
-**Visual workflows for reproducible bioimage analysis.**
+**Visual image processing made approachable.**
+
+VIPP's scientific purpose is to support **visual workflows for reproducible
+bioimage analysis**: workflows that can be inspected, saved, rerun, and
+reported with their important context intact.
 
 [![CI](https://github.com/rensutheart/napari-vipp/actions/workflows/ci.yml/badge.svg)](https://github.com/rensutheart/napari-vipp/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/napari-vipp.svg)](https://pypi.org/project/napari-vipp/)
 [![Python](https://img.shields.io/pypi/pyversions/napari-vipp.svg)](https://pypi.org/project/napari-vipp/)
 [![License](https://img.shields.io/pypi/l/napari-vipp.svg)](LICENSE)
 
-`napari-vipp` is the napari-native implementation of **VIPP, the Visual Image
-Processing Platform**. Build typed node graphs, inspect intermediate images and
-tables, tune parameters, save workflows, and repeat the same operations without
-hiding axis or physical-scale metadata.
+`napari-vipp` is the napari-native implementation of VIPP. Build typed visual
+workflows, inspect intermediate images and tables, tune parameters, save and
+batch-run graphs, and retain the metadata and provenance needed to understand
+how results were produced.
 
 > **Alpha software:** expect breaking workflow and parameter changes. Validate
 > outputs on representative data before scientific interpretation or
 > publication.
 
-VIPP's implemented safeguards include stable source revisions, physical-grid
-checks, exact unsampled diagnostics, detached viewer layers, atomic artifacts,
-and batch publication only after source reverification. See the
+VIPP includes physical-grid checks, exact unsampled diagnostics, detached
+viewer layers, atomic artifacts, source reverification, and publication only
+after successful batch validation. See the
 [scientific integrity boundaries](docs/architecture.md#scientific-integrity-boundaries)
-and the contributor [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requirements).
+and [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requirements).
 
-## Install And Open
+## Quick Start
 
-VIPP 0.13.0a4 supports CPython 3.12 and 3.13. If napari is not already
-installed, install it with a Qt backend at the same time:
+### Windows Installer (Recommended Path)
+
+The intended normal experience is one signed Windows `.exe`: download it from
+the official release, double-click it, keep the recommended managed VIPP
+environment, review CPU or qualified NVIDIA GPU setup, and launch VIPP from
+the shortcuts it creates.
+
+> **Installer status:** the signed `.exe` is the next delivery stage and is not
+> yet published. The public `0.13.0a4` release still uses the manual fallback
+> below. Do not download a VIPP installer unless it is attached to an official
+> [napari-vipp GitHub release](https://github.com/rensutheart/napari-vipp/releases).
+
+The [VIPP Quick Start](docs/quick-start.md) explains the installer-first flow,
+current manual commands, CPU/GPU choices, prerequisites, the advanced
+existing-napari route, update/repair/uninstall behavior, and a first workflow.
+
+### Current Alpha: Manual Installation
+
+VIPP `0.13.0a4` supports CPython 3.12 and 3.13. Create and activate a dedicated
+virtual environment, then install:
 
 ```bash
 python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a4"
 vipp
 ```
 
-An exact alpha version does not need pip's `--pre` option. Use
-`python -m pip install --pre napari-vipp` only when asking pip to choose the
-latest unpinned VIPP alpha; `--pre` affects that command's dependency resolver
-globally.
+An exact alpha version does not need pip's `--pre` option. The optional public
+GPU route currently requires native Windows, CPython 3.12, a compatible NVIDIA
+driver/GPU, and the pinned CUDA 13 stack. Follow the
+[Quick Start](docs/quick-start.md#nvidia-cuda-13-on-windows) rather than adding
+GPU packages to a general napari environment by hand.
 
-The optional CUDA providers are currently qualified on CPython 3.12 only. On a
-native Windows machine with a compatible NVIDIA driver, the self-contained
-CUDA 13 route is:
-
-```powershell
-py -3.12 -m venv ".venv-vipp-gpu-cu13"
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a4"
-& ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
-& ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
-```
-
-This installs the exact NumPy, SciPy, scikit-image, CuPy, and CUDA package
-versions used by the public admission policy. On native Windows with CPython
-3.12, Auto, Prefer GPU, and explicit Custom GPU choices can use an NVIDIA CUDA
-device with compute capability 7.5 or newer when CUDA runtime API 13.2, driver
-API 13.3 or newer, and the exact scientific/provider gates pass. The GPU model
-is recorded for provenance rather than used as an allowlist. Linux,
-unsupported dtypes or parameters, insufficient memory, and missing optional
-providers remain on the scientifically authoritative CPU path with a visible
-reason. Only the NVIDIA display driver is a machine-wide prerequisite; this
-standard route does not need a separate CUDA Toolkit, `nvcc`, Visual Studio, or
-CMake. macOS is CPU-only in this alpha. The standard extra also omits cuCIM;
-Windows users can optionally build the pinned cuCIM 26.6.0 source locally and
-approve that wheel in the same environment. Without it, the affected nodes
-remain on CPU. See the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a4/getting-started/windows-cuda/)
-and [GPU scope and setup](#gpu-execution-and-development-environment) before
-using accelerated results.
-
-In napari, open:
+Inside an existing napari session, open:
 
 ```text
 Plugins > VIPP Workflow (napari-vipp)
 ```
 
-### Source-Current Startup Experience
+### First Workflow
 
-The next installer-facing startup layer is implemented under `Unreleased`; it
-is not part of the already published `0.13.0a4` wheel. A wheel built from this
-source provides three clickable GUI entry points with the same branded,
-real-milestone splash:
-
-```text
-vipp-app          Automatic
-vipp-cpu          CPU only
-vipp-prefer-gpu   Prefer scientifically eligible GPU implementations
-```
-
-The source-current `app` extra supplies napari with PyQt6 for a standalone
-environment; users installing the plugin into an existing napari environment
-do not need that extra.
-
-The ordinary `vipp` command also shows the splash and accepts `--profile`; use
-`vipp --no-splash` when direct terminal output is preferred. Opening VIPP from
-napari's Plugins menu paints a lightweight branded loading panel before the
-large scientific modules and full workflow editor are constructed. Python
-entry points do not themselves create a Windows desktop shortcut, Linux
-`.desktop` file, or macOS app bundle; those are the next installer layer. See
-the [desktop startup and installer plan](docs/desktop-startup-and-installer-plan.md)
-for the cross-platform path and the existing-napari versus managed-environment
-boundary.
-
-Use `Open example...` for a runnable workflow with synthetic data. A good first
-choice is `Red-Channel Label Cleanup`; select nodes from left to right to review
-their parameters, thumbnails, metadata, and outputs. To explore collection
-processing, open `Deterministic Batch & Provenance`; VIPP prepares a small
-self-contained working copy and opens it already configured and previewed.
+Choose **Open example...** and start with **Red-Channel Label Cleanup**. Select
+nodes from left to right to inspect parameters, previews, metadata, and
+outputs. **Deterministic Batch & Provenance** is a self-contained introduction
+to collection processing.
 
 ![VIPP example workflow chooser](docs/assets/user-guide/vipp-example-chooser.png)
 
-## What It Supports
+## What VIPP Supports
 
 | Area | Current alpha capabilities |
 | --- | --- |
-| Graph authoring | Searchable node palette, typed ports, dynamic outputs, cycle prevention, undo/redo, graph notes, draggable named tunnels, insert-on-wire, live source subtitles, auto-layout, and saved positions. |
-| Images and metadata | Semantic T/C/Z/Y/X axes, scale/units/origin, channel and acquisition metadata, source identity, and operation history. |
-| Image processing | Intensity transforms, filters, background correction, thresholding, watershed, binary/label morphology, channels, axes, masks, and composites. |
-| Measurements | Object and intensity tables, calibrated morphology, 3D mesh morphology, skeleton/network analysis, colocalization, object association, and table composition. |
-| Restoration | Born-Wolf PSF generation, measured-PSF preparation, and manual/cached 2D or 3D Richardson-Lucy and RL-TV deconvolution. |
-| Reuse and automation | Independent workflow tabs, workflow JSON, generated headless Python, explicit batch outputs, background collection runs, reviewed plans, representative navigation, retained batch results, and workflow/config/manifest artifacts. |
+| Graph authoring | Searchable node palette and canvas, typed ports, dynamic outputs, cycle prevention, undo/redo, graph notes, named tunnels, insert-on-wire, saved positions, and auto-layout. |
+| Images and metadata | Semantic T/C/Z/Y/X axes, scale, units, origin, channel/acquisition metadata, source identity, and operation history. |
+| Processing | Intensity transforms, filters, background correction, thresholding, watershed, binary/label morphology, channels, axes, masks, and composites. |
+| Measurements | Object and intensity tables, calibrated/mesh morphology, skeleton/network analysis, colocalization, object association, and table composition. |
+| Restoration | Born-Wolf PSF generation, measured-PSF preparation, Richardson-Lucy, and RL-TV deconvolution in 2D/3D. |
+| Reuse and automation | Independent workflow tabs, workflow JSON, generated Python, explicit batch outputs, plan review, progress/cancellation, manifests, and provenance artifacts. |
 | I/O | OME-TIFF, ImageJ TIFF, TIFF, local OME-Zarr 0.4/0.5, NPY/NPZ, common 2D raster formats, and optional microscope readers. |
 
 Most graph operations are still eager. Large z-stacks and OME-Zarr datasets
-therefore need deliberate cache, preview, and output choices; see the
-[cache and memory guide](docs/cache-and-memory.md).
+need deliberate cache, preview, and output choices; see
+[Cache and memory](docs/cache-and-memory.md).
 
-## Optional Microscope Readers
+<a id="gpu-execution-and-development-environment"></a>
 
-Install only the reader family you need, then restart napari:
+## GPU Acceleration (Optional)
 
-| Format family | Install command |
-| --- | --- |
-| Nikon ND2 | `python -m pip install --pre "napari-vipp[nd2]"` |
-| Zeiss CZI | `python -m pip install --pre "napari-vipp[czi]"` |
-| Mixed microscope formats | `python -m pip install --pre "napari-vipp[microscope]"` |
-| BioIO/Bio-Formats fallback | `python -m pip install --pre "napari-vipp[bioformats]"` |
+VIPP remains fully usable on CPU on Windows, Linux, and macOS. The current
+public GPU route is native Windows, CPython 3.12, CUDA 13, and a compatible
+NVIDIA GPU with compute capability 7.5 or newer. GPU model names are recorded
+for reproducibility rather than used as an allowlist.
 
-These routes are an experimental foundation: axes and common metadata are
-normalized where the source reader exposes them, but format-specific coverage
-still needs validation against a broader corpus of real acquisition files.
+**Auto** is recommended and may correctly choose CPU. **Prefer GPU**
+requests every scientifically eligible GPU implementation, while **Custom**
+adds per-node choices and **Find fastest pipeline…**. Unsupported operations,
+data, parameters, environments, or memory conditions visibly use CPU. cuCIM is
+optional and separately installed.
+
+See the [GPU Guide](docs/gpu-guide.md) for qualification, supported operation
+families, setup, benchmarking, fallback, cuCIM, and cross-device
+reproducibility. Durable batch/generated-Python behavior is documented in
+[Durable GPU execution](docs/durable-gpu-execution.md); exact scientific and
+benchmark evidence remains in the linked phase records rather than this
+landing page.
 
 ## Workflow Basics
 
-1. Add or select an `Image Source` for a napari layer, file, or bundled sample.
-2. Add nodes from the palette and connect compatible output and input ports.
-3. Select a node to tune parameters and inspect its output metadata.
-4. Click `Calculate` for manual/cached nodes such as measurements and
-   deconvolution.
+1. Add an **Image Source** for a napari layer, file, or bundled sample.
+2. Add nodes from the palette and connect compatible ports.
+3. Select a node to tune parameters and inspect output metadata.
+4. Click **Calculate** for manual/cached analysis or deconvolution nodes.
 5. Pin important image outputs into napari for full-resolution comparison.
-6. Save the graph with `Save workflow...`.
-7. Add `Batch Output` nodes before `Batch workspace...` when exact saved outputs
-   matter.
-8. Review `Image stack` for each collection source. A new unsaved row starts at
-   `Automatic (recommended)`. If an exact `QYX` TIFF reaches a workflow step
-   that requires `ZYX`, VIPP selects `Pages are depth slices (Z stack)`, shows
-   the change, and retries. Keep that choice only when the pages really are
-   depth slices; choose `Use the file's labels unchanged` to opt out.
-   Interpretation changes labels, not pixel order, and does not invent a Z
-   spacing.
-9. Optionally click `Preview batch` to inspect the complete plan and use the
-   representative slider or a preview-table row without running or saving the
-   full batch. Preview is not required: `Run batch` performs its own planning
-   and representative scientific-contract preflight.
-10. Run the collection from the retained workspace with one click, where
-   overall-item and current-operation progress, cancellation, final statuses,
-   validation, and the
-   `vipp_batch_manifest.json` path remain available for inspection.
-11. To validate the complete batch path without your own files, choose
-   `Open example...` -> `Deterministic Batch & Provenance` -> `Open batch
-   demo...`. Choose where to save its small working copy, review the populated
-   graph, move through all three paired fields with the representative slider,
-   review the three-item/nine-output batch preview, then click `Run demo batch`. VIPP
-   checks the finished outputs and provenance against exact ground truth
-   automatically.
+6. Save the graph with **Save workflow...**.
+7. Add explicit **Batch Output** nodes before running a collection when exact
+   saved outputs matter.
 
-Workflow JSON stores the graph and optional VIPP UI state, not cached pixels or
-tables. When Batch workspace is active, Save workflow can optionally attach its
-versioned config so the same workspace reopens from that one JSON file; local
-paths are included, but source pixels are not. Workflow schema 4 also stores
-portable compute intent under `execution.compute`: mode, fallback policy,
-per-node preferences, precision policy, and workload policy. Machine-local
-runtime/device choices, memory limits, experimental admission, and benchmark
-evidence are deliberately excluded. Schema-3 workflows load with an explicit
-CPU policy. Collection batch config version 3 adds guarded source-axis
-declarations and executes portable compute intent through the same CPU/GPU
-service as interactive VIPP. Version-1 configs load with explicit CPU intent;
-version-2 configs keep their saved compute request. Neither older version gains
-an axis declaration unless it is reviewed and saved as version 3. A loaded blank
-declaration is shown as `Use the file's labels unchanged`, never as the
-automatic policy for a new row. New manifests are version 3 and record raw and
-effective source axes. See the
-[durable GPU execution guide](docs/durable-gpu-execution.md) for request
-precedence, provenance, OOM fallback, progress, cancellation, CLI commands, and
-current limitations.
+The [User Guide](docs/user-guide.md) covers graph controls, workflow schema,
+batch configuration, source-axis declarations, export, and scientific review.
+
+## Optional Microscope Readers
+
+Reader packages should be installed with the Python interpreter from the exact
+environment that launches VIPP, never a global/base Python. Keep the VIPP
+version pinned and restart napari afterward. For example:
+
+```bash
+python -m pip install "napari-vipp[nd2]==0.13.0a4"
+```
+
+Available extras include `nd2`, `czi`, `microscope`, and `bioformats`. See
+[Image import and export](docs/io-user-guide.md) for formats, limitations, and
+the matching commands.
+
+## Source-Current Installer And Startup Preview
+
+This source tree, but not the published `0.13.0a4` release, contains the next
+Windows installer: a novice-facing setup window, automatic CPU/GPU
+recommendation, exact dependency review, transactional install/update/repair,
+owned shortcuts, independent CPU/GPU Apps & Features entries, ownership-safe
+uninstall, and acceptance checks. It installs into a private managed location
+and never overwrites an unrelated folder or manually managed napari environment.
+A release EXE remains unavailable until this code is tagged,
+built with that tag's exact wheel, signed, and independently verified.
+
+Source-current builds also contain the branded Automatic/CPU/Prefer-GPU
+launchers, lightweight in-napari loading host, read-only planning CLI, and the
+separate optional cuCIM local-build add-on.
+
+See the [Desktop startup and installer plan](docs/desktop-startup-and-installer-plan.md)
+and [Windows installation planner](docs/windows-installation-planner.md).
 
 ## Documentation
 
-- [Published VIPP documentation](https://rensutheart.github.io/vipp-mkdocs/)
-- [Categorized 0.13.0a4 release notes](CHANGELOG.md#0130a4---2026-08-09)
-- [Documentation index](docs/README.md)
-- [User guide](docs/user-guide.md)
+- [Quick Start](docs/quick-start.md)
+- [User Guide](docs/user-guide.md)
+- [GPU Guide](docs/gpu-guide.md)
 - [Image import and export](docs/io-user-guide.md)
 - [Example workflow index](examples/README.md)
 - [Measurement workflows](docs/measurement-workflows.md)
-- [Operator tips](docs/operator-tips.md)
-- [Developer notes](docs/developer-notes.md)
-- [Current planning and roadmap](docs/planning.md)
+- [Durable GPU execution](docs/durable-gpu-execution.md)
+- [Architecture](docs/architecture.md)
+- [Planning and roadmap](docs/planning.md)
+- [Published versioned manual](https://rensutheart.github.io/vipp-mkdocs/)
 
 ## Development
-
-Create a local environment and install the development dependencies:
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
-```
-
-### GPU Execution And Development Environment
-
-VIPP 0.13.0a1 is the first alpha to package evidence-gated GPU execution. GPU
-coverage is deliberately incomplete and every accelerated region retains a
-visible, scientifically authoritative CPU path. Phase 1 provides
-Rolling-Ball/Subtract Background, median, and
-2D/3D Gaussian. Phase 2B adds ordinary CuPy/CuPyX
-Richardson-Lucy, Phase 2C adds Richardson-Lucy TV for 2D/3D spatial data and
-leading blocks while preserving the existing CPU formula and defaults, and
-Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu providers. Phase 4 adds
-the public CPU Sigma Filter node and a clean-room CuPy RawKernel provider.
-Phase 5 adds exact CuPyX Connected Components for boolean 2D/3D masks, including
-SciPy-identical `int32` label IDs and independent leading-block resets. Their
-validated regions are normal public GPU candidates on this alpha; unsupported
-regions visibly use CPU. Phase 6 adds cuCIM candidates for
-the basic schemas of **Measure Objects** and **Measure Objects + Intensity**,
-with an exact typed-table finalizer after the mandatory GPU-to-host boundary.
-Both deconvolution paths use exact ordered-multi-input benchmarking. The alpha
-includes
-CPU/Auto/Prefer-GPU/Custom execution contracts, visible or strict fallback,
-transactional device execution, scientific cache identity, and per-node/
-whole-pipeline benchmark services. The toolbar controls
-now provide the first Phase 2 interactive slice: new sessions default to
-`Auto`, the main toolbar lists `Auto`/`CPU`/`Prefer GPU`/`Custom`, and
-Custom mode
-shows `Auto for this node`, `CPU`, and one choice per declared GPU library
-where implemented. `Best GPU` appears only when multiple libraries compete;
-accepted runs add compact CPU/CuPy/cuCIM badges, and CPU fallback is shown in
-amber. `Prefer GPU` considers every reviewed public GPU implementation,
-including `public_custom` providers that Auto does not consider. It skips
-only the CPU-versus-GPU speed gate: scientific parity, dtype, parameter,
-shape, environment, dependency, and memory admission remain mandatory, and
-VIPP never inserts a cast or changes an authored parameter to make GPU eligible.
-When all eligible GPU choices have complete comparable timing evidence, the
-fastest GPU is selected; otherwise the stable implementation ID provides a
-deterministic choice without implying that it is fastest. A node with no
-eligible GPU receives an explained ordinary CPU decision.
-
-`Auto` starts from reviewed GPU defaults rather than treating missing timing as
-proof that CPU is faster. Successful, fallback-free completed full-pipeline
-runs—whether CPU, GPU, or mixed—add only their wall time to machine-local
-history. If the exact compatible history contains an accelerated observation
-but no CPU observation, the next global Auto run measures the authoritative CPU
-assignment once on the same execution surface. A later matching Auto run uses
-the accelerated assignment only when it beats CPU by at least 1.20x and 20 ms;
-otherwise it uses CPU. Interactive, batch, and registry-lifecycle timing
-surfaces are never mixed. Auto never silently benchmarks multiple
-implementations. The optional CPU comparison is preflighted against host-memory
-headroom. On Windows that includes both available physical RAM and remaining
-system commit; if either reserve would be unsafe, Auto keeps its reviewed safe
-assignment, explains that the comparison was skipped, and can collect the
-missing CPU evidence on a later run.
-
-`Prefer GPU` always uses visible fallback; a strict Prefer-GPU request is
-invalid because the policy explicitly means “GPU wherever possible, CPU
-everywhere else.” Saved per-node preferences remain intact but dormant outside
-Custom mode. Switch back to Custom to reactivate them and to use
-`Benchmark node…` or `Find fastest pipeline…`; the whole-pipeline optimizer is
-intentionally Custom-only. Developer-hidden implementations remain excluded
-unless experimental admission is explicitly enabled, which is not a public
-support claim.
-
-Compute intent is immutable while a calculation or benchmark is active. The
-mode selector and Custom per-node controls remain disabled until the work
-finishes normally. To change policy sooner, the user must explicitly choose
-`Cancel calculation`/`Cancel analysis`; controls unlock only after the worker
-has finished synchronizing and releasing CPU/GPU resources. Entering Custom while
-idle is configuration-only: it retains the last valid output and its actual
-CPU/GPU provenance. When that result does not satisfy the saved Custom choices,
-VIPP marks its badges and summary as a previous result; changing a per-node
-choice or calculating replaces it.
-
-Failure handling is provenance-aware rather than all-or-nothing. A failed run
-may accept a verified source boundary, and a cleanup-failed run may retain a
-completed processing node only when the matching actual-implementation decision
-is available for its badge and report. Uncomputed or unreported processing
-values never replace an earlier valid result. Cancellation keeps the prior
-coherent result. If accelerator cleanup fails during a calculation, node
-benchmark, whole-pipeline analysis, or collection batch, VIPP treats the
-process runtime as unsafe: all new compute and policy changes are disabled
-until VIPP is restarted.
-
-VIPP uses one message-strip component, with major and actionable paths now
-severity-classified;
-only actionable failures receive the full alert treatment. Workflow-v4
-persistence now records portable authored compute intent, while separate
-non-scientific UI metadata preserves explicit optimizer locks without changing
-the scientific workflow hash. Legacy workflow-v3 files load in CPU mode and
-with every node unlocked until the user explicitly opts into Auto, Prefer GPU,
-or Custom.
-Machine-local runtime/device selection, memory limits, provider admission,
-and benchmark evidence are not copied between machines. Batch config version 3
-captures the full effective run request plus guarded source-axis declarations,
-while generated Python embeds the portable workflow request. Both use the
-shared execution service, preserve
-per-node choices, report exact actual implementations, and remain import-safe
-on a CPU-only installation. The saved batch runner and exported CLI add
-compute/fallback/node overrides, nested or operation progress, cooperative
-cancellation, exit code 130, structured OOM records, and atomic provenance.
-`Settings > Compute setup and memory…` verifies optional packages and hardware
-on a worker and presents system RAM plus discrete VRAM, or one shared budget on
-unified-memory machines. On Windows the cache status also distinguishes
-physical RAM from commit headroom because either can bound a large CPU
-allocation. In Custom mode, eligible single-output nodes with
-one or more ordered inputs offer `Benchmark node…`: VIPP detaches and hashes
-every input, includes every transfer and input in memory accounting, compares
-the exact captured workload, requires scientific parity, saves evidence
-locally, previews warm timing/parity/memory results, and changes the portable
-node preference only after explicit acceptance. The final UI Apply boundary
-revalidates the exact input bytes and metadata, graph, compute intent, locks,
-candidate assignment, and accelerator environment before making one undoable
-change. Writers and multi-output nodes remain excluded.
-GPU eligibility is dtype-sensitive. For example, the currently reviewed CuPyX
-Gaussian implementation accepts finite `float32`; native `uint16` Gaussian is
-intentionally CPU-only until its integer result semantics pass a separate
-scientific admission gate. The initial ordinary GPU Richardson-Lucy region
-likewise requires both the Image and PSF to be explicitly finite `float32`; its
-output is shape-preserving `float32`. Its first scientifically admitted region
-also requires `filter_epsilon == 1e-8`, 1 through 25 iterations, odd PSF
-extents, and the default-safe normalization/clipping/scale options. The CPU
-operation's existing `1e-12` default and every other epsilon are unchanged and
-therefore remain on CPU: VIPP does not silently alter the threshold or shorten
-an authored run to use the GPU. This is a conservative measured allowlist, not
-a claim that `1e-8` is intrinsically the only valid GPU value: `1e-10` already
-missed the production parity gate at 25 iterations, other tested values were
-not monotonic, and `1e-8` itself had failures at 50 iterations. The exact
-`1e-12` point has not yet had a complete GPU admission study. Change that
-scientific parameter only when it is appropriate for the analysis, then
-benchmark the exact Image/PSF workload.
-
-GPU Richardson-Lucy TV has two separately validated profiles. With
-`tv_regularization == 0`, it reduces to ordinary RL and therefore uses that
-path's strict `filter_epsilon == 1e-8` policy and parity gate. Positive TV is
-initially admitted only at the unchanged shipped settings:
-`tv_regularization == 0.002`, `tv_epsilon == 1e-6`,
-`filter_epsilon == 1e-12`, `denominator_floor == 0.05`, and exactly 10 or 25
-iterations. Other positive-TV iteration counts remain on CPU until their
-nonlinear trajectories are measured; lambda-zero retains ordinary RL's 1–25
-range. Its nonlinear recurrence amplifies small CPU/GPU convolution and
-reduction-order differences, so positive TV uses a separate, versioned 0.5%
-NRMSE/peak-scaled maximum-error screen plus feature, MSE, flux, boundary, and
-floor diagnostics. This is an operation-specific public candidate region backed
-by fixed and holdout matrices—not permission to change an authored parameter,
-and not a blanket biological-restoration or cross-platform equivalence claim.
-
-GPU provider visibility in this alpha follows the evidence. An implementation
-whose declared region has passed scientific parity and the required memory,
-progress, cancellation, cleanup, and runtime checks is a normal public
-`Custom` or `Prefer GPU` candidate and may participate in `Auto` where
-applicable performance evidence exists. `developer_hidden` is reserved for
-incomplete or unvalidated work and is excluded unless experimental admission
-is explicitly enabled. Promotion is region-specific: data types, parameters,
-shapes, or platforms outside a provider's reviewed region remain on CPU with a
-visible CPU decision or fallback. Public visibility does not imply that every
-GPU, operating system, dtype, parameter region, or workload has been qualified.
-
-**Sigma Filter** is an edge-preserving Lee filter compatible with the documented
-behavior of Fiji's
-[Sigma Filter Plus](https://imagej.net/ij/plugins/sigma-filter.html). It works
-slice-wise over the resolved `YX` axes, uses nearest/clamped borders, and treats
-every channel and leading stack index as an independent plane.
-`channel_axis=None` follows VIPP's scalar-default convention; no ROI or mask
-input is part of the version-1 node. The public CPU contract accepts finite
-native-endian `uint8`, `uint16`, and `float32` data, preserves shape and dtype,
-and exposes radius 0.5–10, non-negative sigma width, minimum-pixel fraction
-0–1, and the documented outlier-aware fallback. Unsigned results use
-Fiji-compatible half-up rounding.
-
-The CuPy implementation scans each circular footprint twice in one fused
-`RawKernel`, keeps image-sized data resident, and does not build an image-by-
-footprint sliding-window tensor. Its exact public region is the same native-
-endian finite `uint8`/`uint16`/`float32` parameter and axis surface, with
-complete finite extrema facts and a float32-square overflow guard for
-`float32`. Non-native byte order fails closed before accelerator transfer.
-Integer output must be bitwise equal; float32 uses a tight versioned gate plus
-explicit adversarial selection/fallback tests. Kernel arithmetic disables fused
-multiply-add and requests precise divide/square-root. Because NVRTC can still
-force flush-to-zero behavior, explicit bit conversions preserve float32
-subnormal samples, squares, and outputs rather than silently changing a
-threshold decision. GPU progress advances only after each 64-row tile is
-synchronized; cancellation occurs between tiles. Calls outside the reviewed
-region, missing CUDA/CuPy, and unqualified platforms visibly remain on CPU.
-
-The historical pre-0.13.0a3 full-profile RTX 5090 record passed all 10 exact
-admission cases, all 10 matched rejection cases, cancellation/cleanup, and
-bitwise parity for all 18 timed workloads. Representative transfer-inclusive
-speedups were 23.57x for a 512² radius-0.5 plane, 55.23x for a 512² radius-2
-plane, 170.95x
-for a 2048² radius-10 plane, and 93.62x for an 8×512² radius-2 stack. On this
-host, radius 0.5 first cleared both Auto gates at 512²: its 20.13-ms absolute
-saving just exceeded the 20-ms gate, while its paired 95% speedup lower bound
-was 19.58x against the 1.20x gate. Radius 2 also cleared at 512²; radii 5 and 10
-cleared at the smallest tested 256². These are machine-local observations, not
-portable speed promises; see the
-[canonical Sigma Filter evidence](docs/benchmarks/sigma-filter-cupy-windows-rtx5090.md).
-
-The scientific reference is the Lee 1983 sigma-filter algorithm. Frozen
-unsigned-integer fixtures were generated independently by executing the
-published ImageJ plugin bytecode, rather than by reusing VIPP's Python oracle.
-VIPP intentionally differs from the published plugin in two narrow, tested
-places: it uses exact `ceil(footprint_count * minimum_fraction)`, and clamps a
-cancellation-induced negative population variance to positive zero before the
-square root. See the
-[Sigma Filter implementation record](docs/gpu-phase4-sigma-filter-implementation-report.md)
-for formulas, provenance, evidence, limitations, and timings.
-
-Canny preserves VIPP's float32 plane conversion, constant-boundary Gaussian and
-Sobel arithmetic, bilinear non-maximum suppression, eight-connected hysteresis,
-quantile semantics, leading blocks, and explicit RGB/RGBA luma conversion. Its
-initial public GPU region accepts bool, `uint8`, and `uint16` inputs with
-canonical sigma 0 through 12. Authored `float32` Canny remains on CPU because
-CUDA subnormal flush-to-zero can change final edge bits even for finite inputs.
-Otsu preserves exact native integer
-levels up to the existing 65,536-level guard, NumPy float histogram edges and
-first-maximum tie breaking, finite-value handling, boolean identity, stack/slice
-scope, RGB/RGBA luma conversion, and the strict `image > threshold` mask rule.
-Its bounded atomic histogram avoids CuPy/CUB's device-occupancy-dependent wide-
-histogram workspace while retaining exact counts.
-Both providers return an exact boolean mask, report only synchronized progress,
-and visibly use CPU outside their admitted regions. In the source-current schema-v3
-[canonical RTX 5090 record](docs/benchmarks/canny-otsu-cupy-windows-rtx5090.md),
-all 28 admission cases were bitwise exact. On the 8x1024x1024 `uint16` stack,
-Canny measured 0.6812 seconds on CPU versus 0.0349 seconds GPU end-to-end
-(19.51x), while Otsu measured 0.0455 versus 0.0077 seconds (5.92x). The
-privacy-redacted 8.51-million-voxel ND2 volume measured 16.40x and 5.28x,
-respectively. Schema v3 binds the evidence to source fingerprints and strictly
-limits private-source metadata; these remain short machine-local screens, not
-portable performance guarantees or saved optimizer choices.
-
-Basic GPU **Measurements** accepts native non-negative `int32` labels in
-resolved 2D/3D spatial layouts, including leading blocks and sparse positive
-IDs. The intensity-aware node additionally accepts a same-shape native `bool`,
-`uint8`, `uint16`, or finite `float32` image. The first promoted region covers
-the existing basic morphology and basic morphology-plus-intensity schemas;
-extended shape, axis, boundary, ratio, and moment columns visibly remain on CPU.
-Valid non-negative integer label arrays outside native `int32`, unsupported
-intensity dtypes, non-finite float32 intensity, an unqualified cuCIM runtime, or
-insufficient VRAM produce a specific CPU decision or fallback rather than an
-implicit cast or a changed table. Boolean/non-integer label domains, negative
-labels, and invalid input shapes are errors for the CPU and GPU operations; VIPP
-does not misreport those invalid inputs as fallbacks.
-
-The cuCIM provider returns a private resident packed `float64` matrix. VIPP
-copies it to the host, cleans up the CUDA scope, and only then runs the mandatory
-finalizer that reconstructs the exact `TableData` schema, column/row order,
-units, calibration, and public scalar types. Finalizer time and staging memory
-are included in optimization, and the public table always ends device
-residency. Tiny cuCIM region-properties/Euler lookup caches are primed once in
-a separate module-owned pool; every transactional execution pool must still
-return to zero.
-
-The historical pre-0.13.0a4 RTX 5090 record passed all 11 admission cases, all
-11 matched rejections, both lifecycle cases, and clean private-pool teardown.
-Full-public speedups were 1.87x for 1024² morphology, 16.37x for 2048²
-morphology plus
-`uint16` intensity, 7.28x for a 32×256×256 intensity volume, and 23.90x for a
-64×512×512 confocal-like intensity volume. CPU was correctly faster for small
-256²/512² images and for the measured 6×512² float32 intensity stack. These are
-machine-local screens: `Auto` and `Find fastest pipeline…` compare the exact
-workload and pipeline residency context instead of assuming GPU always wins.
-See the [Phase 6 Measurements implementation record](docs/gpu-phase6-measurements-implementation-report.md)
-and [canonical evidence](docs/benchmarks/measurements-cucim-windows-rtx5090.md).
-
-Explicit **Convert
-Dtype** nodes can unlock these GPU candidates and may improve
-acceleration across a longer GPU-resident segment. Choose
-`Scaling = Preserve` when the intention is to keep the numeric values; the
-node's default `Rescale` deliberately remaps the intensity range. VIPP never
-inserts this cast merely to win a benchmark. With Preserve, a `float32` value
-exactly represents integer values with magnitude up to 2^24 (including every
-`uint8` and `uint16` value), but conversion still changes the workflow's public
-data representation.
-Review downstream ranges, thresholds, rounding/output semantics, file writers,
-and RAM/VRAM use; `float32` also requires twice the storage of `uint16`. Benchmark
-the exact converted pipeline rather than assuming conversion will be faster.
-
-Custom mode also exposes the review-first `Find fastest pipeline…` analysis.
-After cancellation cleanup, it can establish a private fresh baseline for the
-current graph and parameters when the retained display is previous or stale;
-the user does not have to publish an ordinary replacement run first. It works
-from detached source data
-and compares every scientifically eligible CPU/CuPy/cuCIM implementation for
-every **unlocked** node. The implementation currently in use is the starting
-assignment, not an optimizer constraint. Only a separate, explicit node lock
-means “keep this implementation,” and applying a winning assignment does not lock
-it automatically. The lock preserves the actual implementation captured for
-that analysis; it does not silently turn a broad `Best GPU` or library preference
-into a portable machine-specific exact pin. A node following pipeline policy has
-no explicit choice to preserve and therefore cannot be locked until the user
-selects a per-node choice. Exact complete node evidence is reused only when the
-workload bytes/shape/dtype/parameters, scientific software stack, implementations,
-device/environment, memory scope, and measurement policy still match. Otherwise
-the analysis runs parity first, screens timing at three paired rounds, and extends
-to seven or fifteen only for a close or uncertain comparison. Complete-pipeline
-timing starts at five paired rounds and extends to seven or fifteen only until
-the result is decisive or the analysis reports it as inconclusive. Saved node
-timing never
-replaces fresh whole-pipeline parity before a changed assignment can be offered.
-If the current assignment wins, VIPP reports that as a successful result rather
-than an optimization failure.
-
-When a synchronized GPU candidate already has enough repeat measurements to be
-a reliable incumbent, the optimizer may stop a cooperative CPU warm call after
-its elapsed time exceeds the incumbent's one-sided confidence bound plus a
-material margin. The report records `CPU > ...; stopped early`: this is a
-**censored lower bound**, not an exact CPU timing, and it is not reusable as
-durable timing history. Parity is still established independently, directional
-transfers remain in the graph-wide cost model, and any changed modeled
-assignment must pass final paired whole-pipeline validation before it can be
-offered. If the already-current assignment remains the winner, its fresh
-baseline plus parity and conservative exact-or-censored comparison evidence is
-reported without inventing a redundant paired alternative run.
-The analysis dialog separates **overall progress** from the **current
-operation**. Overall progress follows the complete analysis, while the second
-bar names the node, implementation, phase, and timing round currently being
-measured. The selectable time limit is elapsed wall-clock time, not a RAM or
-VRAM budget. Multi-plane background subtraction reports each completed plane
-for both CPU and cuCIM; its current-operation bar advances through those planes
-and starts over for each parity, warmup, or timed invocation. A cuCIM plane is
-reported only after its output has been synchronized. Richardson-Lucy reports
-completed iterations for each leading 2D/3D block, synchronizes before each
-reported checkpoint, and checks cancellation between iterations.
-Richardson-Lucy TV uses the same truthful per-block/per-iteration checkpoint
-contract. Operations
-implemented as one monolithic NumPy, SciPy, CuPy, or cuCIM call have no truthful
-intermediate milestone, so their current-operation bar can remain unchanged until that call
-returns even though work is continuing; this pause alone does not mean the
-analysis is stuck.
-
-Reaching the time limit does **not** mean the current pipeline is optimal: it
-means that no fastest assignment was determined within the selected time. VIPP
-does not change any node settings in that case. Complete exact-workload node
-records remain available for a later identical analysis, but partial timings
-from the node that was interrupted are discarded. Retry with a longer time
-limit; the timeout result identifies the stage and node that consumed the
-remaining time and reports which completed evidence can be reused.
-
-The analysis measures synchronized transfer costs and usable
-VRAM, solves one graph-wide CPU/GPU assignment, and then validates the complete
-current and proposed assignments for changed-node plus affected
-observable-boundary parity and paired end-to-end benefit. Every private
-validation run must report the exact requested implementation map and
-environment, no fallback, and clean accelerator teardown. It refuses to
-make a proposal when evidence or identity is incomplete/stale, memory is not
-admissible, the graph contains an unsafe retained writer path, or the measured
-gain does not exceed the greater of 5% or 10 ms with a lower confidence bound
-above 1.0. Analysis changes nothing; a reviewed proposal is rechecked against
-graph, source, compute intent and locks, actual assignment, exact source
-bytes/metadata/image state, and a fresh probe of the exact candidate environment
-before one undoable apply,
-after which only affected branches are invalidated.
-
-GPU work for one runtime/device is serialized by a fair process-wide
-accelerator lease. Execution, transfer measurement, and node/pipeline
-optimization therefore cannot unknowingly contend for the same CUDA device;
-cancellation and the one absolute analysis deadline also apply while waiting
-for the lease. Different runtime/device keys remain independent.
-
-Validated GPU candidates are normally visible in the core admission model and
-the normal UI; only unfinished or unvalidated providers remain
-`developer_hidden`. This remains release- and operation-scoped support rather
-than a blanket cross-platform GPU claim. The current optimizer is deliberately limited
-to a calculated, writer-free scientific subgraph, one accelerator runtime, and
-single-output nodes supported by exact node benchmarking. Ordered multi-input
-nodes such as Richardson-Lucy and Richardson-Lucy TV are supported;
-multi-output, multi-runtime,
-side-effecting, and incomplete workloads still fail closed. Unifying every UI
-optimizer input into one immutable application snapshot remains a named
-hardening task rather than a completed claim. See the
-[production GPU plan](docs/gpu-production-implementation-plan.md) for the
-CPU/Auto/Prefer-GPU/Custom design, per-node and whole-pipeline benchmarking,
-fallback,
-memory, and promotion rules. The
-[Phase 1 implementation record](docs/gpu-phase1-implementation-report.md)
-summarizes the code, exact admitted matrix, validation evidence, and deferred
-gates. The
-[Phase 2B Richardson-Lucy implementation record](docs/gpu-phase2b-rl-implementation-report.md)
-records the new provider, benchmark/lease substrate, exact parity policy,
-limitations, and ordered next work. The
-[Phase 2C Richardson-Lucy TV implementation record](docs/gpu-phase2c-rl-tv-implementation-report.md)
-records the preserved nonlinear contract, separate lambda-zero and positive-TV
-profiles, validation evidence, and remaining promotion gates. The
-[Canny and Otsu implementation record](docs/gpu-phase3-canny-otsu-implementation-report.md)
-records the exact-mask contracts, initial public regions, rejected raw cuCIM
-Canny route, lifecycle policies, and real-device evidence protocol. The
-[Sigma Filter implementation record](docs/gpu-phase4-sigma-filter-implementation-report.md)
-records its clean-room CPU contract, independently frozen Fiji evidence, fused
-CuPy implementation, exact public region, lifecycle evidence, and measured
-crossovers. The
-[Connected Components implementation record](docs/gpu-phase5-connected-components-implementation-report.md)
-records exact SciPy `int32` IDs, the resident CuPyX path, block-boundary
-lifecycle, memory model, CPU fallbacks, and machine-local timing interpretation.
-The
-[basic Measurements implementation record](docs/gpu-phase6-measurements-implementation-report.md)
-records the typed-table boundary, exact promoted schema, visible CPU regions,
-cuCIM lifecycle design, and workload-dependent CPU/GPU timing evidence.
-The machine-local
-[large-stack Richardson-Lucy timing summary](docs/benchmarks/rl-cupy-performance-windows-rtx5090.md)
-compares synchronized CPU and transfer-inclusive CuPy execution on the private
-representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses, with
-paired median speedups of 45.03x, 85.06x, and 94.58x, respectively. The
-[Richardson-Lucy TV timing summary](docs/benchmarks/rl-tv-cupy-performance-windows-rtx5090.md)
-records 78.61x and 83.02x paired median speedups for the same private
-8.51-million-voxel volume and a 16.78-million-voxel shape stress at the exact
-positive shipped profile. The
-[Canny/Otsu timing summary](docs/benchmarks/canny-otsu-cupy-windows-rtx5090.md)
-records their separate 28-case exact-mask admission, synchronized timing,
-memory-bound, cancellation, and zero-residue cleanup evidence.
-
-Structural cache reuse also fails closed on exact scientific context: source
-bytes/state and revision, node parameters and incoming topology, chained
-upstream result identity, and the actual versioned implementation must all
-match. Changing a downstream preference does not invalidate an exact upstream
-cache, while in-place source changes and stale upstream parameters do.
-
-Use the checked-in setup helper to create a dedicated Python 3.12 environment.
-It pins one CUDA major, refuses mixed CuPy distributions, installs only into the
-named virtual environment, runs `pip check`, and finishes with real Gaussian,
-median, and signal-convolution kernels. A successful run writes a strict
-provenance record inside that environment; cuCIM remains unavailable if the
-record is missing, malformed, or no longer matches the installed wheel. Inspect
-the exact commands without writing first if desired:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda13 --plan-only
-powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda13
-.\.venv-gpu-cu13\Scripts\python.exe -m napari_vipp.core.compute_diagnostics --track cuda13
-```
-
-On Linux, the same helper can prepare an evidence environment through the shell
-wrapper:
-
-```bash
-bash scripts/setup_gpu_dev.sh --track cuda13 --plan-only
-bash scripts/setup_gpu_dev.sh --track cuda13
-./.venv-gpu-cu13/bin/python -m napari_vipp.core.compute_diagnostics --track cuda13
-```
-
-The current executable public GPU policy admits only the validated
-native-Windows matrix. Linux preparation is available for the pending clean-host
-validation, but GPU execution intentionally fails closed there until that
-evidence is reviewed.
-
-The base package supports CPython 3.12 and 3.13, but the initial GPU validation
-matrix is deliberately CPython 3.12 only. Installing the base package or CuPy
-on a newer interpreter is not a VIPP GPU support claim; each Python minor must
-pass the clean-install, real-kernel, scientific-parity, memory, and cleanup
-gates first.
-
-Exact GPU parity is also defined against the authoritative CPU scientific stack.
-The current public Windows region requires NumPy 2.5.1, SciPy 1.18.0, and
-scikit-image 0.26.0. VIPP records those versions in the compute-environment
-fingerprint and visibly keeps nodes on CPU if any are missing or different;
-broader dependency versions require their own parity matrix rather than an
-implicit compatibility claim.
-
-Public Auto, Prefer-GPU, and explicit Custom GPU admission use a compatible-
-device rule rather than a model-name allowlist. The pinned native-Windows CUDA
-13 stack and synchronized provider probes must pass, CUDA runtime API 13.2 is
-required, the driver API must be 13.3 or newer, and the NVIDIA device must
-report compute capability 7.5 or newer. Auto remains evidence- and workload-
-driven and may correctly select CPU; Prefer GPU requests every scientifically
-and operationally eligible public GPU implementation even when CPU is faster.
-**Find fastest pipeline…** remains available to run exact node and changed-
-output whole-pipeline parity before proposing a measured Custom assignment.
-
-Reference evidence includes the retained RTX 5090 operation matrices and
-source-current 0.13.0a4 RTX 4050 Laptop GPU runs. On that RTX 4050, all 13
-bundled workflows completed independently in CPU, Auto, and Prefer-GPU modes;
-both accelerated modes selected real CUDA nodes and passed the selected nodes'
-declared parity contracts without fallback or cleanup failure. The exact
-0.13.0a3 tagged wheel also passed end-to-end local qualification, Find Fastest,
-applied CuPyX median execution, bitwise CPU parity, no-fallback execution,
-cleanup, and terminal-memory checks on the same system. These records establish
-bounded evidence for their exact hosts and revisions; they are not portable
-performance promises or a guarantee of bitwise identity on every compatible
-GPU.
-
-Compatible GPUs can show minor device-dependent floating-point differences
-because CUDA hardware, drivers, compiler paths, and reduction order can differ.
-VIPP still enforces each implementation's declared parity contract. For
-reproducibility, retain the exact GPU model and compute capability, NVIDIA
-driver, CUDA driver/runtime and toolkit-package versions, Python,
-CuPy/CuPyX/cuCIM, NumPy, SciPy, scikit-image, actual implementation IDs,
-workflow, and input identities. Validate consequential results against the CPU
-reference and review results before combining runs from different
-environments.
-
-The machine still needs a compatible NVIDIA driver. Select `--track cuda12` for
-the separate `.venv-gpu-cu12` qualification-only environment; CUDA 12 is
-outside the current public admission region. The project also
-publishes platform-marked `gpu-cuda12` and `gpu-cuda13` extras. Those extras pin
-the scientific stack used by admission; the checked-in setup helper additionally
-produces a detailed development provenance record and verifies real kernels.
-Never install the CUDA 12 and
-CUDA 13 CuPy distributions into the same environment. If diagnostics report an
-unavailable runtime, they print a copyable setup command; VIPP's CPU path remains
-usable.
-
-The scientifically validated cuCIM background provider is a normal public
-candidate in its exact admitted Windows environment. That provider remains
-optional: VIPP neither distributes nor requires cuCIM, and CPU is authoritative
-when it is absent or rejected. Windows users may build the exact cuCIM 26.6.0
-tag/commit locally with VIPP's fixed recipe. The builder materializes the
-licences, removes the unusable Clara command, and emits both a per-build wheel
-SHA-256 and a canonical payload manifest. The setup helper verifies those bytes,
-installs them into an existing released VIPP environment, runs real probes, and
-writes the approval record without replacing VIPP with an editable checkout.
-When the remaining environment and workload gates pass, Subtract Background,
-Rolling-Ball Background, and the admitted basic measurements can use cuCIM;
-otherwise they visibly fall back to CPU. Follow the
-[Windows CUDA and local cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a4/getting-started/windows-cuda/);
-the [cuCIM source evaluation](docs/cucim-windows-source-evaluation.md) records
-the technical evidence, and
-[`scripts/build_cucim_windows.ps1`](scripts/build_cucim_windows.ps1) implements
-the fixed recipe. It omits
-Clara I/O, and each user keeps their locally built wheel private. The historical
-`586D...134CF8` artifact remains unavailable and must not be redistributed. A
-future hosted wheel would still need a distinct downstream identity and a
-separate distribution review. CUDA acceleration targets validated Windows
-systems first, with native Linux next. macOS
-continues to use VIPP's CPU path
-while an M1 Max Metal/MPS/MLX provider is investigated; Apple unified memory
-must be reported as one shared budget, not RAM plus VRAM.
-
-For production collection replay in this alpha, let `Batch workspace...`
-write `vipp_batch_pipeline.py` and its config/workflow companions, then run:
-
-```powershell
-.\.venv-gpu-cu13\Scripts\python.exe .\results\vipp_batch_pipeline.py --progress
-```
-
-The runner uses the saved compute request unless explicit CLI overrides are
-provided. See [Durable GPU execution](docs/durable-gpu-execution.md) before
-using `--compute-mode`, `--fallback-policy`, or `--node-preference`.
-
-Run the required checks:
-
-```bash
 python -m npe2 validate src/napari_vipp/napari.yaml
 python -m ruff check .
 python -m pytest
 ```
 
-Launch a development instance from the repository with `./vipp`; it uses the
-project's `.venv-macos` environment directly, so shell activation is not
-required. The installed `vipp` command and `python -m napari_vipp` are also
-supported. To open the synthetic sample with a pipeline run already completed, use
-`python scripts/launch_vipp_sample.py`. The
-[architecture reference](docs/architecture.md) explains the graph, metadata,
-execution, persistence, and UI boundaries.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Use
+[SUPPORT.md](SUPPORT.md) for help, report vulnerabilities privately through
+[SECURITY.md](SECURITY.md), and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before
-opening a pull request, use [SUPPORT.md](SUPPORT.md) for help and issue-reporting
-guidance, and report suspected vulnerabilities privately through
-[SECURITY.md](SECURITY.md). All project interactions follow the
-[Code of Conduct](CODE_OF_CONDUCT.md).
+## Current Alpha
 
-## 0.13 Alpha Highlights
+`0.13.0a4` broadens public GPU admission to compatible NVIDIA CUDA 13 devices
+without a model-name allowlist while retaining exact software, scientific,
+memory, and workload gates. The 0.13 series also adds portable compute intent,
+actual implementation provenance, unified interactive/batch/export execution,
+workflow schema 4, batch schema 3, independent workflow tabs, expanded
+measurements/restoration, and substantial I/O, graph, progress, cancellation,
+and publication hardening.
 
-`0.13.0a4` is the current alpha. It admits compatible CUDA 13 GPUs across Auto,
-Prefer GPU, and explicit Custom choices without a model-name allowlist, while
-retaining the local Find-Fastest and Sigma fixes from `0.13.0a3`, the fresh-
-graph compute corrections from `0.13.0a2`, and the portable scientific CPU
-reference path introduced in `0.13.0a1`:
-
-- exact per-port planning descriptors for `Split Channels`, with unresolved
-  downstream projections kept unresolved until a deterministic contract or
-  concrete value is available;
-- compatible native-Windows CUDA 13 admission for NVIDIA compute capability
-  7.5 or newer, with driver API 13.3 or newer and exact runtime, scientific-
-  stack, provider, memory, and workload gates recorded by policy artifact v8;
-- local Find-Fastest qualification for secondary NVIDIA GPUs that pass the
-  pinned CUDA 13/provider gates and exact parity, plus a CuPy 14.1.1 Sigma
-  kernel compile fix;
-- toolbar `CPU`/`Auto`/`Prefer GPU`/`Custom` policy, per-node
-  CPU/CuPy/cuCIM choices and
-  actual-run badges, setup diagnostics, RAM/VRAM reporting, node benchmarking,
-  and a review-before-apply whole-pipeline optimizer;
-- public-candidate GPU regions for background subtraction, median, Gaussian,
-  Richardson-Lucy, Richardson-Lucy TV, Canny, Otsu, Sigma Filter, connected
-  components, and basic measurement profiles;
-- one execution contract across interactive calculation, durable collection
-  batch, generated Python/CLI, and export, including exact implementation
-  provenance, nested progress, cooperative cancellation, memory admission,
-  structured OOM fallback, cleanup, and atomic publication;
-- workflow schema 4 and batch-config/manifest schema 3 for portable compute
-  intent and guarded source-axis declarations, with schema-3 workflows and
-  version-1 batch configs migrating to explicit CPU and version-2 batch configs
-  retaining their saved compute request;
-- independent workflow tabs, high-resolution colocalization scatter tools,
-  live source subtitles, draggable tunnel rerouting, and retained napari
-  camera/slice/display state during node tuning;
-- Low/Standard/High/Very High thumbnail backing detail, responsive sampled
-  Slice contrast,
-  exact resolution-independent Stack Percentile histograms/native Min-max
-  reductions, conservative adaptive CPU/CuPy presentation routing, separate
-  selected-node thumbnail-contrast status in the inspector, and truthful
-  progress/cooperative cancellation; and
-- ND2 ordered-axis metadata correction, a novice-facing `Image stack` choice
-  with guarded `QYX -> ZYX` batch suggestions, Crop Stack type preservation,
-  new Sigma Filter and ImageJ Auto Threshold nodes, plus substantial cache,
-  optimizer, progress, cancellation, and publication hardening.
-
-GPU support is not complete or generally cross-platform in this alpha. Native
-Linux qualification, broader multi-architecture reproducibility evidence,
-Apple acceleration, general cuCIM packaging, and additional node providers
-remain planned. Colocalization and ImageJ
-compatibility work also changes some numerical results; review the scientific
-compatibility notes before comparing old and new analyses. See the categorized
-[0.13.0a4 release notes](CHANGELOG.md#0130a4---2026-08-09), the
-[upgrade and workflow contract](docs/user-guide.md#save-workflow-json), and
-[planning.md](docs/planning.md) for the remaining milestones.
+See the categorized [0.13.0a4 release notes](CHANGELOG.md#0130a4---2026-08-09)
+and [roadmap](docs/planning.md) for details and remaining milestones.
 
 ## Citation, Acknowledgement, And License
 

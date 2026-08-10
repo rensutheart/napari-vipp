@@ -10,7 +10,9 @@ napari hub.
 
 - Target package version: set `<version>` from the release milestone before
   starting; do not reuse the current package version by accident.
-- Current prepared target: `0.13.0a4`.
+- Current published release: `0.13.0a4`.
+- Current prepared target: none; set and review `<version>` before beginning a
+  new release.
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -25,7 +27,7 @@ napari hub.
    clean, pushed release commit.
 
 This repository does not currently contain a PyPI Trusted Publishing workflow,
-so this runbook documents the manual Twine route for 0.13.0a4. Never paste,
+so this runbook documents the manual Twine route for alpha releases. Never paste,
 print, commit, or place the PyPI token in a command, script, or shell
 environment variable. Enter it only at Twine's hidden password prompt.
 
@@ -33,6 +35,8 @@ Recommended local tools:
 
 - Python 3.12 or 3.13 for the CPU package; CPython 3.12 for CUDA qualification
 - `python -m pip install -U build twine`
+- for the isolated Windows setup build, CPython 3.12.10 and
+  `python -m pip install ".[installer-build]"`; this pins PyInstaller 6.21.0
 
 ## 2. Verify Metadata
 
@@ -228,12 +232,79 @@ and confirm its VIPP version and source commit equal `$releaseVersion` and
 `$taggedSha`; the archive must contain no wheel. Publish its SHA-256 alongside
 the download.
 
+For a release that includes the standalone Windows installer, build it from the
+exact wheel already in this artifact directory. Dependencies may resolve
+online, but the top-level VIPP package is the hash-recorded wheel embedded in
+the EXE:
+
+```powershell
+$wheel = "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl"
+python scripts/package_windows_installer.py build `
+  --wheel $wheel `
+  --output-directory $artifactDir
+$stagingExe = "$artifactDir/VIPP-Setup-$releaseVersion-Windows-x86_64-SIGNING-STAGING.exe"
+$buildManifest = "$artifactDir/VIPP-Setup-$releaseVersion-Windows-x86_64-SIGNING-STAGING-build.json"
+```
+
+This refuses a dirty or untagged tree and creates only a signing-staging name.
+For a local or pull-request smoke, add `--development`; that permits unfinished
+source but creates only a visibly marked `DEVELOPMENT` EXE.
+
+Use the real code-signing certificate from the Windows certificate store. The
+hook invokes Windows SDK `signtool.exe` with SHA-256 and an RFC 3161 timestamp,
+then verifies the result. Never put a private key or password in the repository:
+
+```powershell
+.\scripts\sign_windows_installer.ps1 `
+  -InputPath $stagingExe `
+  -CertificateThumbprint '<approved-40-hex-thumbprint>'
+```
+
+Only then create the official filename and release metadata. Omit the final
+cuCIM option when that separate, optional local-build ZIP is not being attached:
+
+```powershell
+python scripts/package_windows_installer.py finalize `
+  --signed-staging-executable $stagingExe `
+  --build-manifest $buildManifest `
+  --output-directory $artifactDir `
+  --expected-signer-thumbprint '<approved-40-hex-thumbprint>' `
+  --cucim-bundle $cucimInstaller
+```
+
+Finalization rechecks the clean tag, signer thumbprint, timestamp certificate,
+copied signature, embedded wheel, and optional cuCIM version/commit. It creates
+the reserved official EXE, release JSON, persistent third-party notices, and
+`SHA256SUMS-Windows-<version>.txt`. There is no unsigned override.
+
 Expected output artifacts:
 
 - `dist/<version>-<tagged-short-sha>/napari_vipp-<version>.tar.gz`
 - `dist/<version>-<tagged-short-sha>/napari_vipp-<version>-py3-none-any.whl`
+- when the signed Windows bootstrapper is part of the release,
+  `dist/<version>-<tagged-short-sha>/VIPP-Setup-<version>-Windows-x86_64.exe`
+- with that bootstrapper, its `-release.json`,
+  `-THIRD-PARTY-NOTICES.txt`, and `SHA256SUMS-Windows-<version>.txt` sidecars
 - when selected for the release,
   `dist/<version>-<tagged-short-sha>/napari-vipp-cucim-installer-<version>-windows.zip`
+
+The repository build and fail-closed signing gate do not replace clean-machine
+acceptance. Before publishing, run managed-CPU and qualified-GPU install,
+launch, update, repair, and uninstall smokes. The quick-start link must use the
+exact finalized asset name. If the release does not include the `.exe`, every
+quick-start surface must say **not yet published** rather than showing a dead
+download.
+
+During those smokes, change each install-relevant field after a successful
+review and confirm **Install VIPP** stays disabled until **Check these settings**
+finishes for the new selection. Exercise a slow or interrupted GPU dependency
+download: a transfer that continues receiving data may run for several minutes,
+the configured 120-second timeout applies to network idleness rather than total
+setup duration, and retries remain bounded. After a terminal network failure,
+verify ownership-bound rollback leaves no incomplete copy active and preserves
+any previous working copy. **Try again** must rerun checking and resolution for
+the exact current selection, show the new review, and require a fresh
+confirmation.
 
 Using a version-and-commit-specific directory prevents an upload command from
 including artifacts from an older release. It does not make an existing
@@ -250,9 +321,13 @@ python -m pip install -r requirements.txt
 python -m mkdocs build --strict
 ```
 
-Review the rendered `0.13.0a4` release page, workflow-schema upgrade guidance,
+Review the rendered `<version>` release page, installer-first quick start,
+workflow-schema upgrade guidance,
 batch workspace instructions, architecture boundaries, Windows CUDA/cuCIM
-installation boundary, and known limitations.
+installation boundary, and known limitations. When the signed Windows `.exe`
+is included, the quick start must lead with its exact official asset; otherwise
+it must explicitly say the installer is not yet published and retain the
+manual fallback.
 Commit and push the docs release before the package release. A push to the docs
 repository publishes only the `nightly` manual: confirm the nightly release
 page and Windows CUDA guide resolve. Do not mistake that for the numbered
@@ -266,6 +341,31 @@ Push the already-qualified immutable tag first:
 ```powershell
 git push origin "v<version>"
 ```
+
+If this release includes the signed Windows bootstrapper, publish the GitHub
+prerelease and its exact installer asset **before** promoting the versioned
+manual. Otherwise the prioritized Quick Start would point to a file that does
+not exist. Attach the already qualified wheel, sdist, and signed `.exe`, then
+verify the public asset URL, Authenticode signature guidance, size, and SHA-256:
+
+```powershell
+gh release create "v$releaseVersion" --prerelease --verify-tag `
+  --notes-file release-notes.md `
+  "$artifactDir/napari_vipp-$releaseVersion.tar.gz" `
+  "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl" `
+  "$artifactDir/VIPP-Setup-$releaseVersion-Windows-x86_64.exe" `
+  "$artifactDir/VIPP-Setup-$releaseVersion-Windows-x86_64-release.json" `
+  "$artifactDir/VIPP-Setup-$releaseVersion-Windows-x86_64-THIRD-PARTY-NOTICES.txt" `
+  "$artifactDir/SHA256SUMS-Windows-$releaseVersion.txt"
+```
+
+When selected, append `$cucimInstaller` to that command. cuCIM remains a
+separate optional release asset and is never payload inside the primary EXE.
+
+Record that the GitHub prerelease is already public and skip the later
+`gh release create` command. If verification fails, stop before deploying the
+manual or uploading to PyPI; never publish a temporary or unsigned download at
+the final asset name.
 
 Next, dispatch the companion repository's numbered documentation deployment:
 
@@ -282,6 +382,7 @@ upload, open both of these URLs and confirm they show the target version rather
 than a 404 or `nightly` content:
 
 - `https://rensutheart.github.io/vipp-mkdocs/<version>/`
+- `https://rensutheart.github.io/vipp-mkdocs/<version>/getting-started/`
 - `https://rensutheart.github.io/vipp-mkdocs/<version>/getting-started/windows-cuda/`
 
 Only then publish exactly the two hash-recorded artifacts. PyPI uploads cannot be
@@ -308,7 +409,9 @@ Post-upload validation:
 - Confirm `Requires-Python` and optional GPU extras match the tagged metadata
 
 Prepare the release notes body below in a temporary file, then create the
-release with GitHub CLI (or use the equivalent GitHub UI fields):
+release with GitHub CLI (or use the equivalent GitHub UI fields). Skip this
+creation step when the signed-installer ordering above already published the
+same prerelease; inspect that existing release instead:
 
 ```powershell
 gh release create "v$releaseVersion" --prerelease --verify-tag `
@@ -397,11 +500,22 @@ If not updated after indexing delay:
 - [ ] If published, the separate cuCIM installer ZIP came from the clean tagged
       commit, contains no wheel, and its source commit/file hashes plus archive
       SHA-256 were verified and recorded
+- [ ] Windows-installer status is truthful everywhere: if shipped, the exact
+      tagged `VIPP-Setup-<version>-Windows-x86_64.exe` is Authenticode-signed,
+      hash-recorded, attached, clean-machine accepted, and linked first; if not
+      shipped, Quick Start explicitly says **not yet published**
+- [ ] Windows installer invalidates reviewed state after every install-relevant
+      edit; GPU downloads tolerate continuing multi-minute transfers with the
+      bounded retry/120-second idle-timeout policy; terminal network failure
+      rolls back safely; and Try again rechecks the exact current selection
+      before a fresh confirmation
 - [ ] Clean tagged wheel/sdist build, Twine, content, `pip check`, manifest,
       compute-policy-resource, and entry-point checks pass; SHA-256 hashes saved
-- [ ] Companion documentation strict build passes and release page is published
+- [ ] Companion documentation strict build passes; its Quick Start, release
+      page, and installer/manual/advanced hierarchy match the released artifacts
 - [ ] Git tag pushed
-- [ ] Numbered release manual and Windows CUDA guide resolve before package upload
+- [ ] Numbered release manual, Quick Start, and Windows CUDA guide resolve before
+      package upload
 - [ ] Uploaded to PyPI
 - [ ] GitHub pre-release published with wheel and sdist attached
 - [ ] napari hub page shows latest version

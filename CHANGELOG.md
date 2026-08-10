@@ -20,6 +20,59 @@
   performs the pinned verified build locally, delegates artifact and
   environment admission to the existing reviewed helpers, and retains logs,
   manifests, artifacts, and resumable run state.
+- Added the first production-installer core: a standard-library-only,
+  non-mutating Windows discovery and planning service for managed CPU, managed
+  CUDA 13, and explicitly selected existing napari virtual environments. Its
+  deterministic schema-v1 JSON records stable blockers, exact release intent,
+  disk reserve, future action argument arrays, acceptance, shortcuts, and a
+  rollback ownership boundary without running pip, creating files, importing
+  scientific/GPU libraries, downloading content, or changing the registry.
+  Discovery is fingerprint-bound to its exact request, rejects remote or
+  redirected interpreter/target/shortcut paths before content inspection,
+  validates target-parent feasibility, and refuses existing venvs that inherit
+  system site-packages. CUDA plans retain device ordinals and match the current
+  runtime's all-visible-device probe contract.
+- Added `vipp-install-plan plan` for inspecting that contract. GPU planning
+  uses the packaged public driver/compute-capability policy without a device
+  model allowlist; cuCIM and transitive dependency resolution remain explicit
+  separate follow-up stages.
+- Added the standalone Windows setup packaging boundary: a pinned PyInstaller
+  configuration embeds the exact same-tag VIPP wheel, public policy, VIPP icon,
+  and CPython/Tcl-Tk/PyInstaller notices. Unsigned builds can use only
+  `DEVELOPMENT` or `SIGNING-STAGING` names; the official release filename,
+  manifest, and SHA-256 sidecars are created only after a timestamped
+  Authenticode signature from the approved certificate passes verification.
+  The optional no-wheel cuCIM local-build ZIP remains a separate, hash-bound
+  GitHub release companion.
+- Replaced the setup window's provisional drawn header with a raster generated
+  from the official horizontal VIPP SVG and the canonical product tagline.
+  Computer checks now keep visible milestone history, elapsed time, and a plain
+  warning that exact-package review can take several minutes while the moving
+  bar confirms setup is active. Advanced details show the live stage, progress,
+  requested route/location, resolved target, technical report, and activity
+  history instead of an empty placeholder.
+- Added the novice managed-install lifecycle behind that packaging boundary:
+  new installs, transactional updates, repairs, independently coexisting CPU
+  and CUDA installations, hash-owned shortcuts, Windows Apps & Features
+  registration, and ownership-safe uninstall. Manual and unrelated napari
+  environments are never overwritten or removed.
+- Bound the setup confirmation to every install-relevant selection. Editing the
+  compute route, location, existing environment, or desktop-shortcut choice now
+  requires **Check these settings** again before Install can be enabled.
+  Multi-minute GPU downloads use bounded retries with a 120-second network-idle
+  timeout, and transient network failures roll back the incomplete candidate.
+  **Try again** rechecks the exact current selection and requires a fresh review
+  rather than reusing a failed transaction.
+- Reordered the source-current installation documentation around an
+  installer-first quick start. The future signed Windows `.exe` is the primary
+  ordinary-user path but remains explicitly labelled as not yet published;
+  current pip commands, existing-napari installation, and the headless planner
+  are retained as manual or advanced routes until the artifact is available.
+- Reduced the main README to a product-facing landing page and moved GPU setup,
+  modes, qualification, supported operation families, benchmarking, fallback,
+  cuCIM, and reproducibility guidance into a dedicated user-facing GPU guide.
+  Exact admission matrices and machine-local timing evidence remain in their
+  technical records.
 
 ## 0.13.0a4 - 2026-08-09
 

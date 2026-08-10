@@ -1,4 +1,13 @@
-# VIPP Windows cuCIM installer coordinator
+# Optional VIPP cuCIM Windows Add-on
+
+This is **not the main VIPP installer**. Run it only after the standard VIPP
+CUDA 13 installation is complete and `vipp-compute-doctor --track cuda13`
+reports that CuPy GPU execution is available. VIPP starts and its other
+qualified GPU operations work without cuCIM.
+
+The first verified local build and GPU warm-up can take a long time with little
+console output. Let it finish unless it reports an error; later probes reuse
+the compiled cache and are normally much faster.
 
 After extracting the standalone download, double-click
 `Install VIPP cuCIM.cmd` in its top-level folder. It adds the pinned local

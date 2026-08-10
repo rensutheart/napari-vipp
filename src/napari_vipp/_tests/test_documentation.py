@@ -103,6 +103,89 @@ def test_measurement_workflow_guide_links_reference_examples():
         assert workflow_name in guide
 
 
+def test_windows_installer_quick_start_is_primary_and_truthful():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    quick_start = (REPO_ROOT / "docs" / "quick-start.md").read_text(
+        encoding="utf-8"
+    )
+    documentation_index = (REPO_ROOT / "docs" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    planner_guide = (
+        REPO_ROOT / "docs" / "windows-installation-planner.md"
+    ).read_text(encoding="utf-8")
+
+    assert readme.index("### Windows Installer (Recommended Path)") < readme.index(
+        'python -m pip install "napari[pyqt6]>=0.6"'
+    )
+    assert quick_start.index("## Windows: The Recommended Route") < quick_start.index(
+        "## Available Today: Manual Alpha Installation"
+    )
+    assert "not yet published" in quick_start
+    assert "github.com/rensutheart/napari-vipp/releases/download/" not in quick_start
+    assert "Windows Settings > Apps > Installed apps" in quick_start
+    assert "Managed CPU and CUDA installations can coexist" in quick_start
+    assert documentation_index.index("(quick-start.md)") < documentation_index.index(
+        "(user-guide.md)"
+    )
+    assert "ready only for dependency resolution, never" in planner_guide
+    assert "ready_for_apply: false" in planner_guide
+
+
+def test_product_tagline_is_consistent_across_primary_surfaces():
+    tagline = "Visual image processing made approachable"
+    supporting_promise = "visual workflows for reproducible bioimage analysis"
+    surfaces = (
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "docs" / "README.md",
+        REPO_ROOT / "docs" / "quick-start.md",
+        REPO_ROOT / "docs" / "assets" / "branding" / "README.md",
+        REPO_ROOT / "pyproject.toml",
+    )
+
+    for surface in surfaces:
+        assert tagline in surface.read_text(encoding="utf-8")
+
+    for surface in (
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "docs" / "README.md",
+        REPO_ROOT / "docs" / "assets" / "branding" / "README.md",
+    ):
+        normalized = " ".join(
+            surface.read_text(encoding="utf-8").lower().split()
+        )
+        assert supporting_promise in normalized
+
+
+def test_main_readme_is_concise_and_routes_gpu_details():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    gpu_guide = (REPO_ROOT / "docs" / "gpu-guide.md").read_text(encoding="utf-8")
+
+    assert len(readme.splitlines()) <= 300
+    assert "## GPU Acceleration (Optional)" in readme
+    assert "(docs/gpu-guide.md)" in readme
+    assert "### GPU Execution And Development Environment" not in readme
+    assert "23.57x" not in readme
+    for required_section in (
+        "## Compute Modes",
+        "## Current Windows CUDA Qualification",
+        "## Accelerated Operation Families",
+        "## Optional cuCIM Add-on",
+        "## Cross-device Reproducibility",
+    ):
+        assert required_section in gpu_guide
+
+
+def test_installer_plan_prioritizes_nontechnical_managed_users():
+    desktop_plan = (
+        REPO_ROOT / "docs" / "desktop-startup-and-installer-plan.md"
+    ).read_text(encoding="utf-8")
+
+    assert "primary design persona is a physiologist" in desktop_plan
+    assert "one clear confirmation: **Install VIPP**" in desktop_plan
+    assert "under **Advanced details**" in desktop_plan
+
+
 def test_analytical_phantom_validation_report_is_current():
     script_path = REPO_ROOT / "scripts" / "validate_calibrated_morphology_phantoms.py"
     spec = importlib.util.spec_from_file_location(

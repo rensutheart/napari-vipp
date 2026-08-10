@@ -1,16 +1,18 @@
 # Durable GPU Execution
 
-This page describes the GPU-development branch contract for collection batch
-runs, generated Python, command-line replay, and standalone output export. These
-surfaces now use the same headless execution service as interactive VIPP. They
-therefore preserve the requested compute mode and per-node choices, report the
-implementation that actually ran, and apply the same scientific-admission,
-fallback, memory, cancellation, and cleanup rules.
+This page describes the current durable compute contract for collection batch
+runs, generated Python, command-line replay, and standalone output export.
+These surfaces use the same headless execution service as interactive VIPP.
+They therefore preserve the requested compute mode and per-node choices,
+report the implementation that actually ran, and apply the same scientific-
+admission, fallback, memory, cancellation, and cleanup rules.
 
-This is branch-scoped functionality, not a released cross-platform GPU-support
-claim. Only operation regions and runtime environments that have passed their
-documented gates can run on a GPU. Everything else follows the explicit CPU or
-fallback decision described below.
+The released Windows GPU functionality remains region- and environment-scoped,
+not a blanket cross-platform support claim. Only operation regions and runtime
+environments that have passed their documented gates can run on a GPU.
+Everything else follows the explicit CPU or fallback decision described below.
+For setup, compute modes, supported operation families, and reproducibility,
+start with the [GPU guide](gpu-guide.md).
 
 ## One Execution Contract
 
@@ -362,8 +364,8 @@ are finalized on the normal cooperative-cancellation path, and the CLI exits
 ## Current Limitations
 
 - GPU execution remains limited to admitted operation regions and qualified
-  environments on the GPU development branch. Unsupported dtype, parameter,
-  shape, dependency, or platform regions use CPU or fail according to policy.
+  environments. Unsupported dtype, parameter, shape, dependency, or platform
+  regions use CPU or fail according to policy.
 - `Auto` is hardware- and workload-dependent. Reproduction requires the
   recorded environment and actual implementation provenance, not only the
   authored request.
