@@ -704,6 +704,56 @@ def test_deferred_self_delete_uses_encoded_literal_command(tmp_path: Path) -> No
 
 
 @pytest.mark.skipif(os.name != "nt", reason="exercises the Windows helper process")
+def test_deferred_helper_removes_matching_cache_and_journal_without_modules(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    record, root, _shortcut, registry = _registered_case(tmp_path)
+
+    def crash_before_cache_cleanup(*_args, **_kwargs):
+        raise SimulatedPowerLoss("terminal uninstall")
+
+    monkeypatch.setattr(
+        ManagedUninstaller,
+        "_remove_or_defer_uninstaller",
+        staticmethod(crash_before_cache_cleanup),
+    )
+    uninstaller = ManagedUninstaller(registry=registry)
+    prepared = uninstaller.prepare(root, shortcut_roots=(tmp_path / "Desktop",))
+    with pytest.raises(SimulatedPowerLoss):
+        uninstaller.apply(prepared, uninstaller.authorize(prepared))
+
+    assert record.uninstaller_path is not None
+    journal = _journal_files(record)[0]
+    request = build_deferred_self_delete(
+        record.uninstaller_path,
+        wait_for_pid=2_147_483_647,
+        expected_sha256=record.uninstaller_sha256,
+        journal_path=journal,
+        journal_sha256=hashlib.sha256(journal.read_bytes()).hexdigest(),
+    )
+    hostile_modules = tmp_path / "empty-powershell-modules"
+    hostile_modules.mkdir()
+    environment = dict(os.environ)
+    environment["PSModulePath"] = str(hostile_modules)
+
+    completed = subprocess.run(  # noqa: S603 - reviewed encoded helper argv
+        request.argv,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        env=environment,
+        timeout=60,
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    assert not record.uninstaller_path.exists()
+    assert not journal.exists()
+    assert not record.uninstaller_path.parent.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="exercises the Windows helper process")
 def test_delayed_deferred_helper_preserves_same_version_reinstall(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
