@@ -1433,9 +1433,20 @@ target contract identity and separately report
 
 Manual thresholds use the input images' native intensity units. VIPP does not
 rescale or clip channel values before calculating metrics. `Costes auto` stores
-its calculated native thresholds and shows them as scatter guides/status; the
-manual threshold rows reappear with those stored values when you switch back
-to `Manual`.
+its calculated native thresholds and shows them in disabled threshold controls
+as well as the scatter guides/status. Switching back to `Manual` enables those
+same controls without discarding the resolved Costes values.
+
+Costes assumes that its analysis population supports a meaningful positive
+two-channel regression. A mask made by thresholding one of the two analysis
+channels can selection-bias that population. In particular, if removing
+background leaves weakly or negatively correlated channel values, the classic
+Coloc2 stepper can stop at its first, near-maximum threshold pair. VIPP keeps
+that source-aligned result visible and reports a diagnostic rather than silently
+substituting different thresholds. Use a spatial or otherwise channel-neutral
+ROI when possible, or switch to `Manual` and review the retained values and
+scatter guides. RACC remains undefined when fewer than two ROI voxels pass both
+thresholds.
 
 Thresholded Pearson fields describe different voxel populations; they are not
 fractions or correlations of binary masks:

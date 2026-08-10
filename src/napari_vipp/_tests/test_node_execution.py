@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+import napari_vipp.core.pipeline as pipeline_module
 from napari_vipp.core.node_execution import (
     DEFAULT_CPU_NODE_EXECUTOR,
     NodeCallExecutor,
@@ -77,6 +78,70 @@ def test_multi_input_executor_preserves_target_port_order_and_list_contract():
     assert call.positional_input() == [image, image]
     assert call.kwargs["input_count"] == 2
     np.testing.assert_array_equal(outputs[added.id], image + image)
+
+
+def test_costes_cache_requires_the_exact_same_input_objects(monkeypatch):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    metrics = pipeline.add_node("colocalization_metrics")
+    pipeline.set_param(metrics.id, "threshold_mode", "Costes auto")
+    assert pipeline.connect("input", metrics.id, target_port=0).success
+    assert pipeline.connect("input", metrics.id, target_port=1).success
+
+    calls: list[tuple[object, ...]] = []
+
+    def fake_costes(inputs, *, intensity_max, progress):
+        del intensity_max, progress
+        exact_inputs = tuple(inputs)
+        calls.append(exact_inputs)
+        threshold = float(np.asarray(exact_inputs[0])[0, 0])
+        return {
+            "threshold_1": threshold,
+            "threshold_2": threshold + 1.0,
+            "slope": 1.0,
+            "intercept": 0.0,
+            "pearson_below": 0.0,
+            "iterations": 1,
+        }
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "colocalization_costes_threshold_result",
+        fake_costes,
+    )
+    # Model an identity-key collision deterministically. The production key uses
+    # ``id`` values, so temporary planning inputs could otherwise collide after
+    # they are released and their addresses are reused by authoritative arrays.
+    monkeypatch.setattr(
+        pipeline,
+        "_colocalization_costes_cache_key",
+        lambda inputs, **kwargs: ("forced-collision",),
+    )
+
+    first_inputs = (
+        np.full((3, 3), 10, dtype=np.uint16),
+        np.full((3, 3), 11, dtype=np.uint16),
+    )
+    replacement_inputs = (
+        np.full((3, 3), 20, dtype=np.uint16),
+        np.full((3, 3), 21, dtype=np.uint16),
+    )
+
+    first = pipeline.prepare_node_call(metrics.id, first_inputs, (None, None))
+    reused = pipeline.prepare_node_call(metrics.id, first_inputs, (None, None))
+    replacement = pipeline.prepare_node_call(
+        metrics.id,
+        replacement_inputs,
+        (None, None),
+    )
+
+    assert first is not None
+    assert reused is not None
+    assert replacement is not None
+    assert first.kwargs["channel_1_threshold"] == 10.0
+    assert reused.kwargs["channel_1_threshold"] == 10.0
+    assert replacement.kwargs["channel_1_threshold"] == 20.0
+    assert calls == [first_inputs, replacement_inputs]
 
 
 def test_resolved_spatial_kwargs_and_progress_are_prepared_before_delegation():

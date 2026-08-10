@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from itertools import combinations, product
@@ -4224,6 +4224,14 @@ def colocalization_metrics(
     costes_pearson_any_below = (
         float("nan") if costes is None else costes["pearson_below"]
     )
+    warnings = (
+        *warnings,
+        *_costes_quality_warnings(
+            costes,
+            metrics,
+            mask_restricted=mask_supplied,
+        ),
+    )
 
     columns = {
         "threshold_mode": [str(threshold_mode)],
@@ -4714,7 +4722,7 @@ def racc_index(
         inputs,
         intensity_max=intensity_max,
     )
-    threshold_1, threshold_2, _costes = _coloc_thresholds(
+    threshold_1, threshold_2, costes = _coloc_thresholds(
         ch1,
         ch2,
         threshold_mode=threshold_mode,
@@ -4734,6 +4742,7 @@ def racc_index(
         include_percentile=include_percentile,
         intensity_max=intensity_max,
         roi_mask=roi_mask,
+        costes=costes,
     )
     if str(output_dtype).strip().lower() == "uint8":
         return np.round(np.clip(output, 0.0, 1.0) * 255.0).astype(np.uint8)
@@ -12188,6 +12197,57 @@ def _coloc_metric_values(
     }
 
 
+def _costes_quality_warnings(
+    costes: dict[str, float] | None,
+    metrics: Mapping[str, object],
+    *,
+    mask_restricted: bool,
+) -> tuple[str, ...]:
+    """Describe an extreme Costes fit without recalculating its regression."""
+    if costes is None:
+        return ()
+
+    pearson = float(metrics.get("pearson_no_threshold", float("nan")))
+    slope = float(costes.get("slope", float("nan")))
+    iterations = int(costes.get("iterations", 0))
+    jointly_above = int(metrics.get("colocalized_voxels", 0))
+    non_positive_fit = bool(
+        (np.isfinite(pearson) and pearson <= 0.0)
+        or (np.isfinite(slope) and slope <= 0.0)
+    )
+    extreme_first_step = iterations == 1 and jointly_above < 2
+    if not non_positive_fit and not extreme_first_step:
+        return ()
+
+    population = "selected ROI" if mask_restricted else "analysis population"
+    details: list[str] = []
+    if non_positive_fit:
+        values = []
+        if np.isfinite(pearson):
+            values.append(f"Pearson r={pearson:.6g}")
+        if np.isfinite(slope):
+            values.append(f"regression slope={slope:.6g}")
+        suffix = f" ({'; '.join(values)})" if values else ""
+        details.append(
+            f"the {population} has non-positive channel correlation{suffix}"
+        )
+    if iterations == 1:
+        details.append("the automatic search stopped at its first candidate")
+    if jointly_above < 2:
+        noun = "voxel" if jointly_above == 1 else "voxels"
+        details.append(
+            f"only {jointly_above} jointly above-threshold {noun} remain"
+        )
+
+    guidance = "Review the scatter or switch to Manual thresholds."
+    if mask_restricted:
+        guidance = (
+            "An ROI derived from one channel can bias this fit; use a neutral "
+            "spatial ROI, review the scatter, or switch to Manual thresholds."
+        )
+    return (f"Costes warning: {'; '.join(details)}. {guidance}",)
+
+
 def _coloc_sum(values: np.ndarray, mask: np.ndarray) -> float:
     return float(np.sum(np.asarray(values, dtype=np.float64)[mask], dtype=np.float64))
 
@@ -13001,6 +13061,7 @@ def _racc_index_image(
     include_percentile: float,
     intensity_max: float,
     roi_mask: np.ndarray | None = None,
+    costes: Mapping[str, float] | None = None,
 ) -> np.ndarray:
     theta_degrees = float(theta_degrees)
     include_percentile = float(include_percentile)
@@ -13009,12 +13070,29 @@ def _racc_index_image(
     if not 0 < include_percentile <= 100:
         raise ValueError("RACC included percentile must satisfy 0 < p <= 100.")
 
+    mask_restricted = roi_mask is not None
     if roi_mask is None:
         roi_mask = np.ones(ch1.shape, dtype=bool)
     analysis_max = _coloc_analysis_intensity_max(ch1, ch2, intensity_max)
     mask = (ch1 >= threshold_1) & (ch2 >= threshold_2) & roi_mask
     overlap_voxels = int(np.count_nonzero(mask))
     if overlap_voxels < 2:
+        if costes is not None:
+            noun = "voxel" if overlap_voxels == 1 else "voxels"
+            roi_guidance = (
+                " A channel-selected ROI can bias the Costes fit; use a neutral "
+                "spatial ROI, review the scatter, or switch to Manual thresholds."
+                if mask_restricted
+                else " Review the scatter or switch to Manual thresholds."
+            )
+            raise ValueError(
+                "Costes auto selected channel thresholds "
+                f"{threshold_1:g} and {threshold_2:g}, leaving only "
+                f"{overlap_voxels} jointly above-threshold {noun}; RACC is "
+                "undefined. Costes can select extreme thresholds when the "
+                "analysis population has weak or negative correlation."
+                f"{roi_guidance}"
+            )
         raise ValueError(
             "Fewer than two voxels pass both channel thresholds; RACC is undefined."
         )

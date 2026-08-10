@@ -659,6 +659,13 @@ COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "racc_index",
     "masked_racc_index",
 }
+COLOCALIZATION_COSTES_OPERATIONS = COLOCALIZATION_THRESHOLD_OPERATIONS | {
+    "object_colocalization_metrics",
+}
+COLOCALIZATION_THRESHOLD_VALUE_PARAMETERS = {
+    "channel_1_threshold",
+    "channel_2_threshold",
+}
 COLOCALIZATION_SCATTER_OPERATIONS = COLOCALIZATION_THRESHOLD_OPERATIONS
 BACKGROUND_PIPELINE_OPERATIONS = {
     "auto_watershed_from_mask",
@@ -12373,6 +12380,10 @@ class VippWidget(QWidget):
             else:
                 control_class = ParameterControl
             widget = control_class(spec, presented_value, bounds)
+            if self._is_colocalization_threshold_value_spec(node_id, spec):
+                widget.setEnabled(
+                    self._colocalization_thresholds_are_editable(node_id)
+                )
             if compact_deconvolution_form and isinstance(
                 widget,
                 (ChoiceControl, ParameterControl),
@@ -12433,6 +12444,7 @@ class VippWidget(QWidget):
             )
             for spec in specs
             if str(getattr(spec, "visibility", "always") or "always") != "always"
+            and not self._is_colocalization_threshold_value_spec(node_id, spec)
         ]
         if any(not result.visible for result in results):
             text = (
@@ -14439,6 +14451,15 @@ class VippWidget(QWidget):
                     choice_labels=spec.choice_labels,
                 )
             widget.set_bounds(bounds, presented_value, emit=False)
+            if self._is_colocalization_threshold_value_spec(
+                self._selected_node_id,
+                spec,
+            ):
+                widget.setEnabled(
+                    self._colocalization_thresholds_are_editable(
+                        self._selected_node_id
+                    )
+                )
             label = self.parameter_form.labelForField(widget)
             if isinstance(label, QLabel):
                 label.setText(spec.label)
@@ -14508,17 +14529,52 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return False
+        if self._is_colocalization_threshold_value_spec(node_id, spec):
+            # Costes owns these values while it is selected, but they remain
+            # useful scientific output and become the starting point when the
+            # user switches back to Manual.
+            return False
         visibility = resolve_parameter_visibility(
             spec,
             context=self.pipeline.parameter_visibility_context(node_id),
         )
         return not visibility.visible
 
+    def _is_colocalization_threshold_value_spec(self, node_id: str, spec) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        return bool(
+            node is not None
+            and node.operation_id in COLOCALIZATION_COSTES_OPERATIONS
+            and spec.name in COLOCALIZATION_THRESHOLD_VALUE_PARAMETERS
+        )
+
+    def _colocalization_thresholds_are_editable(self, node_id: str) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        return bool(
+            node is not None
+            and not str(node.params.get("threshold_mode", "Manual"))
+            .strip()
+            .lower()
+            .startswith("costes")
+        )
+
+    def _refresh_colocalization_threshold_control_states(
+        self,
+        node_id: str,
+    ) -> None:
+        if node_id != self._selected_node_id:
+            return
+        editable = self._colocalization_thresholds_are_editable(node_id)
+        for name in COLOCALIZATION_THRESHOLD_VALUE_PARAMETERS:
+            widget = self._parameter_widgets.get(name)
+            if widget is not None:
+                widget.setEnabled(editable)
+
     def _parameter_uses_numeric_entry_only(self, node_id: str, spec) -> bool:
         node = self.pipeline.nodes.get(node_id)
         if (
             node is not None
-            and node.operation_id in COLOCALIZATION_THRESHOLD_OPERATIONS
+            and node.operation_id in COLOCALIZATION_COSTES_OPERATIONS
             and spec.name in {"channel_1_threshold", "channel_2_threshold"}
         ):
             return True
@@ -17433,6 +17489,11 @@ class VippWidget(QWidget):
         self.pipeline.set_param(self._selected_node_id, name, value)
         if self._parameter_visibility_controls_changed(self._selected_node_id):
             self._render_parameters(self._selected_node_id)
+        if (
+            node.operation_id in COLOCALIZATION_COSTES_OPERATIONS
+            and name == "threshold_mode"
+        ):
+            self._refresh_colocalization_threshold_control_states(node.id)
         if node.operation_id == "split_channels" and name == "preview_channel":
             self._refresh_split_channel_display_surfaces({node.id})
             self.status_label.setText(
@@ -20858,6 +20919,19 @@ class VippWidget(QWidget):
             f"{result.colocalized_voxels:,}/{result.roi_voxels:,} "
             f"({colocalized_percentage})"
         )
+        costes_diagnostic = ""
+        if (
+            str(result.threshold_mode).strip().lower().startswith("costes")
+            and result.roi_voxels > 0
+            and result.colocalized_voxels < 2
+        ):
+            costes_diagnostic = (
+                " Costes diagnostic: fewer than two ROI voxels pass both "
+                "resolved thresholds, so RACC is undefined. An ROI selected "
+                "from either analysis channel can cause this when its retained "
+                "channels are weakly or negatively correlated; use a spatial "
+                "or otherwise channel-neutral ROI, or switch to Manual."
+            )
         channel_1_range, channel_2_range = self._scatter_result_axis_ranges(result)
         self.colocalization_scatter_plot.set_density(
             result.density_counts,
@@ -20883,6 +20957,7 @@ class VippWidget(QWidget):
             f"{result.threshold_mode} thresholds. Exact colocalized count: "
             f"{count_detail}. {display_detail}"
         )
+        summary += costes_diagnostic
         if result.warnings:
             summary += " " + "; ".join(result.warnings)
         tooltip = (
@@ -20891,6 +20966,8 @@ class VippWidget(QWidget):
         )
         if not density_is_clipped:
             tooltip += "Every ROI voxel contributes to the density. "
+        if costes_diagnostic:
+            tooltip += costes_diagnostic.strip() + " "
         tooltip += "Drag a threshold line to switch to manual thresholds."
         self.colocalization_scatter_summary.setText(summary)
         self.colocalization_scatter_summary.setToolTip(tooltip)
@@ -21048,6 +21125,7 @@ class VippWidget(QWidget):
                 "threshold_mode",
                 "Manual",
             )
+            self._refresh_colocalization_threshold_control_states(node.id)
             changed = True
         if not np.isclose(float(node.params.get(name, np.nan)), value):
             self._record_parameter_undo(self._selected_node_id, name)

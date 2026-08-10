@@ -5335,7 +5335,7 @@ def test_parameter_dependent_visibility_refreshes_and_preserves_values(qtbot):
     assert "denominator_floor" in widget._parameter_widgets
 
 
-def test_costes_auto_hides_manual_threshold_rows_without_resetting_them(qtbot):
+def test_costes_auto_keeps_resolved_threshold_rows_as_manual_start(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     node = widget.add_node_from_palette("object_colocalization_metrics")
@@ -5343,12 +5343,39 @@ def test_costes_auto_hides_manual_threshold_rows_without_resetting_them(qtbot):
     widget.pipeline.set_param(node.id, "channel_2_threshold", 87.0)
     widget.graph_view.select_node(node.id)
 
+    threshold_1 = widget._parameter_widgets["channel_1_threshold"]
+    threshold_2 = widget._parameter_widgets["channel_2_threshold"]
+    assert threshold_1.isEnabled()
+    assert threshold_2.isEnabled()
+
     widget._on_param_changed("threshold_mode", "Costes auto")
 
-    assert "channel_1_threshold" not in widget._parameter_widgets
-    assert "channel_2_threshold" not in widget._parameter_widgets
+    assert widget._parameter_widgets["channel_1_threshold"] is threshold_1
+    assert widget._parameter_widgets["channel_2_threshold"] is threshold_2
+    assert not threshold_1.isEnabled()
+    assert not threshold_2.isEnabled()
     assert node.params["channel_1_threshold"] == 41.0
     assert node.params["channel_2_threshold"] == 87.0
+
+    # The completed Costes calculation writes its derived values to the node;
+    # the inspector must display them even though they remain read-only.
+    node.params["channel_1_threshold"] = 53.0
+    node.params["channel_2_threshold"] = 97.0
+    widget._refresh_selected_parameter_controls()
+
+    assert threshold_1.value() == 53.0
+    assert threshold_2.value() == 97.0
+    assert not threshold_1.isEnabled()
+    assert not threshold_2.isEnabled()
+
+    widget._on_param_changed("threshold_mode", "Manual")
+
+    assert threshold_1.isEnabled()
+    assert threshold_2.isEnabled()
+    assert threshold_1.value() == 53.0
+    assert threshold_2.value() == 97.0
+    assert node.params["channel_1_threshold"] == 53.0
+    assert node.params["channel_2_threshold"] == 97.0
 
 
 def test_stored_3d_mode_remains_visible_and_truthful_after_yx_replacement(qtbot):
@@ -5955,11 +5982,25 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
         widget.pipeline.nodes[coloc.id].params["channel_1_threshold"],
         25.0,
     )
+    threshold_1_control = widget._parameter_widgets["channel_1_threshold"]
+    threshold_2_control = widget._parameter_widgets["channel_2_threshold"]
+    assert not threshold_1_control.isEnabled()
+    assert not threshold_2_control.isEnabled()
+    assert np.isclose(
+        threshold_1_control.value(),
+        widget.pipeline.nodes[coloc.id].params["channel_1_threshold"],
+    )
+    assert np.isclose(
+        threshold_2_control.value(),
+        widget.pipeline.nodes[coloc.id].params["channel_2_threshold"],
+    )
 
     widget._on_colocalization_scatter_threshold_changed(1, 12.5)
     widget._debounce_timer.stop()
 
     assert widget.pipeline.nodes[coloc.id].params["threshold_mode"] == "Manual"
+    assert threshold_1_control.isEnabled()
+    assert threshold_2_control.isEnabled()
     assert np.isclose(
         widget.pipeline.nodes[coloc.id].params["channel_1_threshold"],
         12.5,
@@ -6572,6 +6613,37 @@ def test_colocalization_scatter_zero_roi_reports_percentage_unavailable(qtbot):
     assert "0/0 (n/a) meet both thresholds" in (
         widget.colocalization_scatter_summary.toolTip()
     )
+
+
+def test_costes_scatter_explains_too_small_racc_population(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    coloc = widget.add_node_from_palette("masked_racc_index")
+    widget.graph_view.select_node(coloc.id)
+    key = ("degenerate-costes",)
+    widget._current_colocalization_scatter_key = key
+
+    widget._apply_colocalization_scatter_result(
+        ColocalizationScatterResult(
+            0,
+            key,
+            coloc.id,
+            "Costes auto",
+            48_409.0,
+            61_092.0,
+            density_counts=np.ones((32, 32), dtype=np.float64),
+            roi_voxels=2_311,
+            colocalized_voxels=1,
+        )
+    )
+
+    summary = widget.colocalization_scatter_summary.text()
+    tooltip = widget.colocalization_scatter_summary.toolTip()
+    assert "Costes diagnostic" in summary
+    assert "RACC is undefined" in summary
+    assert "channel-neutral ROI" in summary
+    assert "switch to Manual" in summary
+    assert "RACC is undefined" in tooltip
 
 
 def test_clipped_scatter_summary_separates_density_from_exact_counts(qtbot):
