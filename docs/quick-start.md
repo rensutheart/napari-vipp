@@ -22,10 +22,13 @@ directly to the deterministic release asset
 2. Double-click it. No terminal activation should be required.
 3. Keep the recommended private VIPP environment. The one-click installer does
    not modify an existing napari environment.
-4. Accept the recommended compute route:
-   - **CPU** works on every supported Windows computer; or
-   - **NVIDIA GPU** is offered only when the driver, Python, CUDA 13, GPU
-     architecture, package, memory, and scientific gates can be satisfied.
+4. Leave **Automatic** selected for the simplest setup. To choose manually,
+   expand **Advanced details**, then use **Computer use** to select **CPU** or
+   **NVIDIA GPU**. CPU works on every supported Windows computer. Automatic
+   chooses NVIDIA only when the driver, Python, CUDA 13, GPU architecture,
+   package, memory, and scientific gates can be satisfied. The explicit NVIDIA
+   choice stays visible, but setup will block installation and explain what is
+   missing if those checks do not pass.
 5. In **Reviewed settings**, confirm the exact installation location, the CPU
    or NVIDIA CUDA 13 route, and whether shortcuts will be added to the Start
    Menu only or to both the Start Menu and Desktop. Select **Install**, then
@@ -33,13 +36,15 @@ directly to the deterministic release asset
    computer-use choice, installation location, or desktop-shortcut choice,
    select **Check these settings** again. Setup will not enable **Install** for
    settings it has not checked.
-6. Open **VIPP Automatic** from the created shortcut. CUDA installations also
-   provide **VIPP CPU** and **VIPP Prefer GPU** shortcuts.
+6. For a CPU installation, open **VIPP** from the created shortcut. A CUDA
+   installation instead provides **VIPP Automatic**, **VIPP CPU**, and
+   **VIPP Prefer GPU** shortcuts; start with **VIPP Automatic**.
 
 The installer does not silently replace an existing installation. An older
 installer-owned copy is offered as **Update**, with the old working environment
-kept until the replacement passes its checks. The same healthy version offers
-**Open VIPP** and an optional **Repair**. A newer version is not downgraded.
+kept until the replacement passes its checks. To repair the same healthy
+version, rerun that version's VIPP setup `.exe`; its reviewed screen offers
+**Open VIPP** and **Repair**. A newer version is not downgraded.
 Files, folders, shortcuts, or napari environments that the installer does not
 own are never overwritten; setup asks for a separate managed location instead.
 Managed CPU and CUDA installations can coexist. Remove either one later from

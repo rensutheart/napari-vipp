@@ -3,6 +3,9 @@
 This directory contains the reviewed PyInstaller configuration for the single
 novice-facing Windows VIPP setup program. CPU or NVIDIA GPU support is selected
 inside that program; there are not separate CPU and GPU setup executables.
+The setup program uses a separately installed supported 64-bit Python. If none
+is available, its guided screen links to the official Python 3.12.10 installer
+and lets the user check again without entering terminal commands.
 Its approval screen names the exact managed location, resolved CPU or CUDA 13
 route, and Start Menu/Desktop shortcut scope. The GPU space allowance is
 described as installation-drive storage rather than GPU memory (VRAM).

@@ -40,7 +40,9 @@ and [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requi
 The intended normal experience is one signed Windows `.exe`: download it from
 the official release, double-click it, keep the recommended managed VIPP
 environment, review CPU or qualified NVIDIA GPU setup, and launch VIPP from
-the shortcuts it creates.
+the shortcuts it creates. A supported 64-bit Python is a separate prerequisite;
+if it is missing, setup links to the official Python 3.12.10 installer and lets
+the user check again afterward.
 
 Before **Install** is enabled, setup shows the exact managed location, the
 resolved CPU or NVIDIA CUDA 13 route, and whether shortcuts will be added to the

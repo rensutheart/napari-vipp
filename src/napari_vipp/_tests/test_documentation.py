@@ -128,6 +128,12 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     assert "github.com/rensutheart/napari-vipp/releases/download/" not in quick_start
     assert "Windows Settings > Apps > Installed apps" in quick_start
     assert "Managed CPU and CUDA installations can coexist" in quick_start
+    assert "expand **Advanced details**" in quick_start
+    assert "use **Computer use**" in quick_start
+    assert "For a CPU installation, open **VIPP**" in quick_start
+    assert "rerun that version's VIPP setup `.exe`" in quick_start
+    assert "A supported 64-bit Python is a separate prerequisite" in readme
+    assert "separately installed supported 64-bit Python" in packaging_readme
     for document in (readme, quick_start):
         normalized = " ".join(document.split())
         assert "15 GiB" in normalized
