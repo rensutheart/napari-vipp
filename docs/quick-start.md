@@ -66,7 +66,7 @@ or `nvcc`. The first VIPP installation requires an internet connection while
 the signed bootstrapper obtains packages from PyPI. Setup resolves and
 hash-locks the concrete binary package set before the user confirms it. GPU
 setup is a large download and can take several minutes. It currently needs at
-least 15 GB free on the installation drive while setup runs. This is disk
+least 15 GiB free on the installation drive while setup runs. This is disk
 storage, not GPU memory (VRAM). Setup allows up to 120 seconds without receiving
 network data before treating an attempt as stalled, then retries only a limited
 number of times; 120 seconds is not a limit on the total download or

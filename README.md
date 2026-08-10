@@ -45,7 +45,7 @@ the shortcuts it creates.
 Before **Install** is enabled, setup shows the exact managed location, the
 resolved CPU or NVIDIA CUDA 13 route, and whether shortcuts will be added to the
 Start Menu only or to both the Start Menu and Desktop. GPU setup currently
-needs at least 15 GB free on the installation drive while it runs. This is disk
+needs at least 15 GiB free on the installation drive while it runs. This is disk
 storage, not GPU memory (VRAM). The standard GPU installation works without
 cuCIM; that optional add-on is installed separately afterward.
 

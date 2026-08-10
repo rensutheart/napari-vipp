@@ -155,7 +155,7 @@ def test_gpu_install_explains_that_the_large_download_can_pause(tmp_path):
     controller.start()
     workers.pop(0)()
     assert controller.state.status_message == (
-        "Setup will use GPU acceleration. It needs at least 15 GB free on the "
+        "Setup will use GPU acceleration. It needs at least 15 GiB free on the "
         "installation drive during setup. This is disk storage, not GPU "
         "memory (VRAM)."
     )

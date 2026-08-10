@@ -742,12 +742,12 @@ def _ready_status(prepared: PreparedInstall) -> str:
     gib = prepared.required_free_bytes / 1024**3
     if prepared.track is ComputeTrack.CUDA13:
         return (
-            f"Setup will use GPU acceleration. It needs at least {gib:.0f} GB "
+            f"Setup will use GPU acceleration. It needs at least {gib:.0f} GiB "
             "free on the installation drive during setup. This is disk "
             "storage, not GPU memory (VRAM)."
         )
     return (
-        f"Setup will use {compute} and needs at least {gib:.0f} GB of free "
+        f"Setup will use {compute} and needs at least {gib:.0f} GiB of free "
         "disk space during setup."
     )
 

@@ -130,7 +130,7 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     assert "Managed CPU and CUDA installations can coexist" in quick_start
     for document in (readme, quick_start):
         normalized = " ".join(document.split())
-        assert "15 GB" in normalized
+        assert "15 GiB" in normalized
         assert "disk storage, not GPU memory (VRAM)" in normalized
         assert "standard GPU installation works without" in normalized
         assert "cuCIM" in normalized
