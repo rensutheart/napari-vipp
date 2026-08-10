@@ -35,6 +35,11 @@ _TRACK_LABELS = {
 _LABEL_FOR_TRACK = {value: key for key, value in _TRACK_LABELS.items()}
 VIPP_TAGLINE = "Visual image processing made approachable"
 DEVELOPMENT_BUILD_LABEL = "DEVELOPMENT BUILD — local testing only"
+_HEADER_MIN_WIDTH = 520
+_HEADER_MIN_HEIGHT = 420
+_HEADER_LEFT_PADDING = 22
+_HEADER_INLINE_GAP = 14
+_HEADER_RIGHT_PADDING = 18
 _STATUS_HISTORY_LIMIT = 12
 _STAGE_LABELS = {
     InstallerScreen.CHECKING: "Checking this computer",
@@ -54,6 +59,37 @@ def _format_elapsed(seconds: int) -> str:
     if minutes:
         return f"{minutes}m {remaining:02d}s"
     return f"{remaining}s"
+
+
+def _header_inline_width(brand_width: int, tagline_width: int) -> int:
+    """Return the width needed to keep the brand and tagline side by side."""
+
+    return (
+        _HEADER_LEFT_PADDING
+        + brand_width
+        + _HEADER_INLINE_GAP
+        + tagline_width
+        + _HEADER_RIGHT_PADDING
+    )
+
+
+def _header_should_stack(
+    available_width: int,
+    brand_width: int,
+    tagline_width: int,
+) -> bool:
+    """Keep the tagline whole by stacking it when the inline row is too narrow."""
+
+    return available_width < _header_inline_width(brand_width, tagline_width)
+
+
+def _header_minimum_width(brand_width: int, tagline_width: int) -> int:
+    """Guarantee that each stacked header row can remain unwrapped."""
+
+    return max(
+        _HEADER_MIN_WIDTH,
+        _HEADER_LEFT_PADDING + max(brand_width, tagline_width) + _HEADER_RIGHT_PADDING,
+    )
 
 
 def _activity_text(
@@ -185,6 +221,7 @@ class InstallerWindow:
         self._last_rendered_screen: InstallerScreen | None = None
         self._status_history = ["Starting VIPP Setup…"]
         self._brand_image = None
+        self._header_stacked: bool | None = None
         self._stage_started_at = time.monotonic()
         self._last_elapsed_second = -1
         self._development_build = _is_development_build()
@@ -204,7 +241,7 @@ class InstallerWindow:
             _window_title(_installed_version(), development=self._development_build)
         )
         self.root.geometry(self._bounded_geometry(760, 660))
-        self.root.minsize(520, 420)
+        self.root.minsize(_HEADER_MIN_WIDTH, _HEADER_MIN_HEIGHT)
         self.root.configure(background="#f4f7fb")
         self.root.bind("<Return>", lambda _event: self._primary_requested())
         self.root.bind("<Escape>", lambda _event: self._close_requested())
@@ -215,10 +252,13 @@ class InstallerWindow:
             pass
 
     def _bounded_geometry(self, preferred_width: int, preferred_height: int) -> str:
-        width = min(preferred_width, max(520, self.root.winfo_screenwidth() - 80))
+        width = min(
+            preferred_width,
+            max(_HEADER_MIN_WIDTH, self.root.winfo_screenwidth() - 80),
+        )
         height = min(
             preferred_height,
-            max(420, self.root.winfo_screenheight() - 120),
+            max(_HEADER_MIN_HEIGHT, self.root.winfo_screenheight() - 120),
         )
         return f"{width}x{height}"
 
@@ -236,34 +276,36 @@ class InstallerWindow:
         )
         style.configure("VIPP.TCheckbutton", background="#f4f7fb")
 
-        header = tk.Frame(self.root, background="#08151F", height=104)
-        header.pack(fill="x")
-        header.pack_propagate(False)
+        self._header = tk.Frame(self.root, background="#08151F")
+        self._header.pack(fill="x")
         self._brand_image = self._load_brand_image()
         if self._brand_image is not None:
-            tk.Label(
-                header,
+            self._brand_label = tk.Label(
+                self._header,
                 image=self._brand_image,
                 background="#08151F",
                 borderwidth=0,
-            ).pack(side="left", padx=(22, 14), pady=10)
+            )
         else:
-            tk.Label(
-                header,
+            self._brand_label = tk.Label(
+                self._header,
                 text="VIPP",
                 font=("Segoe UI Semibold", 27),
                 foreground="#F8FAFC",
                 background="#08151F",
-            ).pack(side="left", padx=(28, 18), pady=20)
-        tk.Label(
-            header,
+            )
+        self._tagline_label = tk.Label(
+            self._header,
             text=VIPP_TAGLINE,
             font=("Segoe UI", 10),
             foreground="#d8e7f3",
             background="#08151F",
             justify="left",
+            anchor="w",
             wraplength=0,
-        ).pack(side="left", anchor="w", fill="x", expand=True, padx=(0, 18))
+        )
+        self._set_header_layout(stacked=False)
+        self._header.bind("<Configure>", self._header_resized)
 
         main = ttk.Frame(self.root)
         main.pack(fill="both", expand=True)
@@ -398,6 +440,70 @@ class InstallerWindow:
             style="VIPP.TButton",
         )
         self._secondary.pack(side="right", padx=(0, 10))
+
+        # Requested widths include the active Windows text scaling.  The
+        # normal minimum remains compact, but grows at unusually high scaling
+        # so the official logo and exact tagline can both stay whole.
+        self.root.update_idletasks()
+        self.root.minsize(
+            _header_minimum_width(
+                self._brand_label.winfo_reqwidth(),
+                self._tagline_label.winfo_reqwidth(),
+            ),
+            _HEADER_MIN_HEIGHT,
+        )
+
+    def _header_resized(self, event) -> None:
+        self._set_header_layout(
+            stacked=_header_should_stack(
+                int(event.width),
+                self._brand_label.winfo_reqwidth(),
+                self._tagline_label.winfo_reqwidth(),
+            )
+        )
+
+    def _set_header_layout(self, *, stacked: bool) -> None:
+        if self._header_stacked is stacked:
+            return
+        self._header_stacked = stacked
+        if stacked:
+            self._header.columnconfigure(0, weight=1)
+            self._header.columnconfigure(1, weight=0)
+            self._brand_label.grid(
+                row=0,
+                column=0,
+                columnspan=2,
+                sticky="w",
+                padx=(_HEADER_LEFT_PADDING, _HEADER_RIGHT_PADDING),
+                pady=(10, 0),
+            )
+            self._tagline_label.grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="w",
+                padx=(_HEADER_LEFT_PADDING, _HEADER_RIGHT_PADDING),
+                pady=(2, 10),
+            )
+            return
+        self._header.columnconfigure(0, weight=0)
+        self._header.columnconfigure(1, weight=1)
+        self._brand_label.grid(
+            row=0,
+            column=0,
+            columnspan=1,
+            sticky="w",
+            padx=(_HEADER_LEFT_PADDING, _HEADER_INLINE_GAP),
+            pady=10,
+        )
+        self._tagline_label.grid(
+            row=0,
+            column=1,
+            columnspan=1,
+            sticky="w",
+            padx=(0, _HEADER_RIGHT_PADDING),
+            pady=10,
+        )
 
     def _build_advanced(self, parent) -> None:
         ttk = self._ttk

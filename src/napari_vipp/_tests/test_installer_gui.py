@@ -19,6 +19,9 @@ from napari_vipp.installer.gui import (
     VIPP_TAGLINE,
     InstallerWindow,
     _activity_text,
+    _header_inline_width,
+    _header_minimum_width,
+    _header_should_stack,
     _reviewed_message,
     _window_title,
     build_parser,
@@ -323,6 +326,53 @@ def test_installer_header_uses_official_logo_without_reconstructed_circle():
     assert "wraplength=0" in gui_source
     assert "wraplength=210" not in gui_source
     assert "create_oval" not in gui_source
+
+
+def test_installer_header_stacks_only_below_measured_inline_width():
+    required = _header_inline_width(287, 263)
+
+    assert _header_should_stack(520, 287, 263)
+    assert not _header_should_stack(760, 287, 263)
+    assert not _header_should_stack(required, 287, 263)
+    assert _header_should_stack(required - 1, 287, 263)
+
+
+def test_installer_header_minimum_width_preserves_each_unwrapped_row():
+    assert _header_minimum_width(287, 263) == 520
+    assert _header_minimum_width(287, 600) == 640
+
+
+def test_installer_header_layout_moves_whole_unwrapped_tagline():
+    class _Header:
+        def __init__(self):
+            self.columns = []
+
+        def columnconfigure(self, column, *, weight):
+            self.columns.append((column, weight))
+
+    class _Label:
+        def __init__(self):
+            self.layouts = []
+
+        def grid(self, **kwargs):
+            self.layouts.append(kwargs)
+
+    window = object.__new__(InstallerWindow)
+    window._header = _Header()
+    window._brand_label = _Label()
+    window._tagline_label = _Label()
+    window._header_stacked = None
+
+    window._set_header_layout(stacked=True)
+    window._set_header_layout(stacked=False)
+
+    assert window._brand_label.layouts[0]["row"] == 0
+    assert window._tagline_label.layouts[0]["row"] == 1
+    assert window._brand_label.layouts[1]["row"] == 0
+    assert window._tagline_label.layouts[1]["row"] == 0
+    assert "wraplength=0" in (
+        Path(__file__).resolve().parents[1] / "installer" / "gui.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_installer_has_page_and_console_scrollbars_with_fixed_footer():
