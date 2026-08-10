@@ -143,6 +143,7 @@ from napari_vipp.core.operations import (
 )
 from napari_vipp.core.pipeline import (
     EXECUTION_BLOCKED,
+    EXECUTION_ERROR,
     EXECUTION_NOT_CALCULATED,
     EXECUTION_READY,
     EXECUTION_RUNNING,
@@ -6640,10 +6641,14 @@ def test_costes_scatter_explains_too_small_racc_population(qtbot):
     summary = widget.colocalization_scatter_summary.text()
     tooltip = widget.colocalization_scatter_summary.toolTip()
     assert "Costes diagnostic" in summary
-    assert "RACC is undefined" in summary
-    assert "channel-neutral ROI" in summary
+    assert "usable jointly threshold-positive population" in summary
+    assert "RACC is unavailable" in summary
+    assert "spatial overlap or co-occurrence" in summary
+    assert "Review the scatter and resolved thresholds" in summary
     assert "switch to Manual" in summary
-    assert "RACC is undefined" in tooltip
+    assert "RACC is unavailable" in tooltip
+    assert "channel-neutral ROI" not in summary
+    assert "weakly or negatively correlated" not in summary
 
 
 def test_clipped_scatter_summary_separates_density_from_exact_counts(qtbot):
@@ -10822,6 +10827,123 @@ def test_failed_partial_clone_preserves_valid_outputs_thumbnails_and_badges(qtbo
     assert "Previous result (stale)" in card.compute_badge.toolTip()
     assert "gaussian" in widget._pending_dirty_node_ids
     assert "synthetic allocation failure" in widget.status_label.text()
+
+
+def test_cpu_partial_failure_updates_completed_metrics_and_errors_actual_node(
+    qtbot,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    metrics = widget.add_node_from_palette("masked_colocalization_metrics")
+    racc = widget.add_node_from_palette("masked_racc_index")
+
+    old_table = TableData(("value",), ((26067,),), name="old metrics")
+    old_state = TableState(1, 1, ("value",), source_name="old metrics")
+    new_table = TableData(("value",), ((48403,),), name="new metrics")
+    new_state = TableState(1, 1, ("value",), source_name="new metrics")
+    widget.pipeline.outputs[metrics.id] = old_table
+    widget.pipeline.output_states[metrics.id] = old_state
+    widget.pipeline.node_outputs[metrics.id] = [old_table]
+    widget.pipeline.node_output_states[metrics.id] = [old_state]
+    widget.pipeline.completed_node_ids.add(metrics.id)
+    widget.pipeline.node_execution_states[metrics.id] = EXECUTION_READY
+    widget.pipeline.nodes[metrics.id].params["threshold_mode"] = "Costes auto"
+    widget.pipeline.nodes[metrics.id].params["channel_1_threshold"] = 26067.0
+    widget.pipeline.nodes[racc.id].params["threshold_mode"] = "Costes auto"
+    widget.pipeline.nodes[racc.id].params["channel_1_threshold"] = 26067.0
+    widget.pipeline.nodes[racc.id].params["channel_2_threshold"] = 3071.0
+    widget.graph_view.select_node(racc.id)
+    threshold_1_control = widget._parameter_widgets["channel_1_threshold"]
+    threshold_2_control = widget._parameter_widgets["channel_2_threshold"]
+
+    partial = deepcopy(widget.pipeline)
+    partial.outputs[metrics.id] = new_table
+    partial.output_states[metrics.id] = new_state
+    partial.node_outputs[metrics.id] = [new_table]
+    partial.node_output_states[metrics.id] = [new_state]
+    partial.completed_node_ids.add(metrics.id)
+    partial.node_execution_states[metrics.id] = EXECUTION_READY
+    partial.nodes[metrics.id].params["channel_1_threshold"] = 48403.0
+    partial.completed_node_ids.discard(racc.id)
+    partial.node_execution_states[racc.id] = EXECUTION_ERROR
+    partial.node_execution_messages[racc.id] = "masked RACC sentinel"
+    partial.nodes[racc.id].params["channel_1_threshold"] = 48403.0
+    partial.nodes[racc.id].params["channel_2_threshold"] = 61092.0
+
+    decision = NodeExecutionDecision(
+        metrics.id,
+        metrics.operation_id,
+        NodeComputePreference(NodePreferenceKind.CPU),
+        "cpu-numpy",
+        "cpu",
+        f"cpu-{metrics.operation_id}-v1",
+        DecisionKind.POLICY_CPU,
+        DecisionReason.EXPLICIT_CPU,
+        "CPU test decision.",
+        implementation_version="1",
+    )
+    request = ComputeRequest(mode=ComputeMode.CPU)
+    run_id = 127
+    dirty = {metrics.id, racc.id}
+    widget._active_pipeline_run_id = run_id
+    widget._pipeline_cancel_events[run_id] = threading.Event()
+    widget._pipeline_run_context[run_id] = (
+        None,
+        "input volume",
+        metrics.id,
+        widget._last_pipeline_source_signature,
+        dirty,
+        request,
+        frozenset(dirty),
+    )
+    widget._pipeline_run_manual_node_ids[run_id] = frozenset(dirty)
+    widget._begin_pipeline_dispatch(dirty)
+    widget._set_pipeline_busy(True, metrics.id)
+    widget._on_background_pipeline_node_started((run_id, racc.id))
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(
+            run_id,
+            serialize_workflow(widget.pipeline, compute_request=request),
+            pipeline=partial,
+            error="masked RACC sentinel",
+            execution_report=ExecutionReport(
+                request,
+                ComputeEnvironment(),
+                actual_decisions=(decision,),
+            ),
+        )
+    )
+
+    assert widget.pipeline.outputs[metrics.id] is new_table
+    assert widget.pipeline.node_execution_states[metrics.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_messages[metrics.id] == ""
+    assert (
+        widget.pipeline.nodes[metrics.id].params["channel_1_threshold"]
+        == 48403.0
+    )
+    assert widget.pipeline.node_execution_states[racc.id] == EXECUTION_ERROR
+    assert widget.pipeline.node_execution_messages[racc.id] == (
+        "masked RACC sentinel"
+    )
+    assert widget.pipeline.nodes[racc.id].params["channel_1_threshold"] == 48403.0
+    assert widget.pipeline.nodes[racc.id].params["channel_2_threshold"] == 61092.0
+    assert threshold_1_control.value() == 48403.0
+    assert threshold_2_control.value() == 61092.0
+    assert not threshold_1_control.isEnabled()
+    assert not threshold_2_control.isEnabled()
+
+    widget._on_param_changed("threshold_mode", "Manual")
+    widget._debounce_timer.stop()
+
+    assert threshold_1_control.value() == 48403.0
+    assert threshold_2_control.value() == 61092.0
+    assert threshold_1_control.isEnabled()
+    assert threshold_2_control.isEnabled()
+    assert widget.pipeline.nodes[racc.id].params["channel_1_threshold"] == 48403.0
+    assert widget.pipeline.nodes[racc.id].params["channel_2_threshold"] == 61092.0
+    assert racc.id in widget._pending_dirty_node_ids
+    assert racc.id not in widget._pending_manual_node_ids
 
 
 def test_cancel_background_run_requeues_dirty_nodes(qtbot):

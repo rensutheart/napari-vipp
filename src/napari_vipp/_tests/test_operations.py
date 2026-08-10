@@ -1284,38 +1284,45 @@ def test_costes_auto_matches_source_derived_simple_stepper_regression_case():
     assert operations._java_round(-1.5) == -1.0
 
 
-def test_costes_channel_selected_roi_warns_and_explains_undefined_racc():
+def test_costes_unusable_population_warns_and_explains_undefined_racc():
     data, _metadata, _layer_type = next(
         sample
         for sample in make_sample_data()
         if sample[1]["name"] == "VIPP synthetic colocalization"
     )
     channel_1, channel_2 = data
-    roi = channel_1 > 7500
+    # Matches the edited Binary Threshold in the reported saved workflow.
+    roi = channel_1 > 8184.276
 
     record = colocalization_metrics(
         [channel_1, channel_2, roi],
         threshold_mode="Costes auto",
     ).records()[0]
 
-    assert int(np.count_nonzero(roi)) == 2311
-    assert record["channel_1_threshold"] == 48409.0
+    assert int(np.count_nonzero(roi)) == 2310
+    assert record["channel_1_threshold"] == 48403.0
     assert record["channel_2_threshold"] == 61092.0
     assert record["colocalized_voxels"] == 1
     assert record["costes_iterations"] == 1
-    assert record["costes_slope"] == -18.941268366369343
+    assert record["costes_slope"] == pytest.approx(-18.6674, rel=1e-5)
     warning = record["normalization_warnings"]
-    assert "selected ROI has non-positive channel correlation" in warning
-    assert "automatic search stopped at its first candidate" in warning
-    assert "only 1 jointly above-threshold voxel" in warning
-    assert "neutral spatial ROI" in warning
+    assert "resolved channel thresholds 48403 and 61092" in warning
+    assert "1 jointly threshold-positive voxel" in warning
+    assert "unusable for RACC" in warning
+    assert "requires at least 2" in warning
+    assert "does not imply that the channels have no spatial overlap" in warning
+    assert "scatter and resolved thresholds" in warning
+    assert "Manual thresholds" in warning
+    assert "ROI" not in warning
+    assert "correlation" not in warning
 
     with pytest.raises(
         ValueError,
         match=(
-            r"Costes auto selected channel thresholds 48409 and 61092, leaving "
-            r"only 1 jointly above-threshold voxel; RACC is undefined.*"
-            r"neutral spatial ROI.*Manual thresholds"
+            r"Costes auto resolved channel thresholds 48403 and 61092, leaving "
+            r"1 jointly threshold-positive voxel\. RACC requires at least 2.*"
+            r"does not imply.*spatial overlap or co-occurrence.*"
+            r"scatter and resolved thresholds.*Manual thresholds"
         ),
     ):
         racc_index(

@@ -4229,7 +4229,6 @@ def colocalization_metrics(
         *_costes_quality_warnings(
             costes,
             metrics,
-            mask_restricted=mask_supplied,
         ),
     )
 
@@ -12200,52 +12199,27 @@ def _coloc_metric_values(
 def _costes_quality_warnings(
     costes: dict[str, float] | None,
     metrics: Mapping[str, object],
-    *,
-    mask_restricted: bool,
 ) -> tuple[str, ...]:
-    """Describe an extreme Costes fit without recalculating its regression."""
+    """Describe a Costes population that is too small for RACC."""
     if costes is None:
         return ()
 
-    pearson = float(metrics.get("pearson_no_threshold", float("nan")))
-    slope = float(costes.get("slope", float("nan")))
-    iterations = int(costes.get("iterations", 0))
     jointly_above = int(metrics.get("colocalized_voxels", 0))
-    non_positive_fit = bool(
-        (np.isfinite(pearson) and pearson <= 0.0)
-        or (np.isfinite(slope) and slope <= 0.0)
-    )
-    extreme_first_step = iterations == 1 and jointly_above < 2
-    if not non_positive_fit and not extreme_first_step:
+    if jointly_above >= 2:
         return ()
 
-    population = "selected ROI" if mask_restricted else "analysis population"
-    details: list[str] = []
-    if non_positive_fit:
-        values = []
-        if np.isfinite(pearson):
-            values.append(f"Pearson r={pearson:.6g}")
-        if np.isfinite(slope):
-            values.append(f"regression slope={slope:.6g}")
-        suffix = f" ({'; '.join(values)})" if values else ""
-        details.append(
-            f"the {population} has non-positive channel correlation{suffix}"
-        )
-    if iterations == 1:
-        details.append("the automatic search stopped at its first candidate")
-    if jointly_above < 2:
-        noun = "voxel" if jointly_above == 1 else "voxels"
-        details.append(
-            f"only {jointly_above} jointly above-threshold {noun} remain"
-        )
-
-    guidance = "Review the scatter or switch to Manual thresholds."
-    if mask_restricted:
-        guidance = (
-            "An ROI derived from one channel can bias this fit; use a neutral "
-            "spatial ROI, review the scatter, or switch to Manual thresholds."
-        )
-    return (f"Costes warning: {'; '.join(details)}. {guidance}",)
+    threshold_1 = float(costes["threshold_1"])
+    threshold_2 = float(costes["threshold_2"])
+    noun = "voxel" if jointly_above == 1 else "voxels"
+    return (
+        "Costes warning: resolved channel thresholds "
+        f"{threshold_1:g} and {threshold_2:g} leave {jointly_above} jointly "
+        f"threshold-positive {noun}. This population is unusable for RACC, "
+        "which requires at least 2 jointly threshold-positive voxels. This "
+        "does not imply that the channels have no spatial overlap or "
+        "co-occurrence. Review the scatter and resolved thresholds, or switch "
+        "to Manual thresholds.",
+    )
 
 
 def _coloc_sum(values: np.ndarray, mask: np.ndarray) -> float:
@@ -13070,7 +13044,6 @@ def _racc_index_image(
     if not 0 < include_percentile <= 100:
         raise ValueError("RACC included percentile must satisfy 0 < p <= 100.")
 
-    mask_restricted = roi_mask is not None
     if roi_mask is None:
         roi_mask = np.ones(ch1.shape, dtype=bool)
     analysis_max = _coloc_analysis_intensity_max(ch1, ch2, intensity_max)
@@ -13079,19 +13052,15 @@ def _racc_index_image(
     if overlap_voxels < 2:
         if costes is not None:
             noun = "voxel" if overlap_voxels == 1 else "voxels"
-            roi_guidance = (
-                " A channel-selected ROI can bias the Costes fit; use a neutral "
-                "spatial ROI, review the scatter, or switch to Manual thresholds."
-                if mask_restricted
-                else " Review the scatter or switch to Manual thresholds."
-            )
             raise ValueError(
-                "Costes auto selected channel thresholds "
-                f"{threshold_1:g} and {threshold_2:g}, leaving only "
-                f"{overlap_voxels} jointly above-threshold {noun}; RACC is "
-                "undefined. Costes can select extreme thresholds when the "
-                "analysis population has weak or negative correlation."
-                f"{roi_guidance}"
+                "Costes auto resolved channel thresholds "
+                f"{threshold_1:g} and {threshold_2:g}, leaving "
+                f"{overlap_voxels} jointly threshold-positive {noun}. RACC "
+                "requires at least 2 jointly threshold-positive voxels, so it "
+                "is undefined for this population. This does not imply that "
+                "the channels have no spatial overlap or co-occurrence. Review "
+                "the scatter and resolved thresholds, or switch to Manual "
+                "thresholds."
             )
         raise ValueError(
             "Fewer than two voxels pass both channel thresholds; RACC is undefined."

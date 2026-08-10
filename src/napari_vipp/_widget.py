@@ -18845,6 +18845,61 @@ class VippWidget(QWidget):
         )
         self.graph_view.set_node_processing(result.node_id, False)
 
+    def _background_pipeline_failure_messages(
+        self,
+        result_pipeline: PrototypePipeline | None,
+        runnable_node_ids: Iterable[str],
+        processing_node_id: str | None,
+        error: str,
+    ) -> dict[str, str]:
+        """Resolve a detached run failure to the node that actually failed."""
+
+        candidates = {
+            node_id
+            for node_id in runnable_node_ids
+            if node_id in self.pipeline.nodes
+        }
+        if result_pipeline is not None:
+            if not candidates:
+                candidates = set(result_pipeline.nodes) & set(self.pipeline.nodes)
+            failures: dict[str, str] = {}
+            for node_id in result_pipeline.topological_order():
+                live_node = self.pipeline.nodes.get(node_id)
+                result_node = result_pipeline.nodes.get(node_id)
+                if (
+                    node_id not in candidates
+                    or live_node is None
+                    or result_node is None
+                    or live_node.operation_id != result_node.operation_id
+                    or result_pipeline.node_execution_states.get(node_id)
+                    != EXECUTION_ERROR
+                ):
+                    continue
+                failures[node_id] = (
+                    result_pipeline.node_execution_messages.get(node_id, "")
+                    or error
+                )
+            if failures:
+                return failures
+
+        active_node_id = self._active_pipeline_node_id
+        if active_node_id in self.pipeline.nodes and (
+            not candidates or active_node_id in candidates
+        ):
+            active_state = (
+                result_pipeline.node_execution_states.get(active_node_id)
+                if result_pipeline is not None
+                else None
+            )
+            if result_pipeline is None or active_state in {
+                EXECUTION_RUNNING,
+                EXECUTION_ERROR,
+            }:
+                return {active_node_id: error}
+        if processing_node_id in self.pipeline.nodes:
+            return {str(processing_node_id): error}
+        return {}
+
     def _on_background_pipeline_finished(self, result: PipelineRunResult) -> None:
         if result.run_id != self._active_pipeline_run_id:
             return
@@ -18958,10 +19013,15 @@ class VippWidget(QWidget):
                     inflight_manual_node_ids
                 )
             if result.error:
-                self.pipeline.set_node_execution_error(
-                    processing_node_id,
-                    result.error,
-                )
+                for node_id, message in (
+                    self._background_pipeline_failure_messages(
+                        result.pipeline,
+                        runnable_node_ids,
+                        processing_node_id,
+                        result.error,
+                    ).items()
+                ):
+                    self.pipeline.set_node_execution_error(node_id, message)
             self._compute_runtime_quarantined_reason = (
                 "CPU/GPU cleanup failed. Restart VIPP before changing compute "
                 "policy or calculating again."
@@ -19063,18 +19123,83 @@ class VippWidget(QWidget):
             # uncomputed ``None`` outputs. Publish only nodes the clone actually
             # completed, while retaining the last coherent result for every
             # failed or uncomputed node.
-            self._merge_completed_pipeline_run_result(result.pipeline)
-            self._requeue_inflight_dirty_nodes()
-            self._pending_manual_node_ids.update(
-                node_id
-                for node_id in inflight_manual_node_ids
-                if self.pipeline.is_manual_node(node_id)
+            failure_messages = self._background_pipeline_failure_messages(
+                result.pipeline,
+                runnable_node_ids,
+                processing_node_id,
+                result.error,
             )
-            if inflight_manual_node_ids:
-                self.pipeline.mark_manual_descendants_stale(
-                    inflight_manual_node_ids
+            can_publish_cpu_partial = bool(
+                result.execution_report is not None
+                and compute_request.mode is ComputeMode.CPU
+                and result.execution_report.request.mode is ComputeMode.CPU
+                and not self._pipeline_run_pending
+                and not pending_dirty
+            )
+            completed = self._merge_completed_pipeline_run_result(
+                result.pipeline,
+                include_processing=can_publish_cpu_partial,
+                update_params=can_publish_cpu_partial,
+            )
+            if can_publish_cpu_partial:
+                if result.pipeline is not None:
+                    for node_id in failure_messages:
+                        live_node = self.pipeline.nodes.get(node_id)
+                        result_node = result.pipeline.nodes.get(node_id)
+                        if (
+                            live_node is not None
+                            and result_node is not None
+                            and live_node.operation_id
+                            == result_node.operation_id
+                        ):
+                            # Preparation may resolve authoritative UI values
+                            # (notably Costes thresholds) before the scientific
+                            # kernel rejects its final population.
+                            live_node.params = dict(result_node.params)
+                self._complete_pipeline_run(source_signature, dirty_node_ids)
+                unfinished_runnable = set(runnable_node_ids) - completed
+                self._pending_dirty_node_ids.update(
+                    unfinished_runnable & set(self.pipeline.nodes)
                 )
-            self.pipeline.set_node_execution_error(processing_node_id, result.error)
+                unfinished_manual = inflight_manual_node_ids - completed
+                failed_branches = self.pipeline.descendants_inclusive(
+                    failure_messages
+                )
+                self._pending_manual_node_ids.update(
+                    node_id
+                    for node_id in unfinished_manual - failed_branches
+                    if self.pipeline.is_manual_node(node_id)
+                )
+                if unfinished_manual:
+                    self.pipeline.mark_manual_descendants_stale(
+                        unfinished_manual
+                    )
+                partial_report = replace(
+                    result.execution_report,
+                    actual_decisions=tuple(
+                        decision
+                        for decision in result.execution_report.actual_decisions
+                        if decision.node_id in completed
+                    ),
+                )
+                self._accept_execution_report(partial_report)
+            else:
+                self._requeue_inflight_dirty_nodes()
+                self._pending_manual_node_ids.update(
+                    node_id
+                    for node_id in inflight_manual_node_ids
+                    if self.pipeline.is_manual_node(node_id)
+                )
+                if inflight_manual_node_ids:
+                    self.pipeline.mark_manual_descendants_stale(
+                        inflight_manual_node_ids
+                    )
+            for node_id, message in failure_messages.items():
+                self.pipeline.set_node_execution_error(node_id, message)
+            if can_publish_cpu_partial and self._selected_node_id in (
+                completed | set(failure_messages)
+            ):
+                self._refresh_selected_parameter_controls()
             continue_pending = bool(self._pipeline_run_pending and pending_dirty)
             self._pipeline_run_pending = False
             self._set_pipeline_busy(False)
@@ -19289,6 +19414,7 @@ class VippWidget(QWidget):
         result_pipeline: PrototypePipeline | None,
         *,
         include_processing: bool = False,
+        update_params: bool = False,
     ) -> set[str]:
         """Merge only provenance-safe nodes from an interrupted graph run.
 
@@ -19321,6 +19447,10 @@ class VippWidget(QWidget):
             return set()
         self._discard_pending_thumbnail_contrast_limit_requests()
         for node_id in completed:
+            if update_params:
+                self.pipeline.nodes[node_id].params = dict(
+                    result_pipeline.nodes[node_id].params
+                )
             self.pipeline.outputs[node_id] = result_pipeline.outputs.get(node_id)
             self.pipeline.output_states[node_id] = (
                 result_pipeline.output_states.get(node_id)
@@ -20926,11 +21056,12 @@ class VippWidget(QWidget):
             and result.colocalized_voxels < 2
         ):
             costes_diagnostic = (
-                " Costes diagnostic: fewer than two ROI voxels pass both "
-                "resolved thresholds, so RACC is undefined. An ROI selected "
-                "from either analysis channel can cause this when its retained "
-                "channels are weakly or negatively correlated; use a spatial "
-                "or otherwise channel-neutral ROI, or switch to Manual."
+                " Costes diagnostic: Costes auto did not yield a usable jointly "
+                "threshold-positive population (fewer than two analysis voxels pass "
+                "both resolved thresholds), so RACC is unavailable. This does "
+                "not by itself mean the channels have no spatial overlap or "
+                "co-occurrence. Review the scatter and resolved thresholds, or "
+                "switch to Manual."
             )
         channel_1_range, channel_2_range = self._scatter_result_axis_ranges(result)
         self.colocalization_scatter_plot.set_density(

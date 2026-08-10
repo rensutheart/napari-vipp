@@ -7017,11 +7017,15 @@ class PrototypePipeline:
         )
         remaining = execution.remaining_node_ids
         completed = execution.completed_node_ids
+        execution_order = self.topological_order()
         while remaining:
             runnable = [
                 node_id
-                for node_id in remaining
-                if all(source in completed for source in self._input_sources(node_id))
+                for node_id in execution_order
+                if node_id in remaining
+                and all(
+                    source in completed for source in self._input_sources(node_id)
+                )
             ]
             if not runnable:
                 break

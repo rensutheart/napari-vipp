@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 import numpy as np
 
@@ -24,7 +25,10 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.host_memory import HostMemorySnapshot
 from napari_vipp.core.pipeline import (
     EXECUTION_BLOCKED,
+    EXECUTION_ERROR,
+    EXECUTION_READY,
     EXECUTION_STALE,
+    NODE_LIBRARY_BY_ID,
     PrototypePipeline,
 )
 from napari_vipp.core.workflow import serialize_workflow
@@ -93,6 +97,58 @@ def test_execute_pipeline_request_materializes_a_detached_graph():
     assert finished[0].node_outputs[0] is data
     assert finished[0].output_state is not None
     np.testing.assert_array_equal(result.pipeline.outputs["input"], data)
+
+
+def test_cpu_failure_reports_completed_sibling_prefix_with_provenance(
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    failing = pipeline.add_node("gamma_correction")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    pipeline.set_param(median.id, "size", 1)
+    for node in (gaussian, median, failing):
+        assert pipeline.connect("input", node.id).success
+
+    original_gamma = NODE_LIBRARY_BY_ID["gamma_correction"]
+
+    def fail_gamma(_image, **_kwargs):
+        raise ValueError("sibling sentinel")
+
+    monkeypatch.setitem(
+        NODE_LIBRARY_BY_ID,
+        "gamma_correction",
+        replace(original_gamma, function=fail_gamma),
+    )
+    data = np.arange(20, dtype=np.float32).reshape(4, 5)
+
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=71,
+            workflow=serialize_workflow(pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+        )
+    )
+
+    assert result.error == "sibling sentinel"
+    assert result.pipeline is not None
+    assert result.execution_report is not None
+    assert [
+        decision.node_id
+        for decision in result.execution_report.actual_decisions
+    ] == [gaussian.id, median.id]
+    assert result.pipeline.node_execution_states[gaussian.id] == EXECUTION_READY
+    assert result.pipeline.node_execution_states[median.id] == EXECUTION_READY
+    assert result.pipeline.node_execution_states[failing.id] == EXECUTION_ERROR
+    assert {"input", gaussian.id, median.id} <= set(
+        result.pipeline.node_compute_provenance
+    )
+    assert failing.id not in result.pipeline.node_compute_provenance
 
 
 def test_cpu_report_keeps_pruned_intermediate_implementation_decisions():

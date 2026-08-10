@@ -11,7 +11,11 @@ from napari_vipp.core.node_execution import (
     NodeCallExecutor,
     PreparedNodeCall,
 )
-from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.pipeline import (
+    EXECUTION_ERROR,
+    EXECUTION_READY,
+    PrototypePipeline,
+)
 
 
 class _RecordingExecutor:
@@ -244,3 +248,59 @@ def test_executor_exception_is_not_retyped_or_hidden():
             np.zeros((3, 3), dtype=np.float32),
             node_executor=_FailingExecutor(),
         )
+
+
+def test_cpu_run_orders_runnable_siblings_topologically_before_failure(
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    siblings = [pipeline.add_node("gamma_correction") for _index in range(3)]
+    for sibling in siblings:
+        assert pipeline.connect("input", sibling.id).success
+
+    declared_order = tuple(pipeline.topological_order())
+
+    class _ReverseRemaining(set):
+        def __iter__(self):
+            return iter(
+                node_id
+                for node_id in reversed(declared_order)
+                if node_id in self
+            )
+
+    original_prepare = pipeline.prepare_execution
+
+    def prepare_with_adversarial_set(*args, **kwargs):
+        execution = original_prepare(*args, **kwargs)
+        execution.remaining_node_ids = _ReverseRemaining(
+            execution.remaining_node_ids
+        )
+        return execution
+
+    monkeypatch.setattr(
+        pipeline,
+        "prepare_execution",
+        prepare_with_adversarial_set,
+    )
+
+    class _FailLastExecutor:
+        def execute(self, call: PreparedNodeCall, /) -> Any:
+            if call.node_id == siblings[-1].id:
+                raise LookupError("last sibling failed")
+            return DEFAULT_CPU_NODE_EXECUTOR.execute(call)
+
+    started: list[str] = []
+    with pytest.raises(LookupError, match="last sibling failed"):
+        pipeline.run(
+            np.ones((3, 3), dtype=np.float32),
+            node_started_callback=started.append,
+            node_executor=_FailLastExecutor(),
+        )
+
+    assert started == ["input", *(node.id for node in siblings)]
+    assert all(
+        pipeline.node_execution_states[node.id] == EXECUTION_READY
+        for node in siblings[:-1]
+    )
+    assert pipeline.node_execution_states[siblings[-1].id] == EXECUTION_ERROR
