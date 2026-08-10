@@ -108,6 +108,9 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     quick_start = (REPO_ROOT / "docs" / "quick-start.md").read_text(
         encoding="utf-8"
     )
+    packaging_readme = (
+        REPO_ROOT / "packaging" / "windows" / "README.md"
+    ).read_text(encoding="utf-8")
     documentation_index = (REPO_ROOT / "docs" / "README.md").read_text(
         encoding="utf-8"
     )
@@ -125,6 +128,15 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     assert "github.com/rensutheart/napari-vipp/releases/download/" not in quick_start
     assert "Windows Settings > Apps > Installed apps" in quick_start
     assert "Managed CPU and CUDA installations can coexist" in quick_start
+    for document in (readme, quick_start):
+        normalized = " ".join(document.split())
+        assert "15 GB" in normalized
+        assert "disk storage, not GPU memory (VRAM)" in normalized
+        assert "standard GPU installation works without" in normalized
+        assert "cuCIM" in normalized
+    assert "exact managed location" in packaging_readme
+    assert "CPU or CUDA 13" in packaging_readme
+    assert "installation-drive storage" in packaging_readme
     assert documentation_index.index("(quick-start.md)") < documentation_index.index(
         "(user-guide.md)"
     )

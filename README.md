@@ -42,6 +42,13 @@ the official release, double-click it, keep the recommended managed VIPP
 environment, review CPU or qualified NVIDIA GPU setup, and launch VIPP from
 the shortcuts it creates.
 
+Before **Install** is enabled, setup shows the exact managed location, the
+resolved CPU or NVIDIA CUDA 13 route, and whether shortcuts will be added to the
+Start Menu only or to both the Start Menu and Desktop. GPU setup currently
+needs at least 15 GB free on the installation drive while it runs. This is disk
+storage, not GPU memory (VRAM). The standard GPU installation works without
+cuCIM; that optional add-on is installed separately afterward.
+
 > **Installer status:** the signed `.exe` is the next delivery stage and is not
 > yet published. The public `0.13.0a4` release still uses the manual fallback
 > below. Do not download a VIPP installer unless it is attached to an official

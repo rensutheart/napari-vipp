@@ -26,10 +26,11 @@ from napari_vipp.installer.frontend import (
     TrackChoice,
 )
 
+_CUDA13_TRACK_LABEL = "NVIDIA GPU acceleration (CUDA 13)"
 _TRACK_LABELS = {
     "Recommended automatically": TrackChoice.AUTOMATIC,
     "CPU (works on all supported computers)": TrackChoice.CPU,
-    "NVIDIA GPU acceleration": TrackChoice.CUDA13,
+    _CUDA13_TRACK_LABEL: TrackChoice.CUDA13,
 }
 _LABEL_FOR_TRACK = {value: key for key, value in _TRACK_LABELS.items()}
 VIPP_TAGLINE = "Visual image processing made approachable"
@@ -78,6 +79,36 @@ def _activity_text(
     }:
         lines.append(f"  Elapsed in this stage: {_format_elapsed(elapsed_seconds)}")
     return "\n".join(lines)
+
+
+def _reviewed_message(
+    state: InstallerViewState,
+    selection: InstallerSelection,
+) -> str:
+    """Add the exact checked choices to the visible approval message."""
+
+    if state.screen is not InstallerScreen.READY:
+        return state.message
+    target = state.target or selection.install_root
+    location = str(target) if target is not None else "recommended managed location"
+    if state.track is None:
+        track = _LABEL_FOR_TRACK[selection.track]
+    elif state.track.value == "cuda13":
+        track = _CUDA13_TRACK_LABEL
+    else:
+        track = "CPU (works on all supported computers)"
+    shortcuts = (
+        "Start Menu and Desktop"
+        if selection.create_desktop_shortcut
+        else "Start Menu only"
+    )
+    review = (
+        "Reviewed settings:\n"
+        f"Installation location: {location}\n"
+        f"Computer use: {track}\n"
+        f"Shortcuts: {shortcuts}"
+    )
+    return "\n\n".join(part for part in (state.message.strip(), review) if part)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -488,7 +519,7 @@ class InstallerWindow:
         self._state = state
         self._record_status(state.status_message)
         self._headline.set(state.headline)
-        self._message.set(state.message)
+        self._message.set(_reviewed_message(state, self._selection))
         self._status.set(state.status_message)
         self._activity.set(
             _activity_text(
@@ -569,7 +600,7 @@ class InstallerWindow:
             facts.append(f"Resolved location: {state.target}")
         if state.track is not None:
             label = (
-                "NVIDIA GPU acceleration"
+                _CUDA13_TRACK_LABEL
                 if state.track.value == "cuda13"
                 else "CPU"
             )

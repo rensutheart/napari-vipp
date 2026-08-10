@@ -3,6 +3,9 @@
 This directory contains the reviewed PyInstaller configuration for the single
 novice-facing Windows VIPP setup program. CPU or NVIDIA GPU support is selected
 inside that program; there are not separate CPU and GPU setup executables.
+Its approval screen names the exact managed location, resolved CPU or CUDA 13
+route, and Start Menu/Desktop shortcut scope. The GPU space allowance is
+described as installation-drive storage rather than GPU memory (VRAM).
 
 The release build embeds the exact `napari-vipp` wheel built from the same tag.
 The wheel SHA-256 is checked before the installer resolves dependencies and its

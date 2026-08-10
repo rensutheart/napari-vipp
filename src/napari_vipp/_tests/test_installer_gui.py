@@ -15,8 +15,10 @@ from napari_vipp.installer.gui import (
     VIPP_TAGLINE,
     InstallerWindow,
     _activity_text,
+    _reviewed_message,
     build_parser,
 )
+from napari_vipp.installer.models import ComputeTrack
 
 
 class _Controller:
@@ -198,6 +200,53 @@ def test_checking_activity_explains_long_package_review_and_elapsed_time():
     assert "can take several minutes" in rendered
     assert "moving bar means setup is still working" in rendered
     assert "Elapsed in this stage: 2m 14s" in rendered
+
+
+def test_ready_message_shows_exact_checked_settings_without_technical_details(
+    tmp_path,
+):
+    target = tmp_path / "managed CUDA installation"
+    state = InstallerViewState(
+        screen=InstallerScreen.READY,
+        headline="Ready to install VIPP",
+        message="VIPP will be installed in its own safe location.",
+        primary_label="Install VIPP",
+        primary_enabled=True,
+        target=target,
+        track=ComputeTrack.CUDA13,
+    )
+
+    rendered = _reviewed_message(
+        state,
+        InstallerSelection(
+            track="cuda13",
+            install_root=target,
+            create_desktop_shortcut=False,
+        ),
+    )
+
+    assert rendered.startswith(state.message)
+    assert "Reviewed settings:" in rendered
+    assert f"Installation location: {target}" in rendered
+    assert "Computer use: NVIDIA GPU acceleration (CUDA 13)" in rendered
+    assert "Shortcuts: Start Menu only" in rendered
+    assert "technical" not in rendered.casefold()
+
+    desktop_rendered = _reviewed_message(
+        state,
+        InstallerSelection(
+            track="cuda13",
+            install_root=target,
+            create_desktop_shortcut=True,
+        ),
+    )
+    assert "Shortcuts: Start Menu and Desktop" in desktop_rendered
+
+
+def test_non_ready_message_is_not_decorated_with_reviewed_settings():
+    state = _state(InstallerScreen.CHECKING)
+
+    assert _reviewed_message(state, InstallerSelection()) == state.message
 
 
 def test_advanced_details_are_live_and_never_use_placeholder_text(tmp_path):
@@ -412,7 +461,7 @@ def test_form_edit_invalidates_plan_and_check_uses_exact_visible_values(tmp_path
     window = object.__new__(InstallerWindow)
     window._controller = _Controller()
     window._selection = InstallerSelection()
-    window._track = _Value("NVIDIA GPU acceleration")
+    window._track = _Value("NVIDIA GPU acceleration (CUDA 13)")
     window._install_root = _Value(str(tmp_path / "custom GPU root"))
     window._existing_environment = _Value(False)
     window._existing_python = None

@@ -26,11 +26,13 @@ directly to the deterministic release asset
    - **CPU** works on every supported Windows computer; or
    - **NVIDIA GPU** is offered only when the driver, Python, CUDA 13, GPU
      architecture, package, memory, and scientific gates can be satisfied.
-5. Review the location and package changes, select **Install**, and wait for
-   the acceptance checks to finish. If you change the computer-use choice,
-   installation location, or desktop-shortcut choice, select **Check these
-   settings** again. Setup will not enable **Install** for settings it has not
-   checked.
+5. In **Reviewed settings**, confirm the exact installation location, the CPU
+   or NVIDIA CUDA 13 route, and whether shortcuts will be added to the Start
+   Menu only or to both the Start Menu and Desktop. Select **Install**, then
+   wait for setup and its final checks to finish. If you change the
+   computer-use choice, installation location, or desktop-shortcut choice,
+   select **Check these settings** again. Setup will not enable **Install** for
+   settings it has not checked.
 6. Open **VIPP Automatic** from the created shortcut. CUDA installations also
    provide **VIPP CPU** and **VIPP Prefer GPU** shortcuts.
 
@@ -63,19 +65,21 @@ environment; it does not require a system CUDA Toolkit, Visual Studio, CMake,
 or `nvcc`. The first VIPP installation requires an internet connection while
 the signed bootstrapper obtains packages from PyPI. Setup resolves and
 hash-locks the concrete binary package set before the user confirms it. GPU
-setup is a large download and can take several minutes. Setup allows up to 120
-seconds without receiving network data before treating an attempt as stalled,
-then retries only a limited number of times; 120 seconds is not a limit on the
-total download or installation time. If a temporary network problem still
-stops setup, the incomplete new copy is rolled back and any previous working
-VIPP remains active. After the connection recovers, **Try again** rechecks the
-computer-use, location, and shortcut choices currently shown and presents them
-for review before **Install** can be selected again.
+setup is a large download and can take several minutes. It currently needs at
+least 15 GB free on the installation drive while setup runs. This is disk
+storage, not GPU memory (VRAM). Setup allows up to 120 seconds without receiving
+network data before treating an attempt as stalled, then retries only a limited
+number of times; 120 seconds is not a limit on the total download or
+installation time. If a temporary network problem still stops setup, the
+incomplete new copy is rolled back and any previous working VIPP remains active.
+After the connection recovers, **Try again** rechecks the computer-use,
+location, and shortcut choices currently shown and presents them for review
+before **Install** can be selected again.
 
-cuCIM remains an optional, separate Windows installer that performs the
-verified build locally after the standard VIPP CUDA environment is working.
-It is not required to start VIPP or use the other qualified CuPy/CuPyX GPU
-operations.
+The standard GPU installation works without cuCIM. The optional, separate
+cuCIM Windows installer performs its verified build locally after the standard
+VIPP CUDA environment is working; cuCIM is not required to start VIPP or use
+the other qualified CuPy/CuPyX GPU operations.
 
 ## Available Today: Manual Alpha Installation
 
