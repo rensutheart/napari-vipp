@@ -440,6 +440,7 @@ def execute_pipeline_request(
     run_started: float | None = None
     observer_seconds = 0.0
     pipeline: PrototypePipeline | None = None
+    execution_report: ExecutionReport | None = None
     timing_store: JsonPipelineTimingStore | None = None
     timing_workload_fingerprint = ""
     timing_host_environment_fingerprint = ""
@@ -586,22 +587,52 @@ def execute_pipeline_request(
 
         run_started = perf_counter() if timing_store is not None else None
         if request.compute_request.mode is ComputeMode.CPU:
-            pipeline.run(
-                request.input_data,
-                input_metadata=request.input_metadata,
-                input_name=request.input_name,
-                source_payloads=request.source_payloads,
-                dirty_node_ids=request.dirty_node_ids,
-                node_started_callback=observed_node_started_callback,
-                node_finished_callback=publish_node_result,
-                progress_callback=observed_progress_callback,
-                cancel_callback=cancel_callback,
-                manual_mode=MANUAL_RUN_SKIP,
-                manual_node_ids=request.manual_node_ids,
-                target_node_ids=request.target_node_ids,
-                retain_node_ids=request.retain_node_ids,
-                prune_unretained=request.prune_unretained,
-            )
+            try:
+                pipeline.run(
+                    request.input_data,
+                    input_metadata=request.input_metadata,
+                    input_name=request.input_name,
+                    source_payloads=request.source_payloads,
+                    dirty_node_ids=request.dirty_node_ids,
+                    node_started_callback=observed_node_started_callback,
+                    node_finished_callback=publish_node_result,
+                    progress_callback=observed_progress_callback,
+                    cancel_callback=cancel_callback,
+                    manual_mode=MANUAL_RUN_SKIP,
+                    manual_node_ids=request.manual_node_ids,
+                    target_node_ids=request.target_node_ids,
+                    retain_node_ids=request.retain_node_ids,
+                    prune_unretained=request.prune_unretained,
+                )
+            except OperationCancelled:
+                raise
+            except Exception:
+                # CPU nodes commit atomically one at a time.  Preserve exact
+                # provenance and backend decisions for the prefix that really
+                # completed so an interactive caller can safely publish those
+                # sibling results even though a later node failed.
+                completed_cpu_node_ids = (
+                    set(timing_schedule.runnable_node_ids)
+                    & set(pipeline.completed_node_ids)
+                )
+                try:
+                    partial_decisions = _publish_cpu_compute_provenance(
+                        pipeline,
+                        request,
+                        completed_cpu_node_ids,
+                        source_scientific_contexts=source_scientific_contexts,
+                    )
+                except Exception:
+                    # Provenance publication is presentation/cache metadata and
+                    # must never replace the authoritative scientific failure.
+                    execution_report = None
+                else:
+                    execution_report = ExecutionReport(
+                        request=request.compute_request,
+                        environment=ComputeEnvironment(),
+                        actual_decisions=partial_decisions,
+                    )
+                raise
             actual_decisions = _publish_cpu_compute_provenance(
                 pipeline,
                 request,
@@ -665,8 +696,10 @@ def execute_pipeline_request(
             error=str(exc),
             cancelled=failure.kind == "cancelled",
             source_revisions=request.source_revisions,
+            execution_report=execution_report,
             failure=failure,
         )
+    assert execution_report is not None
     if timing_warnings:
         execution_report = replace(
             execution_report,

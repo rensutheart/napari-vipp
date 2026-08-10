@@ -218,17 +218,18 @@ the correlation has increased relative to the previous test. The returned
 thresholds are the last pair actually tested. There is no arbitrary
 100-iteration cap.
 
-This stopping rule assumes a population with a meaningful positive
-two-channel relationship. A mask derived by thresholding either analysis
-channel can selection-bias that relationship. If the retained population is
-weakly or negatively correlated, the first tested correlation can already
-satisfy the stop condition, leaving a near-maximum threshold pair and very few
-joint-positive voxels. VIPP preserves that source-aligned result, exposes its
-values in the read-only Costes threshold controls, and reports a diagnostic;
-it does not silently replace the fit with whole-image or manual thresholds.
-Use a spatial or otherwise channel-neutral ROI, or inspect the scatter and
-switch to `Manual`, when this diagnostic appears. RACC is undefined if fewer
-than two voxels pass both thresholds and reports that condition explicitly.
+This stopping rule assumes an analysis population with a meaningful
+two-channel intensity relationship. If that assumption is not supported, the
+first tested correlation can already satisfy the stop condition, leaving an
+extreme threshold pair and very few joint-positive voxels. That is an unusable
+automatic-threshold population for RACC, but it is not evidence that the
+channels have no spatial overlap or co-occurrence; those are different
+properties. VIPP preserves the source-aligned result, exposes its values in the
+read-only Costes threshold controls, and reports the failed threshold
+population rather than silently replacing the fit. Review the scatter and
+resolved thresholds, then use an appropriate reproducible alternative or
+switch to `Manual` when justified. RACC requires at least two voxels passing
+both thresholds and reports when that requirement is not met.
 
 The output table records:
 

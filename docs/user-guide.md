@@ -1437,16 +1437,16 @@ its calculated native thresholds and shows them in disabled threshold controls
 as well as the scatter guides/status. Switching back to `Manual` enables those
 same controls without discarding the resolved Costes values.
 
-Costes assumes that its analysis population supports a meaningful positive
-two-channel regression. A mask made by thresholding one of the two analysis
-channels can selection-bias that population. In particular, if removing
-background leaves weakly or negatively correlated channel values, the classic
-Coloc2 stepper can stop at its first, near-maximum threshold pair. VIPP keeps
-that source-aligned result visible and reports a diagnostic rather than silently
-substituting different thresholds. Use a spatial or otherwise channel-neutral
-ROI when possible, or switch to `Manual` and review the retained values and
-scatter guides. RACC remains undefined when fewer than two ROI voxels pass both
-thresholds.
+Costes is a correlation-based automatic-threshold method. If its assumptions
+are not supported by the selected analysis population, it can resolve a pair
+of thresholds that leaves too few jointly threshold-positive voxels for a
+threshold-dependent calculation such as RACC. That failure does not by itself
+mean the channels have no spatial overlap or co-occurrence: visible overlap,
+Manders quantities, overlap coefficients, and intensity correlation describe
+different properties of the data. VIPP keeps the source-aligned thresholds
+visible and reports the unusable population rather than silently substituting
+different thresholds. Review the scatter and resolved values, then use an
+appropriate reproducible alternative or switch to `Manual` when justified.
 
 Thresholded Pearson fields describe different voxel populations; they are not
 fractions or correlations of binary masks:
