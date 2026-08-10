@@ -4172,12 +4172,18 @@ def _validate_resolution_temp_capacity(
             free = shutil.disk_usage(probe).free
         except OSError as exc:
             raise PreparationError(
-                "Setup could not check free space for its temporary files."
+                "Setup could not check free space for temporary downloads and "
+                f"installer records at {probe}."
             ) from exc
         if free < required:
+            required_gib = required / 1024**3
+            # Round down so a near-threshold value can never be displayed as if
+            # it met the requirement (for example, 4.999 GiB must not say 5.00).
+            free_gib = (free * 100 // 1024**3) / 100
             raise PreparationError(
-                "Setup needs more free space on the drive used for temporary "
-                "downloads and installer records."
+                f"Setup needs at least {required_gib:.0f} GiB of free disk space "
+                f"on the volume containing {probe} for temporary downloads and "
+                f"installer records; {free_gib:.2f} GiB is available."
             )
 
 

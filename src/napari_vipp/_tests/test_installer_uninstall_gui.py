@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from napari_vipp.installer.models import ComputeTrack
 from napari_vipp.installer.uninstall import (
     DeferredSelfDelete,
     UninstallIssue,
@@ -36,17 +37,20 @@ class FakeMessages:
     def __init__(self, events: list[str], *, confirm: bool = True) -> None:
         self.events = events
         self.confirm = confirm
+        self.confirmations: list[tuple[str, str]] = []
+        self.information: list[tuple[str, str]] = []
         self.errors: list[str] = []
         self.result_thread_ids: list[int] = []
 
-    def askyesno(self, _title: str, _message: str, **_options: object) -> bool:
+    def askyesno(self, title: str, message: str, **_options: object) -> bool:
         self.events.append("confirm")
+        self.confirmations.append((title, message))
         return self.confirm
 
-    def showinfo(self, _title: str, message: str, **_options: object) -> None:
+    def showinfo(self, title: str, message: str, **_options: object) -> None:
         self.events.append("result-visible")
         self.result_thread_ids.append(threading.get_ident())
-        assert "images and analysis files were not changed" in message
+        self.information.append((title, message))
 
     def showerror(self, _title: str, message: str, **_options: object) -> None:
         self.events.append("error-visible")
@@ -55,11 +59,18 @@ class FakeMessages:
 
 
 class FakeUninstaller:
-    def __init__(self, events: list[str], result: UninstallResult) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        result: UninstallResult,
+        *,
+        track: ComputeTrack = ComputeTrack.CPU,
+    ) -> None:
         self.events = events
         self.result = result
         self.prepared = SimpleNamespace(
-            record=SimpleNamespace(version="0.13.0"),
+            managed_root=result.managed_root,
+            record=SimpleNamespace(version="0.13.0", track=track),
             fingerprint="a" * 64,
         )
         self.apply_thread_id: int | None = None
@@ -194,6 +205,56 @@ def test_self_delete_is_scheduled_only_after_success_is_visible(
     assert events.count("confirm") == 1
     assert events.index("result-visible") < events.index(f"scheduled:{target}")
     assert events[-1] == "destroy"
+
+
+@pytest.mark.parametrize(
+    ("track", "track_label"),
+    [
+        (ComputeTrack.CPU, "CPU"),
+        (ComputeTrack.CUDA13, "NVIDIA GPU / CUDA 13"),
+    ],
+)
+def test_confirmation_and_success_identify_exact_managed_copy(
+    tmp_path: Path,
+    track: ComputeTrack,
+    track_label: str,
+) -> None:
+    events: list[str] = []
+    messages = FakeMessages(events)
+    uninstaller = FakeUninstaller(
+        events,
+        _result(tmp_path, completed=True),
+        track=track,
+    )
+
+    exit_code = _run(tmp_path, uninstaller, messages, events)
+
+    managed_root = tmp_path / "managed"
+    assert exit_code == UninstallExitCode.COMPLETED
+    assert messages.confirmations == [
+        (
+            "Remove VIPP?",
+            (
+                "Remove VIPP 0.13.0 from this Windows account?\n\n"
+                f"VIPP copy: {track_label}\n"
+                f"Managed folder: {managed_root}\n\n"
+                "This removes the VIPP program and the shortcuts created by "
+                "VIPP Setup. Your images, analysis files, Python installations, "
+                "and other napari environments will not be removed."
+            ),
+        )
+    ]
+    assert messages.information == [
+        (
+            "VIPP was removed",
+            (
+                "VIPP was removed from this Windows account.\n\n"
+                f"VIPP copy: {track_label}\n"
+                f"Managed folder: {managed_root}\n\n"
+                "Your images and analysis files were not changed."
+            ),
+        )
+    ]
 
 
 def test_incomplete_cleanup_shows_exact_path_and_error(tmp_path: Path) -> None:

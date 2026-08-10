@@ -10,7 +10,9 @@ import pytest
 
 from napari_vipp.installer.models import ComputeTrack, InstallMode, InstallRequest
 from napari_vipp.installer.payload import (
+    PAYLOAD_SCHEMA_VERSION,
     InstallerPayloadError,
+    bundled_build_channel,
     bundled_logo_path,
     bundled_notices_path,
     bundled_release_spec,
@@ -32,14 +34,21 @@ def _wheel(path: Path, *, version: str = "0.13.0a4") -> Path:
     return path
 
 
-def _payload(tmp_path: Path, wheel: Path, *, digest: str | None = None) -> Path:
+def _payload(
+    tmp_path: Path,
+    wheel: Path,
+    *,
+    digest: str | None = None,
+    development: object = False,
+) -> Path:
     root = tmp_path / "installer_payload"
     root.mkdir()
     copied = root / wheel.name
     copied.write_bytes(wheel.read_bytes())
     document = {
         "schema": "napari-vipp-windows-installer-payload",
-        "schema_version": 1,
+        "schema_version": PAYLOAD_SCHEMA_VERSION,
+        "development": development,
         "distribution": "napari-vipp",
         "version": "0.13.0a4",
         "source_commit": "1" * 40,
@@ -109,6 +118,7 @@ def _finalize_fixture(tmp_path: Path, payload: bytes = b"reviewed"):
     notices.write_text("CPython\nTcl/Tk\nPyInstaller\n", encoding="utf-8")
     frozen_payload = {
         "payload_manifest_sha256": "2" * 64,
+        "development": False,
         "source_commit": state.commit,
         "source_tag": state.expected_tag,
         "wheel": {
@@ -155,6 +165,61 @@ def test_bundled_release_spec_binds_verified_local_wheel(tmp_path):
         python=Path("C:/Python312/python.exe"),
     )
     assert release.requirement(request).endswith(f"{wheel.name}[app]")
+
+
+@pytest.mark.parametrize(
+    ("development", "expected"),
+    [(False, "release"), (True, "development")],
+)
+def test_bundled_build_channel_requires_explicit_frozen_marker(
+    tmp_path,
+    development,
+    expected,
+):
+    wheel = _wheel(tmp_path / "napari_vipp-0.13.0a4-py3-none-any.whl")
+    root = _payload(tmp_path, wheel, development=development)
+
+    assert bundled_build_channel(root, frozen=True) == expected
+
+
+@pytest.mark.parametrize("development", [None, 0, "false", {}])
+def test_frozen_payload_rejects_non_boolean_development_marker(
+    tmp_path,
+    development,
+):
+    wheel = _wheel(tmp_path / "napari_vipp-0.13.0a4-py3-none-any.whl")
+    root = _payload(tmp_path, wheel, development=development)
+
+    with pytest.raises(InstallerPayloadError, match="development.*Boolean"):
+        bundled_build_channel(root, frozen=True)
+    with pytest.raises(InstallerPayloadError, match="development.*Boolean"):
+        bundled_release_spec(root, frozen=True)
+
+
+def test_frozen_payload_rejects_missing_development_marker(tmp_path):
+    wheel = _wheel(tmp_path / "napari_vipp-0.13.0a4-py3-none-any.whl")
+    root = _payload(tmp_path, wheel)
+    manifest = root / "payload-manifest.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document.pop("development")
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(InstallerPayloadError, match="development.*Boolean"):
+        bundled_build_channel(root, frozen=True)
+    with pytest.raises(InstallerPayloadError, match="development.*Boolean"):
+        bundled_release_spec(root, frozen=True)
+
+
+def test_v1_frozen_payload_is_not_assumed_to_be_a_release_build(tmp_path):
+    wheel = _wheel(tmp_path / "napari_vipp-0.13.0a4-py3-none-any.whl")
+    root = _payload(tmp_path, wheel, development=False)
+    manifest = root / "payload-manifest.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["schema_version"] = 1
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(InstallerPayloadError, match="schema_version.*2"):
+        bundled_build_channel(root, frozen=True)
 
 
 def test_bundled_release_spec_rejects_changed_wheel(tmp_path):
@@ -235,6 +300,24 @@ def test_development_plan_cannot_claim_official_filename(tmp_path, monkeypatch):
     assert str(plan["output_executable"]).endswith("-DEVELOPMENT.exe")
     assert plan["official_filename"] == "VIPP-Setup-0.13.0a4-Windows-x86_64.exe"
     assert not (tmp_path / "artifacts").exists()
+
+
+@pytest.mark.parametrize("development", [False, True])
+def test_frozen_payload_manifest_records_requested_build_channel(
+    tmp_path,
+    development,
+):
+    wheel_path = _wheel(tmp_path / "napari_vipp-0.13.0a4-py3-none-any.whl")
+    wheel = packager.inspect_wheel(wheel_path, expected_version="0.13.0a4")
+
+    document = packager._payload_manifest_document(
+        _release_state(),
+        wheel,
+        development=development,
+    )
+
+    assert document["schema_version"] == PAYLOAD_SCHEMA_VERSION
+    assert document["development"] is development
 
 
 def test_untagged_tree_cannot_plan_official_installer(tmp_path, monkeypatch):
@@ -339,6 +422,26 @@ def test_finalize_rejects_changed_build_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(packager, "inspect_source", lambda _root: state)
 
     with pytest.raises(packager.InstallerPackagingError, match="does not belong"):
+        packager.finalize_installer(
+            repository_root=REPO_ROOT,
+            signed_staging_executable=staging,
+            build_manifest_path=manifest,
+            output_directory=tmp_path / "release",
+            expected_signer_thumbprint="A" * 40,
+            authenticode_probe=lambda _path: _valid_signature(),
+            frozen_payload_probe=lambda _path: frozen_payload,
+        )
+
+
+def test_finalize_rejects_development_frozen_payload(tmp_path, monkeypatch):
+    state, staging, manifest, frozen_payload = _finalize_fixture(tmp_path)
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["frozen_payload"]["development"] = True
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(packager, "_require_windows_amd64", lambda: None)
+    monkeypatch.setattr(packager, "inspect_source", lambda _root: state)
+
+    with pytest.raises(packager.InstallerPackagingError, match="development payload"):
         packager.finalize_installer(
             repository_root=REPO_ROOT,
             signed_staging_executable=staging,

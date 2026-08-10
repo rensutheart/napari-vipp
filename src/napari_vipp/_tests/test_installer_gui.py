@@ -5,6 +5,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from napari_vipp.installer import gui as gui_module
 from napari_vipp.installer.frontend import (
     InstallerScreen,
     InstallerSelection,
@@ -12,10 +15,12 @@ from napari_vipp.installer.frontend import (
     TargetKind,
 )
 from napari_vipp.installer.gui import (
+    DEVELOPMENT_BUILD_LABEL,
     VIPP_TAGLINE,
     InstallerWindow,
     _activity_text,
     _reviewed_message,
+    _window_title,
     build_parser,
 )
 from napari_vipp.installer.models import ComputeTrack
@@ -144,6 +149,32 @@ def test_parser_keeps_recommended_automatic_route_by_default():
     assert args.base_python is None
 
 
+@pytest.mark.parametrize("development", [False, True])
+def test_development_identity_is_visible_in_title_and_version_output(
+    development,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setattr(gui_module, "_installed_version", lambda: "0.13.0a4")
+    monkeypatch.setattr(
+        gui_module,
+        "_is_development_build",
+        lambda: development,
+    )
+
+    title = _window_title("0.13.0a4", development=development)
+    with pytest.raises(SystemExit, match="0"):
+        build_parser().parse_args(["--version"])
+    version_output = capsys.readouterr().out.strip()
+
+    if development:
+        assert title.endswith(DEVELOPMENT_BUILD_LABEL)
+        assert version_output.endswith(DEVELOPMENT_BUILD_LABEL)
+    else:
+        assert DEVELOPMENT_BUILD_LABEL not in title
+        assert DEVELOPMENT_BUILD_LABEL not in version_output
+
+
 def test_ready_and_success_primary_actions_are_unambiguous():
     ready = _window(_state(InstallerScreen.READY, kind=TargetKind.NEW))
     success = _window(_state(InstallerScreen.SUCCESS, kind=TargetKind.NEW))
@@ -256,6 +287,7 @@ def test_advanced_details_are_live_and_never_use_placeholder_text(tmp_path):
         "Starting VIPP Setup…",
         "Checking Windows, Python, and available hardware…",
     ]
+    window._development_build = True
     state = InstallerViewState(
         screen=InstallerScreen.CHECKING,
         headline="Checking this computer…",
@@ -269,11 +301,15 @@ def test_advanced_details_are_live_and_never_use_placeholder_text(tmp_path):
     details = window._rendered_details(state)
 
     assert "Stage: Checking this computer" in details
+    assert DEVELOPMENT_BUILD_LABEL in details.splitlines()
     assert "Current activity: Checking available hardware…" in details
     assert f"Requested location: {tmp_path}" in details
     assert "Python candidate: CPython 3.12" in details
     assert "Recent activity:" in details
     assert "Detailed checks will appear here." not in details
+
+    window._development_build = False
+    assert DEVELOPMENT_BUILD_LABEL not in window._rendered_details(state)
 
 
 def test_installer_header_uses_official_logo_without_reconstructed_circle():
@@ -283,6 +319,7 @@ def test_installer_header_uses_official_logo_without_reconstructed_circle():
 
     assert VIPP_TAGLINE == "Visual image processing made approachable"
     assert "bundled_logo_path" in gui_source
+    assert "text=DEVELOPMENT_BUILD_LABEL" in gui_source
     assert "wraplength=0" in gui_source
     assert "wraplength=210" not in gui_source
     assert "create_oval" not in gui_source

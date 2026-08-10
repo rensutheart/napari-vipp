@@ -181,6 +181,13 @@ are not claims about final environment size or GPU memory. A GPU with less than
 15 GiB of VRAM can still qualify. VIPP evaluates available VRAM separately for
 each operation and visibly uses CPU when a particular workload does not fit.
 
+Before the guided setup begins dependency resolution, the transactional engine
+also checks every volume used for Windows temporary files and VIPP installer
+records. Each such volume needs at least 1 GiB free for CPU setup or 5 GiB free
+for CUDA setup. This is a separate gate from the managed installation location;
+if it fails, setup names the exact checked location, requirement, and available
+space.
+
 The standalone planner deliberately stops before network dependency resolution
 or mutation. It records `ready_for_resolution: true` but always keeps
 `ready_for_apply: false`,

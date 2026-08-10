@@ -48,8 +48,11 @@ Before **Install** is enabled, setup shows the exact managed location, the
 resolved CPU or NVIDIA CUDA 13 route, and whether shortcuts will be added to the
 Start Menu only or to both the Start Menu and Desktop. GPU setup currently
 needs at least 15 GiB free on the installation drive while it runs. This is disk
-storage, not GPU memory (VRAM). The standard GPU installation works without
-cuCIM; that optional add-on is installed separately afterward.
+storage, not GPU memory (VRAM). It also needs at least 5 GiB free on each drive
+used for Windows temporary files and VIPP installer records; CPU setup needs at
+least 1 GiB there. Setup names the exact location if that check fails. The
+standard GPU installation works without cuCIM; that optional add-on is installed
+separately afterward.
 
 > **Installer status:** the signed `.exe` is the next delivery stage and is not
 > yet published. The public `0.13.0a4` release still uses the manual fallback

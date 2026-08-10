@@ -45,6 +45,9 @@ BUILD_SCHEMA = "napari-vipp-windows-installer-build"
 RELEASE_SCHEMA = "napari-vipp-windows-installer-release"
 PAYLOAD_SCHEMA = "napari-vipp-windows-installer-payload"
 SCHEMA_VERSION = 1
+# Payload schema v2 requires an explicit development Boolean.  Build and release
+# sidecar schemas remain at v1 because their existing contracts are unchanged.
+PAYLOAD_SCHEMA_VERSION = 2
 ARCHITECTURE = "x86_64"
 PAYLOAD_MANIFEST_NAME = "payload-manifest.json"
 THIRD_PARTY_NOTICES_NAME = "THIRD-PARTY-NOTICES.txt"
@@ -113,6 +116,30 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--expected-signer-thumbprint", required=True)
     finalize.add_argument("--cucim-bundle", type=Path)
     return parser
+
+
+def _payload_manifest_document(
+    source: SourceState,
+    wheel: WheelRecord,
+    *,
+    development: bool,
+) -> dict[str, object]:
+    if not isinstance(development, bool):
+        raise InstallerPackagingError(
+            "The frozen payload development marker must be a Boolean."
+        )
+    return {
+        "schema": PAYLOAD_SCHEMA,
+        "schema_version": PAYLOAD_SCHEMA_VERSION,
+        "development": development,
+        "distribution": "napari-vipp",
+        "version": source.version,
+        "source_commit": source.commit,
+        "source_tag": (
+            source.expected_tag if source.expected_tag in source.exact_tags else None
+        ),
+        "wheel": wheel.as_dict(),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -222,19 +249,11 @@ def build_installer(
         payload_manifest = temporary_root / PAYLOAD_MANIFEST_NAME
         _write_json(
             payload_manifest,
-            {
-                "schema": PAYLOAD_SCHEMA,
-                "schema_version": SCHEMA_VERSION,
-                "distribution": "napari-vipp",
-                "version": source.version,
-                "source_commit": source.commit,
-                "source_tag": (
-                    source.expected_tag
-                    if source.expected_tag in source.exact_tags
-                    else None
-                ),
-                "wheel": wheel.as_dict(),
-            },
+            _payload_manifest_document(
+                source,
+                wheel,
+                development=development,
+            ),
         )
         icon = temporary_root / "vipp-mark.ico"
         _render_icon(root / "src/napari_vipp/assets/branding/vipp-mark.svg", icon)
@@ -303,6 +322,10 @@ def build_installer(
                 f"PyInstaller did not create the expected EXE: {built_executable}"
             )
         frozen_payload = inspect_frozen_payload(built_executable)
+        if frozen_payload.get("development") is not development:
+            raise InstallerPackagingError(
+                "The frozen EXE build channel differs from the requested build."
+            )
         if frozen_payload["wheel"]["sha256"] != wheel.sha256:
             raise InstallerPackagingError(
                 "The frozen EXE does not contain the reviewed release wheel."
@@ -367,6 +390,10 @@ def finalize_installer(
     if not isinstance(frozen_build, dict) or not isinstance(wheel_build, dict):
         raise InstallerPackagingError(
             "The build manifest lacks its frozen payload or wheel record."
+        )
+    if frozen_build.get("development") is not False:
+        raise InstallerPackagingError(
+            "An official installer cannot contain a development payload."
         )
     frozen_wheel = frozen_build.get("wheel")
     if (
@@ -714,9 +741,14 @@ def inspect_frozen_payload(path: Path) -> dict[str, object]:
         raise InstallerPackagingError("The frozen payload manifest is invalid.")
     if (
         manifest.get("schema") != PAYLOAD_SCHEMA
-        or manifest.get("schema_version") != SCHEMA_VERSION
+        or manifest.get("schema_version") != PAYLOAD_SCHEMA_VERSION
     ):
         raise InstallerPackagingError("The frozen payload schema is invalid.")
+    development = manifest.get("development")
+    if not isinstance(development, bool):
+        raise InstallerPackagingError(
+            "The frozen payload development marker must be a Boolean."
+        )
     wheel_record = manifest.get("wheel")
     if not isinstance(wheel_record, dict):
         raise InstallerPackagingError("The frozen wheel record is missing.")
@@ -738,6 +770,7 @@ def inspect_frozen_payload(path: Path) -> dict[str, object]:
         )
     return {
         "payload_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "development": development,
         "source_commit": manifest.get("source_commit"),
         "source_tag": manifest.get("source_tag"),
         "wheel": {

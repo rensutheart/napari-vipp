@@ -8,7 +8,10 @@ is available, its guided screen links to the official Python 3.12.10 installer
 and lets the user check again without entering terminal commands.
 Its approval screen names the exact managed location, resolved CPU or CUDA 13
 route, and Start Menu/Desktop shortcut scope. The GPU space allowance is
-described as installation-drive storage rather than GPU memory (VRAM).
+described as installation-drive storage rather than GPU memory (VRAM). The UI
+and user guide separately explain the 5 GiB GPU (1 GiB CPU) allowance on every
+drive used for Windows temporary files and installer records, and setup names
+the exact failing location.
 
 The release build embeds the exact `napari-vipp` wheel built from the same tag.
 The wheel SHA-256 is checked before the installer resolves dependencies and its
@@ -16,6 +19,9 @@ path, digest, source commit, and version are retained in build/release manifests
 
 Use [`scripts/package_windows_installer.py`](../../scripts/package_windows_installer.py)
 from the repository root. `build --development` creates a local smoke artifact.
+That executable identifies itself as **DEVELOPMENT BUILD — local testing only**
+in its title, `--version` output, and Advanced details, and its embedded channel
+marker cannot be finalized as a release.
 An official build requires a clean exact `v<version>` tag and produces only a
 `SIGNING-STAGING` executable. The real signing hook is
 [`scripts/sign_windows_installer.ps1`](../../scripts/sign_windows_installer.ps1).

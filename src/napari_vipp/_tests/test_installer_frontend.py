@@ -157,7 +157,8 @@ def test_gpu_install_explains_that_the_large_download_can_pause(tmp_path):
     assert controller.state.status_message == (
         "Setup will use GPU acceleration. It needs at least 15 GiB free on the "
         "installation drive during setup. This is disk storage, not GPU "
-        "memory (VRAM)."
+        "memory (VRAM). Windows temporary files and VIPP installer records also "
+        "need at least 5 GiB free on every drive they use."
     )
     controller.confirm()
 
@@ -311,9 +312,11 @@ def test_errors_are_plain_in_main_view_and_trace_is_advanced(tmp_path):
             "choose Try again",
         ),
         (
-            "Setup needs more free space for temporary downloads",
+            "Setup needs at least 5 GiB of free disk space on the volume containing "
+            "C:\\Windows\\Temp for temporary downloads and installer records; "
+            "2.00 GiB is available.",
             "More free space",
-            "Free some space",
+            "C:\\Windows\\Temp",
         ),
     ],
 )

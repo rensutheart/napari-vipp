@@ -10,12 +10,14 @@ import sys
 import zipfile
 from email.parser import Parser
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from napari_vipp.installer.models import ReleaseSpec
 
 PAYLOAD_SCHEMA = "napari-vipp-windows-installer-payload"
-PAYLOAD_SCHEMA_VERSION = 1
+# Schema v2 makes the development marker mandatory.  Frozen v1 payloads are
+# rejected rather than silently being presented as release builds.
+PAYLOAD_SCHEMA_VERSION = 2
 PAYLOAD_MANIFEST_NAME = "payload-manifest.json"
 PAYLOAD_DIRECTORY_NAME = "installer_payload"
 NOTICES_DIRECTORY_NAME = "installer_licenses"
@@ -25,6 +27,8 @@ INSTALLER_LOGO_NAME = "vipp-logo-dark.png"
 
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+InstallerBuildChannel = Literal["development", "release"]
 
 
 class InstallerPayloadError(RuntimeError):
@@ -125,32 +129,14 @@ def bundled_release_spec(
     never falls back to downloading a same-named top-level VIPP package.
     """
 
-    is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
-    if payload_root is None:
-        if not is_frozen:
-            from napari_vipp.installer.planner import current_release_spec
+    root = _bundled_payload_root(payload_root, frozen=frozen)
+    if root is None:
+        from napari_vipp.installer.planner import current_release_spec
 
-            return current_release_spec()
-        extraction_root = getattr(sys, "_MEIPASS", None)
-        if not extraction_root:
-            raise InstallerPayloadError(
-                "The frozen setup program did not expose its payload directory."
-            )
-        root = Path(extraction_root) / PAYLOAD_DIRECTORY_NAME
-    else:
-        root = Path(payload_root)
+        return current_release_spec()
 
-    manifest_path = root / PAYLOAD_MANIFEST_NAME
-    try:
-        document = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise InstallerPayloadError(
-            f"The installer payload manifest could not be read: {manifest_path}"
-        ) from exc
-    if not isinstance(document, dict):
-        raise InstallerPayloadError("The installer payload manifest must be an object.")
-    _require_equal(document, "schema", PAYLOAD_SCHEMA)
-    _require_equal(document, "schema_version", PAYLOAD_SCHEMA_VERSION)
+    document = _read_payload_manifest(root)
+    _required_boolean(document, "development")
 
     distribution = _required_text(document, "distribution")
     if _normal_distribution(distribution) != "napari-vipp":
@@ -210,6 +196,58 @@ def bundled_release_spec(
     )
 
 
+def bundled_build_channel(
+    payload_root: Path | None = None,
+    *,
+    frozen: bool | None = None,
+) -> InstallerBuildChannel | None:
+    """Return the trusted build channel embedded in a frozen setup program.
+
+    Source and editable runs have no frozen build channel and return ``None``.
+    A frozen payload must carry an explicit Boolean marker; missing or malformed
+    metadata is rejected rather than assumed to be a release build.
+    """
+
+    root = _bundled_payload_root(payload_root, frozen=frozen)
+    if root is None:
+        return None
+    document = _read_payload_manifest(root)
+    return "development" if _required_boolean(document, "development") else "release"
+
+
+def _bundled_payload_root(
+    payload_root: Path | None,
+    *,
+    frozen: bool | None,
+) -> Path | None:
+    if payload_root is not None:
+        return Path(payload_root)
+    is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+    if not is_frozen:
+        return None
+    extraction_root = getattr(sys, "_MEIPASS", None)
+    if not extraction_root:
+        raise InstallerPayloadError(
+            "The frozen setup program did not expose its payload directory."
+        )
+    return Path(extraction_root) / PAYLOAD_DIRECTORY_NAME
+
+
+def _read_payload_manifest(root: Path) -> dict[str, Any]:
+    manifest_path = root / PAYLOAD_MANIFEST_NAME
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise InstallerPayloadError(
+            f"The installer payload manifest could not be read: {manifest_path}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise InstallerPayloadError("The installer payload manifest must be an object.")
+    _require_equal(document, "schema", PAYLOAD_SCHEMA)
+    _require_equal(document, "schema_version", PAYLOAD_SCHEMA_VERSION)
+    return document
+
+
 def _wheel_identity(path: Path) -> tuple[str, str]:
     try:
         with zipfile.ZipFile(path) as archive:
@@ -244,6 +282,13 @@ def _required_text(document: dict[str, Any], key: str) -> str:
     return value.strip()
 
 
+def _required_boolean(document: dict[str, Any], key: str) -> bool:
+    value = document.get(key)
+    if not isinstance(value, bool):
+        raise InstallerPayloadError(f"Payload field {key!r} must be a Boolean.")
+    return value
+
+
 def _require_equal(document: dict[str, Any], key: str, expected: object) -> None:
     if document.get(key) != expected:
         raise InstallerPayloadError(
@@ -265,6 +310,7 @@ def _sha256(path: Path) -> str:
 
 __all__ = [
     "InstallerPayloadError",
+    "InstallerBuildChannel",
     "PAYLOAD_DIRECTORY_NAME",
     "PAYLOAD_MANIFEST_NAME",
     "PAYLOAD_SCHEMA",
@@ -272,6 +318,7 @@ __all__ = [
     "BRANDING_DIRECTORY_NAME",
     "INSTALLER_LOGO_NAME",
     "bundled_logo_path",
+    "bundled_build_channel",
     "bundled_release_spec",
     "bundled_notices_path",
     "persistent_setup_path",

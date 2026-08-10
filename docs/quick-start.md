@@ -72,11 +72,15 @@ the signed bootstrapper obtains packages from PyPI. Setup resolves and
 hash-locks the concrete binary package set before the user confirms it. GPU
 setup is a large download and can take several minutes. It currently needs at
 least 15 GiB free on the installation drive while setup runs. This is disk
-storage, not GPU memory (VRAM). Setup allows up to 120 seconds without receiving
-network data before treating an attempt as stalled, then retries only a limited
-number of times; 120 seconds is not a limit on the total download or
-installation time. If a temporary network problem still stops setup, the
-incomplete new copy is rolled back and any previous working VIPP remains active.
+storage, not GPU memory (VRAM). GPU setup also needs at least 5 GiB free on each
+drive used for Windows temporary files and VIPP installer records (normally the
+Windows system drive); CPU setup needs at least 1 GiB there. Setup identifies
+the exact location if this additional check fails. Setup allows up to 120
+seconds without receiving network data before treating an attempt as stalled,
+then retries only a limited number of times; 120 seconds is not a limit on the
+total download or installation time. If a temporary network problem still
+stops setup, the incomplete new copy is rolled back and any previous working
+VIPP remains active.
 After the connection recovers, **Try again** rechecks the computer-use,
 location, and shortcut choices currently shown and presents them for review
 before **Install** can be selected again.

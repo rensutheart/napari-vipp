@@ -143,10 +143,21 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     assert "exact managed location" in packaging_readme
     assert "CPU or CUDA 13" in packaging_readme
     assert "installation-drive storage" in packaging_readme
+    assert "DEVELOPMENT BUILD — local testing only" in packaging_readme
+    assert "embedded channel" in packaging_readme
+    assert "5 GiB" in quick_start
+    assert "Windows temporary files and VIPP installer records" in quick_start
+    assert "Setup identifies the exact location" in " ".join(quick_start.split())
     assert documentation_index.index("(quick-start.md)") < documentation_index.index(
         "(user-guide.md)"
     )
     assert "ready only for dependency resolution, never" in planner_guide
+    assert "1 GiB free for CPU setup or 5 GiB free for CUDA setup" in " ".join(
+        planner_guide.split()
+    )
+    assert "exact checked location, requirement, and available space" in " ".join(
+        planner_guide.split()
+    )
     assert "ready_for_apply: false" in planner_guide
 
 

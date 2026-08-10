@@ -14,6 +14,7 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Protocol, cast
 
+from napari_vipp.installer.models import ComputeTrack
 from napari_vipp.installer.uninstall import (
     DeferredSelfDelete,
     ManagedUninstaller,
@@ -157,6 +158,8 @@ def main(
             (
                 f"Remove VIPP {prepared.record.version} from this Windows "
                 "account?\n\n"
+                f"VIPP copy: {_track_label(prepared.record.track)}\n"
+                f"Managed folder: {prepared.managed_root}\n\n"
                 "This removes the VIPP program and the shortcuts created by "
                 "VIPP Setup. Your images, analysis files, Python installations, "
                 "and other napari environments will not be removed."
@@ -217,6 +220,8 @@ def main(
             "VIPP was removed",
             (
                 "VIPP was removed from this Windows account.\n\n"
+                f"VIPP copy: {_track_label(prepared.record.track)}\n"
+                f"Managed folder: {result.managed_root}\n\n"
                 "Your images and analysis files were not changed."
             ),
             parent=root,
@@ -418,6 +423,14 @@ def _absolute_path(value: str) -> Path:
             "--managed-root must be an explicit absolute path"
         )
     return path
+
+
+def _track_label(track: ComputeTrack) -> str:
+    """Render the validated ownership track without exposing enum internals."""
+
+    if track is ComputeTrack.CUDA13:
+        return "NVIDIA GPU / CUDA 13"
+    return "CPU"
 
 
 def _close_frozen_splash() -> None:

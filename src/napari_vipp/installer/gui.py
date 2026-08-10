@@ -34,6 +34,7 @@ _TRACK_LABELS = {
 }
 _LABEL_FOR_TRACK = {value: key for key, value in _TRACK_LABELS.items()}
 VIPP_TAGLINE = "Visual image processing made approachable"
+DEVELOPMENT_BUILD_LABEL = "DEVELOPMENT BUILD — local testing only"
 _STATUS_HISTORY_LIMIT = 12
 _STAGE_LABELS = {
     InstallerScreen.CHECKING: "Checking this computer",
@@ -127,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"VIPP Setup {_installed_version()}",
+        version=_version_text(),
     )
     return parser
 
@@ -186,6 +187,7 @@ class InstallerWindow:
         self._brand_image = None
         self._stage_started_at = time.monotonic()
         self._last_elapsed_second = -1
+        self._development_build = _is_development_build()
 
         self._configure_root()
         self._build_window()
@@ -198,7 +200,9 @@ class InstallerWindow:
         self._controller.start(self._selection)
 
     def _configure_root(self) -> None:
-        self.root.title(f"VIPP Setup — {_installed_version()}")
+        self.root.title(
+            _window_title(_installed_version(), development=self._development_build)
+        )
         self.root.geometry(self._bounded_geometry(760, 660))
         self.root.minsize(520, 420)
         self.root.configure(background="#f4f7fb")
@@ -294,6 +298,17 @@ class InstallerWindow:
         outer.bind("<Configure>", self._content_resized)
         self._content_canvas.bind("<Configure>", self._viewport_resized)
         self.root.bind("<MouseWheel>", self._content_mousewheel, add="+")
+        if self._development_build:
+            tk.Label(
+                outer,
+                text=DEVELOPMENT_BUILD_LABEL,
+                font=("Segoe UI Semibold", 10),
+                foreground="#6b3a00",
+                background="#fff1cc",
+                anchor="w",
+                padx=10,
+                pady=7,
+            ).pack(fill="x", pady=(0, 14))
         self._headline_label = ttk.Label(
             outer,
             textvariable=self._headline,
@@ -579,15 +594,20 @@ class InstallerWindow:
             if self._selection.create_desktop_shortcut
             else "not requested"
         )
-        facts = [
-            f"VIPP Setup version: {_installed_version()}",
-            f"Stage: {_STAGE_LABELS[state.screen]}",
-            f"Current activity: {state.status_message or 'Waiting for the next check'}",
-            f"Progress: {progress}",
-            f"Elapsed in this stage: {_format_elapsed(self._elapsed_seconds())}",
-            f"Requested computer use: {_LABEL_FOR_TRACK[self._selection.track]}",
-            f"Desktop shortcut: {shortcut_request}",
-        ]
+        current_activity = state.status_message or "Waiting for the next check"
+        facts = [f"VIPP Setup version: {_installed_version()}"]
+        if getattr(self, "_development_build", False):
+            facts.append(DEVELOPMENT_BUILD_LABEL)
+        facts.extend(
+            (
+                f"Stage: {_STAGE_LABELS[state.screen]}",
+                f"Current activity: {current_activity}",
+                f"Progress: {progress}",
+                f"Elapsed in this stage: {_format_elapsed(self._elapsed_seconds())}",
+                f"Requested computer use: {_LABEL_FOR_TRACK[self._selection.track]}",
+                f"Desktop shortcut: {shortcut_request}",
+            )
+        )
         if self._selection.install_root is not None:
             facts.append(f"Requested location: {self._selection.install_root}")
         else:
@@ -610,10 +630,13 @@ class InstallerWindow:
         if state.technical_details:
             facts.extend(("", "Live technical details:", state.technical_details))
         facts.extend(("", "Recent activity:"))
-        facts.extend(f"  {index}. {message}" for index, message in enumerate(
-            self._status_history,
-            start=1,
-        ))
+        facts.extend(
+            f"  {index}. {message}"
+            for index, message in enumerate(
+                self._status_history,
+                start=1,
+            )
+        )
         return "\n".join(facts)
 
     def _elapsed_seconds(self) -> int:
@@ -948,11 +971,33 @@ def _installed_version() -> str:
 
         return bundled_release_spec().version
     except (ImportError, OSError, RuntimeError, ValueError):
-        pass
+        if bool(getattr(sys, "frozen", False)):
+            raise
     try:
         return importlib.metadata.version("napari-vipp")
     except importlib.metadata.PackageNotFoundError:
         return "source build"
+
+
+@lru_cache(maxsize=1)
+def _is_development_build() -> bool:
+    from napari_vipp.installer.payload import bundled_build_channel
+
+    return bundled_build_channel() == "development"
+
+
+def _window_title(version: str, *, development: bool) -> str:
+    title = f"VIPP Setup — {version}"
+    if development:
+        return f"{title} — {DEVELOPMENT_BUILD_LABEL}"
+    return title
+
+
+def _version_text() -> str:
+    version = f"VIPP Setup {_installed_version()}"
+    if _is_development_build():
+        return f"{version} — {DEVELOPMENT_BUILD_LABEL}"
+    return version
 
 
 def _windows_scale(root) -> float:
@@ -972,4 +1017,9 @@ def _close_frozen_splash() -> None:
         pass
 
 
-__all__ = ["InstallerWindow", "build_parser", "main"]
+__all__ = [
+    "DEVELOPMENT_BUILD_LABEL",
+    "InstallerWindow",
+    "build_parser",
+    "main",
+]

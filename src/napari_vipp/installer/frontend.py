@@ -744,11 +744,15 @@ def _ready_status(prepared: PreparedInstall) -> str:
         return (
             f"Setup will use GPU acceleration. It needs at least {gib:.0f} GiB "
             "free on the installation drive during setup. This is disk "
-            "storage, not GPU memory (VRAM)."
+            "storage, not GPU memory (VRAM). Windows temporary files and VIPP "
+            "installer records also need at least 5 GiB free on every drive "
+            "they use."
         )
     return (
         f"Setup will use {compute} and needs at least {gib:.0f} GiB of free "
-        "disk space during setup."
+        "disk space on the installation drive during setup. Windows temporary "
+        "files and VIPP installer records also need at least 1 GiB free on "
+        "every drive they use."
     )
 
 
@@ -759,6 +763,13 @@ def _join_details(*parts: str) -> str:
 def _plain_check_failure(exc: Exception) -> tuple[str, str]:
     text = str(exc).casefold()
     if "free space" in text or "disk space" in text:
+        if "temporary downloads and installer records" in text:
+            detail = str(exc).strip().rstrip(".")
+            return (
+                "More free space is needed",
+                f"{detail}. Free some space at that location, then choose Try "
+                "again. Nothing has been installed.",
+            )
         return (
             "More free space is needed",
             "Free some space on the drive named in Advanced details, then choose "

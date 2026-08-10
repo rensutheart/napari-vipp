@@ -1429,11 +1429,47 @@ def test_resolution_temp_reserve_is_track_aware_on_low_system_drive(
         cpu_plan,
         state_root=Path("D:/VIPP/installer"),
     )
-    with pytest.raises(PreparationError, match="temporary downloads"):
+    with pytest.raises(PreparationError) as caught:
         engine_module._validate_resolution_temp_capacity(
             cuda_plan,
             state_root=Path("D:/VIPP/installer"),
         )
+    message = str(caught.value)
+    assert "at least 5 GiB of free disk space" in message
+    assert "c:/windows/temp" in message.replace("\\", "/").casefold()
+    assert "temporary downloads and installer records" in message
+    assert "2.00 GiB is available" in message
+
+
+def test_resolution_temp_capacity_never_rounds_a_failure_up_to_the_threshold(
+    tmp_path,
+    monkeypatch,
+):
+    cpu_plan = _plan(tmp_path / "managed", _release())
+    cuda_plan = replace(
+        cpu_plan,
+        request=replace(cpu_plan.request, track=ComputeTrack.CUDA13),
+        required_free_bytes=15 * 1024**3,
+    )
+    monkeypatch.setattr(engine_module.tempfile, "gettempdir", lambda: "C:/Temp")
+    monkeypatch.setattr(
+        engine_module,
+        "_nearest_existing_path",
+        lambda path: Path(path),
+    )
+
+    class _Usage:
+        free = 5 * 1024**3 - 1
+
+    monkeypatch.setattr(engine_module.shutil, "disk_usage", lambda _path: _Usage())
+
+    with pytest.raises(PreparationError) as caught:
+        engine_module._validate_resolution_temp_capacity(
+            cuda_plan,
+            state_root=Path("C:/VIPP/installer"),
+        )
+
+    assert "4.99 GiB is available" in str(caught.value)
 
 
 def test_install_registers_and_uninstall_removes_only_owned_objects(tmp_path):
