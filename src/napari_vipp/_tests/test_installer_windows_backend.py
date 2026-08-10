@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from napari_vipp.installer import discovery as discovery_module
 from napari_vipp.installer.discovery import (
@@ -25,6 +28,15 @@ from napari_vipp.installer.models import (
 )
 from napari_vipp.installer.python_discovery import PythonCandidate
 from napari_vipp.installer.windows_backend import WindowsInstallerBackend
+
+
+@pytest.fixture(autouse=True)
+def _simulate_windows_host(monkeypatch):
+    """Exercise the Windows backend consistently on every CI host."""
+
+    monkeypatch.setattr(discovery_module.sys, "platform", "win32")
+    monkeypatch.setattr(discovery_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(discovery_module.platform, "machine", lambda: "AMD64")
 
 
 class _Engine:
@@ -468,11 +480,14 @@ def test_open_vipp_uses_documents_not_the_replaceable_environment(
     assert len(calls) == 1
     assert Path(calls[0][1]["cwd"]) == tmp_path / "Documents"
     assert Path(calls[0][1]["cwd"]) != launcher.parent.parent
-    assert calls[0][1]["creationflags"] & getattr(
-        subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-    )
+    if os.name == "nt":
+        assert calls[0][1]["creationflags"] & getattr(
+            subprocess,
+            "CREATE_NO_WINDOW",
+            0x08000000,
+        )
+    else:
+        assert calls[0][1]["creationflags"] == 0
 
 
 def test_prepare_reports_plain_language_discovery_and_decision_milestones(

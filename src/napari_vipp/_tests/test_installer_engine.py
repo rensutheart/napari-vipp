@@ -60,6 +60,17 @@ _VIPP_HASH = "a" * 64
 _DEPENDENCY_HASH = "b" * 64
 
 
+@pytest.fixture(autouse=True)
+def _isolate_installer_temporary_directory(monkeypatch, tmp_path):
+    """Keep Windows-installer tests off redirected host temp directories."""
+
+    monkeypatch.setattr(
+        engine_module.tempfile,
+        "gettempdir",
+        lambda: str(tmp_path.resolve()),
+    )
+
+
 def _release(
     version: str = "0.13.0a5",
     *,
@@ -1410,8 +1421,8 @@ def test_resolution_temp_reserve_is_track_aware_on_low_system_drive(
             self.free = free
 
     def disk_usage(path):
-        drive = os.path.splitdrive(os.path.abspath(path))[0].casefold()
-        return _Usage(2 * 1024**3 if drive == "c:" else 20 * 1024**3)
+        normalized = str(path).replace("\\", "/").casefold()
+        return _Usage(2 * 1024**3 if normalized.startswith("c:/") else 20 * 1024**3)
 
     monkeypatch.setattr(engine_module.shutil, "disk_usage", disk_usage)
     engine_module._validate_resolution_temp_capacity(
