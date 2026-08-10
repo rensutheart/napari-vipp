@@ -2065,6 +2065,22 @@ def build_deferred_self_delete(
     _verify_regular_file_hash(path, digest, "persistent uninstaller")
     literal = str(path).replace("'", "''")
     parent = str(path.parent).replace("'", "''")
+    # Get-FileHash is module-provided rather than a PowerShell language primitive.
+    # A Python parent can pass Windows PowerShell a PSModulePath with PowerShell 7
+    # modules first, preventing the compatible Desktop module from auto-loading.
+    # Keep the detached helper independent of module discovery by hashing through
+    # the .NET types that are built into every supported Windows PowerShell host.
+    file_hash_function = (
+        "function Get-VippSha256 { param([string]$Path) "
+        "$stream=$null; $algorithm=$null; try { "
+        "$stream=[System.IO.File]::OpenRead($Path); "
+        "$algorithm=[System.Security.Cryptography.SHA256]::Create(); "
+        "return ([System.BitConverter]::ToString("
+        "$algorithm.ComputeHash($stream))).Replace('-','') "
+        "} catch { return '' } finally { "
+        "if ($algorithm -ne $null) { $algorithm.Dispose() }; "
+        "if ($stream -ne $null) { $stream.Dispose() } } }; "
+    )
     journal_cleanup = ""
     deletion_authorization = ""
     if journal_path is not None:
@@ -2109,7 +2125,7 @@ def build_deferred_self_delete(
             "if (Test-Path -LiteralPath $m) { return $false }; "
             "if (-not (Test-Path -LiteralPath $j -PathType Leaf)) { "
             "return $false }; "
-            f"return ((Get-FileHash -LiteralPath $j -Algorithm SHA256).Hash "
+            f"return ((Get-VippSha256 -Path $j) "
             f"-ieq '{expected_journal}') }}; "
         )
         journal_cleanup = (
@@ -2124,6 +2140,7 @@ def build_deferred_self_delete(
         else ""
     )
     script = (
+        f"{file_hash_function}"
         f"Wait-Process -Id {wait_for_pid} -ErrorAction SilentlyContinue; "
         f"$mx=[Threading.Mutex]::new($false,'{mutex_name}'); $held=$false; "
         "try { try { $held=$mx.WaitOne() } "
@@ -2132,7 +2149,7 @@ def build_deferred_self_delete(
         f"$p='{literal}'; {deletion_authorization}"
         "for ($i=0; $i -lt 120; $i++) { "
         "if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { break }; "
-        f"if ((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ine "
+        f"if ((Get-VippSha256 -Path $p) -ine "
         f"'{digest}') {{ break }}; "
         f"{authorization_checks}"
         f"try {{ {authorization_checks}"

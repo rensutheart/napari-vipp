@@ -696,6 +696,9 @@ def test_deferred_self_delete_uses_encoded_literal_command(tmp_path: Path) -> No
     assert "AbandonedMutexException" in script
     assert "$mx.ReleaseMutex()" in script
     assert "-LiteralPath" in script
+    assert "Get-FileHash" not in script
+    assert "function Get-VippSha256" in script
+    assert "[System.Security.Cryptography.SHA256]::Create()" in script
     assert str(target).replace("'", "''") in script
     assert all(str(target) not in argument for argument in request.argv)
 
