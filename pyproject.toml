@@ -110,9 +110,12 @@ dev = [
     "build>=1.2",
     "napari[pyqt6]>=0.6",
     "npe2>=0.8",
+    "numpy==2.5.1",
     "pytest>=8",
     "pytest-qt>=4.4",
     "ruff>=0.12",
+    "scikit-image==0.26.0",
+    "scipy==1.18.0",
 ]
 installer-build = [
     "altgraph==0.17.5",

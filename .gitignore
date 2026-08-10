@@ -1,4 +1,5 @@
 .venv/
+.venv-installer-build-31210/
 .venv-macos/
 .venv-gpu-*/
 .pytest_cache/
