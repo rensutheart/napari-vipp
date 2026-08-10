@@ -934,6 +934,21 @@ class PipelineRunState:
     prune_unretained: bool = False
 
 
+@dataclass(frozen=True)
+class _ColocalizationCostesCacheEntry:
+    """One fit plus strong ownership of its exact analysis inputs."""
+
+    inputs: tuple[Any, ...]
+    result: dict[str, float]
+
+    def matches(self, inputs: Iterable[Any]) -> bool:
+        candidate = tuple(inputs)
+        return len(candidate) == len(self.inputs) and all(
+            current is cached
+            for current, cached in zip(candidate, self.inputs, strict=True)
+        )
+
+
 EXECUTION_READY = "ready"
 EXECUTION_RUNNING = "running"
 EXECUTION_STALE = "stale"
@@ -5171,7 +5186,10 @@ class PrototypePipeline:
         self.node_compute_provenance: dict[str, CachedNodeComputeProvenance] = {}
         self.node_execution_states: dict[str, str] = {}
         self.node_execution_messages: dict[str, str] = {}
-        self._colocalization_costes_cache: dict[tuple, dict[str, float]] = {}
+        self._colocalization_costes_cache: dict[
+            tuple,
+            _ColocalizationCostesCacheEntry,
+        ] = {}
         self._counters: Counter[str] = Counter()
         self.reset_starter_graph()
 
@@ -6737,7 +6755,12 @@ class PrototypePipeline:
         progress = kwargs.get("progress")
         if progress is not None:
             progress.check_cancelled()
-        costes = self._colocalization_costes_cache.get(cache_key)
+        cached = self._colocalization_costes_cache.get(cache_key)
+        costes = (
+            cached.result
+            if cached is not None and cached.matches(inputs)
+            else None
+        )
         if costes is None:
             costes = (
                 object_colocalization_costes_threshold_result(
@@ -6754,7 +6777,9 @@ class PrototypePipeline:
             )
             if costes is None:
                 return
-            self._colocalization_costes_cache[cache_key] = costes
+            self._colocalization_costes_cache[cache_key] = (
+                _ColocalizationCostesCacheEntry(tuple(inputs), costes)
+            )
         threshold_1 = float(costes["threshold_1"])
         threshold_2 = float(costes["threshold_2"])
         kwargs["channel_1_threshold"] = float(threshold_1)

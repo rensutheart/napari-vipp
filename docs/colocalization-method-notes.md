@@ -218,6 +218,18 @@ the correlation has increased relative to the previous test. The returned
 thresholds are the last pair actually tested. There is no arbitrary
 100-iteration cap.
 
+This stopping rule assumes a population with a meaningful positive
+two-channel relationship. A mask derived by thresholding either analysis
+channel can selection-bias that relationship. If the retained population is
+weakly or negatively correlated, the first tested correlation can already
+satisfy the stop condition, leaving a near-maximum threshold pair and very few
+joint-positive voxels. VIPP preserves that source-aligned result, exposes its
+values in the read-only Costes threshold controls, and reports a diagnostic;
+it does not silently replace the fit with whole-image or manual thresholds.
+Use a spatial or otherwise channel-neutral ROI, or inspect the scatter and
+switch to `Manual`, when this diagnostic appears. RACC is undefined if fewer
+than two voxels pass both thresholds and reports that condition explicitly.
+
 The output table records:
 
 - `channel_1_threshold`;
@@ -284,8 +296,10 @@ and `T2`; scatter display scaling does not feed back into the quantitative
 calculation.
 
 Dragging either guide line switches the node back to manual thresholds and
-updates the corresponding threshold parameter. The scatter plot is therefore a
-threshold review and tuning view, not an additional metric.
+updates the corresponding threshold parameter. While Costes is active, both
+resolved threshold controls remain visible but disabled; switching to Manual
+enables them with the same values. The scatter plot is therefore a threshold
+review and tuning view, not an additional metric.
 
 `Colocalization Scatter Plot` and `Masked Colocalization Scatter Plot` expose
 the density as an RGB workflow output. Histogram bins and output pixels are

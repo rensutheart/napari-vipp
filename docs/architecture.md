@@ -1155,6 +1155,9 @@ channel/ROI input objects and intensity domain. Compatible metrics, overlay,
 scatter, and RACC nodes consume the same complete fit (not just copied threshold
 values); masked and unmasked populations remain separate. The cache is cleared at
 every execution boundary so in-place source edits cannot reuse an earlier fit.
+Each entry retains and identity-checks strong references to its inputs, preventing
+temporary planning arrays from being released and a later array from accidentally
+matching a recycled Python object identifier.
 
 Fiji-related metric arithmetic in this alpha is an experimental,
 source-aligned target for Coloc2 3.1.0; independent Fiji-generated golden

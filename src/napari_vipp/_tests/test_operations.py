@@ -10,6 +10,7 @@ from scipy import signal
 from skimage import exposure
 
 import napari_vipp.core.operations as operations
+from napari_vipp._sample_data import make_sample_data
 from napari_vipp.core.metadata import (
     AcquisitionMetadata,
     AxisMetadata,
@@ -1281,6 +1282,54 @@ def test_costes_auto_matches_source_derived_simple_stepper_regression_case():
     assert record["costes_pearson_below"] == record["pearson_below_threshold"]
     assert operations._java_round(2.5) == 3.0
     assert operations._java_round(-1.5) == -1.0
+
+
+def test_costes_channel_selected_roi_warns_and_explains_undefined_racc():
+    data, _metadata, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic colocalization"
+    )
+    channel_1, channel_2 = data
+    roi = channel_1 > 7500
+
+    record = colocalization_metrics(
+        [channel_1, channel_2, roi],
+        threshold_mode="Costes auto",
+    ).records()[0]
+
+    assert int(np.count_nonzero(roi)) == 2311
+    assert record["channel_1_threshold"] == 48409.0
+    assert record["channel_2_threshold"] == 61092.0
+    assert record["colocalized_voxels"] == 1
+    assert record["costes_iterations"] == 1
+    assert record["costes_slope"] == -18.941268366369343
+    warning = record["normalization_warnings"]
+    assert "selected ROI has non-positive channel correlation" in warning
+    assert "automatic search stopped at its first candidate" in warning
+    assert "only 1 jointly above-threshold voxel" in warning
+    assert "neutral spatial ROI" in warning
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Costes auto selected channel thresholds 48409 and 61092, leaving "
+            r"only 1 jointly above-threshold voxel; RACC is undefined.*"
+            r"neutral spatial ROI.*Manual thresholds"
+        ),
+    ):
+        racc_index(
+            [channel_1, channel_2, roi],
+            threshold_mode="Costes auto",
+        )
+
+    with pytest.raises(ValueError, match="Fewer than two voxels"):
+        racc_index(
+            [channel_1, channel_2, roi],
+            threshold_mode="Manual",
+            channel_1_threshold=65535,
+            channel_2_threshold=65535,
+        )
 
 
 def test_colocalization_keeps_native_values_above_255_and_rejects_nonfinite():
