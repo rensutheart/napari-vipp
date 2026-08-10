@@ -375,6 +375,15 @@ class _Viewer:
         return layer
 
 
+def _inspect_layer_node_id(viewer) -> str | None:
+    try:
+        layer = viewer.layers["VIPP Inspect"]
+    except (KeyError, IndexError):
+        return None
+    metadata = getattr(layer, "metadata", {})
+    return metadata.get("node_id") if isinstance(metadata, dict) else None
+
+
 def _palette_item(widget, operation_id):
     def find_child(item):
         for child_index in range(item.childCount()):
@@ -8920,6 +8929,7 @@ def test_composite_to_rgb_and_input_share_z_slider_mapping(qtbot):
     node = widget.add_node_from_palette("composite_to_rgb")
     widget._connect_nodes("input", node.id)
     widget.graph_view.select_node(node.id)
+    qtbot.waitUntil(lambda: _inspect_layer_node_id(viewer) == node.id)
 
     viewer.dims.current_step = (5, 0, 0)
     current_step = widget._current_step()
@@ -8957,6 +8967,7 @@ def test_composite_to_rgb_and_input_share_z_slider_mapping(qtbot):
     assert not np.array_equal(rgb_first, rgb_second)
 
     widget.graph_view.select_node("input")
+    qtbot.waitUntil(lambda: _inspect_layer_node_id(viewer) == "input")
     viewer.dims.current_step = (0, 7, 0, 0)
     assert widget._current_step() == (0, 7, 0, 0)
 
@@ -8976,6 +8987,7 @@ def test_composite_to_rgb_and_input_share_time_and_z_slider_mapping(qtbot):
     node = widget.add_node_from_palette("composite_to_rgb")
     widget._connect_nodes("input", node.id)
     widget.graph_view.select_node(node.id)
+    qtbot.waitUntil(lambda: _inspect_layer_node_id(viewer) == node.id)
 
     viewer.dims.current_step = (3, 5, 0, 0)
     current_step = widget._current_step()
@@ -9013,6 +9025,7 @@ def test_composite_to_rgb_and_input_share_time_and_z_slider_mapping(qtbot):
     assert not np.array_equal(rgb_first, rgb_second)
 
     widget.graph_view.select_node("input")
+    qtbot.waitUntil(lambda: _inspect_layer_node_id(viewer) == "input")
     viewer.dims.current_step = (4, 0, 7, 0, 0)
     assert widget._current_step() == (4, 0, 7, 0, 0)
 
