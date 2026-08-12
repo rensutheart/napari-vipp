@@ -237,6 +237,16 @@ def test_published_gpu_extras_pin_the_admitted_scientific_stack():
         )
 
 
+def test_development_extra_pins_the_admitted_scientific_stack():
+    requirements = set(_project_metadata()["optional-dependencies"]["dev"])
+
+    assert {
+        "numpy==2.5.1",
+        "scipy==1.18.0",
+        "scikit-image==0.26.0",
+    } <= requirements
+
+
 def test_release_metadata_bounds_cpu_python_support_to_ci_matrix():
     metadata = _project_metadata()
 

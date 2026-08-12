@@ -2,8 +2,14 @@
 
 Date: 2026-08-04
 Product-direction revision: 2026-08-04
-Status: Phase 1 is implemented headlessly on
-`codex/gpu-cross-platform-support`; the Pass 4 application slice now includes
+Status: Historical engineering plan and implementation record. The released
+0.13 GPU contract has moved beyond the original branch-scoped plan. For the
+current user-facing platform, installation, and policy contract, see the
+[GPU guide](gpu-guide.md) and packaged public policy artifact. Historical
+branch names, planned gates, and evidence below are retained as dated context.
+
+Phase 1 was implemented headlessly on `codex/gpu-cross-platform-support`; the
+Pass 4 application slice now includes
 the four CPU/Auto/Prefer-GPU/Custom policies, workflow-v4 compute intent,
 setup/memory diagnostics, selected-node benchmark review, and a Custom-only
 review-first whole-pipeline optimizer.
@@ -49,8 +55,9 @@ batch manifest, workflow v4, and generated-Python contracts.
 The following constraints and approved product directions are non-negotiable:
 
 - VIPP's base installation and CPU execution are supported on Windows, macOS,
-  and Linux. NVIDIA GPU execution is supported only on native Windows and
-  supported Linux distributions. macOS is CPU-only for the NVIDIA-only phase.
+  and Linux. The released public NVIDIA GPU route is native Windows; Linux and
+  macOS currently use CPU. Linux GPU work below is retained as future or
+  historical qualification planning, not a public support claim.
 - The main toolbar exposes four execution modes: `CPU`, `Auto`, `Prefer GPU`,
   and `Custom`. New interactive sessions default
   to `Auto`. Prefer GPU considers every reviewed public provider, including
@@ -1947,9 +1954,11 @@ different:
 
 The scripts create a dedicated Python 3.12 virtual environment, never modify the
 global interpreter, never install both CuPy CUDA-major distributions, and print
-the exact environment and probe result. CUDA 13 is the first local development
-track; CUDA 12 compatibility is required before public release. README commands
-remain available for users who prefer manual setup.
+the exact environment and probe result. CUDA 13 became the released native-
+Windows route. The older CUDA 12 compatibility requirement in this plan was
+superseded before release and remains a qualification track rather than a
+public-install prerequisite. README commands remain available for users who
+prefer manual setup.
 
 For nontechnical users, the first public UX is guided installation: diagnostics
 select exactly one compatible extra and present a copy button, short explanation,
@@ -3085,12 +3094,14 @@ isolated cuCIM build/benchmark artifacts, and machine-readable clean-environment
 resolution/probe evidence. It does not own workflow schemas or enable a
 scientific operation merely because cuCIM builds.
 
-**Public contracts:** Python 3.12/CUDA 13 as the primary native-Windows
-development track; a separately validated CUDA 12 track before public release;
-named native-Linux distribution/architecture coverage; WSL2 documented as a
-separate Linux deployment rather than a repair path for native napari; no CUDA
-dependency resolution on macOS; provider-neutral diagnostics; and explicit
-promote/defer/reject results for each CuPyX/cuCIM implementation region.
+**Historical planned contracts:** Python 3.12/CUDA 13 as the primary native-
+Windows development track; a separately validated CUDA 12 track and named
+native-Linux distribution/architecture coverage were proposed before public
+release. The released public route is Windows CUDA 13; CUDA 12 and Linux remain
+qualification tracks. WSL2 is a separate Linux deployment rather than a repair
+path for native napari; macOS resolves no CUDA dependencies. Diagnostics remain
+provider-neutral, with explicit promote/defer/reject results for each
+CuPyX/cuCIM implementation region.
 
 **Tests/documentation:** clean base-wheel build/install/import/npe2/generated-
 Python and CPU suites on native Windows, macOS, and Linux; CUDA-13 RTX 5090 and

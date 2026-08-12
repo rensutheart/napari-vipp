@@ -4,7 +4,7 @@ contributions:
   commands:
     - id: napari-vipp.make_widget
       title: VIPP Workflow
-      python_name: napari_vipp._widget:VippWidget
+      python_name: napari_vipp._startup_widget:VippStartupWidget
     - id: napari-vipp.sample_data
       title: VIPP synthetic microscopy samples
       python_name: napari_vipp._sample_data:make_sample_data

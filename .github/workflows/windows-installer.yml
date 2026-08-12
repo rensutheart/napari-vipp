@@ -1,0 +1,90 @@
+name: Windows installer build smoke
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-installer.yml"
+      - "packaging/windows/**"
+      - "scripts/package_windows_installer.py"
+      - "scripts/sign_windows_installer.ps1"
+      - "src/napari_vipp/installer/**"
+      - "src/napari_vipp/_tests/test_windows_installer_packaging.py"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  development-build:
+    name: Frozen EXE development smoke
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up the pinned build Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install installer build and test tools
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps -e .
+          python -m pip install ".[installer-build]" "pytest>=8"
+
+      - name: Run installer packaging tests
+        run: python -m pytest -q src/napari_vipp/_tests/test_windows_installer_packaging.py
+
+      - name: Build the exact wheel for embedding
+        run: python -m build --wheel --outdir dist
+
+      - name: Build the clearly marked development EXE
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem -LiteralPath dist -Filter '*.whl' -File).FullName
+          python scripts/package_windows_installer.py build `
+            --development `
+            --wheel $wheel `
+            --output-directory dist/installer-development
+
+      - name: Inspect frozen payload, branding, metadata, and unsigned boundary
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -LiteralPath dist/installer-development -Filter '*-DEVELOPMENT.exe' -File
+          if ($exe.Count -ne 1) { throw 'Expected exactly one DEVELOPMENT EXE.' }
+          $projectVersion = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          $official = "dist/installer-development/VIPP-Setup-$projectVersion-Windows-x86_64.exe"
+          if (Test-Path -LiteralPath $official) {
+            throw 'An unsigned build used the reserved release filename.'
+          }
+          $listing = python -m PyInstaller.utils.cliutils.archive_viewer -l $exe.FullName
+          @(
+            'payload-manifest.json',
+            'napari_vipp-',
+            'THIRD-PARTY-NOTICES.txt',
+            'vipp-logo-dark.png',
+            'phase1-gpu-public-v8.json'
+          ) | ForEach-Object {
+            if (-not ($listing -match [regex]::Escape($_))) { throw "Missing frozen entry: $_" }
+          }
+          $version = $exe.VersionInfo.ProductVersion
+          if ($version -ne $projectVersion) { throw "Unexpected ProductVersion: $version" }
+          $signature = Get-AuthenticodeSignature -LiteralPath $exe.FullName
+          if ($signature.Status -ne 'NotSigned') { throw "Unexpected CI signature status: $($signature.Status)" }
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList '--version' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Frozen --version smoke failed: $($process.ExitCode)" }
+
+      - name: Upload non-release development evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: vipp-windows-installer-development-${{ github.sha }}
+          path: dist/installer-development/*
+          if-no-files-found: error
+          retention-days: 7

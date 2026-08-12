@@ -1,7 +1,14 @@
 # VIPP logo
 
-VIPP stands for **Visual Image Processing Platform**. Its tagline is **Visual
-workflows for reproducible bioimage analysis.**
+VIPP stands for **Visual Image Processing Platform**. Its primary tagline is
+**Visual image processing made approachable.** This is the canonical short
+wording for the README, documentation, installer, and other user-facing product
+surfaces.
+
+The supporting scientific promise is **Visual workflows for reproducible
+bioimage analysis.** Use it in explanatory copy where there is room to say what
+"approachable" is meant to enable; do not make it compete visually with the
+primary tagline in compact surfaces such as the installer header.
 
 The VIPP mark is a **voxel V**: connected square nodes form the initial of the
 platform while also suggesting image pixels moving through a visual workflow.

@@ -1,13 +1,25 @@
 # VIPP Documentation
 
+**Visual image processing made approachable.**
+
+The supporting scientific promise is **visual workflows for reproducible
+bioimage analysis**.
+
 This index separates current user guidance from implementation references and
 historical planning. Start with the first section unless you are developing or
 reviewing VIPP itself.
 
 ## Use VIPP
 
+- [Quick start](quick-start.md): the prioritized signed-Windows-installer
+  experience, its current availability status, the temporary manual fallback,
+  CPU/GPU choices, and a first workflow. Start here if you are installing VIPP
+  rather than developing it.
 - [User guide](user-guide.md): build, inspect, save, export, and batch-run
   workflows.
+- [GPU guide](gpu-guide.md): optional GPU qualification, compute modes,
+  supported operation families, fallback, benchmarking, cuCIM, and
+  reproducibility.
 - [Image import and export](io-user-guide.md): supported formats, optional
   microscope readers, batch input binding, and output choices.
 - [Durable GPU execution](durable-gpu-execution.md): batch/config migration,
@@ -46,6 +58,8 @@ reviewing VIPP itself.
   scientific-behavior, workflow, UI, and validation changes by version.
 - [Release runbook](release-runbook.md): alpha release verification and
   publication steps.
+- [Windows setup packaging](../packaging/windows/README.md): the same-tag wheel,
+  PyInstaller, Authenticode, licence, checksum, and release-asset boundary.
 - [Research and publication record](research-and-publication.md): evidence
   boundaries, evaluation plan, and reproducibility artifacts.
 
@@ -53,6 +67,12 @@ reviewing VIPP itself.
 
 - [Planning and roadmap](planning.md) is the source of truth for release order
   and active priorities.
+- [Desktop startup and installer plan](desktop-startup-and-installer-plan.md)
+  defines the branded launch profiles, napari loading host, separate local-build
+  cuCIM bundle, and staged Windows/Linux/macOS installer path.
+- [Windows installer and planning contract](windows-installation-planner.md)
+  documents the source-current read-only plan schema, transactional managed
+  executor, update/repair ownership rules, and signed-release boundary.
 - [Production GPU implementation plan](gpu-production-implementation-plan.md)
   defines CPU/Auto/Prefer-GPU/Custom behavior, per-node and graph-global
   benchmarking,
@@ -66,17 +86,10 @@ reviewing VIPP itself.
 - [Node roadmap](node-roadmap.md) tracks current capability gaps by node family.
 - [MitoMorph feature parity](mitomorph-feature-parity.md) tracks remaining
   measurement goals.
-- Optional GPU backend research is intentionally isolated on the
-  [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
-  branch, which has absorbed current `main` while development remains separate.
-  Main remains the CPU production baseline; the GPU branch contains feasibility
-  evidence plus implemented public-candidate regions for Phase 1, ordinary
-  Richardson-Lucy, Richardson-Lucy TV, Canny, Otsu, Sigma Filter, and Connected
-  Components. Validated regions are available in normal
-  Auto/Prefer-GPU/Custom pipelines and the durable
-  batch/generated-Python/CLI/export surfaces on that
-  branch; unsupported regions visibly use CPU. This remains branch-scoped
-  evidence rather than a released cross-platform GPU-support claim.
+- [Durable GPU execution](durable-gpu-execution.md) records the current public
+  Auto/Prefer-GPU/Custom behavior, CPU fallback, environment qualification,
+  provenance, and batch/generated-Python surfaces. Historical GPU phase pages
+  below remain implementation evidence rather than installation instructions.
 
 ## Implementation Records
 

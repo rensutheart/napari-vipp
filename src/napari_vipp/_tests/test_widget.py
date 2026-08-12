@@ -375,6 +375,15 @@ class _Viewer:
         return layer
 
 
+def _inspect_layer_node_id(viewer) -> str | None:
+    try:
+        layer = viewer.layers["VIPP Inspect"]
+    except (KeyError, IndexError):
+        return None
+    metadata = getattr(layer, "metadata", {})
+    return metadata.get("node_id") if isinstance(metadata, dict) else None
+
+
 def _palette_item(widget, operation_id):
     def find_child(item):
         for child_index in range(item.childCount()):
@@ -626,6 +635,48 @@ def test_widget_builds_graph_and_inspects_node(qtbot):
     assert inspect_layer.metadata["node_id"] == "gaussian"
     assert inspect_layer.data.shape == viewer.layers["input volume"].data.shape
     assert not viewer.layers["input volume"].visible
+
+
+def test_widget_can_defer_initial_pipeline_and_run_it_exactly_once(
+    qtbot,
+    monkeypatch,
+):
+    runs = []
+    monkeypatch.setattr(
+        VippWidget,
+        "run_pipeline",
+        lambda self, *args, **kwargs: runs.append((args, kwargs)),
+    )
+
+    widget = VippWidget(
+        _Viewer(),
+        defer_initial_run=True,
+        initial_compute_mode="prefer_gpu",
+    )
+    qtbot.addWidget(widget)
+
+    assert runs == []
+    assert widget.compute_mode_combo.currentData() == "prefer_gpu"
+    assert widget.run_initial_pipeline_once()
+    assert len(runs) == 1
+    assert not widget.run_initial_pipeline_once()
+    assert len(runs) == 1
+
+
+def test_widget_direct_construction_still_runs_initial_pipeline(qtbot, monkeypatch):
+    runs = []
+    monkeypatch.setattr(
+        VippWidget,
+        "run_pipeline",
+        lambda self, *args, **kwargs: runs.append((args, kwargs)),
+    )
+
+    widget = VippWidget(_Viewer(), initial_compute_mode=ComputeMode.CPU)
+    qtbot.addWidget(widget)
+
+    assert len(runs) == 1
+    assert widget.compute_mode_combo.currentData() == "cpu"
+    assert not widget.run_initial_pipeline_once()
 
 
 def test_compute_toolbar_defaults_to_auto_and_shows_actual_compute_badges(qtbot):
@@ -8878,6 +8929,7 @@ def test_composite_to_rgb_and_input_share_z_slider_mapping(qtbot):
     node = widget.add_node_from_palette("composite_to_rgb")
     widget._connect_nodes("input", node.id)
     widget.graph_view.select_node(node.id)
+    qtbot.waitUntil(lambda: _inspect_layer_node_id(viewer) == node.id)
 
     viewer.dims.current_step = (5, 0, 0)
     current_step = widget._current_step()
@@ -8915,6 +8967,7 @@ def test_composite_to_rgb_and_input_share_z_slider_mapping(qtbot):
     assert not np.array_equal(rgb_first, rgb_second)
 
     widget.graph_view.select_node("input")
+    qtbot.waitUntil(lambda: _inspect_layer_node_id(viewer) == "input")
     viewer.dims.current_step = (0, 7, 0, 0)
     assert widget._current_step() == (0, 7, 0, 0)
 
@@ -8934,6 +8987,7 @@ def test_composite_to_rgb_and_input_share_time_and_z_slider_mapping(qtbot):
     node = widget.add_node_from_palette("composite_to_rgb")
     widget._connect_nodes("input", node.id)
     widget.graph_view.select_node(node.id)
+    qtbot.waitUntil(lambda: _inspect_layer_node_id(viewer) == node.id)
 
     viewer.dims.current_step = (3, 5, 0, 0)
     current_step = widget._current_step()
@@ -8971,6 +9025,7 @@ def test_composite_to_rgb_and_input_share_time_and_z_slider_mapping(qtbot):
     assert not np.array_equal(rgb_first, rgb_second)
 
     widget.graph_view.select_node("input")
+    qtbot.waitUntil(lambda: _inspect_layer_node_id(viewer) == "input")
     viewer.dims.current_step = (4, 0, 7, 0, 0)
     assert widget._current_step() == (4, 0, 7, 0, 0)
 
