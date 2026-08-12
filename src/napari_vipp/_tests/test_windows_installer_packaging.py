@@ -150,6 +150,22 @@ def _finalize_fixture(tmp_path: Path, payload: bytes = b"reviewed"):
     return state, staging, manifest, frozen_payload
 
 
+def _unsigned_finalize_fixture(tmp_path: Path, payload: bytes = b"reviewed"):
+    state, staging, manifest, frozen_payload = _finalize_fixture(tmp_path, payload)
+    _pe(staging, payload, signed=False)
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["artifact"] = {
+        "filename": staging.name,
+        "sha256": hashlib.sha256(staging.read_bytes()).hexdigest(),
+        "size_bytes": staging.stat().st_size,
+        "authenticode_content_sha256": (
+            packager.authenticode_content_sha256(staging)
+        ),
+    }
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    return state, staging, manifest, frozen_payload
+
+
 def test_bundled_release_spec_binds_verified_local_wheel(tmp_path):
     wheel = _wheel(tmp_path / "napari_vipp-0.13.0a4-py3-none-any.whl")
     root = _payload(tmp_path, wheel)
@@ -299,6 +315,7 @@ def test_development_plan_cannot_claim_official_filename(tmp_path, monkeypatch):
     assert plan["release_ready"] is False
     assert str(plan["output_executable"]).endswith("-DEVELOPMENT.exe")
     assert plan["official_filename"] == "VIPP-Setup-0.13.0a4-Windows-x86_64.exe"
+    assert plan["unsigned_release_filename"].endswith("-UNSIGNED.exe")
     assert not (tmp_path / "artifacts").exists()
 
 
@@ -513,6 +530,87 @@ def test_finalize_rechecks_payload_after_copy_and_writes_sidecars(
         final.read_bytes()
     ).hexdigest()
     assert (tmp_path / "release/SHA256SUMS-Windows-0.13.0a4.txt").is_file()
+
+
+def test_finalize_unsigned_uses_explicit_name_and_checksum_sidecars(
+    tmp_path, monkeypatch
+):
+    state, staging, manifest, frozen_payload = _unsigned_finalize_fixture(tmp_path)
+    monkeypatch.setattr(packager, "_require_windows_amd64", lambda: None)
+    monkeypatch.setattr(packager, "inspect_source", lambda _root: state)
+
+    result = packager.finalize_unsigned_installer(
+        repository_root=REPO_ROOT,
+        unsigned_staging_executable=staging,
+        build_manifest_path=manifest,
+        output_directory=tmp_path / "release",
+        authenticode_probe=lambda _path: {
+            "status": "NotSigned",
+            "status_message": "The file is not digitally signed.",
+            "signer_certificate": None,
+            "timestamp_certificate": None,
+        },
+        frozen_payload_probe=lambda _path: frozen_payload,
+    )
+
+    final = (
+        tmp_path
+        / "release/VIPP-Setup-0.13.0a4-Windows-x86_64-UNSIGNED.exe"
+    )
+    assert final.is_file()
+    assert not (
+        tmp_path / "release/VIPP-Setup-0.13.0a4-Windows-x86_64.exe"
+    ).exists()
+    assert result["release_channel"] == "explicitly-unsigned"
+    assert result["signature"]["status"] == "NotSigned"
+    assert result["user_warning"] == {
+        "signed": False,
+        "expected_windows_publisher": "Unknown publisher",
+        "run_only_from_official_github_release": True,
+        "verify_sha256_before_running": True,
+    }
+    checksum = tmp_path / "release/SHA256SUMS-Windows-0.13.0a4.txt"
+    assert final.name in checksum.read_text(encoding="ascii")
+
+
+def test_finalize_unsigned_rejects_any_signature(tmp_path, monkeypatch):
+    state, staging, manifest, frozen_payload = _unsigned_finalize_fixture(tmp_path)
+    monkeypatch.setattr(packager, "_require_windows_amd64", lambda: None)
+    monkeypatch.setattr(packager, "inspect_source", lambda _root: state)
+
+    with pytest.raises(packager.InstallerPackagingError, match="NotSigned"):
+        packager.finalize_unsigned_installer(
+            repository_root=REPO_ROOT,
+            unsigned_staging_executable=staging,
+            build_manifest_path=manifest,
+            output_directory=tmp_path / "release",
+            authenticode_probe=lambda _path: _valid_signature(),
+            frozen_payload_probe=lambda _path: frozen_payload,
+        )
+
+
+def test_finalize_unsigned_rejects_certificate_on_notsigned_status(
+    tmp_path, monkeypatch
+):
+    state, staging, manifest, frozen_payload = _unsigned_finalize_fixture(tmp_path)
+    monkeypatch.setattr(packager, "_require_windows_amd64", lambda: None)
+    monkeypatch.setattr(packager, "inspect_source", lambda _root: state)
+    contradictory_probe = {
+        "status": "NotSigned",
+        "status_message": "Contradictory probe result.",
+        "signer_certificate": {"thumbprint": "A" * 40},
+        "timestamp_certificate": None,
+    }
+
+    with pytest.raises(packager.InstallerPackagingError, match="no signer"):
+        packager.finalize_unsigned_installer(
+            repository_root=REPO_ROOT,
+            unsigned_staging_executable=staging,
+            build_manifest_path=manifest,
+            output_directory=tmp_path / "release",
+            authenticode_probe=lambda _path: contradictory_probe,
+            frozen_payload_probe=lambda _path: frozen_payload,
+        )
 
 
 def test_official_build_rejects_wheel_not_reproduced_from_tag(tmp_path, monkeypatch):

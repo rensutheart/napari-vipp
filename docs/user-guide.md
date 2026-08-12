@@ -12,8 +12,10 @@ your data and acquisition settings.
 
 ## Start VIPP
 
-Begin with the [installer-first quick start](quick-start.md). The signed Windows
-`.exe` is the recommended ordinary-user route for `0.13.0a5`; manual pip
+Begin with the [installer-first quick start](quick-start.md). The explicitly
+unsigned Windows `.exe` is the recommended ordinary-user route for `0.13.0a5`;
+verify its published SHA-256 before accepting Windows' **Unknown publisher**
+warning. Manual pip
 installation remains available for Linux, macOS, and advanced use. Installing
 into an existing napari environment,
 raw planner commands, and environment repair are advanced routes.

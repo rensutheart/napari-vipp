@@ -2,7 +2,9 @@
 
 The build command only creates a development EXE or a signing-staging EXE.  The
 official release filename is created exclusively by ``finalize`` after a valid,
-timestamped Authenticode signature has been independently verified.
+timestamped Authenticode signature has been independently verified. An
+intentional unsigned release uses ``finalize-unsigned`` and an unmistakable
+``-UNSIGNED`` filename; it can never claim the reserved signed filename.
 """
 
 from __future__ import annotations
@@ -115,6 +117,20 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--output-directory", type=Path, required=True)
     finalize.add_argument("--expected-signer-thumbprint", required=True)
     finalize.add_argument("--cucim-bundle", type=Path)
+
+    finalize_unsigned = commands.add_parser(
+        "finalize-unsigned",
+        help=(
+            "Create explicitly named unsigned release assets from a clean "
+            "tagged build."
+        ),
+    )
+    finalize_unsigned.add_argument(
+        "--unsigned-staging-executable", type=Path, required=True
+    )
+    finalize_unsigned.add_argument("--build-manifest", type=Path, required=True)
+    finalize_unsigned.add_argument("--output-directory", type=Path, required=True)
+    finalize_unsigned.add_argument("--cucim-bundle", type=Path)
     return parser
 
 
@@ -154,13 +170,21 @@ def main(argv: list[str] | None = None) -> int:
                 development=args.development,
                 plan_only=args.plan_only,
             )
-        else:
+        elif args.command == "finalize":
             result = finalize_installer(
                 repository_root=root,
                 signed_staging_executable=args.signed_staging_executable,
                 build_manifest_path=args.build_manifest,
                 output_directory=args.output_directory,
                 expected_signer_thumbprint=args.expected_signer_thumbprint,
+                cucim_bundle=args.cucim_bundle,
+            )
+        else:
+            result = finalize_unsigned_installer(
+                repository_root=root,
+                unsigned_staging_executable=args.unsigned_staging_executable,
+                build_manifest_path=args.build_manifest,
+                output_directory=args.output_directory,
                 cucim_bundle=args.cucim_bundle,
             )
     except InstallerPackagingError as exc:
@@ -212,6 +236,7 @@ def build_installer(
         "development": development,
         "release_ready": False,
         "official_filename": f"{base_name}.exe",
+        "unsigned_release_filename": f"{base_name}-UNSIGNED.exe",
         "output_executable": str(executable),
         "build_manifest": str(build_manifest_path),
         "third_party_notices": str(notices_path),
@@ -224,9 +249,11 @@ def build_installer(
             "windowed": True,
         },
         "signing": {
-            "required_for_release": True,
+            "required_for_reserved_signed_filename": True,
+            "required_for_explicit_unsigned_release": False,
             "performed": False,
             "final_asset_name_reserved_until_verified": True,
+            "unsigned_release_requires_explicit_filename": True,
         },
     }
     if plan_only:
@@ -578,6 +605,221 @@ def finalize_installer(
         if probe(final_executable).get("status") != "Valid":
             raise InstallerPackagingError(
                 "The published EXE failed final Authenticode verification."
+            )
+    except Exception:
+        for path in reversed(published):
+            path.unlink(missing_ok=True)
+        raise
+    document["release_manifest"] = _file_record(release_manifest)
+    document["checksums"] = _file_record(checksum_path)
+    return document
+
+
+def finalize_unsigned_installer(
+    *,
+    repository_root: Path,
+    unsigned_staging_executable: Path,
+    build_manifest_path: Path,
+    output_directory: Path,
+    cucim_bundle: Path | None = None,
+    authenticode_probe=None,
+    frozen_payload_probe=None,
+) -> dict[str, object]:
+    """Publish a deliberately unsigned, checksum-bound installer artifact."""
+
+    root = repository_root.resolve()
+    _require_windows_amd64()
+    source = inspect_source(root)
+    if not source.officially_releasable:
+        raise InstallerPackagingError(
+            "Unsigned finalization still requires a clean checkout at the exact "
+            "release tag."
+        )
+    build_document = _read_json(build_manifest_path)
+    _require_manifest_field(build_document, "schema", BUILD_SCHEMA)
+    _require_manifest_field(build_document, "schema_version", SCHEMA_VERSION)
+    if build_document.get("development") is not False:
+        raise InstallerPackagingError(
+            "A development build cannot become an unsigned release."
+        )
+    if build_document.get("source") != _source_dict(source):
+        raise InstallerPackagingError(
+            "The build manifest does not belong to this clean tagged checkout."
+        )
+    frozen_build = build_document.get("frozen_payload")
+    wheel_build = build_document.get("wheel")
+    if not isinstance(frozen_build, dict) or not isinstance(wheel_build, dict):
+        raise InstallerPackagingError(
+            "The build manifest lacks its frozen payload or wheel record."
+        )
+    frozen_wheel = frozen_build.get("wheel")
+    if (
+        frozen_build.get("development") is not False
+        or frozen_build.get("source_commit") != source.commit
+        or frozen_build.get("source_tag") != source.expected_tag
+        or not isinstance(frozen_wheel, dict)
+        or frozen_wheel.get("sha256") != wheel_build.get("sha256")
+        or frozen_wheel.get("contents_sha256")
+        != wheel_build.get("contents_sha256")
+    ):
+        raise InstallerPackagingError(
+            "The frozen payload is not bound to this tagged source and release "
+            "wheel."
+        )
+
+    staging = unsigned_staging_executable.expanduser().resolve()
+    expected_staging = (
+        f"VIPP-Setup-{source.version}-Windows-{ARCHITECTURE}-SIGNING-STAGING.exe"
+    )
+    if staging.name != expected_staging:
+        raise InstallerPackagingError(
+            f"The unsigned staging filename must be {expected_staging}."
+        )
+    artifact_record = build_document.get("artifact")
+    if not isinstance(artifact_record, dict) or not staging.is_file():
+        raise InstallerPackagingError("The unsigned staging artifact is missing.")
+    if (
+        artifact_record.get("sha256") != _sha256(staging)
+        or artifact_record.get("size_bytes") != staging.stat().st_size
+        or artifact_record.get("authenticode_content_sha256")
+        != authenticode_content_sha256(staging)
+    ):
+        raise InstallerPackagingError(
+            "The unsigned staging EXE differs from its reviewed build record."
+        )
+    payload_probe = frozen_payload_probe or inspect_frozen_payload
+    staging_payload = payload_probe(staging)
+    if staging_payload != frozen_build:
+        raise InstallerPackagingError(
+            "The unsigned staging EXE payload differs from the reviewed build."
+        )
+    probe = authenticode_probe or probe_authenticode
+    signature = probe(staging)
+    if (
+        signature.get("status") != "NotSigned"
+        or signature.get("signer_certificate") is not None
+        or signature.get("timestamp_certificate") is not None
+    ):
+        raise InstallerPackagingError(
+            "Unsigned finalization accepts only an EXE reported as NotSigned "
+            "with no signer or timestamp certificate."
+        )
+
+    output_dir = output_directory.expanduser().resolve()
+    base_name = f"VIPP-Setup-{source.version}-Windows-{ARCHITECTURE}-UNSIGNED"
+    final_executable = output_dir / f"{base_name}.exe"
+    release_manifest = output_dir / f"{base_name}-release.json"
+    final_notices = output_dir / f"{base_name}-{THIRD_PARTY_NOTICES_NAME}"
+    checksum_path = output_dir / f"SHA256SUMS-Windows-{source.version}.txt"
+    notices_source = Path(str(build_document.get("third_party_notices", "")))
+    for candidate in (final_executable, release_manifest, final_notices, checksum_path):
+        if candidate.exists():
+            raise InstallerPackagingError(
+                f"Refusing to overwrite release asset: {candidate}"
+            )
+    notices_record = build_document.get("third_party_notices_record")
+    if (
+        not notices_source.is_file()
+        or not isinstance(notices_record, dict)
+        or notices_record.get("sha256") != _sha256(notices_source)
+    ):
+        raise InstallerPackagingError(
+            "The build's third-party notices are missing or changed."
+        )
+
+    companion = None
+    if cucim_bundle is not None:
+        if cucim_bundle.expanduser().resolve().parent != output_dir:
+            raise InstallerPackagingError(
+                "The cuCIM companion must already be in the release artifact "
+                "directory."
+            )
+        companion = inspect_cucim_bundle(
+            cucim_bundle,
+            expected_version=source.version,
+            expected_commit=source.commit,
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    published: list[Path] = []
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".vipp-finalize-unsigned-", dir=output_dir
+        ) as temporary:
+            temporary_root = Path(temporary)
+            temporary_executable = temporary_root / final_executable.name
+            temporary_notices = temporary_root / final_notices.name
+            temporary_manifest = temporary_root / release_manifest.name
+            temporary_checksums = temporary_root / checksum_path.name
+            shutil.copyfile(staging, temporary_executable)
+            shutil.copyfile(notices_source, temporary_notices)
+            copied_signature = probe(temporary_executable)
+            if (
+                _sha256(temporary_executable) != artifact_record.get("sha256")
+                or payload_probe(temporary_executable) != staging_payload
+                or copied_signature.get("status") != "NotSigned"
+                or copied_signature.get("signer_certificate") is not None
+                or copied_signature.get("timestamp_certificate") is not None
+            ):
+                raise InstallerPackagingError(
+                    "The copied unsigned EXE differs from the reviewed staging EXE."
+                )
+            document: dict[str, object] = {
+                "schema": RELEASE_SCHEMA,
+                "schema_version": SCHEMA_VERSION,
+                "release_channel": "explicitly-unsigned",
+                "source": _source_dict(source),
+                "artifact": _file_record(temporary_executable),
+                "embedded_wheel": wheel_build,
+                "frozen_payload": staging_payload,
+                "signature": copied_signature,
+                "user_warning": {
+                    "signed": False,
+                    "expected_windows_publisher": "Unknown publisher",
+                    "run_only_from_official_github_release": True,
+                    "verify_sha256_before_running": True,
+                },
+                "third_party_notices": _file_record(temporary_notices),
+                "cucim_companion": companion,
+                "relationship": {
+                    "primary_installer_contains_cucim": False,
+                    "cucim_is_optional_separate_local_build": companion is not None,
+                },
+            }
+            _write_json(temporary_manifest, document)
+            checksum_files = [
+                temporary_executable,
+                temporary_notices,
+                temporary_manifest,
+            ]
+            if cucim_bundle is not None:
+                checksum_files.append(cucim_bundle.resolve())
+            temporary_checksums.write_text(
+                "".join(
+                    f"{_sha256(path)}  {path.name}\n" for path in checksum_files
+                ),
+                encoding="ascii",
+                newline="\n",
+            )
+            for source_path, destination in (
+                (temporary_manifest, release_manifest),
+                (temporary_notices, final_notices),
+                (temporary_checksums, checksum_path),
+                (temporary_executable, final_executable),
+            ):
+                os.replace(source_path, destination)
+                published.append(destination)
+        published_signature = probe(final_executable)
+        if (
+            _sha256(final_executable) != artifact_record.get("sha256")
+            or final_executable.stat().st_size != artifact_record.get("size_bytes")
+            or payload_probe(final_executable) != staging_payload
+            or published_signature.get("status") != "NotSigned"
+            or published_signature.get("signer_certificate") is not None
+            or published_signature.get("timestamp_certificate") is not None
+        ):
+            raise InstallerPackagingError(
+                "The published unsigned EXE failed final verification."
             )
     except Exception:
         for path in reversed(published):

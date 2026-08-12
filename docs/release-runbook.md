@@ -276,7 +276,28 @@ python scripts/package_windows_installer.py finalize `
 Finalization rechecks the clean tag, signer thumbprint, timestamp certificate,
 copied signature, embedded wheel, and optional cuCIM version/commit. It creates
 the reserved official EXE, release JSON, persistent third-party notices, and
-`SHA256SUMS-Windows-<version>.txt`. There is no unsigned override.
+`SHA256SUMS-Windows-<version>.txt`. This signed path has no unsigned override.
+
+If the release decision is explicitly to ship unsigned, keep the signing-staging
+EXE unsigned and use the separate fail-closed command:
+
+```powershell
+python scripts/package_windows_installer.py finalize-unsigned `
+  --unsigned-staging-executable $stagingExe `
+  --build-manifest $buildManifest `
+  --output-directory $artifactDir `
+  --cucim-bundle $cucimInstaller
+```
+
+This path still requires the clean exact tag, matching reproducible wheel,
+unchanged staging bytes, exact frozen payload, and optional same-tag cuCIM
+bundle. It also requires Windows to report `NotSigned` and creates only
+`VIPP-Setup-<version>-Windows-x86_64-UNSIGNED.exe`, its release JSON, notices,
+and SHA-256 sidecar. It cannot create the filename reserved for a signed
+installer. Every public surface must state **Unknown publisher**, require the
+official GitHub source and matching checksum, explain **More info > Run
+anyway**, provide the manual fallback, and tell users not to bypass an actual
+antivirus detection or disable security.
 
 Expected output artifacts:
 
@@ -284,6 +305,8 @@ Expected output artifacts:
 - `dist/<version>-<tagged-short-sha>/napari_vipp-<version>-py3-none-any.whl`
 - when the signed Windows bootstrapper is part of the release,
   `dist/<version>-<tagged-short-sha>/VIPP-Setup-<version>-Windows-x86_64.exe`
+- when an explicitly unsigned alpha bootstrapper is selected instead,
+  `dist/<version>-<tagged-short-sha>/VIPP-Setup-<version>-Windows-x86_64-UNSIGNED.exe`
 - with that bootstrapper, its `-release.json`,
   `-THIRD-PARTY-NOTICES.txt`, and `SHA256SUMS-Windows-<version>.txt` sidecars
 - when selected for the release,
@@ -325,10 +348,11 @@ python -m mkdocs build --strict
 Review the rendered `<version>` release page, installer-first quick start,
 workflow-schema upgrade guidance,
 batch workspace instructions, architecture boundaries, Windows CUDA/cuCIM
-installation boundary, and known limitations. When the signed Windows `.exe`
-is included, the quick start must lead with its exact official asset; otherwise
-it must explicitly say the installer is not yet published and retain the
-manual fallback.
+installation boundary, and known limitations. When a Windows `.exe` is
+included, the quick start must lead with its exact asset and truthful signing
+status. An unsigned alpha must provide checksum-first SmartScreen instructions
+and a manual fallback. If no installer is included, explicitly say it is not
+yet published.
 Commit and push the docs release before the package release. A push to the docs
 repository publishes only the `nightly` manual: confirm the nightly release
 page and Windows CUDA guide resolve. Do not mistake that for the numbered
@@ -343,11 +367,13 @@ Push the already-qualified immutable tag first:
 git push origin "v<version>"
 ```
 
-If this release includes the signed Windows bootstrapper, publish the GitHub
+If this release includes a Windows bootstrapper, publish the GitHub
 prerelease and its exact installer asset **before** promoting the versioned
 manual. Otherwise the prioritized Quick Start would point to a file that does
-not exist. Attach the already qualified wheel, sdist, and signed `.exe`, then
-verify the public asset URL, Authenticode signature guidance, size, and SHA-256:
+not exist. Attach the already qualified wheel, sdist, and selected signed or
+explicitly unsigned `.exe`, then verify the public asset URL, signing-status
+guidance, size, and SHA-256. The example below shows the signed path; substitute
+the exact `-UNSIGNED` asset and sidecars when that release decision applies:
 
 ```powershell
 gh release create "v$releaseVersion" --prerelease --verify-tag `
@@ -503,10 +529,13 @@ If not updated after indexing delay:
 - [ ] If published, the separate cuCIM installer ZIP came from the clean tagged
       commit, contains no wheel, and its source commit/file hashes plus archive
       SHA-256 were verified and recorded
-- [ ] Windows-installer status is truthful everywhere: if shipped, the exact
-      tagged `VIPP-Setup-<version>-Windows-x86_64.exe` is Authenticode-signed,
-      hash-recorded, attached, clean-machine accepted, and linked first; if not
-      shipped, Quick Start explicitly says **not yet published**
+- [ ] Windows-installer status is truthful everywhere: if signed, the reserved
+      filename is Authenticode-signed and timestamped; if explicitly unsigned,
+      the filename contains `-UNSIGNED`, Windows reports `NotSigned`, and every
+      public surface requires the official source and matching SHA-256 before
+      **More info > Run anyway**. Either shipped artifact is attached,
+      clean-machine accepted, and linked first; if no installer is shipped,
+      Quick Start says **not yet published**
 - [ ] Windows installer invalidates reviewed state after every install-relevant
       edit; GPU downloads tolerate continuing multi-minute transfers with the
       bounded retry/120-second idle-timeout policy; terminal network failure

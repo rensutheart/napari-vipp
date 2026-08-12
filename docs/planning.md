@@ -35,7 +35,7 @@ architecture and environment gates. Compute intent and exact implementation
 provenance now span interactive, batch, generated Python/CLI, and export
 execution. Source-current work adds branded launchers and the non-mutating
 Windows installer planner. The immediate product priority is the transactional
-apply engine and signed installer `.exe`, followed by broader platform
+apply engine and explicitly labelled installer `.exe`, followed by broader platform
 qualification, validation on real data, scalable OME-Zarr previews, and safe
 graph/parameter copy and paste.
 Registration, model-backed segmentation, stitching, and AI-assisted graph
@@ -174,13 +174,14 @@ explicitly selected existing-napari routes without changing packages, files,
 shortcuts, or the registry. It records the interpreter, target, conservative
 disk reserve, stable validation issues, top-level release requirement,
 acceptance commands, shortcuts, and rollback boundary in deterministic schema
-v1 JSON. Its transactional apply engine and signed per-user Windows bootstrapper
-are included in `0.13.0a5`. Linux and macOS installers should reuse the same
-headless environment-plan contract. The signed Windows `.exe`
+v1 JSON. Its transactional apply engine and per-user Windows bootstrapper are
+included in `0.13.0a5`. Linux and macOS installers should reuse the same
+headless environment-plan contract. The Windows `.exe`
 must become the first installation route in the README, quick start, release
 notes, and versioned manual; existing-napari, planner, and raw pip instructions
-remain advanced routes. The official Windows filename must remain reserved for
-the signed, timestamped, verified artifact attached to the immutable release.
+remain advanced routes. The signed Windows filename remains reserved for a
+valid Authenticode artifact; an unsigned alpha must use `-UNSIGNED` and include
+checksum-first Windows-warning instructions.
 Linux GPU and Apple acceleration remain gated by their independent platform
 qualification. See the [quick start](quick-start.md) and
 [desktop startup and installer plan](desktop-startup-and-installer-plan.md).
@@ -709,7 +710,7 @@ Delivered:
 Workflow schema remains version 3 and batch-config schema remains version 1.
 The optional attached config is excluded from the scientific workflow hash.
 
-### Next Alpha - Signed Windows Installer
+### 0.13.0a5 - Windows Installer
 
 Goal: make the safe path for an ordinary Windows microscopy user one download
 and one double-click, without requiring napari, Python-environment, or terminal
@@ -717,9 +718,9 @@ expertise.
 
 Release gate:
 
-- a tagged, Authenticode-signed
-  `VIPP-Setup-<version>-Windows-x86_64.exe` is attached to the official GitHub
-  release with verified signer guidance and SHA-256;
+- a tagged `VIPP-Setup-<version>-Windows-x86_64-UNSIGNED.exe` is attached to
+  the official GitHub release with a manifest, SHA-256, explicit `NotSigned`
+  status, and checksum-first **More info > Run anyway** guidance;
 - managed CPU is the default portable route, while eligible NVIDIA hardware
   can choose managed CUDA 13 and receive Automatic, CPU, and Prefer-GPU
   shortcuts;

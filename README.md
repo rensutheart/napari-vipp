@@ -37,8 +37,8 @@ and [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requi
 
 ### Windows Installer (Recommended Path)
 
-The normal experience is one signed Windows `.exe`: download
-[`VIPP-Setup-0.13.0a5-Windows-x86_64.exe`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/VIPP-Setup-0.13.0a5-Windows-x86_64.exe)
+The normal experience is one Windows `.exe`: download
+[`VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe)
 from the official `v0.13.0a5` release, double-click it, and keep the recommended
 managed VIPP environment. Review CPU or qualified NVIDIA GPU setup, then launch
 VIPP from the shortcuts it creates. A supported 64-bit Python is a separate prerequisite;
@@ -55,11 +55,15 @@ least 1 GiB there. Setup names the exact location if that check fails. The
 standard GPU installation works without cuCIM; that optional add-on is installed
 separately afterward.
 
-> **Safety:** use only the installer attached to the official
-> [`v0.13.0a5` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a5).
-> Windows should report a valid VIPP publisher signature. The release also
-> provides the SHA-256 checksum and release manifest; do not use a similarly
-> named installer from another location.
+> **Unsigned alpha:** this release is intentionally not Authenticode-signed,
+> so Windows will show **Unknown publisher** and may show
+> **Windows protected your PC**. Download only the explicitly named
+> `-UNSIGNED.exe` from the official
+> [`v0.13.0a5` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a5),
+> verify its SHA-256 against the attached `SHA256SUMS` file, then select
+> **More info > Run anyway**. Stop if the hash differs or antivirus identifies
+> a threat; never disable Windows security. The [Quick Start](docs/quick-start.md)
+> gives the exact verification steps and a manual fallback.
 
 The [VIPP Quick Start](docs/quick-start.md) explains the installer-first flow,
 current manual commands, CPU/GPU choices, prerequisites, the advanced

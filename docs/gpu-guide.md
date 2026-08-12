@@ -59,9 +59,9 @@ CMake.
 
 ## Install And Verify
 
-The signed Windows installer is the planned normal route but is not yet
-published. Until then, follow the [Quick Start](quick-start.md) to create the
-dedicated CUDA 13 environment and run:
+The explicitly unsigned Windows installer is the normal 0.13.0a5 route. Follow
+the checksum and Windows-warning steps in the [Quick Start](quick-start.md), or
+use this manual dedicated CUDA 13 environment route:
 
 ```powershell
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13

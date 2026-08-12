@@ -1,6 +1,6 @@
 # VIPP 0.13.0a5
 
-VIPP 0.13.0a5 introduces the recommended signed Windows installer and branded
+VIPP 0.13.0a5 introduces the recommended Windows installer and branded
 desktop launchers. The managed installer is designed for people who do not want
 to manage Python environments or CUDA packages themselves: it checks the
 computer, recommends CPU or a qualified NVIDIA CUDA 13 setup, shows the exact
@@ -13,9 +13,17 @@ batch artifacts used for consequential analysis.
 
 ## Windows installation
 
-Download `VIPP-Setup-0.13.0a5-Windows-x86_64.exe` only from this release. The
-installer is Authenticode-signed and timestamped. Its SHA-256 checksum, release
-manifest, and third-party notices are attached beside it.
+Download `VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe` only from this
+release. This alpha is intentionally not Authenticode-signed. Windows will
+therefore show **Unknown publisher** and may show **Windows protected your PC**.
+Verify the installer against the attached `SHA256SUMS-Windows-0.13.0a5.txt`
+before selecting **More info > Run anyway**. Do not continue if the hash differs
+or antivirus identifies a threat, and never disable Windows security. A machine
+whose policy does not offer **Run anyway** must use the manual installation.
+
+The exact release manifest and third-party notices are attached beside the
+installer. The explicit `-UNSIGNED` filename is intentional; no unsigned file
+is published under the filename reserved for a future signed installer.
 
 The managed setup provides:
 
@@ -83,9 +91,10 @@ The exact 0.13.0a5 release candidate passed the cross-platform source, package,
 and installer-smoke suites. The development installer also passed fresh CPU
 and CUDA managed installation, real Auto and Prefer-GPU execution with CPU
 parity and cleanup, optional cuCIM installation and execution, update/repair,
-and independent CPU/CUDA removal on the Windows reference system. The official
-release file is produced only from the immutable tag, signed, timestamped, and
-then rechecked before publication.
+and independent CPU/CUDA removal on the Windows reference system. The release
+file is produced only from the immutable tag, explicitly named `-UNSIGNED`,
+bound to the exact wheel and source commit, hash-recorded, and rechecked before
+publication.
 
 See the repository [Quick Start](docs/quick-start.md), [GPU Guide](docs/gpu-guide.md),
 and [changelog](CHANGELOG.md#0130a5---2026-08-12) for complete instructions and

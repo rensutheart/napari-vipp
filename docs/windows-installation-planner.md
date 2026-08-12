@@ -2,14 +2,17 @@
 
 VIPP `0.13.0a5` contains both the read-only installation planner and a
 transactional managed-environment executor behind a novice-facing Windows
-setup window. The official release executable is built from the immutable
-`v0.13.0a5` tag with that tag's exact wheel, signed with the approved
-Authenticode certificate, timestamped, and verified before publication.
+setup window. The 0.13.0a5 release executable is built from the immutable
+`v0.13.0a5` tag with that tag's exact wheel, published only with an explicit
+`-UNSIGNED` filename, and bound to its release manifest and SHA-256 checksum.
+Windows therefore reports **Unknown publisher** for this alpha; the
+[installer-first quick start](quick-start.md) requires checksum verification
+before the user chooses **More info > Run anyway**.
 
 This command is an implementation, diagnostics, and advanced-support surface.
 The ordinary user path is the [installer-first quick start](quick-start.md).
 The planner CLI on this page is for development, diagnostics, and advanced
-support; users should download the signed `.exe` once it is published rather
+support; users should download the exact release `.exe` rather
 than copy planner or pip commands.
 
 ## Supported Plans

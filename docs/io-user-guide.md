@@ -30,7 +30,7 @@ dialog with the required extra and a generic pip suggestion. Use the safer
 environment-bound commands below with the Python interpreter from the
 environment that launches VIPP, never a global/base Python. Keep the VIPP
 release pinned, restart napari after installing a new reader, then reopen the
-file. The signed installer should eventually expose these as Add/Repair
+file. A future installer should expose these as Add/Repair
 components rather than terminal steps.
 
 | Format family | Extensions | Install command |

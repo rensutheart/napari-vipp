@@ -4,36 +4,58 @@
 
 ## Windows: The Recommended Route
 
-The normal VIPP experience is a signed Windows installer: download one `.exe`,
-double-click it, review the proposed location and compute option, and
-launch VIPP from the shortcuts it creates.
+The normal VIPP experience is one Windows installer: download the explicitly
+named unsigned `.exe`, verify it, review the proposed location and compute
+option, and launch VIPP from the shortcuts it creates.
 
-**[Download the signed VIPP 0.13.0a5 Windows installer](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/VIPP-Setup-0.13.0a5-Windows-x86_64.exe)**
+**[Download the VIPP 0.13.0a5 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe)**
 
 Use only the file attached to the official
 [`v0.13.0a5` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a5).
-Windows should show a valid VIPP publisher signature. The same release includes
-the SHA-256 checksum and release manifest. The ordinary flow is:
+This alpha is intentionally not Authenticode-signed. **Unknown publisher** and
+a **Windows protected your PC** warning are therefore expected. The same
+release includes the SHA-256 checksum and release manifest.
 
-1. Download the signed Windows VIPP installer from the official release.
-2. Double-click it. No terminal activation should be required.
-3. Keep the recommended private VIPP environment. The one-click installer does
+1. Download both `VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe` and
+   `SHA256SUMS-Windows-0.13.0a5.txt` from the official release.
+2. Open PowerShell in the download folder and run:
+
+   ```powershell
+   Get-FileHash -Algorithm SHA256 `
+     .\VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe
+   ```
+
+   The 64-character hash must exactly match the hash beside that filename in
+   `SHA256SUMS-Windows-0.13.0a5.txt`. Stop and delete the installer if it does
+   not match.
+3. Double-click the installer. If Windows shows **Windows protected your PC**,
+   select **More info**, confirm the app name ends in `-UNSIGNED.exe` and the
+   publisher is **Unknown publisher**, then select **Run anyway**.
+4. If Microsoft Defender or another antivirus identifies a threat, stop—do not
+   allow it and do not disable security. Some work or school computers and
+   Windows 11 systems with Smart App Control may block unsigned applications
+   without offering **Run anyway**. Use the manual installation below on those
+   computers.
+
+After that one-time Windows warning, the ordinary setup flow is:
+
+1. Keep the recommended private VIPP environment. The one-click installer does
    not modify an existing napari environment.
-4. Leave **Automatic** selected for the simplest setup. To choose manually,
+2. Leave **Automatic** selected for the simplest setup. To choose manually,
    expand **Advanced details**, then use **Computer use** to select **CPU** or
    **NVIDIA GPU**. CPU works on every supported Windows computer. Automatic
    chooses NVIDIA only when the driver, Python, CUDA 13, GPU architecture,
    package, memory, and scientific gates can be satisfied. The explicit NVIDIA
    choice stays visible, but setup will block installation and explain what is
    missing if those checks do not pass.
-5. In **Reviewed settings**, confirm the exact installation location, the CPU
+3. In **Reviewed settings**, confirm the exact installation location, the CPU
    or NVIDIA CUDA 13 route, and whether shortcuts will be added to the Start
    Menu only or to both the Start Menu and Desktop. Select **Install**, then
    wait for setup and its final checks to finish. If you change the
    computer-use choice, installation location, or desktop-shortcut choice,
    select **Check these settings** again. Setup will not enable **Install** for
    settings it has not checked.
-6. For a CPU installation, open **VIPP** from the created shortcut. A CUDA
+4. For a CPU installation, open **VIPP** from the created shortcut. A CUDA
    installation instead provides **VIPP Automatic**, **VIPP CPU**, and
    **VIPP Prefer GPU** shortcuts; start with **VIPP Automatic**.
 
@@ -65,7 +87,7 @@ then allows the user to retry discovery without copying terminal commands. The
 normal CUDA route installs its CUDA component packages inside the managed
 environment; it does not require a system CUDA Toolkit, Visual Studio, CMake,
 or `nvcc`. The first VIPP installation requires an internet connection while
-the signed bootstrapper obtains packages from PyPI. Setup resolves and
+the bootstrapper obtains packages from PyPI. Setup resolves and
 hash-locks the concrete binary package set before the user confirms it. GPU
 setup is a large download and can take several minutes. It currently needs at
 least 15 GiB free on the installation drive while setup runs. This is disk
@@ -147,7 +169,7 @@ bindings. The planner additionally requires stable napari 0.6
 or newer and PyQt6. Adding CUDA 13 to an existing environment is an expert
 operation because Python, Qt, NumPy/SciPy/scikit-image, CuPy, and CUDA-package
 constraints can conflict; a fresh managed CUDA environment remains the safer
-manual route until the signed installer can review exact dependency changes.
+manual route until the installer can review exact dependency changes.
 
 ## First Workflow
 

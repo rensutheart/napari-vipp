@@ -49,10 +49,11 @@ advanced and non-Windows installations.
   separate follow-up stages.
 - Added the standalone Windows setup packaging boundary: a pinned PyInstaller
   configuration embeds the exact same-tag VIPP wheel, public policy, VIPP icon,
-  and CPython/Tcl-Tk/PyInstaller notices. Unsigned builds can use only
-  `DEVELOPMENT` or `SIGNING-STAGING` names; the official release filename,
-  manifest, and SHA-256 sidecars are created only after a timestamped
-  Authenticode signature from the approved certificate passes verification.
+  and CPython/Tcl-Tk/PyInstaller notices. A verified Authenticode signature is
+  still mandatory for the reserved signed filename. This alpha additionally
+  permits an intentional unsigned release only under an explicit `-UNSIGNED`
+  filename, with a release manifest, SHA-256 sidecars, exact-tag and frozen-
+  payload verification, and `Unknown publisher` guidance.
   The optional no-wheel cuCIM local-build ZIP remains a separate, hash-bound
   GitHub release companion.
 - Replaced the setup window's provisional drawn header with a raster generated
@@ -75,7 +76,9 @@ advanced and non-Windows installations.
   **Try again** rechecks the exact current selection and requires a fresh review
   rather than reusing a failed transaction.
 - Reordered the installation documentation around an installer-first quick
-  start. The signed Windows `.exe` is the primary ordinary-user path; pip
+  start. The explicitly unsigned Windows `.exe` is the primary ordinary-user
+  path for this alpha; checksum verification and exact SmartScreen instructions
+  precede execution, while pip
   commands, existing-napari installation, and the headless planner remain
   manual or advanced routes.
 - Reduced the main README to a product-facing landing page and moved GPU setup,
