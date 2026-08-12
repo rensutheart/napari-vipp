@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/branding/vipp-logo-dark.svg">
-    <img src="docs/assets/branding/vipp-logo.svg" alt="VIPP" width="420">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/rensutheart/napari-vipp/main/docs/assets/branding/vipp-logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/rensutheart/napari-vipp/main/docs/assets/branding/vipp-logo.svg" alt="VIPP" width="420">
   </picture>
 </p>
 
@@ -98,7 +98,7 @@ nodes from left to right to inspect parameters, previews, metadata, and
 outputs. **Deterministic Batch & Provenance** is a self-contained introduction
 to collection processing.
 
-![VIPP example workflow chooser](docs/assets/user-guide/vipp-example-chooser.png)
+![VIPP example workflow chooser](https://raw.githubusercontent.com/rensutheart/napari-vipp/main/docs/assets/user-guide/vipp-example-chooser.png)
 
 ## What VIPP Supports
 
