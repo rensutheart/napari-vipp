@@ -1,11 +1,10 @@
 # Windows Installer And Planning Contract
 
-The source-current tree contains both the read-only installation planner and a
+VIPP `0.13.0a5` contains both the read-only installation planner and a
 transactional managed-environment executor behind a novice-facing Windows
-setup window. The executable is still a development artifact until the code is
-included in a new immutable VIPP tag, built with that tag's exact wheel, signed
-with the approved Authenticode certificate, timestamped, and verified. It is
-therefore not part of the published `0.13.0a4` release.
+setup window. The official release executable is built from the immutable
+`v0.13.0a5` tag with that tag's exact wheel, signed with the approved
+Authenticode certificate, timestamped, and verified before publication.
 
 This command is an implementation, diagnostics, and advanced-support surface.
 The ordinary user path is the [installer-first quick start](quick-start.md).

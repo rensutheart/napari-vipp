@@ -4,19 +4,16 @@
 
 ## Windows: The Recommended Route
 
-The normal VIPP experience will be a signed Windows installer: download one
-`.exe`, double-click it, review the proposed location and compute option, and
+The normal VIPP experience is a signed Windows installer: download one `.exe`,
+double-click it, review the proposed location and compute option, and
 launch VIPP from the shortcuts it creates.
 
-> **Current status:** the signed installer is the next delivery stage and is
-> not yet published. VIPP `0.13.0a4` still uses the manual installation below.
-> Until an installer is attached to an official
-> [napari-vipp GitHub release](https://github.com/rensutheart/napari-vipp/releases),
-> do not download similarly named installers from another location.
+**[Download the signed VIPP 0.13.0a5 Windows installer](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/VIPP-Setup-0.13.0a5-Windows-x86_64.exe)**
 
-When the installer is released, this page and the repository README will link
-directly to the deterministic release asset
-`VIPP-Setup-<version>-Windows-x86_64.exe`. The ordinary flow will be:
+Use only the file attached to the official
+[`v0.13.0a5` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a5).
+Windows should show a valid VIPP publisher signature. The same release includes
+the SHA-256 checksum and release manifest. The ordinary flow is:
 
 1. Download the signed Windows VIPP installer from the official release.
 2. Double-click it. No terminal activation should be required.
@@ -59,7 +56,7 @@ Installing into an existing napari environment is an **Advanced manual** route.
 The first one-click installer deliberately leaves those environments unchanged;
 use the version-pinned instructions below only when that integration is needed.
 
-The first installer release will treat Python and, for GPU use, a sufficiently
+The installer treats Python and, for GPU use, a sufficiently
 recent NVIDIA display driver as separate prerequisites. It will detect a
 missing Python and link to the official
 [Python 3.12.10 Windows release](https://www.python.org/downloads/release/python-31210/),
@@ -90,19 +87,19 @@ cuCIM Windows installer performs its verified build locally after the standard
 VIPP CUDA environment is working; cuCIM is not required to start VIPP or use
 the other qualified CuPy/CuPyX GPU operations.
 
-## Available Today: Manual Alpha Installation
+## Manual Alpha Installation (Advanced And Non-Windows)
 
-Use these commands only until the signed installer is published, or when an
-advanced installation needs terminal-level control.
+Use these commands when an advanced installation needs terminal-level control
+or when installing on Linux or macOS.
 
 ### CPU On Windows, Linux, Or macOS
 
-VIPP `0.13.0a4` supports CPython 3.12 and 3.13. Create and activate a dedicated
+VIPP `0.13.0a5` supports CPython 3.12 and 3.13. Create and activate a dedicated
 virtual environment first; do not install the application into a global/base
 Python. Then run:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a4"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a5"
 vipp
 ```
 
@@ -116,7 +113,7 @@ The current CUDA route requires native 64-bit Windows and CPython 3.12:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a4"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a5"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -130,7 +127,7 @@ probes all ordinals before choosing its default; the installer must identify
 any failing ordinal. Unsupported work stays on CPU with an explanation.
 
 For the optional local cuCIM build, follow the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a4/getting-started/windows-cuda/)
+[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a5/getting-started/windows-cuda/)
 only after the standard compute doctor passes.
 
 ### Existing napari Environment (Advanced)
@@ -140,13 +137,13 @@ Python explicitly. A conservative CPU update is:
 
 ```powershell
 $napariPython = "C:\Path\To\napari-env\Scripts\python.exe"
-& $napariPython -m pip install "napari-vipp==0.13.0a4"
+& $napariPython -m pip install "napari-vipp==0.13.0a5"
 & $napariPython -m pip check
 ```
 
 Do not use this route for a global Python, an environment that exposes system
 site-packages, an editable VIPP checkout, or an environment with multiple Qt
-bindings. The source-current planner additionally requires stable napari 0.6
+bindings. The planner additionally requires stable napari 0.6
 or newer and PyQt6. Adding CUDA 13 to an existing environment is an expert
 operation because Python, Qt, NumPy/SciPy/scikit-image, CuPy, and CUDA-package
 constraints can conflict; a fresh managed CUDA environment remains the safer

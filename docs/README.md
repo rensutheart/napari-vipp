@@ -11,10 +11,9 @@ reviewing VIPP itself.
 
 ## Use VIPP
 
-- [Quick start](quick-start.md): the prioritized signed-Windows-installer
-  experience, its current availability status, the temporary manual fallback,
-  CPU/GPU choices, and a first workflow. Start here if you are installing VIPP
-  rather than developing it.
+- [Quick start](quick-start.md): the signed-Windows-installer experience,
+  manual Linux/macOS and advanced routes, CPU/GPU choices, and a first
+  workflow. Start here if you are installing VIPP rather than developing it.
 - [User guide](user-guide.md): build, inspect, save, export, and batch-run
   workflows.
 - [GPU guide](gpu-guide.md): optional GPU qualification, compute modes,
@@ -71,7 +70,7 @@ reviewing VIPP itself.
   defines the branded launch profiles, napari loading host, separate local-build
   cuCIM bundle, and staged Windows/Linux/macOS installer path.
 - [Windows installer and planning contract](windows-installation-planner.md)
-  documents the source-current read-only plan schema, transactional managed
+  documents the read-only plan schema, transactional managed
   executor, update/repair ownership rules, and signed-release boundary.
 - [Production GPU implementation plan](gpu-production-implementation-plan.md)
   defines CPU/Auto/Prefer-GPU/Custom behavior, per-node and graph-global

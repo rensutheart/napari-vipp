@@ -13,7 +13,7 @@ environment, memory, and scientific-parity gates. Work outside those gates
 runs on CPU with an explanation; VIPP does not silently cast data or change an
 authored parameter merely to use a GPU.
 
-The public `0.13.0a4` CUDA route currently targets native 64-bit Windows and
+The public `0.13.0a5` CUDA route currently targets native 64-bit Windows and
 CPython 3.12. Linux and macOS continue to use the CPU path in this alpha while
 their accelerator policies are qualified separately.
 

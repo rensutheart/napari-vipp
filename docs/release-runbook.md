@@ -1,6 +1,6 @@
 # VIPP Alpha Release Runbook
 
-Last reviewed: 2026-08-09
+Last reviewed: 2026-08-12
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 publishing the companion documentation site, and confirming discovery on
@@ -10,7 +10,7 @@ napari hub.
 
 - Target package version: set `<version>` from the release milestone before
   starting; do not reuse the current package version by accident.
-- Current published release: `0.13.0a4`.
+- Current published release: `0.13.0a5`.
 - Current prepared target: none; set and review `<version>` before beginning a
   new release.
 - Release maturity: Alpha

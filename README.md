@@ -37,10 +37,11 @@ and [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requi
 
 ### Windows Installer (Recommended Path)
 
-The intended normal experience is one signed Windows `.exe`: download it from
-the official release, double-click it, keep the recommended managed VIPP
-environment, review CPU or qualified NVIDIA GPU setup, and launch VIPP from
-the shortcuts it creates. A supported 64-bit Python is a separate prerequisite;
+The normal experience is one signed Windows `.exe`: download
+[`VIPP-Setup-0.13.0a5-Windows-x86_64.exe`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/VIPP-Setup-0.13.0a5-Windows-x86_64.exe)
+from the official `v0.13.0a5` release, double-click it, and keep the recommended
+managed VIPP environment. Review CPU or qualified NVIDIA GPU setup, then launch
+VIPP from the shortcuts it creates. A supported 64-bit Python is a separate prerequisite;
 if it is missing, setup links to the official Python 3.12.10 installer and lets
 the user check again afterward.
 
@@ -54,22 +55,23 @@ least 1 GiB there. Setup names the exact location if that check fails. The
 standard GPU installation works without cuCIM; that optional add-on is installed
 separately afterward.
 
-> **Installer status:** the signed `.exe` is the next delivery stage and is not
-> yet published. The public `0.13.0a4` release still uses the manual fallback
-> below. Do not download a VIPP installer unless it is attached to an official
-> [napari-vipp GitHub release](https://github.com/rensutheart/napari-vipp/releases).
+> **Safety:** use only the installer attached to the official
+> [`v0.13.0a5` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a5).
+> Windows should report a valid VIPP publisher signature. The release also
+> provides the SHA-256 checksum and release manifest; do not use a similarly
+> named installer from another location.
 
 The [VIPP Quick Start](docs/quick-start.md) explains the installer-first flow,
 current manual commands, CPU/GPU choices, prerequisites, the advanced
 existing-napari route, update/repair/uninstall behavior, and a first workflow.
 
-### Current Alpha: Manual Installation
+### Manual Installation (Advanced And Non-Windows)
 
-VIPP `0.13.0a4` supports CPython 3.12 and 3.13. Create and activate a dedicated
+VIPP `0.13.0a5` supports CPython 3.12 and 3.13. Create and activate a dedicated
 virtual environment, then install:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a4"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a5"
 vipp
 ```
 
@@ -153,25 +155,21 @@ environment that launches VIPP, never a global/base Python. Keep the VIPP
 version pinned and restart napari afterward. For example:
 
 ```bash
-python -m pip install "napari-vipp[nd2]==0.13.0a4"
+python -m pip install "napari-vipp[nd2]==0.13.0a5"
 ```
 
 Available extras include `nd2`, `czi`, `microscope`, and `bioformats`. See
 [Image import and export](docs/io-user-guide.md) for formats, limitations, and
 the matching commands.
 
-## Source-Current Installer And Startup Preview
+## Windows Installer And Startup
 
-This source tree, but not the published `0.13.0a4` release, contains the next
-Windows installer: a novice-facing setup window, automatic CPU/GPU
+VIPP `0.13.0a5` provides a novice-facing Windows setup window, automatic CPU/GPU
 recommendation, exact dependency review, transactional install/update/repair,
 owned shortcuts, independent CPU/GPU Apps & Features entries, ownership-safe
 uninstall, and acceptance checks. It installs into a private managed location
 and never overwrites an unrelated folder or manually managed napari environment.
-A release EXE remains unavailable until this code is tagged,
-built with that tag's exact wheel, signed, and independently verified.
-
-Source-current builds also contain the branded Automatic/CPU/Prefer-GPU
+It also provides branded Automatic/CPU/Prefer-GPU
 launchers, lightweight in-napari loading host, read-only planning CLI, and the
 separate optional cuCIM local-build add-on.
 
@@ -208,15 +206,17 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Use
 
 ## Current Alpha
 
-`0.13.0a4` broadens public GPU admission to compatible NVIDIA CUDA 13 devices
-without a model-name allowlist while retaining exact software, scientific,
-memory, and workload gates. The 0.13 series also adds portable compute intent,
+`0.13.0a5` adds the installer-first Windows experience, branded launchers, and
+the optional verified local cuCIM add-on. It retains compatible NVIDIA CUDA 13
+admission without a model-name allowlist and the exact software, scientific,
+memory, and workload gates from `0.13.0a4`. The 0.13 series also adds portable
+compute intent,
 actual implementation provenance, unified interactive/batch/export execution,
 workflow schema 4, batch schema 3, independent workflow tabs, expanded
 measurements/restoration, and substantial I/O, graph, progress, cancellation,
 and publication hardening.
 
-See the categorized [0.13.0a4 release notes](CHANGELOG.md#0130a4---2026-08-09)
+See the categorized [0.13.0a5 release notes](CHANGELOG.md#0130a5---2026-08-12)
 and [roadmap](docs/planning.md) for details and remaining milestones.
 
 ## Citation, Acknowledgement, And License

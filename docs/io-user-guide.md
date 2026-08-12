@@ -35,10 +35,10 @@ components rather than terminal steps.
 
 | Format family | Extensions | Install command |
 | --- | --- | --- |
-| Zeiss CZI | `.czi` | `python -m pip install "napari-vipp[czi]==0.13.0a4"` |
-| Nikon ND2 | `.nd2` | `python -m pip install "napari-vipp[nd2]==0.13.0a4"` |
-| Broad microscope reader set | `.czi`, `.nd2`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `python -m pip install "napari-vipp[microscope]==0.13.0a4"` |
-| BioIO/Bio-Formats fallback | Leica/Olympus/Bio-Formats-backed sources | `python -m pip install "napari-vipp[bioformats]==0.13.0a4"` |
+| Zeiss CZI | `.czi` | `python -m pip install "napari-vipp[czi]==0.13.0a5"` |
+| Nikon ND2 | `.nd2` | `python -m pip install "napari-vipp[nd2]==0.13.0a5"` |
+| Broad microscope reader set | `.czi`, `.nd2`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `python -m pip install "napari-vipp[microscope]==0.13.0a5"` |
+| BioIO/Bio-Formats fallback | Leica/Olympus/Bio-Formats-backed sources | `python -m pip install "napari-vipp[bioformats]==0.13.0a5"` |
 
 Use the format-specific extra when you know what you need. Use
 `napari-vipp[microscope]` on a workstation intended to open mixed acquisition
