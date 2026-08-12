@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.13.0a5 - 2026-08-12
+
+### Release Overview
+
+This fifth 0.13 alpha makes the Windows installer the recommended path for
+ordinary users. It adds branded Automatic, CPU-only, and Prefer-GPU launchers;
+a novice-facing managed setup flow; transactional install, update, and repair;
+independently removable CPU and CUDA installations; and a separate optional
+cuCIM local-build add-on. The manually managed pip route remains available for
+advanced and non-Windows installations.
+
 ### Desktop Startup And Installation Foundation
 
 - Added a lightweight packaged launcher with a branded splash, elapsed time,
@@ -38,10 +49,11 @@
   separate follow-up stages.
 - Added the standalone Windows setup packaging boundary: a pinned PyInstaller
   configuration embeds the exact same-tag VIPP wheel, public policy, VIPP icon,
-  and CPython/Tcl-Tk/PyInstaller notices. Unsigned builds can use only
-  `DEVELOPMENT` or `SIGNING-STAGING` names; the official release filename,
-  manifest, and SHA-256 sidecars are created only after a timestamped
-  Authenticode signature from the approved certificate passes verification.
+  and CPython/Tcl-Tk/PyInstaller notices. A verified Authenticode signature is
+  still mandatory for the reserved signed filename. This alpha additionally
+  permits an intentional unsigned release only under an explicit `-UNSIGNED`
+  filename, with a release manifest, SHA-256 sidecars, exact-tag and frozen-
+  payload verification, and `Unknown publisher` guidance.
   The optional no-wheel cuCIM local-build ZIP remains a separate, hash-bound
   GitHub release companion.
 - Replaced the setup window's provisional drawn header with a raster generated
@@ -63,11 +75,12 @@
   timeout, and transient network failures roll back the incomplete candidate.
   **Try again** rechecks the exact current selection and requires a fresh review
   rather than reusing a failed transaction.
-- Reordered the source-current installation documentation around an
-  installer-first quick start. The future signed Windows `.exe` is the primary
-  ordinary-user path but remains explicitly labelled as not yet published;
-  current pip commands, existing-napari installation, and the headless planner
-  are retained as manual or advanced routes until the artifact is available.
+- Reordered the installation documentation around an installer-first quick
+  start. The explicitly unsigned Windows `.exe` is the primary ordinary-user
+  path for this alpha; checksum verification and exact SmartScreen instructions
+  precede execution, while pip
+  commands, existing-napari installation, and the headless planner remain
+  manual or advanced routes.
 - Reduced the main README to a product-facing landing page and moved GPU setup,
   modes, qualification, supported operation families, benchmarking, fallback,
   cuCIM, and reproducibility guidance into a dedicated user-facing GPU guide.

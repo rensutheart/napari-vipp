@@ -13,7 +13,7 @@ environment, memory, and scientific-parity gates. Work outside those gates
 runs on CPU with an explanation; VIPP does not silently cast data or change an
 authored parameter merely to use a GPU.
 
-The public `0.13.0a4` CUDA route currently targets native 64-bit Windows and
+The public `0.13.0a5` CUDA route currently targets native 64-bit Windows and
 CPython 3.12. Linux and macOS continue to use the CPU path in this alpha while
 their accelerator policies are qualified separately.
 
@@ -59,9 +59,9 @@ CMake.
 
 ## Install And Verify
 
-The signed Windows installer is the planned normal route but is not yet
-published. Until then, follow the [Quick Start](quick-start.md) to create the
-dedicated CUDA 13 environment and run:
+The explicitly unsigned Windows installer is the normal 0.13.0a5 route. Follow
+the checksum and Windows-warning steps in the [Quick Start](quick-start.md), or
+use this manual dedicated CUDA 13 environment route:
 
 ```powershell
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13

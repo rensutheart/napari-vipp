@@ -109,20 +109,22 @@ the standard VIPP CUDA route.
 
 ## Documentation And Discovery Contract
 
-The signed installer must be the first installation path shown in the README,
+The release installer must be the first installation path shown in the README,
 documentation index, release notes, and versioned user manual. The ordinary
-quick start should fit on one screen: download the exact official `.exe`,
-double-click it, keep the managed-environment recommendation, review the
+quick start should fit on one screen: download and verify the exact release
+`.exe`, handle any documented Windows publisher warning, keep the managed-
+environment recommendation, review the
 compute route and location, install, then open the created VIPP shortcut.
 
 Documentation must remain truthful while delivery is staged:
 
-- before the signed artifact exists, label it **not yet published** and keep a
+- before the installer artifact exists, label it **not yet published** and keep a
   clearly separated manual fallback for the current release;
 - after publication, link directly to the exact release asset and publish its
-  deterministic name
-  `VIPP-Setup-<version>-Windows-x86_64.exe`, version, signer verification
-  guidance, and SHA-256 beside the link;
+  deterministic name, version, signing status, and SHA-256 beside the link. An
+  unsigned alpha must contain `-UNSIGNED` in its filename, state that **Unknown
+  publisher** is expected, and put checksum verification before **More info >
+  Run anyway**;
 - present managed installation first and move existing-napari installation,
   the headless planner, raw pip commands, and environment repair into
   **Advanced** or troubleshooting sections;
@@ -174,8 +176,9 @@ for prerequisites and support paths.
 3. **Windows bootstrapper:** the source-current transactional managed executor,
    novice setup window, exact wheel payload, shortcut ownership, update/repair,
    independent CPU/GPU Apps & Features entries, ownership-safe uninstall, and
-   signed-asset gates are implemented. Complete the clean-machine acceptance,
-   immutable tagging, Authenticode signing, and release publication before
+   signed and explicitly-unsigned asset gates are implemented. Complete the
+   clean-machine acceptance, immutable tagging, selected release finalization,
+   and release publication before
    making the `.exe` the live Quick Start. Keep cuCIM as the separate locally
    building bundle.
 4. **Linux desktop package:** reuse the same Python launcher and environment
@@ -200,16 +203,17 @@ Apply, the incomplete candidate is rolled back without replacing a previous
 working copy. **Try again** reruns checking and resolution for the exact choices
 currently shown, then requires a new review and confirmation instead of reusing
 the failed transaction.
-Remaining release work is clean-machine acceptance, signing with the approved
-certificate, and publishing the verified same-tag assets.
+Remaining release work is clean-machine acceptance, selected signed or
+explicitly-unsigned finalization, and publishing the verified same-tag assets.
 
 ## Release Gates
 
 Every installer or launcher release should verify:
 
 - the README, quick start, documentation index, release notes, and versioned
-  manual all point first to the exact signed installer artifact, or explicitly
-  say that it has not yet been published;
+  manual all point first to the exact installer artifact, state its signing
+  status, and provide checksum-first instructions, or explicitly say that it
+  has not yet been published;
 - clean CPU installation and launch on Windows, Linux, and macOS;
 - Windows CUDA installation, compute doctor, real eligible GPU execution,
   visible CPU decisions, cleanup, and fallback reporting;

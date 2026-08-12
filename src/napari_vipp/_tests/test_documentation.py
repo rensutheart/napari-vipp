@@ -122,10 +122,18 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
         'python -m pip install "napari[pyqt6]>=0.6"'
     )
     assert quick_start.index("## Windows: The Recommended Route") < quick_start.index(
-        "## Available Today: Manual Alpha Installation"
+        "## Manual Alpha Installation (Advanced And Non-Windows)"
     )
-    assert "not yet published" in quick_start
-    assert "github.com/rensutheart/napari-vipp/releases/download/" not in quick_start
+    assert (
+        "https://github.com/rensutheart/napari-vipp/releases/download/"
+        "v0.13.0a5/VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe"
+    ) in quick_start
+    assert "SHA256SUMS-Windows-0.13.0a5.txt" in quick_start
+    assert "**Unknown publisher**" in quick_start
+    assert "**More info**, confirm" in quick_start
+    assert "**Run anyway**" in quick_start
+    assert "do not disable security" in quick_start
+    assert "manual installation below" in quick_start
     assert "Windows Settings > Apps > Installed apps" in quick_start
     assert "Managed CPU and CUDA installations can coexist" in quick_start
     assert "expand **Advanced details**" in quick_start

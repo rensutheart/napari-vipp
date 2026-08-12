@@ -4,39 +4,58 @@
 
 ## Windows: The Recommended Route
 
-The normal VIPP experience will be a signed Windows installer: download one
-`.exe`, double-click it, review the proposed location and compute option, and
-launch VIPP from the shortcuts it creates.
+The normal VIPP experience is one Windows installer: download the explicitly
+named unsigned `.exe`, verify it, review the proposed location and compute
+option, and launch VIPP from the shortcuts it creates.
 
-> **Current status:** the signed installer is the next delivery stage and is
-> not yet published. VIPP `0.13.0a4` still uses the manual installation below.
-> Until an installer is attached to an official
-> [napari-vipp GitHub release](https://github.com/rensutheart/napari-vipp/releases),
-> do not download similarly named installers from another location.
+**[Download the VIPP 0.13.0a5 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe)**
 
-When the installer is released, this page and the repository README will link
-directly to the deterministic release asset
-`VIPP-Setup-<version>-Windows-x86_64.exe`. The ordinary flow will be:
+Use only the file attached to the official
+[`v0.13.0a5` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a5).
+This alpha is intentionally not Authenticode-signed. **Unknown publisher** and
+a **Windows protected your PC** warning are therefore expected. The same
+release includes the SHA-256 checksum and release manifest.
 
-1. Download the signed Windows VIPP installer from the official release.
-2. Double-click it. No terminal activation should be required.
-3. Keep the recommended private VIPP environment. The one-click installer does
+1. Download both `VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe` and
+   `SHA256SUMS-Windows-0.13.0a5.txt` from the official release.
+2. Open PowerShell in the download folder and run:
+
+   ```powershell
+   Get-FileHash -Algorithm SHA256 `
+     .\VIPP-Setup-0.13.0a5-Windows-x86_64-UNSIGNED.exe
+   ```
+
+   The 64-character hash must exactly match the hash beside that filename in
+   `SHA256SUMS-Windows-0.13.0a5.txt`. Stop and delete the installer if it does
+   not match.
+3. Double-click the installer. If Windows shows **Windows protected your PC**,
+   select **More info**, confirm the app name ends in `-UNSIGNED.exe` and the
+   publisher is **Unknown publisher**, then select **Run anyway**.
+4. If Microsoft Defender or another antivirus identifies a threat, stop—do not
+   allow it and do not disable security. Some work or school computers and
+   Windows 11 systems with Smart App Control may block unsigned applications
+   without offering **Run anyway**. Use the manual installation below on those
+   computers.
+
+After that one-time Windows warning, the ordinary setup flow is:
+
+1. Keep the recommended private VIPP environment. The one-click installer does
    not modify an existing napari environment.
-4. Leave **Automatic** selected for the simplest setup. To choose manually,
+2. Leave **Automatic** selected for the simplest setup. To choose manually,
    expand **Advanced details**, then use **Computer use** to select **CPU** or
    **NVIDIA GPU**. CPU works on every supported Windows computer. Automatic
    chooses NVIDIA only when the driver, Python, CUDA 13, GPU architecture,
    package, memory, and scientific gates can be satisfied. The explicit NVIDIA
    choice stays visible, but setup will block installation and explain what is
    missing if those checks do not pass.
-5. In **Reviewed settings**, confirm the exact installation location, the CPU
+3. In **Reviewed settings**, confirm the exact installation location, the CPU
    or NVIDIA CUDA 13 route, and whether shortcuts will be added to the Start
    Menu only or to both the Start Menu and Desktop. Select **Install**, then
    wait for setup and its final checks to finish. If you change the
    computer-use choice, installation location, or desktop-shortcut choice,
    select **Check these settings** again. Setup will not enable **Install** for
    settings it has not checked.
-6. For a CPU installation, open **VIPP** from the created shortcut. A CUDA
+4. For a CPU installation, open **VIPP** from the created shortcut. A CUDA
    installation instead provides **VIPP Automatic**, **VIPP CPU**, and
    **VIPP Prefer GPU** shortcuts; start with **VIPP Automatic**.
 
@@ -59,7 +78,7 @@ Installing into an existing napari environment is an **Advanced manual** route.
 The first one-click installer deliberately leaves those environments unchanged;
 use the version-pinned instructions below only when that integration is needed.
 
-The first installer release will treat Python and, for GPU use, a sufficiently
+The installer treats Python and, for GPU use, a sufficiently
 recent NVIDIA display driver as separate prerequisites. It will detect a
 missing Python and link to the official
 [Python 3.12.10 Windows release](https://www.python.org/downloads/release/python-31210/),
@@ -68,7 +87,7 @@ then allows the user to retry discovery without copying terminal commands. The
 normal CUDA route installs its CUDA component packages inside the managed
 environment; it does not require a system CUDA Toolkit, Visual Studio, CMake,
 or `nvcc`. The first VIPP installation requires an internet connection while
-the signed bootstrapper obtains packages from PyPI. Setup resolves and
+the bootstrapper obtains packages from PyPI. Setup resolves and
 hash-locks the concrete binary package set before the user confirms it. GPU
 setup is a large download and can take several minutes. It currently needs at
 least 15 GiB free on the installation drive while setup runs. This is disk
@@ -90,19 +109,19 @@ cuCIM Windows installer performs its verified build locally after the standard
 VIPP CUDA environment is working; cuCIM is not required to start VIPP or use
 the other qualified CuPy/CuPyX GPU operations.
 
-## Available Today: Manual Alpha Installation
+## Manual Alpha Installation (Advanced And Non-Windows)
 
-Use these commands only until the signed installer is published, or when an
-advanced installation needs terminal-level control.
+Use these commands when an advanced installation needs terminal-level control
+or when installing on Linux or macOS.
 
 ### CPU On Windows, Linux, Or macOS
 
-VIPP `0.13.0a4` supports CPython 3.12 and 3.13. Create and activate a dedicated
+VIPP `0.13.0a5` supports CPython 3.12 and 3.13. Create and activate a dedicated
 virtual environment first; do not install the application into a global/base
 Python. Then run:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a4"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a5"
 vipp
 ```
 
@@ -116,7 +135,7 @@ The current CUDA route requires native 64-bit Windows and CPython 3.12:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a4"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a5"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -130,7 +149,7 @@ probes all ordinals before choosing its default; the installer must identify
 any failing ordinal. Unsupported work stays on CPU with an explanation.
 
 For the optional local cuCIM build, follow the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a4/getting-started/windows-cuda/)
+[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a5/getting-started/windows-cuda/)
 only after the standard compute doctor passes.
 
 ### Existing napari Environment (Advanced)
@@ -140,17 +159,17 @@ Python explicitly. A conservative CPU update is:
 
 ```powershell
 $napariPython = "C:\Path\To\napari-env\Scripts\python.exe"
-& $napariPython -m pip install "napari-vipp==0.13.0a4"
+& $napariPython -m pip install "napari-vipp==0.13.0a5"
 & $napariPython -m pip check
 ```
 
 Do not use this route for a global Python, an environment that exposes system
 site-packages, an editable VIPP checkout, or an environment with multiple Qt
-bindings. The source-current planner additionally requires stable napari 0.6
+bindings. The planner additionally requires stable napari 0.6
 or newer and PyQt6. Adding CUDA 13 to an existing environment is an expert
 operation because Python, Qt, NumPy/SciPy/scikit-image, CuPy, and CUDA-package
 constraints can conflict; a fresh managed CUDA environment remains the safer
-manual route until the signed installer can review exact dependency changes.
+manual route until the installer can review exact dependency changes.
 
 ## First Workflow
 

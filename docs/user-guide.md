@@ -1,6 +1,6 @@
 # VIPP User Guide
 
-Last reviewed: 2026-08-09
+Last reviewed: 2026-08-12
 
 This guide is written for people building visual image-processing workflows in
 VIPP. It focuses on how to use the graph, how to choose the right controls, and
@@ -12,10 +12,12 @@ your data and acquisition settings.
 
 ## Start VIPP
 
-Begin with the [installer-first quick start](quick-start.md). The signed Windows
-`.exe` is the prioritized ordinary-user route but is not yet published; that
-page therefore keeps the current `0.13.0a4` manual fallback immediately below
-the planned installer flow. Installing into an existing napari environment,
+Begin with the [installer-first quick start](quick-start.md). The explicitly
+unsigned Windows `.exe` is the recommended ordinary-user route for `0.13.0a5`;
+verify its published SHA-256 before accepting Windows' **Unknown publisher**
+warning. Manual pip
+installation remains available for Linux, macOS, and advanced use. Installing
+into an existing napari environment,
 raw planner commands, and environment repair are advanced routes.
 
 Once VIPP is installed, start **VIPP Automatic** from its launcher or open

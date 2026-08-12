@@ -28,6 +28,14 @@ An official build requires a clean exact `v<version>` tag and produces only a
 Only `finalize`, after verifying the approved Authenticode signer and timestamp,
 may create `VIPP-Setup-<version>-Windows-x86_64.exe`.
 
+When a release explicitly chooses to ship unsigned, `finalize-unsigned` may
+instead create only
+`VIPP-Setup-<version>-Windows-x86_64-UNSIGNED.exe`. It requires the same clean
+exact tag, reproducible wheel, frozen-payload and checksum checks, rejects a
+development build or changed staging file, confirms Windows reports
+`NotSigned`, and writes the release manifest, notices, and SHA-256 sidecar. It
+cannot create the filename reserved for a signed release.
+
 The EXE embeds the VIPP licence, the exact CPython/Tcl-Tk/PyInstaller licence
 texts from the pinned build runtime, the public compute policy, and a VIPP icon.
 The combined third-party notices are also a persistent release sidecar and are

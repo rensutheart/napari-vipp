@@ -75,7 +75,7 @@ def test_bundle_is_deterministic_complete_and_contains_no_wheel(packager, tmp_pa
             assert info.compress_type == zipfile.ZIP_STORED
             assert stat.S_IFMT(info.external_attr >> 16) == stat.S_IFREG
         manifest = json.loads(archive.read("bundle-manifest.json"))
-        assert manifest["vipp_version"] == "0.13.0a4"
+        assert manifest["vipp_version"] == "0.13.0a5"
         assert manifest["source_commit"] == SOURCE_COMMIT
         assert manifest["entrypoint"] == "Install VIPP cuCIM.cmd"
         assert manifest["contains_prebuilt_cucim_wheel"] is False
@@ -122,7 +122,7 @@ def test_bundle_plan_only_prints_hash_manifest_without_writing(
     document = json.loads(capsys.readouterr().out)
     assert document["plan_only"] is True
     assert document["output"] == str(output.resolve())
-    assert document["manifest"]["vipp_version"] == "0.13.0a4"
+    assert document["manifest"]["vipp_version"] == "0.13.0a5"
     assert document["manifest"]["source_commit"] == SOURCE_COMMIT
     assert all(
         len(record["sha256"]) == 64 for record in document["manifest"]["files"].values()

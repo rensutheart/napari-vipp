@@ -1,6 +1,6 @@
 # VIPP Alpha Release Runbook
 
-Last reviewed: 2026-08-09
+Last reviewed: 2026-08-12
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 publishing the companion documentation site, and confirming discovery on
@@ -11,8 +11,7 @@ napari hub.
 - Target package version: set `<version>` from the release milestone before
   starting; do not reuse the current package version by accident.
 - Current published release: `0.13.0a4`.
-- Current prepared target: none; set and review `<version>` before beginning a
-  new release.
+- Current prepared target: `0.13.0a5`.
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -20,16 +19,18 @@ napari hub.
 
 1. You have push/tag permission on GitHub for this repository.
 2. You have upload permission for the `napari-vipp` project on PyPI.
-3. You have a PyPI API token available to paste into Twine's hidden password
-   prompt.
+3. The project-scoped PyPI API token is stored as the protected
+   `PYPI_API_TOKEN` secret in this repository's `pypi` GitHub environment.
 4. You have a clean git working tree on the release commit.
 5. The companion `vipp-mkdocs` repository has a reviewed release page and a
    clean, pushed release commit.
 
-This repository does not currently contain a PyPI Trusted Publishing workflow,
-so this runbook documents the manual Twine route for alpha releases. Never paste,
-print, commit, or place the PyPI token in a command, script, or shell
-environment variable. Enter it only at Twine's hidden password prompt.
+The `pypi` environment accepts deployments only from `main`. Store a
+project-scoped token there, never in the repository or command history, and
+rotate it if its source copy is exposed. Dispatch the workflow only from
+`main` and only after the exact tag's GitHub prerelease assets and numbered
+manual have been verified. PyPI Trusted Publishing may replace the token later
+without changing the artifact-verification flow.
 
 Recommended local tools:
 
@@ -275,7 +276,28 @@ python scripts/package_windows_installer.py finalize `
 Finalization rechecks the clean tag, signer thumbprint, timestamp certificate,
 copied signature, embedded wheel, and optional cuCIM version/commit. It creates
 the reserved official EXE, release JSON, persistent third-party notices, and
-`SHA256SUMS-Windows-<version>.txt`. There is no unsigned override.
+`SHA256SUMS-Windows-<version>.txt`. This signed path has no unsigned override.
+
+If the release decision is explicitly to ship unsigned, keep the signing-staging
+EXE unsigned and use the separate fail-closed command:
+
+```powershell
+python scripts/package_windows_installer.py finalize-unsigned `
+  --unsigned-staging-executable $stagingExe `
+  --build-manifest $buildManifest `
+  --output-directory $artifactDir `
+  --cucim-bundle $cucimInstaller
+```
+
+This path still requires the clean exact tag, matching reproducible wheel,
+unchanged staging bytes, exact frozen payload, and optional same-tag cuCIM
+bundle. It also requires Windows to report `NotSigned` and creates only
+`VIPP-Setup-<version>-Windows-x86_64-UNSIGNED.exe`, its release JSON, notices,
+and SHA-256 sidecar. It cannot create the filename reserved for a signed
+installer. Every public surface must state **Unknown publisher**, require the
+official GitHub source and matching checksum, explain **More info > Run
+anyway**, provide the manual fallback, and tell users not to bypass an actual
+antivirus detection or disable security.
 
 Expected output artifacts:
 
@@ -283,6 +305,8 @@ Expected output artifacts:
 - `dist/<version>-<tagged-short-sha>/napari_vipp-<version>-py3-none-any.whl`
 - when the signed Windows bootstrapper is part of the release,
   `dist/<version>-<tagged-short-sha>/VIPP-Setup-<version>-Windows-x86_64.exe`
+- when an explicitly unsigned alpha bootstrapper is selected instead,
+  `dist/<version>-<tagged-short-sha>/VIPP-Setup-<version>-Windows-x86_64-UNSIGNED.exe`
 - with that bootstrapper, its `-release.json`,
   `-THIRD-PARTY-NOTICES.txt`, and `SHA256SUMS-Windows-<version>.txt` sidecars
 - when selected for the release,
@@ -324,10 +348,11 @@ python -m mkdocs build --strict
 Review the rendered `<version>` release page, installer-first quick start,
 workflow-schema upgrade guidance,
 batch workspace instructions, architecture boundaries, Windows CUDA/cuCIM
-installation boundary, and known limitations. When the signed Windows `.exe`
-is included, the quick start must lead with its exact official asset; otherwise
-it must explicitly say the installer is not yet published and retain the
-manual fallback.
+installation boundary, and known limitations. When a Windows `.exe` is
+included, the quick start must lead with its exact asset and truthful signing
+status. An unsigned alpha must provide checksum-first SmartScreen instructions
+and a manual fallback. If no installer is included, explicitly say it is not
+yet published.
 Commit and push the docs release before the package release. A push to the docs
 repository publishes only the `nightly` manual: confirm the nightly release
 page and Windows CUDA guide resolve. Do not mistake that for the numbered
@@ -342,11 +367,13 @@ Push the already-qualified immutable tag first:
 git push origin "v<version>"
 ```
 
-If this release includes the signed Windows bootstrapper, publish the GitHub
+If this release includes a Windows bootstrapper, publish the GitHub
 prerelease and its exact installer asset **before** promoting the versioned
 manual. Otherwise the prioritized Quick Start would point to a file that does
-not exist. Attach the already qualified wheel, sdist, and signed `.exe`, then
-verify the public asset URL, Authenticode signature guidance, size, and SHA-256:
+not exist. Attach the already qualified wheel, sdist, and selected signed or
+explicitly unsigned `.exe`, then verify the public asset URL, signing-status
+guidance, size, and SHA-256. The example below shows the signed path; substitute
+the exact `-UNSIGNED` asset and sidecars when that release decision applies:
 
 ```powershell
 gh release create "v$releaseVersion" --prerelease --verify-tag `
@@ -385,20 +412,22 @@ than a 404 or `nightly` content:
 - `https://rensutheart.github.io/vipp-mkdocs/<version>/getting-started/`
 - `https://rensutheart.github.io/vipp-mkdocs/<version>/getting-started/windows-cuda/`
 
-Only then publish exactly the two hash-recorded artifacts. PyPI uploads cannot be
-replaced, so recheck the directory, version, and explicit filenames before
-entering credentials. Pass only the token username on the command line and
-paste the API token into Twine's hidden password prompt:
+Only then publish exactly the two hash-recorded artifacts. PyPI uploads cannot
+be replaced, so dispatch the protected workflow from `main` with the already
+qualified tag:
 
 ```powershell
-python -m twine upload --username "__token__" `
-  "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl" `
-  "$artifactDir/napari_vipp-$releaseVersion.tar.gz"
+gh workflow run publish-pypi.yml `
+  --repo rensutheart/napari-vipp `
+  --ref main `
+  -f tag="v$releaseVersion"
 ```
 
-Do not put the token in `TWINE_PASSWORD`, the command line, or a PowerShell
-assignment. At the `Password:` prompt, paste the token; Twine does not echo the
-input or add it to shell history.
+Wait for that exact workflow run to succeed. It checks out the immutable tag,
+downloads exactly the wheel and source archive already attached to its GitHub
+prerelease, validates their metadata, and publishes them with the project-
+scoped token held only in the protected `pypi` environment. It does not rebuild
+the distributions or accept a broad artifact glob.
 
 Post-upload validation:
 
@@ -500,10 +529,13 @@ If not updated after indexing delay:
 - [ ] If published, the separate cuCIM installer ZIP came from the clean tagged
       commit, contains no wheel, and its source commit/file hashes plus archive
       SHA-256 were verified and recorded
-- [ ] Windows-installer status is truthful everywhere: if shipped, the exact
-      tagged `VIPP-Setup-<version>-Windows-x86_64.exe` is Authenticode-signed,
-      hash-recorded, attached, clean-machine accepted, and linked first; if not
-      shipped, Quick Start explicitly says **not yet published**
+- [ ] Windows-installer status is truthful everywhere: if signed, the reserved
+      filename is Authenticode-signed and timestamped; if explicitly unsigned,
+      the filename contains `-UNSIGNED`, Windows reports `NotSigned`, and every
+      public surface requires the official source and matching SHA-256 before
+      **More info > Run anyway**. Either shipped artifact is attached,
+      clean-machine accepted, and linked first; if no installer is shipped,
+      Quick Start says **not yet published**
 - [ ] Windows installer invalidates reviewed state after every install-relevant
       edit; GPU downloads tolerate continuing multi-minute transfers with the
       bounded retry/120-second idle-timeout policy; terminal network failure
