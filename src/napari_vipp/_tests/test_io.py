@@ -677,6 +677,27 @@ def test_czi_missing_optional_dependency_prefers_format_specific_hint(
     )
 
 
+def test_imaris_ims_uses_the_shared_bioformats_source_contract(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "acquisition.ims"
+    observed = []
+    sentinel = object()
+
+    def inspect_bioio(source, format_hint):
+        observed.append((source, format_hint))
+        return sentinel
+
+    monkeypatch.setattr(microscope_io, "_inspect_bioio", inspect_bioio)
+
+    assert microscope_io.is_microscope_source(path)
+    assert microscope_io.microscope_format_for_path(path) == "imaris-ims"
+    assert microscope_io.inspect_microscope(path) is sentinel
+    assert observed == [(path, "imaris-ims")]
+    assert "*.ims" in microscope_io.MICROSCOPE_FILE_FILTER
+
+
 def test_nested_microscope_metadata_does_not_break_acquisition_detection():
     acquisition = microscope_io._acquisition_from_metadata(
         {

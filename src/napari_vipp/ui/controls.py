@@ -774,7 +774,7 @@ class ImageSourceControl(QWidget):
             ),
             "Images and arrays (*.ome.tif *.ome.tiff *.tif *.tiff *.png *.jpg "
             "*.jpeg *.jpe *.jfif *.bmp *.dib *.gif *.webp *.tga *.pbm *.pgm "
-            "*.ppm *.pnm *.npy *.npz *.nd2 *.czi *.lsm *.lif *.lof *.xlif "
+            "*.ppm *.pnm *.npy *.npz *.nd2 *.czi *.ims *.lsm *.lif *.lof *.xlif "
             "*.oir *.oib *.oif *.vsi);;"
             f"{MICROSCOPE_FILE_FILTER};;"
             "All files (*.*)",

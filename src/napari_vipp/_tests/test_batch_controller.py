@@ -106,6 +106,35 @@ def test_controller_previews_one_workflow_snapshot_and_current_pipeline(
     assert collision[0].output_statuses == ("exists; collision",)
 
 
+def test_controller_labels_each_series_from_a_collection_container(tmp_path):
+    pipeline, _output_id = _explicit_batch_pipeline()
+    workflow = serialize_workflow(pipeline)
+    controller = CollectionBatchController(
+        workflow_document_provider=lambda: workflow,
+        pipeline_provider=lambda: pipeline,
+    )
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    np.savez(
+        input_dir / "plate.ims-export.npz",
+        field_a=np.ones((4, 5), dtype=np.uint8),
+        field_b=np.full((4, 5), 2, dtype=np.uint8),
+    )
+
+    preview = controller.preview(
+        input_dir=input_dir,
+        output_dir=tmp_path / "outputs",
+        pattern="*.npz",
+        image_format="npy",
+    )
+
+    assert preview.total_items == 2
+    assert [row.source_labels["input"] for row in preview.rows] == [
+        "plate.ims-export.npz › field_a",
+        "plate.ims-export.npz › field_b",
+    ]
+
+
 def test_controller_saves_companion_and_rejects_a_different_workflow(
     tmp_path,
 ):

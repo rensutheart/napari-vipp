@@ -109,6 +109,33 @@ cuCIM Windows installer performs its verified build locally after the standard
 VIPP CUDA environment is working; cuCIM is not required to start VIPP or use
 the other qualified CuPy/CuPyX GPU operations.
 
+To add cuCIM to a working `0.13.0a5` CUDA installation:
+
+1. Download
+   [`napari-vipp-cucim-installer-0.13.0a5-windows.zip`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/napari-vipp-cucim-installer-0.13.0a5-windows.zip)
+   and `SHA256SUMS-Windows-0.13.0a5.txt` from the same official release.
+2. In PowerShell, run:
+
+   ```powershell
+   Get-FileHash -Algorithm SHA256 `
+     .\napari-vipp-cucim-installer-0.13.0a5-windows.zip
+   ```
+
+   The result must be
+   `e57194c66717bfd740810954f3b625ea991af82af8adf3f985329f53e90678ef`,
+   which is also recorded beside the ZIP in the release checksum file.
+3. Use **Extract All**. In the extracted folder, double-click
+   **Install VIPP cuCIM.cmd** and select `Scripts\python.exe` inside the
+   released VIPP CUDA 13 environment when asked. The download contains no
+   cuCIM wheel; it builds the pinned source on that computer, verifies the
+   result and its provenance, and admits it only after real CUDA/cuCIM probes
+   pass. The first build can take a long time.
+
+The complete [Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a5/getting-started/windows-cuda/)
+also retains the source-checkout procedure as an Advanced alternative. Do not
+run either cuCIM route until the standard CUDA Compute Doctor passes, and do
+not share the private wheel produced on one computer with another user.
+
 ## Manual Alpha Installation (Advanced And Non-Windows)
 
 Use these commands when an advanced installation needs terminal-level control
@@ -148,9 +175,8 @@ CUDA device must meet the architecture floor because the released runtime
 probes all ordinals before choosing its default; the installer must identify
 any failing ordinal. Unsupported work stays on CPU with an explanation.
 
-For the optional local cuCIM build, follow the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a5/getting-started/windows-cuda/)
-only after the standard compute doctor passes.
+For troubleshooting or the Advanced source-checkout route, follow the
+[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a5/getting-started/windows-cuda/).
 
 ### Existing napari Environment (Advanced)
 

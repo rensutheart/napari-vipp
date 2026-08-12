@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
@@ -63,6 +63,7 @@ class BatchPreviewRow:
     outputs: list[Path]
     output_statuses: tuple[str, ...] = ()
     explicit_outputs: bool = True
+    source_labels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -739,7 +740,9 @@ class CollectionBatchDialog(QDialog):
             self.pattern_edit = self._source_rows[0]["pattern"]
         else:
             self.input_edit = QLineEdit()
-            self.pattern_edit = QLineEdit("*.tif;*.tiff;*.ome.tif;*.ome.tiff")
+            self.pattern_edit = QLineEdit(
+                "*.tif;*.tiff;*.ome.tif;*.ome.tiff;*.lif;*.ims"
+            )
         self._refresh_suggested_output_path()
 
     def _make_source_row(
@@ -751,7 +754,9 @@ class CollectionBatchDialog(QDialog):
         index: int,
     ) -> QWidget:
         folder_edit = QLineEdit()
-        pattern_edit = QLineEdit("*.tif;*.tiff;*.ome.tif;*.ome.tiff")
+        pattern_edit = QLineEdit(
+            "*.tif;*.tiff;*.ome.tif;*.ome.tiff;*.lif;*.ims"
+        )
         axis_declaration_edit = AxisInterpretationControl()
         browse_button = QPushButton("Folder...")
         browse_button.clicked.connect(
@@ -1226,12 +1231,18 @@ class CollectionBatchDialog(QDialog):
             index_item.setData(Qt.UserRole, item.batch_index - 1)
             self.preview_table.setItem(row_index, 0, index_item)
             source_text = "\n".join(
-                f"{node_id}: {path.name}" for node_id, path in item.sources.items()
+                f"{node_id}: {item.source_labels.get(node_id, path.name)}"
+                for node_id, path in item.sources.items()
             )
             source_item = QTableWidgetItem(f"{item.batch_id}\n{source_text}")
             source_item.setToolTip(
                 "\n".join(
                     f"{node_id}: {path}"
+                    + (
+                        f"\n  {item.source_labels[node_id]}"
+                        if node_id in item.source_labels
+                        else ""
+                    )
                     for node_id, path in item.sources.items()
                 )
             )

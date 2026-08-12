@@ -136,6 +136,7 @@ from napari_vipp.core.operations import (
     save_output,
     select_axis_slice,
     select_table_columns,
+    set_microscope_metadata,
     set_pixel_size,
     sigma_filter,
     skeleton_graph_overlay,
@@ -2526,6 +2527,68 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         reorder_axes,
+        subcategory=AXES_REGIONS_GROUP,
+        preserves_input_type=True,
+    ),
+    OperationSpec(
+        "set_microscope_metadata",
+        "Set Microscope Metadata",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "channel_1_wavelength_nm",
+                "Channel 1 emission wavelength (nm)",
+                "float",
+                0.0,
+                0.0,
+                2000.0,
+                1.0,
+                1,
+            ),
+            ParameterSpec(
+                "channel_2_wavelength_nm",
+                "Channel 2 emission wavelength (nm)",
+                "float",
+                0.0,
+                0.0,
+                2000.0,
+                1.0,
+                1,
+            ),
+            ParameterSpec(
+                "channel_3_wavelength_nm",
+                "Channel 3 emission wavelength (nm)",
+                "float",
+                0.0,
+                0.0,
+                2000.0,
+                1.0,
+                1,
+            ),
+            ParameterSpec(
+                "numerical_aperture",
+                "Objective numerical aperture",
+                "float",
+                0.0,
+                0.0,
+                2.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
+                "refractive_index",
+                "Immersion refractive index",
+                "float",
+                0.0,
+                0.0,
+                2.0,
+                0.001,
+                4,
+            ),
+        ),
+        set_microscope_metadata,
         subcategory=AXES_REGIONS_GROUP,
         preserves_input_type=True,
     ),
@@ -6669,11 +6732,7 @@ class PrototypePipeline:
         )
         if required_nodes is not None:
             candidates.intersection_update(required_nodes)
-        candidates = {
-            node_id
-            for node_id in candidates
-            if self._has_required_input_connections(node_id)
-        }
+        candidates = self._nodes_with_available_input_chains(candidates)
         skipped = self._manual_nodes_to_skip(
             candidates,
             manual_mode,
@@ -6692,18 +6751,62 @@ class PrototypePipeline:
     def _has_required_input_connections(self, node_id: str) -> bool:
         """Return whether a node has every structurally required input edge."""
 
+        return self._required_input_connections(node_id) is not None
+
+    def _required_input_connections(
+        self,
+        node_id: str,
+    ) -> tuple[GraphConnection, ...] | None:
+        """Return the ordered required edges, or ``None`` when incomplete."""
+
         node = self.nodes[node_id]
         if not self.operation_spec(node.operation_id).has_input:
-            return True
+            return ()
         connections = self._input_connections(node_id)
         if not connections:
-            return False
+            return None
         if not self._node_accepts_multiple_inputs(node):
-            return True
-        connected_ports = {connection.target_port for connection in connections}
-        return all(
-            port in connected_ports for port in range(self._required_inputs_for(node))
-        )
+            return (connections[0],)
+        connected_ports = {
+            connection.target_port: connection for connection in connections
+        }
+        required = self._required_inputs_for(node)
+        if any(port not in connected_ports for port in range(required)):
+            return None
+        return tuple(connected_ports[port] for port in range(required))
+
+    def _nodes_with_available_input_chains(
+        self,
+        candidate_node_ids: Iterable[str],
+    ) -> set[str]:
+        """Exclude fragments whose upstream chain cannot produce a value.
+
+        A node with an immediate input edge is not necessarily executable: that
+        edge may begin at another loose processing node. Incremental execution
+        may still consume a completed cached node outside the candidate set.
+        """
+
+        candidates = set(candidate_node_ids) & set(self.nodes)
+        available = {
+            node_id
+            for node_id in set(self.nodes) - candidates
+            if node_id in self.completed_node_ids and self._has_cached_output(node_id)
+        }
+        runnable: set[str] = set()
+        for node_id in self.topological_order():
+            if node_id not in candidates:
+                continue
+            connections = self._required_input_connections(node_id)
+            if connections is None:
+                continue
+            if connections and any(
+                connection.source_id not in available
+                for connection in connections
+            ):
+                continue
+            runnable.add(node_id)
+            available.add(node_id)
+        return runnable
 
     def _mark_nodes_blocked_by_manual_barrier(
         self,
@@ -8502,7 +8605,11 @@ class PrototypePipeline:
                 node.title,
                 self._public_params(node.params),
             )
-            channels = input_state.channels
+            channels = _metadata._transformed_channels(
+                input_state,
+                node.operation_id,
+                self._public_params(node.params),
+            )
         kind = _metadata._lazy_kind_label(
             output_dtype,
             input_state.shape,
@@ -8521,6 +8628,11 @@ class PrototypePipeline:
                     ),
                     history=input_state.history + (history_item,),
                     channels=channels,
+                    acquisition=_metadata._transformed_acquisition(
+                        input_state,
+                        node.operation_id,
+                        self._public_params(node.params),
+                    ),
                     value_range=DEFERRED_VALUE_RANGE,
                     value_pattern="",
                 ),

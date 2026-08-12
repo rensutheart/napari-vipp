@@ -35,6 +35,7 @@ from napari_vipp.core.compute_registry import (
 )
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
 from napari_vipp.core.pipeline import (
+    EXECUTION_NOT_CALCULATED,
     EXECUTION_READY,
     PrototypePipeline,
     SourcePayload,
@@ -187,6 +188,38 @@ def _source_payloads(spec, pipeline, sample_catalog) -> dict[str, SourcePayload]
     return payloads
 
 
+def _execution_reachable_node_ids(
+    pipeline: PrototypePipeline,
+) -> frozenset[str]:
+    """Return nodes whose complete input chain starts at a source boundary."""
+
+    reachable: set[str] = set()
+    for node_id in pipeline.topological_order():
+        node = pipeline.nodes[node_id]
+        spec = pipeline.operation_spec(node.operation_id)
+        if not spec.has_input:
+            reachable.add(node_id)
+            continue
+        connections = pipeline._input_connections(node_id)
+        if not connections:
+            continue
+        if pipeline._node_accepts_multiple_inputs(node):
+            required = pipeline._required_inputs_for(node)
+            by_port = {
+                connection.target_port: connection for connection in connections
+            }
+            if any(port not in by_port for port in range(required)):
+                continue
+            dependencies = tuple(
+                by_port[port].source_id for port in range(required)
+            )
+        else:
+            dependencies = (connections[0].source_id,)
+        if all(source_id in reachable for source_id in dependencies):
+            reachable.add(node_id)
+    return frozenset(reachable)
+
+
 def _execute_example(spec, sample_catalog, mode: ComputeMode):
     pipeline = _restore_example(spec)
     manual_node_ids = frozenset(pipeline.manual_node_ids())
@@ -221,10 +254,11 @@ def _execute_example(spec, sample_catalog, mode: ComputeMode):
     assert result.failure is None
     assert result.pipeline is not None
     completed = result.pipeline
-    assert completed.completed_node_ids == frozenset(completed.nodes)
-    assert manual_node_ids <= completed.completed_node_ids
+    expected_completed = _execution_reachable_node_ids(completed)
+    assert completed.completed_node_ids == expected_completed
+    assert manual_node_ids & expected_completed <= completed.completed_node_ids
     assert set(completed.node_outputs) == set(completed.nodes)
-    for node_id in completed.topological_order():
+    for node_id in expected_completed:
         assert completed.node_execution_states[node_id] == EXECUTION_READY
         assert len(completed.node_outputs[node_id]) == len(
             completed.output_ports(node_id)
@@ -233,6 +267,10 @@ def _execute_example(spec, sample_catalog, mode: ComputeMode):
         assert len(completed.node_output_states[node_id]) == len(
             completed.node_outputs[node_id]
         )
+    for node_id in set(completed.nodes) - expected_completed:
+        assert completed.node_execution_states[node_id] == EXECUTION_NOT_CALCULATED
+        assert completed.node_outputs[node_id] == []
+        assert completed.node_output_states[node_id] == []
 
     assert result.execution_report is not None
     assert result.execution_report.request.mode is mode
@@ -247,9 +285,14 @@ def _execute_example(spec, sample_catalog, mode: ComputeMode):
         for node_id, node in completed.nodes.items()
         if node.operation_id == "input"
     }
-    expected_decision_node_ids = set(completed.nodes) - source_node_ids
+    planned_node_ids = set(
+        completed.plan_execution(
+            manual_node_ids=manual_node_ids,
+        ).candidate_node_ids
+    )
+    expected_decision_node_ids = planned_node_ids - source_node_ids
     if mode is not ComputeMode.CPU:
-        expected_decision_node_ids |= source_node_ids
+        expected_decision_node_ids |= source_node_ids & planned_node_ids
     assert expected_decision_node_ids == decision_node_ids
     assert len(decision_node_ids) == len(result.execution_report.actual_decisions)
     safe_prefer_gpu_reasons = {
@@ -272,10 +315,10 @@ def _execute_example(spec, sample_catalog, mode: ComputeMode):
             assert decision.reason in safe_prefer_gpu_reasons
     for connection in completed.connections:
         assert connection.source_port < len(
-            completed.node_outputs[connection.source_id]
+            completed.output_ports(connection.source_id)
         )
     for tunnel in completed.output_tunnels.values():
-        assert tunnel.source_port < len(completed.node_outputs[tunnel.source_id])
+        assert tunnel.source_port < len(completed.output_ports(tunnel.source_id))
     return completed
 
 
@@ -355,10 +398,16 @@ def _execute_real_cuda_example(spec, sample_catalog, mode: ComputeMode):
     assert result.execution_report is not None
     assert result.execution_report.cleanup_succeeded
     assert result.execution_report.fallback_records == ()
-    assert result.pipeline.completed_node_ids == frozenset(result.pipeline.nodes)
+    expected_completed = _execution_reachable_node_ids(result.pipeline)
+    assert result.pipeline.completed_node_ids == expected_completed
     assert all(
-        state == EXECUTION_READY
-        for state in result.pipeline.node_execution_states.values()
+        result.pipeline.node_execution_states[node_id] == EXECUTION_READY
+        for node_id in expected_completed
+    )
+    assert all(
+        result.pipeline.node_execution_states[node_id]
+        == EXECUTION_NOT_CALCULATED
+        for node_id in set(result.pipeline.nodes) - expected_completed
     )
     assert all(
         not decision.fallback_used
@@ -445,7 +494,7 @@ def test_fresh_example_cpu_and_prefer_gpu_outputs_match(spec, sample_catalog):
 
 
 def test_compute_matrix_covers_every_bundled_example():
-    assert len(EXAMPLE_WORKFLOWS) == 13
+    assert len(EXAMPLE_WORKFLOWS) == 14
     ids = [spec.id for spec in EXAMPLE_WORKFLOWS]
     filenames = [spec.filename for spec in EXAMPLE_WORKFLOWS]
     assert len(ids) == len(set(ids))

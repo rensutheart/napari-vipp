@@ -1357,6 +1357,14 @@ or origin. Review `Output Metadata` after declaring axes. If the source did not
 carry a trustworthy Z calibration, use `Set Pixel Size / Units` explicitly
 before calibrated measurements, rescaling, projections, or deconvolution.
 
+`Set Microscope Metadata` is the corresponding pass-through node for facts the
+reader could not recover reliably: up to three channel emission wavelengths,
+objective numerical aperture, and immersion refractive index. A value of zero
+means “leave the carried value unchanged.” Channel 2 or 3 requires an explicit
+channel axis and a matching channel count, so the node cannot silently attach a
+wavelength to Z, time, or an absent channel. The authored values travel with
+the image metadata and appear in workflow history without changing pixels.
+
 The menu is a friendly front end to the durable source declaration. A headless
 Python configuration can state the same decision with
 `AxisDeclaration("QYX", "ZYX")`; serialized config version 3 stores exact

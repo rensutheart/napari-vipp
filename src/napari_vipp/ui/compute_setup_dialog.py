@@ -6,6 +6,7 @@ import platform
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from qtpy.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from qtpy.QtWidgets import (
@@ -13,6 +14,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -23,10 +25,12 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_vipp.core.compute import ExecutionReport
 from napari_vipp.core.compute_diagnostics import (
     ComputeDoctorReport,
     DoctorStatus,
     collect_compute_diagnostics,
+    write_compute_support_bundle,
 )
 from napari_vipp.ui.compute_setup import (
     ComputeSetupActionKind,
@@ -91,6 +95,9 @@ class ComputeSetupDialog(QDialog):
         thread_pool: QThreadPool | None = None,
         doctor: Callable[..., ComputeDoctorReport] = collect_compute_diagnostics,
         host_memory_provider: Callable[[], HostMemorySnapshot] | None = None,
+        recent_execution_provider: Callable[[], ExecutionReport | None]
+        | None = None,
+        support_writer: Callable[..., Path] = write_compute_support_bundle,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Compute setup and memory")
@@ -99,6 +106,8 @@ class ComputeSetupDialog(QDialog):
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
         self._doctor = doctor
         self._host_memory_provider = host_memory_provider
+        self._recent_execution_provider = recent_execution_provider
+        self._support_writer = support_writer
         self._serial = 0
         self._active_serial: int | None = None
         self._last_report: ComputeDoctorReport | None = None
@@ -122,6 +131,17 @@ class ComputeSetupDialog(QDialog):
         self.title_label.setStyleSheet("font-size: 14px; font-weight: 650;")
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
+        self.next_step_label = QLabel()
+        self.next_step_label.setWordWrap(True)
+        self.next_step_label.setStyleSheet("font-weight: 600;")
+        self.check_widget = QWidget()
+        self.check_form = QFormLayout(self.check_widget)
+        self.check_form.setContentsMargins(0, 4, 0, 4)
+        self.check_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.advanced_button = QPushButton("Show advanced details")
+        self.advanced_button.setCheckable(True)
+        self.advanced_button.setChecked(False)
+        self.advanced_widget = QWidget()
         self.details_label = QLabel()
         self.details_label.setWordWrap(True)
         self.details_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -136,6 +156,11 @@ class ComputeSetupDialog(QDialog):
         self.copy_button = QPushButton("Copy setup command")
         self.copy_button.setAccessibleName("Copy GPU setup command")
         self.copy_button.setEnabled(False)
+        self.export_button = QPushButton("Save privacy-redacted support report…")
+        self.export_button.setAccessibleName("Save privacy-redacted support report")
+        self.export_button.setEnabled(False)
+        self.save_status_label = QLabel()
+        self.save_status_label.setWordWrap(True)
         self.close_buttons = QDialogButtonBox(QDialogButtonBox.Close)
 
         controls = QHBoxLayout()
@@ -147,19 +172,30 @@ class ComputeSetupDialog(QDialog):
         command_row = QHBoxLayout()
         command_row.addWidget(self.command_edit, 1)
         command_row.addWidget(self.copy_button)
+        advanced_layout = QVBoxLayout(self.advanced_widget)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.addWidget(self.details_label)
+        advanced_layout.addWidget(self.memory_widget)
+        advanced_layout.addLayout(command_row)
         layout = QVBoxLayout(self)
         layout.addLayout(controls)
         layout.addWidget(self.title_label)
         layout.addWidget(self.summary_label)
-        layout.addWidget(self.details_label)
-        layout.addWidget(self.memory_widget)
-        layout.addLayout(command_row)
+        layout.addWidget(self.next_step_label)
+        layout.addWidget(self.check_widget)
+        layout.addWidget(self.advanced_button)
+        layout.addWidget(self.advanced_widget)
+        layout.addWidget(self.export_button)
+        layout.addWidget(self.save_status_label)
         layout.addWidget(self.close_buttons)
 
         self.verify_button.clicked.connect(self.verify)
         self.copy_button.clicked.connect(self.copy_setup_command)
+        self.export_button.clicked.connect(self.save_support_report)
+        self.advanced_button.toggled.connect(self._set_advanced_visible)
         self.close_buttons.rejected.connect(self.close)
         self._apply_presentation(self._presentation)
+        self._set_advanced_visible(False)
 
     @property
     def presentation(self) -> ComputeSetupPresentation:
@@ -196,6 +232,45 @@ class ComputeSetupDialog(QDialog):
             return
         QApplication.clipboard().setText(command)
 
+    def save_support_report(self) -> None:
+        """Ask for a target and atomically save the redacted support document."""
+
+        report = self._last_report
+        if report is None:
+            return
+        selected, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save privacy-redacted support report",
+            "vipp-compute-support.json",
+            "JSON files (*.json)",
+        )
+        if not selected:
+            return
+        target = Path(selected)
+        if target.suffix.lower() != ".json":
+            target = target.with_suffix(".json")
+        try:
+            self._support_writer(
+                target,
+                report,
+                recent_execution=self._recent_execution(),
+            )
+        except Exception as exc:
+            self.save_status_label.setText(
+                "The support report could not be saved: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.save_status_label.setStyleSheet(
+                _summary_style(ComputeSetupTone.WARNING)
+            )
+            return
+        self.save_status_label.setText(
+            f"Saved privacy-redacted support report: {target.name}"
+        )
+        self.save_status_label.setStyleSheet(
+            _summary_style(ComputeSetupTone.SUCCESS)
+        )
+
     def _on_check_finished(self, result: ComputeSetupCheckResult) -> None:
         if result.serial != self._active_serial:
             return
@@ -210,6 +285,8 @@ class ComputeSetupDialog(QDialog):
         self.title_label.setText(presentation.title)
         self.summary_label.setText(presentation.summary)
         self.summary_label.setStyleSheet(_summary_style(presentation.tone))
+        self.next_step_label.setText(presentation.next_step)
+        self.next_step_label.setVisible(bool(presentation.next_step))
         self.details_label.setText("\n".join(presentation.details))
         self.details_label.setVisible(bool(presentation.details))
         self.progress.setVisible(presentation.busy)
@@ -242,8 +319,27 @@ class ComputeSetupDialog(QDialog):
         self.command_edit.setVisible(bool(command))
         self.copy_button.setVisible(bool(command))
         self.copy_button.setEnabled(bool(command))
+        export_action = next(
+            (
+                action
+                for action in presentation.actions
+                if action.kind is ComputeSetupActionKind.EXPORT_SUPPORT
+            ),
+            None,
+        )
+        self.export_button.setVisible(export_action is not None)
+        self.export_button.setEnabled(
+            bool(export_action is not None and export_action.enabled)
+        )
+        _replace_check_rows(self.check_form, presentation)
         _replace_memory_rows(self.memory_form, presentation)
         self.presentation_changed.emit(presentation)
+
+    def _set_advanced_visible(self, visible: bool) -> None:
+        self.advanced_widget.setVisible(bool(visible))
+        self.advanced_button.setText(
+            "Hide advanced details" if visible else "Show advanced details"
+        )
 
     def _host_memory(self) -> HostMemorySnapshot | None:
         if self._host_memory_provider is None:
@@ -253,6 +349,29 @@ class ComputeSetupDialog(QDialog):
         except Exception:
             return None
         return snapshot if isinstance(snapshot, HostMemorySnapshot) else None
+
+    def _recent_execution(self) -> ExecutionReport | None:
+        if self._recent_execution_provider is None:
+            return None
+        try:
+            report = self._recent_execution_provider()
+        except Exception:
+            return None
+        return report if isinstance(report, ExecutionReport) else None
+
+
+def _replace_check_rows(
+    form: QFormLayout,
+    presentation: ComputeSetupPresentation,
+) -> None:
+    while form.rowCount():
+        form.removeRow(0)
+    for row in presentation.check_rows:
+        value = QLabel(row.value)
+        value.setWordWrap(True)
+        value.setToolTip(row.detail)
+        value.setStyleSheet(_summary_style(row.tone))
+        form.addRow(row.label, value)
 
 
 def _replace_memory_rows(

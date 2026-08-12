@@ -372,6 +372,34 @@ def test_real_gpu_default_region_parity_and_residency(
     _assert_float32_parity(expected, real_cupy.asnumpy(output))
 
 
+def test_real_gpu_progress_is_synchronized_and_cancellable(real_cupy):
+    image = real_cupy.asarray(_image((2, 13, 15), seed=641))
+    psf = real_cupy.asarray(_psf((5, 5), seed=643))
+    updates = []
+    progress = ProgressContext(
+        cancelled=lambda: len(updates) >= 3,
+        reporter=updates.append,
+    )
+
+    with pytest.raises(OperationCancelled, match="Operation cancelled"):
+        cupy_rl_tv.richardson_lucy_tv_deconvolution(
+            [image, psf],
+            spatial_mode="2D YX",
+            iterations=5,
+            tv_regularization=0.002,
+            tv_epsilon=1e-6,
+            filter_epsilon=1e-12,
+            denominator_floor=0.05,
+            progress=progress,
+        )
+
+    assert [(item.current, item.total) for item in updates] == [
+        (0, 10),
+        (1, 10),
+        (2, 10),
+    ]
+
+
 @pytest.mark.parametrize("phantom_factory", (make_phantom_2d, make_phantom_3d))
 def test_real_gpu_preserves_default_phantom_metrics(real_cupy, phantom_factory):
     phantom = phantom_factory()

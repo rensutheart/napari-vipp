@@ -57,6 +57,8 @@ reviewing VIPP itself.
   scientific-behavior, workflow, UI, and validation changes by version.
 - [Release runbook](release-runbook.md): alpha release verification and
   publication steps.
+- [Windows installer field acceptance](windows-installer-field-acceptance.md):
+  a short record for exact-artifact CPU, CUDA, rollback, path, and novice checks.
 - [Windows setup packaging](../packaging/windows/README.md): the same-tag wheel,
   PyInstaller, Authenticode, licence, checksum, and release-asset boundary.
 - [Research and publication record](research-and-publication.md): evidence

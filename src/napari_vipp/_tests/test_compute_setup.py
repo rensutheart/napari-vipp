@@ -8,8 +8,13 @@ from pathlib import Path
 import pytest
 
 from napari_vipp.core.compute import MemoryTopology
-from napari_vipp.core.compute_diagnostics import ComputeDoctorReport, DoctorStatus
+from napari_vipp.core.compute_diagnostics import (
+    ComputeDoctorReport,
+    DoctorStatus,
+    PublicAdmissionRegion,
+)
 from napari_vipp.core.compute_registry import (
+    ImplementationLibraryProbeResult,
     RuntimeDevice,
     RuntimeMemorySnapshot,
     RuntimeProbeResult,
@@ -37,8 +42,10 @@ def _report(
     reason_code: str = "cuda_available",
     repair_command: str = "",
     memory_snapshot: RuntimeMemorySnapshot | None = None,
+    library_probes: tuple[ImplementationLibraryProbeResult, ...] = (),
+    admission_regions: tuple[PublicAdmissionRegion, ...] = (),
 ) -> ComputeDoctorReport:
-    available = status is DoctorStatus.AVAILABLE
+    available = status in {DoctorStatus.AVAILABLE, DoctorStatus.DEGRADED}
     probe = RuntimeProbeResult(
         runtime_id="cuda-cupy",
         available=available,
@@ -59,6 +66,8 @@ def _report(
         repair_command=repair_command,
         runtime_probe=probe,
         memory_snapshot=memory_snapshot,
+        library_probes=library_probes,
+        admission_regions=admission_regions,
     )
 
 
@@ -124,6 +133,53 @@ def test_available_discrete_gpu_has_separate_ram_and_vram_rows():
     assert presentation.actions[0].refresh_runtime
 
 
+def test_completed_check_is_three_plain_rows_with_optional_cucim_clear():
+    regions = tuple(
+        PublicAdmissionRegion(
+            operation_id=f"operation-{index}",
+            implementation_id=f"implementation-{index}",
+            implementation_version="1",
+            implementation_library_id="cupyx",
+            admission_tier="public_auto_candidate",
+            environment_policy_id="test-policy",
+            admitted=index < 2,
+            reason_code="selected_implementation",
+            reason="Reviewed" if index < 2 else "Not reviewed here",
+            supported_spatial_ndims=(2,),
+            public_input_dtypes=(("float32",),),
+        )
+        for index in range(3)
+    )
+    report = _report(
+        status=DoctorStatus.DEGRADED,
+        library_probes=(
+            ImplementationLibraryProbeResult("cupy", True, version="14.1.1"),
+            ImplementationLibraryProbeResult("cupyx", True, version="14.1.1"),
+            ImplementationLibraryProbeResult(
+                "cucim",
+                False,
+                reason_code="cucim_not_installed",
+                message="Optional add-on is absent.",
+            ),
+        ),
+        admission_regions=regions,
+    )
+
+    presentation = present_compute_setup(report)
+
+    assert presentation.state is ComputeSetupState.DEGRADED
+    assert [row.label for row in presentation.check_rows] == [
+        "CUDA and GPU",
+        "Optional cuCIM",
+        "VIPP GPU coverage",
+    ]
+    assert [row.value for row in presentation.check_rows] == [
+        "Ready",
+        "Not installed (optional)",
+        "2 of 3 reviewed regions ready",
+    ]
+
+
 def test_unified_memory_is_one_budget_and_never_double_counted():
     report = _report(
         memory_snapshot=RuntimeMemorySnapshot(
@@ -167,7 +223,8 @@ def test_macos_uses_honest_apple_gpu_not_enabled_wording_without_cuda_setup():
     assert "Apple GPU acceleration is not enabled" in presentation.summary
     assert "CPU processing" in presentation.summary
     assert [action.kind for action in presentation.actions] == [
-        ComputeSetupActionKind.VERIFY
+        ComputeSetupActionKind.VERIFY,
+        ComputeSetupActionKind.EXPORT_SUPPORT,
     ]
     assert [row.key for row in presentation.memory_rows] == ["system_ram"]
     assert not presentation.actionable
@@ -189,13 +246,14 @@ def test_missing_runtime_offers_copy_only_command_then_explicit_verify():
 
     assert presentation.state is ComputeSetupState.UNAVAILABLE
     assert presentation.actionable
-    copy_action, verify_action = presentation.actions
+    copy_action, verify_action, export_action = presentation.actions
     assert copy_action.kind is ComputeSetupActionKind.COPY_COMMAND
     assert copy_action.command == command
     assert not copy_action.automatic
     assert verify_action.kind is ComputeSetupActionKind.VERIFY
     assert verify_action.command == ""
     assert verify_action.refresh_runtime
+    assert export_action.kind is ComputeSetupActionKind.EXPORT_SUPPORT
     assert not callable(copy_action)
 
 
@@ -213,7 +271,8 @@ def test_multiline_repair_command_is_hidden_instead_of_made_copyable():
     assert presentation.tone is ComputeSetupTone.ERROR
     assert presentation.actionable
     assert [action.kind for action in presentation.actions] == [
-        ComputeSetupActionKind.VERIFY
+        ComputeSetupActionKind.VERIFY,
+        ComputeSetupActionKind.EXPORT_SUPPORT,
     ]
     assert "hidden" in presentation.details[-1]
 

@@ -37,14 +37,15 @@ components rather than terminal steps.
 | --- | --- | --- |
 | Zeiss CZI | `.czi` | `python -m pip install "napari-vipp[czi]==0.13.0a5"` |
 | Nikon ND2 | `.nd2` | `python -m pip install "napari-vipp[nd2]==0.13.0a5"` |
-| Broad microscope reader set | `.czi`, `.nd2`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `python -m pip install "napari-vipp[microscope]==0.13.0a5"` |
-| BioIO/Bio-Formats fallback | Leica/Olympus/Bio-Formats-backed sources | `python -m pip install "napari-vipp[bioformats]==0.13.0a5"` |
+| Broad microscope reader set | `.czi`, `.nd2`, `.ims`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `python -m pip install "napari-vipp[microscope]==0.13.0a5"` |
+| BioIO/Bio-Formats fallback | `.ims` and Leica/Olympus/Bio-Formats-backed sources | `python -m pip install "napari-vipp[bioformats]==0.13.0a5"` |
 
 Use the format-specific extra when you know what you need. Use
 `napari-vipp[microscope]` on a workstation intended to open mixed acquisition
 formats.
 
-For multi-series TIFF or multi-image OME-Zarr, select the required item in
+For multi-series TIFF, NPZ, microscope containers such as LIF/IMS, or
+multi-image OME-Zarr, select the required item in
 `Series / image`. Time, channel, and Z remain axes inside that item. Use graph
 nodes such as Select Axis Slice to subset them reproducibly.
 
@@ -120,11 +121,13 @@ and sidecars and shows the pass/fail result in the batch summary. The selected
 working-copy location remains available for inspecting those artifacts.
 
 When multiple source rows are bound, VIPP sorts the matched files for each row
-and pairs them by position. Each bound source must match the same number of
-files, so item 1 uses the first file from every bound source, item 2 uses the
-second file from every bound source, and so on. The first bound source is the
-primary source used for default naming. Each item gets a stable batch index
-(`0001`, `0002`, ...) and a stable batch id such as `0001_field_a`.
+and expands any multi-series container into its inspected image items. It then
+pairs those image items by position. Each bound source must therefore resolve
+to the same number of image items. A batch row shows both the container name
+and series/scene name, and output names include the series identity so two
+images from the same file cannot collide. The first bound source is the primary
+source used for default naming. Each item gets a stable batch index (`0001`,
+`0002`, ...) and a stable batch id.
 
 Each collection source has an `Image stack` choice. A new unsaved source row
 starts at `Automatic (recommended)`. If a representative reports exactly `QYX`

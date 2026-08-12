@@ -319,6 +319,11 @@ exact finalized asset name. If the release does not include the `.exe`, every
 quick-start surface must say **not yet published** rather than showing a dead
 download.
 
+Record the exact-artifact CPU, CUDA, path, rollback, and novice results with the
+[Windows installer field-acceptance form](windows-installer-field-acceptance.md).
+Leave anything that was not actually exercised as **not run**; an older build or
+an automated test cannot stand in for the tagged executable.
+
 During those smokes, change each install-relevant field after a successful
 review and confirm **Install VIPP** stays disabled until **Check these settings**
 finishes for the new selection. Exercise a slow or interrupted GPU dependency
@@ -335,6 +340,55 @@ including artifacts from an older release. It does not make an existing
 same-version artifact safe: confirm both files were produced from the tagged
 commit, record their SHA-256 hashes, and repeat the clean-wheel CPU and CUDA
 acceptance smokes against these files rather than an editable checkout.
+
+### Scheduled cuCIM release canary
+
+The `Windows cuCIM release canary` workflow provides two deliberately separate
+levels of evidence:
+
+- its weekly hosted-Windows job checks out the configured immutable release
+  tag, reproduces the no-wheel cuCIM installer ZIP, compares it byte-for-byte
+  with the published GitHub asset, and verifies the embedded tag, commit,
+  entry point, and no-wheel declaration; and
+- its real CUDA job runs only when a maintainer explicitly selects
+  `run_real_canary` or sets `VIPP_CUCIM_CANARY_ENABLED=true`. It requires an
+  up-to-date self-hosted Windows runner labelled `vipp-cuda13` and the protected
+  `cuda-canary` environment variable `VIPP_CUCIM_CANARY_PYTHON`, pointing to a
+  dedicated, already released VIPP CUDA environment. It saves a redacted Doctor
+  report and, for releases that contain the aggregate admission harness, runs
+  the complete `quick` profile and retains its aggregate/operation evidence.
+  Older pre-harness tags record that limitation explicitly rather than claiming
+  a pass. An optional `VIPP_CUCIM_CANARY_WORK_ROOT` retains the large pinned
+  source/build cache.
+
+Set `VIPP_CUCIM_CANARY_TAG` to the exact published prerelease tag whenever the
+maintained canary moves beyond `v0.13.0a5`. A skipped real-CUDA job is truthful
+static bundle evidence only; it must never be recorded as a GPU build,
+installation, Compute Doctor, or operation acceptance pass.
+
+Normal CI also installs the built wheel and sdist in clean jobs on Windows,
+Linux, and macOS, alternating CPython 3.12 and 3.13 while covering both archive
+formats on every operating system. These package jobs do not replace the
+managed installer or real-GPU acceptance paths.
+
+Before a GPU release candidate, validate the live public catalogue and run its
+owned qualification plan from the clean tagged checkout:
+
+```powershell
+python scripts/run_gpu_admission.py --check
+python scripts/run_gpu_admission.py `
+  --profile full `
+  --output .\gpu-admission-aggregate.json `
+  --artifacts .\gpu-admission-artifacts `
+  --device-index 0
+```
+
+Use `--profile quick` for the protected scheduled/manual canary. Both profiles
+fail if a public implementation is unaccounted for, an evidence owner is not
+actually invoked, a required facet is missing, a pytest owner skips, or an
+artifact fails its declared schema. Promote evidence only from the reviewed
+clean commit and hardware context named by the release; a dirty-worktree pass
+is useful integration evidence but not a canonical qualification record.
 
 ## 5. Build And Publish Documentation
 

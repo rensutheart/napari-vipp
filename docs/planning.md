@@ -292,47 +292,53 @@ not deferred until a later milestone:
 
 ### 1. Field Hardening And Supported Compute Reach
 
-The immediate objective is to finish the novice-first installer distribution
-and make the public GPU release easy to install, diagnose, and support on real
-user machines before broadening the operation catalogue.
+Priority 1 engineering is complete on the post-`0.13.0a5` hardening branch:
 
-Near-term work:
+- the published unsigned installer, release manifest, checksum sidecar, and
+  no-wheel cuCIM ZIP were independently rechecked, and the shortest official
+  download/checksum/extract route is now visible in the primary guides;
+- CI defines genuinely clean wheel and source-archive installations across
+  Windows, Linux, macOS, and both supported Python versions;
+- Compute Doctor separately reports CUDA runtime health, optional CuPyX/cuCIM
+  usability, and the current live VIPP admission catalogue. It gives one repair
+  action and exports an atomic, recursively privacy-redacted support bundle;
+- one strict real-GPU admission command now accounts for all 13 public GPU
+  implementations and requires owned parity, adversarial, metadata,
+  input-integrity, memory, cancellation, cleanup, fallback, provenance, and
+  transfer-inclusive timing evidence;
+- the scheduled Windows cuCIM workflow reproducibly checks the public no-wheel
+  bundle on hosted CI and defines a protected, explicitly enabled real-CUDA
+  build/Doctor/admission route for a dedicated self-hosted runner;
+- the Imaris `.ims`, Set Microscope Metadata, and multi-series collection-batch
+  contributions from pull requests 8, 10, and 13 were absorbed through the
+  shared source, metadata, execution, naming, and provenance contracts; and
+- the optional-preview and cancellation reports in issues 11 and 14 pass the
+  current Windows regression suite. They remain open until their macOS
+  reporters or equivalent environments verify the released behavior.
 
-- complete the explicitly labelled Windows installer artifact, checksum,
-  manifest, release-page guidance, fresh-account CPU/GPU acceptance, and bounded
-  rollback evidence described in the installer distribution gate below;
-- use clean-machine onboarding, including the first student installations, as a
-  timed acceptance path from Python installation to Compute Doctor and the first
-  verified example result;
-- follow installation with a small novice pilot: open an example, transfer it to
-  owned data, interpret axes/calibration and a visible CPU fallback, save and
-  reopen the workflow, and complete a batch. Record completion, errors, time,
-  and whether the user understood VIPP's automatic decisions;
-- re-test and close already-addressed reports such as
-  [optional batch preview](https://github.com/rensutheart/napari-vipp/issues/11)
-  and [batch cancellation](https://github.com/rensutheart/napari-vipp/issues/14)
-  only after the reporters or equivalent environments verify 0.13 behavior;
-- review and rebase the existing
-  [Imaris `.ims`](https://github.com/rensutheart/napari-vipp/pull/8),
-  [microscope metadata](https://github.com/rensutheart/napari-vipp/pull/10), and
-  [collection-file batch](https://github.com/rensutheart/napari-vipp/pull/13)
-  contributions through the shared source and metadata contracts rather than
-  merging suffix-specific behavior mechanically;
-- qualify at least one Windows RTX 40-series environment and named native-Linux
-  CUDA 12/13 environments, with WSL2 recorded separately rather than substituted
-  for native evidence;
-- make Compute Doctor distinguish `CUDA starts`, `optional library is usable`,
-  and `these VIPP operation regions are publicly admitted`, with concise repair
-  guidance and a privacy-redacted JSON support bundle;
-- consolidate the operation-specific evidence scripts into a reusable,
-  spec-driven real-GPU admission harness covering CPU-oracle parity, adversarial
-  workloads, metadata, mutation, memory, cancellation, cleanup, fallback,
-  provenance, and transfer-inclusive whole-workflow timing;
-- run that harness on controlled real GPU hosts for nightly/manual and release-
-  candidate evidence while keeping ordinary pull-request CI CPU-capable; and
-- add clean wheel/sdist installation checks plus a scheduled Windows canary for
-  the pinned local cuCIM build, installation, provenance manifest, doctor probe,
-  and representative operation checks.
+A strict `quick` integration run on the local RTX 5090 completed all 16 owners
+and all 130 implementation/facet mappings. Because it ran from a dirty feature
+worktree, its temporary artifacts are integration evidence only; they were not
+promoted into the canonical benchmark record or used to broaden public support.
+
+The remaining Priority 1 items are deliberately field qualification, not
+unfinished implementation:
+
+- run the exact published executable on a fresh qualified-CUDA Windows account,
+  including live paths with spaces and non-ASCII characters;
+- exercise exact-artifact cancellation and terminal network-failure rollback
+  while proving that a previous working copy remains usable;
+- complete the timed novice path through installation, Compute Doctor, a first
+  example, owned data, save/reopen, visible fallback, and a small batch;
+- register and protect the dedicated Windows CUDA canary runner before calling
+  its scheduled real-GPU job operational; and
+- collect reviewed evidence on at least one Windows RTX 40-series machine and
+  one named native-Linux CUDA 12/13 environment. WSL2 remains separate evidence.
+
+The [field-acceptance form](windows-installer-field-acceptance.md) records those
+outcomes consistently and keeps every unrun check visibly pending. Earlier
+development-installer runs, unit tests, or a different artifact remain useful
+supporting evidence, never substitutes for the exact field check.
 
 Release acceptance is not merely a successful CUDA import. A supported machine
 must receive truthful admitted-node results, unsupported machines must receive a
@@ -438,10 +444,16 @@ Required product behavior:
 - public/synthetic reader fixtures plus controlled private real-file evidence
   where licensing or size prevents redistribution.
 
-This foundation should absorb `.ims`, LIF multi-series behavior, and a Set
-Microscope Metadata capability coherently. It also supplies the metadata needed
-for PSF generation, deconvolution, calibrated measurement, output naming, and
-publication provenance.
+The first compatible slice is now delivered: `.ims` uses the shared microscope
+reader path, Set Microscope Metadata updates carried channel/acquisition facts
+without changing pixels, and collection batch expands inspected multi-series
+containers into named items used by preview, output naming, manifests, and
+provenance. Those fields are not yet the complete durable `SourceItem` model;
+the remaining work is to unify their identity across interactive selection,
+OME-Zarr groups/levels, plate/well/field traversal, replay, and semantic-axis
+iteration. That foundation also supplies the metadata needed for PSF generation,
+deconvolution, calibrated measurement, output naming, and publication
+provenance.
 
 ### 4. OME-Zarr Scale, Preview, And Lazy Execution
 
@@ -659,19 +671,30 @@ explicitly labelled `-UNSIGNED`.
 
 Theme: field hardening and compute qualification.
 
-Release gate:
+Engineering completed on the Priority 1 branch:
 
-- clean Windows CPU and CUDA setup paths are independently reproduced;
 - Compute Doctor distinguishes runtime health from actual VIPP admission and
-  can export a redacted support bundle;
-- addressed batch preview/cancellation reports are verified and closed or
-  retained with exact remaining reproductions;
+  exports a strictly redacted support bundle;
 - the `.ims`, microscope-metadata, and multi-series collection contributions
-  are reviewed against the shared source model;
-- base wheel/sdist, optional GPU extras, and the private cuCIM build recipe have
-  clean-install evidence appropriate to their claims;
+  are integrated through shared contracts;
+- the base wheel and source archive have clean-install CI on every base OS,
+  while the optional GPU extras and private cuCIM recipe have explicit,
+  separately scoped checks;
 - the accepted tunnel-insertion and graph-fragment editing implementation
-  retains its atomicity, compatibility, and user-guide acceptance evidence.
+  retains its atomicity, compatibility, and user-guide acceptance evidence; and
+- Prefer-GPU planning now safely excludes deliberately loose connected graph
+  fragments, matching ordinary CPU execution.
+
+Remaining field release gate:
+
+- exact-artifact Windows CPU and CUDA routes are independently reproduced on
+  fresh accounts, including spaces and Unicode paths plus bounded rollback;
+- the timed novice path and first small pilot are recorded;
+- addressed batch preview/cancellation reports are verified by their reporters
+  or equivalent macOS environments and then closed or retained with an exact
+  remaining reproduction; and
+- the protected real-CUDA canary is enabled only after its dedicated runner is
+  registered and reviewed.
 
 Qualification targets:
 

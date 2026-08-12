@@ -68,6 +68,10 @@ separately afterward.
 The [VIPP Quick Start](docs/quick-start.md) explains the installer-first flow,
 current manual commands, CPU/GPU choices, prerequisites, the advanced
 existing-napari route, update/repair/uninstall behavior, and a first workflow.
+After a standard CUDA installation passes Compute Doctor, the separate
+[`0.13.0a5` cuCIM add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/napari-vipp-cucim-installer-0.13.0a5-windows.zip)
+can build the optional pinned provider locally. It contains no prebuilt cuCIM
+wheel; verify the ZIP against the release checksum before extracting it.
 
 ### Manual Installation (Advanced And Non-Windows)
 

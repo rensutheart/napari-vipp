@@ -164,6 +164,10 @@ class CollectionBatchController:
                 outputs=[output.path for output in item.outputs],
                 output_statuses=tuple(output.status_text for output in item.outputs),
                 explicit_outputs=explicit,
+                source_labels={
+                    node_id: item.source_label(node_id)
+                    for node_id in item.source_series_indices
+                },
             )
             for item in plan.items[: max(int(preview_limit), 0)]
         )

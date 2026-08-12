@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### Features Added
+
+#### Clearer GPU Diagnosis And Qualification
+
+- Rebuilt Compute Doctor around three separate answers: whether CUDA can run,
+  whether optional CuPyX/cuCIM providers are usable, and which of VIPP's 13
+  current reviewed GPU regions are actually admitted. The window now gives one
+  recommended next step, keeps technical detail collapsed, and can save an
+  atomic privacy-redacted support report.
+- Added one strict, spec-driven GPU admission runner that maps every public GPU
+  implementation to parity, adversarial-input, metadata, input-integrity,
+  memory, cancellation, cleanup, fallback, provenance, and complete-workflow
+  timing evidence. The former Phase-1 benchmark now covers the current public
+  background, Gaussian 2D/3D, and median implementations.
+
+#### Image Sources, Series, And Microscope Metadata
+
+- Added Imaris `.ims` files to the shared microscope/BioIO source path.
+- Added **Set Microscope Metadata**, a pixel-preserving node for recording up
+  to three emission wavelengths, objective numerical aperture, and immersion
+  refractive index when a reader cannot recover them reliably.
+- Batch sources now expand a multi-series container into distinct, clearly
+  named items; interactive representative browsing, output names, manifests,
+  and provenance retain both the container and selected series identity.
+  These changes incorporate and harden community contributions from Tom Naber
+  in pull requests 8, 10, and 13.
+
+### Bug Fixes
+
+- Prefer-GPU planning now ignores connected graph fragments whose upstream
+  processing chain is deliberately loose, matching CPU behavior and allowing
+  the Graph Editing Acceptance Check example to calculate normally.
+
+### Installation And Release Qualification
+
+- Added clean wheel and source-archive installation jobs across Windows,
+  Linux, and macOS, covering CPython 3.12/3.13 and verifying packaged resources
+  plus the headless Compute Doctor and installer-planner entry points.
+- Added a weekly Windows cuCIM release canary. Hosted CI reproducibly verifies
+  the published no-wheel bundle; an explicitly enabled protected self-hosted
+  job performs the lengthy real CUDA build, installation, provenance, Doctor,
+  and representative-library probes without treating a skipped GPU job as
+  acceptance evidence.
+- Made the exact `0.13.0a5` cuCIM add-on download and checksum-first extraction
+  route visible in the README, Quick Start, GPU guide, and bundled add-on guide.
+
 ## 0.13.0a5 - 2026-08-12
 
 ### Release Overview

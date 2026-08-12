@@ -17,6 +17,7 @@ from napari_vipp.core.operations import (
     reorder_axes,
     richardson_lucy_deconvolution,
     select_axis_slice,
+    set_microscope_metadata,
     set_pixel_size,
     subtract_images,
 )
@@ -172,6 +173,7 @@ def test_operations_do_not_mutate_readonly_input_buffers(
 @pytest.mark.parametrize(
     "operation",
     [
+        pytest.param(set_microscope_metadata, id="set-microscope-metadata"),
         pytest.param(set_pixel_size, id="set-pixel-size"),
         pytest.param(batch_output, id="batch-output"),
     ],

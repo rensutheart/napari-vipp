@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from qtpy.QtWidgets import QApplication, QFormLayout
 
-from napari_vipp.core.compute import MemoryTopology
+from napari_vipp.core.compute import (
+    ComputeEnvironment,
+    ComputeRequest,
+    ExecutionReport,
+    MemoryTopology,
+)
 from napari_vipp.core.compute_diagnostics import ComputeDoctorReport, DoctorStatus
 from napari_vipp.core.compute_registry import (
     RuntimeDevice,
@@ -70,12 +76,19 @@ def _dialog(
     *,
     doctor: Callable[..., ComputeDoctorReport],
     host_memory: HostMemorySnapshot | None = None,
+    recent_execution_provider=None,
+    support_writer=None,
 ) -> tuple[ComputeSetupDialog, _CapturingThreadPool]:
     pool = _CapturingThreadPool()
+    kwargs = {}
+    if support_writer is not None:
+        kwargs["support_writer"] = support_writer
     dialog = ComputeSetupDialog(
         thread_pool=pool,
         doctor=doctor,
         host_memory_provider=(lambda: host_memory),
+        recent_execution_provider=recent_execution_provider,
+        **kwargs,
     )
     qtbot.addWidget(dialog)
     return dialog, pool
@@ -116,6 +129,8 @@ def test_dialog_initial_state_does_not_probe_or_offer_a_command(qtbot):
     assert dialog.progress.isHidden()
     assert dialog.command_edit.isHidden()
     assert dialog.copy_button.isHidden()
+    assert dialog.advanced_widget.isHidden()
+    assert not dialog.export_button.isEnabled()
     assert _form_rows(dialog.memory_form) == [
         (
             "System RAM",
@@ -194,6 +209,61 @@ def test_success_renders_separate_ram_and_vram_rows(qtbot):
     ]
     assert dialog.command_edit.isHidden()
     assert dialog.copy_button.isHidden()
+    assert dialog.export_button.isEnabled()
+    assert _form_rows(dialog.check_form) == [
+        (
+            "CUDA and GPU",
+            "Ready",
+            "CuPy GPU execution is available on Test RTX.",
+        ),
+        (
+            "Optional cuCIM",
+            "Not checked (optional)",
+            "No cuCIM probe result was recorded.",
+        ),
+        (
+            "VIPP GPU coverage",
+            "No reviewed regions available",
+            "Only reviewed combinations are offered automatically; "
+            "CPU remains safe.",
+        ),
+    ]
+
+
+def test_advanced_details_start_collapsed_and_support_export_is_explicit(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    report = _report()
+    recent = ExecutionReport(ComputeRequest(), ComputeEnvironment())
+    calls = []
+
+    def writer(path, written_report, *, recent_execution=None):
+        calls.append((Path(path), written_report, recent_execution))
+        return Path(path)
+
+    dialog, pool = _dialog(
+        qtbot,
+        doctor=lambda **_kwargs: report,
+        recent_execution_provider=lambda: recent,
+        support_writer=writer,
+    )
+    dialog.verify()
+    pool.workers[0].run()
+    target = tmp_path / "doctor-support"
+    monkeypatch.setattr(
+        "napari_vipp.ui.compute_setup_dialog.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), "JSON files (*.json)"),
+    )
+
+    assert dialog.advanced_widget.isHidden()
+    dialog.advanced_button.click()
+    assert dialog.advanced_widget.isVisibleTo(dialog)
+    dialog.export_button.click()
+
+    assert calls == [(target.with_suffix(".json"), report, recent)]
+    assert "privacy-redacted" in dialog.save_status_label.text()
 
 
 def test_setup_command_is_copy_only_and_never_starts_work(qtbot):

@@ -114,6 +114,7 @@ from napari_vipp.core.operations import (
     save_output,
     select_axis_slice,
     select_table_columns,
+    set_microscope_metadata,
     set_pixel_size,
     skeleton_graph_overlay,
     skeleton_graph_tables,
@@ -277,6 +278,7 @@ def test_vipp_operation_nodes_are_registered():
         "convert_dtype",
         "select_axis_slice",
         "reorder_axes",
+        "set_microscope_metadata",
         "set_pixel_size",
         "rescale_axes",
         "project_image",
@@ -1767,6 +1769,23 @@ def test_execution_plan_excludes_structurally_disconnected_processing_nodes():
     assert threshold.id not in started
     assert outputs[threshold.id] is None
     assert pipeline.node_execution_states[threshold.id] == EXECUTION_NOT_CALCULATED
+
+
+def test_execution_plan_excludes_a_connected_fragment_without_a_source_chain():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    loose_unsharp = pipeline.add_node("unsharp_mask")
+    fragment_threshold = pipeline.add_node("binary_threshold")
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(loose_unsharp.id, fragment_threshold.id).success
+
+    plan = pipeline.plan_execution()
+
+    assert plan.candidate_node_ids == {"input", gaussian.id}
+    assert plan.runnable_node_ids == {"input", gaussian.id}
+    assert loose_unsharp.id not in plan.candidate_node_ids
+    assert fragment_threshold.id not in plan.candidate_node_ids
 
 
 def test_manual_execution_barrier_is_operation_agnostic():
@@ -4531,6 +4550,77 @@ def test_set_pixel_size_updates_spatial_axis_metadata_and_pipeline_projection():
         0.5,
         0.5,
     ]
+
+
+def test_set_microscope_metadata_updates_carried_acquisition_and_channels():
+    data = np.zeros((2, 4, 5), dtype=np.uint16)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("c", "channel", confidence="explicit"),
+            AxisMetadata("y", "space", confidence="explicit"),
+            AxisMetadata("x", "space", confidence="explicit"),
+        ),
+    )
+    result = set_microscope_metadata(
+        data,
+        channel_1_wavelength_nm=461.0,
+        channel_2_wavelength_nm=520.0,
+        numerical_aperture=1.4,
+        refractive_index=1.515,
+    )
+    updated = transform_image_state(
+        result,
+        state,
+        operation_id="set_microscope_metadata",
+        operation_title="Set Microscope Metadata",
+        params={
+            "channel_1_wavelength_nm": 461.0,
+            "channel_2_wavelength_nm": 520.0,
+            "channel_3_wavelength_nm": 0.0,
+            "numerical_aperture": 1.4,
+            "refractive_index": 1.515,
+        },
+    )
+
+    assert result is data
+    assert [channel.emission_wavelength for channel in updated.channels] == [
+        461.0,
+        520.0,
+    ]
+    assert updated.acquisition.objective_na == 1.4
+    assert updated.acquisition.refractive_index == 1.515
+    assert "ch1=461" in updated.history[-1]
+
+    pipeline = PrototypePipeline()
+    metadata_node = pipeline.add_node("set_microscope_metadata")
+    pipeline.set_param(metadata_node.id, "channel_1_wavelength_nm", 461.0)
+    pipeline.set_param(metadata_node.id, "channel_2_wavelength_nm", 520.0)
+    pipeline.set_param(metadata_node.id, "numerical_aperture", 1.4)
+    pipeline.set_param(metadata_node.id, "refractive_index", 1.515)
+    assert pipeline.connect("input", metadata_node.id).success
+    pipeline.run(data, input_metadata={"axes": "CYX"})
+
+    pipeline_state = pipeline.output_states[metadata_node.id]
+    assert [channel.emission_wavelength for channel in pipeline_state.channels] == [
+        461.0,
+        520.0,
+    ]
+    assert pipeline_state.acquisition.objective_na == 1.4
+
+
+def test_set_microscope_metadata_requires_explicit_channel_axis_for_channel_two():
+    data = np.zeros((2, 4, 5), dtype=np.uint16)
+    state = image_state_from_array(data)
+
+    with pytest.raises(ValueError, match="explicit channel axis"):
+        transform_image_state(
+            data,
+            state,
+            operation_id="set_microscope_metadata",
+            operation_title="Set Microscope Metadata",
+            params={"channel_2_wavelength_nm": 520.0},
+        )
 
 
 def test_rescale_axes_updates_shape_dtype_and_physical_scale_metadata():

@@ -71,6 +71,7 @@ LABEL_OPERATIONS = {
 KIND_PRESERVING_OPERATIONS = {
     "rescale_axes",
     "clear_border_objects",
+    "set_microscope_metadata",
     "set_pixel_size",
 }
 
@@ -615,7 +616,7 @@ def transform_image_state(
         history=input_state.history
         + (_operation_history(input_state, operation_id, operation_title, params),),
         channels=_transformed_channels(input_state, operation_id, params),
-        acquisition=input_state.acquisition,
+        acquisition=_transformed_acquisition(input_state, operation_id, params),
         source=input_state.source,
     )
     if operation_id in KIND_PRESERVING_OPERATIONS:
@@ -1571,6 +1572,41 @@ def _transformed_channels(
             params.get("channel_colors", ""),
             count=_state_channel_count(input_state),
         )
+    if operation_id == "set_microscope_metadata":
+        wavelengths = tuple(
+            _positive_float(params.get(f"channel_{index}_wavelength_nm"), 0.0)
+            for index in range(1, 4)
+        )
+        supplied = tuple(index for index, value in enumerate(wavelengths) if value)
+        if not supplied:
+            return channels
+        channel_axis = _channel_axis_index(input_state.axes)
+        if supplied[-1] > 0 and (
+            channel_axis is None or not input_state.axes[channel_axis].is_explicit
+        ):
+            raise ValueError(
+                "Channel 2 or 3 wavelength requires an explicit channel axis."
+            )
+        channel_count = (
+            int(input_state.shape[channel_axis])
+            if channel_axis is not None
+            else max(len(channels), 1)
+        )
+        if supplied[-1] >= channel_count:
+            raise ValueError(
+                f"Channel {supplied[-1] + 1} wavelength was supplied, but the "
+                f"image contains {channel_count} channel(s)."
+            )
+        updated = list(channels)
+        while len(updated) < channel_count:
+            updated.append(ChannelMetadata(name=f"Channel {len(updated) + 1}"))
+        for index in supplied:
+            updated[index] = replace(
+                updated[index],
+                emission_wavelength=wavelengths[index],
+                emission_wavelength_unit="nanometer",
+            )
+        return tuple(updated)
     if operation_id == "project_image":
         channel_index = _channel_axis_index(input_state.axes)
         projected_axes = _projection_axis_indices_from_params(input_state.axes, params)
@@ -1581,6 +1617,27 @@ def _transformed_channels(
     ):
         return ()
     return channels
+
+
+def _transformed_acquisition(
+    input_state: ImageState,
+    operation_id: str,
+    params: dict[str, Any],
+) -> AcquisitionMetadata:
+    acquisition = input_state.acquisition
+    if operation_id != "set_microscope_metadata":
+        return acquisition
+    numerical_aperture = _positive_float(
+        params.get("numerical_aperture"), acquisition.objective_na or 0.0
+    )
+    refractive_index = _positive_float(
+        params.get("refractive_index"), acquisition.refractive_index or 0.0
+    )
+    return replace(
+        acquisition,
+        objective_na=numerical_aperture or None,
+        refractive_index=refractive_index or None,
+    )
 
 
 def _selected_axis_channels(
@@ -2367,6 +2424,23 @@ def _operation_history(
             f"{operation_title}: x={_format_number(params.get('x_size', 1.0))}, "
             f"y={_format_number(params.get('y_size', 1.0))}, "
             f"z={_format_number(params.get('z_size', 1.0))} {unit}"
+        )
+    if operation_id == "set_microscope_metadata":
+        wavelengths = ", ".join(
+            f"ch{index}={_format_number(value)}"
+            for index in range(1, 4)
+            if (
+                value := _positive_float(
+                    params.get(f"channel_{index}_wavelength_nm"), 0.0
+                )
+            )
+        )
+        na = _positive_float(params.get("numerical_aperture"), 0.0)
+        ri = _positive_float(params.get("refractive_index"), 0.0)
+        return (
+            f"{operation_title}: wavelengths {wavelengths or 'unchanged'} nm; "
+            f"NA={_format_number(na) if na else 'unchanged'}; "
+            f"RI={_format_number(ri) if ri else 'unchanged'}"
         )
     if operation_id == "rescale_axes":
         interpolation = params.get("interpolation", "Auto")
