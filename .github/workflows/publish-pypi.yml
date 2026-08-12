@@ -21,7 +21,6 @@ jobs:
       url: https://pypi.org/project/napari-vipp/
     permissions:
       contents: read
-      id-token: write
 
     steps:
       - name: Check out the requested tag
@@ -66,7 +65,8 @@ jobs:
           python -m pip install --upgrade twine
           python -m twine check distributions/*
 
-      - name: Publish to PyPI with a short-lived identity token
+      - name: Publish to PyPI with the protected project token
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: distributions/
+          password: ${{ secrets.PYPI_API_TOKEN }}

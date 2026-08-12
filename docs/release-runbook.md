@@ -19,18 +19,18 @@ napari hub.
 
 1. You have push/tag permission on GitHub for this repository.
 2. You have upload permission for the `napari-vipp` project on PyPI.
-3. PyPI trusts this repository's `publish-pypi.yml` workflow with the `pypi`
-   GitHub environment for the `napari-vipp` project.
+3. The project-scoped PyPI API token is stored as the protected
+   `PYPI_API_TOKEN` secret in this repository's `pypi` GitHub environment.
 4. You have a clean git working tree on the release commit.
 5. The companion `vipp-mkdocs` repository has a reviewed release page and a
    clean, pushed release commit.
 
-The PyPI Trusted Publisher is a one-time project setting. Configure it with
-owner `rensutheart`, repository `napari-vipp`, workflow
-`publish-pypi.yml`, and environment `pypi`. The workflow then uses a
-short-lived identity token: no PyPI password, API token, or repository secret
-is stored. Dispatch it only from `main` and only after the exact tag's GitHub
-prerelease assets and numbered manual have been verified.
+The `pypi` environment accepts deployments only from `main`. Store a
+project-scoped token there, never in the repository or command history, and
+rotate it if its source copy is exposed. Dispatch the workflow only from
+`main` and only after the exact tag's GitHub prerelease assets and numbered
+manual have been verified. PyPI Trusted Publishing may replace the token later
+without changing the artifact-verification flow.
 
 Recommended local tools:
 
@@ -413,7 +413,7 @@ than a 404 or `nightly` content:
 - `https://rensutheart.github.io/vipp-mkdocs/<version>/getting-started/windows-cuda/`
 
 Only then publish exactly the two hash-recorded artifacts. PyPI uploads cannot
-be replaced, so dispatch the trusted workflow from `main` with the already
+be replaced, so dispatch the protected workflow from `main` with the already
 qualified tag:
 
 ```powershell
@@ -425,9 +425,9 @@ gh workflow run publish-pypi.yml `
 
 Wait for that exact workflow run to succeed. It checks out the immutable tag,
 downloads exactly the wheel and source archive already attached to its GitHub
-prerelease, validates their metadata, and publishes them through PyPI's
-short-lived OpenID Connect credential. It does not rebuild the distributions
-or accept a broad artifact glob.
+prerelease, validates their metadata, and publishes them with the project-
+scoped token held only in the protected `pypi` environment. It does not rebuild
+the distributions or accept a broad artifact glob.
 
 Post-upload validation:
 
