@@ -12,6 +12,9 @@ from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
+    "graph-authoring-acceptance.json": (
+        "2284451c5998dd059eaa4ee748d229b3289ff0d8f94824d115a205e8702b359d"
+    ),
     "otsu-red-channel-labels.json": (
         "60367b60a9657770ed7bcc2ffacc1ce0474b4d40a4610f57f46e449dfba85faf"
     ),

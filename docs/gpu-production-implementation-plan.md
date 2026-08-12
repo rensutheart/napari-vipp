@@ -1,49 +1,16 @@
 # Production GPU implementation plan
 
 Date: 2026-08-04
-Product-direction revision: 2026-08-04
+Product-direction revision: 2026-08-07
 Status: Historical engineering plan and implementation record. The released
 0.13 GPU contract has moved beyond the original branch-scoped plan. For the
 current user-facing platform, installation, and policy contract, see the
-[GPU guide](gpu-guide.md) and packaged public policy artifact. Historical
-branch names, planned gates, and evidence below are retained as dated context.
+[GPU guide](gpu-guide.md) and packaged public policy artifact. The current
+delivery order is maintained in [planning.md](planning.md). Historical branch
+names, planned gates, and evidence below are retained as dated context.
 
-Phase 1 was implemented headlessly on `codex/gpu-cross-platform-support`; the
-Pass 4 application slice now includes
-the four CPU/Auto/Prefer-GPU/Custom policies, workflow-v4 compute intent,
-setup/memory diagnostics, selected-node benchmark review, and a Custom-only
-review-first whole-pipeline optimizer.
-Phase 2B adds ordinary CuPy/CuPyX Richardson-Lucy,
-ordered-multi-input/single-output exact benchmarking, and a process-wide
-per-device accelerator lease. Phase 2C adds CuPy/CuPyX
-Richardson-Lucy TV with separate lambda-zero and positive-TV scientific
-profiles. Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu. The validated
-regions for all of these providers are normal public
-Auto/Prefer-GPU/Custom candidates
-on this branch; unsupported regions visibly use CPU. Phase 4 adds the public
-CPU Sigma Filter and a clean-room CuPy RawKernel provider whose exact reviewed
-region is also a normal public Auto/Prefer-GPU/Custom candidate. Its historical
-pre-0.13.0a3 RTX 5090 record passed 10 exact admission cases, 10 matched
-rejections, 18 bitwise-exact timed workloads, cancellation, and cleanup.
-Canonical Canny/Otsu
-numerical evidence for this source revision records 28/28 exact admission cases,
-memory/lifecycle proof, and separate synthetic/real-acquisition timings.
-Phase 5 adds exact CuPyX Connected Components for boolean 2D/3D masks. Its
-historical pre-0.13.0a3 record passed 16/16 exact native-`int32` admission cases,
-deterministic leading-block resets, synchronized block-boundary cancellation,
-cleanup, and conservative memory coverage. The strict v5 packaged policy
-artifact appends this public candidate without changing historical v1-v4 bytes.
-Phase 6 adds public cuCIM candidates for the basic schemas of Measure Objects
-and Measure Objects + Intensity. Its source-current RTX 5090 record passed all
-11 admission cases, 11 matched rejections, two lifecycle cases, and zero
-transaction-pool residue; the public typed table is finalized only after the
-mandatory host boundary. The strict v6 policy artifact appends these candidates
-without changing historical v1-v5 bytes.
-`developer_hidden` is reserved for unfinished or
-unvalidated work, while named release/platform gates remain region-specific.
-Cross-platform review: 2026-07-15
-cuCIM native-Windows evidence update: 2026-07-16
-cuCIM Windows port-plan update: 2026-07-16
+`developer_hidden` remains reserved for unfinished or unvalidated work, while
+named release and platform gates remain region-specific.
 
 ## Purpose and fixed constraints
 
@@ -116,7 +83,7 @@ The following constraints and approved product directions are non-negotiable:
   `developer_hidden` is only for incomplete or unvalidated work. Unsupported
   dtype, parameter, shape, environment, or platform regions visibly resolve or
   fall back to CPU rather than hiding a validated provider or coercing the
-  authored workflow. Branch visibility is not a blanket released-package or
+  authored workflow. The presence of a provider in the package is not a blanket
   cross-platform support claim.
 - Capability declarations are dtype-explicit and designed for bool, common
   microscopy integers, float32, float64, and non-finite policies from the
@@ -3341,13 +3308,13 @@ not reasons to redesign Phase 1.
   registries and each of `pipeline.py`, `_widget.py`, `batch.py`, and
   `workflow.py`; split operation-family declarations before parallel promotion.
 
-## Ordered next suggested steps (maintained 2026-08-04)
+## Historical post-Phase 6 queue (superseded 2026-08-07)
 
-This is the implementation queue after the basic Measurements vertical slice
-and the completed durable batch/generated-Python/CLI/export integration.
-Update this section when a wave lands so the branch and handoff report retain
-one explicit order. The completed public Canny/Otsu contracts and their separate evidence
-protocol are recorded in
+This was the branch implementation queue after the basic Measurements vertical
+slice and the completed durable batch/generated-Python/CLI/export integration.
+It is retained as a dated handoff record and does not define the current product
+order; [planning.md](planning.md) is authoritative. The completed public
+Canny/Otsu contracts and their separate evidence protocol are recorded in
 the [Phase 3A report](gpu-phase3-canny-otsu-implementation-report.md); Sigma's
 contract, external Fiji evidence, fused public CuPy provider, and canonical
 timing crossovers are recorded in the
@@ -3388,7 +3355,7 @@ selection is also now tracked before sustained real-acquisition benchmarking:
 Extract Channel and Select Axis Slice must slice first and materialize only the
 selected workload rather than eagerly decoding a complete ND2 acquisition.
 
-## Handoff summary
+## Historical branch handoff summary
 
 1. **Product model:** CPU, Auto, Prefer GPU, and Custom are distinct global
    modes. Auto is the default. Prefer GPU uses every eligible reviewed GPU
@@ -3400,7 +3367,8 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
    executes transactional host/device segments through lazy runtimes and
    implementation libraries, keeps public caches host-only, and returns actual
    implementation provenance.
-3. **Phase 1:** implemented on the GPU development branch: contracts ->
+3. **Phase 1:** originally implemented on the GPU development branch before the
+   `0.13.0a1` merge: contracts ->
    fake/lazy-CUDA substrate and reproducible dev setup -> production-faithful
    Background/Subtract Background -> CuPyX median and Gaussian -> headless node
    benchmark, scientific cache identity, and whole-pipeline optimizer.
@@ -3415,9 +3383,9 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
    finalizer, visible exact-region fallback, and RTX workload evidence.
    Durable batch/generated-Python/CLI/export execution is now complete for
    supported node regions, including exact provenance, structured fallback,
-   nested progress, cancellation, and cleanup-gated publication. Continue in
-   the maintained order above: native/packaging evidence, provider-completeness
-   review, Apple feasibility, then explicit bridges and broader node coverage.
+   nested progress, cancellation, and cleanup-gated publication. Current
+   delivery order is maintained in [planning.md](planning.md), not in this
+   historical handoff.
 5. **Admission rule:** scientific validity, memory, progress, cancellation,
    cleanup, and runtime evidence make a region a normal public Custom and
    Prefer-GPU candidate; incomplete/unvalidated work alone remains

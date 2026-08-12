@@ -234,8 +234,9 @@ churn while real operation changes still fail closed.
 
 ## Packaged compute-policy artifact
 
-`phase1-gpu-public-v5.json` is the current immutable packaged compute-policy
-record. It is a strict extension of v4: the six historical operations are
+`phase1-gpu-public-v5.json` was the immutable packaged compute-policy record at
+Phase 5 completion; the active v7 artifact retains it unchanged. V5 is a strict
+extension of v4: the six historical operations are
 byte-for-byte represented in the same order and the connected-components
 record is appended. The record mirrors the live public candidate's bool dtype,
 2D/3D support, policy IDs, limitations, and derived

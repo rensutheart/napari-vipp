@@ -563,6 +563,8 @@ def test_node_context_menu_emits_requested_action(qtbot, monkeypatch):
     view._show_node_context_menu("threshold", QPoint(0, 0))
 
     assert labels == [
+        "Copy node",
+        "Paste values",
         "Delete",
         "Inspect Code",
         "Duplicate Node",

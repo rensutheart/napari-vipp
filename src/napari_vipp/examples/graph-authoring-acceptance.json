@@ -1,0 +1,189 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 3,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "gaussian_main",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic object morphology",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "gaussian_main",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 1.2,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "threshold_low",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 15000.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "threshold_high",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 30000.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "rescale_direct",
+      "operation_id": "rescale_intensity",
+      "params": {
+        "cutoff_mode": "Percentiles",
+        "in_low_value": 0.0,
+        "in_high_value": 1.0,
+        "in_low_percentile": 0.0,
+        "in_high_percentile": 100.0,
+        "out_min": 0.0,
+        "out_max": 1.0
+      }
+    },
+    {
+      "id": "gaussian_values_source",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 4.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "gaussian_values_target",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 0.6,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "unsharp_fragment",
+      "operation_id": "unsharp_mask",
+      "params": {
+        "radius": 2.0,
+        "amount": 1.8,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "threshold_fragment",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 20000.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "invert_loose",
+      "operation_id": "invert",
+      "params": {}
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "gaussian_main",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gaussian_main",
+      "target": "threshold_low",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Shared processed image"
+    },
+    {
+      "source": "gaussian_main",
+      "target": "threshold_high",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Shared processed image"
+    },
+    {
+      "source": "gaussian_main",
+      "target": "rescale_direct",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "unsharp_fragment",
+      "target": "threshold_fragment",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 180.0],
+    "gaussian_main": [360.0, 180.0],
+    "threshold_low": [780.0, 0.0],
+    "threshold_high": [780.0, 260.0],
+    "rescale_direct": [780.0, 520.0],
+    "gaussian_values_source": [80.0, 850.0],
+    "gaussian_values_target": [440.0, 850.0],
+    "unsharp_fragment": [940.0, 850.0],
+    "threshold_fragment": [1300.0, 850.0],
+    "invert_loose": [360.0, 500.0]
+  },
+  "notes": [
+    {
+      "id": "note_tunnel",
+      "text": "TEST 1 - INSERT BEFORE A TUNNEL\nOn the upper Gaussian Blur, right-click the 'Shared processed image' badge. Choose Insert node before 'Shared processed image'..., then choose Invert. PASS: Invert appears before the tunnel, both upper threshold nodes still use it, and the separate Rescale Intensity wire is unchanged.",
+      "position": [340.0, -170.0],
+      "width": 390.0,
+      "attached_node": "gaussian_main"
+    },
+    {
+      "id": "note_loose_tunnel",
+      "text": "ALTERNATIVE FOR TEST 1 - DRAG THE LOOSE NODE\nIf you already completed Test 1, undo it first. Drag this unconnected Invert node onto the 'Shared processed image' badge and release when the badge highlights. PASS: it is inserted before the tunnel in one step. Undo when finished.",
+      "position": [300.0, 690.0],
+      "width": 360.0,
+      "attached_node": "invert_loose"
+    },
+    {
+      "id": "note_values",
+      "text": "TEST 2 - COPY SETTINGS\nClick the lower-left Gaussian Blur (sigma 4.0) and press Ctrl+C. First right-click a threshold node: Paste values should be unavailable there. Then right-click the lower-right Gaussian Blur (sigma 0.6) and choose Paste values from Gaussian Blur. PASS: sigma becomes 4.0, while its position and wires stay unchanged.",
+      "position": [80.0, 1090.0],
+      "width": 720.0
+    },
+    {
+      "id": "note_fragment",
+      "text": "TEST 3 - COPY TWO CONNECTED NODES\nClick Unsharp Mask, then hold Ctrl and click Binary Threshold. Press Ctrl+C, click blank canvas, then press Ctrl+V. PASS: one new copy of each appears near the centre, joined by one wire. Drag either new node: both selected copies move together.",
+      "position": [940.0, 1090.0],
+      "width": 720.0
+    },
+    {
+      "id": "note_undo",
+      "text": "TEST 4 - PASTE LOCATION AND UNDO\nWith the two nodes still copied, right-click empty canvas and choose Paste nodes here. PASS: the pair appears at that spot. Press Ctrl+Z once: the whole pair disappears. Press Ctrl+Y: it returns. Press Ctrl+V twice more: repeated copies should be slightly offset.",
+      "position": [940.0, 1300.0],
+      "width": 520.0
+    }
+  ],
+  "tunnels": [
+    {
+      "name": "Shared processed image",
+      "source": "gaussian_main",
+      "source_port": 0
+    }
+  ]
+}

@@ -53,12 +53,14 @@ from napari_vipp._widget import (
     CollectionBatchDialog,
     ColocalizationScatterRequest,
     ColocalizationScatterResult,
+    ConnectionInsertCandidate,
     ConnectionInsertDialog,
     ConnectionInsertMappingDialog,
     ConnectionInsertPortMapping,
     ExampleWorkflowDialog,
     FlexibleDoubleSpinBox,
     GeneratedLayerContrastResult,
+    GraphNoteState,
     HistogramPlot,
     InputHistogramResult,
     PipelineNodeResult,
@@ -121,6 +123,12 @@ from napari_vipp.core.compute import (
 )
 from napari_vipp.core.execution import PipelineExecutionFailure
 from napari_vipp.core.export import export_pipeline_to_python
+from napari_vipp.core.graph_fragments import (
+    GraphFragment,
+    GraphFragmentNode,
+    GraphFragmentNote,
+    capture_graph_fragment,
+)
 from napari_vipp.core.graph_search import find_graph_matches
 from napari_vipp.core.io import (
     ImageDataset,
@@ -150,6 +158,7 @@ from napari_vipp.core.pipeline import (
     EXECUTION_STALE,
     NODE_LIBRARY_BY_ID,
     PALETTE_NODE_LIBRARY,
+    GraphConnection,
     GraphNode,
     OutputTunnel,
     PrototypePipeline,
@@ -2450,6 +2459,395 @@ def test_duplicate_node_copies_parameters_without_connections(qtbot):
         "library", "cupyx"
     )
     assert clone_id in widget._compute_optimizer_locked_node_ids
+
+
+def test_graph_fragment_copy_paste_is_atomic_and_keeps_only_internal_edges(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    QApplication.clipboard().clear()
+    widget._compute_node_preferences["gaussian"] = NodeComputePreference(
+        "library", "cupyx"
+    )
+    widget._compute_optimizer_locked_node_ids.add("gaussian")
+    widget._add_graph_note("Copied rationale", attached_node="gaussian")
+    widget._history.clear()
+    before_ids = set(widget.pipeline.nodes)
+
+    widget._copy_graph_nodes(("gaussian", "threshold"))
+    pasted_ids = widget._paste_graph_fragment(QPointF(900.0, 500.0))
+
+    assert len(pasted_ids) == 2
+    assert set(widget.pipeline.nodes) - before_ids == set(pasted_ids)
+    pasted_gaussian = next(
+        node_id
+        for node_id in pasted_ids
+        if widget.pipeline.nodes[node_id].operation_id == "gaussian_blur"
+    )
+    pasted_threshold = next(
+        node_id
+        for node_id in pasted_ids
+        if widget.pipeline.nodes[node_id].operation_id == "otsu_threshold"
+    )
+    assert (
+        GraphConnection(pasted_gaussian, pasted_threshold)
+        in widget.pipeline.connections
+    )
+    assert not any(
+        connection.source_id == "input" and connection.target_id == pasted_gaussian
+        for connection in widget.pipeline.connections
+    )
+    assert widget._compute_node_preferences[pasted_gaussian] == NodeComputePreference(
+        "library", "cupyx"
+    )
+    assert pasted_gaussian in widget._compute_optimizer_locked_node_ids
+    assert any(
+        note.attached_node == pasted_gaussian and note.text == "Copied rationale"
+        for note in widget._graph_notes.values()
+    )
+    assert widget.graph_view.selected_node_ids() == pasted_ids
+    assert len(widget._undo_stack) == 1
+
+    widget.undo()
+
+    assert set(widget.pipeline.nodes) == before_ids
+    assert not any(
+        note.attached_node in set(pasted_ids) for note in widget._graph_notes.values()
+    )
+
+
+def test_paste_values_requires_same_operation_and_keeps_target_execution_intent(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    QApplication.clipboard().clear()
+    target = widget._add_node_at("gaussian_blur", QPointF(800.0, 400.0))
+    widget.pipeline.set_param("gaussian", "sigma", 4.0)
+    widget.pipeline.set_param(target.id, "sigma", 0.6)
+    preference = NodeComputePreference("library", "numpy")
+    widget._compute_node_preferences[target.id] = preference
+    connections_before = tuple(widget.pipeline.connections)
+    position_before = QPointF(widget.graph_view.node_position(target.id))
+    widget._history.clear()
+
+    widget._copy_graph_nodes(("gaussian",))
+    assert widget._paste_graph_node_values(target.id)
+
+    assert widget.pipeline.nodes[target.id].params["sigma"] == 4.0
+    assert widget._compute_node_preferences[target.id] == preference
+    assert tuple(widget.pipeline.connections) == connections_before
+    assert widget.graph_view.node_position(target.id) == position_before
+    assert len(widget._undo_stack) == 1
+    widget._debounce_timer.stop()
+
+    widget.undo()
+
+    assert widget.pipeline.nodes[target.id].params["sigma"] == 0.6
+    assert widget._compute_node_preferences[target.id] == preference
+
+
+def test_paste_values_preserves_rescale_representations_and_refreshes_ui(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer(
+        np.zeros((12, 96, 128), dtype=np.float32),
+        metadata={"axes": "ZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    QApplication.clipboard().clear()
+    source = widget._add_node_at("rescale_axes", QPointF(700.0, 300.0))
+    target = widget._add_node_at("rescale_axes", QPointF(1000.0, 300.0))
+    widget._connect_nodes("input", target.id)
+    copied_values = {
+        "resize_mode": "Output size",
+        "x_scale": 2.01,
+        "y_scale": 2.02,
+        "z_scale": 1.31,
+        "x_size": 257,
+        "y_size": 193,
+        "z_size": 17,
+        "lock_xy": True,
+    }
+    for name, value in copied_values.items():
+        widget.pipeline.set_param(source.id, name, value)
+    widget._copy_graph_nodes((source.id,))
+    widget.graph_view.select_node(target.id)
+    connections_before = tuple(widget.pipeline.connections)
+    widget._history.clear()
+
+    assert widget._paste_graph_node_values(target.id)
+
+    for name, value in copied_values.items():
+        assert widget.pipeline.nodes[target.id].params[name] == value
+    assert tuple(widget.pipeline.connections) == connections_before
+    assert widget._parameter_widgets["resize_mode"].combo.currentData() == (
+        "Output size"
+    )
+    assert widget._parameter_widgets["x_size"].value() == 257
+    assert widget._parameter_widgets["y_size"].value() == 193
+    assert widget._parameter_widgets["z_size"].value() == 17
+    assert len(widget._undo_stack) == 1
+    widget._debounce_timer.stop()
+
+
+def test_paste_values_refreshes_input_histogram_and_schedules_once(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    QApplication.clipboard().clear()
+    source = widget._add_node_at("binary_threshold", QPointF(700.0, 300.0))
+    target = widget._add_node_at("binary_threshold", QPointF(1000.0, 300.0))
+    widget.pipeline.set_param(source.id, "threshold", 0.77)
+    widget._copy_graph_nodes((source.id,))
+    widget.graph_view.select_node(target.id)
+    histogram_calls = []
+    monkeypatch.setattr(
+        widget,
+        "_update_rescale_input_histogram",
+        lambda *args: histogram_calls.append(args),
+    )
+
+    class _TimerSpy:
+        def __init__(self, timer):
+            self._timer = timer
+            self.starts = 0
+
+        def __getattr__(self, name):
+            return getattr(self._timer, name)
+
+        def start(self, *args):
+            self.starts += 1
+            return self._timer.start(*args)
+
+    timer = _TimerSpy(widget._debounce_timer)
+    widget._debounce_timer = timer
+    widget._history.clear()
+
+    assert widget._paste_graph_node_values(target.id)
+
+    assert widget.pipeline.nodes[target.id].params["threshold"] == 0.77
+    assert len(histogram_calls) == 1
+    assert timer.starts == 1
+    assert len(widget._undo_stack) == 1
+    timer.stop()
+
+
+def test_paste_values_rolls_back_if_live_ui_commit_fails(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    QApplication.clipboard().clear()
+    target = widget._add_node_at("gaussian_blur", QPointF(800.0, 400.0))
+    widget.pipeline.set_param("gaussian", "sigma", 4.0)
+    widget.pipeline.set_param(target.id, "sigma", 0.6)
+    widget._copy_graph_nodes(("gaussian",))
+    before_params = deepcopy(widget.pipeline.nodes[target.id].params)
+    before_counters = deepcopy(widget.pipeline._counters)
+    widget._history.clear()
+
+    sync_count = 0
+
+    def fail_first_sync(_node_id):
+        nonlocal sync_count
+        sync_count += 1
+        if sync_count == 1:
+            raise RuntimeError("injected output-port presentation failure")
+
+    monkeypatch.setattr(widget, "_sync_node_output_ports", fail_first_sync)
+
+    assert not widget._paste_graph_node_values(target.id)
+
+    assert widget.pipeline.nodes[target.id].params == before_params
+    assert widget.pipeline._counters == before_counters
+    assert len(widget._undo_stack) == 0
+
+
+def test_failed_graph_paste_restores_monotonic_node_counters(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    QApplication.clipboard().clear()
+    widget._copy_graph_nodes(("gaussian",))
+    widget.pipeline._counters["gaussian_blur"] = 9
+    before_ids = set(widget.pipeline.nodes)
+    before_counters = deepcopy(widget.pipeline._counters)
+    run_count = 0
+
+    def fail_first_run(*_args, **_kwargs):
+        nonlocal run_count
+        run_count += 1
+        if run_count == 1:
+            raise RuntimeError("injected calculation handoff failure")
+
+    monkeypatch.setattr(widget, "run_pipeline", fail_first_run)
+
+    assert widget._paste_graph_fragment(QPointF(900.0, 500.0)) == ()
+
+    assert set(widget.pipeline.nodes) == before_ids
+    assert widget.pipeline._counters == before_counters
+
+
+def test_fragment_paste_note_ids_are_case_insensitively_unique(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._graph_notes = {
+        "NOTE_1": GraphNoteState("NOTE_1", "Existing", (0.0, 0.0))
+    }
+    fragment = GraphFragment(
+        (
+            GraphFragmentNode(
+                "n0",
+                "gaussian_blur",
+                {"sigma": 1.2, "channel_axis": -1},
+            ),
+        ),
+        notes=(
+            GraphFragmentNote(
+                "note0",
+                "Copied rationale",
+                (20.0, 30.0),
+                240.0,
+                "n0",
+            ),
+        ),
+    )
+
+    plan = widget._prepare_graph_fragment_paste(fragment, QPointF(0.0, 0.0))
+
+    assert plan[5][0].id == "note_2"
+
+
+def test_fragment_paste_remaps_colliding_tunnel_name_and_fresh_node_ids(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget.pipeline.add_output_tunnel("Shared", "input")
+    source = PrototypePipeline()
+    source.reset_empty_graph()
+    blur = source.add_node("gaussian_blur")
+    threshold = source.add_node("otsu_threshold")
+    source.add_output_tunnel("Shared", blur.id)
+    assert source.connect_to_tunnel("Shared", threshold.id).success
+    fragment = capture_graph_fragment(
+        source,
+        (blur.id, threshold.id),
+        positions={blur.id: (0.0, 0.0), threshold.id: (300.0, 0.0)},
+    )
+
+    plan = widget._prepare_graph_fragment_paste(fragment, QPointF(500.0, 300.0))
+    staged, node_ids, _positions, connections, tunnels = plan[:5]
+
+    assert set(node_ids).isdisjoint(widget.pipeline.nodes)
+    assert [tunnel.name for tunnel in tunnels] == ["Shared copy"]
+    assert connections[0].tunnel_name == "Shared copy"
+    assert staged.output_tunnel("Shared") is not None
+    assert staged.output_tunnel("Shared copy") is not None
+
+
+def test_insert_before_tunnel_keeps_subscribers_and_direct_wires_in_one_undo(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    assert widget.load_example_workflow("graph-authoring") is not None
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    widget._history.clear()
+    before_connections = tuple(widget.pipeline.connections)
+    before_tunnels = widget.pipeline.output_tunnel_list()
+    before_ids = set(widget.pipeline.nodes)
+
+    inserted = widget._insert_new_node_before_tunnel(
+        "invert",
+        "Shared processed image",
+        QPointF(620.0, 180.0),
+    )
+
+    assert inserted is not None
+    tunnel = widget.pipeline.output_tunnel("Shared processed image")
+    assert tunnel is not None
+    assert tunnel.source_id == inserted.id
+    subscribers = [
+        connection
+        for connection in widget.pipeline.connections
+        if connection.tunnel_name == tunnel.name
+    ]
+    assert {connection.target_id for connection in subscribers} == {
+        "threshold_low",
+        "threshold_high",
+    }
+    assert GraphConnection("gaussian_main", inserted.id) in widget.pipeline.connections
+    assert (
+        GraphConnection("gaussian_main", "rescale_direct")
+        in widget.pipeline.connections
+    )
+    assert len(widget._undo_stack) == 1
+
+    widget.undo()
+
+    assert set(widget.pipeline.nodes) == before_ids
+    assert tuple(widget.pipeline.connections) == before_connections
+    assert widget.pipeline.output_tunnel_list() == before_tunnels
+
+
+def test_tunnel_palette_preview_rejects_node_that_cannot_preserve_users(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    assert widget.load_example_workflow("graph-authoring") is not None
+
+    compatible, _message = widget._tunnel_insert_preview_state(
+        "invert",
+        "Shared processed image",
+    )
+    incompatible, message = widget._tunnel_insert_preview_state(
+        "input",
+        "Shared processed image",
+    )
+
+    assert compatible == "compatible"
+    assert incompatible == "incompatible"
+    assert "cannot keep every user" in message
+
+
+def test_canceling_tunnel_port_choice_is_reported_as_cancel_not_incompatible(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    assert widget.load_example_workflow("graph-authoring") is not None
+    mapping = ConnectionInsertPortMapping(0, 0, "input", "output", "")
+    monkeypatch.setattr(
+        widget,
+        "_tunnel_insert_mapping_options",
+        lambda *_args, **_kwargs: [mapping, mapping],
+    )
+    monkeypatch.setattr(
+        widget,
+        "_choose_tunnel_insert_mapping",
+        lambda *_args, **_kwargs: None,
+    )
+    before_ids = set(widget.pipeline.nodes)
+
+    inserted = widget._insert_new_node_before_tunnel(
+        "invert",
+        "Shared processed image",
+        QPointF(620.0, 180.0),
+    )
+
+    assert inserted is None
+    assert set(widget.pipeline.nodes) == before_ids
+    assert widget.status_label.text() == "Insert before tunnel canceled."
 
 
 def test_node_code_text_includes_call_and_source(qtbot):
@@ -13880,6 +14278,8 @@ def test_split_axis_insert_mapping_dialog_switches_axis_options(qtbot):
     qtbot.addWidget(dialog)
 
     assert dialog.selected_mapping() == z_mapping
+    assert dialog.tree.palette().base().color().name() == "#1f242c"
+    assert dialog.tree.palette().alternateBase().color().name() == "#252b35"
 
     dialog.axis_combo.setCurrentIndex(1)
 
@@ -14205,6 +14605,27 @@ def test_connection_insert_dialog_filters_candidates(qtbot):
 
     assert dialog.selected_operation_id() == "split_axis"
     assert dialog.ok_button.isEnabled()
+
+
+def test_connection_insert_dialog_uses_subtle_alternating_rows(qtbot):
+    candidate = ConnectionInsertCandidate(
+        operation_id="gaussian_blur",
+        title="Gaussian Blur",
+        category="Filtering",
+        subcategory="",
+        mode="full",
+        detail="Insert Gaussian Blur.",
+        search_text="gaussian blur filtering",
+    )
+    dialog = ConnectionInsertDialog([candidate])
+    qtbot.addWidget(dialog)
+
+    base = dialog.tree.palette().base().color()
+    alternate = dialog.tree.palette().alternateBase().color()
+
+    assert base.name() == "#1f242c"
+    assert alternate.name() == "#252b35"
+    assert abs(base.lightness() - alternate.lightness()) <= 10
 
 
 def test_connection_menu_insert_uses_selected_candidate(qtbot, monkeypatch):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QBrush, QColor
+from qtpy.QtGui import QBrush, QColor, QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -28,6 +28,17 @@ from napari_vipp.ui.examples import (
     ExampleWorkflowSpec,
 )
 from napari_vipp.ui.search import _fuzzy_match, _normalize_search_text
+
+_INSERT_TREE_BASE = "#1f242c"
+_INSERT_TREE_ALTERNATE = "#252b35"
+
+
+def _apply_subtle_alternating_rows(tree: QTreeWidget) -> None:
+    """Keep long insertion lists scannable without high-contrast striping."""
+    palette = tree.palette()
+    palette.setColor(QPalette.Base, QColor(_INSERT_TREE_BASE))
+    palette.setColor(QPalette.AlternateBase, QColor(_INSERT_TREE_ALTERNATE))
+    tree.setPalette(palette)
 
 
 @dataclass(frozen=True)
@@ -76,6 +87,7 @@ class ConnectionInsertDialog(QDialog):
         self.tree.setHeaderLabels(["Node", "Insertion", "Category"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
+        _apply_subtle_alternating_rows(self.tree)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -194,6 +206,7 @@ class ConnectionInsertMappingDialog(QDialog):
         self.tree.setHeaderLabels(["Upstream input", "Downstream output", "Mapping"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
+        _apply_subtle_alternating_rows(self.tree)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tree.itemDoubleClicked.connect(self._accept_item)

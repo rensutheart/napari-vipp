@@ -22,6 +22,7 @@ import numpy as np
 from qtpy.QtCore import (
     QEvent,
     QEventLoop,
+    QMimeData,
     QPointF,
     QRect,
     QSignalBlocker,
@@ -180,6 +181,16 @@ from napari_vipp.core.file_sources import (
     VerifiedSourceInspection as VerifiedSourceInspection,
 )
 from napari_vipp.core.file_sources import load_frozen_file_source_snapshot
+from napari_vipp.core.graph_fragments import (
+    GRAPH_FRAGMENT_MIME_TYPE,
+    MAX_GRAPH_FRAGMENT_BYTES,
+    GraphFragment,
+    GraphFragmentError,
+    capture_graph_fragment,
+    decode_graph_fragment,
+    encode_graph_fragment,
+    prepare_paste_values,
+)
 from napari_vipp.core.graph_layout import (
     LayoutEdge,
     LayoutNode,
@@ -228,9 +239,11 @@ from napari_vipp.core.pipeline import (
     EXECUTION_STALE,
     GLOBAL_THRESHOLD_OPERATIONS,
     MANUAL_RUN_SKIP,
+    GraphConnection,
     GraphNode,
     InputSpec,
     OperationSpec,
+    OutputTunnel,
     ParameterSpec,
     PrototypePipeline,
     SourcePayload,
@@ -246,6 +259,7 @@ from napari_vipp.core.preview import (
     make_preview,
     normalize_thumbnail_with_colormap,
 )
+from napari_vipp.core.snapshots import GraphSnapshot
 from napari_vipp.core.source_identity import (
     LocalSourceIdentity,
     SourceChangedError,
@@ -1376,6 +1390,8 @@ class VippWidget(QWidget):
         self._vipp_current_nsteps: tuple[int, ...] | None = None
         self._tunnel_manager_dialog: TunnelManagerDialog | None = None
         self._graph_notes: dict[str, GraphNoteState] = {}
+        self._last_graph_paste_signature: tuple[bytes, float, float] | None = None
+        self._graph_paste_repeat_count = 0
         self._graph_search_matches: tuple[GraphSearchMatch, ...] = ()
         self._graph_search_index = -1
         self._graph_search_highlighted_tunnel = ""
@@ -1739,6 +1755,9 @@ class VippWidget(QWidget):
         )
         self.graph_view.set_tunnel_reroute_validator(
             self._tunnel_reroute_preview_state
+        )
+        self.graph_view.set_tunnel_insert_validator(
+            self._tunnel_insert_preview_state
         )
         self.graph_view.setMinimumHeight(80)
         self.graph_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
@@ -3184,7 +3203,16 @@ class VippWidget(QWidget):
             self._insert_node_from_connection_menu
         )
         self.graph_view.node_selected.connect(self._select_node)
+        self.graph_view.node_selection_changed.connect(
+            self._on_graph_node_selection_changed
+        )
         self.graph_view.node_delete_requested.connect(self._delete_node)
+        self.graph_view.nodes_delete_requested.connect(self._delete_nodes)
+        self.graph_view.nodes_copy_requested.connect(self._copy_graph_nodes)
+        self.graph_view.paste_requested.connect(self._paste_graph_fragment)
+        self.graph_view.node_paste_values_requested.connect(
+            self._paste_graph_node_values
+        )
         self.graph_view.node_duplicate_requested.connect(self._duplicate_node)
         self.graph_view.node_code_requested.connect(self._inspect_node_code)
         self.graph_view.node_note_requested.connect(self._add_graph_note_for_node)
@@ -3192,6 +3220,7 @@ class VippWidget(QWidget):
             self._toggle_node_isolation_from_graph
         )
         self.graph_view.node_moved.connect(self._on_node_moved)
+        self.graph_view.nodes_moved.connect(self._on_nodes_moved)
         self.graph_view.node_splice_requested.connect(
             self._insert_existing_node_on_connection
         )
@@ -3203,6 +3232,15 @@ class VippWidget(QWidget):
         self.graph_view.tunnel_selected.connect(self._on_graph_tunnel_selected)
         self.graph_view.tunnel_reroute_requested.connect(
             self._reroute_output_tunnel
+        )
+        self.graph_view.tunnel_insert_requested.connect(
+            self._insert_node_before_tunnel_from_menu
+        )
+        self.graph_view.tunnel_node_insert_requested.connect(
+            self._insert_new_node_before_tunnel
+        )
+        self.graph_view.tunnel_node_splice_requested.connect(
+            self._insert_existing_node_before_tunnel
         )
         self.graph_view.note_moved.connect(self._on_graph_note_moved)
         self.graph_view.note_edit_requested.connect(self._edit_graph_note)
@@ -3235,6 +3273,15 @@ class VippWidget(QWidget):
         self._debounce_timer.timeout.connect(
             self._finish_debounced_parameter_history_group
         )
+        try:
+            clipboard = QApplication.clipboard()
+            self._lifecycle.connect(
+                clipboard.dataChanged,
+                self._sync_graph_clipboard_state,
+            )
+        except Exception:
+            pass
+        self._sync_graph_clipboard_state()
 
     def _toggle_left_panel(self) -> None:
         self._set_left_panel_visible(self.palette_panel.isHidden())
@@ -6449,11 +6496,347 @@ class VippWidget(QWidget):
             )
         return node
 
-    def _node_has_connections(self, node_id: str) -> bool:
-        return any(
-            connection.source_id == node_id or connection.target_id == node_id
-            for connection in self.pipeline.connections
+    def _tunnel_insert_mapping_options(
+        self,
+        tunnel_name: str,
+        operation_id: str,
+        *,
+        inserted_node_id: str | None = None,
+    ) -> list[ConnectionInsertPortMapping]:
+        """Return input/output pairs that preserve every tunnel subscriber."""
+        tunnel = self.pipeline.output_tunnel(tunnel_name)
+        if tunnel is None:
+            return []
+        try:
+            spec = self.pipeline.operation_spec(operation_id)
+        except KeyError:
+            return []
+        source_ports = self.pipeline.output_ports(tunnel.source_id)
+        if not 0 <= tunnel.source_port < len(source_ports):
+            return []
+        source_type = source_ports[tunnel.source_port].output_type
+        input_ports = self._operation_insert_input_ports(
+            spec,
+            inserted_node_id=inserted_node_id,
         )
+        output_ports = self._operation_insert_output_ports(
+            spec,
+            source_type,
+            inserted_node_id=inserted_node_id,
+            source_id=tunnel.source_id,
+            source_port=tunnel.source_port,
+        )
+        compatible_inputs = [
+            index
+            for index, port in enumerate(input_ports)
+            if self.pipeline._types_compatible(source_type, port.input_type)
+        ]
+        subscribers = tuple(
+            connection
+            for connection in self.pipeline.connections
+            if connection.tunnel_name == tunnel.name
+        )
+        compatible_outputs: list[int] = []
+        for output_index, output_port in enumerate(output_ports):
+            if all(
+                self.pipeline._types_compatible(
+                    output_port.output_type,
+                    self.pipeline.input_ports(connection.target_id)[
+                        connection.target_port
+                    ].input_type,
+                )
+                for connection in subscribers
+            ):
+                compatible_outputs.append(output_index)
+
+        mappings: list[ConnectionInsertPortMapping] = []
+        for input_index in compatible_inputs:
+            for output_index in compatible_outputs:
+                input_label = input_ports[input_index].label
+                output_label = output_ports[output_index].label
+                mappings.append(
+                    ConnectionInsertPortMapping(
+                        input_port=input_index,
+                        output_port=output_index,
+                        input_label=f"input {input_index + 1}: {input_label}",
+                        output_label=f"output {output_index + 1}: {output_label}",
+                        detail=(
+                            f"{self._node_title(tunnel.source_id)} -> {input_label}; "
+                            f"{output_label} -> tunnel '{tunnel.name}'"
+                        ),
+                    )
+                )
+        return mappings
+
+    def _tunnel_insert_preview_state(
+        self,
+        operation_id: str,
+        tunnel_name: str,
+        inserted_node_id: str = "",
+    ) -> tuple[str, str]:
+        """Describe whether a palette node can preserve a tunnel's users."""
+        try:
+            title = self.pipeline.operation_spec(operation_id).title
+        except KeyError:
+            return "incompatible", "That node type is no longer available."
+        if self._tunnel_insert_mapping_options(
+            tunnel_name,
+            operation_id,
+            inserted_node_id=inserted_node_id or None,
+        ):
+            return (
+                "compatible",
+                f"Drop '{title}' to insert it before tunnel '{tunnel_name}'.",
+            )
+        return (
+            "incompatible",
+            f"'{title}' cannot keep every user of tunnel '{tunnel_name}' connected.",
+        )
+
+    def _choose_tunnel_insert_mapping(
+        self,
+        tunnel_name: str,
+        operation_id: str,
+        *,
+        inserted_node_id: str | None = None,
+    ) -> ConnectionInsertPortMapping | None:
+        mappings = self._tunnel_insert_mapping_options(
+            tunnel_name,
+            operation_id,
+            inserted_node_id=inserted_node_id,
+        )
+        if len(mappings) == 1:
+            return mappings[0]
+        if not mappings:
+            return None
+        title = self.pipeline.operation_spec(operation_id).title
+        tunnel = self.pipeline.output_tunnel(tunnel_name)
+        if tunnel is None:
+            return None
+        dialog = ConnectionInsertMappingDialog(
+            mappings,
+            title,
+            self._node_title(tunnel.source_id),
+            f"tunnel '{tunnel.name}'",
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return dialog.selected_mapping()
+
+    def _choose_tunnel_insert_operation(self, tunnel_name: str) -> str | None:
+        candidates: list[ConnectionInsertCandidate] = []
+        for category, subgroups in grouped_palette_specs().items():
+            for subcategory, specs in subgroups.items():
+                for spec in specs:
+                    mappings = self._tunnel_insert_mapping_options(
+                        tunnel_name,
+                        spec.id,
+                    )
+                    if not mappings:
+                        continue
+                    mode = "full" if len(mappings) == 1 else "choose"
+                    candidates.append(
+                        ConnectionInsertCandidate(
+                            operation_id=spec.id,
+                            title=spec.title,
+                            category=category,
+                            subcategory=subcategory,
+                            mode=mode,
+                            detail=(
+                                f"Insert before tunnel '{tunnel_name}' and keep "
+                                "all of its current users connected."
+                            ),
+                            search_text=_normalize_search_text(
+                                " ".join(
+                                    (
+                                        spec.id,
+                                        spec.title,
+                                        spec.category,
+                                        spec.subcategory,
+                                        tunnel_name,
+                                    )
+                                )
+                            ),
+                        )
+                    )
+        if not candidates:
+            self.status_label.setText(
+                f"No compatible nodes can be inserted before tunnel '{tunnel_name}'."
+            )
+            return None
+        dialog = ConnectionInsertDialog(candidates, self)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return dialog.selected_operation_id()
+
+    def _insert_node_before_tunnel_from_menu(
+        self,
+        tunnel_name: str,
+        position,
+    ) -> object | None:
+        operation_id = self._choose_tunnel_insert_operation(tunnel_name)
+        if not operation_id:
+            return None
+        return self._insert_new_node_before_tunnel(
+            operation_id,
+            tunnel_name,
+            position,
+        )
+
+    def _insert_new_node_before_tunnel(
+        self,
+        operation_id: str,
+        tunnel_name: str,
+        position,
+    ) -> object | None:
+        mappings = self._tunnel_insert_mapping_options(tunnel_name, operation_id)
+        if not mappings:
+            self.status_label.setText(
+                f"'{self.pipeline.operation_spec(operation_id).title}' cannot keep "
+                f"all users of tunnel '{tunnel_name}' connected."
+            )
+            return None
+        mapping = (
+            mappings[0]
+            if len(mappings) == 1
+            else self._choose_tunnel_insert_mapping(tunnel_name, operation_id)
+        )
+        if mapping is None:
+            self.status_label.setText("Insert before tunnel canceled.")
+            return None
+        current = self.pipeline.output_tunnel(tunnel_name)
+        if current is None:
+            self.status_label.setText(f"Unknown tunnel '{tunnel_name}'.")
+            return None
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        try:
+            node = self.pipeline.add_node(operation_id)
+            result = self.pipeline.splice_node_before_output_tunnel(
+                current.name,
+                node.id,
+                inserted_input_port=mapping.input_port,
+                inserted_output_port=mapping.output_port,
+            )
+            point = QPointF(position) + QPointF(160.0, 0.0)
+            self.graph_view.add_node(node, point)
+            self.graph_view.center_node_on(node.id, point)
+            self._sync_node_input_ports(node.id)
+            self._sync_node_output_ports(node.id)
+            self.graph_view.add_connection(
+                result.upstream_connection.source_id,
+                result.upstream_connection.target_id,
+                result.upstream_connection.target_port,
+                result.upstream_connection.source_port,
+            )
+            self._sync_port_tunnels()
+            self._refresh_split_channel_display_surfaces(
+                {result.previous_tunnel.source_id, result.tunnel.source_id}
+            )
+            self._sync_pin_ui()
+            self._refresh_graph_search_matches(reset_index=True)
+            self.graph_view.select_node(node.id)
+            self._mark_pipeline_branches_dirty({node.id})
+            self.run_pipeline()
+            self._push_undo_if_changed(before)
+        except Exception as exc:
+            self._restore_history_snapshot(before)
+            self._set_status(
+                f"Insert before tunnel failed and was rolled back: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return None
+        self.status_label.setText(
+            f"Inserted '{node.title}' before tunnel '{result.tunnel.name}'."
+        )
+        return node
+
+    def _insert_existing_node_before_tunnel(
+        self,
+        node_id: str,
+        tunnel_name: str,
+        old_pos,
+        _new_pos,
+    ) -> object | None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return None
+        old_point = QPointF(old_pos)
+        positions = self.graph_view.node_positions()
+        positions[node_id] = (float(old_point.x()), float(old_point.y()))
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot(positions)
+        if self.pipeline.node_has_graph_bindings(node_id):
+            self._restore_history_snapshot(before)
+            self.status_label.setText(
+                f"Disconnect '{node.title}' from all wires and tunnels before "
+                "inserting it before a tunnel."
+            )
+            return None
+        mappings = self._tunnel_insert_mapping_options(
+            tunnel_name,
+            node.operation_id,
+            inserted_node_id=node_id,
+        )
+        if not mappings:
+            self._restore_history_snapshot(before)
+            self.status_label.setText(
+                f"'{node.title}' cannot keep all users of tunnel "
+                f"'{tunnel_name}' connected."
+            )
+            return None
+        mapping = (
+            mappings[0]
+            if len(mappings) == 1
+            else self._choose_tunnel_insert_mapping(
+                tunnel_name,
+                node.operation_id,
+                inserted_node_id=node_id,
+            )
+        )
+        if mapping is None:
+            self._restore_history_snapshot(before)
+            self.status_label.setText("Insert before tunnel canceled.")
+            return None
+        try:
+            result = self.pipeline.splice_node_before_output_tunnel(
+                tunnel_name,
+                node_id,
+                inserted_input_port=mapping.input_port,
+                inserted_output_port=mapping.output_port,
+            )
+            self.graph_view.add_connection(
+                result.upstream_connection.source_id,
+                result.upstream_connection.target_id,
+                result.upstream_connection.target_port,
+                result.upstream_connection.source_port,
+            )
+            self._sync_node_output_ports(node_id)
+            self._sync_port_tunnels()
+            self._refresh_split_channel_display_surfaces(
+                {result.previous_tunnel.source_id, result.tunnel.source_id}
+            )
+            self.graph_view.select_node(node_id)
+            self._mark_pipeline_branches_dirty({node_id})
+            self.run_pipeline()
+            self._push_undo_if_changed(before)
+        except Exception as exc:
+            self._restore_history_snapshot(before)
+            self._set_status(
+                f"Insert before tunnel failed and was rolled back: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return None
+        self.status_label.setText(
+            f"Inserted existing '{node.title}' before tunnel '{result.tunnel.name}'."
+        )
+        return node
+
+    def _node_has_connections(self, node_id: str) -> bool:
+        return self.pipeline.node_has_graph_bindings(node_id)
 
     def _apply_insert_mapping_params(
         self,
@@ -7126,6 +7509,460 @@ class VippWidget(QWidget):
             self._clear_interactive_collection_batch_session()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Duplicated '{original.title}' as '{clone.title}'.")
+
+    def _clipboard_graph_fragment(self) -> tuple[bytes, GraphFragment]:
+        """Return the validated VIPP fragment currently on the system clipboard."""
+        try:
+            mime = QApplication.clipboard().mimeData()
+            if mime is None or not mime.hasFormat(GRAPH_FRAGMENT_MIME_TYPE):
+                raise GraphFragmentError("Copy one or more VIPP nodes first.")
+            raw_payload = mime.data(GRAPH_FRAGMENT_MIME_TYPE)
+            payload_size = len(raw_payload)
+            if payload_size > MAX_GRAPH_FRAGMENT_BYTES:
+                raise GraphFragmentError(
+                    f"Graph fragment is {payload_size:,} bytes; the limit is "
+                    f"{MAX_GRAPH_FRAGMENT_BYTES:,}."
+                )
+            payload = bytes(raw_payload)
+        except GraphFragmentError:
+            raise
+        except Exception as exc:
+            raise GraphFragmentError("The system clipboard is unavailable.") from exc
+        return payload, decode_graph_fragment(payload)
+
+    def _sync_graph_clipboard_state(self) -> None:
+        """Keep graph menus honest about the current external clipboard."""
+        try:
+            _payload, fragment = self._clipboard_graph_fragment()
+        except (GraphFragmentError, RuntimeError):
+            self.graph_view.set_clipboard_state(False)
+            return
+        operation_id = ""
+        title = ""
+        if len(fragment.nodes) == 1:
+            operation_id = fragment.nodes[0].operation_id
+            try:
+                title = self.pipeline.operation_spec(operation_id).title
+            except (KeyError, ValueError):
+                operation_id = ""
+        self.graph_view.set_clipboard_state(
+            True,
+            copied_single_operation_id=operation_id,
+            copied_single_title=title,
+        )
+
+    def _copy_graph_nodes(self, node_ids) -> None:
+        """Copy selected authored graph state without runtime or external edges."""
+        selected = tuple(
+            node_id
+            for node_id in map(str, node_ids or ())
+            if node_id in self.pipeline.nodes
+        )
+        if not selected:
+            self.status_label.setText("Select at least one node to copy.")
+            return
+        try:
+            fragment = capture_graph_fragment(
+                self.pipeline,
+                selected,
+                positions=self.graph_view.node_positions(),
+                notes=self._graph_note_documents(),
+                node_preferences=self._compute_node_preferences,
+                optimizer_locked_node_ids=(
+                    self._compute_optimizer_locked_node_ids & set(selected)
+                ),
+            )
+            payload = encode_graph_fragment(fragment)
+            mime = QMimeData()
+            mime.setData(GRAPH_FRAGMENT_MIME_TYPE, payload)
+            QApplication.clipboard().setMimeData(mime)
+        except (GraphFragmentError, RuntimeError, TypeError, ValueError) as exc:
+            self._set_status(
+                f"Could not copy nodes: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
+        self._last_graph_paste_signature = None
+        self._graph_paste_repeat_count = 0
+        self._sync_graph_clipboard_state()
+        count = len(fragment.nodes)
+        noun = "node" if count == 1 else "nodes"
+        self.status_label.setText(f"Copied {count} {noun}.")
+
+    @staticmethod
+    def _unique_pasted_tunnel_name(name: str, occupied: set[str]) -> str:
+        """Return a readable case-insensitively unique tunnel name."""
+        original = str(name).strip()
+        if original.casefold() not in occupied:
+            occupied.add(original.casefold())
+            return original
+        base = f"{original} copy"
+        candidate = base
+        suffix = 2
+        while candidate.casefold() in occupied:
+            candidate = f"{base} {suffix}"
+            suffix += 1
+        occupied.add(candidate.casefold())
+        return candidate
+
+    def _prepare_graph_fragment_paste(
+        self,
+        fragment: GraphFragment,
+        anchor: QPointF,
+    ) -> tuple[
+        PrototypePipeline,
+        tuple[str, ...],
+        dict[str, QPointF],
+        tuple[GraphConnection, ...],
+        tuple[OutputTunnel, ...],
+        tuple[GraphNoteState, ...],
+        dict[str, NodeComputePreference],
+        set[str],
+    ]:
+        """Validate a complete destination graph without touching live state."""
+        staged = GraphSnapshot.from_pipeline(self.pipeline).to_pipeline()
+        # Workflow restoration derives counters from currently present nodes,
+        # whereas the live pipeline intentionally never reuses an ID after a
+        # deletion. Keep the live counter so staged and committed IDs agree.
+        staged._counters = deepcopy(self.pipeline._counters)
+        node_id_by_key: dict[str, str] = {}
+        new_node_ids: list[str] = []
+        positions: dict[str, QPointF] = {}
+        preferences: dict[str, NodeComputePreference] = {}
+        locked: set[str] = set()
+        for fragment_node in fragment.nodes:
+            node = staged.add_node(fragment_node.operation_id)
+            node.params = fragment_node.params
+            node_id_by_key[fragment_node.key] = node.id
+            new_node_ids.append(node.id)
+            positions[node.id] = QPointF(
+                float(anchor.x()) + fragment_node.position[0],
+                float(anchor.y()) + fragment_node.position[1],
+            )
+            if fragment_node.compute_preference is not None:
+                preferences[node.id] = fragment_node.compute_preference
+            if fragment_node.optimizer_locked:
+                locked.add(node.id)
+
+        occupied_tunnel_names = {
+            tunnel.name.casefold() for tunnel in self.pipeline.output_tunnel_list()
+        }
+        tunnel_name_map: dict[str, str] = {}
+        new_tunnels: list[OutputTunnel] = []
+        for fragment_tunnel in fragment.tunnels:
+            pasted_name = self._unique_pasted_tunnel_name(
+                fragment_tunnel.name,
+                occupied_tunnel_names,
+            )
+            tunnel_name_map[fragment_tunnel.name] = pasted_name
+            new_tunnels.append(
+                OutputTunnel(
+                    pasted_name,
+                    node_id_by_key[fragment_tunnel.source],
+                    fragment_tunnel.source_port,
+                )
+            )
+
+        new_connections = tuple(
+            GraphConnection(
+                node_id_by_key[connection.source],
+                node_id_by_key[connection.target],
+                connection.target_port,
+                connection.source_port,
+                tunnel_name_map.get(connection.tunnel, "")
+                if connection.tunnel
+                else "",
+            )
+            for connection in fragment.connections
+        )
+
+        used_note_ids = {str(note_id).casefold() for note_id in self._graph_notes}
+        next_note_index = 1
+        pasted_notes: list[GraphNoteState] = []
+        for fragment_note in fragment.notes:
+            while f"note_{next_note_index}".casefold() in used_note_ids:
+                next_note_index += 1
+            note_id = f"note_{next_note_index}"
+            used_note_ids.add(note_id.casefold())
+            next_note_index += 1
+            pasted_notes.append(
+                GraphNoteState(
+                    note_id,
+                    fragment_note.text,
+                    (
+                        float(anchor.x()) + fragment_note.position[0],
+                        float(anchor.y()) + fragment_note.position[1],
+                    ),
+                    fragment_note.width,
+                    node_id_by_key[fragment_note.attached_node],
+                )
+            )
+
+        staged.restore_graph(
+            staged.nodes.values(),
+            (*staged.connections, *new_connections),
+            (*staged.output_tunnel_list(), *new_tunnels),
+        )
+        return (
+            staged,
+            tuple(new_node_ids),
+            positions,
+            new_connections,
+            tuple(new_tunnels),
+            tuple(pasted_notes),
+            preferences,
+            locked,
+        )
+
+    def _paste_graph_fragment(self, scene_position) -> tuple[str, ...]:
+        """Paste one validated fragment as a single undoable graph edit."""
+        try:
+            payload, fragment = self._clipboard_graph_fragment()
+        except (GraphFragmentError, RuntimeError) as exc:
+            self._set_status(
+                f"Cannot paste nodes: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            self._sync_graph_clipboard_state()
+            return ()
+
+        self._finish_parameter_history_group()
+        anchor = QPointF(scene_position)
+        signature = (payload, round(anchor.x(), 3), round(anchor.y(), 3))
+        repeat_count = (
+            self._graph_paste_repeat_count + 1
+            if signature == self._last_graph_paste_signature
+            else 0
+        )
+        adjusted_anchor = anchor + QPointF(24.0 * repeat_count, 24.0 * repeat_count)
+        try:
+            plan = self._prepare_graph_fragment_paste(fragment, adjusted_anchor)
+        except (GraphFragmentError, KeyError, TypeError, ValueError) as exc:
+            self._set_status(
+                f"Cannot paste nodes: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return ()
+
+        before = self._current_history_snapshot()
+        before_counters = deepcopy(self.pipeline._counters)
+        (
+            staged,
+            new_node_ids,
+            positions,
+            new_connections,
+            new_tunnels,
+            pasted_notes,
+            preferences,
+            locked,
+        ) = plan
+        try:
+            for node_id in new_node_ids:
+                staged_node = staged.nodes[node_id]
+                live_node = self.pipeline.add_node(staged_node.operation_id)
+                if live_node.id != node_id:
+                    raise RuntimeError("The workflow changed while nodes were pasted.")
+                live_node.params = deepcopy(staged_node.params)
+            for tunnel in new_tunnels:
+                self.pipeline.add_output_tunnel(
+                    tunnel.name,
+                    tunnel.source_id,
+                    tunnel.source_port,
+                )
+            for connection in new_connections:
+                result = self.pipeline.connect(
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    connection.source_port,
+                    connection.tunnel_name,
+                )
+                if not result.success:
+                    raise RuntimeError(result.message)
+
+            for node_id in new_node_ids:
+                node = self.pipeline.nodes[node_id]
+                self.graph_view.add_node(node, positions[node_id])
+                self._sync_node_input_ports(node_id)
+                self._sync_node_output_ports(node_id)
+                self._sync_input_node_subtitle(node_id)
+            for connection in new_connections:
+                if not connection.tunnel_name:
+                    self.graph_view.add_connection(
+                        connection.source_id,
+                        connection.target_id,
+                        connection.target_port,
+                        connection.source_port,
+                    )
+            for note in pasted_notes:
+                self._graph_notes[note.id] = note
+                self.graph_view.add_note(
+                    note.id,
+                    note.text,
+                    QPointF(*note.position),
+                    width=note.width,
+                    attached_node=note.attached_node,
+                )
+            self._compute_node_preferences.update(preferences)
+            self._compute_optimizer_locked_node_ids.update(locked)
+            self._sync_port_tunnels()
+            self._sync_pin_ui()
+            self._refresh_graph_search_matches(reset_index=True)
+            self.graph_view.set_selected_nodes(
+                new_node_ids,
+                primary_node_id=new_node_ids[-1],
+            )
+            if any(
+                self.pipeline.nodes[node_id].operation_id == "input"
+                for node_id in new_node_ids
+            ) and (
+                self._interactive_collection_batch_items
+                or self._active_collection_batch_dialog is not None
+            ):
+                self._clear_interactive_collection_batch_session()
+            self._mark_pipeline_branches_dirty(set(new_node_ids))
+            self.run_pipeline()
+            self._push_undo_if_changed(before)
+        except Exception as exc:
+            self._restore_history_snapshot(before)
+            self.pipeline._counters = before_counters
+            self._set_status(
+                f"Paste failed and was rolled back: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return ()
+
+        self._last_graph_paste_signature = signature
+        self._graph_paste_repeat_count = repeat_count
+        count = len(new_node_ids)
+        noun = "node" if count == 1 else "nodes"
+        self.status_label.setText(f"Pasted {count} {noun}.")
+        return new_node_ids
+
+    def _paste_graph_node_values(self, target_node_id: str) -> bool:
+        """Replace one node's authored settings in one validated transaction."""
+        target = self.pipeline.nodes.get(target_node_id)
+        if target is None:
+            return False
+        try:
+            _payload, fragment = self._clipboard_graph_fragment()
+            if len(fragment.nodes) != 1:
+                raise GraphFragmentError(
+                    "Paste values requires exactly one copied node."
+                )
+            proposed = prepare_paste_values(
+                fragment.nodes[0],
+                target.operation_id,
+                target.params,
+            )
+            candidate = GraphSnapshot.from_pipeline(self.pipeline).to_pipeline()
+            candidate.nodes[target_node_id].params = deepcopy(proposed)
+            candidate.restore_graph(
+                candidate.nodes.values(),
+                candidate.connections,
+                candidate.output_tunnel_list(),
+            )
+            proposed = deepcopy(candidate.nodes[target_node_id].params)
+        except (GraphFragmentError, KeyError, TypeError, ValueError) as exc:
+            self._set_status(
+                f"Cannot paste values: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return False
+        if target.params == proposed:
+            self.status_label.setText("These nodes already have the same settings.")
+            return False
+
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        before_counters = deepcopy(self.pipeline._counters)
+        changed_names = {
+            name
+            for name in set(target.params) | set(proposed)
+            if target.params.get(name) != proposed.get(name)
+        }
+        try:
+            target.params = proposed
+            if target.operation_id == "input":
+                if target_node_id in self._interactive_collection_source_paths:
+                    self._clear_interactive_collection_batch_session()
+                QTimer.singleShot(0, self._refresh_image_source_options)
+            self._mark_pipeline_dirty(target_node_id)
+            self._reconcile_bulk_parameter_change(target_node_id, changed_names)
+            if target.params != proposed:
+                raise RuntimeError(
+                    "Bulk parameter reconciliation changed pasted authored values."
+                )
+            self._debounce_timer.start()
+            self._sync_current_workflow_tab_state()
+            self._push_undo_if_changed(before)
+        except Exception as exc:
+            self._restore_history_snapshot(before)
+            self.pipeline._counters = before_counters
+            self._set_status(
+                f"Paste values failed and was rolled back: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return False
+        count = len(changed_names)
+        noun = "setting" if count == 1 else "settings"
+        self.status_label.setText(
+            f"Pasted {count} {noun} into '{target.title}'. Recalculating..."
+        )
+        return True
+
+    def _reconcile_bulk_parameter_change(
+        self,
+        node_id: str,
+        changed_names: Iterable[str],
+    ) -> None:
+        """Refresh all derived UI once after one atomic parameter replacement.
+
+        This boundary intentionally excludes interactive coupling helpers such
+        as XY locks, optional representation derivation, and topology trimming.
+        Those helpers are useful while editing one control, but Paste Values
+        has an already validated exact parameter set and must never rewrite it
+        or disconnect existing graph edges.
+        """
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return
+        changed = frozenset(str(name) for name in changed_names)
+
+        self._sync_input_node_subtitle(node_id)
+        self._sync_node_input_ports(node_id)
+        self._sync_node_output_ports(node_id)
+        if "tag" in changed:
+            self._refresh_graph_search_matches(reset_index=True)
+
+        selected = self._selected_node_id == node_id
+        if selected:
+            self._render_parameters(node_id, preserve_authored_values=True)
+            self._sync_auto_contrast_ui()
+            self._update_metadata_panel()
+            self._sync_node_compute_control()
+
+        if node.operation_id == "split_channels" and "preview_channel" in changed:
+            self._refresh_split_channel_display_surfaces({node_id})
+
+        if not selected:
+            return
+        if node.operation_id in COLOCALIZATION_SCATTER_OPERATIONS:
+            self._update_colocalization_scatter()
+        if node.operation_id == "filter_labels_by_volume" and changed & {
+            "min_volume",
+            "max_volume",
+            "spatial_mode",
+        }:
+            self._update_label_volume_histogram()
+        if node.operation_id in INPUT_HISTOGRAM_OPERATIONS:
+            self._update_rescale_input_histogram(node_id, self._current_step())
 
     def _inspect_node_code(self, node_id: str) -> None:
         if node_id not in self.pipeline.nodes:
@@ -11261,7 +12098,8 @@ class VippWidget(QWidget):
 
     def _next_graph_note_id(self) -> str:
         index = 1
-        while f"note_{index}" in self._graph_notes:
+        occupied = {str(note_id).casefold() for note_id in self._graph_notes}
+        while f"note_{index}".casefold() in occupied:
             index += 1
         return f"note_{index}"
 
@@ -11833,33 +12671,52 @@ class VippWidget(QWidget):
             )
 
     def _delete_node(self, node_id: str) -> None:
-        node = self.pipeline.nodes.get(node_id)
-        if node is None:
+        self._delete_nodes((node_id,))
+
+    def _delete_nodes(self, node_ids) -> None:
+        """Delete a node selection as one model mutation and one undo step."""
+        requested = {str(value) for value in (node_ids or ())}
+        ordered_ids = tuple(
+            node_id
+            for node_id in self.pipeline.nodes
+            if node_id in requested
+        )
+        if not ordered_ids:
             return
-        if node_id == self._isolated_tuning_node_id:
+        deleted = set(ordered_ids)
+        selected_was_deleted = self._selected_node_id in deleted
+        if self._isolated_tuning_node_id in deleted:
             self._apply_isolated_tuning(run=False, announce=False)
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
-        title = node.title
+        titles = [self.pipeline.nodes[node_id].title for node_id in ordered_ids]
         dirty_targets = {
             connection.target_id
             for connection in self.pipeline.connections
-            if connection.source_id == node_id
+            if connection.source_id in deleted and connection.target_id not in deleted
         }
         affected_split_sources = {
             connection.source_id
             for connection in self.pipeline.connections
-            if connection.target_id == node_id
+            if connection.target_id in deleted and connection.source_id not in deleted
         }
-        if not self.pipeline.remove_node(node_id):
-            return
-        self._clear_node_thumbnail_statistics_presentation(node_id)
-        self._compute_node_preferences.pop(node_id, None)
-        self._compute_optimizer_locked_node_ids.discard(node_id)
-        self._accepted_compute_decisions.pop(node_id, None)
-        self._compute_decision_environments.pop(node_id, None)
-        self._stale_compute_badge_node_ids.discard(node_id)
-        if node.operation_id == "input" and (
+        deleted_input = any(
+            self.pipeline.nodes[node_id].operation_id == "input"
+            for node_id in ordered_ids
+        )
+        for node_id in ordered_ids:
+            if not self.pipeline.remove_node(node_id):
+                continue
+            self._clear_node_thumbnail_statistics_presentation(node_id)
+            self._compute_node_preferences.pop(node_id, None)
+            self._compute_optimizer_locked_node_ids.discard(node_id)
+            self._accepted_compute_decisions.pop(node_id, None)
+            self._compute_decision_environments.pop(node_id, None)
+            self._stale_compute_badge_node_ids.discard(node_id)
+            self._preview_disabled_node_ids.discard(node_id)
+            self._rescale_auto_output_ranges.pop(node_id, None)
+            self._discard_background_node_result_overrides({node_id})
+        if deleted_input and (
             self._interactive_collection_batch_items
             or self._active_collection_batch_dialog is not None
         ):
@@ -11867,32 +12724,33 @@ class VippWidget(QWidget):
         attached_note_ids = [
             note_id
             for note_id, note in self._graph_notes.items()
-            if note.attached_node == node_id
+            if note.attached_node in deleted
         ]
         for note_id in attached_note_ids:
             self._graph_notes.pop(note_id, None)
             self.graph_view.remove_note(note_id)
-        self.graph_view.remove_node(node_id)
+        for node_id in ordered_ids:
+            self.graph_view.remove_node(node_id)
         self._sync_port_tunnels()
         self._refresh_split_channel_display_surfaces(affected_split_sources)
-        self._preview_disabled_node_ids.discard(node_id)
         self._recent_cache_node_ids = [
             recent_id
             for recent_id in self._recent_cache_node_ids
-            if recent_id != node_id
+            if recent_id not in deleted
         ]
-        self._rescale_auto_output_ranges.pop(node_id, None)
-        self._discard_background_node_result_overrides({node_id})
-        if self._active_pinned_node_id == node_id:
+        if self._active_pinned_node_id in deleted:
             self._clear_active_pin(status=False)
-        if self._selected_node_id == node_id:
+        if selected_was_deleted:
             self._select_first_available_node()
         if self._mark_pipeline_branches_dirty(dirty_targets):
             self.run_pipeline()
         self._sync_execution_ui()
         self._sync_compute_toolbar_summary()
         self._push_undo_if_changed(before)
-        self.status_label.setText(f"Deleted '{title}'.")
+        if len(titles) == 1:
+            self.status_label.setText(f"Deleted '{titles[0]}'.")
+        else:
+            self.status_label.setText(f"Deleted {len(titles)} nodes.")
 
     def _on_node_moved(self, node_id: str, old_pos, _new_pos) -> None:
         if node_id not in self.pipeline.nodes:
@@ -11909,11 +12767,48 @@ class VippWidget(QWidget):
         self._sync_graph_note_positions_from_view()
         self.status_label.setText(f"Moved '{self._node_title(node_id)}'.")
 
+    def _on_nodes_moved(self, old_positions, _new_positions) -> None:
+        moved = {
+            str(node_id): QPointF(position)
+            for node_id, position in dict(old_positions or {}).items()
+            if str(node_id) in self.pipeline.nodes
+        }
+        if not moved:
+            return
+        self._finish_parameter_history_group()
+        positions = self.graph_view.node_positions()
+        for node_id, old_position in moved.items():
+            positions[node_id] = (
+                float(old_position.x()),
+                float(old_position.y()),
+            )
+        self._push_undo_snapshot(
+            self._current_history_snapshot(
+                positions,
+                notes_override=self._graph_note_documents(use_view_positions=False),
+            )
+        )
+        self._sync_graph_note_positions_from_view()
+        self.status_label.setText(f"Moved {len(moved)} nodes together.")
+
     def _select_first_available_node(self) -> None:
         if self.pipeline.nodes:
             node_id = next(iter(self.pipeline.nodes))
             self.graph_view.select_node(node_id)
             return
+        self._clear_node_inspector_selection()
+
+    def _on_graph_node_selection_changed(
+        self,
+        selected_node_ids,
+        primary_node_id: str,
+    ) -> None:
+        """Clear the inspector when the user deliberately clears the canvas."""
+        if tuple(selected_node_ids or ()) or primary_node_id:
+            return
+        self._clear_node_inspector_selection()
+
+    def _clear_node_inspector_selection(self) -> None:
         self._selected_node_id = ""
         self.selected_title.setText("No node selected")
         self._clear_parameter_form()
@@ -12364,7 +13259,43 @@ class VippWidget(QWidget):
             return message or "Calculation failed."
         return message or "This node calculates only when requested."
 
-    def _render_parameters(self, node_id: str) -> None:
+    def _render_parameters(
+        self,
+        node_id: str,
+        *,
+        preserve_authored_values: bool = False,
+    ) -> None:
+        """Render one parameter form, optionally forbidding model normalization.
+
+        Normal interactive rendering may initialize optional representations
+        that are kept in sync by the inspector.  A bulk Paste Values commit is
+        different: every copied authored value has already been validated and
+        must survive presentation refresh exactly.  The preservation mode
+        therefore restores the complete parameter mapping even if a legacy
+        renderer attempts to derive an optional UI value.
+        """
+        saved_params = (
+            deepcopy(self.pipeline.nodes[node_id].params)
+            if preserve_authored_values
+            else None
+        )
+        try:
+            self._render_parameters_impl(
+                node_id,
+                preserve_authored_values=preserve_authored_values,
+            )
+        finally:
+            if saved_params is not None and node_id in self.pipeline.nodes:
+                node = self.pipeline.nodes[node_id]
+                node.params.clear()
+                node.params.update(saved_params)
+
+    def _render_parameters_impl(
+        self,
+        node_id: str,
+        *,
+        preserve_authored_values: bool,
+    ) -> None:
         self._clear_parameter_form()
         node = self.pipeline.nodes[node_id]
         compact_deconvolution_form = (
@@ -12402,7 +13333,10 @@ class VippWidget(QWidget):
             self._render_select_table_columns_parameters(node_id)
             return
         if node.operation_id == "rescale_axes":
-            self._render_rescale_axes_parameters(node_id)
+            self._render_rescale_axes_parameters(
+                node_id,
+                synchronize_representations=not preserve_authored_values,
+            )
             return
         if node.operation_id == "combine_channels":
             self._render_combine_channels_parameters(node_id)
@@ -12417,7 +13351,8 @@ class VippWidget(QWidget):
             self._render_born_wolf_psf_parameters(node_id)
             return
 
-        self._sync_rescale_output_range_defaults(node_id)
+        if not preserve_authored_values:
+            self._sync_rescale_output_range_defaults(node_id)
         rendered = False
         for spec in specs:
             if self._parameter_spec_hidden(node_id, spec):
@@ -12532,8 +13467,14 @@ class VippWidget(QWidget):
         self.parameter_form.addRow(note)
         return True
 
-    def _render_rescale_axes_parameters(self, node_id: str) -> None:
-        self._sync_rescale_axes_representations(node_id)
+    def _render_rescale_axes_parameters(
+        self,
+        node_id: str,
+        *,
+        synchronize_representations: bool = True,
+    ) -> None:
+        if synchronize_representations:
+            self._sync_rescale_axes_representations(node_id)
         node = self.pipeline.nodes[node_id]
         for spec in self._rescale_axes_visible_specs(node_id):
             bounds = self._parameter_bounds_for(node_id, spec)

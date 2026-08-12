@@ -907,6 +907,16 @@ class ConnectionResult:
 
 
 @dataclass(frozen=True)
+class OutputTunnelSpliceResult:
+    """Immutable record of one node inserted before an output tunnel."""
+
+    previous_tunnel: OutputTunnel
+    tunnel: OutputTunnel
+    upstream_connection: GraphConnection
+    subscriber_connections: tuple[GraphConnection, ...]
+
+
+@dataclass(frozen=True)
 class PipelineExecutionPlan:
     """Read-only partition of one requested interactive graph execution."""
 
@@ -5430,6 +5440,23 @@ class PrototypePipeline:
         ]
         return True
 
+    def node_has_graph_bindings(self, node_id: str) -> bool:
+        """Return whether a node participates in any graph-level binding.
+
+        Connections include both ordinary visible wires and tunnel-backed
+        subscriber wires.  A tunnel declaration is itself a binding even when
+        it currently has no subscribers, because moving that node would also
+        move a named public output of the workflow.
+        """
+        if node_id not in self.nodes:
+            return False
+        return any(
+            connection.source_id == node_id or connection.target_id == node_id
+            for connection in self.connections
+        ) or any(
+            tunnel.source_id == node_id for tunnel in self.output_tunnels.values()
+        )
+
     def connect(
         self,
         source_id: str,
@@ -5606,6 +5633,103 @@ class PrototypePipeline:
             for connection in self.connections
         ]
         return rerouted
+
+    def splice_node_before_output_tunnel(
+        self,
+        name: str,
+        inserted_node_id: str,
+        *,
+        inserted_input_port: int = 0,
+        inserted_output_port: int = 0,
+    ) -> OutputTunnelSpliceResult:
+        """Insert one loose existing node immediately before a tunnel.
+
+        The old tunnel source is connected to ``inserted_input_port`` and the
+        named tunnel, including all of its subscribers, is then moved to
+        ``inserted_output_port``.  Connecting the upstream edge first is
+        intentional: type-preserving and dynamic-output nodes can only expose
+        their authoritative output types and port count once their input is
+        known.
+
+        The graph update is atomic.  Any validation or reroute failure restores
+        the original connections and tunnel declarations exactly.  Ordinary
+        wires from the old tunnel source are not part of the reroute and remain
+        untouched.
+        """
+        key = _tunnel_key(name)
+        current = self.output_tunnels.get(key)
+        if current is None:
+            raise ValueError(f"Unknown tunnel '{_clean_tunnel_name(name)}'.")
+        node = self.nodes.get(inserted_node_id)
+        if node is None:
+            raise ValueError(
+                f"Cannot insert missing node {inserted_node_id!r} before "
+                f"tunnel '{current.name}'."
+            )
+        if self.node_has_graph_bindings(inserted_node_id):
+            raise ValueError(
+                f"Cannot insert '{node.title}' before tunnel '{current.name}': "
+                "disconnect the node from all wires and tunnels first."
+            )
+
+        input_port = self._validated_splice_port(
+            inserted_input_port,
+            label="input",
+            tunnel_name=current.name,
+        )
+        output_port = self._validated_splice_port(
+            inserted_output_port,
+            label="output",
+            tunnel_name=current.name,
+        )
+        input_count = self.input_port_count(inserted_node_id)
+        if input_count <= 0:
+            raise ValueError(
+                f"Cannot insert '{node.title}' before tunnel '{current.name}': "
+                "the node does not accept an input."
+            )
+        if input_port >= input_count:
+            raise ValueError(
+                f"Cannot insert '{node.title}' before tunnel '{current.name}': "
+                f"input {input_port} does not exist; the node has "
+                f"{input_count} input port(s)."
+            )
+
+        original_connections = list(self.connections)
+        original_tunnels = dict(self.output_tunnels)
+        try:
+            connected = self.connect(
+                current.source_id,
+                inserted_node_id,
+                target_port=input_port,
+                source_port=current.source_port,
+            )
+            if not connected.success or connected.connection is None:
+                raise ValueError(
+                    f"Cannot insert '{node.title}' before tunnel "
+                    f"'{current.name}': {connected.message}"
+                )
+
+            rerouted = self.reroute_output_tunnel(
+                current.name,
+                inserted_node_id,
+                output_port,
+            )
+            subscribers = tuple(
+                connection
+                for connection in self.connections
+                if connection.tunnel_name == rerouted.name
+            )
+            return OutputTunnelSpliceResult(
+                previous_tunnel=current,
+                tunnel=rerouted,
+                upstream_connection=connected.connection,
+                subscriber_connections=subscribers,
+            )
+        except Exception:
+            self.connections = original_connections
+            self.output_tunnels = original_tunnels
+            raise
 
     def validate_output_tunnel_reroute(
         self,
@@ -6007,6 +6131,26 @@ class PrototypePipeline:
                     f"Output {tunnel.source_id!r} port {tunnel.source_port} "
                     f"already has tunnel '{existing.name}'."
                 )
+
+    @staticmethod
+    def _validated_splice_port(
+        value: int,
+        *,
+        label: str,
+        tunnel_name: str,
+    ) -> int:
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise ValueError(
+                f"Cannot insert before tunnel '{tunnel_name}': {label} port "
+                "must be an integer."
+            )
+        port = int(value)
+        if port < 0:
+            raise ValueError(
+                f"Cannot insert before tunnel '{tunnel_name}': {label} port "
+                "cannot be negative."
+            )
+        return port
 
     def operation_spec(self, operation_id: str) -> OperationSpec:
         return NODE_LIBRARY_BY_ID[operation_id]

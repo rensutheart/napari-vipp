@@ -74,6 +74,11 @@ BATCH_PROVENANCE_EXAMPLE_WORKFLOW = (
     / "examples"
     / "synthetic-batch-provenance.json"
 )
+GRAPH_AUTHORING_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "graph-authoring-acceptance.json"
+)
 
 
 def _restore_workflow(pipeline: PrototypePipeline, workflow: dict) -> None:
@@ -91,6 +96,37 @@ def _label_volumes(labels: np.ndarray) -> dict[int, int]:
         int(label_id): int(np.count_nonzero(labels == label_id))
         for label_id in label_ids
     }
+
+
+def test_graph_authoring_acceptance_workflow_records_each_manual_invariant():
+    workflow = load_workflow(GRAPH_AUTHORING_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    _restore_workflow(pipeline, workflow)
+
+    tunnel = pipeline.output_tunnel("Shared processed image")
+    assert tunnel is not None
+    assert tunnel.source_id == "gaussian_main"
+    assert {
+        connection.target_id
+        for connection in pipeline.connections
+        if connection.tunnel_name == tunnel.name
+    } == {"threshold_low", "threshold_high"}
+    assert any(
+        connection.source_id == "gaussian_main"
+        and connection.target_id == "rescale_direct"
+        and not connection.tunnel_name
+        for connection in pipeline.connections
+    )
+    assert not pipeline.node_has_graph_bindings("invert_loose")
+    assert pipeline.nodes["gaussian_values_source"].params["sigma"] == 4.0
+    assert pipeline.nodes["gaussian_values_target"].params["sigma"] == 0.6
+    assert any(
+        connection.source_id == "unsharp_fragment"
+        and connection.target_id == "threshold_fragment"
+        for connection in pipeline.connections
+    )
+    note_text = " ".join(note["text"] for note in workflow["notes"])
+    assert all(f"TEST {index}" in note_text for index in range(1, 5))
 
 
 def test_synthetic_batch_provenance_workflow_loads_and_runs_exactly():

@@ -13,6 +13,7 @@ from qtpy.QtGui import (
     QFont,
     QFontMetricsF,
     QImage,
+    QKeySequence,
     QPainter,
     QPainterPath,
     QPainterPathStroker,
@@ -21,6 +22,9 @@ from qtpy.QtGui import (
     QTransform,
 )
 from qtpy.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
     QFrame,
     QGraphicsEllipseItem,
     QGraphicsItem,
@@ -31,9 +35,12 @@ from qtpy.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMenu,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -1380,8 +1387,10 @@ class NodeProxy(QGraphicsProxyWidget):
         self.output_ports: list[PortItem] = []
         self._drag_start_scene: QPointF | None = None
         self._drag_start_pos: QPointF | None = None
+        self._drag_group_start_positions: dict[str, QPointF] = {}
         self._dragging = False
         self._press_was_preview = False
+        self._press_preserved_group = False
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -1587,10 +1596,23 @@ class NodeProxy(QGraphicsProxyWidget):
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.LeftButton and not self._press_on_button(event):
             card = self._card()
+            view = _view_for_scene(self.scene())
+            if view is not None:
+                self._press_preserved_group = view._handle_node_press(
+                    self.node_id,
+                    event.modifiers(),
+                    preserve_group_for_drag=True,
+                )
+                self._drag_group_start_positions = (
+                    view._selected_node_start_positions(self.node_id)
+                )
+            else:
+                self.setSelected(True)
+                self._drag_group_start_positions = {
+                    self.node_id: QPointF(self.pos())
+                }
             if card is not None:
-                card.selected.emit(card.node_id)
                 card.setCursor(Qt.ClosedHandCursor)
-            self.setSelected(True)
             self._drag_start_scene = QPointF(event.scenePos())
             self._drag_start_pos = QPointF(self.pos())
             self._dragging = False
@@ -1604,17 +1626,22 @@ class NodeProxy(QGraphicsProxyWidget):
             delta = event.scenePos() - self._drag_start_scene
             if delta.manhattanLength() >= 3:
                 self._dragging = True
-                self.setOpacity(self.DRAG_OPACITY)
-                new_pos = self._drag_start_pos + delta
-                old_pos = QPointF(self.pos())
-                self.setPos(new_pos)
                 view = _view_for_scene(self.scene())
                 if view is not None:
-                    view._move_attached_notes(self.node_id, new_pos - old_pos)
-                    view.update_existing_node_insert_preview(
-                        self.node_id,
-                        event.scenePos(),
+                    view._move_selected_nodes_during_drag(
+                        self._drag_group_start_positions,
+                        delta,
                     )
+                    if len(self._drag_group_start_positions) == 1:
+                        view.update_existing_node_insert_preview(
+                            self.node_id,
+                            event.scenePos(),
+                        )
+                    else:
+                        view._clear_all_insert_previews()
+                else:
+                    self.setOpacity(self.DRAG_OPACITY)
+                    self.setPos(self._drag_start_pos + delta)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -1623,6 +1650,10 @@ class NodeProxy(QGraphicsProxyWidget):
         if self._drag_start_scene is not None and event.button() == Qt.LeftButton:
             start_pos = self._drag_start_pos
             end_pos = QPointF(self.pos())
+            group_start_positions = {
+                node_id: QPointF(position)
+                for node_id, position in self._drag_group_start_positions.items()
+            }
             moved = (
                 self._dragging
                 and start_pos is not None
@@ -1635,14 +1666,28 @@ class NodeProxy(QGraphicsProxyWidget):
             card = self._card()
             if card is not None:
                 card.setCursor(Qt.OpenHandCursor)
-            self.setOpacity(1.0)
             self._drag_start_scene = None
             self._drag_start_pos = None
+            self._drag_group_start_positions = {}
             self._dragging = False
             self._press_was_preview = False
             if moved:
                 view = _view_for_scene(self.scene())
                 if view is not None:
+                    view._finish_selected_node_drag(group_start_positions)
+                    if len(group_start_positions) > 1:
+                        end_positions = {
+                            node_id: QPointF(view._proxies[node_id].pos())
+                            for node_id in group_start_positions
+                            if node_id in view._proxies
+                        }
+                        view.nodes_moved.emit(
+                            group_start_positions,
+                            end_positions,
+                        )
+                        self._press_preserved_group = False
+                        event.accept()
+                        return
                     was_loose = not self.connections
                     inserted = view.release_existing_node_insert(
                         self.node_id,
@@ -1658,6 +1703,15 @@ class NodeProxy(QGraphicsProxyWidget):
                                 end_pos,
                             )
                         view.node_moved.emit(self.node_id, start_pos, end_pos)
+            else:
+                view = _view_for_scene(self.scene())
+                if view is not None:
+                    view._finish_selected_node_drag(group_start_positions)
+                    if self._press_preserved_group:
+                        view._select_node(self.node_id)
+                else:
+                    self.setOpacity(1.0)
+            self._press_preserved_group = False
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -1972,12 +2026,18 @@ class PipelineGraphView(QGraphicsView):
     WIRE_OBSTACLE_MARGIN = 24.0
 
     node_selected = Signal(str)
+    node_selection_changed = Signal(object, str)
     node_delete_requested = Signal(str)
+    nodes_delete_requested = Signal(object)
+    nodes_copy_requested = Signal(object)
+    paste_requested = Signal(QPointF)
+    node_paste_values_requested = Signal(str)
     node_duplicate_requested = Signal(str)
     node_code_requested = Signal(str)
     node_note_requested = Signal(str)
     node_isolation_requested = Signal(str)
     node_moved = Signal(str, object, object)
+    nodes_moved = Signal(object, object)
     node_splice_requested = Signal(str, object, object, object)
     pin_requested = Signal(str)
     node_calculate_requested = Signal(str)
@@ -1989,6 +2049,9 @@ class PipelineGraphView(QGraphicsView):
     port_context_requested = Signal(str, str, int, object)
     tunnel_selected = Signal(str)
     tunnel_reroute_requested = Signal(str, str, int)
+    tunnel_insert_requested = Signal(str, QPointF)
+    tunnel_node_insert_requested = Signal(str, str, QPointF)
+    tunnel_node_splice_requested = Signal(str, str, object, object)
     note_moved = Signal(str, object, object)
     note_edit_requested = Signal(str)
     note_delete_requested = Signal(str)
@@ -2007,6 +2070,10 @@ class PipelineGraphView(QGraphicsView):
         self.setAcceptDrops(True)
         self._proxies: dict[str, NodeProxy] = {}
         self._cards: dict[str, NodeCard] = {}
+        self._primary_node_id: str | None = None
+        self._clipboard_can_paste = False
+        self._clipboard_single_operation_id = ""
+        self._clipboard_single_title = ""
         self._isolated_tuning_node_id: str | None = None
         self._connections: list[ConnectionItem] = []
         self._pending_source: PortItem | None = None
@@ -2015,12 +2082,19 @@ class PipelineGraphView(QGraphicsView):
         self._highlighted_connection: ConnectionItem | None = None
         self._highlighted_connection_state: str | None = None
         self._highlighted_connection_operation: str | None = None
+        self._highlighted_tunnel_insert_port: PortItem | None = None
+        self._highlighted_tunnel_insert_name = ""
+        self._highlighted_tunnel_insert_state: str | None = None
         self._connection_insert_validator: Callable[
             [str, tuple[str, str, int, int]],
             tuple[str, str],
         ] | None = None
         self._tunnel_reroute_validator: Callable[
             [str, str, int],
+            tuple[str, str],
+        ] | None = None
+        self._tunnel_insert_validator: Callable[
+            [str, str, str],
             tuple[str, str],
         ] | None = None
         self._connection_dragging = False
@@ -2068,9 +2142,11 @@ class PipelineGraphView(QGraphicsView):
         preserved_base_transform = QTransform(self._base_transform)
         preserved_zoom = float(self._zoom_percent)
         self.clear_node_processing()
+        self._clear_tunnel_insert_preview()
         self.scene.clear()
         self._proxies.clear()
         self._cards.clear()
+        self._primary_node_id = None
         self._connections.clear()
         self._notes.clear()
         self._pending_source = None
@@ -2435,6 +2511,74 @@ class PipelineGraphView(QGraphicsView):
             self._mark_graph_geometry_changed()
             self.reroute_connections(affected_rect=moved_rect)
 
+    def set_clipboard_state(
+        self,
+        can_paste: bool,
+        *,
+        copied_single_operation_id: str = "",
+        copied_single_title: str = "",
+    ) -> None:
+        """Update menu availability from clipboard data inspected by the owner."""
+        self._clipboard_can_paste = bool(can_paste)
+        self._clipboard_single_operation_id = str(
+            copied_single_operation_id or ""
+        ).strip()
+        self._clipboard_single_title = str(copied_single_title or "").strip()
+
+    def viewport_center_scene_position(self) -> QPointF:
+        """Return the scene point used for keyboard paste."""
+        return self.mapToScene(self.viewport().rect().center())
+
+    def _selected_node_start_positions(
+        self,
+        dragged_node_id: str,
+    ) -> dict[str, QPointF]:
+        selected = self.selected_node_ids()
+        if dragged_node_id not in selected:
+            selected = (dragged_node_id,)
+        return {
+            node_id: QPointF(self._proxies[node_id].pos())
+            for node_id in selected
+            if node_id in self._proxies
+        }
+
+    def _move_selected_nodes_during_drag(
+        self,
+        start_positions: Mapping[str, QPointF],
+        delta: QPointF,
+    ) -> None:
+        for node_id, start_position in start_positions.items():
+            proxy = self._proxies.get(node_id)
+            if proxy is None:
+                continue
+            proxy.setOpacity(NodeProxy.DRAG_OPACITY)
+            old_position = QPointF(proxy.pos())
+            new_position = QPointF(start_position + delta)
+            if _points_close(old_position, new_position):
+                continue
+            proxy.setPos(new_position)
+            self._move_attached_notes(node_id, new_position - old_position)
+
+    def _finish_selected_node_drag(
+        self,
+        start_positions: Mapping[str, QPointF],
+    ) -> None:
+        if not start_positions:
+            return
+        moved_rect = QRectF()
+        for node_id, start_position in start_positions.items():
+            proxy = self._proxies.get(node_id)
+            if proxy is None:
+                continue
+            local_rect = proxy.boundingRect()
+            old_rect = QRectF(local_rect).translated(start_position)
+            moved_rect = moved_rect.united(old_rect.united(proxy.sceneBoundingRect()))
+        self._apply_graph_focus_opacity()
+        if moved_rect.isValid():
+            self._ensure_scene_space_for_rect(moved_rect)
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=moved_rect)
+
     def set_connection_insert_validator(
         self,
         validator: Callable[[str, tuple[str, str, int, int]], tuple[str, str]]
@@ -2448,6 +2592,13 @@ class PipelineGraphView(QGraphicsView):
     ) -> None:
         """Set the topology-aware validator used during tunnel source drags."""
         self._tunnel_reroute_validator = validator
+
+    def set_tunnel_insert_validator(
+        self,
+        validator: Callable[[str, str, str], tuple[str, str]] | None,
+    ) -> None:
+        """Set the validator used for palette drops on source tunnel badges."""
+        self._tunnel_insert_validator = validator
 
     def finish_loose_node_drag(
         self,
@@ -2473,7 +2624,15 @@ class PipelineGraphView(QGraphicsView):
     ) -> None:
         """Preview wire insertion while a loose existing node is dragged."""
         proxy = self._proxies.get(node_id)
-        if proxy is None or proxy.connections:
+        if proxy is None or not self._is_loose_node(node_id):
+            self._clear_all_insert_previews()
+            return
+        tunnel_name = self._update_tunnel_insert_preview(
+            scene_pos,
+            proxy.operation_id,
+            node_id,
+        )
+        if tunnel_name:
             self._clear_connection_insert_preview()
             return
         self._update_connection_insert_preview(proxy.operation_id, scene_pos)
@@ -2487,17 +2646,34 @@ class PipelineGraphView(QGraphicsView):
     ) -> bool:
         """Emit a splice request if a loose node is dropped on a valid wire."""
         proxy = self._proxies.get(node_id)
-        if proxy is None or proxy.connections:
-            self._clear_connection_insert_preview()
+        if proxy is None or not self._is_loose_node(node_id):
+            self._clear_all_insert_previews()
             return False
+        tunnel_name = self._update_tunnel_insert_preview(
+            scene_pos,
+            proxy.operation_id,
+            node_id,
+        )
+        if tunnel_name:
+            if self._highlighted_tunnel_insert_state != "compatible":
+                self._clear_all_insert_previews()
+                return False
+            self._clear_all_insert_previews()
+            self.tunnel_node_splice_requested.emit(
+                node_id,
+                tunnel_name,
+                QPointF(old_pos),
+                QPointF(new_pos),
+            )
+            return True
         self._update_connection_insert_preview(proxy.operation_id, scene_pos)
         connection_key = self._connection_key(self._highlighted_connection)
         state = self._highlighted_connection_state
         if connection_key is None or state == "incompatible":
-            self._clear_connection_insert_preview()
+            self._clear_all_insert_previews()
             return False
 
-        self._clear_connection_insert_preview()
+        self._clear_all_insert_previews()
         self.node_splice_requested.emit(
             node_id,
             connection_key,
@@ -2505,6 +2681,17 @@ class PipelineGraphView(QGraphicsView):
             QPointF(new_pos),
         )
         return True
+
+    def _is_loose_node(self, node_id: str) -> bool:
+        proxy = self._proxies.get(node_id)
+        if proxy is None or proxy.connections:
+            return False
+        tunnel_ports = tuple(self._tunnel_source_ports.values()) + tuple(
+            port
+            for ports in self._tunnel_subscriber_ports.values()
+            for port in ports
+        )
+        return all(port.node_id != node_id for port in tunnel_ports)
 
     def connection_obstacle_rects(
         self,
@@ -2838,6 +3025,7 @@ class PipelineGraphView(QGraphicsView):
         proxy = self._proxies.get(node_id)
         if proxy is None:
             return
+        was_selected = node_id in self.selected_node_ids()
         affected_rect = proxy.sceneBoundingRect()
         for connection in list(proxy.connections):
             self.delete_connection_item(connection, notify=False)
@@ -2851,11 +3039,16 @@ class PipelineGraphView(QGraphicsView):
             self._highlighted_input_port = None
         self._cards.pop(node_id, None)
         self._proxies.pop(node_id, None)
+        if self._primary_node_id == node_id:
+            self._primary_node_id = None
         self._search_match_node_ids.discard(node_id)
         self.scene.removeItem(proxy)
         self._apply_graph_focus_opacity()
         self._mark_graph_geometry_changed()
         self.reroute_connections(affected_rect=affected_rect)
+        if was_selected:
+            remaining = set(self.selected_node_ids())
+            self._set_node_selection(remaining, self._primary_node_id)
 
     def remove_connection(
         self,
@@ -3226,22 +3419,41 @@ class PipelineGraphView(QGraphicsView):
     def dragMoveEvent(self, event):  # noqa: N802
         if event.mimeData().hasFormat(OPERATION_MIME):
             operation_id = bytes(event.mimeData().data(OPERATION_MIME)).decode()
-            self._update_connection_insert_preview(
+            scene_pos = self.mapToScene(_point_from_event(event))
+            tunnel_name = self._update_tunnel_insert_preview(
+                scene_pos,
                 operation_id,
-                self.mapToScene(_point_from_event(event)),
             )
+            if tunnel_name:
+                self._clear_connection_insert_preview()
+            else:
+                self._update_connection_insert_preview(operation_id, scene_pos)
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
 
     def dragLeaveEvent(self, event):  # noqa: N802
-        self._clear_connection_insert_preview()
+        self._clear_all_insert_previews()
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):  # noqa: N802
         if event.mimeData().hasFormat(OPERATION_MIME):
             operation_id = bytes(event.mimeData().data(OPERATION_MIME)).decode()
             scene_pos = self.mapToScene(_point_from_event(event))
+            tunnel_name = self._update_tunnel_insert_preview(
+                scene_pos,
+                operation_id,
+            )
+            if tunnel_name:
+                if self._highlighted_tunnel_insert_state == "compatible":
+                    self.tunnel_node_insert_requested.emit(
+                        operation_id,
+                        tunnel_name,
+                        scene_pos,
+                    )
+                self._clear_all_insert_previews()
+                event.acceptProposedAction()
+                return
             self._update_connection_insert_preview(operation_id, scene_pos)
             connection = self._highlighted_connection
             state = self._highlighted_connection_state
@@ -3250,7 +3462,7 @@ class PipelineGraphView(QGraphicsView):
                 self.node_insert_requested.emit(operation_id, connection_key, scene_pos)
             else:
                 self.node_create_requested.emit(operation_id, scene_pos)
-            self._clear_connection_insert_preview()
+            self._clear_all_insert_previews()
             event.acceptProposedAction()
             return
         super().dropEvent(event)
@@ -3260,6 +3472,17 @@ class PipelineGraphView(QGraphicsView):
             self._cancel_pending_tunnel_reroute()
             event.accept()
             return
+        if not self._shortcut_belongs_to_text_editor():
+            if event.matches(QKeySequence.Copy):
+                selected = self.selected_node_ids()
+                if selected:
+                    self.nodes_copy_requested.emit(selected)
+                    event.accept()
+                    return
+            if event.matches(QKeySequence.Paste) and self._clipboard_can_paste:
+                self.paste_requested.emit(self.viewport_center_scene_position())
+                event.accept()
+                return
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
             selected_connections = [
                 item
@@ -3283,23 +3506,35 @@ class PipelineGraphView(QGraphicsView):
                 event.accept()
                 return
 
-            selected_nodes = [
-                item
-                for item in self.scene.selectedItems()
-                if isinstance(item, NodeProxy)
-            ]
-            if not selected_nodes:
-                selected_nodes = [
-                    proxy
+            selected_node_ids = self.selected_node_ids()
+            if not selected_node_ids:
+                selected_node_ids = tuple(
+                    node_id
                     for node_id, proxy in self._proxies.items()
-                    if self._cards[node_id]._selected
-                ]
-            for item in selected_nodes:
-                self.node_delete_requested.emit(item.node_id)
-            if selected_nodes:
+                    if proxy.isSelected()
+                )
+            if len(selected_node_ids) == 1:
+                self.node_delete_requested.emit(selected_node_ids[0])
+            elif selected_node_ids:
+                self.nodes_delete_requested.emit(selected_node_ids)
+            if selected_node_ids:
                 event.accept()
                 return
         super().keyPressEvent(event)
+
+    def _shortcut_belongs_to_text_editor(self) -> bool:
+        focus = QApplication.focusWidget()
+        if focus is None or focus in {self, self.viewport()}:
+            return False
+        text_editor_types = (
+            QLineEdit,
+            QTextEdit,
+            QPlainTextEdit,
+            QAbstractSpinBox,
+        )
+        if isinstance(focus, text_editor_types):
+            return True
+        return isinstance(focus, QComboBox) and focus.isEditable()
 
     def wheelEvent(self, event):  # noqa: N802
         if event.modifiers() & Qt.ControlModifier:
@@ -3336,6 +3571,17 @@ class PipelineGraphView(QGraphicsView):
             if background_click and self._active_tunnel_name:
                 self.clear_tunnel_highlight(sticky=True)
         if event.button() == Qt.RightButton:
+            tunnel_badge = self._tunnel_badge_port_at_view_pos(pos)
+            if tunnel_badge is not None and tunnel_badge[1].kind == "output":
+                tunnel_name, source_port = tunnel_badge
+                self._show_tunnel_source_context_menu(
+                    tunnel_name,
+                    source_port,
+                    self.mapToScene(pos),
+                    _global_pos_from_event(event),
+                )
+                event.accept()
+                return
             port = self._port_at_view_pos(pos)
             if port is not None:
                 self.port_context_requested.emit(
@@ -3348,8 +3594,20 @@ class PipelineGraphView(QGraphicsView):
                 return
             node_id = self._node_id_at_view_pos(pos)
             if node_id is not None:
-                self._select_node(node_id)
+                selected = set(self.selected_node_ids())
+                if node_id in selected:
+                    self._set_node_selection(selected, node_id)
+                else:
+                    self._select_node(node_id)
                 self._show_node_context_menu(node_id, _global_pos_from_event(event))
+                event.accept()
+                return
+            if background_click:
+                self._clear_node_selection()
+                self._show_canvas_context_menu(
+                    self.mapToScene(pos),
+                    _global_pos_from_event(event),
+                )
                 event.accept()
                 return
             if not background_click:
@@ -3363,6 +3621,8 @@ class PipelineGraphView(QGraphicsView):
             self._cancel_pending_connection()
             event.accept()
             return
+        if event.button() == Qt.LeftButton and background_click:
+            self._clear_node_selection()
         if event.button() in (Qt.MiddleButton, Qt.RightButton) or (
             event.button() == Qt.LeftButton and background_click
         ):
@@ -3415,23 +3675,130 @@ class PipelineGraphView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
+    def selected_node_ids(self) -> tuple[str, ...]:
+        """Return selected node ids in stable graph order."""
+        return tuple(
+            node_id
+            for node_id, card in self._cards.items()
+            if card._selected
+        )
+
+    def primary_node_id(self) -> str | None:
+        """Return the most recently selected node used by the inspector."""
+        if self._primary_node_id in self._cards:
+            return self._primary_node_id
+        return None
+
+    def set_selected_nodes(
+        self,
+        node_ids,
+        *,
+        primary_node_id: str | None = None,
+    ) -> None:
+        """Replace the node selection while retaining a single inspector target."""
+        requested = {
+            str(node_id) for node_id in node_ids or () if str(node_id) in self._cards
+        }
+        primary = str(primary_node_id or "") or None
+        if primary not in requested:
+            primary = next(
+                (
+                    node_id
+                    for node_id in reversed(tuple(self._cards))
+                    if node_id in requested
+                ),
+                None,
+            )
+        self._set_node_selection(requested, primary)
+
     def _select_node(self, node_id: str) -> None:
+        if node_id not in self._cards:
+            return
+        self._set_node_selection({node_id}, node_id)
+
+    def _handle_node_press(
+        self,
+        node_id: str,
+        modifiers,
+        *,
+        preserve_group_for_drag: bool = False,
+    ) -> bool:
+        """Apply Windows-style click selection before a node drag starts."""
+        if node_id not in self._cards:
+            return False
+        selected = set(self.selected_node_ids())
+        control = bool(modifiers & (Qt.ControlModifier | Qt.MetaModifier))
+        shift = bool(modifiers & Qt.ShiftModifier)
+        if control:
+            if node_id in selected:
+                selected.remove(node_id)
+                primary = self._primary_node_id
+                if primary == node_id:
+                    primary = next(
+                        (
+                            candidate
+                            for candidate in reversed(tuple(self._cards))
+                            if candidate in selected
+                        ),
+                        None,
+                    )
+            else:
+                selected.add(node_id)
+                primary = node_id
+        elif shift:
+            selected.add(node_id)
+            primary = node_id
+        else:
+            if (
+                preserve_group_for_drag
+                and node_id in selected
+                and len(selected) > 1
+            ):
+                self._set_node_selection(selected, node_id)
+                return True
+            selected = {node_id}
+            primary = node_id
+        self._set_node_selection(selected, primary)
+        return False
+
+    def _set_node_selection(
+        self,
+        selected_node_ids: set[str],
+        primary_node_id: str | None,
+    ) -> None:
+        selected = {
+            node_id for node_id in selected_node_ids if node_id in self._cards
+        }
+        if primary_node_id not in selected:
+            primary_node_id = next(
+                (
+                    node_id
+                    for node_id in reversed(tuple(self._cards))
+                    if node_id in selected
+                ),
+                None,
+            )
         for note in self._notes.values():
             note.setSelected(False)
+        for connection in self._connections:
+            connection.setSelected(False)
         for card_id, card in self._cards.items():
-            selected = card_id == node_id
-            card.set_selected(selected)
+            is_selected = card_id in selected
+            card.set_selected(is_selected)
             proxy = self._proxies.get(card_id)
-            if proxy is not None and proxy.isSelected() != selected:
-                proxy.setSelected(selected)
-        self.node_selected.emit(node_id)
+            if proxy is not None and proxy.isSelected() != is_selected:
+                proxy.setSelected(is_selected)
+        self._primary_node_id = primary_node_id
+        ordered = self.selected_node_ids()
+        primary = primary_node_id or ""
+        self.node_selection_changed.emit(ordered, primary)
+        if primary:
+            self.node_selected.emit(primary)
 
     def _clear_node_selection(self) -> None:
-        for card_id, card in self._cards.items():
-            card.set_selected(False)
-            proxy = self._proxies.get(card_id)
-            if proxy is not None and proxy.isSelected():
-                proxy.setSelected(False)
+        if not self.selected_node_ids() and self._primary_node_id is None:
+            return
+        self._set_node_selection(set(), None)
 
     def _node_id_at_view_pos(self, pos: QPoint) -> str | None:
         scene_pos = self.mapToScene(pos)
@@ -3447,35 +3814,109 @@ class PipelineGraphView(QGraphicsView):
         card = self._cards.get(node_id)
         if card is None:
             return
+        selected_node_ids = self.selected_node_ids()
+        if node_id not in selected_node_ids:
+            selected_node_ids = (node_id,)
+        selected_count = len(selected_node_ids)
         menu = QMenu(self)
-        delete_action = menu.addAction("Delete")
-        code_action = menu.addAction("Inspect Code")
-        duplicate_action = menu.addAction("Duplicate Node")
-        add_note_action = menu.addAction("Add note")
-        menu.addSeparator()
-        isolation_action = menu.addAction("Tune node in isolation")
-        isolation_action.setCheckable(True)
-        isolation_action.setChecked(node_id == self._isolated_tuning_node_id)
-        isolation_action.setEnabled(
-            self._isolated_tuning_node_id in {None, node_id}
+        copy_label = (
+            "Copy node"
+            if selected_count == 1
+            else f"Copy {selected_count} nodes"
         )
+        copy_action = menu.addAction(copy_label)
+        paste_values_action = menu.addAction("Paste values")
+        proxy = self._proxies.get(node_id)
+        paste_values_enabled = bool(
+            selected_count == 1
+            and proxy is not None
+            and self._clipboard_single_operation_id
+            and proxy.operation_id == self._clipboard_single_operation_id
+        )
+        paste_values_action.setEnabled(paste_values_enabled)
+        if paste_values_enabled and self._clipboard_single_title:
+            paste_values_action.setText(
+                f"Paste values from {self._clipboard_single_title}"
+            )
+        menu.addSeparator()
+        delete_action = menu.addAction(
+            "Delete" if selected_count == 1 else f"Delete {selected_count} nodes"
+        )
+        code_action = menu.addAction("Inspect Code") if selected_count == 1 else None
+        duplicate_action = (
+            menu.addAction("Duplicate Node") if selected_count == 1 else None
+        )
+        add_note_action = menu.addAction("Add note") if selected_count == 1 else None
+        menu.addSeparator()
+        isolation_action = None
+        if selected_count == 1:
+            isolation_action = menu.addAction("Tune node in isolation")
+            isolation_action.setCheckable(True)
+            isolation_action.setChecked(node_id == self._isolated_tuning_node_id)
+            isolation_action.setEnabled(
+                self._isolated_tuning_node_id in {None, node_id}
+            )
         pin_action = None
-        if card._can_pin:
+        if selected_count == 1 and card._can_pin:
             menu.addSeparator()
             pin_action = menu.addAction("Unpin" if card._pinned else "Pin")
         action = _exec_menu(menu, global_pos)
-        if action == delete_action:
-            self.node_delete_requested.emit(node_id)
-        elif action == code_action:
+        if action == copy_action:
+            self.nodes_copy_requested.emit(selected_node_ids)
+        elif action == paste_values_action:
+            self.node_paste_values_requested.emit(node_id)
+        elif action == delete_action:
+            if selected_count == 1:
+                self.node_delete_requested.emit(node_id)
+            else:
+                self.nodes_delete_requested.emit(selected_node_ids)
+        elif code_action is not None and action == code_action:
             self.node_code_requested.emit(node_id)
-        elif action == duplicate_action:
+        elif duplicate_action is not None and action == duplicate_action:
             self.node_duplicate_requested.emit(node_id)
-        elif action == add_note_action:
+        elif add_note_action is not None and action == add_note_action:
             self.node_note_requested.emit(node_id)
-        elif action == isolation_action:
+        elif isolation_action is not None and action == isolation_action:
             self.node_isolation_requested.emit(node_id)
         elif pin_action is not None and action == pin_action:
             self.pin_requested.emit(node_id)
+
+    def _show_canvas_context_menu(
+        self,
+        scene_pos: QPointF,
+        global_pos: QPoint,
+    ) -> None:
+        menu = QMenu(self)
+        paste_action = menu.addAction("Paste nodes here")
+        paste_action.setEnabled(self._clipboard_can_paste)
+        action = _exec_menu(menu, global_pos)
+        if action == paste_action:
+            self.paste_requested.emit(QPointF(scene_pos))
+
+    def _show_tunnel_source_context_menu(
+        self,
+        tunnel_name: str,
+        source_port: PortItem,
+        scene_pos: QPointF,
+        global_pos: QPoint,
+    ) -> None:
+        if source_port.kind != "output":
+            return
+        if self._tunnel_source_ports.get(tunnel_name) is not source_port:
+            return
+        menu = QMenu(self)
+        insert_action = menu.addAction(f"Insert node before '{tunnel_name}'...")
+        tunnel_options_action = menu.addAction("Tunnel options...")
+        action = _exec_menu(menu, global_pos)
+        if action == insert_action:
+            self.tunnel_insert_requested.emit(tunnel_name, QPointF(scene_pos))
+        elif action == tunnel_options_action:
+            self.port_context_requested.emit(
+                source_port.kind,
+                source_port.node_id,
+                source_port.port_index,
+                global_pos,
+            )
 
     def _start_panning(self, pos: QPoint) -> None:
         self._panning = True
@@ -3520,8 +3961,13 @@ class PipelineGraphView(QGraphicsView):
         self,
         pos: QPoint,
     ) -> tuple[str, PortItem] | None:
-        scene_pos = self.mapToScene(pos)
-        subscriber_match: tuple[str, PortItem] | None = None
+        return self._tunnel_badge_port_at_scene_pos(self.mapToScene(pos))
+
+    def _tunnel_badge_port_at_scene_pos(
+        self,
+        scene_pos: QPointF,
+    ) -> tuple[str, PortItem] | None:
+        matches: list[tuple[float, str, PortItem]] = []
         for item in self.scene.items(scene_pos):
             if not isinstance(item, TunnelBadgeItem):
                 continue
@@ -3533,13 +3979,16 @@ class PipelineGraphView(QGraphicsView):
                     ).strip()
                     if not name:
                         break
-                    match = (name, current)
-                    if current.kind == "output":
-                        return match
-                    subscriber_match = match
+                    center = item.mapToScene(item.boundingRect().center())
+                    dx = center.x() - scene_pos.x()
+                    dy = center.y() - scene_pos.y()
+                    matches.append((dx * dx + dy * dy, name, current))
                     break
                 current = current.parentItem()
-        return subscriber_match
+        if not matches:
+            return None
+        _distance, name, port = min(matches, key=lambda match: match[0])
+        return name, port
 
     def _connection_at(self, scene_pos: QPointF) -> ConnectionItem | None:
         candidates: list[tuple[float, ConnectionItem]] = []
@@ -3612,6 +4061,72 @@ class PipelineGraphView(QGraphicsView):
         self._connection_pulse_timer.start()
         if message:
             self.status_message.emit(message)
+
+    def _update_tunnel_insert_preview(
+        self,
+        scene_pos: QPointF,
+        operation_id: str = "",
+        inserted_node_id: str = "",
+    ) -> str:
+        """Highlight only a source tunnel badge as a node-insertion target."""
+        match = self._tunnel_badge_port_at_scene_pos(scene_pos)
+        tunnel_name = ""
+        port = None
+        if match is not None:
+            candidate_name, candidate_port = match
+            if (
+                candidate_port.kind == "output"
+                and self._tunnel_source_ports.get(candidate_name) is candidate_port
+            ):
+                tunnel_name = candidate_name
+                port = candidate_port
+        state = "compatible"
+        message = ""
+        if port is not None and operation_id and self._tunnel_insert_validator:
+            try:
+                state, message = self._tunnel_insert_validator(
+                    operation_id,
+                    tunnel_name,
+                    inserted_node_id,
+                )
+            except Exception as exc:
+                state, message = "incompatible", str(exc)
+            if state != "compatible":
+                state = "incompatible"
+        if (
+            port is self._highlighted_tunnel_insert_port
+            and tunnel_name == self._highlighted_tunnel_insert_name
+            and state == self._highlighted_tunnel_insert_state
+        ):
+            return tunnel_name
+        self._clear_tunnel_insert_preview()
+        if port is None:
+            return ""
+        self._highlighted_tunnel_insert_port = port
+        self._highlighted_tunnel_insert_name = tunnel_name
+        self._highlighted_tunnel_insert_state = state
+        port.set_drop_state(state)
+        self.status_message.emit(
+            message
+            or (
+                f"Drop to insert the node before tunnel '{tunnel_name}'."
+                if state == "compatible"
+                else f"That node cannot be inserted before tunnel '{tunnel_name}'."
+            )
+        )
+        return tunnel_name
+
+    def _clear_tunnel_insert_preview(self) -> None:
+        port = getattr(self, "_highlighted_tunnel_insert_port", None)
+        if port is not None:
+            port.set_drop_state(None)
+        self._highlighted_tunnel_insert_port = None
+        self._highlighted_tunnel_insert_name = ""
+        self._highlighted_tunnel_insert_state = None
+
+    def _clear_all_insert_previews(self) -> None:
+        self._clear_connection_insert_preview()
+        self._clear_tunnel_insert_preview()
 
     def _clear_connection_insert_preview(self) -> None:
         if self._highlighted_connection is not None:

@@ -247,15 +247,12 @@ changing defaults, then make the node safer and easier to tune.
 - The documentation clearly distinguishes iteration artifacts, TV suppression,
   PSF mismatch, and edge handling.
 
-## Future GPU work
+## GPU follow-on
 
-Optional GPU capability, benchmark, provider, and packaging research is
-intentionally isolated on the
-[`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
-branch. Main remains the CPU production baseline. The branch is future-looking
-and must pass its documented numerical-parity, memory, cancellation, packaging,
-and cross-platform gates before any production GPU behavior is proposed for
-main.
+The qualified GPU execution system subsequently shipped in VIPP `0.13.0a1`.
+Current field-hardening and coherent-workflow priorities are maintained in
+[planning.md](planning.md); the numerical-parity, memory, cancellation,
+packaging, and platform gates remain mandatory for every newly admitted region.
 
 ## Agent assignments and dependency boundaries
 

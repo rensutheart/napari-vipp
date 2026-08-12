@@ -12,6 +12,7 @@ python scripts/launch_vipp_intensity_workflow.py <name>
 
 Current launcher names:
 
+- `graph-authoring`
 - `intensity`
 - `merged`
 - `morphology`
@@ -27,6 +28,7 @@ custom or external workflow JSON files.
 
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
+| `graph-authoring-acceptance.json` | `VIPP synthetic object morphology` | Numbered, on-canvas acceptance recipe for inserting a node before a shared tunnel, copying settings between matching nodes, copying and moving a connected node group, pasting at a chosen location, and checking one-step undo/redo. Open it as `graph-authoring`. |
 | `synthetic-batch-provenance.json` | Ready-to-run paired NumPy demo | End-to-end batch validation with three deterministic sorted-position pairs, explicit NPY/TIFF/TSV outputs, known overlap labels and measurements, portable config/runner files, and full manifest provenance. Select it through `Open example...`, click `Open batch demo...`, choose a working-copy location, use the representative slider or preview-table rows to inspect all three paired fields throughout the graph, then click `Run demo batch` and inspect retained progress and validation in the batch workspace. |
 | `otsu-red-channel-labels.json` | `VIPP synthetic multichannel volume` | Label-cleanup review path: split the red/TRITC-like channel, blur, Otsu threshold, fill holes, connected components, clear border objects, and volume filtering. |
 | `red-channel-object-intensity-measurements.json` | `VIPP synthetic multichannel volume` | Named multi-input table node review: filtered labels plus matching intensity image, carried through a `Red intensity` tunnel, into `Measure Objects + Intensity`. |

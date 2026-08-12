@@ -3,11 +3,12 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-12
 
-It reflects the live codebase through current 0.12 development, including
-restoration, optional microscope-reader routing, reproducible collection batch
-execution, and graph restore hardening.
+It reflects the live codebase through VIPP `0.13.0a5`, including restoration,
+optional microscope-reader routing, reproducible collection batch execution,
+graph restore hardening, the unified CPU/GPU execution contract, and graph
+fragment authoring.
 
 For product framing and longer-range ideas, see [README.md](../README.md) and
 [planning.md](planning.md). The accepted OME I/O architecture is documented in
@@ -538,15 +539,15 @@ pre-0.13.0a3 RTX 5090 record passed exact parity, matched rejection,
 synchronized progress,
 cancellation, cleanup, runtime, and timing review. Its declared region is
 therefore a normal public `Custom` candidate and a reviewed Auto default; the
-implementation entered immutable artifact v4
-as `public_auto_candidate`, and current artifact v7 retains it unchanged. Auto
+implementation entered immutable artifact v4 as `public_auto_candidate`, and
+current artifact v7 retains it unchanged. Auto
 uses the reviewed default with no compatible history. Accelerated-only history
 causes the next global Auto run to measure CPU once on the same execution
 surface; a later run uses the completed pair under the 1.20x/20-ms gate. It
 never silently benchmarks multiple implementations or mixes incompatible
 interactive, batch, or registry-lifecycle timing surfaces.
 Non-native-endian arrays and other unsupported dtypes,
-parameters, values, runtimes, and platforms visibly use CPU. This branch rule
+parameters, values, runtimes, and platforms visibly use CPU. This admission rule
 does not imply support for every
 released package, OS, or GPU, and the recorded timing crossovers are
 machine-local rather than portable guarantees. The full matrix is retained in
@@ -1208,15 +1209,23 @@ Main classes:
 
 | Class | Role |
 | --- | --- |
-| `PipelineGraphView` | Canvas, pan/zoom, drag/drop node creation, wire creation/removal, selection, delete-key handling, and node context menus. |
+| `PipelineGraphView` | Canvas, pan/zoom, drag/drop node creation, wire creation/removal, additive node selection, group movement, clipboard/menu requests, delete-key handling, and node/canvas context menus. |
 | `NodeProxy` | Movable graphics item wrapping a `NodeCard`; owns the visual input/output ports (one or more output ports for multi-output nodes). |
 | `NodeCard` | Embedded widget with category tint, title, thumbnail, and compact metadata. Pin state is represented by card styling; Pin/Unpin actions live in the inspector and node context menu. |
 | `PortItem` | Input/output port circle with hover/drop feedback, optional accent colour/label, and optional tunnel badge. Multi-input and multi-output nodes have several ports. |
 | `ConnectionItem` | Curved visible wire storing source id, target id, `target_port`, and `source_port`. Tunnel-marked connections are not drawn as `ConnectionItem`s. |
 
-Right-clicking a node opens a context menu with Delete, Inspect Code, Duplicate
-Node, Add note, and Tune node in isolation, plus Pin or Unpin for
-image/mask/label-producing nodes. Duplicate Node
+Plain click selects one node; Ctrl/Cmd-click toggles membership and Shift-click
+adds a node. The most recently added node remains the inspector's primary node.
+A selected group moves together and emits one history request. Right-clicking a
+selected member preserves the group, while right-clicking an unselected node
+makes it the sole selection.
+
+Right-clicking a node opens a context menu with Copy, exact-operation Paste
+values, Delete, Inspect Code, Duplicate Node, Add note, and Tune node in
+isolation, plus Pin or Unpin for image/mask/label-producing nodes. A multi-node
+menu exposes group Copy and Delete. The canvas menu pastes at the clicked scene
+position, while Ctrl/Cmd+V pastes at the visible viewport centre. Duplicate Node
 copies the node operation and current parameter values into an unconnected node
 near the original; it does not infer connections. Inspect Code opens a
 read-only dialog containing node metadata, connected input references, a
@@ -1231,10 +1240,35 @@ reference image feeds many downstream nodes. They remain explicit graph
 semantics: the connection occupies the target input slot, is type-checked,
 rejects cycles, participates in execution, and is saved in workflow JSON.
 
+The source badge of a named tunnel is also an insertion boundary. Its menu can
+request a compatible palette operation; a palette operation or genuinely loose
+node can be dropped on the badge. `VippWidget` delegates the mutation to
+`PrototypePipeline.splice_node_before_output_tunnel()`, which first connects the
+old source to the inserted input, then validates and reroutes the same tunnel
+and all subscribers to the inserted output. The core method snapshots tunnel
+and connection state and restores it exactly on failure. Subscriber badges are
+not insertion targets, and ordinary non-tunnel wires from the old source are
+outside the mutation.
+
+Graph fragments are encoded by the Qt-free `core/graph_fragments.py` boundary
+as strict, finite, size-limited versioned JSON under a private MIME type. Local
+fragment keys replace workflow node IDs. Decode validates parameter schemas,
+ports, types, cycles, tunnel declarations, and note attachments in a detached
+pipeline. The widget then allocates fresh IDs and unique tunnel names, validates
+the complete destination graph, and commits nodes, internal edges, authored
+preferences, locks, and attached notes as one history action. Paste Values uses
+the same exact-operation parameter validation but retains target-only runtime
+and execution intent.
+
 Signals to `VippWidget`:
 
 - `node_selected(node_id)`
+- `node_selection_changed(node_ids, primary_node_id)`
 - `node_delete_requested(node_id)`
+- `nodes_delete_requested(node_ids)`
+- `nodes_copy_requested(node_ids)`
+- `paste_requested(scene_position)`
+- `node_paste_values_requested(node_id)`
 - `node_duplicate_requested(node_id)`
 - `node_code_requested(node_id)`
 - `node_isolation_requested(node_id)`
@@ -1243,6 +1277,9 @@ Signals to `VippWidget`:
 - `connection_requested(source_id, target_id, target_port, source_port)`
 - `connection_removed(source_id, target_id, target_port)`
 - `port_context_requested(kind, node_id, port_index, global_position)`
+- `tunnel_insert_requested(tunnel_name, scene_position)`
+- `tunnel_node_insert_requested(operation_id, tunnel_name, scene_position)`
+- `tunnel_node_splice_requested(node_id, tunnel_name, old_position, new_position)`
 - `status_message(text)`
 
 Slot-aware connections are important. The graph must never treat all wires into

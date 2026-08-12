@@ -635,6 +635,38 @@ Use `Search graph` above the canvas to find nodes, operation IDs, named
 tunnels, and `Batch Output` tags. Press Enter or click `Focus` to move through
 matches. Tunnel matches reveal the source and subscribers.
 
+### Select, Copy, And Reuse Nodes
+
+Use an ordinary click to select one node. On Windows and Linux, hold `Ctrl`
+while clicking to add or remove individual nodes from the selection; `Shift`
+also adds nodes. On macOS, use `Cmd`. The last node clicked is the one shown in
+the inspector. Drag any selected member to move the whole group together.
+
+Copy and paste work like other desktop applications:
+
+1. Select one or more nodes. The nodes do not have to be connected.
+2. Press `Ctrl+C` (`Cmd+C` on macOS), or right-click a selected node and choose
+   `Copy node` or `Copy N nodes`.
+3. Press `Ctrl+V`/`Cmd+V` to paste near the centre of the visible canvas, or
+   right-click blank canvas and choose `Paste nodes here`.
+
+VIPP gives every pasted node a new identity, keeps the group's relative layout,
+and restores only wires whose two ends were copied. Attached notes follow their
+nodes. A named tunnel is included when its source and at least one of its users
+are selected; users outside the selection do not follow the copy. Ordinary
+wires to nodes outside the selection do not follow it either. Repeated pastes
+are offset so the copies remain visible. One Undo removes the complete paste.
+
+To reuse settings without creating a node, copy exactly one node, right-click a
+node of the same kind, and choose `Paste values from ...`. For example, Gaussian
+Blur values can be pasted only into another Gaussian Blur. This changes the
+authored settings and recalculates that branch, but does not move the target,
+change its wires, or replace its CPU/GPU preference. VIPP validates the complete
+setting set first; an incompatible paste changes nothing.
+
+Graph shortcuts are active only on the graph canvas. Copying or pasting text in
+a path field, note editor, or other text control continues to behave normally.
+
 ### Named Port Tunnels
 
 Named tunnels are hidden wires for outputs reused many times. They keep dense
@@ -659,6 +691,16 @@ To change a tunnel's source without editing JSON, drag the source badge on its
 current output port and release it over another compatible output. VIPP previews
 type/cycle validity, moves every subscriber atomically, and records one undoable
 graph edit.
+
+To add processing before an existing tunnel, right-click the tunnel badge on
+its source output and choose `Insert node before ...`. VIPP lists nodes that can
+accept the old source and still feed every current subscriber. You can also drag
+a node from the library onto that source badge, or drag a completely loose node
+there. VIPP adds one ordinary wire from the old source to the inserted node and
+moves the same named tunnel to the inserted output. All tunnel users remain
+connected, ordinary wires from the old source remain unchanged, and one Undo
+restores the whole previous arrangement. A node that already has any wire or
+tunnel binding must be disconnected first.
 
 ### Graph Notes
 

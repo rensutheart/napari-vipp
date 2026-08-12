@@ -1,6 +1,6 @@
 # Research And Publication Record
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-08-07
 
 This file is the persistent record for a future VIPP journal paper and public
 online documentation. It separates design intent from claims that have been
@@ -84,7 +84,9 @@ Not yet evidence-backed and therefore not suitable as paper claims:
 - scalability to whole-slide or very large volumetric datasets;
 - numerical equivalence to Fiji, CellProfiler, scikit-image, or other tools
   across a benchmark corpus;
-- reproducible collection batch execution;
+- independent, publication-level validation of collection batch replay across
+  machines and facilities (the implementation already has deterministic local
+  execution evidence);
 - numerical or biological validation of deconvolution outputs on a reference
   corpus;
 - complete OME metadata fidelity;

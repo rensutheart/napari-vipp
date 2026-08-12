@@ -1,21 +1,21 @@
 # Full Collection-Batch Cancellation Verification
 
-Status: implemented on `codex/gpu-cross-platform-support`
+Status: released in VIPP `0.13.0a1` on `main`
 
 Cross-platform scope: Windows, macOS, and Linux
 
-Last reviewed: 2026-08-04
+Last reviewed: 2026-08-07
 
 ## Outcome
 
-Full collection-batch execution is cooperatively cancellable on the GPU branch.
+Full collection-batch execution is cooperatively cancellable in VIPP `0.13`.
 The implementation is not limited to CUDA or Windows: the Batch Workspace,
 worker, cancellation token, core batch checkpoints, and provenance behavior are
 shared across supported platforms and CPU/GPU execution modes.
 
-The CPU-only `main` branch at commit `33ac31b` still uses the older synchronous,
-non-cancellable full-batch path. Do not use that branch to judge the current GPU
-branch's batch cancellation behavior.
+The pre-merge `main` branch at historical commit `33ac31b` used the older
+synchronous, non-cancellable full-batch path; it is not representative of the
+released `0.13` behavior.
 
 ## Implemented Behavior
 
@@ -68,7 +68,7 @@ runtime; the cancellation architecture is provider-neutral.
 
 ## Windows / GPU Evidence
 
-The GPU branch includes a real-provider cancellation test that requests
+The released code includes a real-provider cancellation test that requests
 cancellation during execution and checks cleanup before a partial pipeline or
 output can be published. Windows remains subject to the same cooperative
 limitation as macOS: an active non-interruptible native call can delay the final

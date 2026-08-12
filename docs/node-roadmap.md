@@ -2,7 +2,7 @@
 
 Status: current node-family planning document
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-08-12
 
 This document tracks the node catalogue at the level of workflow capability:
 what VIPP can already do, which node families are still worth building, and
@@ -25,6 +25,11 @@ specialist docs for implementation detail:
 - [ome-io-plan.md](ome-io-plan.md) and
   [cache-and-memory.md](cache-and-memory.md): I/O, lazy data, preview, cache,
   and memory policy.
+
+GPU delivery order is intentionally defined by complete workflow islands in
+[planning.md](planning.md), not by converting this catalogue one node at a
+time. The [production GPU implementation plan](gpu-production-implementation-plan.md)
+contains the detailed admission, fallback, and validation rules.
 
 ## Scope
 
@@ -95,7 +100,7 @@ truth is `NODE_LIBRARY` in `src/napari_vipp/core/pipeline.py`.
 | Tables and object measurements | First-class table outputs, object morphology, intensity measurements, calibrated physical variants, 3D mesh morphology, table merge, column selection, metadata annotation, grouped summaries, CSV/TSV output. | Optional mesh export/preview, specialist mesh repair/smoothing only if validated, richer intensity distribution columns if requested, and continued analytical validation. |
 | Skeleton and network analysis | Skeletonize, skeleton keypoints, graph overlay, component labels, branch labels, branch pruning, component analysis, branch tables, branch summaries, graph node/edge tables, and whole-network metrics. | Skeleton/network validation report, specialist mitochondrial network indices, and broader progress/cancellation coverage for dense networks. |
 | Colocalization and spatial association | Whole-image and ROI-masked Pearson/Manders/overlap/Costes metrics, colocalized-voxel RGB views, RACC-like index images, object colocalization metrics, label overlap, nearest-object distance, and event localization tables. | Validation figures/notebooks, RACC core/interop decision, and publication-facing example artifacts. |
-| Graph platform | Typed ports, named heterogeneous inputs, dynamic multi-outputs, tunnels, graph search, notes, undo/redo, duplicate/delete, insert-on-wire mapping, manual/cached nodes, cache modes, memory guard. | Large-workflow navigation only if user workflows demand it; AI-assisted authoring after batch/provenance and validation are stronger. |
+| Graph platform | Typed ports, named heterogeneous inputs, dynamic multi-outputs, tunnels, graph search, notes, undo/redo, duplicate/delete, insert-on-wire mapping, atomic insert-before-tunnel, multi-node selection and movement, validated graph-fragment copy/paste, exact-operation value paste, manual/cached nodes, cache modes, memory guard. | Complete cross-platform acceptance for the new graph-authoring interactions; pursue broader large-workflow navigation only if user workflows demand it, and AI-assisted authoring after batch/provenance and validation are stronger. |
 
 ## P0: Platform Foundations
 
