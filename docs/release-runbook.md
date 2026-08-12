@@ -10,9 +10,8 @@ napari hub.
 
 - Target package version: set `<version>` from the release milestone before
   starting; do not reuse the current package version by accident.
-- Current published release: `0.13.0a5`.
-- Current prepared target: none; set and review `<version>` before beginning a
-  new release.
+- Current published release: `0.13.0a4`.
+- Current prepared target: `0.13.0a5`.
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -20,16 +19,18 @@ napari hub.
 
 1. You have push/tag permission on GitHub for this repository.
 2. You have upload permission for the `napari-vipp` project on PyPI.
-3. You have a PyPI API token available to paste into Twine's hidden password
-   prompt.
+3. PyPI trusts this repository's `publish-pypi.yml` workflow with the `pypi`
+   GitHub environment for the `napari-vipp` project.
 4. You have a clean git working tree on the release commit.
 5. The companion `vipp-mkdocs` repository has a reviewed release page and a
    clean, pushed release commit.
 
-This repository does not currently contain a PyPI Trusted Publishing workflow,
-so this runbook documents the manual Twine route for alpha releases. Never paste,
-print, commit, or place the PyPI token in a command, script, or shell
-environment variable. Enter it only at Twine's hidden password prompt.
+The PyPI Trusted Publisher is a one-time project setting. Configure it with
+owner `rensutheart`, repository `napari-vipp`, workflow
+`publish-pypi.yml`, and environment `pypi`. The workflow then uses a
+short-lived identity token: no PyPI password, API token, or repository secret
+is stored. Dispatch it only from `main` and only after the exact tag's GitHub
+prerelease assets and numbered manual have been verified.
 
 Recommended local tools:
 
@@ -385,20 +386,22 @@ than a 404 or `nightly` content:
 - `https://rensutheart.github.io/vipp-mkdocs/<version>/getting-started/`
 - `https://rensutheart.github.io/vipp-mkdocs/<version>/getting-started/windows-cuda/`
 
-Only then publish exactly the two hash-recorded artifacts. PyPI uploads cannot be
-replaced, so recheck the directory, version, and explicit filenames before
-entering credentials. Pass only the token username on the command line and
-paste the API token into Twine's hidden password prompt:
+Only then publish exactly the two hash-recorded artifacts. PyPI uploads cannot
+be replaced, so dispatch the trusted workflow from `main` with the already
+qualified tag:
 
 ```powershell
-python -m twine upload --username "__token__" `
-  "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl" `
-  "$artifactDir/napari_vipp-$releaseVersion.tar.gz"
+gh workflow run publish-pypi.yml `
+  --repo rensutheart/napari-vipp `
+  --ref main `
+  -f tag="v$releaseVersion"
 ```
 
-Do not put the token in `TWINE_PASSWORD`, the command line, or a PowerShell
-assignment. At the `Password:` prompt, paste the token; Twine does not echo the
-input or add it to shell history.
+Wait for that exact workflow run to succeed. It checks out the immutable tag,
+downloads exactly the wheel and source archive already attached to its GitHub
+prerelease, validates their metadata, and publishes them through PyPI's
+short-lived OpenID Connect credential. It does not rebuild the distributions
+or accept a broad artifact glob.
 
 Post-upload validation:
 
