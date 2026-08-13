@@ -1,6 +1,6 @@
 # VIPP User Guide
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-08-13
 
 This guide is written for people building visual image-processing workflows in
 VIPP. It focuses on how to use the graph, how to choose the right controls, and
@@ -13,7 +13,7 @@ your data and acquisition settings.
 ## Start VIPP
 
 Begin with the [installer-first quick start](quick-start.md). The explicitly
-unsigned Windows `.exe` is the recommended ordinary-user route for `0.13.0a5`;
+unsigned Windows `.exe` is the recommended ordinary-user route for `0.13.0a6`;
 verify its published SHA-256 before accepting Windows' **Unknown publisher**
 warning. Manual pip
 installation remains available for Linux, macOS, and advanced use. Installing
@@ -1356,6 +1356,14 @@ declaration therefore does not discover or correct the physical Z step, unit,
 or origin. Review `Output Metadata` after declaring axes. If the source did not
 carry a trustworthy Z calibration, use `Set Pixel Size / Units` explicitly
 before calibrated measurements, rescaling, projections, or deconvolution.
+
+`Set Microscope Metadata` is the corresponding pass-through node for facts the
+reader could not recover reliably: up to three channel emission wavelengths,
+objective numerical aperture, and immersion refractive index. A value of zero
+means “leave the carried value unchanged.” Channel 2 or 3 requires an explicit
+channel axis and a matching channel count, so the node cannot silently attach a
+wavelength to Z, time, or an absent channel. The authored values travel with
+the image metadata and appear in workflow history without changing pixels.
 
 The menu is a friendly front end to the durable source declaration. A headless
 Python configuration can state the same decision with

@@ -23,6 +23,7 @@ class ComputeSetupState(StrEnum):
     NOT_CHECKED = "not_checked"
     CHECKING = "checking"
     AVAILABLE = "available"
+    DEGRADED = "degraded"
     UNAVAILABLE = "unavailable"
     UNSUPPORTED = "unsupported"
     MISCONFIGURED = "misconfigured"
@@ -43,6 +44,7 @@ class ComputeSetupActionKind(StrEnum):
 
     VERIFY = "verify"
     COPY_COMMAND = "copy_command"
+    EXPORT_SUPPORT = "export_support"
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +79,31 @@ class ComputeMemoryRow:
     detail: str = ""
 
     def __post_init__(self) -> None:
+        for name in ("key", "label", "value"):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must not be empty.")
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "detail", str(self.detail).strip())
+
+
+@dataclass(frozen=True, slots=True)
+class ComputeSetupCheckRow:
+    """One plain-language answer in the three-layer setup check."""
+
+    key: str
+    label: str
+    value: str
+    tone: ComputeSetupTone | str = ComputeSetupTone.NEUTRAL
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        tone = (
+            self.tone
+            if isinstance(self.tone, ComputeSetupTone)
+            else ComputeSetupTone(str(self.tone).strip().lower())
+        )
+        object.__setattr__(self, "tone", tone)
         for name in ("key", "label", "value"):
             value = str(getattr(self, name)).strip()
             if not value:
@@ -143,6 +170,8 @@ class ComputeSetupPresentation:
     summary: str
     reason_code: str
     track: str
+    next_step: str = ""
+    check_rows: tuple[ComputeSetupCheckRow, ...] = ()
     details: tuple[str, ...] = ()
     memory_rows: tuple[ComputeMemoryRow, ...] = ()
     actions: tuple[ComputeSetupAction, ...] = ()
@@ -167,7 +196,15 @@ class ComputeSetupPresentation:
             if not value:
                 raise ValueError(f"{name} must not be empty.")
             object.__setattr__(self, name, value)
-        details = tuple(text for value in self.details if (text := str(value).strip()))
+        object.__setattr__(self, "next_step", str(self.next_step).strip())
+        check_rows = tuple(self.check_rows)
+        if any(not isinstance(row, ComputeSetupCheckRow) for row in check_rows):
+            raise TypeError("check_rows must contain ComputeSetupCheckRow values.")
+        if len({row.key for row in check_rows}) != len(check_rows):
+            raise ValueError("compute setup check row keys must be unique.")
+        details = tuple(
+            text for value in self.details if (text := str(value).strip())
+        )
         rows = tuple(self.memory_rows)
         actions = tuple(self.actions)
         if any(not isinstance(row, ComputeMemoryRow) for row in rows):
@@ -181,6 +218,7 @@ class ComputeSetupPresentation:
         if not isinstance(self.busy, bool) or not isinstance(self.actionable, bool):
             raise TypeError("busy and actionable must be booleans.")
         object.__setattr__(self, "details", details)
+        object.__setattr__(self, "check_rows", check_rows)
         object.__setattr__(self, "memory_rows", rows)
         object.__setattr__(self, "actions", actions)
 
@@ -201,6 +239,7 @@ def compute_setup_not_checked(
         summary="GPU setup has not been checked in this session.",
         reason_code="not_checked",
         track=str(track).strip() or "auto",
+        check_rows=_pending_check_rows("Not checked", ComputeSetupTone.NEUTRAL),
         memory_rows=_memory_rows(host_memory, None, device_name=""),
         actions=(_verify_action(track, label="Verify GPU setup"),),
     )
@@ -222,6 +261,7 @@ def compute_setup_checking(
         summary="Checking optional GPU packages and hardware…",
         reason_code="diagnostic_running",
         track=str(track).strip() or "auto",
+        check_rows=_pending_check_rows("Checking…", ComputeSetupTone.INFO),
         details=("VIPP remains responsive while verification runs.",),
         memory_rows=_memory_rows(host_memory, None, device_name=""),
         actions=(
@@ -286,6 +326,14 @@ def present_compute_setup(
             label="Verify again" if report.available else "Verify GPU setup",
         )
     )
+    actions.append(
+        ComputeSetupAction(
+            action_id="export_compute_support",
+            kind=ComputeSetupActionKind.EXPORT_SUPPORT,
+            label="Save privacy-redacted support report…",
+            track=report.track,
+        )
+    )
 
     device_name = _selected_device_name(report)
     return ComputeSetupPresentation(
@@ -295,6 +343,12 @@ def present_compute_setup(
         summary=summary,
         reason_code=report.reason_code,
         track=report.track,
+        next_step=(
+            f"Next step: {report.guidance.title}. {report.guidance.summary}"
+            if report.guidance is not None
+            else ""
+        ),
+        check_rows=_completed_check_rows(report),
         details=tuple(details),
         memory_rows=_memory_rows(
             host_memory,
@@ -303,7 +357,8 @@ def present_compute_setup(
         ),
         actions=tuple(actions),
         actionable=(
-            report.status is DoctorStatus.MISCONFIGURED
+            report.status
+            in {DoctorStatus.DEGRADED, DoctorStatus.MISCONFIGURED}
             or (
                 report.status is DoctorStatus.UNAVAILABLE
                 and any(
@@ -339,6 +394,10 @@ def _result_state(
             ComputeSetupState.AVAILABLE,
             ComputeSetupTone.SUCCESS,
         ),
+        DoctorStatus.DEGRADED: (
+            ComputeSetupState.DEGRADED,
+            ComputeSetupTone.WARNING,
+        ),
         DoctorStatus.UNAVAILABLE: (
             ComputeSetupState.UNAVAILABLE,
             ComputeSetupTone.WARNING,
@@ -352,6 +411,81 @@ def _result_state(
             ComputeSetupTone.ERROR,
         ),
     }[status]
+
+
+def _pending_check_rows(
+    value: str,
+    tone: ComputeSetupTone,
+) -> tuple[ComputeSetupCheckRow, ...]:
+    return (
+        ComputeSetupCheckRow("cuda", "CUDA and GPU", value, tone),
+        ComputeSetupCheckRow("cucim", "Optional cuCIM", value, tone),
+        ComputeSetupCheckRow("vipp", "VIPP GPU coverage", value, tone),
+    )
+
+
+def _completed_check_rows(
+    report: ComputeDoctorReport,
+) -> tuple[ComputeSetupCheckRow, ...]:
+    cuda_ready = report.cuda_ready
+    cuda_row = ComputeSetupCheckRow(
+        "cuda",
+        "CUDA and GPU",
+        "Ready" if cuda_ready else "Could not start",
+        ComputeSetupTone.SUCCESS if cuda_ready else ComputeSetupTone.WARNING,
+        (
+            report.runtime_probe.message
+            if report.runtime_probe is not None
+            else "No CUDA runtime result was recorded."
+        ),
+    )
+    cucim = report.cucim_probe
+    if cucim is None:
+        cucim_value = "Not checked (optional)"
+        cucim_tone = ComputeSetupTone.NEUTRAL
+        cucim_detail = "No cuCIM probe result was recorded."
+    elif cucim.available:
+        cucim_value = "Ready"
+        cucim_tone = ComputeSetupTone.SUCCESS
+        cucim_detail = cucim.message
+    elif cucim.reason_code == "cucim_not_installed":
+        cucim_value = "Not installed (optional)"
+        cucim_tone = ComputeSetupTone.NEUTRAL
+        cucim_detail = cucim.message
+    elif cucim.reason_code == "runtime_unavailable":
+        cucim_value = "Not checked (CUDA unavailable)"
+        cucim_tone = ComputeSetupTone.NEUTRAL
+        cucim_detail = cucim.message
+    else:
+        cucim_value = "Needs attention (optional)"
+        cucim_tone = ComputeSetupTone.WARNING
+        cucim_detail = cucim.message
+    cucim_row = ComputeSetupCheckRow(
+        "cucim",
+        "Optional cuCIM",
+        cucim_value,
+        cucim_tone,
+        cucim_detail,
+    )
+    admitted = len(report.admitted_regions)
+    total = len(report.admission_regions)
+    if not total:
+        coverage_value = "No reviewed regions available"
+        coverage_tone = ComputeSetupTone.NEUTRAL
+    elif admitted == total:
+        coverage_value = f"{admitted} of {total} reviewed regions ready"
+        coverage_tone = ComputeSetupTone.SUCCESS
+    else:
+        coverage_value = f"{admitted} of {total} reviewed regions ready"
+        coverage_tone = ComputeSetupTone.WARNING
+    coverage_row = ComputeSetupCheckRow(
+        "vipp",
+        "VIPP GPU coverage",
+        coverage_value,
+        coverage_tone,
+        "Only reviewed combinations are offered automatically; CPU remains safe.",
+    )
+    return (cuda_row, cucim_row, coverage_row)
 
 
 def _memory_rows(
@@ -505,6 +639,7 @@ __all__ = [
     "ComputeMemoryRow",
     "ComputeSetupAction",
     "ComputeSetupActionKind",
+    "ComputeSetupCheckRow",
     "ComputeSetupPresentation",
     "ComputeSetupState",
     "ComputeSetupTone",

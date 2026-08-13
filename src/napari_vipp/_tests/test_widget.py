@@ -4808,6 +4808,7 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
     assert _palette_child_by_text(axes_regions, "Select Axis Slice")
     assert _palette_child_by_text(axes_regions, "Split Axis")
     assert _palette_child_by_text(axes_regions, "Reorder Axes")
+    assert _palette_child_by_text(axes_regions, "Set Microscope Metadata")
     assert _palette_child_by_text(axes_regions, "Set Pixel Size / Units")
     assert _palette_child_by_text(axes_regions, "Rescale Axes")
     assert _palette_child_by_text(channels, "Extract Channel")
@@ -4844,6 +4845,26 @@ def test_set_pixel_size_uses_numeric_entries_without_sliders(qtbot):
     x_control.value_box.setValue(0.25)
 
     assert widget.pipeline.nodes[node.id].params["x_size"] == 0.25
+
+
+def test_set_microscope_metadata_uses_precise_numeric_entries(qtbot):
+    viewer = _Viewer(np.zeros((2, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("set_microscope_metadata")
+    widget._connect_nodes("input", node.id)
+
+    wavelength = widget._parameter_widgets["channel_1_wavelength_nm"]
+    numerical_aperture = widget._parameter_widgets["numerical_aperture"]
+
+    assert not hasattr(wavelength, "slider")
+    assert not hasattr(numerical_aperture, "slider")
+    wavelength.value_box.setValue(461.0)
+    numerical_aperture.value_box.setValue(1.4)
+
+    assert node.params["channel_1_wavelength_nm"] == 461.0
+    assert node.params["numerical_aperture"] == 1.4
 
 
 def test_set_pixel_size_inspection_applies_napari_layer_scale(qtbot):
@@ -16632,6 +16653,56 @@ def test_collection_batch_navigator_switches_the_complete_representative_pair(
     assert scientific_workflow_hash(widget._batch_workflow_document()) == (
         config.workflow_sha256
     )
+
+
+def test_collection_batch_navigator_browses_series_inside_one_container(
+    qtbot,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    first = np.full((4, 16, 18), 11, dtype=np.uint8)
+    second = np.full((4, 16, 18), 22, dtype=np.uint8)
+    np.savez(input_dir / "multi_series.npz", upper=first, lower=second)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    original_params = dict(widget.pipeline.nodes["input"].params)
+
+    preview = widget._preview_collection_batch(
+        input_dir="",
+        output_dir=tmp_path / "outputs",
+        pattern="*.npz",
+        image_format="npy",
+        source_bindings=[
+            {
+                "node_id": "input",
+                "title": "Batch input",
+                "input_dir": str(input_dir),
+                "pattern": "*.npz",
+            }
+        ],
+    )
+
+    assert len(preview.items) == 2
+    assert [item.source_series_indices["input"] for item in preview.items] == [
+        0,
+        1,
+    ]
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], first)
+    assert "multi_series.npz" in widget.batch_navigator.sources_label.text()
+    assert "upper" in widget.batch_navigator.sources_label.text()
+
+    widget.batch_navigator.next_button.click()
+    qtbot.waitUntil(
+        lambda: np.array_equal(widget.pipeline.outputs.get("input"), second),
+        timeout=5000,
+    )
+
+    assert widget.batch_navigator.current_index == 1
+    assert widget._interactive_collection_source_series_indices == {"input": 1}
+    assert "lower" in widget.batch_navigator.sources_label.text()
+    assert widget.pipeline.nodes["input"].params == original_params
 
 
 @pytest.mark.parametrize("source_mode", ["napari layer", "file path"])

@@ -1154,6 +1154,7 @@ class VippWidget(QWidget):
         "_file_source_payload_cache",
         "_file_source_path_identities",
         "_interactive_collection_source_paths",
+        "_interactive_collection_source_series_indices",
         "_interactive_collection_batch_items",
         "_interactive_collection_batch_config",
         "_interactive_collection_batch_config_path",
@@ -1259,6 +1260,7 @@ class VippWidget(QWidget):
         ] = {}
         self._file_source_path_identities: dict[str, LocalSourceIdentity] = {}
         self._interactive_collection_source_paths: dict[str, Path] = {}
+        self._interactive_collection_source_series_indices: dict[str, int] = {}
         self._interactive_collection_batch_items: tuple[BatchItemPlan, ...] = ()
         self._interactive_collection_batch_config: BatchConfig | None = None
         self._interactive_collection_batch_config_path: Path | None = None
@@ -3324,6 +3326,7 @@ class VippWidget(QWidget):
                 self,
                 thread_pool=self._compute_setup_thread_pool,
                 host_memory_provider=self._compute_setup_host_memory,
+                recent_execution_provider=lambda: self._last_execution_report,
             )
             dialog.presentation_changed.connect(
                 self._on_compute_setup_presentation_changed
@@ -5271,6 +5274,7 @@ class VippWidget(QWidget):
             "_file_source_payload_cache": {},
             "_file_source_path_identities": {},
             "_interactive_collection_source_paths": {},
+            "_interactive_collection_source_series_indices": {},
             "_interactive_collection_batch_items": (),
             "_interactive_collection_batch_config": None,
             "_interactive_collection_batch_config_path": None,
@@ -9792,6 +9796,9 @@ class VippWidget(QWidget):
             node_id: Path(path).expanduser().resolve()
             for node_id, path in planned_items[index].source_paths.items()
         }
+        representative_series_indices = dict(
+            planned_items[index].source_series_indices
+        )
         previous_declarations = tuple(
             sorted(
                 (source.node_id, source.axis_declaration)
@@ -9816,12 +9823,15 @@ class VippWidget(QWidget):
             and self._active_source_load_id is None
             and not self._pipeline_run_pending
             and representative_paths == self._interactive_collection_source_paths
+            and representative_series_indices
+            == self._interactive_collection_source_series_indices
             and previous_declarations == current_declarations
             and scientific_workflow_hash(self._batch_workflow_document())
             == config.workflow_sha256
         )
         if self._interactive_collection_batch_items and not reuse_representative:
             self._interactive_collection_source_paths.clear()
+            self._interactive_collection_source_series_indices.clear()
             self._prune_file_source_payload_cache()
         self._interactive_collection_batch_items = planned_items
         self._interactive_collection_batch_config = config
@@ -9832,6 +9842,7 @@ class VippWidget(QWidget):
         )
         if not reuse_representative:
             self._interactive_collection_source_paths.clear()
+            self._interactive_collection_source_series_indices.clear()
         self._interactive_collection_batch_index = index if reuse_representative else -1
         self._interactive_collection_batch_requested_index = -1
         self._interactive_collection_batch_failed_index = -1
@@ -9891,6 +9902,7 @@ class VippWidget(QWidget):
             node_id: Path(path).expanduser().resolve()
             for node_id, path in item.source_paths.items()
         }
+        representative_series_indices = dict(item.source_series_indices)
         if not representative_paths:
             message = "The batch item did not resolve any collection Image Sources."
             self.status_label.setText(message)
@@ -9910,6 +9922,8 @@ class VippWidget(QWidget):
             and self._interactive_collection_batch_requested_index < 0
             and self._interactive_collection_batch_failed_index != index
             and representative_paths == self._interactive_collection_source_paths
+            and representative_series_indices
+            == self._interactive_collection_source_series_indices
         ):
             self._sync_interactive_collection_batch_navigator()
             active_dialog = self._active_collection_batch_dialog
@@ -9921,6 +9935,8 @@ class VippWidget(QWidget):
         if (
             index == self._interactive_collection_batch_requested_index
             and representative_paths == self._interactive_collection_source_paths
+            and representative_series_indices
+            == self._interactive_collection_source_series_indices
         ):
             active_dialog = self._active_collection_batch_dialog
             if active_dialog is not None:
@@ -9933,6 +9949,9 @@ class VippWidget(QWidget):
         # execution can therefore never observe a half-switched source pair.
         subtitle_node_ids = set(self._interactive_collection_source_paths)
         self._interactive_collection_source_paths = representative_paths
+        self._interactive_collection_source_series_indices = (
+            representative_series_indices
+        )
         subtitle_node_ids.update(representative_paths)
         self._sync_input_node_subtitles(subtitle_node_ids)
         self._interactive_collection_batch_requested_index = index
@@ -9976,14 +9995,14 @@ class VippWidget(QWidget):
             else {}
         )
         source_names: dict[str, str] = {}
-        for node_id, path in item.source_paths.items():
+        for node_id, _path in item.source_paths.items():
             node = self.pipeline.nodes.get(node_id)
             if node is None:
                 continue
             title = configured_titles.get(node_id, node.title)
             if title in source_names:
                 title = f"{title} ({node_id})"
-            source_names[title] = Path(path).name
+            source_names[title] = item.source_label(node_id)
         self.batch_navigator.set_session(
             len(items),
             index,
@@ -10001,7 +10020,11 @@ class VippWidget(QWidget):
             node_id: Path(path).expanduser().resolve()
             for node_id, path in items[index].source_paths.items()
         }
-        if expected_paths != self._interactive_collection_source_paths:
+        if (
+            expected_paths != self._interactive_collection_source_paths
+            or items[index].source_series_indices
+            != self._interactive_collection_source_series_indices
+        ):
             return
         self._interactive_collection_batch_index = index
         self._interactive_collection_batch_requested_index = -1
@@ -10064,10 +10087,14 @@ class VippWidget(QWidget):
                 node_id: Path(path).expanduser().resolve()
                 for node_id, path in items[committed].source_paths.items()
             }
+            self._interactive_collection_source_series_indices = dict(
+                items[committed].source_series_indices
+            )
             self._interactive_collection_batch_failed_index = -1
             self._sync_interactive_collection_batch_navigator()
         elif items and 0 <= failed_index < len(items):
             self._interactive_collection_source_paths.clear()
+            self._interactive_collection_source_series_indices.clear()
             self._interactive_collection_batch_failed_index = -1
             self._sync_interactive_collection_batch_navigator(index=failed_index)
         subtitle_node_ids.update(self._interactive_collection_source_node_ids())
@@ -10150,6 +10177,7 @@ class VippWidget(QWidget):
             close_workspace = False
         subtitle_node_ids = self._interactive_collection_source_node_ids()
         self._interactive_collection_source_paths.clear()
+        self._interactive_collection_source_series_indices.clear()
         self._prune_file_source_payload_cache()
         self._interactive_collection_batch_items = ()
         self._interactive_collection_batch_config = None
@@ -11718,7 +11746,7 @@ class VippWidget(QWidget):
                 SourceFileLoadSpec(
                     node_id=node_id,
                     path=resolved_path,
-                    series_index=int(node.params.get("series_index", 0) or 0),
+                    series_index=self._file_source_series_index_for_node(node),
                     cache_key=key,
                     expected_identity=self._file_source_path_identities.get(
                         resolved_path
@@ -11745,6 +11773,12 @@ class VippWidget(QWidget):
             return None
         return (
             str(source_path),
+            self._file_source_series_index_for_node(node),
+        )
+
+    def _file_source_series_index_for_node(self, node) -> int:
+        return self._interactive_collection_source_series_indices.get(
+            node.id,
             int(node.params.get("series_index", 0) or 0),
         )
 
@@ -11873,7 +11907,7 @@ class VippWidget(QWidget):
             resolved_path = str(source_path)
             snapshot = load_frozen_file_source_snapshot(
                 source_path,
-                int(node.params.get("series_index", 0)),
+                self._file_source_series_index_for_node(node),
                 expected_identity=self._file_source_path_identities.get(
                     resolved_path
                 ),
@@ -15281,7 +15315,7 @@ class VippWidget(QWidget):
             return ""
         return (
             f"Representative batch item {index + 1}/{len(items)}: "
-            f"{Path(path).name}. The full batch has not been run."
+            f"{items[index].source_label(node_id)}. The full batch has not been run."
         )
 
     def _render_select_axis_slice_parameters(self, node_id: str) -> None:
@@ -15584,10 +15618,22 @@ class VippWidget(QWidget):
             and spec.name in {"channel_1_threshold", "channel_2_threshold"}
         ):
             return True
-        return (
-            node is not None
-            and node.operation_id == "set_pixel_size"
-            and spec.name in {"x_size", "y_size", "z_size"}
+        return node is not None and (
+            (
+                node.operation_id == "set_pixel_size"
+                and spec.name in {"x_size", "y_size", "z_size"}
+            )
+            or (
+                node.operation_id == "set_microscope_metadata"
+                and spec.name
+                in {
+                    "channel_1_wavelength_nm",
+                    "channel_2_wavelength_nm",
+                    "channel_3_wavelength_nm",
+                    "numerical_aperture",
+                    "refractive_index",
+                }
+            )
         )
 
     def _effective_parameter_spec(self, node_id: str, spec):
@@ -21239,7 +21285,7 @@ class VippWidget(QWidget):
         path = items[index].source_paths.get(node_id)
         if path is None:
             return ""
-        return f"Batch {index + 1}/{len(items)} · {Path(path).name}"
+        return f"Batch {index + 1}/{len(items)} · {items[index].source_label(node_id)}"
 
     def _on_selected_preview_toggled(self, checked: bool) -> None:
         node_id = self._selected_node_id

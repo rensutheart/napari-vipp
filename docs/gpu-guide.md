@@ -13,7 +13,7 @@ environment, memory, and scientific-parity gates. Work outside those gates
 runs on CPU with an explanation; VIPP does not silently cast data or change an
 authored parameter merely to use a GPU.
 
-The public `0.13.0a5` CUDA route currently targets native 64-bit Windows and
+The public `0.13.0a6` CUDA route currently targets native 64-bit Windows and
 CPython 3.12. Linux and macOS continue to use the CPU path in this alpha while
 their accelerator policies are qualified separately.
 
@@ -59,7 +59,7 @@ CMake.
 
 ## Install And Verify
 
-The explicitly unsigned Windows installer is the normal 0.13.0a5 route. Follow
+The explicitly unsigned Windows installer is the normal 0.13.0a6 route. Follow
 the checksum and Windows-warning steps in the [Quick Start](quick-start.md), or
 use this manual dedicated CUDA 13 environment route:
 
@@ -70,6 +70,30 @@ use this manual dedicated CUDA 13 environment route:
 A passing report identifies the selected device and confirms that CuPy GPU
 execution is available. `python -m pip check` must also report no broken
 requirements.
+
+Compute Doctor answers three separate questions instead of treating a working
+CUDA import as the whole result:
+
+1. **CUDA and GPU** — can the pinned CUDA/CuPy runtime really allocate and run;
+2. **Optional cuCIM** — is the separately built add-on usable; and
+3. **VIPP GPU coverage** — how many of the current reviewed operation regions
+   VIPP will actually admit on this machine.
+
+The **Compute setup and memory** window presents those three short rows and one
+next step. Memory, provider messages, and other technical evidence begin under
+**Show advanced details** so a new user does not have to interpret them first.
+After a check, **Save privacy-redacted support report…** writes an atomic JSON
+report that is suitable to attach to a support request. The equivalent Windows
+PowerShell command is:
+
+```powershell
+& ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13 --support-bundle ".\vipp-compute-support.json"
+```
+
+The support report excludes local repair commands, workflow and node names,
+filesystem paths, credentials, and raw environment/workload fingerprints. The
+separate `--json` option prints a detailed *local* diagnostic and may include
+machine-local provenance; do not share that raw output without reviewing it.
 
 Source developers can inspect or create the pinned qualification environment
 with:
@@ -114,13 +138,18 @@ cuCIM is not required for VIPP or for the other qualified CuPy/CuPyX
 operations. It supplies the currently reviewed rolling-ball/background and
 basic-measurement candidates in its exact admitted environment.
 
-VIPP does not redistribute a private cuCIM wheel. Windows users may run the
-separate [optional cuCIM local-build add-on](../scripts/README-cucim-windows-installer.md)
-only after the standard CUDA compute doctor passes. The bundle contains no
-wheel: it performs the pinned build locally, verifies the resulting bytes and
-provenance, runs real GPU probes, and records approval in the selected released
-VIPP environment. The first build and kernel warm-up can take a long time;
-later probes normally reuse the compiled cache.
+VIPP does not redistribute a private cuCIM wheel. Windows users may download
+the exact
+[`0.13.0a6` optional cuCIM local-build add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a6/napari-vipp-cucim-installer-0.13.0a6-windows.zip)
+only after the standard CUDA Compute Doctor passes. Verify its SHA-256 against
+the release's `SHA256SUMS-Windows-0.13.0a6.txt`, extract it, and double-click
+**Install VIPP cuCIM.cmd**. The bundle contains no wheel: it performs the pinned
+build locally, verifies the resulting bytes and provenance, runs real GPU
+probes, and records approval in the selected released VIPP environment. The
+first build and kernel warm-up can take a long time; later probes normally
+reuse the compiled cache. See the bundle's
+[complete instructions](../scripts/README-cucim-windows-installer.md) for the
+expected checksum, retained records, and command-line recovery route.
 
 When cuCIM is absent or rejected, affected nodes remain scientifically usable
 on CPU.

@@ -5805,6 +5805,25 @@ def set_pixel_size(
     return np.asarray(data)
 
 
+def set_microscope_metadata(
+    data,
+    channel_1_wavelength_nm: float = 0.0,
+    channel_2_wavelength_nm: float = 0.0,
+    channel_3_wavelength_nm: float = 0.0,
+    numerical_aperture: float = 0.0,
+    refractive_index: float = 0.0,
+) -> np.ndarray:
+    """Pass pixels through while updating carried acquisition metadata."""
+    del (
+        channel_1_wavelength_nm,
+        channel_2_wavelength_nm,
+        channel_3_wavelength_nm,
+        numerical_aperture,
+        refractive_index,
+    )
+    return np.asarray(data)
+
+
 def rescale_axes(
     data,
     x_scale: float = 1.0,

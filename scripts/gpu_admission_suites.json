@@ -1,0 +1,426 @@
+{
+  "schema": "napari-vipp-gpu-admission-suite-manifest",
+  "schema_version": 1,
+  "required_facets": [
+    "cpu_oracle_parity",
+    "adversarial_workloads",
+    "metadata",
+    "input_integrity",
+    "memory",
+    "cancellation",
+    "cleanup",
+    "fallback",
+    "provenance",
+    "transfer_inclusive_timing"
+  ],
+  "implementations": [
+    {
+      "operation_id": "rolling_ball_background",
+      "implementation_id": "cucim-rolling_ball_background-v2",
+      "implementation_version": "2",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cucim"
+    },
+    {
+      "operation_id": "subtract_background",
+      "implementation_id": "cucim-subtract_background-v2",
+      "implementation_version": "2",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cucim"
+    },
+    {
+      "operation_id": "median_filter",
+      "implementation_id": "cupyx-median-filter-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "gaussian_blur",
+      "implementation_id": "cupyx-gaussian-blur-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "gaussian_blur_3d",
+      "implementation_id": "cupyx-gaussian-blur-3d-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "richardson_lucy_deconvolution",
+      "implementation_id": "rl-cupy-f32-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "richardson_lucy_tv_deconvolution",
+      "implementation_id": "rl-tv-cupy-f32-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "canny_edges",
+      "implementation_id": "cupyx-canny-edges-exact-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "otsu_threshold",
+      "implementation_id": "cupy-otsu-threshold-exact-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "sigma_filter",
+      "implementation_id": "cupy-sigma-filter-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupy"
+    },
+    {
+      "operation_id": "label_connected_components",
+      "implementation_id": "cupyx-connected-components-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "measure_objects",
+      "implementation_id": "cucim-measure-objects-basic-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cucim"
+    },
+    {
+      "operation_id": "measure_objects_intensity",
+      "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cucim"
+    }
+  ],
+  "runners": [
+    {
+      "id": "core-production-evidence",
+      "kind": "evidence",
+      "implementations": [
+        "rolling_ball_background::cucim-rolling_ball_background-v2",
+        "subtract_background::cucim-subtract_background-v2",
+        "median_filter::cupyx-median-filter-v1",
+        "gaussian_blur::cupyx-gaussian-blur-v1",
+        "gaussian_blur_3d::cupyx-gaussian-blur-3d-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity",
+        "memory",
+        "cleanup",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_phase1.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_phase1.py", "--output", "{artifact}", "--device-id", "{device_id}"],
+        "full": ["{python}", "scripts/benchmark_gpu_phase1.py", "--output", "{artifact}", "--device-id", "{device_id}"]
+      },
+      "artifact": "core-production.json",
+      "artifact_schema": "napari-vipp-core-public-gpu-benchmark-evidence",
+      "artifact_schema_version": 2
+    },
+    {
+      "id": "core-provider-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "rolling_ball_background::cucim-rolling_ball_background-v2",
+        "subtract_background::cucim-subtract_background-v2",
+        "median_filter::cupyx-median-filter-v1",
+        "gaussian_blur::cupyx-gaussian-blur-v1",
+        "gaussian_blur_3d::cupyx-gaussian-blur-3d-v1"
+      ],
+      "facets": ["adversarial_workloads", "metadata", "input_integrity", "cancellation"],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_background.py",
+        "src/napari_vipp/_tests/test_gpu_gaussian.py",
+        "src/napari_vipp/_tests/test_gpu_median.py",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py"
+      ],
+      "profile_commands": {
+        "quick": [
+          "{python}", "-m", "pytest", "-q",
+          "src/napari_vipp/_tests/test_gpu_background.py",
+          "src/napari_vipp/_tests/test_gpu_gaussian.py",
+          "src/napari_vipp/_tests/test_gpu_median.py",
+          "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_run_batch_gpu_provenance_cleanup_and_reuse",
+          "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_headless_background_gaussian_median_forms_one_device_segment"
+        ],
+        "full": [
+          "{python}", "-m", "pytest", "-q",
+          "src/napari_vipp/_tests/test_gpu_background.py",
+          "src/napari_vipp/_tests/test_gpu_gaussian.py",
+          "src/napari_vipp/_tests/test_gpu_median.py",
+          "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_run_batch_gpu_provenance_cleanup_and_reuse",
+          "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_headless_background_gaussian_median_forms_one_device_segment"
+        ]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "rl-admission-evidence",
+      "kind": "evidence",
+      "implementations": ["richardson_lucy_deconvolution::rl-cupy-f32-v1"],
+      "facets": ["cpu_oracle_parity", "adversarial_workloads", "provenance"],
+      "owner_paths": ["scripts/benchmark_gpu_rl_admission.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_rl_admission.py", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_rl_admission.py", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "rl-admission.json",
+      "artifact_schema": "napari-vipp-cupy-rl-admission-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "rl-performance-evidence",
+      "kind": "evidence",
+      "implementations": ["richardson_lucy_deconvolution::rl-cupy-f32-v1"],
+      "facets": ["metadata", "memory", "cleanup", "transfer_inclusive_timing"],
+      "owner_paths": ["scripts/benchmark_gpu_rl_performance.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_rl_performance.py", "--profile", "medium", "--output", "{artifact}", "--device-id", "{device_id}"],
+        "full": ["{python}", "scripts/benchmark_gpu_rl_performance.py", "--profile", "large", "--output", "{artifact}", "--device-id", "{device_id}"]
+      },
+      "artifact": "rl-performance.json",
+      "artifact_schema": "napari-vipp-cupy-rl-performance-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "rl-provider-contracts",
+      "kind": "pytest",
+      "implementations": ["richardson_lucy_deconvolution::rl-cupy-f32-v1"],
+      "facets": ["input_integrity", "cancellation"],
+      "owner_paths": ["src/napari_vipp/_tests/test_gpu_rl.py"],
+      "profile_commands": {
+        "quick": [
+          "{python}", "-m", "pytest", "-q",
+          "src/napari_vipp/_tests/test_gpu_rl.py::test_real_gpu_float32_parity_and_residency",
+          "src/napari_vipp/_tests/test_gpu_rl.py::test_real_gpu_progress_is_synchronized_and_cancellable"
+        ],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_rl.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "rl-tv-admission-evidence",
+      "kind": "evidence",
+      "implementations": ["richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1"],
+      "facets": ["cpu_oracle_parity", "adversarial_workloads", "provenance"],
+      "owner_paths": ["scripts/benchmark_gpu_rl_tv_admission.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_rl_tv_admission.py", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_rl_tv_admission.py", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "rl-tv-admission.json",
+      "artifact_schema": "napari-vipp-cupy-rl-tv-admission-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "rl-tv-performance-evidence",
+      "kind": "evidence",
+      "implementations": ["richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1"],
+      "facets": ["metadata", "memory", "cleanup", "transfer_inclusive_timing"],
+      "owner_paths": ["scripts/benchmark_gpu_rl_tv_performance.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_rl_tv_performance.py", "--profile", "practical", "--output", "{artifact}", "--device-id", "{device_id}"],
+        "full": ["{python}", "scripts/benchmark_gpu_rl_tv_performance.py", "--profile", "practical", "--output", "{artifact}", "--device-id", "{device_id}"]
+      },
+      "artifact": "rl-tv-performance.json",
+      "artifact_schema": "napari-vipp-cupy-rl-tv-performance-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "rl-tv-provider-contracts",
+      "kind": "pytest",
+      "implementations": ["richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1"],
+      "facets": ["input_integrity", "cancellation"],
+      "owner_paths": ["src/napari_vipp/_tests/test_gpu_rl_tv.py"],
+      "profile_commands": {
+        "quick": [
+          "{python}", "-m", "pytest", "-q",
+          "src/napari_vipp/_tests/test_gpu_rl_tv.py::test_real_gpu_default_region_parity_and_residency",
+          "src/napari_vipp/_tests/test_gpu_rl_tv.py::test_real_gpu_progress_is_synchronized_and_cancellable"
+        ],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_rl_tv.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "canny-otsu-evidence",
+      "kind": "evidence",
+      "implementations": [
+        "canny_edges::cupyx-canny-edges-exact-v1",
+        "otsu_threshold::cupy-otsu-threshold-exact-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata", "memory",
+        "cancellation", "cleanup", "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_canny_otsu.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_canny_otsu.py", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_canny_otsu.py", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "canny-otsu.json",
+      "artifact_schema": "napari-vipp-cupy-canny-otsu-evidence",
+      "artifact_schema_version": 3
+    },
+    {
+      "id": "canny-otsu-provider-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "canny_edges::cupyx-canny-edges-exact-v1",
+        "otsu_threshold::cupy-otsu-threshold-exact-v1"
+      ],
+      "facets": ["input_integrity"],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_canny.py",
+        "src/napari_vipp/_tests/test_gpu_otsu.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_canny.py", "src/napari_vipp/_tests/test_gpu_otsu.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_canny.py", "src/napari_vipp/_tests/test_gpu_otsu.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "sigma-evidence",
+      "kind": "evidence",
+      "implementations": ["sigma_filter::cupy-sigma-filter-v1"],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata", "input_integrity",
+        "memory", "cancellation", "cleanup", "fallback", "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_sigma.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_sigma.py", "--profile", "quick", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_sigma.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "sigma.json",
+      "artifact_schema": "napari-vipp-cupy-sigma-filter-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "connected-components-evidence",
+      "kind": "evidence",
+      "implementations": ["label_connected_components::cupyx-connected-components-v1"],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "memory", "cancellation",
+        "cleanup", "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_connected_components.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_connected_components.py", "--profile", "quick", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_connected_components.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "connected-components.json",
+      "artifact_schema": "napari-vipp-cupyx-connected-components-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "connected-components-provider-contracts",
+      "kind": "pytest",
+      "implementations": ["label_connected_components::cupyx-connected-components-v1"],
+      "facets": ["metadata", "input_integrity"],
+      "owner_paths": ["src/napari_vipp/_tests/test_gpu_connected_components_provider.py"],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_connected_components_provider.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_connected_components_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "measurements-evidence",
+      "kind": "evidence",
+      "implementations": [
+        "measure_objects::cucim-measure-objects-basic-v1",
+        "measure_objects_intensity::cucim-measure-objects-intensity-basic-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata", "memory",
+        "cancellation", "cleanup", "fallback", "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_measurements.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_measurements.py", "--profile", "quick", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_measurements.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "measurements.json",
+      "artifact_schema": "napari-vipp-cucim-basic-measurements-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "measurements-provider-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "measure_objects::cucim-measure-objects-basic-v1",
+        "measure_objects_intensity::cucim-measure-objects-intensity-basic-v1"
+      ],
+      "facets": ["input_integrity"],
+      "owner_paths": ["src/napari_vipp/_tests/test_gpu_measurements_provider.py"],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_measurements_provider.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_measurements_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "public-fallback-policy-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "rolling_ball_background::cucim-rolling_ball_background-v2",
+        "subtract_background::cucim-subtract_background-v2",
+        "median_filter::cupyx-median-filter-v1",
+        "gaussian_blur::cupyx-gaussian-blur-v1",
+        "gaussian_blur_3d::cupyx-gaussian-blur-3d-v1",
+        "richardson_lucy_deconvolution::rl-cupy-f32-v1",
+        "richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1",
+        "canny_edges::cupyx-canny-edges-exact-v1",
+        "otsu_threshold::cupy-otsu-threshold-exact-v1",
+        "sigma_filter::cupy-sigma-filter-v1",
+        "label_connected_components::cupyx-connected-components-v1",
+        "measure_objects::cucim-measure-objects-basic-v1",
+        "measure_objects_intensity::cucim-measure-objects-intensity-basic-v1"
+      ],
+      "facets": ["fallback"],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_broad_gpu_admission_regressions.py",
+        "src/napari_vipp/_tests/test_compute_policy.py",
+        "src/napari_vipp/_tests/test_compute_planning.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_broad_gpu_admission_regressions.py", "src/napari_vipp/_tests/test_compute_policy.py", "src/napari_vipp/_tests/test_compute_planning.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_broad_gpu_admission_regressions.py", "src/napari_vipp/_tests/test_compute_policy.py", "src/napari_vipp/_tests/test_compute_planning.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    }
+  ]
+}

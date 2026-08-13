@@ -658,6 +658,44 @@ def test_build_batch_plan_glob_union_is_globally_sorted(tmp_path):
     ]
 
 
+def test_multi_series_collection_expands_into_stable_batch_items(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    archive = inputs / "acquisition.npz"
+    first = np.full((3, 4), 11, dtype=np.uint16)
+    second = np.full((3, 4), 22, dtype=np.uint16)
+    np.savez(archive, upper_field=first, lower_field=second)
+    workflow, output_ids = _batch_workflow()
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, output_ids)
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.npz"),),
+    )
+
+    plan = build_batch_plan(config)
+
+    assert [item.source_series_indices for item in plan.items] == [
+        {"input": 0},
+        {"input": 1},
+    ]
+    assert [item.source_label("input") for item in plan.items] == [
+        "acquisition.npz › upper_field",
+        "acquisition.npz › lower_field",
+    ]
+    assert len({item.batch_id for item in plan.items}) == 2
+    assert len({item.outputs[0].path for item in plan.items}) == 2
+
+    result = run_batch(workflow, config)
+
+    assert result.summary["completed"] == 2
+    np.testing.assert_array_equal(np.load(plan.items[0].outputs[0].path), first)
+    np.testing.assert_array_equal(np.load(plan.items[1].outputs[0].path), second)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["items"][1]["sources"][0]["series"]["index"] == 1
+    assert manifest["items"][1]["sources"][0]["series"]["name"] == "lower_field"
+
+
 def test_build_batch_plan_rejects_output_overlapping_any_input(tmp_path):
     inputs = tmp_path / "inputs"
     _write_arrays(inputs, field=np.ones((2, 3), dtype=np.uint8))

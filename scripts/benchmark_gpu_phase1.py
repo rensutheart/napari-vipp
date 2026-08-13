@@ -1,9 +1,9 @@
-"""Create reproducible machine-local Phase-1 GPU benchmark evidence.
+"""Create reproducible machine-local core GPU benchmark evidence.
 
-This is deliberately a developer-only, headless command.  It benchmarks the
-fixed float32 subtract-background, Gaussian, and median cases through VIPP's
-production node adapter, after every candidate passes the exact Phase-1
-environment and scientific admission gates.
+This is deliberately a maintainer-only, headless command.  It benchmarks the
+fixed float32 background, Gaussian, and median cases through VIPP's production
+node adapter, after every candidate passes the current public environment and
+scientific admission gates.
 
 Optional GPU providers remain lazy on ``--help`` and module import.  They are
 loaded only when an explicit benchmark run probes and executes them.
@@ -28,12 +28,12 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-EVIDENCE_SCHEMA = "napari-vipp-phase1-production-benchmark-evidence"
-EVIDENCE_SCHEMA_VERSION = 1
+EVIDENCE_SCHEMA = "napari-vipp-core-public-gpu-benchmark-evidence"
+EVIDENCE_SCHEMA_VERSION = 2
 CASE_GENERATOR = "numpy-pcg64-v1"
 ROUND_ORDER_SEED = 20_260_728
 REQUIRED_RUNTIME_ID = "cuda-cupy"
-DEVELOPER_ENABLEMENT = True
+ALLOW_EXPERIMENTAL = False
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PROVENANCE_PATHS = (
     "scripts/benchmark_gpu_phase1.py",
@@ -51,7 +51,7 @@ SOURCE_PROVENANCE_PATHS = (
     "src/napari_vipp/core/gpu/cupy_gaussian.py",
     "src/napari_vipp/core/gpu/cupy_median.py",
     "src/napari_vipp/core/gpu/cucim_background.py",
-    "src/napari_vipp/compute_policies/phase1-gpu-developer-v2.json",
+    "src/napari_vipp/compute_policies/phase1-gpu-public-v8.json",
 )
 
 
@@ -68,6 +68,20 @@ class _CaseDefinition:
 
 
 CASE_DEFINITIONS = (
+    _CaseDefinition(
+        "rolling_ball_background",
+        20_260_700,
+        (31, 37),
+        (
+            ("radius", 5),
+            ("light_background", False),
+            ("disable_smoothing", False),
+            ("spatial_mode", "2D YX"),
+            ("resolved_spatial_ndim", 2),
+            ("progress", None),
+            ("channel_axis", None),
+        ),
+    ),
     _CaseDefinition(
         "subtract_background",
         20_260_701,
@@ -88,6 +102,17 @@ CASE_DEFINITIONS = (
         20_260_702,
         (128, 160),
         (("sigma", 1.3), ("channel_axis", None)),
+    ),
+    _CaseDefinition(
+        "gaussian_blur_3d",
+        20_260_704,
+        (9, 31, 37),
+        (
+            ("sigma_z", 0.8),
+            ("sigma_y", 1.3),
+            ("sigma_x", 1.7),
+            ("channel_axis", None),
+        ),
     ),
     _CaseDefinition(
         "median_filter",
@@ -133,7 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def run_benchmarks(*, device_id: str = "") -> dict[str, object]:
-    """Run the fixed production profile after exact hidden-tier admission."""
+    """Run the fixed production profile after exact public admission."""
 
     source_provenance = _source_provenance()
 
@@ -161,27 +186,34 @@ def run_benchmarks(*, device_id: str = "") -> dict[str, object]:
     from napari_vipp.core.node_execution import PreparedNodeCall
     from napari_vipp.core.operations import (
         gaussian_blur,
+        gaussian_blur_3d,
         median_filter,
+        rolling_ball_background,
         subtract_background,
     )
 
     cpu_functions = {
+        "rolling_ball_background": rolling_ball_background,
         "subtract_background": subtract_background,
         "gaussian_blur": gaussian_blur,
+        "gaussian_blur_3d": gaussian_blur_3d,
         "median_filter": median_filter,
     }
     policy = load_phase1_compute_policy()
-    if not policy.exposure.developer_enablement_required:
+    if (
+        policy.exposure.developer_enablement_required
+        or not policy.exposure.public_controls_enabled
+        or policy.status != "public-validated"
+    ):
         raise BenchmarkEvidenceError(
-            "The loaded policy does not require developer enablement; refusing "
-            "to treat it as the Phase-1 hidden-tier policy."
+            "The loaded compute policy is not the current public validated policy."
         )
 
     request = ComputeRequest(
         mode=ComputeMode.SELECTIVE,
         runtime_id=REQUIRED_RUNTIME_ID,
         device_id=str(device_id).strip(),
-        allow_experimental=DEVELOPER_ENABLEMENT,
+        allow_experimental=ALLOW_EXPERIMENTAL,
     )
     registry = ComputeRegistry()
     try:
@@ -190,12 +222,12 @@ def run_benchmarks(*, device_id: str = "") -> dict[str, object]:
         for definition in CASE_DEFINITIONS:
             matches = registry.implementations_for_operation(
                 definition.operation_id,
-                allow_experimental=DEVELOPER_ENABLEMENT,
+                allow_experimental=ALLOW_EXPERIMENTAL,
             )
             if len(matches) != 1:
                 raise BenchmarkEvidenceError(
                     f"Required operation {definition.operation_id!r} has "
-                    f"{len(matches)} developer GPU candidates; expected exactly one."
+                    f"{len(matches)} public GPU candidates; expected exactly one."
                 )
             spec = matches[0]
             packaged = policy.operation(definition.operation_id)
@@ -258,7 +290,7 @@ def run_benchmarks(*, device_id: str = "") -> dict[str, object]:
                 registry=registry,
                 environment_fingerprint=environment.fingerprint,
                 device_id=environment.device_id,
-                allow_experimental=DEVELOPER_ENABLEMENT,
+                allow_experimental=ALLOW_EXPERIMENTAL,
             )
             _require_production_profile(
                 built.request,
@@ -275,7 +307,7 @@ def run_benchmarks(*, device_id: str = "") -> dict[str, object]:
                 spec,
                 built.request.workload,
                 environment,
-                allow_experimental=DEVELOPER_ENABLEMENT,
+                allow_experimental=ALLOW_EXPERIMENTAL,
                 array_facts=(facts,),
             )
             if not support.supported:
@@ -323,8 +355,8 @@ def run_benchmarks(*, device_id: str = "") -> dict[str, object]:
             "schema": EVIDENCE_SCHEMA,
             "schema_version": EVIDENCE_SCHEMA_VERSION,
             "created_utc": datetime.now(UTC).isoformat(),
-            "kind": "machine-local-production-node-benchmark",
-            "developer_hidden_enabled": DEVELOPER_ENABLEMENT,
+            "kind": "machine-local-public-production-node-benchmark",
+            "experimental_candidates_enabled": ALLOW_EXPERIMENTAL,
             "fixed_case_generator": CASE_GENERATOR,
             "round_order_seed": ROUND_ORDER_SEED,
             "policy": {

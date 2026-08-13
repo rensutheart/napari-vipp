@@ -2,6 +2,93 @@
 
 ## Unreleased
 
+## 0.13.0a6 - 2026-08-13
+
+### Release Overview
+
+This sixth 0.13 alpha makes workflow editing substantially easier and turns
+GPU setup and qualification into something users can inspect without reading
+developer logs. Nodes and connected graph fragments can now be copied and
+pasted, settings can be transferred between matching nodes, and a processing
+step can be inserted before an existing tunnel without rebuilding the graph.
+Compute Doctor now explains CUDA, optional libraries, and the GPU operations
+VIPP can actually use as three separate questions with one recommended next
+step.
+
+The release also expands real-world image handling with Imaris `.ims` import,
+multi-series batch items, and a node for recording missing microscope metadata.
+It adds clean-package checks and a reproducible GPU qualification harness, but
+does not pretend that automated checks replace fresh-computer installation
+testing. The included field checklist records those remaining human acceptance
+steps explicitly.
+
+### Features Added
+
+#### Faster Graph Editing And Reuse
+
+- Added Windows-style multi-node selection, group movement, group deletion,
+  and copy/paste for complete graph fragments. Pasted nodes receive fresh
+  identities while keeping their internal connections, applicable tunnels,
+  notes, positions, and authored settings.
+- Added **Paste Values** for transferring settings between two nodes of the
+  exact same operation. The transfer is validated before it changes the live
+  workflow, refreshes the interface once, and can be undone in one step.
+- Added **Insert node before tunnel** from the tunnel menu, compatible palette
+  drops onto a tunnel, and insertion by dragging a loose node onto a tunnel.
+  Existing tunnel subscribers remain connected to the same named route.
+- Added the self-explaining **Graph Editing Acceptance Check** example so these
+  behaviors can be tested without preparing images or a workflow first.
+
+#### Clearer GPU Diagnosis And Qualification
+
+- Rebuilt Compute Doctor around three separate answers: whether CUDA can run,
+  whether optional CuPyX/cuCIM providers are usable, and which of VIPP's 13
+  current reviewed GPU regions are actually admitted. The window now gives one
+  recommended next step, keeps technical detail collapsed, and can save an
+  atomic privacy-redacted support report.
+- Added one strict, spec-driven GPU admission runner that maps every public GPU
+  implementation to parity, adversarial-input, metadata, input-integrity,
+  memory, cancellation, cleanup, fallback, provenance, and complete-workflow
+  timing evidence. The former Phase-1 benchmark now covers the current public
+  background, Gaussian 2D/3D, and median implementations.
+
+#### Image Sources, Series, And Microscope Metadata
+
+- Added Imaris `.ims` files to the shared microscope/BioIO source path.
+- Added **Set Microscope Metadata**, a pixel-preserving node for recording up
+  to three emission wavelengths, objective numerical aperture, and immersion
+  refractive index when a reader cannot recover them reliably.
+- Batch sources now expand a multi-series container into distinct, clearly
+  named items; interactive representative browsing, output names, manifests,
+  and provenance retain both the container and selected series identity.
+  These changes incorporate and harden community contributions from Tom Naber
+  in pull requests 8, 10, and 13.
+
+### Bug Fixes
+
+- Prefer-GPU planning now ignores connected graph fragments whose upstream
+  processing chain is deliberately loose, matching CPU behavior and allowing
+  the Graph Editing Acceptance Check example to calculate normally.
+
+### Installation And Release Qualification
+
+- Added clean wheel and source-archive installation jobs across Windows,
+  Linux, and macOS, covering CPython 3.12/3.13 and verifying packaged resources
+  plus the headless Compute Doctor and installer-planner entry points.
+- Added a weekly Windows cuCIM release canary. Hosted CI reproducibly verifies
+  the published no-wheel bundle; an explicitly enabled protected self-hosted
+  job performs the lengthy real CUDA build, installation, provenance, Doctor,
+  and representative-library probes without treating a skipped GPU job as
+  acceptance evidence.
+- Made the exact `0.13.0a6` cuCIM add-on download and checksum-first extraction
+  route visible in the README, Quick Start, and GPU guide. The bundled add-on
+  guide remains version-neutral so it cannot contain a stale or circular
+  archive checksum.
+- Added a plain-language Windows field-acceptance checklist for recording a
+  fresh CPU or CUDA install, paths containing spaces or non-ASCII characters,
+  rollback after interruption, repair/update/uninstall, and a timed novice
+  first-workflow test without marking unperformed checks as passed.
+
 ## 0.13.0a5 - 2026-08-12
 
 ### Release Overview

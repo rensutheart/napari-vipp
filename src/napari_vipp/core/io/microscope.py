@@ -40,6 +40,7 @@ from napari_vipp.core.metadata import (
 MICROSCOPE_SUFFIXES = frozenset(
     {
         ".czi",
+        ".ims",
         ".lif",
         ".lof",
         ".lsm",
@@ -52,11 +53,12 @@ MICROSCOPE_SUFFIXES = frozenset(
     }
 )
 MICROSCOPE_FILE_FILTER = (
-    "Microscope files (*.nd2 *.czi *.lsm *.lif *.lof *.xlif "
+    "Microscope files (*.nd2 *.czi *.ims *.lsm *.lif *.lof *.xlif "
     "*.oir *.oib *.oif *.vsi)"
 )
 
 _BIOIO_FALLBACK_SUFFIXES = {
+    ".ims",
     ".lif",
     ".lof",
     ".oib",
@@ -67,6 +69,7 @@ _BIOIO_FALLBACK_SUFFIXES = {
 }
 _FORMAT_BY_SUFFIX = {
     ".czi": "zeiss-czi",
+    ".ims": "imaris-ims",
     ".lif": "leica-lif",
     ".lof": "leica-lof",
     ".lsm": "zeiss-lsm",

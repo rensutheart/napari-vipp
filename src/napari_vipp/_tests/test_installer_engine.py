@@ -72,7 +72,7 @@ def _isolate_installer_temporary_directory(monkeypatch, tmp_path):
 
 
 def _release(
-    version: str = "0.13.0a5",
+    version: str = "0.13.0a6",
     *,
     wheel_path: Path | None = None,
     wheel_sha256: str = "",
@@ -88,7 +88,7 @@ def _release(
 def _record(
     target: Path,
     *,
-    version: str = "0.13.0a4",
+    version: str = "0.13.0a5",
     healthy: bool = True,
     shortcut: Path | None = None,
 ) -> OwnershipRecord:
@@ -213,7 +213,7 @@ def _report(
                         "archive_info": {"hashes": {"sha256": vipp_hash}},
                     },
                     "requested": True,
-                    "metadata": {"name": "napari-vipp", "version": "0.13.0a5"},
+                    "metadata": {"name": "napari-vipp", "version": "0.13.0a6"},
                 },
                 {
                     "download_info": {
@@ -355,28 +355,28 @@ def test_classifies_new_update_current_repair_newer_and_foreign(tmp_path):
         track=ComputeTrack.CPU,
     )
     update_root = tmp_path / "update"
-    _record(update_root, version="0.13.0a4")
+    _record(update_root, version="0.13.0a5")
     update = inspect_managed_target(
         update_root,
         release=release,
         track=ComputeTrack.CPU,
     )
     current_root = tmp_path / "current"
-    _record(current_root, version="0.13.0a5")
+    _record(current_root, version="0.13.0a6")
     current = inspect_managed_target(
         current_root,
         release=release,
         track=ComputeTrack.CPU,
     )
     repair_root = tmp_path / "repair"
-    _record(repair_root, version="0.13.0a5", healthy=False)
+    _record(repair_root, version="0.13.0a6", healthy=False)
     repair = inspect_managed_target(
         repair_root,
         release=release,
         track=ComputeTrack.CPU,
     )
     newer_root = tmp_path / "newer"
-    _record(newer_root, version="0.13.0a6")
+    _record(newer_root, version="0.13.0a7")
     newer = inspect_managed_target(
         newer_root,
         release=release,
@@ -491,7 +491,7 @@ def test_apply_uses_permanent_versioned_environment_and_exact_lock(tmp_path):
 
 def test_failed_update_preserves_active_environment_and_manifest(tmp_path):
     target = tmp_path / "managed"
-    old = _record(target, version="0.13.0a4")
+    old = _record(target, version="0.13.0a5")
     before = (target / ".vipp-installer" / "ownership.json").read_bytes()
     runner = _FakeRunner(fail_acceptance=True)
     engine = _engine(tmp_path, runner)
@@ -515,7 +515,7 @@ def test_failed_update_preserves_active_environment_and_manifest(tmp_path):
 
 def test_cancelled_apply_removes_only_marked_candidate(tmp_path):
     target = tmp_path / "managed"
-    old = _record(target, version="0.13.0a4")
+    old = _record(target, version="0.13.0a5")
     token = CancellationToken()
     runner = _FakeRunner(cancel_on_install=token)
     engine = _engine(tmp_path, runner)
@@ -554,7 +554,7 @@ def test_foreign_and_newer_targets_are_not_resolved_or_authorized(tmp_path):
 
 def test_bundled_wheel_hash_is_verified_for_resolution_and_apply(tmp_path):
     target = tmp_path / "managed"
-    wheel = tmp_path / "napari_vipp-0.13.0a5-py3-none-any.whl"
+    wheel = tmp_path / "napari_vipp-0.13.0a6-py3-none-any.whl"
     wheel.write_bytes(b"exact tagged wheel")
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     release = _release(wheel_path=wheel, wheel_sha256=digest)
@@ -729,7 +729,7 @@ def test_owned_shortcut_update_is_restored_if_commit_fails(tmp_path, monkeypatch
     shortcut = desktop / "VIPP.lnk"
     old_bytes = b"shortcut to the accepted old VIPP"
     shortcut.write_bytes(old_bytes)
-    old_record = _record(target, version="0.13.0a4", shortcut=shortcut)
+    old_record = _record(target, version="0.13.0a5", shortcut=shortcut)
     manifest_before = (target / ".vipp-installer" / "ownership.json").read_bytes()
     runner = _FakeRunner()
     engine = _engine(tmp_path, runner)
@@ -758,7 +758,7 @@ def test_disabling_owned_desktop_shortcut_removes_it_after_acceptance(tmp_path):
     desktop.mkdir()
     shortcut = desktop / "VIPP.lnk"
     shortcut.write_bytes(b"owned old desktop shortcut")
-    _record(target, version="0.13.0a4", shortcut=shortcut)
+    _record(target, version="0.13.0a5", shortcut=shortcut)
     engine = _engine(tmp_path, _FakeRunner())
 
     prepared = engine.prepare(_plan(target, _release()))
@@ -787,7 +787,7 @@ def test_owned_desktop_shortcut_removal_rolls_back_before_ownership(
     shortcut = desktop / "VIPP.lnk"
     old_bytes = b"owned old desktop shortcut"
     shortcut.write_bytes(old_bytes)
-    old_record = _record(target, version="0.13.0a4", shortcut=shortcut)
+    old_record = _record(target, version="0.13.0a5", shortcut=shortcut)
     engine = _engine(tmp_path, _FakeRunner())
     prepared = engine.prepare(_plan(target, _release()))
 
@@ -998,7 +998,7 @@ document = {
         "requested": True,
         "metadata": {
             "name": "napari-vipp",
-            "version": "0.13.0a5",
+            "version": "0.13.0a6",
             "summary": "Resolver progress \\u23f1",
         },
     }],
@@ -1029,7 +1029,7 @@ print(json.dumps(document, ensure_ascii=False))
         approved_hosts=frozenset({"packages.example"}),
     )
     assert [(package.name, package.version) for package in packages] == [
-        ("napari-vipp", "0.13.0a5")
+        ("napari-vipp", "0.13.0a6")
     ]
 
 
@@ -1209,7 +1209,7 @@ def test_crash_during_owned_shortcut_removal_restores_old_install(
     shortcut = desktop / "VIPP.lnk"
     old_bytes = b"owned shortcut before update"
     shortcut.write_bytes(old_bytes)
-    old_record = _record(target, version="0.13.0a4", shortcut=shortcut)
+    old_record = _record(target, version="0.13.0a5", shortcut=shortcut)
     engine = _engine(tmp_path, _FakeRunner())
     prepared = engine.prepare(_plan(target, _release()))
     original = engine_module._write_transaction_journal
@@ -1247,7 +1247,7 @@ def test_crash_after_ownership_finishes_owned_shortcut_removal(
     desktop.mkdir()
     shortcut = desktop / "VIPP.lnk"
     shortcut.write_bytes(b"owned shortcut before update")
-    _record(target, version="0.13.0a4", shortcut=shortcut)
+    _record(target, version="0.13.0a5", shortcut=shortcut)
     engine = _engine(tmp_path, _FakeRunner())
     prepared = engine.prepare(_plan(target, _release()))
     original = engine_module.write_ownership_record
@@ -1275,7 +1275,7 @@ def test_crash_after_ownership_finishes_owned_shortcut_removal(
 
 def test_old_retired_environments_are_bounded_after_update(tmp_path):
     target = tmp_path / "managed"
-    old = _record(target, version="0.13.0a4")
+    old = _record(target, version="0.13.0a5")
     retired: list[OwnedEnvironment] = []
     for index in range(3):
         environment = managed_environments_root(target) / f"retired-{index}"
@@ -1966,7 +1966,7 @@ def test_same_version_reinstall_keeps_terminal_journal_until_commit(
 
 def test_environment_with_reparse_descendant_is_foreign(tmp_path):
     target = tmp_path / "managed"
-    record = _record(target, version="0.13.0a5")
+    record = _record(target, version="0.13.0a6")
     outside = tmp_path / "outside"
     outside.mkdir()
     link = record.environment_root / "redirected-data"

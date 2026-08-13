@@ -1,6 +1,6 @@
 # VIPP Alpha Release Runbook
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-08-13
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 publishing the companion documentation site, and confirming discovery on
@@ -10,8 +10,8 @@ napari hub.
 
 - Target package version: set `<version>` from the release milestone before
   starting; do not reuse the current package version by accident.
-- Current published release: `0.13.0a4`.
-- Current prepared target: `0.13.0a5`.
+- Current published release: `0.13.0a5`.
+- Current prepared target: `0.13.0a6`.
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -35,9 +35,11 @@ without changing the artifact-verification flow.
 Recommended local tools:
 
 - Python 3.12 or 3.13 for the CPU package; CPython 3.12 for CUDA qualification
-- `python -m pip install -U build twine`
-- for the isolated Windows setup build, CPython 3.12.10 and
-  `python -m pip install ".[installer-build]"`; this pins PyInstaller 6.21.0
+- for the release artifacts and isolated Windows setup build, a dedicated
+  64-bit CPython 3.12.10 environment with
+  `python -m pip install ".[installer-build]" twine`; this pins the build
+  backend, wheel tooling, and PyInstaller 6.21.0 used by the reproducibility
+  gate
 
 ## 2. Verify Metadata
 
@@ -52,6 +54,10 @@ Confirm these are set:
 - README has a clear license section
 - CHANGELOG has an `Unreleased` section or a dated section for the target
   version with the release highlights
+- `release-notes.md` has human-readable **Features added** and **Bug fixes**
+  sections, useful feature subcategories, current installation/upgrade notes,
+  contributor credit, and public links; ordinary prose is not forced into
+  narrow hard-wrapped columns
 - the companion documentation version and release page match the target
 
 Required checks:
@@ -123,10 +129,10 @@ distribution decision before freezing the commit:
    installation, compute, and validation pages that ordinary users cannot
    install cuCIM and that the affected providers normally remain on CPU.
 
-VIPP 0.13.0a1 through 0.13.0a4 use option 2. Every user builds and keeps their
-own archive; policy allows a per-user archive SHA only when its installed
-payload, pinned source/recipe, environment, and workload pass the exact
-reviewed gates.
+VIPP 0.13.0a1 through the published 0.13.0a5 use option 2, and the prepared
+0.13.0a6 target retains that decision. Every user builds and keeps their own
+archive; policy allows a per-user archive SHA only when its installed payload,
+pinned source/recipe, environment, and workload pass the exact reviewed gates.
 
 Never publish the historical `586D...134CF8` research wheel. Its exact archive
 is no longer retained, and the installed copy contains Windows-materialized
@@ -202,7 +208,6 @@ old same-version artifacts can otherwise look uploadable even though they came
 from another commit. Do not use a broad root-level `dist/*` upload glob:
 
 ```powershell
-python -m pip install -U build twine
 $releaseVersion = "<version>"
 $taggedSha = (git rev-parse "v$releaseVersion^{}").Trim()
 $artifactDir = "dist/$releaseVersion-$($taggedSha.Substring(0, 12))"
@@ -210,8 +215,19 @@ if (Test-Path -LiteralPath $artifactDir) {
     throw "Artifact directory already exists; choose a clean checkout or inspect it without reusing it: $artifactDir"
 }
 New-Item -ItemType Directory -Path $artifactDir | Out-Null
-python -m build --outdir $artifactDir
-python -m twine check `
+$releasePython = "C:\path\to\cpython-3.12.10\python.exe"
+$builderVenv = Join-Path $env:TEMP "vipp-release-builder-$releaseVersion"
+if (Test-Path -LiteralPath $builderVenv) {
+    throw "Release-builder environment already exists: $builderVenv"
+}
+& $releasePython -m venv $builderVenv
+$builderPython = Join-Path $builderVenv "Scripts\python.exe"
+& $builderPython -m pip install ".[installer-build]" twine
+$env:PYTHONHASHSEED = "0"
+$env:SOURCE_DATE_EPOCH = (git show -s --format=%ct $taggedSha).Trim()
+& $builderPython -m build --sdist --no-isolation --outdir $artifactDir
+& $builderPython -m build --wheel --no-isolation --outdir $artifactDir
+& $builderPython -m twine check `
   "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl" `
   "$artifactDir/napari_vipp-$releaseVersion.tar.gz"
 Get-FileHash -Algorithm SHA256 `
@@ -224,7 +240,7 @@ create it from this same clean tagged checkout and artifact directory:
 
 ```powershell
 $cucimInstaller = "$artifactDir/napari-vipp-cucim-installer-$releaseVersion-windows.zip"
-python scripts/package_cucim_windows_installer.py --output $cucimInstaller
+& $builderPython scripts/package_cucim_windows_installer.py --output $cucimInstaller
 Get-FileHash -Algorithm SHA256 $cucimInstaller
 ```
 
@@ -240,7 +256,7 @@ the EXE:
 
 ```powershell
 $wheel = "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl"
-python scripts/package_windows_installer.py build `
+& $builderPython scripts/package_windows_installer.py build `
   --wheel $wheel `
   --output-directory $artifactDir
 $stagingExe = "$artifactDir/VIPP-Setup-$releaseVersion-Windows-x86_64-SIGNING-STAGING.exe"
@@ -265,7 +281,7 @@ Only then create the official filename and release metadata. Omit the final
 cuCIM option when that separate, optional local-build ZIP is not being attached:
 
 ```powershell
-python scripts/package_windows_installer.py finalize `
+& $builderPython scripts/package_windows_installer.py finalize `
   --signed-staging-executable $stagingExe `
   --build-manifest $buildManifest `
   --output-directory $artifactDir `
@@ -282,7 +298,7 @@ If the release decision is explicitly to ship unsigned, keep the signing-staging
 EXE unsigned and use the separate fail-closed command:
 
 ```powershell
-python scripts/package_windows_installer.py finalize-unsigned `
+& $builderPython scripts/package_windows_installer.py finalize-unsigned `
   --unsigned-staging-executable $stagingExe `
   --build-manifest $buildManifest `
   --output-directory $artifactDir `
@@ -319,6 +335,11 @@ exact finalized asset name. If the release does not include the `.exe`, every
 quick-start surface must say **not yet published** rather than showing a dead
 download.
 
+Record the exact-artifact CPU, CUDA, path, rollback, and novice results with the
+[Windows installer field-acceptance form](windows-installer-field-acceptance.md).
+Leave anything that was not actually exercised as **not run**; an older build or
+an automated test cannot stand in for the tagged executable.
+
 During those smokes, change each install-relevant field after a successful
 review and confirm **Install VIPP** stays disabled until **Check these settings**
 finishes for the new selection. Exercise a slow or interrupted GPU dependency
@@ -335,6 +356,56 @@ including artifacts from an older release. It does not make an existing
 same-version artifact safe: confirm both files were produced from the tagged
 commit, record their SHA-256 hashes, and repeat the clean-wheel CPU and CUDA
 acceptance smokes against these files rather than an editable checkout.
+
+### Scheduled cuCIM release canary
+
+The `Windows cuCIM release canary` workflow provides two deliberately separate
+levels of evidence:
+
+- its weekly hosted-Windows job checks out the configured immutable release
+  tag, reproduces the no-wheel cuCIM installer ZIP, compares it byte-for-byte
+  with the published GitHub asset, and verifies the embedded tag, commit,
+  entry point, and no-wheel declaration; and
+- its real CUDA job runs only when a maintainer explicitly selects
+  `run_real_canary` or sets `VIPP_CUCIM_CANARY_ENABLED=true`. It requires an
+  up-to-date self-hosted Windows runner labelled `vipp-cuda13` and the protected
+  `cuda-canary` environment variable `VIPP_CUCIM_CANARY_PYTHON`, pointing to a
+  dedicated, already released VIPP CUDA environment. It saves a redacted Doctor
+  report and, for releases that contain the aggregate admission harness, runs
+  the complete `quick` profile and retains its aggregate/operation evidence.
+  Older pre-harness tags record that limitation explicitly rather than claiming
+  a pass. An optional `VIPP_CUCIM_CANARY_WORK_ROOT` retains the large pinned
+  source/build cache.
+
+Keep `VIPP_CUCIM_CANARY_TAG` on `v0.13.0a5` until the complete next prerelease
+and its cuCIM ZIP are public. Then move it to that exact published tag (the
+prepared target is `v0.13.0a6`). A skipped real-CUDA job is truthful static
+bundle evidence only; it must never be recorded as a GPU build, installation,
+Compute Doctor, or operation acceptance pass.
+
+Normal CI also installs the built wheel and sdist in clean jobs on Windows,
+Linux, and macOS, alternating CPython 3.12 and 3.13 while covering both archive
+formats on every operating system. These package jobs do not replace the
+managed installer or real-GPU acceptance paths.
+
+Before a GPU release candidate, validate the live public catalogue and run its
+owned qualification plan from the clean tagged checkout:
+
+```powershell
+python scripts/run_gpu_admission.py --check
+python scripts/run_gpu_admission.py `
+  --profile full `
+  --output .\gpu-admission-aggregate.json `
+  --artifacts .\gpu-admission-artifacts `
+  --device-index 0
+```
+
+Use `--profile quick` for the protected scheduled/manual canary. Both profiles
+fail if a public implementation is unaccounted for, an evidence owner is not
+actually invoked, a required facet is missing, a pytest owner skips, or an
+artifact fails its declared schema. Promote evidence only from the reviewed
+clean commit and hardware context named by the release; a dirty-worktree pass
+is useful integration evidence but not a canonical qualification record.
 
 ## 5. Build And Publish Documentation
 
@@ -458,8 +529,11 @@ If using the GitHub UI:
 5. Attach the wheel and source distribution built from the tagged commit
 6. Add release notes (suggested template below)
 
-Write release highlights from the target CHANGELOG section. The following is a
-structure, not a reusable list of 0.11 features:
+Write release highlights from the target CHANGELOG section in plain language.
+Use feature subcategories to make a large release scannable, keep fixes
+separate, explain upgrade or optional-component boundaries, and credit external
+contributors. Do not turn prose into a narrow column with manual line breaks.
+The following is a structure, not a reusable feature list:
 
 ```markdown
 ## napari-vipp v<version> (Alpha)
@@ -471,10 +545,20 @@ This is an early alpha build and is still in active development.
 - Validate outputs before publication or production use.
 - This release is distributed under the BSD 3-Clause License.
 
-### Highlights
-- Summarize the target release's user-visible changes.
-- Call out workflow/schema compatibility changes.
-- Link new guides, validation reports, or examples.
+### Features added
+
+#### <User-facing feature group>
+
+Explain what changed and why it matters in ordinary prose.
+
+### Bug fixes
+
+- Summarize corrected behavior in user-facing terms.
+
+### Installation and upgrading
+
+- Call out workflow/schema compatibility and optional-component boundaries.
+- Link the exact public installer, guides, validation reports, or examples.
 ```
 
 ## 7. napari Hub Listing/Refresh

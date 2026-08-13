@@ -35,6 +35,18 @@ For a useful bug report, include:
 - a workflow JSON when it can be shared safely; and
 - synthetic or public sample data rather than restricted research data.
 
+For GPU setup or fallback problems, first open **Compute setup and memory**, run
+the check, and choose **Save privacy-redacted support report…**. Attach that JSON
+file instead of copying the raw advanced diagnostic. From Windows PowerShell,
+the same export is available with:
+
+```powershell
+vipp-compute-doctor --track cuda13 --support-bundle ".\vipp-compute-support.json"
+```
+
+The `--json` output is intended for local inspection and is not the redacted
+support format.
+
 Remove patient, participant, specimen, institution, file-path, and acquisition
 identifiers before attaching logs, screenshots, metadata, or workflows.
 

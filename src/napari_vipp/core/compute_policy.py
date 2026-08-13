@@ -386,16 +386,24 @@ PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256 = (
 )
 
 
-def evaluate_candidate_support(
+def evaluate_candidate_environment_support(
     spec: OperationComputeSpec,
-    workload: WorkloadDescriptor,
     environment: ComputeEnvironment,
     *,
     allow_experimental: bool,
-    array_facts: tuple[ArrayFacts, ...] = (),
 ) -> SupportDecision:
-    """Evaluate declared scientific/environment support without timing."""
+    """Evaluate public visibility and environment admission without a workload.
 
+    Compute Doctor and other capability surfaces need to distinguish a working
+    accelerator from an implementation region that VIPP can actually expose on
+    the current machine.  Workload-specific dtype, shape, parameter, and memory
+    gates remain the responsibility of :func:`evaluate_candidate_workload_support`.
+    """
+
+    if not isinstance(spec, OperationComputeSpec):
+        raise TypeError("spec must be an OperationComputeSpec.")
+    if not isinstance(environment, ComputeEnvironment):
+        raise TypeError("environment must be a ComputeEnvironment.")
     if not spec.visible_for(allow_experimental=allow_experimental):
         return SupportDecision(
             False,
@@ -412,6 +420,33 @@ def evaluate_candidate_support(
         )
     environment_decision = _evaluate_phase1_cuda_environment(spec, environment)
     if environment_decision is not None:
+        return environment_decision
+    return SupportDecision(
+        True,
+        DecisionReason.SELECTED_IMPLEMENTATION,
+        (
+            "The current machine is inside this implementation's public "
+            "environment region."
+        ),
+    )
+
+
+def evaluate_candidate_support(
+    spec: OperationComputeSpec,
+    workload: WorkloadDescriptor,
+    environment: ComputeEnvironment,
+    *,
+    allow_experimental: bool,
+    array_facts: tuple[ArrayFacts, ...] = (),
+) -> SupportDecision:
+    """Evaluate declared scientific/environment support without timing."""
+
+    environment_decision = evaluate_candidate_environment_support(
+        spec,
+        environment,
+        allow_experimental=allow_experimental,
+    )
+    if not environment_decision.supported:
         return environment_decision
     return evaluate_candidate_workload_support(
         spec,
@@ -2432,6 +2467,7 @@ __all__ = [
     "SupportDecision",
     "ValueDescriptor",
     "evaluate_auto_performance",
+    "evaluate_candidate_environment_support",
     "evaluate_candidate_support",
     "evaluate_candidate_workload_support",
     "evaluate_memory_support",

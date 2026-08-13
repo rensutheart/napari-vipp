@@ -28,6 +28,7 @@ from napari_vipp.core.compute_policy import (
     _evaluate_phase1_cuda_host_environment,
     estimate_candidate_memory,
     evaluate_auto_performance,
+    evaluate_candidate_environment_support,
     evaluate_candidate_support,
     evaluate_candidate_workload_support,
     propagate_output_descriptors,
@@ -149,6 +150,26 @@ def _facts(
         strides=(256, 4),
         contiguous=True,
     )
+
+
+def test_public_environment_wrapper_checks_admission_without_a_workload():
+    spec = _gpu_spec()
+
+    admitted = evaluate_candidate_environment_support(
+        spec,
+        _cuda_environment(),
+        allow_experimental=False,
+    )
+    linux = evaluate_candidate_environment_support(
+        spec,
+        replace(_cuda_environment(), os_name="Linux"),
+        allow_experimental=False,
+    )
+
+    assert admitted.supported
+    assert admitted.reason is DecisionReason.SELECTED_IMPLEMENTATION
+    assert not linux.supported
+    assert linux.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
 
 
 def test_array_facts_are_revision_keyed_and_validate_layout():

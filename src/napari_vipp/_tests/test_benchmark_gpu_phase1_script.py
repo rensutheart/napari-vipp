@@ -48,13 +48,28 @@ def test_platform_provenance_uses_only_a_privacy_safe_executable_name(monkeypatc
     assert provenance["executable"] == "python.exe"
 
 
-def test_canonical_evidence_binds_the_privacy_safe_current_generator():
+def test_checked_in_phase1_evidence_is_historical_after_public_harness_upgrade():
     document = json.loads(EVIDENCE_PATH.read_text(encoding="utf-8"))
 
     assert document["platform"]["executable"] == "python.exe"
+    assert document["schema"] == "napari-vipp-phase1-production-benchmark-evidence"
     assert document["source_provenance"]["files"][
         "scripts/benchmark_gpu_phase1.py"
-    ] == hashlib.sha256(BENCHMARK_SCRIPT.read_bytes()).hexdigest()
+    ] != hashlib.sha256(BENCHMARK_SCRIPT.read_bytes()).hexdigest()
+
+
+def test_public_core_manifest_covers_each_current_core_candidate():
+    assert benchmark_gpu_phase1.ALLOW_EXPERIMENTAL is False
+    assert tuple(
+        definition.operation_id for definition in benchmark_gpu_phase1.CASE_DEFINITIONS
+    ) == (
+        "rolling_ball_background",
+        "subtract_background",
+        "gaussian_blur",
+        "gaussian_blur_3d",
+        "median_filter",
+    )
+    assert benchmark_gpu_phase1.EVIDENCE_SCHEMA_VERSION == 2
 
 
 def test_help_does_not_start_a_gpu_benchmark(monkeypatch, capsys):
