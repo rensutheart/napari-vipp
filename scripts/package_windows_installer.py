@@ -1046,10 +1046,15 @@ function Certificate($value) {
 """
     env = dict(os.environ)
     env["VIPP_SIGNATURE_TARGET"] = str(path.resolve())
+    system_root = Path(env.get("SystemRoot") or env.get("WINDIR") or r"C:\Windows")
+    windows_powershell = (
+        system_root / "System32" / "WindowsPowerShell" / "v1.0"
+    )
+    env["PSModulePath"] = str(windows_powershell / "Modules")
     try:
         completed = subprocess.run(
             [
-                "powershell.exe",
+                str(windows_powershell / "powershell.exe"),
                 "-NoProfile",
                 "-NonInteractive",
                 "-ExecutionPolicy",
