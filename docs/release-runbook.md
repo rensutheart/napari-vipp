@@ -35,9 +35,11 @@ without changing the artifact-verification flow.
 Recommended local tools:
 
 - Python 3.12 or 3.13 for the CPU package; CPython 3.12 for CUDA qualification
-- `python -m pip install -U build twine`
-- for the isolated Windows setup build, CPython 3.12.10 and
-  `python -m pip install ".[installer-build]"`; this pins PyInstaller 6.21.0
+- for the release artifacts and isolated Windows setup build, a dedicated
+  64-bit CPython 3.12.10 environment with
+  `python -m pip install ".[installer-build]" twine`; this pins the build
+  backend, wheel tooling, and PyInstaller 6.21.0 used by the reproducibility
+  gate
 
 ## 2. Verify Metadata
 
@@ -206,7 +208,6 @@ old same-version artifacts can otherwise look uploadable even though they came
 from another commit. Do not use a broad root-level `dist/*` upload glob:
 
 ```powershell
-python -m pip install -U build twine
 $releaseVersion = "<version>"
 $taggedSha = (git rev-parse "v$releaseVersion^{}").Trim()
 $artifactDir = "dist/$releaseVersion-$($taggedSha.Substring(0, 12))"
@@ -214,8 +215,19 @@ if (Test-Path -LiteralPath $artifactDir) {
     throw "Artifact directory already exists; choose a clean checkout or inspect it without reusing it: $artifactDir"
 }
 New-Item -ItemType Directory -Path $artifactDir | Out-Null
-python -m build --outdir $artifactDir
-python -m twine check `
+$releasePython = "C:\path\to\cpython-3.12.10\python.exe"
+$builderVenv = Join-Path $env:TEMP "vipp-release-builder-$releaseVersion"
+if (Test-Path -LiteralPath $builderVenv) {
+    throw "Release-builder environment already exists: $builderVenv"
+}
+& $releasePython -m venv $builderVenv
+$builderPython = Join-Path $builderVenv "Scripts\python.exe"
+& $builderPython -m pip install ".[installer-build]" twine
+$env:PYTHONHASHSEED = "0"
+$env:SOURCE_DATE_EPOCH = (git show -s --format=%ct $taggedSha).Trim()
+& $builderPython -m build --sdist --no-isolation --outdir $artifactDir
+& $builderPython -m build --wheel --no-isolation --outdir $artifactDir
+& $builderPython -m twine check `
   "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl" `
   "$artifactDir/napari_vipp-$releaseVersion.tar.gz"
 Get-FileHash -Algorithm SHA256 `
@@ -228,7 +240,7 @@ create it from this same clean tagged checkout and artifact directory:
 
 ```powershell
 $cucimInstaller = "$artifactDir/napari-vipp-cucim-installer-$releaseVersion-windows.zip"
-python scripts/package_cucim_windows_installer.py --output $cucimInstaller
+& $builderPython scripts/package_cucim_windows_installer.py --output $cucimInstaller
 Get-FileHash -Algorithm SHA256 $cucimInstaller
 ```
 
@@ -244,7 +256,7 @@ the EXE:
 
 ```powershell
 $wheel = "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl"
-python scripts/package_windows_installer.py build `
+& $builderPython scripts/package_windows_installer.py build `
   --wheel $wheel `
   --output-directory $artifactDir
 $stagingExe = "$artifactDir/VIPP-Setup-$releaseVersion-Windows-x86_64-SIGNING-STAGING.exe"
@@ -269,7 +281,7 @@ Only then create the official filename and release metadata. Omit the final
 cuCIM option when that separate, optional local-build ZIP is not being attached:
 
 ```powershell
-python scripts/package_windows_installer.py finalize `
+& $builderPython scripts/package_windows_installer.py finalize `
   --signed-staging-executable $stagingExe `
   --build-manifest $buildManifest `
   --output-directory $artifactDir `
@@ -286,7 +298,7 @@ If the release decision is explicitly to ship unsigned, keep the signing-staging
 EXE unsigned and use the separate fail-closed command:
 
 ```powershell
-python scripts/package_windows_installer.py finalize-unsigned `
+& $builderPython scripts/package_windows_installer.py finalize-unsigned `
   --unsigned-staging-executable $stagingExe `
   --build-manifest $buildManifest `
   --output-directory $artifactDir `
