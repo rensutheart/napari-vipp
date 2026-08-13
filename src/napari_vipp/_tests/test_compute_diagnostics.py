@@ -556,6 +556,10 @@ def test_all_provider_noise_is_contained_so_json_output_stays_valid(
 
     assert report.status is DoctorStatus.AVAILABLE
     assert capsys.readouterr().out == ""
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_diagnostics.collect_compute_diagnostics",
+        lambda **_kwargs: report,
+    )
     assert main(["--track", "cuda13", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "available"
 
