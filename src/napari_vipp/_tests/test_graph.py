@@ -457,7 +457,7 @@ def test_gpu_optimization_hint_is_subtle_explanatory_and_independent(qtbot):
     assert not card.optimization_badge.isHidden()
     assert not card.compute_badge.isHidden()
     assert "exact dtype conversion" in card.optimization_badge.toolTip()
-    assert "GPU optimization available" in card.optimization_badge.accessibleName()
+    assert "GPU eligibility tip" in card.optimization_badge.accessibleName()
     assert "#422006" in card.optimization_badge.styleSheet()
 
     view.clear_node_optimization_hints()
