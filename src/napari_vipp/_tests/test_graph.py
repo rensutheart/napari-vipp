@@ -440,6 +440,32 @@ def test_unchanged_compute_badge_skips_card_geometry_refresh(qtbot, monkeypatch)
     assert refreshes == ["card", "ports"]
 
 
+def test_gpu_optimization_hint_is_subtle_explanatory_and_independent(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+
+    assert card.optimization_badge.isHidden()
+
+    view.set_node_compute_badge("gaussian", "cpu")
+    view.set_node_optimization_hint(
+        "gaussian",
+        "This node could use GPU after an exact dtype conversion. Select it to review.",
+    )
+
+    assert card.optimization_badge.text() == "GPU tip"
+    assert not card.optimization_badge.isHidden()
+    assert not card.compute_badge.isHidden()
+    assert "exact dtype conversion" in card.optimization_badge.toolTip()
+    assert "GPU optimization available" in card.optimization_badge.accessibleName()
+    assert "#422006" in card.optimization_badge.styleSheet()
+
+    view.clear_node_optimization_hints()
+
+    assert card.optimization_badge.isHidden()
+    assert not card.compute_badge.isHidden()
+
+
 def test_thumbnail_retains_full_render_detail_for_device_aware_painting(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)

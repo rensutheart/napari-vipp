@@ -183,8 +183,8 @@ def test_available_report_includes_probe_memory_and_is_json_safe():
     assert runtime.probe_calls == 1
     assert runtime.snapshot_calls == 1
     assert not runtime.closed  # injected runtimes remain caller-owned
-    assert len(report.admission_regions) == 13
-    assert len(report.admitted_regions) == 9
+    assert len(report.admission_regions) == 14
+    assert len(report.admitted_regions) == 10
     assert report.guidance is not None
     assert report.guidance.optional
 
@@ -363,7 +363,7 @@ def test_cli_converts_unexpected_diagnostic_failure_to_json(monkeypatch, capsys)
     assert payload["details"][0].startswith("ModuleNotFoundError")
 
 
-def test_live_catalog_reports_three_distinct_layers_and_all_thirteen_regions():
+def test_live_catalog_reports_three_distinct_layers_and_all_fourteen_regions():
     runtime = _FakeRuntime()
 
     standard = _doctor(runtime, library_probes=_library_probes())
@@ -387,6 +387,7 @@ def test_live_catalog_reports_three_distinct_layers_and_all_thirteen_regions():
         "cupyx-median-filter-v1",
         "cupyx-gaussian-blur-v1",
         "cupyx-gaussian-blur-3d-v1",
+        "cupyx-convert-dtype-preserve-f32-v1",
         "rl-cupy-f32-v1",
         "rl-tv-cupy-f32-v1",
         "cupyx-canny-edges-exact-v1",
@@ -406,8 +407,8 @@ def test_live_catalog_reports_three_distinct_layers_and_all_thirteen_regions():
         live_ids
     )
     assert standard.status is DoctorStatus.AVAILABLE
-    assert len(standard.admitted_regions) == 9
-    assert len(complete.admitted_regions) == 13
+    assert len(standard.admitted_regions) == 10
+    assert len(complete.admitted_regions) == 14
     assert complete.guidance is None
 
 

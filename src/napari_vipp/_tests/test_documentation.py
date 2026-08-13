@@ -213,6 +213,28 @@ def test_main_readme_is_concise_and_routes_gpu_details():
         assert required_section in gpu_guide
 
 
+def test_safe_gpu_dtype_repair_is_explained_consistently():
+    documents = (
+        REPO_ROOT / "docs" / "planning.md",
+        REPO_ROOT / "docs" / "user-guide.md",
+        REPO_ROOT / "docs" / "gpu-guide.md",
+        REPO_ROOT / "docs" / "durable-gpu-execution.md",
+    )
+
+    for document in documents:
+        text = document.read_text(encoding="utf-8")
+        assert "**Add conversion**" in text, document.name
+        assert "`uint8`" in text, document.name
+        assert "`uint16`" in text, document.name
+        assert "`float32`" in text, document.name
+        assert "Preserve" in text, document.name
+        assert "GPU eligible" in text or "GPU eligibility" in text, document.name
+        assert "guarantee" in text, document.name
+
+    roadmap = documents[0].read_text(encoding="utf-8")
+    assert "never silently insert casts" in roadmap
+
+
 def test_installer_plan_prioritizes_nontechnical_managed_users():
     desktop_plan = (
         REPO_ROOT / "docs" / "desktop-startup-and-installer-plan.md"

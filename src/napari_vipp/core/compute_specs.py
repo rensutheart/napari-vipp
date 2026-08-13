@@ -201,6 +201,79 @@ def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
     )
 
 
+def _convert_dtype_spec() -> OperationComputeSpec:
+    """Return the exact, lossless integer-to-float32 conversion contract."""
+
+    boundary_policy_id = "elementwise-no-boundary-v1"
+    precision_policy_id = "integer-to-float32-exact-v1"
+    input_port = ComputePortContract(
+        0,
+        ValueKind.ARRAY,
+        port_name="image",
+        public_dtypes=("uint8", "uint16"),
+        internal_dtypes=("same",),
+        accumulation_dtype="same",
+        value_domain="nonnegative-integer-microscopy-intensity-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="integer-to-float32-preserve-v1",
+        nonfinite_policy_id="finite-only-v1",
+        rounding_policy_id=precision_policy_id,
+        overflow_policy_id=precision_policy_id,
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    output_port = ComputePortContract(
+        0,
+        ValueKind.IMAGE,
+        port_name="image",
+        public_dtypes=("float32",),
+        internal_dtypes=("float32",),
+        accumulation_dtype="float32",
+        value_domain="exact-nonnegative-integer-values-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="fixed:float32",
+        conversion_policy_id="integer-to-float32-preserve-v1",
+        nonfinite_policy_id="finite-output-v1",
+        rounding_policy_id=precision_policy_id,
+        overflow_policy_id=precision_policy_id,
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    return OperationComputeSpec(
+        operation_id="convert_dtype",
+        implementation_id="cupyx-convert-dtype-preserve-f32-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref="napari_vipp.core.gpu.cupy_convert_dtype:convert_dtype",
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id="convert-dtype-f32-preserve-parameters-v1",
+        workload_policy_id="convert-dtype-u8-u16-to-f32-preserve-v1",
+        parity_policy_id="array-bitwise-v1",
+        memory_model_id="cupy-convert-dtype-memory-v1",
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        progress_policy_id="monolithic-sync-progress-v1",
+        cancellation_policy_id="monolithic-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(1, 2, 3),
+        supports_device_residency=True,
+        limitations=(
+            "uint8-uint16-to-float32-preserve-only-v1",
+            "other-conversions-remain-cpu-v1",
+        ),
+    )
+
+
 def _mask_port(
     port_index: int,
     *,
@@ -644,6 +717,7 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _median_spec(),
     _gaussian_spec(three_dimensional=False),
     _gaussian_spec(three_dimensional=True),
+    _convert_dtype_spec(),
     *richardson_lucy_compute_specs(),
     _canny_spec(),
     _otsu_spec(),

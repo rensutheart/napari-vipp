@@ -6,6 +6,7 @@ import numpy as np
 
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp.core import operations as operations_module
+from napari_vipp.core.compute import ComputeMode
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
 from napari_vipp.core.workflow import load_workflow
 
@@ -103,6 +104,24 @@ def test_graph_authoring_acceptance_workflow_records_each_manual_invariant():
     pipeline = PrototypePipeline()
     _restore_workflow(pipeline, workflow)
 
+    assert workflow["compute_request"].mode is ComputeMode.AUTO
+
+    input_node = pipeline.nodes["input"]
+    assert input_node.params["sample_name"] == "VIPP synthetic object morphology"
+    sample = next(
+        item
+        for item in make_sample_data()
+        if item[1]["name"] == input_node.params["sample_name"]
+    )
+    assert sample[0].dtype == np.uint16
+    assert pipeline.nodes["gaussian_main"].operation_id == "gaussian_blur"
+    assert any(
+        connection.source_id == "input"
+        and connection.target_id == "gaussian_main"
+        and connection.target_port == 0
+        for connection in pipeline.connections
+    )
+
     tunnel = pipeline.output_tunnel("Shared processed image")
     assert tunnel is not None
     assert tunnel.source_id == "gaussian_main"
@@ -126,7 +145,11 @@ def test_graph_authoring_acceptance_workflow_records_each_manual_invariant():
         for connection in pipeline.connections
     )
     note_text = " ".join(note["text"] for note in workflow["notes"])
-    assert all(f"TEST {index}" in note_text for index in range(1, 5))
+    assert all(f"TEST {index}" in note_text for index in range(1, 6))
+    assert "Add conversion" in note_text
+    assert "float32 and Preserve" in note_text
+    assert "GPU eligible, not guaranteed" in note_text
+    assert "CPU-only system" in note_text
 
 
 def test_synthetic_batch_provenance_workflow_loads_and_runs_exactly():

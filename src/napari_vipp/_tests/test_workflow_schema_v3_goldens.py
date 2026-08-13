@@ -13,7 +13,7 @@ from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     "graph-authoring-acceptance.json": (
-        "2284451c5998dd059eaa4ee748d229b3289ff0d8f94824d115a205e8702b359d"
+        "bf6fc43ad7ac57f3bcc01229302c8bea38a934ba2e5cbe72f38e6c05f60dc51f"
     ),
     "otsu-red-channel-labels.json": (
         "60367b60a9657770ed7bcc2ffacc1ce0474b4d40a4610f57f46e449dfba85faf"
@@ -86,8 +86,8 @@ def _restore_and_reserialize(document: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _canonical_schema_v4_migration(document: dict[str, Any]) -> dict[str, Any]:
-    """Mirror v3 normalization plus its explicit CPU-intent migration."""
+def _canonical_schema_v4_document(document: dict[str, Any]) -> dict[str, Any]:
+    """Mirror normalization and the v3 explicit-CPU migration when needed."""
     canonical = deepcopy(document)
     # ``view`` predates the current core persistence API and is intentionally
     # not part of the deserialized graph parts returned to callers.
@@ -98,16 +98,17 @@ def _canonical_schema_v4_migration(document: dict[str, Any]) -> dict[str, Any]:
         canonical.get("tunnels", []),
         key=lambda item: item["name"],
     )
-    canonical["version"] = 4
-    canonical["execution"] = {
-        "compute": {
-            "mode": "cpu",
-            "fallback_policy": "visible",
-            "node_preferences": {},
-            "precision_policy": "scientific-default-v1",
-            "workload_policy": "vipp-best-available-v1",
+    if document["version"] == 3:
+        canonical["version"] = 4
+        canonical["execution"] = {
+            "compute": {
+                "mode": "cpu",
+                "fallback_policy": "visible",
+                "node_preferences": {},
+                "precision_policy": "scientific-default-v1",
+                "workload_policy": "vipp-best-available-v1",
+            }
         }
-    }
     return canonical
 
 
@@ -115,20 +116,19 @@ def _canonical_schema_v4_migration(document: dict[str, Any]) -> dict[str, Any]:
     "filename",
     EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES,
 )
-def test_bundled_schema_v3_examples_restore_to_canonical_structure(filename):
+def test_bundled_examples_restore_to_canonical_schema_v4_structure(filename):
     document = _load_example(filename)
 
     reserialized = _restore_and_reserialize(document)
 
-    assert reserialized == _canonical_schema_v4_migration(document)
-    assert reserialized != document
+    assert reserialized == _canonical_schema_v4_document(document)
 
 
 @pytest.mark.parametrize(
     ("filename", "expected_hash"),
     EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES.items(),
 )
-def test_bundled_schema_v3_scientific_hashes_are_golden(filename, expected_hash):
+def test_bundled_example_scientific_hashes_are_golden(filename, expected_hash):
     document = _load_example(filename)
     reserialized = _restore_and_reserialize(document)
 

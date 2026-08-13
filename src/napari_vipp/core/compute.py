@@ -471,6 +471,12 @@ class DecisionKind(StrEnum):
     FALLBACK_CPU = "fallback_cpu"
 
 
+class ComputeRepairAction(StrEnum):
+    """Stable graph-edit action offered by compute planning."""
+
+    INSERT_CONVERT_DTYPE = "insert_convert_dtype"
+
+
 class FallbackReason(StrEnum):
     """Typed cause when and only when CPU fallback occurred."""
 
@@ -503,6 +509,119 @@ class MemoryEstimate:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer.")
+
+
+@dataclass(frozen=True, slots=True)
+class ComputeRepairCandidate:
+    """Stable identity of the candidate proven by a counterfactual repair."""
+
+    implementation_id: str
+    implementation_version: str
+    runtime_id: str
+    implementation_library_id: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "implementation_id",
+            "implementation_version",
+            "runtime_id",
+            "implementation_library_id",
+        ):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must not be empty.")
+            object.__setattr__(self, name, value)
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "implementation_id": self.implementation_id,
+            "implementation_version": self.implementation_version,
+            "runtime_id": self.runtime_id,
+            "implementation_library_id": self.implementation_library_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ComputeRepairSuggestion:
+    """One transparent graph edit that can remove a proven compute blocker."""
+
+    action: ComputeRepairAction | str
+    node_id: str
+    operation_id: str
+    input_port_index: int
+    input_port_name: str
+    current_dtype: str
+    target_dtype: str
+    scaling: str
+    exact: bool
+    message: str
+    candidate: ComputeRepairCandidate
+
+    def __post_init__(self) -> None:
+        action = (
+            self.action
+            if isinstance(self.action, ComputeRepairAction)
+            else ComputeRepairAction(str(self.action).strip().lower())
+        )
+        for name in (
+            "node_id",
+            "operation_id",
+            "input_port_name",
+            "current_dtype",
+            "target_dtype",
+            "scaling",
+            "message",
+        ):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must not be empty.")
+            object.__setattr__(self, name, value)
+        if (
+            isinstance(self.input_port_index, bool)
+            or not isinstance(self.input_port_index, int)
+            or self.input_port_index < 0
+        ):
+            raise ValueError("input_port_index must be a non-negative integer.")
+        if not isinstance(self.exact, bool):
+            raise TypeError("exact must be a boolean.")
+        if not isinstance(self.candidate, ComputeRepairCandidate):
+            raise TypeError("candidate must be a ComputeRepairCandidate.")
+        if action is ComputeRepairAction.INSERT_CONVERT_DTYPE:
+            if self.current_dtype not in {"uint8", "uint16"}:
+                raise ValueError(
+                    "insert_convert_dtype currently requires a uint8 or uint16 "
+                    "source dtype."
+                )
+            if self.target_dtype != "float32":
+                raise ValueError(
+                    "insert_convert_dtype currently requires a float32 target."
+                )
+            if self.scaling.casefold() != "preserve" or not self.exact:
+                raise ValueError(
+                    "insert_convert_dtype must be an exact Preserve conversion."
+                )
+        object.__setattr__(self, "action", action)
+
+    @property
+    def conversion_parameters(self) -> dict[str, str]:
+        """Parameters for the visible Convert Dtype node to insert."""
+
+        return {"output_dtype": self.target_dtype, "scaling": self.scaling}
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "action": self.action.value,
+            "node_id": self.node_id,
+            "operation_id": self.operation_id,
+            "input_port_index": self.input_port_index,
+            "input_port_name": self.input_port_name,
+            "current_dtype": self.current_dtype,
+            "target_dtype": self.target_dtype,
+            "scaling": self.scaling,
+            "exact": self.exact,
+            "message": self.message,
+            "candidate": self.candidate.as_dict(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -937,6 +1056,18 @@ class ExecutionPlan:
     segments: tuple[ExecutionSegment, ...]
     decisions: tuple[NodeExecutionDecision, ...]
     warnings: tuple[str, ...] = ()
+    repair_suggestions: tuple[ComputeRepairSuggestion, ...] = ()
+
+    def __post_init__(self) -> None:
+        suggestions = tuple(self.repair_suggestions)
+        if any(
+            not isinstance(suggestion, ComputeRepairSuggestion)
+            for suggestion in suggestions
+        ):
+            raise TypeError(
+                "repair_suggestions must contain ComputeRepairSuggestion values."
+            )
+        object.__setattr__(self, "repair_suggestions", suggestions)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1437,6 +1568,9 @@ __all__ = [
     "ComputeCapabilityReport",
     "ComputeEnvironment",
     "ComputeMode",
+    "ComputeRepairAction",
+    "ComputeRepairCandidate",
+    "ComputeRepairSuggestion",
     "ComputeRequest",
     "DecisionKind",
     "DecisionReason",

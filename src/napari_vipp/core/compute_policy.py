@@ -908,6 +908,10 @@ def estimate_candidate_memory(
         )
         kernel_bytes = sum(2 * math.ceil(4 * sigma) + 1 for sigma in sigmas) * 8
         workspace = primary_elements * max(primary_itemsize, 4) * 5 + kernel_bytes
+    elif spec.memory_model_id == "cupy-convert-dtype-memory-v1":
+        # The admitted preserve conversion is one uint8/uint16-to-float32 cast.
+        # Its only image-sized allocation is the already-counted output array.
+        workspace = 0
     elif spec.memory_model_id == "cupy-sigma-filter-memory-v1":
         parameters = dict(workload.parameters)
         shape = workload.input_shapes[0]
@@ -1186,6 +1190,41 @@ def _gaussian_3d_region_policy(
     _array_facts: tuple[ArrayFacts, ...],
 ) -> SupportDecision | None:
     return _evaluate_gaussian_region(workload, three_dimensional=True)
+
+
+def _convert_dtype_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    """Admit only the exact conversion used by the one-click GPU repair."""
+
+    parameters = dict(workload.parameters)
+    output_dtype = str(parameters.get("output_dtype", "uint8")).lower()
+    scaling = str(parameters.get("scaling", "rescale")).lower()
+    valid_output_dtypes = {"bool", "uint8", "uint16", "float32"}
+    valid_scaling_modes = {"rescale", "clip", "preserve"}
+    if output_dtype not in valid_output_dtypes:
+        return _workload_rejection(
+            "Convert Dtype output_dtype must be bool, uint8, uint16, or float32.",
+            fallback_allowed=False,
+        )
+    if scaling not in valid_scaling_modes:
+        return _workload_rejection(
+            "Convert Dtype scaling must be rescale, clip, or preserve.",
+            fallback_allowed=False,
+        )
+    input_dtype = _dtype_name(workload.input_dtypes[0])
+    if (
+        input_dtype not in {"uint8", "uint16"}
+        or output_dtype != "float32"
+        or scaling != "preserve"
+    ):
+        return _workload_rejection(
+            "GPU Convert Dtype is initially admitted only for lossless uint8 or "
+            "uint16 to float32 conversion with Preserve scaling; this conversion "
+            "remains on CPU."
+        )
+    return None
 
 
 def _richardson_lucy_region_policy(
@@ -1625,6 +1664,7 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "sigma-filter-parameters-v1": _sigma_filter_region_policy,
         "gaussian-2d-parameters-v1": _gaussian_2d_region_policy,
         "gaussian-3d-parameters-v1": _gaussian_3d_region_policy,
+        "convert-dtype-f32-preserve-parameters-v1": _convert_dtype_region_policy,
         "rl-parameters-v1": _richardson_lucy_region_policy,
         "rl-tv-parameters-v1": _richardson_lucy_tv_region_policy,
         "canny-parameters-v1": _canny_region_policy,
@@ -2225,6 +2265,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "sigma-filter-parameters-v1",
             "gaussian-2d-parameters-v1",
             "gaussian-3d-parameters-v1",
+            "convert-dtype-f32-preserve-parameters-v1",
             *RICHARDSON_LUCY_POLICY_IDS["parameter"],
             "canny-parameters-v1",
             "otsu-parameters-v1",
@@ -2238,6 +2279,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "median-exact-u8-u16-f32-v1",
             "sigma-u8-u16-finite-f32-v1",
             "gaussian-finite-f32-v1",
+            "convert-dtype-u8-u16-to-f32-preserve-v1",
             *RICHARDSON_LUCY_POLICY_IDS["workload"],
             "canny-exact-bool-u8-u16-v2",
             "otsu-real-exact-v1",
@@ -2251,6 +2293,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "median-production-bitwise-v1",
             "sigma-dtype-parity-v1",
             "gaussian-float32-tolerance-v1",
+            "array-bitwise-v1",
             *RICHARDSON_LUCY_POLICY_IDS["parity"],
             "mask-bitwise-v1",
             "labels-bitwise-int32-v1",
@@ -2263,6 +2306,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupy-sigma-filter-memory-v1",
             "cupyx-gaussian-2d-memory-v1",
             "cupyx-gaussian-3d-memory-v1",
+            "cupy-convert-dtype-memory-v1",
             *RICHARDSON_LUCY_POLICY_IDS["memory"],
             "cupyx-canny-exact-memory-v1",
             "cupy-otsu-histogram-memory-v1",
@@ -2293,6 +2337,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-median-identity-v1",
             "sigma-float32-workspace-restore-v1",
             "cupyx-gaussian-float32-v1",
+            "integer-to-float32-preserve-v1",
             *RICHARDSON_LUCY_POLICY_IDS["conversion"],
             "canny-plane-float32-or-luma-v1",
             "otsu-native-or-luma-v1",
@@ -2318,6 +2363,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "median-bitwise-v1",
             "sigma-half-up-u8-u16-f32-identity-v1",
             "gaussian-float32-tolerance-v1",
+            "integer-to-float32-exact-v1",
             *RICHARDSON_LUCY_POLICY_IDS["rounding"],
             "mask-bitwise-v1",
             "labels-bitwise-int32-v1",
@@ -2329,6 +2375,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "background-clip-public-dtype-v1",
             "preserve-public-dtype-v1",
             "sigma-float32-square-safe-v1",
+            "integer-to-float32-exact-v1",
             *RICHARDSON_LUCY_POLICY_IDS["overflow"],
             "finite-float32-workspace-v1",
             "binary-mask-v1",
@@ -2343,6 +2390,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "background-nearest-rolling-ball-v1",
             "scipy-reflect-v1",
             "sigma-nearest-circular-footprint-v1",
+            "elementwise-no-boundary-v1",
             *RICHARDSON_LUCY_POLICY_IDS["boundary"],
             "skimage-canny-constant-zero-v1",
             "otsu-strict-greater-finite-mask-v1",
@@ -2355,6 +2403,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "median-bitwise-v1",
             "sigma-ordered-f32-square-f64-accum-v1",
             "gaussian-float32-v1",
+            "integer-to-float32-exact-v1",
             *RICHARDSON_LUCY_POLICY_IDS["precision"],
             "canny-exact-mask-v1",
             "otsu-exact-mask-v1",

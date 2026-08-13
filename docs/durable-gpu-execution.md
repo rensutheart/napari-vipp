@@ -43,13 +43,19 @@ The four policies have distinct purposes:
 
 Prefer GPU bypasses only the performance gate. Scientific parity, dtype,
 parameter, shape, optional-dependency, environment, provider, and memory gates
-remain mandatory. VIPP never inserts a cast, changes a parameter, or admits a
-developer-hidden provider merely to place more work on GPU. Developer-hidden
+remain mandatory. VIPP never silently inserts a cast, changes a parameter, or
+admits a developer-hidden provider merely to place more work on GPU. Developer-hidden
 implementations are considered only when the request explicitly enables
 experimental admission, and such a run is not a public support claim. If every
 eligible GPU candidate has complete comparable timing evidence, Prefer GPU
 selects the fastest GPU; otherwise it selects deterministically by stable
 implementation ID. Missing timing evidence is not itself a reason to use CPU.
+
+A separate, user-confirmed **Add conversion** action may author a visible
+**Convert Dtype** node when a reviewed `uint8`/`uint16` to `float32` Preserve
+conversion is the sole blocker. That graph edit is persisted,
+provenance-visible, and undoable; it is not an implicit policy coercion. Its
+result is GPU eligibility rather than a guarantee of GPU execution.
 
 On native Windows, Auto, Prefer GPU, and Custom use the same CUDA-device
 admission rule: the exact pinned Python, scientific-stack, CUDA runtime,

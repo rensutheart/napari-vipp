@@ -26,7 +26,7 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         ("VIPP synthetic object morphology",),
         "Follow numbered canvas notes to check inserting a node before a shared "
         "tunnel, copying settings, copying a connected node group, group movement, "
-        "and one-step undo/redo.",
+        "one-step undo/redo, and a qualified GPU dtype repair.",
     ),
     ExampleWorkflowSpec(
         "batch-provenance",

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Features Added
+
+#### Clearer GPU Workflow Repairs
+
+- Added a reviewed GPU-resident implementation for the existing **Convert
+  Dtype** node in its lossless `uint8`/`uint16` to `float32`, **Preserve**
+  region. It can stay in the same CUDA segment as a following GPU node instead
+  of forcing a device-to-host-to-device round trip.
+- Added a subtle **GPU tip** on nodes where input dtype is the only remaining
+  GPU blocker. Selecting the node explains the exact conversion and memory
+  trade-off; **Add conversion** inserts a normal visible node on the affected
+  input only, with one-step Undo and no silent change to shared branches.
+
+### Bug Fixes
+
+- GPU conversion suggestions now fail closed when their saved candidate no
+  longer exists, the input changed, or Custom mode explicitly selects CPU or a
+  different GPU implementation.
+- Tunnel-backed repairs are placed beside the affected subscriber without
+  moving a distant tunnel source or unrelated downstream branches.
+
+### Validation
+
+- Expanded the strict admission catalogue to 14 public GPU implementations
+  and 18 executable evidence owners. Added exact parity, adversarial input,
+  metadata, integrity, memory, cancellation, cleanup, fallback, provenance,
+  and end-to-end timing coverage for Convert Dtype.
+- Added a real-CUDA corridor check proving **Convert Dtype → Gaussian Blur**
+  executes as one resident segment with one upload and one download.
+
 ## 0.13.0a6 - 2026-08-13
 
 ### Release Overview

@@ -362,6 +362,7 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         "median_filter",
         "gaussian_blur",
         "gaussian_blur_3d",
+        "convert_dtype",
         "otsu_threshold",
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",

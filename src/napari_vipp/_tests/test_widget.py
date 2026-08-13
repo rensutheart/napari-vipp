@@ -109,6 +109,9 @@ from napari_vipp.core.batch_demo import (
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
+    ComputeRepairAction,
+    ComputeRepairCandidate,
+    ComputeRepairSuggestion,
     ComputeRequest,
     DecisionKind,
     DecisionReason,
@@ -1116,7 +1119,7 @@ def test_optimizer_lock_is_separate_undoable_and_does_not_recalculate(qtbot):
     assert "gaussian" not in widget._compute_optimizer_locked_node_ids
 
 
-def test_integer_gaussian_compute_note_explains_float32_gpu_option(qtbot):
+def test_integer_gaussian_compute_note_does_not_duplicate_repair_advice(qtbot):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
     qtbot.addWidget(widget)
     widget.run_pipeline = lambda *args, **kwargs: None
@@ -1125,8 +1128,7 @@ def test_integer_gaussian_compute_note_explains_float32_gpu_option(qtbot):
     )
     widget.graph_view.select_node("gaussian")
 
-    assert "uint16" in widget.node_compute_note.text()
-    assert "Convert Dtype" in widget.node_compute_note.text()
+    assert "Convert Dtype" not in widget.node_compute_note.text()
 
 
 def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
@@ -1992,6 +1994,242 @@ def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
     )
     gaussian_tooltip = widget.graph_view._cards["gaussian"].compute_badge.toolTip()
     assert "Host CPU" not in gaussian_tooltip
+
+
+def test_dtype_repair_report_offers_one_click_atomic_visible_conversion(qtbot):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._reset_compute_decisions()
+    request = ComputeRequest(mode="prefer_gpu")
+    cpu_decision = NodeExecutionDecision(
+        "gaussian",
+        "gaussian_blur",
+        NodeComputePreference(),
+        "cpu-numpy",
+        "cpu",
+        "cpu-gaussian-blur-v1",
+        DecisionKind.POLICY_CPU,
+        DecisionReason.WORKLOAD_UNSUPPORTED,
+        "The integer input is outside the admitted GPU region.",
+    )
+    suggestion = ComputeRepairSuggestion(
+        ComputeRepairAction.INSERT_CONVERT_DTYPE,
+        "gaussian",
+        "gaussian_blur",
+        0,
+        "image",
+        "uint16",
+        "float32",
+        "preserve",
+        True,
+        (
+            "This node could use GPU if its uint16 input is converted to float32. "
+            "Pixel values will be preserved exactly; this image will use twice "
+            "the memory."
+        ),
+        ComputeRepairCandidate(
+            "cupyx-gaussian-blur-v1",
+            "1",
+            "cuda-cupy",
+            "cupyx",
+        ),
+    )
+    environment = ComputeEnvironment(
+        runtime_ids=("cpu-numpy", "cuda-cupy"),
+        implementation_libraries=("cpu", "cupyx"),
+        device_id="cuda:0",
+        device_name="Test GPU",
+        device_class="nvidia-cuda",
+    )
+    report = ExecutionReport(
+        request,
+        environment,
+        plan=ExecutionPlan(
+            request.fingerprint,
+            environment.fingerprint,
+            (),
+            (cpu_decision,),
+            repair_suggestions=(suggestion,),
+        ),
+        actual_decisions=(cpu_decision,),
+    )
+
+    widget._accept_execution_report(report)
+    widget.graph_view.select_node("gaussian")
+
+    assert not widget.compute_repair_panel.isHidden()
+    assert widget.add_compute_conversion_button.text() == "Add conversion"
+    assert "twice the memory" in widget.compute_repair_label.text()
+    assert not widget.graph_view._cards["gaussian"].optimization_badge.isHidden()
+    before_nodes = set(widget.pipeline.nodes)
+    before_connections = tuple(widget.pipeline.connections)
+
+    widget.add_compute_conversion_button.click()
+
+    added = set(widget.pipeline.nodes) - before_nodes
+    assert len(added) == 1
+    conversion_id = added.pop()
+    conversion = widget.pipeline.nodes[conversion_id]
+    assert conversion.operation_id == "convert_dtype"
+    assert conversion.params["output_dtype"] == "float32"
+    assert conversion.params["scaling"] == "preserve"
+    assert any(
+        connection.source_id == "input"
+        and connection.target_id == conversion_id
+        for connection in widget.pipeline.connections
+    )
+    assert any(
+        connection.source_id == conversion_id
+        and connection.target_id == "gaussian"
+        and connection.target_port == 0
+        for connection in widget.pipeline.connections
+    )
+    assert not any(
+        connection.source_id == "input" and connection.target_id == "gaussian"
+        for connection in widget.pipeline.connections
+    )
+    assert "eligible for GPU consideration" in widget.status_label.text()
+
+    widget.undo()
+
+    assert set(widget.pipeline.nodes) == before_nodes
+    assert tuple(widget.pipeline.connections) == before_connections
+
+
+def test_dtype_repair_on_tunnel_input_changes_only_that_subscriber(qtbot):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    assert widget.pipeline.add_output_tunnel("Raw", "input", 0).name == "Raw"
+    gaussian_connection = next(
+        connection
+        for connection in widget.pipeline.connections
+        if connection.target_id == "gaussian"
+    )
+    assert widget.pipeline.disconnect(
+        gaussian_connection.source_id,
+        gaussian_connection.target_id,
+        gaussian_connection.target_port,
+    )
+    assert widget.pipeline.connect_to_tunnel("Raw", "gaussian", 0).success
+    other = widget.pipeline.add_node("invert")
+    assert widget.pipeline.connect_to_tunnel("Raw", other.id, 0).success
+    widget.graph_view.build_graph(
+        widget.pipeline.nodes.values(),
+        widget.pipeline.connections,
+        output_tunnels=widget.pipeline.output_tunnel_list(),
+    )
+    widget._sync_all_input_ports()
+    widget._sync_all_output_ports()
+    target_before = QPointF(widget.graph_view.node_position("gaussian"))
+    other_before = QPointF(widget.graph_view.node_position(other.id))
+    before_connections = tuple(widget.pipeline.connections)
+    widget._compute_repair_suggestions["gaussian"] = ComputeRepairSuggestion(
+        "insert_convert_dtype",
+        "gaussian",
+        "gaussian_blur",
+        0,
+        "image",
+        "uint16",
+        "float32",
+        "preserve",
+        True,
+        "Convert only this tunnel subscriber while preserving exact values.",
+        ComputeRepairCandidate(
+            "cupyx-gaussian-blur-v1",
+            "1",
+            "cuda-cupy",
+            "cupyx",
+        ),
+    )
+    widget.graph_view.select_node("gaussian")
+
+    widget.add_compute_conversion_button.click()
+
+    conversion_id = next(
+        node_id
+        for node_id, node in widget.pipeline.nodes.items()
+        if node.operation_id == "convert_dtype"
+    )
+    assert widget.pipeline.tunnel_connection_for_input(conversion_id, 0) is not None
+    assert widget.pipeline.tunnel_connection_for_input("gaussian", 0) is None
+    other_tunnel = widget.pipeline.tunnel_connection_for_input(other.id, 0)
+    assert other_tunnel is not None and other_tunnel.tunnel_name == "Raw"
+    assert widget.pipeline.output_tunnel("Raw").source_id == "input"
+    assert widget.graph_view.node_position("gaussian") == target_before
+    assert widget.graph_view.node_position(other.id) == other_before
+    conversion_rect = widget.graph_view.node_scene_rect(conversion_id)
+    target_rect = widget.graph_view.node_scene_rect("gaussian")
+    assert conversion_rect is not None and target_rect is not None
+    assert target_rect.left() - conversion_rect.right() >= widget.INSERT_GAP_PADDING_X
+
+    widget.undo()
+
+    assert tuple(widget.pipeline.connections) == before_connections
+    assert widget.pipeline.output_tunnel("Raw").source_id == "input"
+    assert widget.graph_view.node_position("gaussian") == target_before
+    assert widget.graph_view.node_position(other.id) == other_before
+
+
+def test_dtype_repair_is_hidden_for_custom_cpu_intent(qtbot):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._compute_repair_suggestions["gaussian"] = ComputeRepairSuggestion(
+        "insert_convert_dtype",
+        "gaussian",
+        "gaussian_blur",
+        0,
+        "image",
+        "uint16",
+        "float32",
+        "preserve",
+        True,
+        "A safe GPU eligibility improvement is available.",
+        ComputeRepairCandidate(
+            "cupyx-gaussian-blur-v1",
+            "1",
+            "cuda-cupy",
+            "cupyx",
+        ),
+    )
+    widget._compute_node_preferences["gaussian"] = NodeComputePreference("cpu")
+    widget.graph_view.select_node("gaussian")
+    widget._sync_all_compute_repair_hints()
+    assert not widget.compute_repair_panel.isHidden()
+
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("custom")
+    )
+
+    assert widget.compute_repair_panel.isHidden()
+    assert widget.graph_view._cards["gaussian"].optimization_badge.isHidden()
+
+
+def test_dtype_repair_ui_rejects_unknown_candidate_identity(qtbot):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._compute_repair_suggestions["gaussian"] = ComputeRepairSuggestion(
+        "insert_convert_dtype",
+        "gaussian",
+        "gaussian_blur",
+        0,
+        "image",
+        "uint16",
+        "float32",
+        "preserve",
+        True,
+        "A forged candidate should never be applied.",
+        ComputeRepairCandidate("unknown-provider", "1", "cuda-cupy", "cupyx"),
+    )
+    widget.graph_view.select_node("gaussian")
+    widget._sync_all_compute_repair_hints()
+
+    assert widget.compute_repair_panel.isHidden()
+    assert not widget.add_compute_conversion_button.isEnabled()
+    assert widget.graph_view._cards["gaussian"].optimization_badge.isHidden()
 
 
 def test_stale_compute_summary_distinguishes_active_update_from_previous_result(qtbot):

@@ -90,11 +90,34 @@ The compute selector in the main toolbar has four policies. New sessions use
 `Prefer GPU` considers both public Custom and public Auto-candidate
 implementations. It bypasses only the CPU-versus-GPU speed requirement. It does
 not bypass scientific parity, dtype, parameter, shape, optional-dependency,
-environment, or memory gates, and it never inserts a dtype conversion or alters
-an authored parameter. When every eligible GPU has complete comparable timing
-evidence, VIPP chooses the fastest GPU; otherwise it chooses deterministically
-by stable implementation ID. A node without an eligible accelerator receives
-an explained ordinary CPU decision, not a misleading GPU success.
+environment, or memory gates, and it never silently inserts a dtype conversion
+or alters an authored parameter. When every eligible GPU has complete
+comparable timing evidence, VIPP chooses the fastest GPU; otherwise it chooses
+deterministically by stable implementation ID. A node without an eligible
+accelerator receives an explained ordinary CPU decision, not a misleading GPU
+success.
+
+#### One-click safe dtype repair
+
+Sometimes an integer input is the only reason an otherwise supported node
+cannot use its GPU implementation. On a qualified GPU setup, VIPP then explains
+the one problem and offers **Add conversion**. The first supported shortcut is
+`uint8` or `uint16` to `float32` with **Scaling = Preserve**. Every integer
+pixel value is represented exactly; VIPP does not rescale the image. The
+explanation also states the memory trade-off: the converted input uses four
+times the memory of `uint8`, or twice the memory of `uint16`.
+
+Clicking **Add conversion** places a normal, visible **Convert Dtype** node on
+the affected input wire, before the blocked node. Its settings are visible,
+saved with the workflow, and removed together by one Undo. Other branches are
+left unchanged. VIPP does not offer the shortcut for clipping, rescaling,
+lossy conversion, or when dtype is not the only problem.
+
+After insertion, **GPU eligible** means the scientific dtype requirement is
+now satisfied. It is not a promise that the next run will use the GPU: compute
+mode, workload size, available GPU memory, runtime health, or another later
+change can still select CPU or cause a visible CPU fallback. CPU-only and
+unqualified GPU environments do not offer this action.
 
 Prefer GPU therefore requires `visible` fallback; `strict` is not a valid
 combination. Per-node choices remain saved but are dormant until you switch

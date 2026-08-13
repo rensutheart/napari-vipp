@@ -30,7 +30,8 @@ The following constraints and approved product directions are non-negotiable:
   to `Auto`. Prefer GPU considers every reviewed public provider, including
   `public_custom`, without applying the CPU-versus-GPU benefit gate. It does
   not bypass scientific, dtype, parameter, shape, dependency, environment, or
-  memory gates; never synthesizes a cast; requires visible fallback; and gives
+  memory gates; never silently synthesizes a cast; requires visible fallback;
+  and gives
   unsupported nodes an explained ordinary CPU decision. Complete comparable
   GPU evidence selects the fastest GPU, otherwise stable implementation-ID
   order supplies a deterministic choice. Developer-hidden providers remain
@@ -92,8 +93,10 @@ The following constraints and approved product directions are non-negotiable:
   decision or fallback rather than an implicit conversion.
 - Dtype is therefore part of GPU eligibility, not an incidental implementation
   detail. VIPP may explain that an explicit, scientifically appropriate
-  conversion can unlock another implementation, but must never insert such a
-  conversion merely to improve a benchmark. For example, the current Gaussian
+  conversion can unlock another implementation, but must never silently insert
+  such a conversion merely to improve a benchmark. A user-confirmed
+  **Add conversion** action is an explicit authored graph edit, not optimizer
+  coercion. For example, the current Gaussian
   GPU region is finite `float32`; native `uint16` remains CPU-only. Ordinary RL
   initially requires explicit finite `float32` for both Image and PSF and
   returns shape-preserving `float32`. Converting
@@ -241,9 +244,11 @@ options, `filter_epsilon` exactly at the evidence-backed `1e-8` point, and 1..25
 iterations. The unchanged CPU default (`1e-12`), every other epsilon, and longer
 runs visibly remain on CPU; VIPP neither alters a scientific threshold nor
 truncates a run.
-VIPP does not insert a dtype conversion. A reviewed `Convert Dtype` node can
-unlock the candidate when
-that representation change is scientifically appropriate.
+VIPP does not silently insert a dtype conversion. A reviewed `Convert Dtype`
+node can unlock the candidate when that representation change is scientifically
+appropriate. The bounded **Add conversion** action may author that visible,
+undoable node for the reviewed `uint8`/`uint16` to `float32` Preserve case; the
+result is eligibility rather than guaranteed GPU execution.
 
 The production benchmark adapter and application coordinator now accept one or
 more ordered inputs for a single-output pure operation. Every input is detached,
@@ -2130,6 +2135,9 @@ exact unsupported region. For native-`uint16` Gaussian it may suggest reviewing
 an explicit **Convert Dtype** to `float32`, with a link to the dtype warning and
 an explanation of `Preserve` versus the node's default `Rescale`; it must not
 imply that conversion is scientifically neutral or silently edit the graph.
+For the reviewed exact `uint8`/`uint16` Preserve case, the review may offer
+**Add conversion**; acceptance must create a visible node as one undoable graph
+edit and then recompute eligibility without promising GPU execution.
 
 ### 10.4 Errors, memory, and progress
 

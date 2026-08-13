@@ -130,7 +130,22 @@ parameters solely to unlock acceleration.
 An explicit **Convert Dtype** node may make a longer GPU-resident segment
 eligible, but conversion changes the public workflow representation and can
 change scaling, storage, thresholds, and downstream output semantics. VIPP
-never inserts that conversion automatically.
+never inserts that conversion silently.
+
+When dtype is the only blocker on a qualified GPU setup, VIPP can offer
+**Add conversion**. The initial safe action inserts a visible **Convert Dtype**
+node on the affected wire, set to `float32` and `Scaling = Preserve`, for a
+`uint8` or `uint16` input. Those integer values are exactly representable in
+`float32`; the action does not rescale them. The edit is saved normally and one
+Undo removes it. Other branches remain unchanged. VIPP also states the memory
+trade-off before the edit: the converted image uses four times the bytes of
+`uint8`, or twice the bytes of `uint16`.
+
+The refreshed result says **GPU eligible**, not guaranteed. Compute mode,
+workload policy, memory, runtime health, or another eligibility gate may still
+select CPU or produce a visible fallback. The shortcut is not offered on a
+CPU-only/unqualified environment or for a lossy, clipping, or rescaling
+conversion that needs scientific review.
 
 ## Optional cuCIM Add-on
 

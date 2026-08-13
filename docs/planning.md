@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-08-13
 
 This is the concise source of truth for VIPP's product direction, active
 priorities, and intended release order. Detailed implementation contracts and
@@ -304,7 +304,7 @@ Priority 1 engineering is delivered in `0.13.0a6`:
 - Compute Doctor separately reports CUDA runtime health, optional CuPyX/cuCIM
   usability, and the current live VIPP admission catalogue. It gives one repair
   action and exports an atomic, recursively privacy-redacted support bundle;
-- one strict real-GPU admission command now accounts for all 13 public GPU
+- one strict real-GPU admission command accounts for all 13 public GPU
   implementations and requires owned parity, adversarial, metadata,
   input-integrity, memory, cancellation, cleanup, fallback, provenance, and
   transfer-inclusive timing evidence;
@@ -318,10 +318,19 @@ Priority 1 engineering is delivered in `0.13.0a6`:
   current Windows regression suite. They remain open until their macOS
   reporters or equivalent environments verify the released behavior.
 
-A strict `quick` integration run on the local RTX 5090 completed all 16 owners
-and all 130 implementation/facet mappings. Because it ran from a dirty feature
-worktree, its temporary artifacts are integration evidence only; they were not
-promoted into the canonical benchmark record or used to broaden public support.
+A strict `quick` integration run for the a6 catalogue on the local RTX 5090
+completed all 16 owners and all 130 implementation/facet mappings. Because it
+ran from a dirty feature worktree, its temporary artifacts are integration
+evidence only; they were not promoted into the canonical benchmark record or
+used to broaden public support.
+
+The current Convert Dtype development branch expands that catalogue to 14
+public GPU implementations, 18 executable owners, and all 140 required
+implementation/facet mappings. Its strict RTX 5090 `quick` run passed on
+2026-08-13 in 989.4 seconds (aggregate SHA-256
+`c31b230b1ccf67cfc2c5c65d66b55391bf6e421f0e5b71023b5d6463791cffe9`).
+This remains dirty-worktree integration evidence until repeated from an
+immutable candidate commit; it does not by itself broaden supported hardware.
 
 The remaining Priority 1 items are deliberately field qualification, not
 unfinished implementation:
@@ -370,8 +379,10 @@ present the enhanced corridor as standard CUDA coverage.
 Feature Sequence A's first release-blocking implementation wave contains only
 what is needed to close and validate the standard corridor:
 
-1. explicit `Convert Dtype`, beginning with exact preserve/bool behavior and
-   carefully bounded clip semantics before rescale promotion;
+1. explicit `Convert Dtype`: the exact `uint8`/`uint16` to `float32` Preserve
+   region and its visible one-click repair are implemented in the current
+   development branch; bool, carefully bounded clip semantics, and any later
+   rescale promotion remain separate evidence-gated regions;
 2. a residency-preserving Extract Channel/view bridge and Binary Threshold; and
 3. the selected Fill Holes, Remove Small Objects, and label-output bridges.
 
@@ -402,8 +413,22 @@ Provider direction:
 - investigate a CuPy/CuPyX basic-measurement fallback and time-box an exact
   alternative rolling-ball study, but retain the CPU reference rather than
   weakening semantics to avoid a local cuCIM build; and
-- do not insert casts, reorder axes, alter parameters, or change dimensional
-  meaning merely to make a GPU implementation eligible.
+- never silently insert casts, reorder axes, alter parameters, or change
+  dimensional meaning merely to make a GPU implementation eligible.
+
+The first bounded one-click repair is **Add conversion** for exact
+`uint8`/`uint16` to `float32` conversion with `Scaling = Preserve`. VIPP offers
+it only when dtype is the sole blocker for an otherwise supported GPU path and
+the current environment has a qualifying provider. Accepting the action inserts
+a normal, visible **Convert Dtype** node on the affected input wire and records
+one undoable graph edit; it does not rewrite other branches behind the user's
+back. Before insertion it states that `float32` uses four times the input bytes
+of `uint8` or twice those of `uint16`. The refreshed message must say
+**GPU eligible**, not present eligibility
+as a guarantee of GPU use: compute mode, workload policy, memory, runtime
+health, and later graph changes may still select CPU or produce a visible
+fallback. Lossy, clipping, rescaling, or otherwise unproved conversions require
+review rather than this shortcut.
 
 New providers should normally enter as reviewed Custom/Prefer-GPU choices, then
 become Auto candidates only after multi-device, transfer-inclusive evidence.

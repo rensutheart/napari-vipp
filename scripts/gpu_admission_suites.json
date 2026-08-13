@@ -50,6 +50,13 @@
       "library_id": "cupyx"
     },
     {
+      "operation_id": "convert_dtype",
+      "implementation_id": "cupyx-convert-dtype-preserve-f32-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
       "operation_id": "richardson_lucy_deconvolution",
       "implementation_id": "rl-cupy-f32-v1",
       "implementation_version": "1",
@@ -305,6 +312,44 @@
       "artifact_schema_version": null
     },
     {
+      "id": "convert-dtype-evidence",
+      "kind": "evidence",
+      "implementations": [
+        "convert_dtype::cupyx-convert-dtype-preserve-f32-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata",
+        "input_integrity", "memory", "cancellation", "cleanup", "fallback",
+        "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_convert_dtype.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_convert_dtype.py", "--profile", "quick", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_convert_dtype.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "convert-dtype.json",
+      "artifact_schema": "napari-vipp-cupyx-convert-dtype-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "convert-dtype-provider-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "convert_dtype::cupyx-convert-dtype-preserve-f32-v1"
+      ],
+      "facets": ["input_integrity", "cancellation"],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_convert_dtype_provider.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_convert_dtype_provider.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_convert_dtype_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
       "id": "sigma-evidence",
       "kind": "evidence",
       "implementations": ["sigma_filter::cupy-sigma-filter-v1"],
@@ -399,6 +444,7 @@
         "median_filter::cupyx-median-filter-v1",
         "gaussian_blur::cupyx-gaussian-blur-v1",
         "gaussian_blur_3d::cupyx-gaussian-blur-3d-v1",
+        "convert_dtype::cupyx-convert-dtype-preserve-f32-v1",
         "richardson_lucy_deconvolution::rl-cupy-f32-v1",
         "richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1",
         "canny_edges::cupyx-canny-edges-exact-v1",
@@ -411,12 +457,13 @@
       "facets": ["fallback"],
       "owner_paths": [
         "src/napari_vipp/_tests/test_broad_gpu_admission_regressions.py",
+        "src/napari_vipp/_tests/test_compute_policy_convert_dtype_gpu.py",
         "src/napari_vipp/_tests/test_compute_policy.py",
         "src/napari_vipp/_tests/test_compute_planning.py"
       ],
       "profile_commands": {
-        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_broad_gpu_admission_regressions.py", "src/napari_vipp/_tests/test_compute_policy.py", "src/napari_vipp/_tests/test_compute_planning.py"],
-        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_broad_gpu_admission_regressions.py", "src/napari_vipp/_tests/test_compute_policy.py", "src/napari_vipp/_tests/test_compute_planning.py"]
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_broad_gpu_admission_regressions.py", "src/napari_vipp/_tests/test_compute_policy_convert_dtype_gpu.py", "src/napari_vipp/_tests/test_compute_policy.py", "src/napari_vipp/_tests/test_compute_planning.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_broad_gpu_admission_regressions.py", "src/napari_vipp/_tests/test_compute_policy_convert_dtype_gpu.py", "src/napari_vipp/_tests/test_compute_policy.py", "src/napari_vipp/_tests/test_compute_planning.py"]
       },
       "artifact": null,
       "artifact_schema": null,

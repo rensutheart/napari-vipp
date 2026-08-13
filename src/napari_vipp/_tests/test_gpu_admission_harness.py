@@ -67,13 +67,49 @@ def test_checked_in_manifest_maps_every_public_declaration_and_facet(harness):
     )
     owners = harness._facet_owner_map(manifest.runners)
 
-    assert len(declarations) == 13
+    assert len(declarations) == 14
     assert {item.key for item in manifest.implementations} == {
         item.key for item in declarations
     }
     for declaration in declarations:
         assert set(owners[declaration.key]) == set(harness.REQUIRED_FACETS)
         assert all(owners[declaration.key].values())
+
+
+def test_convert_dtype_runs_focused_evidence_and_contract_owners_in_both_profiles(
+    harness,
+):
+    manifest = harness.load_suite_manifest(
+        MANIFEST_PATH,
+        declarations=harness.public_accelerator_declarations(),
+        project_root=PROJECT_ROOT,
+    )
+    implementation = "convert_dtype::cupyx-convert-dtype-preserve-f32-v1"
+    runners = {
+        runner.runner_id: runner
+        for runner in manifest.runners
+        if implementation in runner.implementations
+    }
+
+    assert {
+        "convert-dtype-evidence",
+        "convert-dtype-provider-contracts",
+        "public-fallback-policy-contracts",
+    } <= set(runners)
+    evidence = runners["convert-dtype-evidence"]
+    contracts = runners["convert-dtype-provider-contracts"]
+    assert set(evidence.facets) == set(harness.REQUIRED_FACETS)
+    assert "scripts/benchmark_gpu_convert_dtype.py" in evidence.profile_commands[
+        "quick"
+    ]
+    assert "scripts/benchmark_gpu_convert_dtype.py" in evidence.profile_commands[
+        "full"
+    ]
+    for profile in harness.PROFILES:
+        assert (
+            "src/napari_vipp/_tests/test_gpu_convert_dtype_provider.py"
+            in contracts.profile_commands[profile]
+        )
 
 
 def test_manifest_rejects_an_unmapped_public_declaration(harness, tmp_path):

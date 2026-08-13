@@ -128,6 +128,8 @@ from napari_vipp.core.channel_colors import (
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
+    ComputeRepairAction,
+    ComputeRepairSuggestion,
     ComputeRequest,
     DecisionKind,
     DecisionReason,
@@ -140,6 +142,7 @@ from napari_vipp.core.compute import (
 )
 from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
 from napari_vipp.core.compute_history import default_pipeline_timing_history_path
+from napari_vipp.core.compute_specs import compute_specs_for
 from napari_vipp.core.diagnostics import (
     PSF_EDGE_MASS_WARNING_FRACTION,
     PsfPreflightResult,
@@ -634,6 +637,7 @@ class _IsolatedTuningSnapshot:
     compute_provenance: dict[str, CachedNodeComputeProvenance]
     compute_decisions: dict[str, NodeExecutionDecision]
     compute_decision_environments: dict[str, ComputeEnvironment]
+    compute_repair_suggestions: dict[str, ComputeRepairSuggestion]
     stale_compute_badge_node_ids: frozenset[str]
     execution_report: ExecutionReport | None
     undo_stack: tuple[WorkflowHistorySnapshot, ...]
@@ -1184,6 +1188,7 @@ class VippWidget(QWidget):
         "_colocalization_scatter_density_cache",
         "_accepted_compute_decisions",
         "_compute_decision_environments",
+        "_compute_repair_suggestions",
         "_stale_compute_badge_node_ids",
         "_last_execution_report",
         "_vipp_current_step",
@@ -1410,6 +1415,7 @@ class VippWidget(QWidget):
         self._compute_runtime_quarantined_reason = ""
         self._accepted_compute_decisions: dict[str, NodeExecutionDecision] = {}
         self._compute_decision_environments: dict[str, ComputeEnvironment] = {}
+        self._compute_repair_suggestions: dict[str, ComputeRepairSuggestion] = {}
         self._stale_compute_badge_node_ids: set[str] = set()
         self._last_execution_report: ExecutionReport | None = None
         self._compute_setup_dialog: ComputeSetupDialog | None = None
@@ -1913,6 +1919,27 @@ class VippWidget(QWidget):
         )
         self.node_compute_note.setWordWrap(True)
         self.node_compute_note.setStyleSheet("color: #94a3b8; font-size: 10px;")
+        self.compute_repair_panel = QFrame()
+        self.compute_repair_panel.setObjectName("ComputeRepairPanel")
+        self.compute_repair_panel.setStyleSheet(
+            "QFrame#ComputeRepairPanel {"
+            " background: #29210f; border: 1px solid #a16207;"
+            " border-radius: 5px;"
+            "}"
+        )
+        self.compute_repair_label = QLabel("")
+        self.compute_repair_label.setWordWrap(True)
+        self.compute_repair_label.setStyleSheet(
+            "color: #fde68a; border: none; padding: 1px;"
+        )
+        self.compute_repair_label.setAccessibleName(
+            "Suggested GPU eligibility improvement"
+        )
+        self.add_compute_conversion_button = QPushButton("Add conversion")
+        self.add_compute_conversion_button.setAccessibleName(
+            "Add the suggested Convert Dtype node"
+        )
+        self.compute_repair_panel.hide()
         self.node_benchmark_button = QPushButton("Benchmark node…")
         self.node_benchmark_button.setToolTip(
             "Compare CPU and eligible GPU implementations using this node's "
@@ -2963,6 +2990,16 @@ class VippWidget(QWidget):
         compute_layout.addWidget(self.node_compute_note)
         compute_layout.addWidget(self.node_benchmark_button)
         self.compute_group.setHidden(True)
+        compute_repair_layout = QVBoxLayout(self.compute_repair_panel)
+        compute_repair_layout.setContentsMargins(8, 7, 8, 7)
+        compute_repair_layout.setSpacing(6)
+        compute_repair_layout.addWidget(self.compute_repair_label)
+        compute_repair_layout.addWidget(
+            self.add_compute_conversion_button,
+            0,
+            Qt.AlignLeft,
+        )
+        layout.addWidget(self.compute_repair_panel)
         layout.addWidget(self.compute_group)
         layout.addWidget(self.parameter_group)
         auto_layout = QVBoxLayout(self.auto_contrast_group)
@@ -3104,6 +3141,9 @@ class VippWidget(QWidget):
             self._on_node_compute_optimizer_lock_toggled
         )
         self.node_benchmark_button.clicked.connect(self._benchmark_selected_node)
+        self.add_compute_conversion_button.clicked.connect(
+            self._apply_selected_compute_repair
+        )
         self.optimize_pipeline_button.clicked.connect(
             self._show_pipeline_optimizer
         )
@@ -3545,6 +3585,7 @@ class VippWidget(QWidget):
         self._compute_mode = mode
         self._thumbnail_statistics_engine.reset_accelerator_capability()
         self._push_undo_if_changed(before)
+        self._sync_all_compute_repair_hints()
         if mode is ComputeMode.CUSTOM:
             current_request = self._current_compute_request()
             previous_report = self._last_execution_report
@@ -3696,6 +3737,7 @@ class VippWidget(QWidget):
         )
 
     def _sync_node_compute_control(self) -> None:
+        self._sync_selected_compute_repair()
         node_id = self._selected_node_id
         node = self.pipeline.nodes.get(node_id)
         if node is None or self._compute_mode is not ComputeMode.CUSTOM:
@@ -3755,24 +3797,6 @@ class VippWidget(QWidget):
                 " Choose a concrete CPU or GPU backend before locking this node; "
                 "the current choice alone is not a lock."
             )
-        if node.operation_id in {"gaussian_blur", "gaussian_blur_3d"}:
-            input_values = self.pipeline.input_data_by_port_for_node(node_id).values()
-            input_dtypes = []
-            for value in input_values:
-                raw_dtype = getattr(value, "dtype", None)
-                if raw_dtype is None:
-                    continue
-                try:
-                    input_dtypes.append(np.dtype(raw_dtype))
-                except (TypeError, ValueError):
-                    continue
-            if any(np.issubdtype(dtype, np.integer) for dtype in input_dtypes):
-                note += (
-                    " Native integer Gaussian (including uint16) is intentionally "
-                    "CPU-only because the GPU result is not scientifically "
-                    "admissible. An explicit Convert Dtype → float32 node can "
-                    "make GPU Gaussian eligible."
-                )
         decision = self._accepted_compute_decisions.get(node_id)
         if decision is not None:
             badge = actual_decision_badge(
@@ -3790,6 +3814,201 @@ class VippWidget(QWidget):
         self.node_benchmark_button.setEnabled(benchmark_ready)
         self.node_benchmark_button.setToolTip(benchmark_reason)
         self._sync_compute_policy_editability()
+
+    def _sync_selected_compute_repair(self) -> None:
+        if not hasattr(self, "compute_repair_panel"):
+            return
+        suggestion = self._selected_compute_repair()
+        visible = suggestion is not None
+        self.compute_repair_panel.setVisible(visible)
+        if suggestion is None:
+            self.compute_repair_label.clear()
+            self.add_compute_conversion_button.setEnabled(False)
+            self.add_compute_conversion_button.setToolTip("")
+            return
+        self.compute_repair_label.setText(suggestion.message)
+        blocked = self._compute_policy_edit_block_reason()
+        self.add_compute_conversion_button.setEnabled(not blocked)
+        self.add_compute_conversion_button.setToolTip(
+            blocked
+            or (
+                "Insert a visible Convert Dtype node on this input using "
+                f"{suggestion.target_dtype} and Preserve. The whole graph edit "
+                "can be undone in one step."
+            )
+        )
+
+    def _selected_compute_repair(self) -> ComputeRepairSuggestion | None:
+        suggestion = self._compute_repair_suggestions.get(self._selected_node_id)
+        if suggestion is None or not self._compute_repair_is_current(suggestion):
+            return None
+        return suggestion
+
+    def _compute_repair_is_current(
+        self,
+        suggestion: ComputeRepairSuggestion,
+    ) -> bool:
+        """Fail closed unless a cached repair still matches live safe intent."""
+
+        if self._compute_mode is ComputeMode.CPU:
+            return False
+        node = self.pipeline.nodes.get(suggestion.node_id)
+        if (
+            node is None
+            or node.operation_id != suggestion.operation_id
+            or suggestion.action is not ComputeRepairAction.INSERT_CONVERT_DTYPE
+            or not suggestion.exact
+            or suggestion.current_dtype not in {"uint8", "uint16"}
+            or suggestion.target_dtype != "float32"
+            or suggestion.scaling.casefold() != "preserve"
+        ):
+            return False
+        preference = self._compute_node_preferences.get(
+            suggestion.node_id,
+            NodeComputePreference(),
+        )
+        if self._compute_mode is ComputeMode.CUSTOM:
+            if preference.kind is NodePreferenceKind.CPU:
+                return False
+            if (
+                preference.kind is NodePreferenceKind.LIBRARY
+                and preference.value
+                != suggestion.candidate.implementation_library_id
+            ):
+                return False
+            if (
+                preference.kind is NodePreferenceKind.IMPLEMENTATION
+                and preference.value != suggestion.candidate.implementation_id
+            ):
+                return False
+        candidate_matches = any(
+            spec.implementation_id == suggestion.candidate.implementation_id
+            and spec.implementation_version
+            == suggestion.candidate.implementation_version
+            and spec.runtime_id == suggestion.candidate.runtime_id
+            and spec.implementation_library_id
+            == suggestion.candidate.implementation_library_id
+            for spec in compute_specs_for(
+                suggestion.operation_id,
+                include_cpu=False,
+                allow_experimental=self._compute_allow_experimental,
+            )
+        )
+        if not candidate_matches:
+            return False
+        connection = next(
+            (
+                item
+                for item in self.pipeline.connections
+                if item.target_id == suggestion.node_id
+                and item.target_port == suggestion.input_port_index
+            ),
+            None,
+        )
+        if connection is None:
+            return False
+        value = self.pipeline.input_data_by_port_for_node(suggestion.node_id).get(
+            suggestion.input_port_index
+        )
+        try:
+            return np.dtype(getattr(value, "dtype", None)).name == (
+                suggestion.current_dtype
+            )
+        except (TypeError, ValueError):
+            return False
+
+    def _apply_selected_compute_repair(self) -> None:
+        suggestion = self._selected_compute_repair()
+        if suggestion is None:
+            self._set_status(
+                "That GPU optimization suggestion is no longer current. "
+                "Calculate the workflow again to refresh it.",
+                severity=MessageSeverity.INFO,
+            )
+            self._sync_selected_compute_repair()
+            return
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            self._set_status(
+                blocked,
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            self._sync_selected_compute_repair()
+            return
+        node = self.pipeline.nodes.get(suggestion.node_id)
+        if node is None or node.operation_id != suggestion.operation_id:
+            self._compute_repair_suggestions.pop(suggestion.node_id, None)
+            self._sync_all_compute_repair_hints()
+            self._sync_selected_compute_repair()
+            return
+        connection = next(
+            (
+                item
+                for item in self.pipeline.connections
+                if item.target_id == suggestion.node_id
+                and item.target_port == suggestion.input_port_index
+            ),
+            None,
+        )
+        values_by_port = self.pipeline.input_data_by_port_for_node(suggestion.node_id)
+        value = values_by_port.get(suggestion.input_port_index)
+        try:
+            current_dtype = np.dtype(getattr(value, "dtype", None)).name
+        except (TypeError, ValueError):
+            current_dtype = ""
+        if connection is None or current_dtype != suggestion.current_dtype:
+            self._compute_repair_suggestions.pop(suggestion.node_id, None)
+            self._sync_all_compute_repair_hints()
+            self._sync_selected_compute_repair()
+            self._set_status(
+                "The input changed after this suggestion was calculated. "
+                "Calculate the workflow again before adding a conversion.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+
+        source_rect = self.graph_view.node_scene_rect(connection.source_id)
+        target_rect = self.graph_view.node_scene_rect(connection.target_id)
+        tunnel_local = bool(connection.tunnel_name)
+        if tunnel_local and target_rect is not None:
+            position = QPointF(
+                target_rect.left() - target_rect.width(),
+                target_rect.center().y(),
+            )
+        elif source_rect is None or target_rect is None:
+            position = self.graph_view.viewport_center_scene_position()
+        else:
+            position = QPointF(
+                (source_rect.center().x() + target_rect.center().x()) / 2.0,
+                (source_rect.center().y() + target_rect.center().y()) / 2.0,
+            )
+        inserted = self._insert_node_on_connection(
+            "convert_dtype",
+            (
+                connection.source_id,
+                connection.target_id,
+                connection.target_port,
+                connection.source_port,
+            ),
+            position,
+            params_override=dict(suggestion.conversion_parameters),
+            preserve_input_tunnel=True,
+            open_visible_wire_gap=not tunnel_local,
+        )
+        if inserted is None:
+            return
+        self._compute_repair_suggestions.pop(suggestion.node_id, None)
+        self._sync_all_compute_repair_hints()
+        self._sync_selected_compute_repair()
+        self._set_status(
+            f"Added visible Convert Dtype ({suggestion.current_dtype} → "
+            f"{suggestion.target_dtype}, Preserve) before '{node.title}'. "
+            "Pixel values are preserved exactly. The node is now eligible for "
+            "GPU consideration; actual GPU use still depends on compute policy, "
+            "workload, memory, and the installed runtime. Undo is available.",
+            severity=MessageSeverity.SUCCESS,
+        )
 
     def _can_benchmark_selected_node(self) -> tuple[bool, str]:
         if self._compute_runtime_quarantined_reason:
@@ -4819,10 +5038,12 @@ class VippWidget(QWidget):
     def _reset_compute_decisions(self) -> None:
         self._accepted_compute_decisions.clear()
         self._compute_decision_environments.clear()
+        self._compute_repair_suggestions.clear()
         self._stale_compute_badge_node_ids.clear()
         self._last_execution_report = None
         if hasattr(self, "graph_view"):
             self.graph_view.clear_node_compute_badges()
+            self.graph_view.clear_node_optimization_hints()
         if hasattr(self, "compute_status_label"):
             self._sync_compute_toolbar_summary()
 
@@ -4903,6 +5124,21 @@ class VippWidget(QWidget):
         self.graph_view.clear_node_compute_badges()
         for node_id in self._accepted_compute_decisions:
             self._sync_node_compute_badge(node_id)
+        self._sync_all_compute_repair_hints()
+
+    def _sync_all_compute_repair_hints(self) -> None:
+        if not hasattr(self, "graph_view"):
+            return
+        self.graph_view.clear_node_optimization_hints()
+        if self._compute_mode is ComputeMode.CPU:
+            return
+        for node_id, suggestion in self._compute_repair_suggestions.items():
+            if not self._compute_repair_is_current(suggestion):
+                continue
+            self.graph_view.set_node_optimization_hint(
+                node_id,
+                suggestion.message + " Select this node to review and apply it.",
+            )
 
     def _compute_status_snapshot(
         self,
@@ -5008,6 +5244,20 @@ class VippWidget(QWidget):
             self._accepted_compute_decisions[decision.node_id] = decision
             self._compute_decision_environments[decision.node_id] = report.environment
             self._stale_compute_badge_node_ids.discard(decision.node_id)
+        if report.plan is not None:
+            planned_node_ids = {
+                decision.node_id for decision in report.plan.decisions
+            }
+            for node_id in planned_node_ids:
+                self._compute_repair_suggestions.pop(node_id, None)
+            for suggestion in report.plan.repair_suggestions:
+                node = self.pipeline.nodes.get(suggestion.node_id)
+                if (
+                    node is not None
+                    and node.operation_id == suggestion.operation_id
+                    and suggestion.node_id in planned_node_ids
+                ):
+                    self._compute_repair_suggestions[suggestion.node_id] = suggestion
         # Keep the latest real report internally coherent. The toolbar combines
         # decisions from several accepted runs through ComputeStatusSnapshot.
         self._last_execution_report = report
@@ -5058,6 +5308,7 @@ class VippWidget(QWidget):
             )
             self._accepted_compute_decisions[node_id] = decision
             self._compute_decision_environments[node_id] = environment
+            self._compute_repair_suggestions.pop(node_id, None)
             self._stale_compute_badge_node_ids.discard(node_id)
             recorded_decisions.append(decision)
         self._last_execution_report = ExecutionReport(
@@ -5304,6 +5555,7 @@ class VippWidget(QWidget):
             "_colocalization_scatter_density_cache": {},
             "_accepted_compute_decisions": {},
             "_compute_decision_environments": {},
+            "_compute_repair_suggestions": {},
             "_stale_compute_badge_node_ids": set(),
             "_last_execution_report": None,
             "_vipp_current_step": None,
@@ -6242,6 +6494,10 @@ class VippWidget(QWidget):
         operation_id: str,
         connection_key,
         position,
+        *,
+        params_override: dict[str, object] | None = None,
+        preserve_input_tunnel: bool = False,
+        open_visible_wire_gap: bool = True,
     ) -> object | None:
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
@@ -6264,14 +6520,37 @@ class VippWidget(QWidget):
             source_id, target_id, target_port, source_port = (
                 self._normalize_connection_key(connection_key)
             )
+            original_connection = next(
+                (
+                    connection
+                    for connection in self.pipeline.connections
+                    if connection.source_id == source_id
+                    and connection.target_id == target_id
+                    and connection.target_port == target_port
+                    and connection.source_port == source_port
+                ),
+                None,
+            )
+            if original_connection is None:
+                raise RuntimeError("Original connection was no longer available.")
             downstream = self.pipeline.descendants_inclusive([target_id])
             node = self.pipeline.add_node(operation_id)
             self._apply_insert_mapping_params(node.id, mapping)
+            for name, value in (params_override or {}).items():
+                self.pipeline.set_param(node.id, str(name), value)
             self.graph_view.add_node(node, position)
             self._sync_node_input_ports(node.id)
             self._sync_node_output_ports(node.id)
             self.graph_view.center_node_on(node.id, position)
-            self._make_room_for_inserted_node(source_id, target_id, node.id, downstream)
+            if open_visible_wire_gap:
+                self._make_room_for_inserted_node(
+                    source_id,
+                    target_id,
+                    node.id,
+                    downstream,
+                )
+            else:
+                self._place_inserted_node_before_target(node.id, target_id)
 
             changed_connections = False
             if splice_mode in {"full", "partial"}:
@@ -6290,6 +6569,11 @@ class VippWidget(QWidget):
                     node.id,
                     target_port=mapping.input_port if mapping is not None else 0,
                     source_port=source_port,
+                    tunnel_name=(
+                        original_connection.tunnel_name
+                        if preserve_input_tunnel
+                        else ""
+                    ),
                 )
                 if not input_result.success:
                     raise RuntimeError(input_result.message)
@@ -6316,7 +6600,15 @@ class VippWidget(QWidget):
                 dirty_nodes.add(target_id)
             self._mark_pipeline_branches_dirty(dirty_nodes)
             self.run_pipeline()
-            self._make_room_for_inserted_node(source_id, target_id, node.id, downstream)
+            if open_visible_wire_gap:
+                self._make_room_for_inserted_node(
+                    source_id,
+                    target_id,
+                    node.id,
+                    downstream,
+                )
+            else:
+                self._place_inserted_node_before_target(node.id, target_id)
             self._push_undo_if_changed(before)
         except Exception as exc:
             self._restore_history_snapshot(before)
@@ -7479,6 +7771,28 @@ class VippWidget(QWidget):
                 gap_center_y,
             )
         self.graph_view.center_node_on(inserted_node_id, center)
+
+    def _place_inserted_node_before_target(
+        self,
+        inserted_node_id: str,
+        target_id: str,
+    ) -> None:
+        """Place a tunnel-local subscriber beside its target without moving it."""
+
+        inserted_rect = self.graph_view.node_scene_rect(inserted_node_id)
+        target_rect = self.graph_view.node_scene_rect(target_id)
+        if inserted_rect is None or target_rect is None:
+            return
+        self.graph_view.center_node_on(
+            inserted_node_id,
+            QPointF(
+                target_rect.left()
+                - self.INSERT_GAP_PADDING_X
+                - (inserted_rect.width() / 2.0),
+                target_rect.center().y(),
+            ),
+        )
+        self._sync_graph_note_positions_from_view()
 
     def _duplicate_node(self, node_id: str) -> None:
         original = self.pipeline.nodes.get(node_id)
@@ -10799,6 +11113,10 @@ class VippWidget(QWidget):
         if active_node_id is not None and valid_node_ids != {active_node_id}:
             self._apply_isolated_tuning(run=False, announce=False)
         affected_node_ids = self.pipeline.descendants_inclusive(valid_node_ids)
+        for affected_node_id in affected_node_ids:
+            self._compute_repair_suggestions.pop(affected_node_id, None)
+        self._sync_all_compute_repair_hints()
+        self._sync_selected_compute_repair()
         self._mark_compute_badges_stale(affected_node_ids)
         cleared_overrides = self._discard_background_node_result_overrides(
             affected_node_ids
@@ -10930,6 +11248,7 @@ class VippWidget(QWidget):
             compute_decision_environments=dict(
                 self._compute_decision_environments
             ),
+            compute_repair_suggestions=dict(self._compute_repair_suggestions),
             stale_compute_badge_node_ids=frozenset(
                 self._stale_compute_badge_node_ids
             ),
@@ -11047,6 +11366,9 @@ class VippWidget(QWidget):
         self._accepted_compute_decisions = dict(snapshot.compute_decisions)
         self._compute_decision_environments = dict(
             snapshot.compute_decision_environments
+        )
+        self._compute_repair_suggestions = dict(
+            snapshot.compute_repair_suggestions
         )
         self._stale_compute_badge_node_ids = set(
             snapshot.stale_compute_badge_node_ids

@@ -99,6 +99,7 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "subtract_background",
         "gaussian_blur",
         "gaussian_blur_3d",
+        "convert_dtype",
         "median_filter",
         "sigma_filter",
         "canny_edges",
@@ -2363,31 +2364,47 @@ def _potential_accelerator_specs(
 ) -> tuple[OperationComputeSpec, ...]:
     """Collect provider candidates that preflight must probe exactly once."""
 
+    from napari_vipp.core.compute_repairs import potential_compute_repair_specs
+
     selected: list[OperationComputeSpec] = []
     identities: set[tuple[str, str, str]] = set()
     for workload in workloads:
+        repair_identities = {
+            (
+                implementation.runtime_id,
+                implementation.implementation_id,
+                implementation.implementation_version,
+            )
+            for implementation in potential_compute_repair_specs(
+                request,
+                workload,
+                registry,
+            )
+        }
         for implementation in _candidate_specs_for_workload(
             registry,
             request,
             workload,
         ):
-            if not _candidate_statically_matches(implementation, workload):
-                continue
-            workload_support = evaluate_candidate_workload_support(
-                implementation,
-                workload,
-                array_facts=(),
-            )
-            if (
-                not workload_support.supported
-                and not workload_support.requires_complete_facts
-            ):
-                continue
             identity = (
                 implementation.runtime_id,
                 implementation.implementation_id,
                 implementation.implementation_version,
             )
+            static_match = _candidate_statically_matches(implementation, workload)
+            if not static_match and identity not in repair_identities:
+                continue
+            if static_match:
+                workload_support = evaluate_candidate_workload_support(
+                    implementation,
+                    workload,
+                    array_facts=(),
+                )
+                if (
+                    not workload_support.supported
+                    and not workload_support.requires_complete_facts
+                ):
+                    continue
             if identity in identities:
                 continue
             identities.add(identity)
@@ -3095,6 +3112,27 @@ def _propagate_shape_preserving_facts(
             guarantees.add("no-negative-zero")
         else:
             guarantees.discard("no-negative-zero")
+    elif operation_id == "convert_dtype":
+        source_dtype = np.dtype(facts.dtype)
+        output_dtype_parameter = str(
+            parameters.get("output_dtype", "uint8")
+        ).strip().casefold()
+        scaling = str(parameters.get("scaling", "rescale")).strip().casefold()
+        if (
+            source_dtype not in {np.dtype(np.uint8), np.dtype(np.uint16)}
+            or resolved_dtype != np.dtype(np.float32)
+            or output_dtype_parameter != "float32"
+            or scaling != "preserve"
+        ):
+            return None
+        # Every uint8/uint16 value is represented exactly in float32. This is a
+        # conversion theorem, not a sample-based assumption, so downstream
+        # finite-only providers can consume the projected resident result.
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        minimum = facts.minimum
+        maximum = facts.maximum
+        guarantees.update(("nonnegative", "no-negative-zero"))
     elif operation_id == "sigma_filter":
         # A successful Sigma Filter result is a bounded mean of finite source
         # samples restored to the authored dtype. The operation rejects the
@@ -3323,6 +3361,7 @@ def _planning_execution_plan(
         segments,
         tuple(_planning_decisions_by_node(planning).values()),
         tuple(getattr(planning, "warnings", ())),
+        tuple(getattr(planning, "repair_suggestions", ())),
     )
 
 

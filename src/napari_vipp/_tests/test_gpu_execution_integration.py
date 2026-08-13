@@ -2052,6 +2052,114 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
     )
 
 
+def test_real_convert_dtype_gaussian_corridor_uses_one_device_round_trip(
+    monkeypatch,
+):
+    """Prove the visible repair remains resident through downstream Gaussian."""
+
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+    registry = ComputeRegistry()
+    try:
+        runtime_probe = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not runtime_probe.available or not runtime_probe.selected_device_id:
+            pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
+        library_probe = registry.probe_library("cupyx", refresh=True)
+        if not library_probe.available:
+            pytest.skip(library_probe.message or "CuPyX is unavailable.")
+
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        conversion = pipeline.add_node("convert_dtype")
+        gaussian = pipeline.add_node("gaussian_blur")
+        pipeline.set_param(conversion.id, "output_dtype", "float32")
+        pipeline.set_param(conversion.id, "scaling", "preserve")
+        pipeline.set_param(gaussian.id, "sigma", 1.2)
+        assert pipeline.connect("input", conversion.id).success
+        assert pipeline.connect(conversion.id, gaussian.id).success
+
+        data = np.arange(128 * 160, dtype=np.uint16).reshape(128, 160)
+        pipeline.run(data, input_metadata={"axes": "YX"})
+        expected = pipeline.outputs[gaussian.id].copy()
+
+        runtime = registry.runtime("cuda-cupy")
+        transfers = {"host_to_device": 0, "device_to_host": 0}
+        original_to_device = runtime.to_device
+        original_to_host = runtime.to_host
+
+        def counted_to_device(value, *, device_id=""):
+            transfers["host_to_device"] += 1
+            return original_to_device(value, device_id=device_id)
+
+        def counted_to_host(value):
+            transfers["device_to_host"] += 1
+            return original_to_host(value)
+
+        monkeypatch.setattr(runtime, "to_device", counted_to_device)
+        monkeypatch.setattr(runtime, "to_host", counted_to_host)
+        compute_request = ComputeRequest(
+            mode=ComputeMode.CUSTOM,
+            node_preferences={
+                conversion.id: (
+                    "implementation:cupyx-convert-dtype-preserve-f32-v1"
+                ),
+                gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+            },
+            runtime_id="cuda-cupy",
+            device_id=runtime_probe.selected_device_id,
+            fallback_policy=FallbackPolicy.STRICT,
+        )
+        result = execute_pipeline_request(
+            _accelerated_request(
+                pipeline,
+                data,
+                compute_request,
+                retain_node_ids=frozenset({gaussian.id}),
+                prune_unretained=True,
+            ),
+            compute_registry=registry,
+        )
+
+        assert result.error == ""
+        assert result.pipeline is not None
+        assert result.execution_report is not None
+        assert result.execution_report.cleanup_succeeded
+        assert [
+            (segment.runtime_id, segment.node_ids)
+            for segment in result.execution_report.plan.segments
+        ] == [("cuda-cupy", (conversion.id, gaussian.id))]
+        decisions = {
+            decision.node_id: decision
+            for decision in result.execution_report.actual_decisions
+            if decision.node_id in {conversion.id, gaussian.id}
+        }
+        assert decisions[conversion.id].implementation_id == (
+            "cupyx-convert-dtype-preserve-f32-v1"
+        )
+        assert decisions[gaussian.id].implementation_id == (
+            "cupyx-gaussian-blur-v1"
+        )
+        assert all(
+            decision.runtime_id == "cuda-cupy"
+            and decision.decision_kind is DecisionKind.SELECTED
+            for decision in decisions.values()
+        )
+        assert transfers == {"host_to_device": 1, "device_to_host": 1}
+        parity = operation_parity(
+            "gaussian_blur",
+            expected,
+            result.pipeline.outputs[gaussian.id],
+            input_dtypes=(np.dtype(np.float32),),
+        )
+        assert parity.passed, parity.detail
+        _assert_private_cuda_scope_clean(
+            runtime,
+            runtime_probe.selected_device_id,
+        )
+    finally:
+        registry.close()
+
+
 @pytest.mark.parametrize("mode", (ComputeMode.AUTO, ComputeMode.PREFER_GPU))
 def test_real_gpu_modes_run_every_eligible_node_without_benchmark_evidence(mode):
     if importlib.util.find_spec("cupy") is None:

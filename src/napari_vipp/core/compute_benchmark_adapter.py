@@ -74,6 +74,7 @@ CUSTOM_BENCHMARK_POLICY_ID = "custom-node-paired-adaptive-bootstrap-v3"
 EXACT_PARITY_OPERATION_IDS = frozenset(
     {
         "canny_edges",
+        "convert_dtype",
         "median_filter",
         "otsu_threshold",
         "label_connected_components",

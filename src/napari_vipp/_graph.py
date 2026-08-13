@@ -329,11 +329,29 @@ class NodeCard(QFrame):
         self._compute_badge_kind: ComputeBadgeKind | None = None
         self._compute_badge_stale = False
         self._compute_badge_tooltip = ""
+        self.optimization_badge = QLabel("GPU tip")
+        self.optimization_badge.setObjectName("NodeOptimizationBadge")
+        self.optimization_badge.setAlignment(Qt.AlignCenter)
+        self.optimization_badge.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.optimization_badge.setStyleSheet(
+            "QLabel#NodeOptimizationBadge {"
+            " background: #422006; color: #fde68a;"
+            " border: 1px solid #d97706; border-radius: 7px;"
+            " font-size: 9px; font-weight: 650; padding: 1px 5px;"
+            "}"
+        )
+        self.optimization_badge.hide()
+        self._optimization_hint = ""
         self.title_row = QWidget(self)
         title_layout = QHBoxLayout(self.title_row)
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(6)
         title_layout.addWidget(self.title_label, 1)
+        title_layout.addWidget(
+            self.optimization_badge,
+            0,
+            Qt.AlignRight | Qt.AlignVCenter,
+        )
         title_layout.addWidget(self.compute_badge, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.category_label = QLabel(category)
         self.category_label.setObjectName("NodeCategory")
@@ -680,6 +698,24 @@ class NodeCard(QFrame):
             "}"
         )
         self.compute_badge.show()
+        return True
+
+    def set_optimization_hint(self, tooltip: str = "") -> bool:
+        """Show one derived, presentation-only GPU optimization hint."""
+        detail = str(tooltip or "").strip()
+        if detail == self._optimization_hint:
+            return False
+        self._optimization_hint = detail
+        if not detail:
+            self.optimization_badge.setToolTip("")
+            self.optimization_badge.setAccessibleName("")
+            self.optimization_badge.hide()
+            return True
+        self.optimization_badge.setToolTip(detail)
+        self.optimization_badge.setAccessibleName(
+            "GPU eligibility tip; select this node to review the suggested change"
+        )
+        self.optimization_badge.show()
         return True
 
     def _refresh_style(self) -> None:
@@ -3174,6 +3210,32 @@ class PipelineGraphView(QGraphicsView):
         selected = tuple(self._cards) if node_ids is None else tuple(node_ids)
         for node_id in selected:
             self.clear_node_compute_badge(str(node_id))
+
+    def set_node_optimization_hint(self, node_id: str, tooltip: str = "") -> None:
+        """Set one node's derived GPU optimization hint without policy logic."""
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None or proxy is None:
+            return
+        before = proxy.sceneBoundingRect()
+        if not card.set_optimization_hint(tooltip):
+            return
+        card.adjustSize()
+        proxy.refresh_ports()
+        after = proxy.sceneBoundingRect()
+        if _rect_changed(before, after):
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=before.united(after))
+            return
+        proxy.update()
+        for connection in proxy.connections:
+            connection.update_path()
+
+    def clear_node_optimization_hints(self, node_ids=None) -> None:
+        """Hide derived GPU optimization hints for selected or all nodes."""
+        selected = tuple(self._cards) if node_ids is None else tuple(node_ids)
+        for node_id in selected:
+            self.set_node_optimization_hint(str(node_id), "")
 
     def set_node_thumbnail_stats_tooltip(
         self,

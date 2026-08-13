@@ -620,13 +620,14 @@ def test_unavailable_runtime_or_library_preflight_skips_fact_scan(
 
 
 @pytest.mark.parametrize(
-    ("dtype", "sigma"),
-    ((np.uint8, 1.0), (np.float32, 99.0)),
+    ("dtype", "sigma", "expected_probes"),
+    ((np.uint8, 1.0, 1), (np.float32, 99.0, 0)),
 )
-def test_statically_unsupported_candidate_neither_probes_nor_scans(
+def test_static_preflight_probes_repairable_dtype_but_not_invalid_parameters(
     monkeypatch,
     dtype,
     sigma,
+    expected_probes,
 ):
     calls = _scan_spy(monkeypatch)
     pipeline = PrototypePipeline()
@@ -646,8 +647,8 @@ def test_statically_unsupported_candidate_neither_probes_nor_scans(
 
     assert result.error == ""
     assert calls == []
-    assert registry.runtime_probe_count == 0
-    assert registry.library_probe_count == 0
+    assert registry.runtime_probe_count == expected_probes
+    assert registry.library_probe_count == expected_probes
 
 
 @pytest.mark.parametrize(

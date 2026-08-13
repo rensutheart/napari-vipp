@@ -16,6 +16,7 @@ from types import MappingProxyType
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
+    ComputeRepairSuggestion,
     ComputeRequest,
     DecisionKind,
     DecisionReason,
@@ -42,6 +43,7 @@ from napari_vipp.core.compute_policy import (
     evaluate_memory_support,
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
+from napari_vipp.core.compute_repairs import suggest_compute_repairs
 from napari_vipp.core.compute_specs import OperationComputeSpec
 
 CPU_RUNTIME_ID = "cpu-numpy"
@@ -80,6 +82,7 @@ class ComputePlanningResult:
     environment: ComputeEnvironment
     decisions: tuple[NodeExecutionDecision, ...]
     warnings: tuple[str, ...] = ()
+    repair_suggestions: tuple[ComputeRepairSuggestion, ...] = ()
 
     def __post_init__(self) -> None:
         decisions = tuple(self.decisions)
@@ -92,6 +95,15 @@ class ComputePlanningResult:
             "warnings",
             tuple(str(value).strip() for value in self.warnings if str(value).strip()),
         )
+        suggestions = tuple(self.repair_suggestions)
+        if any(
+            not isinstance(suggestion, ComputeRepairSuggestion)
+            for suggestion in suggestions
+        ):
+            raise TypeError(
+                "repair_suggestions must contain ComputeRepairSuggestion values."
+            )
+        object.__setattr__(self, "repair_suggestions", suggestions)
 
     @property
     def decisions_by_node(self) -> Mapping[str, NodeExecutionDecision]:
@@ -111,6 +123,7 @@ class ComputePlanningResult:
             tuple(segments),
             self.decisions,
             self.warnings,
+            self.repair_suggestions,
         )
 
 
@@ -302,11 +315,26 @@ def plan_compute_decisions(
                 )
         if failures:
             raise ComputePreflightError(failures)
+        decisions_by_node = {decision.node_id: decision for decision in decisions}
+        repair_suggestions = tuple(
+            suggestion
+            for workload in prepared
+            if decisions_by_node[workload.node_id].runtime_id == CPU_RUNTIME_ID
+            for suggestion in suggest_compute_repairs(
+                request,
+                workload,
+                selected_registry,
+                resolved_environment,
+                array_facts=facts_by_node.get(workload.node_id, ()),
+                performance_evidence=evidence_by_candidate,
+            )
+        )
         return ComputePlanningResult(
             request,
             resolved_environment,
             tuple(decisions),
             tuple(warnings),
+            repair_suggestions,
         )
     finally:
         if owns_registry:

@@ -1,6 +1,15 @@
 {
   "type": "napari-vipp-workflow",
-  "version": 3,
+  "version": 4,
+  "execution": {
+    "compute": {
+      "mode": "auto",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
   "metadata": {
     "vipp": {
       "inspector": {
@@ -177,6 +186,13 @@
       "text": "TEST 4 - PASTE LOCATION AND UNDO\nWith the two nodes still copied, right-click empty canvas and choose Paste nodes here. PASS: the pair appears at that spot. Press Ctrl+Z once: the whole pair disappears. Press Ctrl+Y: it returns. Press Ctrl+V twice more: repeated copies should be slightly offset.",
       "position": [940.0, 1300.0],
       "width": 520.0
+    },
+    {
+      "id": "note_gpu_dtype_fix",
+      "text": "TEST 5 - MAKE GAUSSIAN GPU ELIGIBLE\nThis test needs a qualified GPU setup; it is not offered on a CPU-only system. Select the upper Gaussian Blur. VIPP should explain that its uint16 input is the only GPU blocker. Click Add conversion. PASS: a visible Convert Dtype node appears between the Image Source and Gaussian Blur, set to float32 and Preserve. The message now says GPU eligible, not guaranteed. Undo once to remove the whole change.",
+      "position": [-100.0, -170.0],
+      "width": 400.0,
+      "attached_node": "input"
     }
   ],
   "tunnels": [
