@@ -13,7 +13,7 @@ environment, memory, and scientific-parity gates. Work outside those gates
 runs on CPU with an explanation; VIPP does not silently cast data or change an
 authored parameter merely to use a GPU.
 
-The public `0.13.0a5` CUDA route currently targets native 64-bit Windows and
+The public `0.13.0a6` CUDA route currently targets native 64-bit Windows and
 CPython 3.12. Linux and macOS continue to use the CPU path in this alpha while
 their accelerator policies are qualified separately.
 
@@ -59,7 +59,7 @@ CMake.
 
 ## Install And Verify
 
-The explicitly unsigned Windows installer is the normal 0.13.0a5 route. Follow
+The explicitly unsigned Windows installer is the normal 0.13.0a6 route. Follow
 the checksum and Windows-warning steps in the [Quick Start](quick-start.md), or
 use this manual dedicated CUDA 13 environment route:
 
@@ -140,9 +140,9 @@ basic-measurement candidates in its exact admitted environment.
 
 VIPP does not redistribute a private cuCIM wheel. Windows users may download
 the exact
-[`0.13.0a5` optional cuCIM local-build add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/napari-vipp-cucim-installer-0.13.0a5-windows.zip)
+[`0.13.0a6` optional cuCIM local-build add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a6/napari-vipp-cucim-installer-0.13.0a6-windows.zip)
 only after the standard CUDA Compute Doctor passes. Verify its SHA-256 against
-the release's `SHA256SUMS-Windows-0.13.0a5.txt`, extract it, and double-click
+the release's `SHA256SUMS-Windows-0.13.0a6.txt`, extract it, and double-click
 **Install VIPP cuCIM.cmd**. The bundle contains no wheel: it performs the pinned
 build locally, verifies the resulting bytes and provenance, runs real GPU
 probes, and records approval in the selected released VIPP environment. The

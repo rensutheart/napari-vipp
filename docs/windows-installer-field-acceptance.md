@@ -1,6 +1,6 @@
 # Windows Installer Field Acceptance
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-08-13
 
 Use this page for a tagged VIPP installer on a fresh Windows account. It is a
 short evidence record, not an installation guide. The ordinary installation
@@ -13,6 +13,7 @@ without reviewing them for private information.
 ## Record the exact release
 
 - Release tag:
+- Public release URL:
 - Installer filename:
 - Expected SHA-256:
 - SHA-256 shown by PowerShell `Get-FileHash <downloaded-installer>`:
@@ -23,6 +24,10 @@ without reviewing them for private information.
 - Tester or evidence-record identifier:
 - Start time:
 - Finish time:
+
+If this form is returned publicly, remove the tester's name, account name,
+local paths, computer name, and the contents of the private Compute Doctor
+support report first.
 
 Stop if the filename, tag, or checksum does not match the official GitHub
 release. An alpha installer may show **Unknown publisher**, but it must also say

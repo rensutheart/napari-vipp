@@ -1,6 +1,6 @@
 # VIPP Alpha Release Runbook
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-08-13
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 publishing the companion documentation site, and confirming discovery on
@@ -10,8 +10,8 @@ napari hub.
 
 - Target package version: set `<version>` from the release milestone before
   starting; do not reuse the current package version by accident.
-- Current published release: `0.13.0a4`.
-- Current prepared target: `0.13.0a5`.
+- Current published release: `0.13.0a5`.
+- Current prepared target: `0.13.0a6`.
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -52,6 +52,10 @@ Confirm these are set:
 - README has a clear license section
 - CHANGELOG has an `Unreleased` section or a dated section for the target
   version with the release highlights
+- `release-notes.md` has human-readable **Features added** and **Bug fixes**
+  sections, useful feature subcategories, current installation/upgrade notes,
+  contributor credit, and public links; ordinary prose is not forced into
+  narrow hard-wrapped columns
 - the companion documentation version and release page match the target
 
 Required checks:
@@ -123,10 +127,10 @@ distribution decision before freezing the commit:
    installation, compute, and validation pages that ordinary users cannot
    install cuCIM and that the affected providers normally remain on CPU.
 
-VIPP 0.13.0a1 through 0.13.0a4 use option 2. Every user builds and keeps their
-own archive; policy allows a per-user archive SHA only when its installed
-payload, pinned source/recipe, environment, and workload pass the exact
-reviewed gates.
+VIPP 0.13.0a1 through the published 0.13.0a5 use option 2, and the prepared
+0.13.0a6 target retains that decision. Every user builds and keeps their own
+archive; policy allows a per-user archive SHA only when its installed payload,
+pinned source/recipe, environment, and workload pass the exact reviewed gates.
 
 Never publish the historical `586D...134CF8` research wheel. Its exact archive
 is no longer retained, and the installed copy contains Windows-materialized
@@ -361,10 +365,11 @@ levels of evidence:
   a pass. An optional `VIPP_CUCIM_CANARY_WORK_ROOT` retains the large pinned
   source/build cache.
 
-Set `VIPP_CUCIM_CANARY_TAG` to the exact published prerelease tag whenever the
-maintained canary moves beyond `v0.13.0a5`. A skipped real-CUDA job is truthful
-static bundle evidence only; it must never be recorded as a GPU build,
-installation, Compute Doctor, or operation acceptance pass.
+Keep `VIPP_CUCIM_CANARY_TAG` on `v0.13.0a5` until the complete next prerelease
+and its cuCIM ZIP are public. Then move it to that exact published tag (the
+prepared target is `v0.13.0a6`). A skipped real-CUDA job is truthful static
+bundle evidence only; it must never be recorded as a GPU build, installation,
+Compute Doctor, or operation acceptance pass.
 
 Normal CI also installs the built wheel and sdist in clean jobs on Windows,
 Linux, and macOS, alternating CPython 3.12 and 3.13 while covering both archive
@@ -512,8 +517,11 @@ If using the GitHub UI:
 5. Attach the wheel and source distribution built from the tagged commit
 6. Add release notes (suggested template below)
 
-Write release highlights from the target CHANGELOG section. The following is a
-structure, not a reusable list of 0.11 features:
+Write release highlights from the target CHANGELOG section in plain language.
+Use feature subcategories to make a large release scannable, keep fixes
+separate, explain upgrade or optional-component boundaries, and credit external
+contributors. Do not turn prose into a narrow column with manual line breaks.
+The following is a structure, not a reusable feature list:
 
 ```markdown
 ## napari-vipp v<version> (Alpha)
@@ -525,10 +533,20 @@ This is an early alpha build and is still in active development.
 - Validate outputs before publication or production use.
 - This release is distributed under the BSD 3-Clause License.
 
-### Highlights
-- Summarize the target release's user-visible changes.
-- Call out workflow/schema compatibility changes.
-- Link new guides, validation reports, or examples.
+### Features added
+
+#### <User-facing feature group>
+
+Explain what changed and why it matters in ordinary prose.
+
+### Bug fixes
+
+- Summarize corrected behavior in user-facing terms.
+
+### Installation and upgrading
+
+- Call out workflow/schema compatibility and optional-component boundaries.
+- Link the exact public installer, guides, validation reports, or examples.
 ```
 
 ## 7. napari Hub Listing/Refresh

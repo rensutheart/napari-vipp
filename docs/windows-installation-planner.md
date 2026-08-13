@@ -1,9 +1,9 @@
 # Windows Installer And Planning Contract
 
-VIPP `0.13.0a5` contains both the read-only installation planner and a
+VIPP `0.13.0a6` contains both the read-only installation planner and a
 transactional managed-environment executor behind a novice-facing Windows
-setup window. The 0.13.0a5 release executable is built from the immutable
-`v0.13.0a5` tag with that tag's exact wheel, published only with an explicit
+setup window. The 0.13.0a6 release executable is built from the immutable
+`v0.13.0a6` tag with that tag's exact wheel, published only with an explicit
 `-UNSIGNED` filename, and bound to its release manifest and SHA-256 checksum.
 Windows therefore reports **Unknown publisher** for this alpha; the
 [installer-first quick start](quick-start.md) requires checksum verification

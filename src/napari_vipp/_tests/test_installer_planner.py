@@ -40,7 +40,7 @@ from napari_vipp.installer.planner import create_install_plan
 
 
 def _release() -> ReleaseSpec:
-    return ReleaseSpec(distribution="napari-vipp", version="0.13.0a5")
+    return ReleaseSpec(distribution="napari-vipp", version="0.13.0a6")
 
 
 def _python(
@@ -298,7 +298,7 @@ def test_managed_cpu_plan_is_ready_and_cpu_only(tmp_path, minor):
 
     assert plan.ready
     assert document["status"] == "ready"
-    assert document["release"]["requirement"] == "napari-vipp[app]==0.13.0a5"
+    assert document["release"]["requirement"] == "napari-vipp[app]==0.13.0a6"
     assert [shortcut["label"] for shortcut in document["shortcuts"]] == [
         "VIPP"
     ]
@@ -338,7 +338,7 @@ def test_managed_cuda13_accepts_any_qualified_nvidia_model(
 
     assert plan.ready
     assert document["release"]["requirement"] == (
-        "napari-vipp[app,gpu-cuda13]==0.13.0a5"
+        "napari-vipp[app,gpu-cuda13]==0.13.0a6"
     )
     assert {shortcut["label"] for shortcut in document["shortcuts"]} == {
         "VIPP Automatic",
@@ -399,7 +399,7 @@ def test_managed_plan_ignores_packages_from_base_interpreter(tmp_path):
         target,
         python=_python(
             packages=(
-                InstalledPackage("napari-vipp", "0.13.0a4"),
+                InstalledPackage("napari-vipp", "0.13.0a5"),
                 InstalledPackage("numpy", "2.5.1"),
                 InstalledPackage("cupy-cuda13x", "14.1.1"),
             )
@@ -589,7 +589,7 @@ def test_existing_cuda_rejects_wrong_cupy_track(tmp_path):
             (
                 InstalledPackage("napari", "0.6.4"),
                 InstalledPackage("PyQt6", "6.9.1"),
-                InstalledPackage("napari-vipp", "0.13.0a4", editable=True),
+                InstalledPackage("napari-vipp", "0.13.0a5", editable=True),
             ),
             "editable_vipp_not_supported",
         ),
@@ -915,7 +915,7 @@ def test_real_interpreter_probe_is_isolated_and_reports_selected_python():
 def test_package_metadata_scan_filters_without_importing_packages(tmp_path):
     site_packages = tmp_path / "site-packages"
     napari_info = site_packages / "napari-0.6.4.dist-info"
-    vipp_info = site_packages / "napari_vipp-0.13.0a4.dist-info"
+    vipp_info = site_packages / "napari_vipp-0.13.0a5.dist-info"
     unrelated_info = site_packages / "unrelated-1.0.dist-info"
     for directory in (napari_info, vipp_info, unrelated_info):
         directory.mkdir(parents=True)
@@ -924,7 +924,7 @@ def test_package_metadata_scan_filters_without_importing_packages(tmp_path):
         encoding="utf-8",
     )
     (vipp_info / "METADATA").write_text(
-        "Metadata-Version: 2.1\nName: napari-vipp\nVersion: 0.13.0a4\n",
+        "Metadata-Version: 2.1\nName: napari-vipp\nVersion: 0.13.0a5\n",
         encoding="utf-8",
     )
     (vipp_info / "direct_url.json").write_text(
@@ -943,7 +943,7 @@ def test_package_metadata_scan_filters_without_importing_packages(tmp_path):
     ]
     assert observed == [
         ("napari", "0.6.4", False),
-        ("napari-vipp", "0.13.0a4", True),
+        ("napari-vipp", "0.13.0a5", True),
     ]
 
 

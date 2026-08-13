@@ -5,21 +5,17 @@ CUDA 13 installation is complete and `vipp-compute-doctor --track cuda13`
 reports that CuPy GPU execution is available. VIPP starts and its other
 qualified GPU operations work without cuCIM.
 
-For VIPP `0.13.0a5`, download
-[`napari-vipp-cucim-installer-0.13.0a5-windows.zip`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a5/napari-vipp-cucim-installer-0.13.0a5-windows.zip)
-and `SHA256SUMS-Windows-0.13.0a5.txt` only from the official
-[`v0.13.0a5` release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a5).
-In PowerShell, verify it before extracting:
+Download the ZIP and matching `SHA256SUMS-Windows-<version>.txt` only from the
+official GitHub release for the exact VIPP version already installed. In
+PowerShell, verify it before extracting:
 
 ```powershell
 Get-FileHash -Algorithm SHA256 `
-  .\napari-vipp-cucim-installer-0.13.0a5-windows.zip
+  .\napari-vipp-cucim-installer-<version>-windows.zip
 ```
 
-The result must be
-`e57194c66717bfd740810954f3b625ea991af82af8adf3f985329f53e90678ef`,
-matching the line for that ZIP in the downloaded checksum file. Stop if it
-does not match.
+Compare the result with the line for that ZIP in the downloaded checksum file.
+Stop and delete the ZIP if the values do not match.
 
 The first verified local build and GPU warm-up can take a long time with little
 console output. Let it finish unless it reports an error; later probes reuse

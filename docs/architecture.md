@@ -3,9 +3,9 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-08-13
 
-It reflects the live codebase through VIPP `0.13.0a5`, including restoration,
+It reflects the live codebase through VIPP `0.13.0a6`, including restoration,
 optional microscope-reader routing, reproducible collection batch execution,
 graph restore hardening, the unified CPU/GPU execution contract, and graph
 fragment authoring.

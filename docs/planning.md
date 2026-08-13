@@ -35,11 +35,12 @@ GPU planning, a3 enabled local qualification on compatible secondary NVIDIA
 hardware, and a4 replaced the device-model allowlist with the current
 architecture and environment gates. Compute intent and exact implementation
 provenance now span interactive, batch, generated Python/CLI, and export
-execution. Version 0.13.0a5 adds branded launch profiles, the non-mutating
+execution. Version 0.13.0a5 added branded launch profiles, the non-mutating
 Windows installer planner, its transactional apply engine, and a per-user
-Windows bootstrapper. The graph-authoring work accepted after that release adds
-atomic insertion before a named tunnel, multi-node selection and movement,
-validated graph-fragment copy/paste, and exact-operation value transfer.
+Windows bootstrapper. Version 0.13.0a6 adds atomic insertion before a named
+tunnel, multi-node selection and movement, validated graph-fragment copy/paste,
+exact-operation value transfer, clearer compute diagnosis and qualification,
+and the first shared multi-series source slice.
 
 The differentiator is not the number of nodes or GPU badges. VIPP should make a
 complete workflow portable across CPU and supported accelerators, preserve its
@@ -100,7 +101,7 @@ not displace the source, scale, validation, and reproducibility foundations.
 
 ## Current Public Baseline
 
-Current alpha release: `0.13.0a5`.
+Current alpha release: `0.13.0a6`.
 
 The public baseline includes:
 
@@ -140,9 +141,9 @@ Important present limits:
   microscope-metadata normalization, interrupted batch replay, and OME-Zarr
   round-tripping.
 
-## Ordered Product Priorities After 0.13.0a5
+## Ordered Product Priorities After 0.13.0a6
 
-The order below reflects the post-0.13.0a5 perspective. Work with disjoint
+The order below reflects the post-0.13.0a6 perspective. Work with disjoint
 ownership may proceed in parallel, but a later feature does not bypass the
 scientific, compatibility, and operational gates of an earlier foundation.
 
@@ -292,11 +293,12 @@ not deferred until a later milestone:
 
 ### 1. Field Hardening And Supported Compute Reach
 
-Priority 1 engineering is complete on the post-`0.13.0a5` hardening branch:
+Priority 1 engineering is delivered in `0.13.0a6`:
 
-- the published unsigned installer, release manifest, checksum sidecar, and
-  no-wheel cuCIM ZIP were independently rechecked, and the shortest official
-  download/checksum/extract route is now visible in the primary guides;
+- the a5 published unsigned installer, release manifest, checksum sidecar, and
+  no-wheel cuCIM ZIP were independently rechecked; a6 carries the same
+  checksum-first contract and exposes the shortest official route in the
+  primary guides;
 - CI defines genuinely clean wheel and source-archive installations across
   Windows, Linux, macOS, and both supported Python versions;
 - Compute Doctor separately reports CUDA runtime health, optional CuPyX/cuCIM
@@ -611,7 +613,7 @@ compatibility, tunnel subscriber preservation, repeated paste, and undo/redo.
 
 ## Versioned Roadmap
 
-Version numbers after `0.13.0a5` are intentionally not assigned until field
+Version numbers after `0.13.0a6` are intentionally not assigned until field
 evidence establishes the appropriate scope. Every release must ship with tests,
 documentation, an example or validation artifact when appropriate, and
 human-readable release notes.
@@ -632,11 +634,12 @@ human-readable release notes.
 | `0.13.0a3` | Secondary NVIDIA qualification | Compatible secondary NVIDIA hardware can collect and apply local qualification evidence without turning one machine's result into a portable support claim. |
 | `0.13.0a4` | Architecture-based GPU admission | The exact device-model allowlist was replaced by current compute-capability, runtime, driver, environment, provider, and scientific-region gates; the GPU model remains provenance. |
 | `0.13.0a5` | Desktop launch and installer foundation | Branded Automatic, CPU-only, and Prefer-GPU launch profiles, an in-napari loading host, deterministic non-mutating install plans, a transactional apply engine, and a per-user Windows bootstrapper. |
+| `0.13.0a6` | Graph reuse, clearer GPU diagnosis, and field hardening | Multi-node graph copy/paste and exact value transfer, insertion before tunnels, Compute Doctor 2.0, complete public-GPU admission orchestration, clean distribution checks, Imaris and multi-series source improvements, and microscope metadata editing. |
 
 See the [changelog](../CHANGELOG.md) and versioned release notes for full
 delivered detail.
 
-### Installer Distribution Gate After `0.13.0a5`
+### Installer Distribution Gate After `0.13.0a6`
 
 Goal: make the safe path for an ordinary Windows microscopy user one download
 and one double-click, without requiring napari, Python-environment, or terminal
@@ -667,11 +670,11 @@ contract after their own platform qualification. A signed filename remains
 reserved for a valid Authenticode artifact; an unsigned alpha must remain
 explicitly labelled `-UNSIGNED`.
 
-### Next Maintenance Alpha After `0.13.0a5`
+### Delivered Maintenance Alpha: `0.13.0a6`
 
 Theme: field hardening and compute qualification.
 
-Engineering completed on the Priority 1 branch:
+Engineering delivered in this release:
 
 - Compute Doctor distinguishes runtime health from actual VIPP admission and
   exports a strictly redacted support bundle;
