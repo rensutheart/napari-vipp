@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import struct
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -397,6 +399,62 @@ def test_signing_hook_requires_real_certificate_timestamp_and_verification():
     assert "Get-AuthenticodeSignature" in script
     assert "TimeStamperCertificate" in script
     assert "-SIGNING-STAGING.exe" in script
+
+
+def test_authenticode_probe_isolates_windows_powershell_modules(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured["environment"] = kwargs["env"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "status": "NotSigned",
+                    "status_message": "Unsigned test artifact",
+                    "signer_certificate": None,
+                    "timestamp_certificate": None,
+                }
+            ),
+        )
+
+    monkeypatch.setattr(packager.subprocess, "run", run)
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv(
+        "PSModulePath", r"C:\Program Files\PowerShell\7\Modules"
+    )
+
+    result = packager.probe_authenticode(tmp_path / "unsigned.exe")
+
+    windows_powershell = (
+        Path(r"C:\Windows") / "System32" / "WindowsPowerShell" / "v1.0"
+    )
+    assert captured["command"][0] == str(
+        windows_powershell / "powershell.exe"
+    )
+    assert captured["environment"]["PSModulePath"] == str(
+        windows_powershell / "Modules"
+    )
+    assert result["status"] == "NotSigned"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
+def test_authenticode_probe_works_with_hostile_inherited_module_path(
+    tmp_path, monkeypatch
+):
+    unsigned = _pe(tmp_path / "unsigned.exe", b"payload", signed=False)
+    hostile_modules = tmp_path / "hostile-powershell-modules"
+    hostile_modules.mkdir()
+    monkeypatch.setenv("PSModulePath", str(hostile_modules))
+
+    result = packager.probe_authenticode(unsigned)
+
+    assert result["status"] == "NotSigned"
+    assert result["signer_certificate"] is None
+    assert result["timestamp_certificate"] is None
 
 
 def test_authenticode_content_digest_allows_only_signature_fields(tmp_path):
