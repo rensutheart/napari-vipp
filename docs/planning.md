@@ -40,7 +40,10 @@ Windows installer planner, its transactional apply engine, and a per-user
 Windows bootstrapper. Version 0.13.0a6 adds atomic insertion before a named
 tunnel, multi-node selection and movement, validated graph-fragment copy/paste,
 exact-operation value transfer, clearer compute diagnosis and qualification,
-and the first shared multi-series source slice.
+and the first shared multi-series source slice. Version 0.13.0a7 adds visible
+one-click dtype repairs for GPU-blocked nodes, readable optimizer evidence,
+a reviewed GPU segmentation corridor, and a broader documented
+Richardson-Lucy CPU/GPU agreement region without rewriting authored settings.
 
 The differentiator is not the number of nodes or GPU badges. VIPP should make a
 complete workflow portable across CPU and supported accelerators, preserve its
@@ -99,11 +102,15 @@ not displace the source, scale, validation, and reproducibility foundations.
   branded launch profiles, the in-napari loading host, the separate local-build
   cuCIM bundle, and the staged Windows/Linux/macOS installer plan.
 
-## Current Public Baseline
+## Prepared Release Target And Current Public Baseline
 
-Current alpha release: `0.13.0a6`.
+Current published alpha release: `0.13.0a6`.
 
-The public baseline includes:
+Prepared release target: `0.13.0a7`. It does not become the public baseline
+until the immutable tag, GitHub artifacts, numbered manual, and PyPI package
+have all passed the release checks.
+
+The prepared `0.13.0a7` candidate extends the public baseline to include:
 
 - workflow schema 4 with portable CPU/Auto/Prefer-GPU/Custom intent and durable
   per-node preferences;
@@ -121,8 +128,10 @@ The public baseline includes:
   label cleanup, measurements, skeleton/network analysis, colocalization, and
   spatial-association workflows; and
 - reviewed accelerator regions for background subtraction, median, Gaussian,
-  RL/RL-TV, Canny, Otsu, Sigma Filter, connected components, and basic object
-  measurements in their exact admitted environments and workloads.
+  lossless dtype conversion, channel extraction, binary threshold, boolean
+  mask cleanup, RL/RL-TV, Canny, Otsu, Sigma Filter, connected components, and
+  basic object measurements in their exact admitted environments and
+  workloads.
 
 Important present limits:
 
@@ -141,9 +150,9 @@ Important present limits:
   microscope-metadata normalization, interrupted batch replay, and OME-Zarr
   round-tripping.
 
-## Ordered Product Priorities After 0.13.0a6
+## Ordered Product Priorities After 0.13.0a7
 
-The order below reflects the post-0.13.0a6 perspective. Work with disjoint
+The order below reflects the post-0.13.0a7 perspective. Work with disjoint
 ownership may proceed in parallel, but a later feature does not bypass the
 scientific, compatibility, and operational gates of an earlier foundation.
 
@@ -686,9 +695,12 @@ compatibility, tunnel subscriber preservation, repeated paste, and undo/redo.
 
 ## Versioned Roadmap
 
-Version numbers after `0.13.0a6` are intentionally not assigned until field
-evidence establishes the appropriate scope. Every release must ship with tests,
-documentation, an example or validation artifact when appropriate, and
+The next planned feature line is `0.14.0a1`, beginning with the durable
+`SourceItem` identity foundation described in Feature Sequence B. It is a plan,
+not a delivered release or a promise that every large-data feature lands in its
+first alpha. Versions after that planned foundation remain unassigned until
+field evidence establishes the appropriate scope. Every release must ship with
+tests, documentation, an example or validation artifact when appropriate, and
 human-readable release notes.
 
 ### Released Milestones
@@ -712,7 +724,37 @@ human-readable release notes.
 See the [changelog](../CHANGELOG.md) and versioned release notes for full
 delivered detail.
 
-### Installer Distribution Gate After `0.13.0a6`
+### Prepared Milestone
+
+| Version | Theme | Intended durable outcome |
+| --- | --- | --- |
+| `0.13.0a7` | Guided GPU repairs and a connected segmentation corridor | One-click visible dtype repairs, persistent Prefer-GPU guidance, readable inconclusive optimizer evidence, versioned RL agreement, and reviewed threshold plus boolean mask-cleanup implementations in a portable example. |
+
+This milestone moves to the released table only after its immutable tag,
+GitHub assets, numbered manual, PyPI package, and public verification are
+complete.
+
+### Planned Source-Identity Alpha: `0.14.0a1`
+
+The first `0.14` alpha is planned around a versioned, immutable `SourceItem`
+identity that distinguishes a source container from its selected
+series/scene/group/well/field or semantic-axis item. The first coherent slice
+must carry the same stable identity through interactive selection,
+`SourcePayload`, batch rows and output naming, manifests/checkpoints, generated
+runners, replay, and provenance.
+
+This milestone must read existing workflow and batch schemas safely and migrate
+without changing their scientific meaning. Two items in one container must
+remain distinct across save, reopen, batch execution, and export, while a source
+revision invalidates stale identity or cache proof. Public provenance must not
+leak private absolute paths.
+
+The `0.14.0a1` label does not imply that full OME-Zarr lazy execution,
+multiscale export, or plate/well/field traversal is complete. Those remain later
+Feature Sequence B slices built on the identity contract rather than being
+silently folded into it.
+
+### Installer Distribution Gate After `0.13.0a7`
 
 Goal: make the safe path for an ordinary Windows microscopy user one download
 and one double-click, without requiring napari, Python-environment, or terminal
@@ -780,10 +822,41 @@ Qualification targets:
   and state the pending qualification precisely. Do not present an attempted
   target as delivered supported-compute reach.
 
+### Delivered GPU Workflow Alpha: `0.13.0a7`
+
+Theme: make a coherent accelerated path visible, reviewable, and safe to test.
+
+Engineering delivered in this release:
+
+- a GPU-blocked node can explain a lossless dtype repair and insert the normal
+  visible conversion on the affected input with one-step Undo;
+- Prefer GPU retains that guidance after calculation, while Custom selections
+  continue to fail closed when a saved suggestion is stale or contradictory;
+- completed optimizer comparisons remain inspectable when timings are too
+  close to recommend a backend change, with grouped per-implementation rows;
+- the portable segmentation example connects channel selection, dtype
+  conversion, Gaussian filtering, binary threshold, boolean Remove Small
+  Objects, Fill Holes, and Connected Components with honest CPU fallback; and
+- ordinary Richardson-Lucy uses a documented backend-agreement policy across
+  its reviewed epsilon and iteration region without changing either authored
+  parameter.
+
+This is a progress alpha, not completion of the full acceleration sequence.
+The retained RTX 5090 evidence establishes the exact admitted corridor on that
+reference system. Transfer-inclusive benefit on another reviewed hardware
+class, exact tagged-artifact acceptance, and the wider Windows/Linux
+qualification targets remain open; the public support matrix must not expand
+until those results exist.
+
 ### Feature Sequence A: Coherent Workflow Acceleration
 
 Goal: keep a complete common segmentation/measurement corridor resident where
 scientifically and operationally valid.
+
+Version 0.13.0a7 delivers the explicit conversion/view bridges and the first
+reviewed threshold plus boolean mask-cleanup corridor. The multi-hardware
+performance and field-qualification bullets below remain release gates for
+claiming this feature sequence complete.
 
 Release gate:
 
@@ -799,6 +872,11 @@ Release gate:
 
 Goal: make multidimensional and multi-item acquisitions explicit while making
 proven graph fragments easy to reuse.
+
+The planned `0.14.0a1` milestone owns the first durable SourceItem identity
+slice. Later alphas extend that same contract into OME-Zarr scale selection,
+preview/materialization safeguards, and explicit HCS or semantic-axis
+iteration.
 
 Release gate:
 

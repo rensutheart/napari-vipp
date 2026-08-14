@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing GitHub prerelease tag to publish (for example v0.13.0a6)"
+        description: "Existing GitHub prerelease tag to publish (for example v0.13.0a7)"
         required: true
         type: string
 

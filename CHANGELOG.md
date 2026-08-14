@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.13.0a7 - 2026-08-14
+
+### Release Overview
+
+This seventh 0.13 alpha makes GPU acceleration easier to understand and apply
+without silently changing a workflow's scientific settings. VIPP can now point
+out when a visible, lossless dtype conversion is the only thing preventing a
+node from using a reviewed GPU implementation, insert that ordinary conversion
+in the correct place with one click, and undo it as one graph action.
+
+The release also makes optimizer evidence much easier to inspect, including
+when CPU and GPU timings are too close to justify changing the saved backend.
+It adds a portable, reviewed GPU segmentation path through thresholding,
+boolean mask cleanup, and connected components, and broadens the documented
+CPU/GPU agreement region for Richardson-Lucy deconvolution. CPU remains the
+portable reference and visible fallback outside every exact admitted region.
+
 ### Features Added
 
 #### Clearer GPU Workflow Repairs

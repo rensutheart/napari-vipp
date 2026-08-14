@@ -13,9 +13,10 @@ environment, memory, and scientific-parity gates. Work outside those gates
 runs on CPU with an explanation; VIPP does not silently cast data or change an
 authored parameter merely to use a GPU.
 
-The public `0.13.0a6` CUDA route currently targets native 64-bit Windows and
-CPython 3.12. Linux and macOS continue to use the CPU path in this alpha while
-their accelerator policies are qualified separately.
+The prepared `0.13.0a7` CUDA route targets native 64-bit Windows and CPython
+3.12. Until its official prerelease and checksums are public, `0.13.0a6`
+remains the published route. Linux and macOS continue to use the CPU path in
+this alpha while their accelerator policies are qualified separately.
 
 ## Compute Modes
 
@@ -59,7 +60,7 @@ CMake.
 
 ## Install And Verify
 
-The explicitly unsigned Windows installer is the normal 0.13.0a6 route. Follow
+The explicitly unsigned Windows installer is the normal 0.13.0a7 route. Follow
 the checksum and Windows-warning steps in the [Quick Start](quick-start.md), or
 use this manual dedicated CUDA 13 environment route:
 
@@ -118,6 +119,7 @@ Public GPU candidates currently cover reviewed regions of:
 - Richardson-Lucy and Richardson-Lucy TV deconvolution;
 - fixed Binary, Canny, and Otsu thresholding;
 - Sigma Filter;
+- boolean Remove Small Objects and Fill Holes in their reviewed cleanup regions;
 - Connected Components; and
 - the basic **Measure Objects** and **Measure Objects + Intensity** schemas.
 
@@ -228,9 +230,9 @@ basic-measurement candidates in its exact admitted environment.
 
 VIPP does not redistribute a private cuCIM wheel. Windows users may download
 the exact
-[`0.13.0a6` optional cuCIM local-build add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a6/napari-vipp-cucim-installer-0.13.0a6-windows.zip)
+[`0.13.0a7` optional cuCIM local-build add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a7/napari-vipp-cucim-installer-0.13.0a7-windows.zip)
 only after the standard CUDA Compute Doctor passes. Verify its SHA-256 against
-the release's `SHA256SUMS-Windows-0.13.0a6.txt`, extract it, and double-click
+the release's `SHA256SUMS-Windows-0.13.0a7.txt`, extract it, and double-click
 **Install VIPP cuCIM.cmd**. The bundle contains no wheel: it performs the pinned
 build locally, verifies the resulting bytes and provenance, runs real GPU
 probes, and records approval in the selected released VIPP environment. The

@@ -9,7 +9,7 @@ on:
       release_tag:
         description: Published prerelease tag whose bundle should be checked
         required: true
-        default: v0.13.0a5
+        default: v0.13.0a6
         type: string
       run_real_canary:
         description: Also use the protected, self-hosted CUDA canary environment
@@ -26,7 +26,7 @@ concurrency:
 
 env:
   PYTHONUTF8: "1"
-  CANARY_TAG: ${{ inputs.release_tag || vars.VIPP_CUCIM_CANARY_TAG || 'v0.13.0a5' }}
+  CANARY_TAG: ${{ inputs.release_tag || vars.VIPP_CUCIM_CANARY_TAG || 'v0.13.0a6' }}
 
 jobs:
   published-bundle-contract:
@@ -38,7 +38,7 @@ jobs:
       - name: Check out the exact released source
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.release_tag || vars.VIPP_CUCIM_CANARY_TAG || 'v0.13.0a5' }}
+          ref: ${{ inputs.release_tag || vars.VIPP_CUCIM_CANARY_TAG || 'v0.13.0a6' }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -108,7 +108,7 @@ jobs:
       - name: Check out the exact released source
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.release_tag || vars.VIPP_CUCIM_CANARY_TAG || 'v0.13.0a5' }}
+          ref: ${{ inputs.release_tag || vars.VIPP_CUCIM_CANARY_TAG || 'v0.13.0a6' }}
           fetch-depth: 0
           persist-credentials: false
 

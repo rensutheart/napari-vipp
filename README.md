@@ -37,9 +37,14 @@ and [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requi
 
 ### Windows Installer (Recommended Path)
 
+The `0.13.0a7` links below become valid only when the official
+`v0.13.0a7` GitHub prerelease and checksum sidecars are public. Until then, use
+the published `0.13.0a6` release or an explicitly marked development checkout;
+do not download a file from a guessed asset URL.
+
 The normal experience is one Windows `.exe`: download
-[`VIPP-Setup-0.13.0a6-Windows-x86_64-UNSIGNED.exe`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a6/VIPP-Setup-0.13.0a6-Windows-x86_64-UNSIGNED.exe)
-from the official `v0.13.0a6` release, double-click it, and keep the recommended
+[`VIPP-Setup-0.13.0a7-Windows-x86_64-UNSIGNED.exe`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a7/VIPP-Setup-0.13.0a7-Windows-x86_64-UNSIGNED.exe)
+from the official `v0.13.0a7` release, double-click it, and keep the recommended
 managed VIPP environment. Review CPU or qualified NVIDIA GPU setup, then launch
 VIPP from the shortcuts it creates. A supported 64-bit Python is a separate prerequisite;
 if it is missing, setup links to the official Python 3.12.10 installer and lets
@@ -59,7 +64,7 @@ separately afterward.
 > so Windows will show **Unknown publisher** and may show
 > **Windows protected your PC**. Download only the explicitly named
 > `-UNSIGNED.exe` from the official
-> [`v0.13.0a6` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a6),
+> [`v0.13.0a7` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a7),
 > verify its SHA-256 against the attached `SHA256SUMS` file, then select
 > **More info > Run anyway**. Stop if the hash differs or antivirus identifies
 > a threat; never disable Windows security. The [Quick Start](docs/quick-start.md)
@@ -69,17 +74,17 @@ The [VIPP Quick Start](docs/quick-start.md) explains the installer-first flow,
 current manual commands, CPU/GPU choices, prerequisites, the advanced
 existing-napari route, update/repair/uninstall behavior, and a first workflow.
 After a standard CUDA installation passes Compute Doctor, the separate
-[`0.13.0a6` cuCIM add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a6/napari-vipp-cucim-installer-0.13.0a6-windows.zip)
+[`0.13.0a7` cuCIM add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a7/napari-vipp-cucim-installer-0.13.0a7-windows.zip)
 can build the optional pinned provider locally. It contains no prebuilt cuCIM
 wheel; verify the ZIP against the release checksum before extracting it.
 
 ### Manual Installation (Advanced And Non-Windows)
 
-VIPP `0.13.0a6` supports CPython 3.12 and 3.13. Create and activate a dedicated
+VIPP `0.13.0a7` supports CPython 3.12 and 3.13. Create and activate a dedicated
 virtual environment, then install:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a6"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a7"
 vipp
 ```
 
@@ -163,7 +168,7 @@ environment that launches VIPP, never a global/base Python. Keep the VIPP
 version pinned and restart napari afterward. For example:
 
 ```bash
-python -m pip install "napari-vipp[nd2]==0.13.0a6"
+python -m pip install "napari-vipp[nd2]==0.13.0a7"
 ```
 
 Available extras include `nd2`, `czi`, `microscope`, and `bioformats`. See
@@ -172,7 +177,7 @@ the matching commands.
 
 ## Windows Installer And Startup
 
-VIPP `0.13.0a6` provides a novice-facing Windows setup window, automatic CPU/GPU
+VIPP `0.13.0a7` provides a novice-facing Windows setup window, automatic CPU/GPU
 recommendation, exact dependency review, transactional install/update/repair,
 owned shortcuts, independent CPU/GPU Apps & Features entries, ownership-safe
 uninstall, and acceptance checks. It installs into a private managed location
@@ -214,14 +219,15 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Use
 
 ## Current Alpha
 
-`0.13.0a6` adds multi-node graph copy/paste, exact-operation **Paste Values**,
-insertion before named tunnels, a clearer Compute Doctor, strict qualification
-of every public GPU implementation, Imaris `.ims` import, multi-series batch
-items, and a microscope-metadata node. It retains the installer-first Windows
-experience, compatible NVIDIA CUDA 13 admission, and the optional verified
-local cuCIM build.
+`0.13.0a7` adds visible one-click dtype repairs for GPU-blocked nodes, keeps
+scientifically inconclusive optimizer results available for inspection, and
+presents implementation timings as readable grouped rows. It also adds a
+reviewed GPU-resident segmentation corridor through thresholding, boolean mask
+cleanup, and connected components, plus a broader documented CPU/GPU agreement
+region for Richardson-Lucy deconvolution. CPU remains the portable reference,
+and unsupported inputs or parameters continue to use it visibly.
 
-See the categorized [0.13.0a6 release notes](CHANGELOG.md#0130a6---2026-08-13)
+See the categorized [0.13.0a7 release notes](CHANGELOG.md#0130a7---2026-08-14)
 and [roadmap](docs/planning.md) for details and remaining milestones.
 
 ## Citation, Acknowledgement, And License

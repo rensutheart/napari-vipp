@@ -627,7 +627,16 @@ def _scan_relevant_packages(site_packages: Path) -> tuple[InstalledPackage, ...]
                 editable=editable,
             )
         )
-    return tuple(packages)
+    return tuple(
+        sorted(
+            packages,
+            key=lambda package: (
+                package.normalized_name,
+                package.version,
+                package.editable,
+            ),
+        )
+    )
 
 
 def _probe_nvidia_driver(python_executable: Path) -> NvidiaSnapshot:
