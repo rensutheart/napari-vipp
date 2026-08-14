@@ -23,14 +23,15 @@ from napari_vipp.core.richardson_lucy import (
 from napari_vipp.core.richardson_lucy import (
     richardson_lucy_tv_deconvolution as cpu_rl_tv,
 )
+from napari_vipp.core.richardson_lucy_parity import (
+    richardson_lucy_tv_float32_parity,
+)
 from scripts.validate_rl_tv_phantoms import (
     calculate_metrics,
     make_phantom_2d,
     make_phantom_3d,
     observed_image,
 )
-
-RL_TV_FLOAT32_NRMSE_LIMIT = 2e-6
 
 
 class _FakeStream:
@@ -537,24 +538,5 @@ def test_real_gpu_3d_peak_fits_versioned_tv_memory_estimate(real_cupy):
 
 
 def _assert_float32_parity(expected: np.ndarray, actual: np.ndarray) -> None:
-    assert actual.shape == expected.shape
-    assert actual.dtype == expected.dtype == np.dtype(np.float32)
-    assert np.isfinite(actual).all()
-    assert np.all(actual >= 0)
-    expected64 = expected.astype(np.float64)
-    actual64 = actual.astype(np.float64)
-    difference = actual64 - expected64
-    peak = float(np.max(np.abs(expected64), initial=0.0))
-    max_abs = float(np.max(np.abs(difference), initial=0.0))
-    max_abs_limit = 1e-6 + 5e-6 * peak
-    denominator = max(
-        float(np.linalg.norm(expected64.ravel())),
-        float(np.sqrt(expected64.size) * 1e-12),
-    )
-    nrmse = float(np.linalg.norm(difference.ravel()) / denominator)
-    assert nrmse <= RL_TV_FLOAT32_NRMSE_LIMIT, (
-        f"RL-TV NRMSE {nrmse:.9g} exceeds {RL_TV_FLOAT32_NRMSE_LIMIT:.9g}."
-    )
-    assert max_abs <= max_abs_limit, (
-        f"RL-TV max abs error {max_abs:.9g} exceeds {max_abs_limit:.9g}."
-    )
+    result = richardson_lucy_tv_float32_parity(expected, actual)
+    assert result.passed, result.detail

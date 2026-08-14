@@ -1,16 +1,25 @@
 # CuPy Richardson-Lucy admission evidence
 
+> **HISTORICAL EVIDENCE — NOT CURRENT POLICY**
+>
+> This page is the readable companion to the untouched schema-v1 benchmark
+> artifact from July 2026. It has not been regenerated under VIPP's current
+> policy and is not current-policy admission evidence. The tables and pass/fail
+> counts below use the former narrow v1 gate. The current official ordinary-RL
+> backend-agreement gate is 0.5% NRMSE plus a maximum absolute error of
+> `1e-6 + 0.005 × CPU peak`; exact-workload parity is still required.
+
 - Generated: `2026-07-29T21:46:15.679475+00:00`
 - Schema: `napari-vipp-cupy-rl-admission-evidence` version 1
 - Device: `NVIDIA GeForce RTX 5090`
 - Platform: `Windows-10-10.0.19045-SP0`
 
-This deterministic, machine-local scientific-parity evidence supports
-public exposure inside the reviewed exact region on this development
-branch. It is not a portable performance, cross-platform, or released-
-package promotion claim, and it does not waive exact-workload parity.
+At the time it was generated, this deterministic, machine-local evidence
+supported public exposure inside the then-reviewed exact region on the
+development branch. It is not a portable performance, cross-platform, or
+released-package promotion claim, and it does not waive exact-workload parity.
 
-## Policy gate
+## Historical v1 policy gate
 
 - NRMSE: `<= 2e-06`
 - Maximum absolute error: `<= 1e-6 + 5e-6 × CPU peak`
@@ -62,7 +71,7 @@ package promotion claim, and it does not waive exact-workload parity.
 | 1e-06 | 10 | 8/40 | 109.175747 | `even-study-s901-63x65-zero_heavy_dynamic_range` |
 | 1e-06 | 25 | 14/40 | 494052.993 | `even-study-s901-63x65-zero_heavy_dynamic_range` |
 
-## Evidence-backed initial contract
+## Historical v1 contract
 
 - `filter_epsilon == 1e-08`
 - `iterations <= 25`
@@ -72,12 +81,15 @@ package promotion claim, and it does not waive exact-workload parity.
   reviewed region; and
 - exact-workload CPU/GPU parity before timing or optimizer selection.
 
-Higher epsilon values are not automatically safer: the ratio update has
-a threshold branch, and the 1e-7/1e-6 comparison contains parity failures.
-The authored CPU default `filter_epsilon=1e-12` remains unchanged and
-uses CPU fallback. VIPP must never silently raise it to qualify a GPU run.
-Cross-platform support and released-package promotion require their
-own validation and are not claimed by this artifact.
+Under the historical v1 gate, higher epsilon values were not automatically
+safer: the ratio update has a threshold branch, and the 1e-7/1e-6 comparison
+contained v1 parity failures. That observation is now diagnostic only. Under
+the current v2 policy, an authored `filter_epsilon=1e-12` is eligible for the
+reviewed ordinary-RL range and exact-workload parity testing; it does not
+necessarily fall back to CPU. VIPP still never changes the authored epsilon or
+iteration count to qualify a GPU run. Cross-platform support and
+released-package promotion require their own validation and are not claimed by
+this historical artifact.
 
 Raw per-fixture metrics, environment versions, generator contract, and
 source hashes are retained in the sibling JSON artifact.

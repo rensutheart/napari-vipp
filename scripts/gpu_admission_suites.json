@@ -57,6 +57,20 @@
       "library_id": "cupyx"
     },
     {
+      "operation_id": "binary_threshold",
+      "implementation_id": "cupy-binary-threshold-f32-exact-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupy"
+    },
+    {
+      "operation_id": "extract_channel",
+      "implementation_id": "cupy-extract-channel-view-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupy"
+    },
+    {
       "operation_id": "richardson_lucy_deconvolution",
       "implementation_id": "rl-cupy-f32-v1",
       "implementation_version": "1",
@@ -191,7 +205,7 @@
       },
       "artifact": "rl-admission.json",
       "artifact_schema": "napari-vipp-cupy-rl-admission-evidence",
-      "artifact_schema_version": 1
+      "artifact_schema_version": 2
     },
     {
       "id": "rl-performance-evidence",
@@ -237,7 +251,7 @@
       },
       "artifact": "rl-tv-admission.json",
       "artifact_schema": "napari-vipp-cupy-rl-tv-admission-evidence",
-      "artifact_schema_version": 1
+      "artifact_schema_version": 2
     },
     {
       "id": "rl-tv-performance-evidence",
@@ -344,6 +358,51 @@
       "profile_commands": {
         "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_convert_dtype_provider.py"],
         "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_convert_dtype_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "segmentation-bridge-evidence",
+      "kind": "evidence",
+      "implementations": [
+        "binary_threshold::cupy-binary-threshold-f32-exact-v1",
+        "extract_channel::cupy-extract-channel-view-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata",
+        "input_integrity", "memory", "cancellation", "cleanup", "fallback",
+        "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_segmentation_bridge.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_segmentation_bridge.py", "--profile", "quick", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_segmentation_bridge.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "segmentation-bridge.json",
+      "artifact_schema": "napari-vipp-cupy-segmentation-bridge-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "segmentation-bridge-provider-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "binary_threshold::cupy-binary-threshold-f32-exact-v1",
+        "extract_channel::cupy-extract-channel-view-v1"
+      ],
+      "facets": [
+        "metadata", "input_integrity", "cancellation", "cleanup",
+        "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py",
+        "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py", "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py", "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment"]
       },
       "artifact": null,
       "artifact_schema": null,

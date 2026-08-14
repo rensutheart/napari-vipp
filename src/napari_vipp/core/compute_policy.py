@@ -28,8 +28,10 @@ from napari_vipp.core.compute_specs import OperationComputeSpec
 from napari_vipp.core.measurements import basic_measurement_layout
 from napari_vipp.core.richardson_lucy_compute import (
     RICHARDSON_LUCY_FILTER_EPSILON,
+    RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON,
     RICHARDSON_LUCY_MAXIMUM_ITERATIONS,
     RICHARDSON_LUCY_MEMORY_MODEL_IDS,
+    RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON,
     RICHARDSON_LUCY_POLICY_IDS,
     RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR,
     RICHARDSON_LUCY_TV_EPSILON,
@@ -269,6 +271,7 @@ class SupportDecision:
     reason_text: str
     requires_complete_facts: bool = False
     fallback_allowed: bool = True
+    exact_workload_test_allowed: bool = False
 
     def __post_init__(self) -> None:
         reason = (
@@ -285,6 +288,8 @@ class SupportDecision:
             raise TypeError("requires_complete_facts must be a boolean.")
         if not isinstance(self.fallback_allowed, bool):
             raise TypeError("fallback_allowed must be a boolean.")
+        if not isinstance(self.exact_workload_test_allowed, bool):
+            raise TypeError("exact_workload_test_allowed must be a boolean.")
         object.__setattr__(self, "reason", reason)
         object.__setattr__(self, "reason_text", reason_text)
 
@@ -354,16 +359,21 @@ CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID = (
 CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID = (
     "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
 )
+CUDA_CUPY_CORE_WINDOWS_ENVIRONMENT_POLICY_ID = (
+    "cuda-cupy-core-14.1.1-cpython312-windows-native-v1"
+)
 CUDA_ENVIRONMENT_POLICIES = {
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID,
+    CUDA_CUPY_CORE_WINDOWS_ENVIRONMENT_POLICY_ID,
 }
 
 _PHASE1_CUDA_POLICY_PROVIDER = {
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cupyx"),
     CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cucim"),
     CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cupy"),
+    CUDA_CUPY_CORE_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cupy"),
 }
 
 _PHASE1_CUPY_VERSION = "14.1.1"
@@ -455,6 +465,53 @@ def evaluate_candidate_support(
     )
 
 
+def evaluate_candidate_exact_workload_test_support(
+    spec: OperationComputeSpec,
+    workload: WorkloadDescriptor,
+    environment: ComputeEnvironment,
+    *,
+    allow_experimental: bool,
+    array_facts: tuple[ArrayFacts, ...] = (),
+) -> SupportDecision:
+    """Admit only safe candidates to an explicit exact-workload parity test.
+
+    Normal execution deliberately uses :func:`evaluate_candidate_support` and
+    therefore keeps workloads outside a broadly prequalified region on CPU.
+    The pipeline optimizer may call this narrower API when the user explicitly
+    asks Find fastest to execute the authored CPU and GPU workloads and apply
+    their operation-owned scientific-equivalence policy before timing.
+    """
+
+    environment_decision = evaluate_candidate_environment_support(
+        spec,
+        environment,
+        allow_experimental=allow_experimental,
+    )
+    if not environment_decision.supported:
+        return environment_decision
+    workload_decision = evaluate_candidate_workload_support(
+        spec,
+        workload,
+        array_facts=array_facts,
+    )
+    if workload_decision.supported:
+        return workload_decision
+    if not workload_decision.exact_workload_test_allowed:
+        return workload_decision
+    return SupportDecision(
+        True,
+        DecisionReason.SELECTED_IMPLEMENTATION,
+        (
+            "This workload is outside the broadly prequalified region but is "
+            "structurally safe for an exact CPU/GPU scientific-equivalence "
+            "test. Normal execution remains on CPU unless that authored "
+            "workload passes the test."
+        ),
+        fallback_allowed=workload_decision.fallback_allowed,
+        exact_workload_test_allowed=True,
+    )
+
+
 def evaluate_candidate_workload_support(
     spec: OperationComputeSpec,
     workload: WorkloadDescriptor,
@@ -506,7 +563,17 @@ def evaluate_candidate_workload_support(
         workload,
         array_facts=facts,
     )
-    if operation_decision is not None:
+    soft_operation_decision = None
+    if (
+        operation_decision is not None
+        and operation_decision.exact_workload_test_allowed
+    ):
+        # A soft prequalification boundary must never short-circuit hard port
+        # contracts.  Continue through dtype and complete-finiteness checks;
+        # Find fastest may lift only this stored soft decision after every hard
+        # contract has passed for the exact inputs.
+        soft_operation_decision = operation_decision
+    elif operation_decision is not None:
         return operation_decision
     for dtype, port in zip(workload.input_dtypes, spec.input_ports, strict=True):
         normalized_dtype = _dtype_name(dtype)
@@ -551,6 +618,8 @@ def evaluate_candidate_workload_support(
                 "This implementation is admitted only for completely finite inputs.",
                 requires_complete_facts=True,
             )
+    if soft_operation_decision is not None:
+        return soft_operation_decision
     return SupportDecision(
         True,
         DecisionReason.SELECTED_IMPLEMENTATION,
@@ -813,6 +882,27 @@ def _compute_capability_tuple(value: str) -> tuple[int, int]:
     return int(major), int(minor)
 
 
+def _semantic_channel_axis(
+    shape: tuple[int, ...],
+    parameters: Mapping[str, object],
+) -> int | None:
+    """Resolve the authoritative Extract Channel semantic-axis contract."""
+
+    axis_types = parameters.get("axis_types", ())
+    axis_names = parameters.get("axis_names", ())
+    if not isinstance(axis_types, (tuple, list, str)) or not isinstance(
+        axis_names, (tuple, list, str)
+    ):
+        return None
+    for index, axis_type in enumerate(axis_types[: len(shape)]):
+        if str(axis_type).strip().casefold() == "channel":
+            return index
+    for index, axis_name in enumerate(axis_names[: len(shape)]):
+        if str(axis_name).strip().casefold() in {"c", "channel", "rgb", "rgba"}:
+            return index
+    return None
+
+
 def estimate_candidate_memory(
     spec: OperationComputeSpec,
     workload: WorkloadDescriptor,
@@ -860,6 +950,50 @@ def estimate_candidate_memory(
             primary_elements
             * measurement_layout.packed_width
             * np.dtype(np.float64).itemsize
+        )
+    if spec.memory_model_id == "cupy-allocation-sharing-view-v1":
+        if len(workload.input_shapes) != 1 or len(workload.input_dtypes) != 1:
+            raise ValueError("Extract Channel memory requires exactly one input.")
+        parameters = dict(workload.parameters)
+        channel_axis = _semantic_channel_axis(
+            workload.input_shapes[0],
+            parameters,
+        )
+        if channel_axis is None:
+            raise ValueError("Extract Channel memory requires a semantic C axis.")
+        channel_count = workload.input_shapes[0][channel_axis]
+        if channel_count <= 0:
+            raise ValueError("Extract Channel requires at least one channel.")
+        selected_elements = primary_elements // channel_count
+        selected_bytes = selected_elements * primary_itemsize
+        # CuPy 14.1.1's memory pool reserves device allocations in 512-byte
+        # units.  Retaining a view therefore keeps the rounded source block
+        # alive, not only the array's logical bytes.  Model that reservation
+        # explicitly so an odd-sized source cannot slip through a tight cap.
+        allocation_granularity_bytes = 512
+        retained_allocation_bytes = (
+            (input_bytes + allocation_granularity_bytes - 1)
+            // allocation_granularity_bytes
+            * allocation_granularity_bytes
+        )
+        selected_staging_bytes = (
+            (selected_bytes + allocation_granularity_bytes - 1)
+            // allocation_granularity_bytes
+            * allocation_granularity_bytes
+        )
+        # The selected channel is a view: it shares the complete source
+        # allocation and creates no device-sized output or workspace.  The
+        # source allocation must remain live until the view's last consumer,
+        # while a terminal download materializes only the selected channel.
+        # A selected view can be strided (for example YXC), so reserve one
+        # rounded contiguous device staging allocation for that D2H boundary.
+        device_peak_bytes = retained_allocation_bytes + selected_staging_bytes
+        return MemoryEstimate(
+            runtime_managed_peak_bytes=device_peak_bytes,
+            total_device_peak_bytes=device_peak_bytes,
+            host_materialization_peak_bytes=selected_bytes,
+            uncertainty_bytes=0,
+            model_id=spec.memory_model_id,
         )
     if spec.memory_model_id in RICHARDSON_LUCY_MEMORY_MODEL_IDS:
         return estimate_richardson_lucy_memory(
@@ -911,6 +1045,9 @@ def estimate_candidate_memory(
     elif spec.memory_model_id == "cupy-convert-dtype-memory-v1":
         # The admitted preserve conversion is one uint8/uint16-to-float32 cast.
         # Its only image-sized allocation is the already-counted output array.
+        workspace = 0
+    elif spec.memory_model_id == "cupy-binary-threshold-memory-v1":
+        # The elementwise comparison owns only the already-counted bool output.
         workspace = 0
     elif spec.memory_model_id == "cupy-sigma-filter-memory-v1":
         parameters = dict(workload.parameters)
@@ -1213,7 +1350,18 @@ def _convert_dtype_region_policy(
             "Convert Dtype scaling must be rescale, clip, or preserve.",
             fallback_allowed=False,
         )
-    input_dtype = _dtype_name(workload.input_dtypes[0])
+    try:
+        resolved_input_dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "Convert Dtype requires a concrete NumPy-compatible input dtype."
+        )
+    if not resolved_input_dtype.isnative:
+        return _workload_rejection(
+            "GPU Convert Dtype requires native-endian input; this conversion "
+            "remains on CPU so the authoritative dtype contract is preserved."
+        )
+    input_dtype = resolved_input_dtype.name
     if (
         input_dtype not in {"uint8", "uint16"}
         or output_dtype != "float32"
@@ -1223,6 +1371,123 @@ def _convert_dtype_region_policy(
             "GPU Convert Dtype is initially admitted only for lossless uint8 or "
             "uint16 to float32 conversion with Preserve scaling; this conversion "
             "remains on CPU."
+        )
+    return None
+
+
+def _binary_threshold_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    """Admit the exact scalar float32 comparison without a value scan."""
+
+    shape = workload.input_shapes[0]
+    if any(extent == 0 for extent in shape):
+        return _workload_rejection(
+            "Binary threshold requires non-empty image data.",
+            fallback_allowed=False,
+        )
+    parameters = dict(workload.parameters)
+    channel_axis = parameters.get("channel_axis")
+    if channel_axis is not None:
+        _axis, channel_error = _validated_luma_axis(
+            shape,
+            channel_axis,
+            operation="Binary threshold",
+        )
+        if channel_error is not None:
+            return _workload_rejection(channel_error, fallback_allowed=False)
+        return _workload_rejection(
+            "Binary Threshold GPU execution currently supports scalar images; "
+            "explicit RGB/RGBA luma conversion remains authoritative on CPU."
+        )
+
+    raw_threshold = parameters.get("threshold", 0.5)
+    try:
+        threshold = float(raw_threshold)
+    except (TypeError, ValueError, OverflowError):
+        return _workload_rejection(
+            "Binary Threshold threshold must be a number.",
+            fallback_allowed=False,
+        )
+    if not math.isfinite(threshold):
+        # NumPy comparison defines NaN and infinite thresholds, while the
+        # initial GPU contract deliberately admits only finite authored values.
+        return _workload_rejection(
+            "Non-finite Binary Threshold values remain on the authoritative "
+            "CPU path."
+        )
+    try:
+        input_dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "Binary Threshold requires a concrete NumPy-compatible input dtype."
+        )
+    if not input_dtype.isnative:
+        return _workload_rejection(
+            "Binary Threshold GPU execution requires native-endian float32 "
+            "input; this dtype remains on CPU."
+        )
+    if input_dtype.name != "float32":
+        return _workload_rejection(
+            "Binary Threshold GPU execution is initially admitted for float32 "
+            "scalar images; this dtype remains on CPU."
+        )
+    return None
+
+
+def _extract_channel_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    """Validate the exact semantic-axis view and selected channel."""
+
+    shape = workload.input_shapes[0]
+    parameters = dict(workload.parameters)
+    channel_axis = _semantic_channel_axis(shape, parameters)
+    if channel_axis is None:
+        return _workload_rejection(
+            "Extract Channel requires an explicitly declared semantic C axis.",
+            fallback_allowed=False,
+        )
+    raw_channel = parameters.get("channel", 0)
+    if isinstance(raw_channel, (bool, np.bool_)) or not isinstance(
+        raw_channel,
+        Integral,
+    ):
+        return _workload_rejection(
+            "Extract Channel channel index must be an integer.",
+            fallback_allowed=False,
+        )
+    channel_count = shape[channel_axis]
+    channel = int(raw_channel)
+    normalized_channel = channel + channel_count if channel < 0 else channel
+    if not 0 <= normalized_channel < channel_count:
+        return _workload_rejection(
+            f"Extract Channel index {channel!r} is out of range for "
+            f"{channel_count} channels.",
+            fallback_allowed=False,
+        )
+    try:
+        input_dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "Extract Channel requires a concrete NumPy-compatible input dtype."
+        )
+    if not input_dtype.isnative:
+        return _workload_rejection(
+            "Extract Channel GPU execution requires native-endian input so "
+            "its dtype matches the authoritative CPU result."
+        )
+    if input_dtype.name not in {
+        "bool",
+        "uint8",
+        "uint16",
+        "float32",
+    }:
+        return _workload_rejection(
+            "The GPU channel-view bridge supports bool, uint8, uint16, and "
+            "float32 inputs; this dtype remains on CPU."
         )
     return None
 
@@ -1253,6 +1518,7 @@ def _adapt_richardson_lucy_region_rejection(
     return _workload_rejection(
         rejection.reason_text,
         fallback_allowed=rejection.fallback_allowed,
+        exact_workload_test_allowed=rejection.exact_workload_test_allowed,
     )
 
 
@@ -1665,8 +1931,14 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "gaussian-2d-parameters-v1": _gaussian_2d_region_policy,
         "gaussian-3d-parameters-v1": _gaussian_3d_region_policy,
         "convert-dtype-f32-preserve-parameters-v1": _convert_dtype_region_policy,
-        "rl-parameters-v1": _richardson_lucy_region_policy,
-        "rl-tv-parameters-v1": _richardson_lucy_tv_region_policy,
+        "binary-threshold-f32-scalar-parameters-v1": (
+            _binary_threshold_region_policy
+        ),
+        "extract-channel-semantic-axis-parameters-v1": (
+            _extract_channel_region_policy
+        ),
+        "rl-parameters-v2": _richardson_lucy_region_policy,
+        "rl-tv-parameters-v2": _richardson_lucy_tv_region_policy,
         "canny-parameters-v1": _canny_region_policy,
         "otsu-parameters-v1": _otsu_region_policy,
         "connected-components-parameters-v1": (_connected_components_region_policy),
@@ -2119,12 +2391,14 @@ def _workload_rejection(
     reason_text: str,
     *,
     fallback_allowed: bool = True,
+    exact_workload_test_allowed: bool = False,
 ) -> SupportDecision:
     return SupportDecision(
         False,
         DecisionReason.WORKLOAD_UNSUPPORTED,
         reason_text,
         fallback_allowed=fallback_allowed,
+        exact_workload_test_allowed=exact_workload_test_allowed,
     )
 
 
@@ -2266,6 +2540,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "gaussian-2d-parameters-v1",
             "gaussian-3d-parameters-v1",
             "convert-dtype-f32-preserve-parameters-v1",
+            "binary-threshold-f32-scalar-parameters-v1",
+            "extract-channel-semantic-axis-parameters-v1",
             *RICHARDSON_LUCY_POLICY_IDS["parameter"],
             "canny-parameters-v1",
             "otsu-parameters-v1",
@@ -2280,6 +2556,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "sigma-u8-u16-finite-f32-v1",
             "gaussian-finite-f32-v1",
             "convert-dtype-u8-u16-to-f32-preserve-v1",
+            "binary-threshold-f32-scalar-exact-v1",
+            "extract-channel-semantic-axis-view-v1",
             *RICHARDSON_LUCY_POLICY_IDS["workload"],
             "canny-exact-bool-u8-u16-v2",
             "otsu-real-exact-v1",
@@ -2307,6 +2585,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-gaussian-2d-memory-v1",
             "cupyx-gaussian-3d-memory-v1",
             "cupy-convert-dtype-memory-v1",
+            "cupy-binary-threshold-memory-v1",
+            "cupy-allocation-sharing-view-v1",
             *RICHARDSON_LUCY_POLICY_IDS["memory"],
             "cupyx-canny-exact-memory-v1",
             "cupy-otsu-histogram-memory-v1",
@@ -2318,6 +2598,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cpu-dynamic-output-v1",
             "shape-unknown-v1",
             "shape-preserving-v1",
+            "extract-channel-semantic-axis-v1",
             "psf-spatial-kernel-v1",
             "scalar-plane-luma-mask-v1",
             "measurement-input-shape-v1",
@@ -2352,6 +2633,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "finite-no-negative-zero-v1",
             "finite-only-v1",
             "finite-output-v1",
+            "ieee-comparison-v1",
+            "preserve-values-v1",
             "sigma-finite-only-v1",
             "otsu-finite-histogram-v1",
             "integer-nonnegative-v1",
@@ -2364,6 +2647,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "sigma-half-up-u8-u16-f32-identity-v1",
             "gaussian-float32-tolerance-v1",
             "integer-to-float32-exact-v1",
+            "binary-threshold-ieee-f32-exact-v1",
+            "array-bitwise-v1",
             *RICHARDSON_LUCY_POLICY_IDS["rounding"],
             "mask-bitwise-v1",
             "labels-bitwise-int32-v1",
@@ -2391,6 +2676,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "scipy-reflect-v1",
             "sigma-nearest-circular-footprint-v1",
             "elementwise-no-boundary-v1",
+            "strict-greater-elementwise-v1",
+            "semantic-channel-view-v1",
             *RICHARDSON_LUCY_POLICY_IDS["boundary"],
             "skimage-canny-constant-zero-v1",
             "otsu-strict-greater-finite-mask-v1",
@@ -2404,6 +2691,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "sigma-ordered-f32-square-f64-accum-v1",
             "gaussian-float32-v1",
             "integer-to-float32-exact-v1",
+            "binary-threshold-ieee-f32-exact-v1",
+            "array-bitwise-v1",
             *RICHARDSON_LUCY_POLICY_IDS["precision"],
             "canny-exact-mask-v1",
             "otsu-exact-mask-v1",
@@ -2414,6 +2703,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cpu-reference-v1",
             "background-block-progress-v1",
             "monolithic-sync-progress-v1",
+            "constant-time-view-progress-v1",
             "sigma-row-tile-sync-progress-v1",
             *RICHARDSON_LUCY_POLICY_IDS["progress"],
             "scalar-plane-sync-progress-v1",
@@ -2425,6 +2715,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cpu-reference-v1",
             "background-block-cancel-v1",
             "monolithic-boundary-cancel-v1",
+            "constant-time-view-boundary-cancel-v1",
             "sigma-row-tile-boundary-cancel-v1",
             *RICHARDSON_LUCY_POLICY_IDS["cancellation"],
             "scalar-plane-boundary-cancel-v1",
@@ -2490,6 +2781,7 @@ __all__ = [
     "ArrayFactsCache",
     "ArrayFactsKey",
     "CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID",
+    "CUDA_CUPY_CORE_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_ENVIRONMENT_POLICIES",
@@ -2505,6 +2797,8 @@ __all__ = [
     "PolicyCatalog",
     "PolicyKind",
     "RICHARDSON_LUCY_MAXIMUM_ITERATIONS",
+    "RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON",
+    "RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON",
     "RICHARDSON_LUCY_FILTER_EPSILON",
     "RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR",
     "RICHARDSON_LUCY_TV_EPSILON",
@@ -2516,6 +2810,7 @@ __all__ = [
     "SupportDecision",
     "ValueDescriptor",
     "evaluate_auto_performance",
+    "evaluate_candidate_exact_workload_test_support",
     "evaluate_candidate_environment_support",
     "evaluate_candidate_support",
     "evaluate_candidate_workload_support",

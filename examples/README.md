@@ -13,6 +13,7 @@ python scripts/launch_vipp_intensity_workflow.py <name>
 Current launcher names:
 
 - `graph-authoring`
+- `gpu-segmentation`
 - `intensity`
 - `merged`
 - `morphology`
@@ -31,6 +32,7 @@ custom or external workflow JSON files.
 | `graph-authoring-acceptance.json` | `VIPP synthetic object morphology` | Numbered, on-canvas acceptance recipe for inserting a node before a shared tunnel, copying settings between matching nodes, copying and moving a connected node group, pasting at a chosen location, checking one-step undo/redo, and using **Add conversion** to make a `uint16` Gaussian input GPU eligible on a qualified GPU setup. It opens with Auto compute intent so that qualified systems can show the real tip; CPU-only systems continue normally without it. Open it as `graph-authoring`. |
 | `synthetic-batch-provenance.json` | Ready-to-run paired NumPy demo | End-to-end batch validation with three deterministic sorted-position pairs, explicit NPY/TIFF/TSV outputs, known overlap labels and measurements, portable config/runner files, and full manifest provenance. Select it through `Open example...`, click `Open batch demo...`, choose a working-copy location, use the representative slider or preview-table rows to inspect all three paired fields throughout the graph, then click `Run demo batch` and inspect retained progress and validation in the batch workspace. |
 | `otsu-red-channel-labels.json` | `VIPP synthetic multichannel volume` | Label-cleanup review path: split the red/TRITC-like channel, blur, Otsu threshold, fill holes, connected components, clear border objects, and volume filtering. |
+| `synthetic-gpu-segmentation-bridge.json` | `VIPP synthetic multichannel volume` | Portable, annotated Prefer-GPU path through Extract Channel, an exact float32 Preserve conversion, Gaussian Blur, a fixed threshold with a safe sample-specific margin, and 3D Connected Components. Its notes distinguish GPU eligibility from a guarantee, explain host-first extraction versus a resident no-copy view, and limit the one-round-trip expectation to a single retained terminal output. Open it as `gpu-segmentation`; unsupported nodes visibly fall back to CPU. |
 | `red-channel-object-intensity-measurements.json` | `VIPP synthetic multichannel volume` | Named multi-input table node review: filtered labels plus matching intensity image, carried through a `Red intensity` tunnel, into `Measure Objects + Intensity`. |
 | `red-channel-merged-measurement-table.json` | `VIPP synthetic multichannel volume` | PCA-oriented table assembly path: object morphology, object intensity via `Red intensity` tunnel, table merge, and metadata columns. |
 | `synthetic-measurement-summary.json` | `VIPP synthetic measurement summary` | Grouped measurement summaries with known timepoint object counts and areas. |
@@ -41,7 +43,7 @@ custom or external workflow JSON files.
 | `synthetic-colocalization-racc.json` | `VIPP synthetic colocalization` | Two-channel colocalization review path using named red/green channel tunnels: ROI mask, inspector scatter threshold guides, colocalized-voxel RGB views, Pearson/Manders metrics, and RACC index output. |
 | `synthetic-object-colocalization-association.json` | `VIPP synthetic colocalization` | Object-aware colocalization and association review path using named red/green channel tunnels: thresholded channel labels, object colocalization rows, label overlap, nearest-object distances, event localization, and merged morphology/colocalization tables. |
 | `synthetic-deconvolution-rl-tv.json` | `VIPP synthetic deconvolution image` plus `VIPP synthetic measured PSF` | PSF-aware restoration review path with ordinary RL and RL-TV side by side at 25 iterations. RL-TV uses the conservative production-like `0.002` regularization; compare with zero before increasing it. |
-| `synthetic-3d-deconvolution-rl-tv.json` | `VIPP synthetic 3D deconvolution volume` plus `VIPP synthetic 3D measured PSF` | Volumetric PSF-aware review path with matched ZYX PSF, 25-iteration RL/RL-TV comparison, and conservative `0.002` TV regularization. More iterations or stronger TV are not presented as universally better. |
+| `synthetic-3d-deconvolution-rl-tv.json` | `VIPP synthetic 3D deconvolution volume` plus `VIPP synthetic 3D measured PSF` | Volumetric PSF-aware review path with one shared, visible `float32` Preserve conversion feeding matched 25-iteration RL/RL-TV branches, a matched ZYX PSF, the authored `1e-12` filter epsilon, and conservative `0.002` TV regularization. The conversion does not rescale intensity. GPU agreement is a backend check, not proof that the PSF, iteration count, or restored structures are scientifically valid. |
 
 ## Validation Expectations
 

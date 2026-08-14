@@ -685,6 +685,82 @@ class WorkloadDescriptor:
         return canonical_digest(asdict(self))
 
 
+def exact_workload_identity_digest(workload: WorkloadDescriptor) -> str:
+    """Return the planner-compatible scientific identity of one node workload.
+
+    Benchmark descriptors bind their ``facts_fingerprint`` to every input byte,
+    while execution descriptors intentionally bind that field only to the facts
+    needed for support policy.  Those fingerprints cannot be compared directly.
+    This narrower digest covers the fields both paths construct identically;
+    exact source bytes and graph identity remain bound by the qualification's
+    caller-authoritative scope digest.
+    """
+
+    if not isinstance(workload, WorkloadDescriptor):
+        raise TypeError("workload must be a WorkloadDescriptor.")
+    return canonical_digest(
+        {
+            "policy": "exact-workload-planner-identity-v1",
+            "node_id": workload.node_id,
+            "operation_id": workload.operation_id,
+            "input_shapes": workload.input_shapes,
+            "input_dtypes": workload.input_dtypes,
+            "parameters": workload.parameters,
+            "resolved_spatial_ndim": workload.resolved_spatial_ndim,
+            "inputs_resolved": workload.inputs_resolved,
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ExactWorkloadCandidateQualification:
+    """Private proof that one soft-prequalified candidate passed node parity.
+
+    The record is deliberately more specific than a node/implementation pair.
+    Planning must match its exact parameters and input geometry, implementation
+    version, parity policy, compute environment, and caller-owned optimizer
+    identity scope.  The benchmark workload and record digests retain the exact
+    byte-bound evidence identity for provenance and stale-result invalidation.
+    """
+
+    node_id: str
+    operation_id: str
+    implementation_id: str
+    implementation_version: str
+    workload_identity_digest: str
+    benchmark_workload_fingerprint: str
+    compute_environment_fingerprint: str
+    benchmark_environment_fingerprint: str
+    parity_policy_id: str
+    benchmark_record_digest: str
+    qualification_scope_digest: str
+    identity_policy_id: str = "exact-workload-candidate-qualification-v1"
+
+    def __post_init__(self) -> None:
+        for name in (
+            "node_id",
+            "operation_id",
+            "implementation_id",
+            "implementation_version",
+            "workload_identity_digest",
+            "benchmark_workload_fingerprint",
+            "compute_environment_fingerprint",
+            "benchmark_environment_fingerprint",
+            "parity_policy_id",
+            "benchmark_record_digest",
+            "qualification_scope_digest",
+            "identity_policy_id",
+        ):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must not be empty.")
+            object.__setattr__(self, name, value)
+
+    @property
+    def candidate_key(self) -> tuple[str, str]:
+        return self.node_id, self.implementation_id
+
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkRecordKey:
     workload_fingerprint: str
@@ -1576,6 +1652,7 @@ __all__ = [
     "DecisionReason",
     "ExecutionPlan",
     "ExecutionFallbackRecord",
+    "ExactWorkloadCandidateQualification",
     "ExecutionReport",
     "ExecutionSegment",
     "FallbackReason",
@@ -1590,5 +1667,6 @@ __all__ = [
     "WorkloadDescriptor",
     "canonical_digest",
     "detect_compute_capabilities",
+    "exact_workload_identity_digest",
     "select_compute_backend",
 ]

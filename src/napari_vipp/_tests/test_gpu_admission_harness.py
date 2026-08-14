@@ -67,13 +67,52 @@ def test_checked_in_manifest_maps_every_public_declaration_and_facet(harness):
     )
     owners = harness._facet_owner_map(manifest.runners)
 
-    assert len(declarations) == 14
+    assert len(declarations) == 16
     assert {item.key for item in manifest.implementations} == {
         item.key for item in declarations
     }
     for declaration in declarations:
         assert set(owners[declaration.key]) == set(harness.REQUIRED_FACETS)
         assert all(owners[declaration.key].values())
+
+
+def test_custom_public_bridge_regions_are_evidence_mapped_in_both_profiles(harness):
+    declarations = harness.public_accelerator_declarations()
+    manifest = harness.load_suite_manifest(
+        MANIFEST_PATH,
+        declarations=declarations,
+        project_root=PROJECT_ROOT,
+    )
+    bridge = {
+        "binary_threshold::cupy-binary-threshold-f32-exact-v1",
+        "extract_channel::cupy-extract-channel-view-v1",
+    }
+    assert bridge <= {item.key for item in declarations}
+    runners = {
+        runner.runner_id: runner
+        for runner in manifest.runners
+        if bridge <= set(runner.implementations)
+    }
+    assert {
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts",
+    } <= set(runners)
+    evidence = runners["segmentation-bridge-evidence"]
+    contracts = runners["segmentation-bridge-provider-contracts"]
+    assert set(evidence.facets) == set(harness.REQUIRED_FACETS)
+    for profile in harness.PROFILES:
+        assert (
+            "scripts/benchmark_gpu_segmentation_bridge.py"
+            in evidence.profile_commands[profile]
+        )
+        assert (
+            "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py"
+            in contracts.profile_commands[profile]
+        )
+        assert (
+            "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py"
+            in contracts.profile_commands[profile]
+        )
 
 
 def test_convert_dtype_runs_focused_evidence_and_contract_owners_in_both_profiles(

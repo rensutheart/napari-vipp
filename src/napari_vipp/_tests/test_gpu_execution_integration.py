@@ -1486,6 +1486,97 @@ def test_cpu_extract_channel_projects_shape_through_requested_mixed_chain(
     registry.close()
 
 
+def test_prefer_gpu_non_native_extract_is_selected_for_cpu_before_execution(
+    validated_windows_compute_host,
+):
+    del validated_windows_compute_host
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    extract = pipeline.add_node("extract_channel")
+    pipeline.set_param(extract.id, "channel", 1)
+    assert pipeline.connect("input", extract.id).success
+
+    data = np.arange(3 * 5 * 7, dtype=np.uint16).reshape(3, 5, 7).astype(
+        np.dtype(np.uint16).newbyteorder("S")
+    )
+    request = replace(
+        _accelerated_request(
+            pipeline,
+            data,
+            ComputeRequest(mode=ComputeMode.PREFER_GPU),
+        ),
+        input_metadata={"axes": "CYX"},
+    )
+
+    result = execute_pipeline_request(request)
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert result.execution_report is not None
+    output = np.asarray(result.pipeline.outputs[extract.id])
+    np.testing.assert_array_equal(output, data[1], strict=True)
+    assert not output.dtype.isnative
+    decision = next(
+        item
+        for item in result.execution_report.actual_decisions
+        if item.node_id == extract.id
+    )
+    assert decision.implementation_id == "cpu-extract_channel-v1"
+    assert decision.reason is DecisionReason.WORKLOAD_UNSUPPORTED
+    assert not decision.fallback_used
+    assert "native-endian" in decision.reason_text
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "source_dtype", "parameters"),
+    (
+        (
+            "binary_threshold",
+            np.dtype(np.float32).newbyteorder("S"),
+            {"threshold": 0.5},
+        ),
+        (
+            "convert_dtype",
+            np.dtype(np.uint16).newbyteorder("S"),
+            {"output_dtype": "float32", "scaling": "preserve"},
+        ),
+    ),
+)
+def test_prefer_gpu_non_native_inputs_select_cpu_before_device_upload(
+    validated_windows_compute_host,
+    operation_id,
+    source_dtype,
+    parameters,
+):
+    del validated_windows_compute_host
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node(operation_id)
+    for name, value in parameters.items():
+        pipeline.set_param(node.id, name, value)
+    assert pipeline.connect("input", node.id).success
+    data = np.arange(5 * 7).reshape(5, 7).astype(source_dtype)
+    request = _accelerated_request(
+        pipeline,
+        data,
+        ComputeRequest(mode=ComputeMode.PREFER_GPU),
+    )
+
+    result = execute_pipeline_request(request)
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert result.execution_report is not None
+    decision = next(
+        item
+        for item in result.execution_report.actual_decisions
+        if item.node_id == node.id
+    )
+    assert decision.runtime_id == "cpu-numpy"
+    assert decision.reason is DecisionReason.WORKLOAD_UNSUPPORTED
+    assert "native-endian" in decision.reason_text
+
+
 @pytest.mark.parametrize(
     ("downstream_operation", "parameter_name", "parameter_value"),
     (
@@ -2152,6 +2243,183 @@ def test_real_convert_dtype_gaussian_corridor_uses_one_device_round_trip(
             input_dtypes=(np.dtype(np.float32),),
         )
         assert parity.passed, parity.detail
+        _assert_private_cuda_scope_clean(
+            runtime,
+            runtime_probe.selected_device_id,
+        )
+    finally:
+        registry.close()
+
+
+@pytest.mark.parametrize("include_gaussian", (False, True))
+def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
+    monkeypatch,
+    include_gaussian,
+):
+    """Prove the new channel view and threshold bridge preserve one residency."""
+
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+    registry = ComputeRegistry()
+    try:
+        runtime_probe = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not runtime_probe.available or not runtime_probe.selected_device_id:
+            pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
+        for library_id in ("cupy", "cupyx"):
+            library_probe = registry.probe_library(library_id, refresh=True)
+            if not library_probe.available:
+                pytest.skip(
+                    library_probe.message or f"{library_id} is unavailable."
+                )
+
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        extract = pipeline.add_node("extract_channel")
+        conversion = pipeline.add_node("convert_dtype")
+        gaussian = pipeline.add_node("gaussian_blur") if include_gaussian else None
+        threshold = pipeline.add_node("binary_threshold")
+        components = pipeline.add_node("label_connected_components")
+        pipeline.set_param(extract.id, "channel", 1)
+        pipeline.set_param(conversion.id, "output_dtype", "float32")
+        pipeline.set_param(conversion.id, "scaling", "preserve")
+        if gaussian is not None:
+            pipeline.set_param(gaussian.id, "sigma", 1.25)
+        pipeline.set_param(
+            threshold.id,
+            "threshold",
+            777.125 if include_gaussian else 1000.0,
+        )
+        pipeline.set_param(components.id, "spatial_mode", "2D YX")
+        pipeline.set_param(components.id, "connectivity", "Full connectivity")
+        assert pipeline.connect("input", extract.id).success
+        assert pipeline.connect(extract.id, conversion.id).success
+        previous = conversion.id
+        if gaussian is not None:
+            assert pipeline.connect(previous, gaussian.id).success
+            previous = gaussian.id
+        assert pipeline.connect(previous, threshold.id).success
+        assert pipeline.connect(threshold.id, components.id).success
+
+        data = np.zeros((3, 64, 80), dtype=np.uint16)
+        data[1, 8:24, 10:28] = 4000
+        data[1, 36:57, 45:71] = 3000
+        before = data.copy()
+        pipeline.run(data, input_metadata={"axes": "CYX"})
+        expected = pipeline.outputs[components.id].copy()
+        if gaussian is not None:
+            gaussian_output = np.asarray(pipeline.outputs[gaussian.id])
+            margin = float(
+                np.min(
+                    np.abs(
+                        gaussian_output
+                        - float(pipeline.nodes[threshold.id].params["threshold"])
+                    )
+                )
+            )
+            assert margin > 1.0
+
+        runtime = registry.runtime("cuda-cupy")
+        transfers = {"host_to_device": 0, "device_to_host": 0}
+        original_to_device = runtime.to_device
+        original_to_host = runtime.to_host
+
+        def counted_to_device(value, *, device_id=""):
+            transfers["host_to_device"] += 1
+            return original_to_device(value, device_id=device_id)
+
+        def counted_to_host(value):
+            transfers["device_to_host"] += 1
+            return original_to_host(value)
+
+        monkeypatch.setattr(runtime, "to_device", counted_to_device)
+        monkeypatch.setattr(runtime, "to_host", counted_to_host)
+        preferences = {
+            extract.id: "implementation:cupy-extract-channel-view-v1",
+            conversion.id: (
+                "implementation:cupyx-convert-dtype-preserve-f32-v1"
+            ),
+            threshold.id: "implementation:cupy-binary-threshold-f32-exact-v1",
+            components.id: "implementation:cupyx-connected-components-v1",
+        }
+        if gaussian is not None:
+            preferences[gaussian.id] = "implementation:cupyx-gaussian-blur-v1"
+        compute_request = ComputeRequest(
+            mode=ComputeMode.CUSTOM,
+            node_preferences=preferences,
+            runtime_id="cuda-cupy",
+            device_id=runtime_probe.selected_device_id,
+            fallback_policy=FallbackPolicy.STRICT,
+        )
+        request = replace(
+            _accelerated_request(
+                pipeline,
+                data,
+                compute_request,
+                retain_node_ids=frozenset({components.id}),
+                prune_unretained=True,
+            ),
+            input_metadata={"axes": "CYX"},
+        )
+
+        result = execute_pipeline_request(request, compute_registry=registry)
+
+        assert result.error == ""
+        assert result.pipeline is not None
+        assert result.execution_report is not None
+        assert result.execution_report.cleanup_succeeded
+        expected_node_ids = [extract.id, conversion.id]
+        if gaussian is not None:
+            expected_node_ids.append(gaussian.id)
+        expected_node_ids.extend((threshold.id, components.id))
+        assert [
+            (segment.runtime_id, segment.node_ids)
+            for segment in result.execution_report.plan.segments
+        ] == [("cuda-cupy", tuple(expected_node_ids))]
+        decisions = {
+            decision.node_id: decision
+            for decision in result.execution_report.actual_decisions
+            if decision.node_id in expected_node_ids
+        }
+        assert {
+            node_id: decision.implementation_id
+            for node_id, decision in decisions.items()
+        } == {
+            extract.id: "cupy-extract-channel-view-v1",
+            conversion.id: "cupyx-convert-dtype-preserve-f32-v1",
+            **(
+                {gaussian.id: "cupyx-gaussian-blur-v1"}
+                if gaussian is not None
+                else {}
+            ),
+            threshold.id: "cupy-binary-threshold-f32-exact-v1",
+            components.id: "cupyx-connected-components-v1",
+        }
+        assert all(
+            decision.runtime_id == "cuda-cupy"
+            and decision.decision_kind is DecisionKind.SELECTED
+            and not decision.fallback_used
+            for decision in decisions.values()
+        )
+        assert transfers == {"host_to_device": 1, "device_to_host": 1}
+        np.testing.assert_array_equal(
+            result.pipeline.outputs[components.id],
+            expected,
+            strict=True,
+        )
+        np.testing.assert_array_equal(data, before, strict=True)
+        state = result.pipeline.output_states[components.id]
+        assert state.shape == data.shape[1:]
+        assert state.dtype == "int32"
+        assert tuple(axis.name for axis in state.axes) == ("y", "x")
+        assert state.channels == ()
+        assert state.history[-1].startswith("Label Connected Components")
+        # Pruned intermediates remain represented by exact execution-report
+        # decisions without forcing extra D2H transfers. The retained terminal
+        # additionally carries its committed node provenance.
+        provenance = result.pipeline.node_compute_provenance[components.id]
+        assert provenance.actual_implementation.implementation_id == (
+            decisions[components.id].implementation_id
+        )
         _assert_private_cuda_scope_clean(
             runtime,
             runtime_probe.selected_device_id,

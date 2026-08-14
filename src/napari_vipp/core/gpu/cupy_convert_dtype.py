@@ -40,6 +40,11 @@ def convert_dtype(
     resident execution where no operation-level reporter is attached.
     """
 
+    source_dtype = getattr(data, "dtype", None)
+    if source_dtype is not None and not np.dtype(source_dtype).isnative:
+        raise ValueError(
+            "Convert Dtype GPU provider requires native-endian input data."
+        )
     cupy = _cupy_module()
     array = cupy.asarray(data)
     output_dtype = str(output_dtype).lower()

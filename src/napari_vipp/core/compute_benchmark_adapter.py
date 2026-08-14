@@ -22,7 +22,7 @@ from hashlib import sha256
 import numpy as np
 
 from napari_vipp.core.accelerator_lease import accelerator_lease
-from napari_vipp.core.compute import WorkloadDescriptor
+from napari_vipp.core.compute import WorkloadDescriptor, canonical_digest
 from napari_vipp.core.compute_benchmark import (
     ADAPTIVE_WARM_ROUNDS,
     DEFAULT_BOOTSTRAP_SAMPLES,
@@ -56,6 +56,9 @@ from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.progress import ProgressContext, ProgressUpdate
 from napari_vipp.core.richardson_lucy_parity import (
     RICHARDSON_LUCY_FLOAT32_ABSOLUTE_FLOOR,
+    RICHARDSON_LUCY_FLOAT32_MAX_ABS_BASE,
+    RICHARDSON_LUCY_FLOAT32_MAX_ABS_PEAK_FACTOR,
+    RICHARDSON_LUCY_FLOAT32_NEAR_IDENTITY_NRMSE_LIMIT,
     RICHARDSON_LUCY_FLOAT32_NRMSE_LIMIT,
     RICHARDSON_LUCY_PARITY_OPERATION_IDS,
     RICHARDSON_LUCY_TV_FLOAT32_MAX_ABS_BASE,
@@ -74,13 +77,17 @@ CUSTOM_BENCHMARK_POLICY_ID = "custom-node-paired-adaptive-bootstrap-v3"
 EXACT_PARITY_OPERATION_IDS = frozenset(
     {
         "canny_edges",
+        "binary_threshold",
         "convert_dtype",
+        "extract_channel",
         "median_filter",
         "otsu_threshold",
         "label_connected_components",
     }
 )
-EXACT_MASK_PARITY_OPERATION_IDS = frozenset({"canny_edges", "otsu_threshold"})
+EXACT_MASK_PARITY_OPERATION_IDS = frozenset(
+    {"binary_threshold", "canny_edges", "otsu_threshold"}
+)
 EXACT_LABEL_PARITY_OPERATION_IDS = frozenset({"label_connected_components"})
 BACKGROUND_PARITY_OPERATION_IDS = frozenset(
     {"rolling_ball_background", "subtract_background"}
@@ -298,6 +305,10 @@ def build_registered_node_benchmark(
             paired_bootstrap_samples=paired_bootstrap_samples,
             paired_bootstrap_seed=paired_bootstrap_seed,
             paired_confidence_level=paired_confidence_level,
+        ),
+        scientific_contract_digest=_benchmark_scientific_contract_digest(
+            call.operation_id,
+            specs,
         ),
         warm_rounds=warm_rounds,
         time_budget_seconds=time_budget_seconds,
@@ -539,6 +550,53 @@ def _benchmark_policy_id(
     return CUSTOM_BENCHMARK_POLICY_ID
 
 
+def _benchmark_scientific_contract_digest(
+    operation_id: str,
+    specs: Sequence[OperationComputeSpec],
+) -> str:
+    """Bind reusable evidence to every declared scientific policy surface."""
+
+    return canonical_digest(
+        {
+            "identity_policy_id": "production-node-scientific-contract-v1",
+            "operation_id": operation_id,
+            "reference": {
+                "implementation_id": f"cpu-{operation_id}-v1",
+                "implementation_version": "1",
+            },
+            "ordered_candidates": tuple(
+                {
+                    "operation_id": spec.operation_id,
+                    "implementation_id": spec.implementation_id,
+                    "implementation_version": spec.implementation_version,
+                    "runtime_id": spec.runtime_id,
+                    "array_domain": spec.array_domain,
+                    "implementation_library_id": (
+                        spec.implementation_library_id
+                    ),
+                    "validated_environment_policy_id": (
+                        spec.validated_environment_policy_id
+                    ),
+                    "input_ports": spec.input_ports,
+                    "output_ports": spec.output_ports,
+                    "parameter_policy_id": spec.parameter_policy_id,
+                    "workload_policy_id": spec.workload_policy_id,
+                    "parity_policy_id": spec.parity_policy_id,
+                    "shape_policy_id": spec.shape_policy_id,
+                    "boundary_policy_id": spec.boundary_policy_id,
+                    "precision_policy_id": spec.precision_policy_id,
+                    "side_effect_policy_id": spec.side_effect_policy_id,
+                    "dynamic_output_policy_id": spec.dynamic_output_policy_id,
+                    "supported_spatial_ndims": spec.supported_spatial_ndims,
+                    "limitations": spec.limitations,
+                    "host_finalizer_ref": spec.host_finalizer_ref,
+                }
+                for spec in specs
+            ),
+        }
+    )
+
+
 def _validate_admitted_spec(
     call: PreparedNodeCall,
     spec: OperationComputeSpec,
@@ -593,15 +651,19 @@ def _validate_admitted_spec(
             else (
                 "mask-bitwise-v1"
                 if call.operation_id in EXACT_MASK_PARITY_OPERATION_IDS
-                else "median-production-bitwise-v1"
+                else (
+                    "median-production-bitwise-v1"
+                    if call.operation_id == "median_filter"
+                    else "array-bitwise-v1"
+                )
             )
         )
     elif call.operation_id in BACKGROUND_PARITY_OPERATION_IDS:
         expected_parity = "background-dtype-parity-v2"
     elif call.operation_id in RICHARDSON_LUCY_PARITY_OPERATION_IDS:
-        expected_parity = "rl-float32-tolerance-v1"
+        expected_parity = "rl-scientific-equivalence-v2"
     elif call.operation_id in RICHARDSON_LUCY_TV_PARITY_OPERATION_IDS:
-        expected_parity = "rl-tv-float32-tolerance-v1"
+        expected_parity = "rl-tv-scientific-equivalence-v2"
     elif call.operation_id in SIGMA_FILTER_PARITY_OPERATION_IDS:
         expected_parity = "sigma-dtype-parity-v1"
     elif call.operation_id in MEASUREMENT_TABLE_PARITY_OPERATION_IDS:
@@ -1665,6 +1727,9 @@ __all__ = [
     "ProductionInvocationObservation",
     "RegisteredNodeBenchmark",
     "RICHARDSON_LUCY_FLOAT32_ABSOLUTE_FLOOR",
+    "RICHARDSON_LUCY_FLOAT32_MAX_ABS_BASE",
+    "RICHARDSON_LUCY_FLOAT32_MAX_ABS_PEAK_FACTOR",
+    "RICHARDSON_LUCY_FLOAT32_NEAR_IDENTITY_NRMSE_LIMIT",
     "RICHARDSON_LUCY_FLOAT32_NRMSE_LIMIT",
     "RICHARDSON_LUCY_PARITY_OPERATION_IDS",
     "RICHARDSON_LUCY_TV_FLOAT32_MAX_ABS_BASE",

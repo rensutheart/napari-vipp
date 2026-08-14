@@ -139,6 +139,30 @@ def _generic_stack_batch(
     return workflow, config
 
 
+def test_batch_config_roundtrip_preserves_segmentation_bridge_compute_intent(
+    tmp_path,
+):
+    workflow, config, _output_id = _image_batch(tmp_path)
+    request = ComputeRequest(
+        mode=ComputeMode.CUSTOM,
+        node_preferences={
+            "extract": "implementation:cupy-extract-channel-view-v1",
+            "threshold": (
+                "implementation:cupy-binary-threshold-f32-exact-v1"
+            ),
+        },
+        fallback_policy="visible",
+    )
+    configured = replace(config, compute_request=request)
+    config_path = tmp_path / BATCH_CONFIG_FILENAME
+
+    save_batch_config(config_path, configured)
+    loaded = load_batch_config(config_path)
+
+    assert loaded.compute_request == request
+    assert loaded.workflow_sha256 == scientific_workflow_hash(workflow)
+
+
 def test_batch_config_v3_roundtrip_and_v1_v2_migration_preserve_replay(tmp_path):
     workflow, config, _output_id = _image_batch(tmp_path)
     auto = ComputeRequest(

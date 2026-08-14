@@ -11,7 +11,7 @@ import sys
 import textwrap
 import threading
 import weakref
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -133,6 +133,7 @@ from napari_vipp.core.compute import (
     ComputeRequest,
     DecisionKind,
     DecisionReason,
+    ExactWorkloadCandidateQualification,
     ExecutionReport,
     FallbackPolicy,
     NodeComputePreference,
@@ -1189,6 +1190,10 @@ class VippWidget(QWidget):
         "_accepted_compute_decisions",
         "_compute_decision_environments",
         "_compute_repair_suggestions",
+        "_exact_workload_qualifications",
+        "_exact_workload_qualification_scope_digest",
+        "_exact_workload_qualification_source_signature",
+        "_exact_workload_qualification_workflow_fingerprint",
         "_stale_compute_badge_node_ids",
         "_last_execution_report",
         "_vipp_current_step",
@@ -1416,6 +1421,12 @@ class VippWidget(QWidget):
         self._accepted_compute_decisions: dict[str, NodeExecutionDecision] = {}
         self._compute_decision_environments: dict[str, ComputeEnvironment] = {}
         self._compute_repair_suggestions: dict[str, ComputeRepairSuggestion] = {}
+        self._exact_workload_qualifications: frozenset[
+            ExactWorkloadCandidateQualification
+        ] = frozenset()
+        self._exact_workload_qualification_scope_digest = ""
+        self._exact_workload_qualification_source_signature: tuple | None = None
+        self._exact_workload_qualification_workflow_fingerprint = ""
         self._stale_compute_badge_node_ids: set[str] = set()
         self._last_execution_report: ExecutionReport | None = None
         self._compute_setup_dialog: ComputeSetupDialog | None = None
@@ -3826,13 +3837,26 @@ class VippWidget(QWidget):
             self.add_compute_conversion_button.setEnabled(False)
             self.add_compute_conversion_button.setToolTip("")
             return
-        self.compute_repair_label.setText(suggestion.message)
+        shared = self._shared_compute_repairs(suggestion)
+        if len(shared) > 1:
+            titles = tuple(
+                self.pipeline.nodes[item.node_id].title for item in shared
+            )
+            self.compute_repair_label.setText(
+                f"{', '.join(titles[:-1])} and {titles[-1]} use the same "
+                f"{suggestion.current_dtype} input. One visible Convert Dtype "
+                f"node can feed both branches using {suggestion.target_dtype} "
+                "and Preserve. Pixel values and all existing node settings "
+                "will stay unchanged."
+            )
+        else:
+            self.compute_repair_label.setText(suggestion.message)
         blocked = self._compute_policy_edit_block_reason()
         self.add_compute_conversion_button.setEnabled(not blocked)
         self.add_compute_conversion_button.setToolTip(
             blocked
             or (
-                "Insert a visible Convert Dtype node on this input using "
+                "Insert one visible Convert Dtype node on the shared input using "
                 f"{suggestion.target_dtype} and Preserve. The whole graph edit "
                 "can be undone in one step."
             )
@@ -3840,9 +3864,106 @@ class VippWidget(QWidget):
 
     def _selected_compute_repair(self) -> ComputeRepairSuggestion | None:
         suggestion = self._compute_repair_suggestions.get(self._selected_node_id)
+        if suggestion is None:
+            self._refresh_proactive_compute_repairs((self._selected_node_id,))
+            suggestion = self._compute_repair_suggestions.get(self._selected_node_id)
         if suggestion is None or not self._compute_repair_is_current(suggestion):
             return None
         return suggestion
+
+    def _refresh_proactive_compute_repairs(
+        self,
+        node_ids: Iterable[str] = (),
+    ) -> tuple[ComputeRepairSuggestion, ...]:
+        """Expose exact dtype repairs from resolved inputs, including manual nodes."""
+
+        if self._compute_mode is ComputeMode.CPU:
+            return ()
+        requested = tuple(
+            node_id
+            for node_id in node_ids
+            if node_id and node_id in self.pipeline.nodes
+        )
+        try:
+            from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
+                discover_pipeline_compute_repairs,
+            )
+            from napari_vipp.core.compute_registry import ComputeRegistry
+
+            registry = ComputeRegistry()
+            try:
+                discovered = discover_pipeline_compute_repairs(
+                    registry,
+                    self.pipeline,
+                    self._current_compute_request(),
+                    requested,
+                )
+            finally:
+                registry.close()
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return ()
+        accepted: list[ComputeRepairSuggestion] = []
+        for suggestion in discovered:
+            existing = self._compute_repair_suggestions.get(suggestion.node_id)
+            if existing is not None and self._compute_repair_is_current(existing):
+                accepted.append(existing)
+                continue
+            self._compute_repair_suggestions[suggestion.node_id] = suggestion
+            accepted.append(suggestion)
+        return tuple(accepted)
+
+    def _shared_compute_repairs(
+        self,
+        suggestion: ComputeRepairSuggestion,
+    ) -> tuple[ComputeRepairSuggestion, ...]:
+        """Return current repairs that one exact upstream conversion can serve."""
+
+        self._refresh_proactive_compute_repairs()
+
+        def connection_for(item: ComputeRepairSuggestion):
+            return next(
+                (
+                    connection
+                    for connection in self.pipeline.connections
+                    if connection.target_id == item.node_id
+                    and connection.target_port == item.input_port_index
+                ),
+                None,
+            )
+
+        selected_connection = connection_for(suggestion)
+        if selected_connection is None:
+            return (suggestion,)
+        selected_key = (
+            selected_connection.source_id,
+            selected_connection.source_port,
+            selected_connection.tunnel_name,
+            suggestion.current_dtype,
+            suggestion.target_dtype,
+            suggestion.scaling.casefold(),
+        )
+        order = {
+            node_id: index
+            for index, node_id in enumerate(self.pipeline.topological_order())
+        }
+        shared: list[ComputeRepairSuggestion] = []
+        for candidate in self._compute_repair_suggestions.values():
+            if not self._compute_repair_is_current(candidate):
+                continue
+            connection = connection_for(candidate)
+            if connection is None:
+                continue
+            key = (
+                connection.source_id,
+                connection.source_port,
+                connection.tunnel_name,
+                candidate.current_dtype,
+                candidate.target_dtype,
+                candidate.scaling.casefold(),
+            )
+            if key == selected_key:
+                shared.append(candidate)
+        return tuple(sorted(shared, key=lambda item: order[item.node_id]))
 
     def _compute_repair_is_current(
         self,
@@ -3968,47 +4089,220 @@ class VippWidget(QWidget):
             )
             return
 
+        shared = tuple(
+            item
+            for item in self._shared_compute_repairs(suggestion)
+            if self._compute_repair_is_current(item)
+        )
+        shared_connections = tuple(
+            next(
+                (
+                    item
+                    for item in self.pipeline.connections
+                    if item.target_id == repair.node_id
+                    and item.target_port == repair.input_port_index
+                ),
+                None,
+            )
+            for repair in shared
+        )
+        if not shared or any(item is None for item in shared_connections):
+            self._set_status(
+                "The shared input changed after this suggestion was prepared. "
+                "Review the graph and try again.",
+                severity=MessageSeverity.INFO,
+            )
+            self._sync_selected_compute_repair()
+            return
         source_rect = self.graph_view.node_scene_rect(connection.source_id)
-        target_rect = self.graph_view.node_scene_rect(connection.target_id)
-        tunnel_local = bool(connection.tunnel_name)
-        if tunnel_local and target_rect is not None:
+        target_rects = tuple(
+            rect
+            for repair in shared
+            if (rect := self.graph_view.node_scene_rect(repair.node_id)) is not None
+        )
+        tunnel_local = bool(connection.tunnel_name) and len(shared) == 1
+        if tunnel_local and target_rects:
+            target_rect = target_rects[0]
             position = QPointF(
                 target_rect.left() - target_rect.width(),
                 target_rect.center().y(),
             )
-        elif source_rect is None or target_rect is None:
+        elif source_rect is None or not target_rects:
             position = self.graph_view.viewport_center_scene_position()
         else:
-            position = QPointF(
-                (source_rect.center().x() + target_rect.center().x()) / 2.0,
-                (source_rect.center().y() + target_rect.center().y()) / 2.0,
+            target_x = min(rect.center().x() for rect in target_rects)
+            target_y = sum(rect.center().y() for rect in target_rects) / len(
+                target_rects
             )
-        inserted = self._insert_node_on_connection(
-            "convert_dtype",
-            (
-                connection.source_id,
-                connection.target_id,
-                connection.target_port,
-                connection.source_port,
-            ),
-            position,
-            params_override=dict(suggestion.conversion_parameters),
-            preserve_input_tunnel=True,
-            open_visible_wire_gap=not tunnel_local,
-        )
+            position = QPointF(
+                (source_rect.center().x() + target_x) / 2.0,
+                (source_rect.center().y() + target_y) / 2.0,
+            )
+        if len(shared) > 1:
+            inserted = self._insert_shared_compute_conversion(
+                shared,
+                position,
+            )
+        else:
+            inserted = self._insert_node_on_connection(
+                "convert_dtype",
+                (
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    connection.source_port,
+                ),
+                position,
+                params_override=dict(suggestion.conversion_parameters),
+                preserve_input_tunnel=True,
+                open_visible_wire_gap=not tunnel_local,
+            )
         if inserted is None:
             return
-        self._compute_repair_suggestions.pop(suggestion.node_id, None)
+        for repair in shared:
+            self._compute_repair_suggestions.pop(repair.node_id, None)
         self._sync_all_compute_repair_hints()
         self._sync_selected_compute_repair()
+        branch_note = (
+            f" and connected it to {len(shared)} compatible branches"
+            if len(shared) > 1
+            else f" before '{node.title}'"
+        )
         self._set_status(
             f"Added visible Convert Dtype ({suggestion.current_dtype} → "
-            f"{suggestion.target_dtype}, Preserve) before '{node.title}'. "
-            "Pixel values are preserved exactly. The node is now eligible for "
-            "GPU consideration; actual GPU use still depends on compute policy, "
-            "workload, memory, and the installed runtime. Undo is available.",
+            f"{suggestion.target_dtype}, Preserve){branch_note}. Pixel values "
+            "and existing node settings were preserved. The repaired branches "
+            "are ready for Find fastest to check again; actual GPU use still "
+            "depends on policy, memory, parity, and the installed runtime. "
+            "Undo is available as one step.",
             severity=MessageSeverity.SUCCESS,
         )
+
+    def _insert_shared_compute_conversion(
+        self,
+        suggestions: tuple[ComputeRepairSuggestion, ...],
+        position: QPointF,
+    ) -> object | None:
+        """Insert one exact conversion before compatible sibling branches."""
+
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        try:
+            connections = tuple(
+                next(
+                    (
+                        item
+                        for item in self.pipeline.connections
+                        if item.target_id == suggestion.node_id
+                        and item.target_port == suggestion.input_port_index
+                    ),
+                    None,
+                )
+                for suggestion in suggestions
+            )
+            if not connections or any(item is None for item in connections):
+                raise RuntimeError(
+                    "A repaired branch connection is no longer available."
+                )
+            originals = tuple(item for item in connections if item is not None)
+            source_keys = {
+                (item.source_id, item.source_port, item.tunnel_name)
+                for item in originals
+            }
+            if len(source_keys) != 1:
+                raise RuntimeError("The repaired branches no longer share one input.")
+            source_id, source_port, tunnel_name = next(iter(source_keys))
+            for item in originals:
+                mode, reason = self._connection_insert_mode(
+                    "convert_dtype",
+                    (
+                        item.source_id,
+                        item.target_id,
+                        item.target_port,
+                        item.source_port,
+                    ),
+                )
+                if mode != "full":
+                    raise RuntimeError(reason)
+
+            downstream = set().union(
+                *(
+                    self.pipeline.descendants_inclusive([item.target_id])
+                    for item in originals
+                )
+            )
+            node = self.pipeline.add_node("convert_dtype")
+            for name, value in suggestions[0].conversion_parameters.items():
+                self.pipeline.set_param(node.id, name, value)
+            self.graph_view.add_node(node, position)
+            self._sync_node_input_ports(node.id)
+            self._sync_node_output_ports(node.id)
+            self.graph_view.center_node_on(node.id, position)
+
+            for item in originals:
+                if not self.pipeline.disconnect(
+                    item.source_id,
+                    item.target_id,
+                    item.target_port,
+                ):
+                    raise RuntimeError("A repaired branch connection changed.")
+                self.graph_view.remove_connection(
+                    item.source_id,
+                    item.target_id,
+                    target_port=item.target_port,
+                    notify=False,
+                )
+
+            input_result = self.pipeline.connect(
+                source_id,
+                node.id,
+                target_port=0,
+                source_port=source_port,
+                tunnel_name=tunnel_name,
+            )
+            if not input_result.success:
+                raise RuntimeError(input_result.message)
+            self._apply_connection_result_to_graph(input_result)
+            self._sync_node_output_ports(node.id)
+
+            for item in originals:
+                output_result = self.pipeline.connect(
+                    node.id,
+                    item.target_id,
+                    target_port=item.target_port,
+                    source_port=0,
+                )
+                if not output_result.success:
+                    raise RuntimeError(output_result.message)
+                self._apply_connection_result_to_graph(output_result)
+
+            representative = originals[0].target_id
+            self._make_room_for_inserted_node(
+                source_id,
+                representative,
+                node.id,
+                downstream,
+            )
+            self.graph_view.select_node(node.id)
+            self._sync_pin_ui()
+            self._mark_pipeline_branches_dirty({node.id})
+            self.run_pipeline()
+            self._make_room_for_inserted_node(
+                source_id,
+                representative,
+                node.id,
+                downstream,
+            )
+            self._push_undo_if_changed(before)
+        except Exception as exc:
+            self._restore_history_snapshot(before)
+            self._set_status(
+                f"Shared conversion failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return None
+        return node
 
     def _can_benchmark_selected_node(self) -> tuple[bool, str]:
         if self._compute_runtime_quarantined_reason:
@@ -4396,6 +4690,9 @@ class VippWidget(QWidget):
             self._set_status(reason, severity=MessageSeverity.WARNING)
             return
         self._discard_pending_thumbnail_contrast_limit_requests()
+        self._refresh_proactive_compute_repairs()
+        self._sync_all_compute_repair_hints()
+        self._sync_selected_compute_repair()
         existing = self._pipeline_optimizer_dialog
         if existing is not None:
             existing.show()
@@ -4407,6 +4704,10 @@ class VippWidget(QWidget):
             locked_node_count=len(
                 self._compute_optimizer_locked_node_ids & set(self.pipeline.nodes)
             ),
+            node_titles={
+                node_id: self._node_title(node_id)
+                for node_id in self.pipeline.topological_order()
+            },
         )
         dialog.analyze_requested.connect(
             self._start_pipeline_optimizer_analysis
@@ -4431,6 +4732,9 @@ class VippWidget(QWidget):
             self._set_status(reason, severity=MessageSeverity.WARNING)
             return
         self._discard_pending_thumbnail_contrast_limit_requests()
+        self._refresh_proactive_compute_repairs()
+        self._sync_all_compute_repair_hints()
+        self._sync_selected_compute_repair()
         try:
             source_payloads, _source_layers = self._source_payloads_for_pipeline()
             if not source_payloads:
@@ -4680,12 +4984,20 @@ class VippWidget(QWidget):
             )
             return
         if outcome.result is not None:
+            for suggestion in tuple(
+                getattr(outcome.result, "repair_suggestions", ())
+            ):
+                if self._compute_repair_is_current(suggestion):
+                    self._compute_repair_suggestions[suggestion.node_id] = suggestion
+            self._sync_all_compute_repair_hints()
+            self._sync_selected_compute_repair()
             proposal = getattr(outcome.result, "proposal", outcome.result)
             changed = sum(
                 1
                 for row in proposal.rows
                 if row.current_preference != row.proposed_preference
             )
+            severity = MessageSeverity.SUCCESS
             if proposal.pipeline_validation_performed:
                 winner = getattr(proposal.validation_winner, "value", "")
                 if winner == "current":
@@ -4694,6 +5006,14 @@ class VippWidget(QWidget):
                         "the current assignment won paired validation. Review "
                         f"the measured preferences ({changed} change(s))."
                     )
+                elif winner == "inconclusive":
+                    message = (
+                        "Find fastest completed the CPU/GPU comparison, but "
+                        "neither pipeline was clearly faster. Your current "
+                        "settings were kept; the complete measurements remain "
+                        "available in the results table."
+                    )
+                    severity = MessageSeverity.INFO
                 else:
                     message = (
                         "Find fastest found a validated faster assignment with "
@@ -4721,7 +5041,18 @@ class VippWidget(QWidget):
                         "assignment wins the global model. Review the measured "
                         f"preferences ({changed} change(s)) before applying."
                     )
-            self._set_status(message, severity=MessageSeverity.SUCCESS)
+            remaining_repairs = tuple(
+                suggestion
+                for suggestion in self._compute_repair_suggestions.values()
+                if self._compute_repair_is_current(suggestion)
+            )
+            if remaining_repairs:
+                message += (
+                    " A highlighted input also has an exact Add conversion "
+                    "option; apply it and run Find fastest again to include that "
+                    "GPU candidate without changing existing node settings."
+                )
+            self._set_status(message, severity=severity)
             self._resume_pipeline_after_optimizer_if_pending()
             return
         if outcome.cancelled:
@@ -4745,6 +5076,33 @@ class VippWidget(QWidget):
             self._resume_pipeline_after_optimizer_if_pending()
             return
         elif outcome.reason_code == "evidence_incomplete":
+            self._refresh_proactive_compute_repairs()
+            current_repairs = tuple(
+                suggestion
+                for suggestion in self._compute_repair_suggestions.values()
+                if self._compute_repair_is_current(suggestion)
+            )
+            self._sync_all_compute_repair_hints()
+            self._sync_selected_compute_repair()
+            if current_repairs:
+                selected = self._selected_compute_repair() or current_repairs[0]
+                shared = self._shared_compute_repairs(selected)
+                branch_text = (
+                    f"one shared conversion can prepare all {len(shared)} branches"
+                    if len(shared) > 1
+                    else "one conversion can prepare the highlighted node"
+                )
+                self._set_status(
+                    "Find fastest paused on one fixable input issue: "
+                    f"{branch_text}. Select a highlighted node and choose Add "
+                    "conversion, then run Find fastest again. Pixel values, "
+                    "epsilon, iterations, and every other existing setting will "
+                    "remain unchanged.",
+                    severity=MessageSeverity.INFO,
+                    actionable=True,
+                )
+                self._resume_pipeline_after_optimizer_if_pending()
+                return
             severity = MessageSeverity.WARNING
         else:
             severity = MessageSeverity.ERROR
@@ -4762,6 +5120,13 @@ class VippWidget(QWidget):
         QTimer.singleShot(0, self.run_pipeline)
 
     def _apply_pipeline_optimizer_result(self, result: object) -> None:
+        if result is None:
+            self._set_status(
+                "There is no completed Find fastest result to apply. Resolve any "
+                "highlighted input suggestion and run the comparison again.",
+                severity=MessageSeverity.INFO,
+            )
+            return
         blocked = self._compute_policy_edit_block_reason()
         if blocked:
             self._set_status(
@@ -4771,6 +5136,21 @@ class VippWidget(QWidget):
             )
             return
         proposal = getattr(result, "proposal", result)
+        validation_winner = str(
+            getattr(
+                getattr(proposal, "validation_winner", ""),
+                "value",
+                getattr(proposal, "validation_winner", ""),
+            )
+        )
+        if validation_winner == "inconclusive":
+            self._set_status(
+                "No assignment was applied because the completed comparison "
+                "had no clear speed winner. Your current settings remain "
+                "unchanged; inspect the measurements or run the analysis again.",
+                severity=MessageSeverity.INFO,
+            )
+            return
         identity = getattr(result, "identity", None)
         baseline = self._pipeline_optimizer_baseline
         try:
@@ -4954,6 +5334,27 @@ class VippWidget(QWidget):
             )
             return
         current_request = final_request
+        try:
+            exact_qualifications = frozenset(
+                getattr(result, "exact_workload_qualifications", ())
+            )
+        except TypeError:
+            exact_qualifications = frozenset()
+            invalid_exact_qualification = True
+        else:
+            invalid_exact_qualification = any(
+                not isinstance(item, ExactWorkloadCandidateQualification)
+                or item.qualification_scope_digest != getattr(identity, "digest", "")
+                for item in exact_qualifications
+            )
+        if invalid_exact_qualification:
+            self._set_status(
+                "The exact-workload GPU qualification attached to this result is "
+                "invalid. Analyze the pipeline again before applying.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
         updated_request = proposal.updated_request(current_request)
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
@@ -4970,6 +5371,22 @@ class VippWidget(QWidget):
             if row.current_preference != row.proposed_preference
         }
         self._invalidate_compute_policy_results(changed_node_ids)
+        self._clear_exact_workload_qualifications()
+        if exact_qualifications:
+            qualified_workflow = deepcopy(
+                serialize_workflow(
+                    self.pipeline,
+                    compute_request=updated_request,
+                )
+            )
+            self._exact_workload_qualifications = exact_qualifications
+            self._exact_workload_qualification_scope_digest = identity.digest
+            self._exact_workload_qualification_source_signature = (
+                verified_source_signature
+            )
+            self._exact_workload_qualification_workflow_fingerprint = (
+                canonical_digest(qualified_workflow)
+            )
         self._sync_node_compute_control()
         self._sync_compute_toolbar_summary()
         dialog = self._pipeline_optimizer_dialog
@@ -5035,10 +5452,44 @@ class VippWidget(QWidget):
         if seeds:
             self._mark_pipeline_branches_dirty(seeds)
 
+    def _clear_exact_workload_qualifications(self) -> None:
+        """Forget private parity proofs after their authored scope changes."""
+
+        self._exact_workload_qualifications = frozenset()
+        self._exact_workload_qualification_scope_digest = ""
+        self._exact_workload_qualification_source_signature = None
+        self._exact_workload_qualification_workflow_fingerprint = ""
+
+    def _validated_exact_workload_qualifications(
+        self,
+        workflow: Mapping[str, object],
+        source_signature: tuple,
+    ) -> tuple[frozenset[ExactWorkloadCandidateQualification], str]:
+        """Return proofs only while verified workflow and source revision match."""
+
+        qualifications = self._exact_workload_qualifications
+        scope_digest = self._exact_workload_qualification_scope_digest
+        if not qualifications or not scope_digest:
+            return frozenset(), ""
+        if (
+            canonical_digest(workflow)
+            != self._exact_workload_qualification_workflow_fingerprint
+        ):
+            self._clear_exact_workload_qualifications()
+            return frozenset(), ""
+        if (
+            source_signature
+            != self._exact_workload_qualification_source_signature
+        ):
+            self._clear_exact_workload_qualifications()
+            return frozenset(), ""
+        return qualifications, scope_digest
+
     def _reset_compute_decisions(self) -> None:
         self._accepted_compute_decisions.clear()
         self._compute_decision_environments.clear()
         self._compute_repair_suggestions.clear()
+        self._clear_exact_workload_qualifications()
         self._stale_compute_badge_node_ids.clear()
         self._last_execution_report = None
         if hasattr(self, "graph_view"):
@@ -5132,12 +5583,19 @@ class VippWidget(QWidget):
         self.graph_view.clear_node_optimization_hints()
         if self._compute_mode is ComputeMode.CPU:
             return
+        # Repair advice can be rediscovered lazily by the selected-node inspector
+        # after a graph invalidation or accepted execution report.  Refresh the
+        # provider-free view first so the canvas and inspector render one
+        # authoritative snapshot instead of waiting for an unrelated mode change.
+        self._refresh_proactive_compute_repairs()
         for node_id, suggestion in self._compute_repair_suggestions.items():
             if not self._compute_repair_is_current(suggestion):
                 continue
             self.graph_view.set_node_optimization_hint(
                 node_id,
-                suggestion.message + " Select this node to review and apply it.",
+                suggestion.message
+                + " This optimization is available but has not been applied. "
+                "Select this node to review and apply it.",
             )
 
     def _compute_status_snapshot(
@@ -5556,6 +6014,10 @@ class VippWidget(QWidget):
             "_accepted_compute_decisions": {},
             "_compute_decision_environments": {},
             "_compute_repair_suggestions": {},
+            "_exact_workload_qualifications": frozenset(),
+            "_exact_workload_qualification_scope_digest": "",
+            "_exact_workload_qualification_source_signature": None,
+            "_exact_workload_qualification_workflow_fingerprint": "",
             "_stale_compute_badge_node_ids": set(),
             "_last_execution_report": None,
             "_vipp_current_step": None,
@@ -5629,6 +6091,14 @@ class VippWidget(QWidget):
         if isinstance(pending, set):
             pending.update(node_ids)
         session.runtime_cache["_last_pipeline_source_signature"] = None
+        session.runtime_cache["_exact_workload_qualifications"] = frozenset()
+        session.runtime_cache["_exact_workload_qualification_scope_digest"] = ""
+        session.runtime_cache["_exact_workload_qualification_source_signature"] = (
+            None
+        )
+        session.runtime_cache[
+            "_exact_workload_qualification_workflow_fingerprint"
+        ] = ""
         for name in (
             "_thumbnail_contrast_limit_cache",
             "_thumbnail_contrast_statistics_cache",
@@ -11109,6 +11579,7 @@ class VippWidget(QWidget):
         }
         if not valid_node_ids:
             return False
+        self._clear_exact_workload_qualifications()
         active_node_id = self._isolated_tuning_node_id
         if active_node_id is not None and valid_node_ids != {active_node_id}:
             self._apply_isolated_tuning(run=False, announce=False)
@@ -19985,6 +20456,13 @@ class VippWidget(QWidget):
                 compute_request=compute_request,
             )
         )
+        (
+            exact_workload_qualifications,
+            exact_workload_qualification_scope_digest,
+        ) = self._validated_exact_workload_qualifications(
+            workflow,
+            source_signature,
+        )
         cancel_event = threading.Event()
         execution_plan = self.pipeline.plan_execution(
             dirty_node_ids,
@@ -20052,6 +20530,10 @@ class VippWidget(QWidget):
                         SourceRevisionToken,
                     )
                 )
+            ),
+            exact_workload_qualifications=exact_workload_qualifications,
+            exact_workload_qualification_scope_digest=(
+                exact_workload_qualification_scope_digest
             ),
             performance_history_path=default_pipeline_timing_history_path(),
         )

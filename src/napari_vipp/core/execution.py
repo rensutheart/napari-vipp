@@ -31,6 +31,7 @@ from napari_vipp.core.compute import (
     ComputeRequest,
     DecisionKind,
     DecisionReason,
+    ExactWorkloadCandidateQualification,
     ExecutionFallbackRecord,
     ExecutionPlan,
     ExecutionReport,
@@ -100,6 +101,8 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "gaussian_blur",
         "gaussian_blur_3d",
         "convert_dtype",
+        "binary_threshold",
+        "extract_channel",
         "median_filter",
         "sigma_filter",
         "canny_edges",
@@ -150,6 +153,10 @@ class ComputePlanner(Protocol):
         environment: object | None = None,
         array_facts: Mapping[str, tuple[object, ...]] | None = None,
         performance_evidence: Mapping[tuple[str, str], object] | None = None,
+        exact_workload_qualifications: frozenset[
+            ExactWorkloadCandidateQualification
+        ] = frozenset(),
+        exact_workload_qualification_scope_digest: str = "",
     ) -> object: ...
 
 
@@ -205,6 +212,14 @@ class PipelineRunRequest:
         ]
         | None
     ) = field(default=None, repr=False, compare=False)
+    exact_workload_qualifications: frozenset[
+        ExactWorkloadCandidateQualification
+    ] = field(default=frozenset(), repr=False, compare=False)
+    exact_workload_qualification_scope_digest: str = field(
+        default="",
+        repr=False,
+        compare=False,
+    )
     performance_history_path: str | PathLike[str] | None = field(
         default=None,
         repr=False,
@@ -281,6 +296,42 @@ class PipelineRunRequest:
             self,
             "performance_evidence",
             MappingProxyType(dict(sorted(normalized.items()))),
+        )
+        qualifications = frozenset(self.exact_workload_qualifications)
+        if any(
+            not isinstance(item, ExactWorkloadCandidateQualification)
+            for item in qualifications
+        ):
+            raise TypeError(
+                "exact_workload_qualifications must contain "
+                "ExactWorkloadCandidateQualification values."
+            )
+        qualification_scope = str(
+            self.exact_workload_qualification_scope_digest
+        ).strip()
+        if qualifications and not qualification_scope:
+            raise ValueError(
+                "exact_workload_qualification_scope_digest is required when "
+                "exact workload qualifications are supplied."
+            )
+        if any(
+            item.qualification_scope_digest != qualification_scope
+            for item in qualifications
+        ):
+            raise ValueError(
+                "exact workload qualifications must match the request scope."
+            )
+        qualification_keys = tuple(item.candidate_key for item in qualifications)
+        if len(set(qualification_keys)) != len(qualification_keys):
+            raise ValueError(
+                "exact_workload_qualifications contain duplicate candidate "
+                "identities."
+            )
+        object.__setattr__(self, "exact_workload_qualifications", qualifications)
+        object.__setattr__(
+            self,
+            "exact_workload_qualification_scope_digest",
+            qualification_scope,
         )
         history_path = self.performance_history_path
         if history_path is not None:
@@ -1083,6 +1134,10 @@ def _execute_accelerated_pipeline(
             environment=preflight_environment,
             array_facts=array_facts,
             performance_evidence=request.performance_evidence,
+            exact_workload_qualifications=request.exact_workload_qualifications,
+            exact_workload_qualification_scope_digest=(
+                request.exact_workload_qualification_scope_digest
+            ),
         )
         if timing_choice is not None:
             historical_planning = _mark_historical_auto_planning(
@@ -1100,6 +1155,12 @@ def _execute_accelerated_pipeline(
                     environment=preflight_environment,
                     array_facts=array_facts,
                     performance_evidence=request.performance_evidence,
+                    exact_workload_qualifications=(
+                        request.exact_workload_qualifications
+                    ),
+                    exact_workload_qualification_scope_digest=(
+                        request.exact_workload_qualification_scope_digest
+                    ),
                 )
             else:
                 planning = historical_planning
@@ -2162,8 +2223,55 @@ def _project_host_planning_outputs(
         return ((description, projected_state),)
     if operation_id != "extract_channel":
         return None
-    axis_types = tuple(planning_call.kwargs.get("axis_types", ()))
-    axis_names = tuple(planning_call.kwargs.get("axis_names", ()))
+    projection = _extract_channel_output_projection(
+        input_shape,
+        axis_types=tuple(planning_call.kwargs.get("axis_types", ())),
+        axis_names=tuple(planning_call.kwargs.get("axis_names", ())),
+        raw_channel=planning_call.kwargs.get("channel", 0),
+    )
+    if projection is None:
+        return None
+    output_shape, channel_axis = projection
+    output_dtype = np.dtype(input_dtypes[0])
+    description = _ArrayDescription(output_shape, output_dtype)
+    projected_state = None
+    if planning_call.input_states and planning_call.input_states[0] is not None:
+        (base_state,) = pipeline.predict_shape_preserving_node_states(
+            planning_call,
+            output_dtype_policy_ids=("dtype-same-v1",),
+        )
+        if base_state is not None:
+            axes = tuple(getattr(base_state, "axes", ()))
+            if len(axes) != len(input_shape):
+                return None
+            output_axes = axes[:channel_axis] + axes[channel_axis + 1 :]
+            projected_state = replace(
+                base_state,
+                shape=output_shape,
+                axes=output_axes,
+                kind=_metadata._lazy_kind_label(
+                    output_dtype,
+                    output_shape,
+                    output_axes,
+                ),
+                memory=_metadata._memory_label(
+                    int(np.prod(output_shape, dtype=np.int64))
+                    * output_dtype.itemsize
+                ),
+                value_pattern="",
+            )
+    return ((description, projected_state),)
+
+
+def _extract_channel_output_projection(
+    input_shape: tuple[int, ...],
+    *,
+    axis_types: Sequence[object],
+    axis_names: Sequence[object],
+    raw_channel: object,
+) -> tuple[tuple[int, ...], int] | None:
+    """Return the exact rank-reducing semantic channel selection."""
+
     channel_axis = next(
         (
             index
@@ -2185,7 +2293,6 @@ def _project_host_planning_outputs(
     if channel_axis is None:
         return None
 
-    raw_channel = planning_call.kwargs.get("channel", 0)
     if isinstance(raw_channel, (bool, np.bool_)) or not isinstance(
         raw_channel,
         Integral,
@@ -2196,31 +2303,10 @@ def _project_host_planning_outputs(
     normalized_channel = channel + channel_count if channel < 0 else channel
     if not 0 <= normalized_channel < channel_count:
         return None
-
-    output_shape = (
-        input_shape[:channel_axis] + input_shape[channel_axis + 1 :]
+    return (
+        input_shape[:channel_axis] + input_shape[channel_axis + 1 :],
+        channel_axis,
     )
-    description = _ArrayDescription(output_shape, np.dtype(input_dtypes[0]))
-    input_state = planning_call.input_states[0] if planning_call.input_states else None
-    projected_state = input_state
-    axes = tuple(getattr(input_state, "axes", ()))
-    if input_state is not None and len(axes) == len(input_shape):
-        channels = tuple(getattr(input_state, "channels", ()))
-        metadata_channel = channel + len(channels) if channel < 0 else channel
-        selected_channels = (
-            (channels[metadata_channel],)
-            if 0 <= metadata_channel < len(channels)
-            else ()
-        )
-        projected_state = replace(
-            input_state,
-            shape=output_shape,
-            axes=axes[:channel_axis] + axes[channel_axis + 1 :],
-            channels=selected_channels,
-            kind="intensity image",
-            value_pattern="",
-        )
-    return ((description, projected_state),)
 
 
 def _scalar_plane_luma_output_shape(
@@ -2256,6 +2342,35 @@ def _predict_device_node_states(
 ) -> tuple[object | None, ...]:
     """Project resident output metadata without materializing device arrays."""
 
+    if implementation.shape_policy_id == "extract-channel-semantic-axis-v1":
+        if len(outputs) != 1 or len(call.inputs) != 1:
+            raise RuntimeError(
+                "Resident Extract Channel metadata requires one input and one output."
+            )
+        input_shape = tuple(int(size) for size in call.inputs[0].shape)
+        input_dtype = np.dtype(call.inputs[0].dtype)
+        projected = _project_host_planning_outputs(
+            pipeline,
+            "extract_channel",
+            call,
+            (input_shape,),
+            (input_dtype.name,),
+        )
+        if projected is None:
+            raise RuntimeError(
+                "The admitted Extract Channel semantic-axis projection is invalid."
+            )
+        ((description, projected_state),) = projected
+        output = outputs[0]
+        actual_shape = tuple(int(size) for size in output.shape)
+        actual_dtype = np.dtype(output.dtype)
+        if actual_shape != description.shape or actual_dtype != input_dtype:
+            raise RuntimeError(
+                "The resident Extract Channel output violated its declared "
+                "semantic-axis shape or dtype contract."
+            )
+        return (projected_state,)
+
     output_dtype_policy_ids = tuple(
         port.output_dtype_policy_id for port in implementation.output_ports
     )
@@ -2264,6 +2379,21 @@ def _predict_device_node_states(
         output_dtype_policy_ids=output_dtype_policy_ids,
     )
     if implementation.shape_policy_id == "shape-preserving-v1":
+        if implementation.operation_id == "binary_threshold":
+            if len(outputs) != 1 or len(call.inputs) != 1:
+                raise RuntimeError(
+                    "Resident Binary Threshold metadata requires one input and one "
+                    "output."
+                )
+            expected_shape = tuple(int(size) for size in call.inputs[0].shape)
+            actual_shape = tuple(int(size) for size in outputs[0].shape)
+            if actual_shape != expected_shape or np.dtype(outputs[0].dtype) != np.dtype(
+                bool
+            ):
+                raise RuntimeError(
+                    "The resident Binary Threshold output violated its declared "
+                    "shape-preserving bool-mask contract."
+                )
         return states
     if implementation.shape_policy_id != "scalar-plane-luma-mask-v1":
         raise RuntimeError(
@@ -3133,6 +3263,17 @@ def _propagate_shape_preserving_facts(
         minimum = facts.minimum
         maximum = facts.maximum
         guarantees.update(("nonnegative", "no-negative-zero"))
+    elif operation_id == "extract_channel":
+        # Selecting one semantic channel is an exact subset view. Whole-array
+        # finiteness and sign theorems therefore remain valid for the selected
+        # channel, but source extrema need not occur in that channel.
+        guarantees.discard("extrema-conservative-enclosure")
+        if dtype_proves_finite or facts.all_finite is True:
+            finite_count = output_elements
+            completeness = FactCompleteness.COMPLETE
+        else:
+            finite_count = None
+            completeness = FactCompleteness.UNKNOWN
     elif operation_id == "sigma_filter":
         # A successful Sigma Filter result is a bounded mean of finite source
         # samples restored to the authored dtype. The operation rejects the
@@ -3186,8 +3327,8 @@ def _propagate_shape_preserving_facts(
         else:
             guarantees.discard("nonnegative")
             guarantees.discard("no-negative-zero")
-    elif operation_id in {"canny_edges", "otsu_threshold"}:
-        # Both reviewed segmentation providers return an exact boolean mask.
+    elif operation_id in {"binary_threshold", "canny_edges", "otsu_threshold"}:
+        # These reviewed segmentation providers return an exact boolean mask.
         # Boolean output is finite by construction and cannot contain negative
         # values or a signed zero, independent of the source's numeric range.
         finite_count = output_elements

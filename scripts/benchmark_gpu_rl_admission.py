@@ -3,12 +3,12 @@
 This development evidence command preserves the deterministic adversarial
 matrices used to choose the initial ordinary Richardson-Lucy GPU region.  It
 compares VIPP's authoritative progress-aware CPU operation with the real
-resident CuPy provider; it is a scientific-parity command, not a performance
-benchmark.
+resident CuPy provider; it is a backend-agreement command, not a performance
+benchmark or a validation of restoration accuracy.
 
 Importing the module, asking for help, or validating an existing artifact does
 not import CuPy or initialize CUDA.  A full run writes evidence only after all
-three matrices complete successfully.
+four bounded matrices complete successfully.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import platform
 import subprocess
@@ -32,18 +33,24 @@ import numpy as np
 from scipy import signal as scipy_signal
 
 EVIDENCE_SCHEMA = "napari-vipp-cupy-rl-admission-evidence"
-EVIDENCE_SCHEMA_VERSION = 1
+EVIDENCE_SCHEMA_VERSION = 2
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = (
     PROJECT_ROOT / "docs" / "benchmarks" / "rl-cupy-admission-windows-rtx5090.json"
 )
 
-PARITY_POLICY_ID = "rl-float32-tolerance-v1"
-NRMSE_LIMIT = 2e-6
+PARITY_POLICY_ID = "rl-scientific-equivalence-v2"
+NRMSE_LIMIT = 0.005
 MAX_ABSOLUTE_FLOOR = 1e-6
-MAX_ABSOLUTE_PEAK_FACTOR = 5e-6
-RECOMMENDED_FILTER_EPSILON = 1e-8
-RECOMMENDED_MAXIMUM_ITERATIONS = 25
+MAX_ABSOLUTE_PEAK_FACTOR = 0.005
+LEGACY_V1_POLICY_ID = "rl-float32-tolerance-v1"
+LEGACY_V1_NRMSE_LIMIT = 2e-6
+LEGACY_V1_MAX_ABSOLUTE_FLOOR = 1e-6
+LEGACY_V1_MAX_ABSOLUTE_PEAK_FACTOR = 5e-6
+ADMITTED_FILTER_EPSILON_MINIMUM = 1e-12
+ADMITTED_FILTER_EPSILON_MAXIMUM = 1e-6
+ADMITTED_MAXIMUM_ITERATIONS = 100
+DEFAULT_EPSILON_CHECKPOINTS = (10, 25, 26, 50, 100)
 
 PUBLICATION_SCOPE: dict[str, bool] = {
     "development_branch_public_exposure_justified": True,
@@ -63,19 +70,31 @@ SOURCE_PROVENANCE_PATHS = (
 # This object is intentionally JSON-native.  Its digest makes generator edits
 # explicit and lets CPU-only CI verify that committed evidence is current.
 BENCHMARK_CONTRACT: dict[str, object] = {
-    "generator": "numpy-pcg64-rl-admission-v1",
+    "generator": "numpy-pcg64-rl-admission-v2",
     "authoritative_cpu": "progress-aware-vipp-richardson-lucy",
     "candidate": "rl-cupy-f32-v1",
     "input_dtype": "float32",
-    "reviewed_admission_filter_epsilon": 1e-8,
-    "reviewed_admission_maximum_iterations": 25,
+    "reviewed_admission_filter_epsilon_range": [
+        ADMITTED_FILTER_EPSILON_MINIMUM,
+        ADMITTED_FILTER_EPSILON_MAXIMUM,
+    ],
+    "reviewed_admission_maximum_iterations": ADMITTED_MAXIMUM_ITERATIONS,
     "parameter_region": {
         "normalize_psf": True,
         "clip_negative_input": True,
         "clip_output_negative": True,
         "preserve_input_scale": True,
     },
-    "final_odd_164": {
+    "default_epsilon_checkpoints_164": {
+        "fixture_source": "final_odd_164",
+        "filter_epsilons": [ADMITTED_FILTER_EPSILON_MINIMUM],
+        "iterations": list(DEFAULT_EPSILON_CHECKPOINTS),
+        "purpose": (
+            "admission checkpoints for the authored CPU default through the "
+            "expanded 100-iteration boundary"
+        ),
+    },
+    "legacy_branch_characterization_164": {
         "groups": {
             "gaussian_core_36": {
                 "seeds": [100, 101, 102],
@@ -117,17 +136,18 @@ BENCHMARK_CONTRACT: dict[str, object] = {
         },
         "filter_epsilons": [1e-8, 1e-7, 1e-6],
         "filter_epsilon_purpose": (
-            "1e-8 is the reviewed admission value; 1e-7 and 1e-6 demonstrate "
-            "that threshold-branch parity is not monotone in epsilon"
+            "retained v1 near-identity characterization of threshold-branch "
+            "sensitivity; these diagnostic failures do not fail v2"
         ),
         "iterations": [10, 25, 50],
     },
-    "provisional_floor_rejection_36": {
+    "legacy_low_epsilon_characterization_36": {
         "fixture_group": "gaussian_core_36",
         "filter_epsilons": [1e-10],
         "iterations": [10, 25, 50, 100],
+        "purpose": "retained v1 near-identity characterization only",
     },
-    "even_psf_comparison_40": {
+    "legacy_even_psf_characterization_40": {
         "seeds": [900, 901],
         "shape_psf_pairs": [
             [[63, 65], [4, 6], "asymmetric"],
@@ -144,6 +164,10 @@ BENCHMARK_CONTRACT: dict[str, object] = {
         ],
         "filter_epsilons": [1e-8, 1e-7, 1e-6],
         "iterations": [5, 10, 25],
+        "purpose": (
+            "diagnostic comparison only; even PSFs remain outside the "
+            "prequalified workload region independently of tolerance"
+        ),
     },
 }
 
@@ -268,19 +292,25 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
         )
 
         suites = {
-            "final_odd_164": _run_suite(
+            "default_epsilon_checkpoints_164": _run_suite(
+                final_odd,
+                filter_epsilons=(ADMITTED_FILTER_EPSILON_MINIMUM,),
+                iterations=DEFAULT_EPSILON_CHECKPOINTS,
+                cupy=cupy,
+            ),
+            "legacy_branch_characterization_164": _run_suite(
                 final_odd,
                 filter_epsilons=(1e-8, 1e-7, 1e-6),
                 iterations=(10, 25, 50),
                 cupy=cupy,
             ),
-            "provisional_floor_rejection_36": _run_suite(
+            "legacy_low_epsilon_characterization_36": _run_suite(
                 gaussian_core,
                 filter_epsilons=(1e-10,),
                 iterations=(10, 25, 50, 100),
                 cupy=cupy,
             ),
-            "even_psf_comparison_40": _run_suite(
+            "legacy_even_psf_characterization_40": _run_suite(
                 even_comparison,
                 filter_epsilons=(1e-8, 1e-7, 1e-6),
                 iterations=(5, 10, 25),
@@ -304,27 +334,47 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
         "environment": environment,
         "parity_gate": {
             "policy_id": PARITY_POLICY_ID,
+            "scope": "CPU/GPU backend agreement only",
+            "scientific_validity_claimed": False,
             "dtype": "float32",
             "shape_must_match": True,
             "finite_masks_must_match": True,
             "outputs_must_be_finite": True,
+            "nonnegative_outputs_required": True,
+            "nrmse_normalization": "l2(candidate - reference) / l2(reference)",
             "nrmse_limit": NRMSE_LIMIT,
-            "max_abs_formula": "1e-6 + 5e-6 * max(abs(cpu_reference))",
+            "max_abs_formula": "1e-6 + 0.005 * max(abs(cpu_reference))",
             "max_abs_floor": MAX_ABSOLUTE_FLOOR,
             "max_abs_peak_factor": MAX_ABSOLUTE_PEAK_FACTOR,
+            "legacy_v1_diagnostic": {
+                "policy_id": LEGACY_V1_POLICY_ID,
+                "pass_fail": False,
+                "nrmse_limit": LEGACY_V1_NRMSE_LIMIT,
+                "max_abs_formula": "1e-6 + 5e-6 * max(abs(cpu_reference))",
+            },
+            "near_identity_nrmse_diagnostic": {
+                "pass_fail": False,
+                "nrmse_limit": LEGACY_V1_NRMSE_LIMIT,
+            },
         },
         "suites": suites,
         "conclusion": conclusion,
         "limitations": [
             "This is single-host native-Windows RTX 5090 evidence.",
             "The sampled matrix cannot prove parity for every possible image or PSF.",
+            "The 0.5% thresholds test backend agreement only; they do not establish "
+            "restoration accuracy, image quality, resolution, or scientific validity.",
+            "NRMSE has multiple normalization conventions; this artifact fixes and "
+            "records the L2-reference convention used by VIPP.",
+            "The checkpoint matrix does not exhaust every epsilon and iteration "
+            "combination inside the reviewed envelope.",
             "Exact-workload CPU/GPU parity remains mandatory before optimizer "
             "selection.",
-            "The authored CPU default filter_epsilon=1e-12 is unchanged and "
-            "remains outside the initial GPU region.",
+            "The authored CPU default filter_epsilon=1e-12 is unchanged and is "
+            "covered at the declared iteration checkpoints.",
             "No parameter is silently changed to qualify a workload for GPU execution.",
-            "This artifact supports public exposure only inside the reviewed exact "
-            "region on this development branch.",
+            "This artifact supports public exposure only inside the checkpoint-backed "
+            "reviewed envelope on this development branch.",
             "Cross-platform support and released-package promotion are not claimed.",
         ],
     }
@@ -369,30 +419,11 @@ def _run_suite(
                 )
         cupy.get_default_memory_pool().free_all_blocks()
 
-    summaries = []
-    for epsilon in filter_epsilons:
-        for iteration_count in iterations:
-            selected = [
-                record
-                for record in records
-                if record["filter_epsilon"] == float(epsilon)
-                and record["iterations"] == int(iteration_count)
-            ]
-            worst = max(selected, key=lambda item: float(item["gate_score"]))
-            summaries.append(
-                {
-                    "filter_epsilon": float(epsilon),
-                    "iterations": int(iteration_count),
-                    "case_count": len(selected),
-                    "failure_count": sum(not bool(item["passed"]) for item in selected),
-                    "worst_gate_score": float(worst["gate_score"]),
-                    "worst_fixture_id": worst["fixture_id"],
-                    "worst_nrmse": float(worst["nrmse"]),
-                    "worst_max_abs": float(worst["max_abs"]),
-                    "worst_cpu_peak": float(worst["cpu_peak"]),
-                    "worst_max_abs_limit": float(worst["max_abs_limit"]),
-                }
-            )
+    summaries = _derive_suite_summaries(
+        records,
+        filter_epsilons=filter_epsilons,
+        iterations=iterations,
+    )
     return {
         "fixture_count": len(fixtures),
         "fixture_group_counts": dict(
@@ -405,6 +436,75 @@ def _run_suite(
         "summaries": summaries,
         "results": records,
     }
+
+
+def _derive_suite_summaries(
+    records: Sequence[Mapping[str, object]],
+    *,
+    filter_epsilons: Sequence[float],
+    iterations: Sequence[int],
+) -> list[dict[str, object]]:
+    """Derive every aggregate from raw per-fixture measurements."""
+
+    summaries: list[dict[str, object]] = []
+    for epsilon in filter_epsilons:
+        for iteration_count in iterations:
+            selected = [
+                record
+                for record in records
+                if record["filter_epsilon"] == float(epsilon)
+                and record["iterations"] == int(iteration_count)
+            ]
+            if not selected:
+                raise AdmissionEvidenceError(
+                    "Evidence has no raw results for "
+                    f"filter_epsilon={float(epsilon):g}, "
+                    f"iterations={int(iteration_count)}."
+                )
+            worst = max(selected, key=lambda item: float(item["gate_score"]))
+            worst_legacy_v1 = max(
+                selected,
+                key=lambda item: float(item["legacy_v1_gate_score"]),
+            )
+            worst_near_identity_nrmse = max(
+                selected,
+                key=lambda item: float(item["near_identity_nrmse"]),
+            )
+            worst_max_ulp = max(int(item["max_ulp"]) for item in selected)
+            summaries.append(
+                {
+                    "filter_epsilon": float(epsilon),
+                    "iterations": int(iteration_count),
+                    "case_count": len(selected),
+                    "failure_count": sum(
+                        not bool(item["passed"]) for item in selected
+                    ),
+                    "worst_gate_score": float(worst["gate_score"]),
+                    "worst_fixture_id": worst["fixture_id"],
+                    "worst_nrmse": float(worst["nrmse"]),
+                    "worst_max_abs": float(worst["max_abs"]),
+                    "worst_cpu_peak": float(worst["cpu_peak"]),
+                    "worst_max_abs_limit": float(worst["max_abs_limit"]),
+                    "worst_max_ulp": worst_max_ulp,
+                    "legacy_v1_failure_count": sum(
+                        not bool(item["legacy_v1_gate_passed"]) for item in selected
+                    ),
+                    "worst_legacy_v1_gate_score": float(
+                        worst_legacy_v1["legacy_v1_gate_score"]
+                    ),
+                    "worst_legacy_v1_fixture_id": worst_legacy_v1["fixture_id"],
+                    "near_identity_nrmse_failure_count": sum(
+                        not bool(item["near_identity_passed"]) for item in selected
+                    ),
+                    "worst_near_identity_nrmse": float(
+                        worst_near_identity_nrmse["near_identity_nrmse"]
+                    ),
+                    "worst_near_identity_nrmse_fixture_id": (
+                        worst_near_identity_nrmse["fixture_id"]
+                    ),
+                }
+            )
+    return summaries
 
 
 def _compare_fixture(
@@ -463,6 +563,8 @@ def _parity_record(
     actual_finite = np.isfinite(actual)
     finite_masks_equal = bool(np.array_equal(expected_finite, actual_finite))
     completely_finite = bool(np.all(expected_finite) and np.all(actual_finite))
+    cpu_nonnegative = bool(np.all(expected >= 0.0))
+    gpu_nonnegative = bool(np.all(actual >= 0.0))
     if shape_equal:
         expected64 = expected.astype(np.float64)
         actual64 = actual.astype(np.float64)
@@ -476,15 +578,21 @@ def _parity_record(
         nrmse = float(np.linalg.norm(difference.ravel()) / denominator)
     else:
         cpu_peak = max_abs = nrmse = float("inf")
-    max_abs_limit = MAX_ABSOLUTE_FLOOR + MAX_ABSOLUTE_PEAK_FACTOR * cpu_peak
-    gate_score = max(nrmse / NRMSE_LIMIT, max_abs / max_abs_limit)
-    passed = bool(
-        shape_equal
-        and dtype_equal
-        and finite_masks_equal
-        and completely_finite
-        and nrmse <= NRMSE_LIMIT
-        and max_abs <= max_abs_limit
+    max_ulp = (
+        _maximum_float32_ulp_distance(expected, actual)
+        if shape_equal and dtype_equal
+        else None
+    )
+    gate_fields = _derive_record_gate_fields(
+        shape_equal=shape_equal,
+        dtype_equal=dtype_equal,
+        finite_masks_equal=finite_masks_equal,
+        completely_finite=completely_finite,
+        cpu_nonnegative=cpu_nonnegative,
+        gpu_nonnegative=gpu_nonnegative,
+        cpu_peak=cpu_peak,
+        nrmse=nrmse,
+        max_abs=max_abs,
     )
     return {
         "fixture_id": fixture.fixture_id,
@@ -498,13 +606,92 @@ def _parity_record(
         "dtype_equal": dtype_equal,
         "finite_masks_equal": finite_masks_equal,
         "completely_finite": completely_finite,
+        "cpu_nonnegative": cpu_nonnegative,
+        "gpu_nonnegative": gpu_nonnegative,
         "cpu_peak": cpu_peak,
         "nrmse": nrmse,
         "max_abs": max_abs,
+        "max_ulp": max_ulp,
+        **gate_fields,
+    }
+
+
+def _derive_record_gate_fields(
+    *,
+    shape_equal: bool,
+    dtype_equal: bool,
+    finite_masks_equal: bool,
+    completely_finite: bool,
+    cpu_nonnegative: bool,
+    gpu_nonnegative: bool,
+    cpu_peak: float,
+    nrmse: float,
+    max_abs: float,
+) -> dict[str, object]:
+    """Recompute all v2 pass/fail and retained v1 diagnostic fields."""
+
+    max_abs_limit = MAX_ABSOLUTE_FLOOR + MAX_ABSOLUTE_PEAK_FACTOR * cpu_peak
+    gate_score = max(nrmse / NRMSE_LIMIT, max_abs / max_abs_limit)
+    legacy_v1_max_abs_limit = (
+        LEGACY_V1_MAX_ABSOLUTE_FLOOR + LEGACY_V1_MAX_ABSOLUTE_PEAK_FACTOR * cpu_peak
+    )
+    legacy_v1_gate_score = max(
+        nrmse / LEGACY_V1_NRMSE_LIMIT,
+        max_abs / legacy_v1_max_abs_limit,
+    )
+    structural_match = bool(
+        shape_equal and dtype_equal and finite_masks_equal and completely_finite
+    )
+    near_identity_nrmse = nrmse
+    return {
         "max_abs_limit": max_abs_limit,
         "gate_score": gate_score,
-        "passed": passed,
+        "passed": bool(
+            structural_match
+            and cpu_nonnegative
+            and gpu_nonnegative
+            and nrmse <= NRMSE_LIMIT
+            and max_abs <= max_abs_limit
+        ),
+        "legacy_v1_max_abs_limit": legacy_v1_max_abs_limit,
+        "legacy_v1_gate_score": legacy_v1_gate_score,
+        "legacy_v1_gate_passed": bool(
+            structural_match
+            and nrmse <= LEGACY_V1_NRMSE_LIMIT
+            and max_abs <= legacy_v1_max_abs_limit
+        ),
+        "near_identity_nrmse": near_identity_nrmse,
+        "near_identity_passed": bool(
+            structural_match and near_identity_nrmse <= LEGACY_V1_NRMSE_LIMIT
+        ),
     }
+
+
+def _maximum_float32_ulp_distance(
+    expected: np.ndarray,
+    actual: np.ndarray,
+) -> int:
+    """Return a diagnostic float32 ULP distance without affecting admission."""
+
+    if not expected.size:
+        return 0
+
+    def ordered(values: np.ndarray) -> np.ndarray:
+        bits = np.ascontiguousarray(values, dtype=np.float32).view(np.uint32)
+        negative = (bits & np.uint32(0x80000000)) != 0
+        return np.where(
+            negative,
+            np.uint64(0xFFFFFFFF) - bits.astype(np.uint64),
+            np.uint64(0x80000000) + bits.astype(np.uint64),
+        )
+
+    expected_ordered = ordered(expected)
+    actual_ordered = ordered(actual)
+    distance = np.maximum(expected_ordered, actual_ordered) - np.minimum(
+        expected_ordered,
+        actual_ordered,
+    )
+    return int(np.max(distance))
 
 
 def _gaussian_core_fixtures() -> Iterable[_Fixture]:
@@ -738,65 +925,65 @@ def _fixture_manifest_digest(fixtures: Sequence[_Fixture]) -> str:
 
 
 def _derive_conclusion(suites: Mapping[str, object]) -> dict[str, object]:
-    final_suite = _suite_mapping(suites, "final_odd_164")
-    provisional = _suite_mapping(suites, "provisional_floor_rejection_36")
-    even_suite = _suite_mapping(suites, "even_psf_comparison_40")
-    final_summaries = _summary_mappings(final_suite)
-    recommended = [
-        item
-        for item in final_summaries
-        if float(item["filter_epsilon"]) == RECOMMENDED_FILTER_EPSILON
-        and int(item["iterations"]) <= RECOMMENDED_MAXIMUM_ITERATIONS
-    ]
-    recommended_passes = bool(recommended) and all(
-        int(item["failure_count"]) == 0 for item in recommended
+    checkpoints = _summary_mappings(
+        _suite_mapping(suites, "default_epsilon_checkpoints_164")
     )
-    provisional_rejected = any(
-        int(item["iterations"]) >= RECOMMENDED_MAXIMUM_ITERATIONS
-        and int(item["failure_count"]) > 0
-        for item in _summary_mappings(provisional)
+    observed_checkpoints = {
+        int(item["iterations"])
+        for item in checkpoints
+        if float(item["filter_epsilon"]) == ADMITTED_FILTER_EPSILON_MINIMUM
+    }
+    checkpoint_matrix_complete = observed_checkpoints == set(
+        DEFAULT_EPSILON_CHECKPOINTS
     )
-    long_iterations_rejected = any(
-        int(item["iterations"]) > RECOMMENDED_MAXIMUM_ITERATIONS
-        and int(item["failure_count"]) > 0
-        for item in final_summaries
+    checkpoint_matrix_passed = checkpoint_matrix_complete and all(
+        int(item["failure_count"]) == 0 for item in checkpoints
     )
-    even_psfs_rejected = any(
-        int(item["failure_count"]) > 0 for item in _summary_mappings(even_suite)
+    legacy_odd_summaries = (
+        *_summary_mappings(
+            _suite_mapping(suites, "legacy_branch_characterization_164")
+        ),
+        *_summary_mappings(
+            _suite_mapping(suites, "legacy_low_epsilon_characterization_36")
+        ),
     )
-    higher_epsilon_not_monotone = any(
-        float(item["filter_epsilon"]) > RECOMMENDED_FILTER_EPSILON
-        and int(item["iterations"]) <= RECOMMENDED_MAXIMUM_ITERATIONS
-        and int(item["failure_count"]) > 0
-        for item in final_summaries
+    legacy_even_summaries = _summary_mappings(
+        _suite_mapping(suites, "legacy_even_psf_characterization_40")
     )
-    if not all(
-        (
-            recommended_passes,
-            provisional_rejected,
-            long_iterations_rejected,
-            even_psfs_rejected,
-            higher_epsilon_not_monotone,
-        )
-    ):
+    sampled_odd_conditions_passed = checkpoint_matrix_passed and all(
+        int(item["failure_count"]) == 0 for item in legacy_odd_summaries
+    )
+    legacy_summaries = (
+        *legacy_odd_summaries,
+        *legacy_even_summaries,
+    )
+    legacy_v1_sensitivity_observed = any(
+        int(item["legacy_v1_failure_count"]) > 0 for item in legacy_summaries
+    )
+    if not sampled_odd_conditions_passed:
         raise AdmissionEvidenceError(
-            "Completed measurements do not support the reviewed RL admission "
-            "conclusion."
+            "Completed measurements do not support the v2 RL checkpoint-backed "
+            "odd-PSF envelope."
         )
     return {
-        "required_filter_epsilon": RECOMMENDED_FILTER_EPSILON,
-        "recommended_maximum_iterations": RECOMMENDED_MAXIMUM_ITERATIONS,
+        "admitted_filter_epsilon_minimum": ADMITTED_FILTER_EPSILON_MINIMUM,
+        "admitted_filter_epsilon_maximum": ADMITTED_FILTER_EPSILON_MAXIMUM,
+        "admitted_maximum_iterations": ADMITTED_MAXIMUM_ITERATIONS,
+        "default_epsilon_checkpoints": list(DEFAULT_EPSILON_CHECKPOINTS),
         "require_all_psf_extents_odd": True,
-        "reviewed_exact_value_passed_sampled_matrix": recommended_passes,
-        "provisional_1e_10_floor_rejected": provisional_rejected,
-        "iterations_above_25_rejected": long_iterations_rejected,
-        "even_psf_region_rejected": even_psfs_rejected,
-        "higher_filter_epsilon_is_not_monotone": higher_epsilon_not_monotone,
+        "default_epsilon_checkpoints_passed_sampled_matrix": (checkpoint_matrix_passed),
+        "all_sampled_odd_psf_conditions_passed_v2": sampled_odd_conditions_passed,
+        "filter_epsilon_continuum_exhaustively_sampled": False,
+        "legacy_v1_policy_id": LEGACY_V1_POLICY_ID,
+        "legacy_v1_is_diagnostic_only": True,
+        "legacy_v1_branch_sensitivity_observed": legacy_v1_sensitivity_observed,
+        "agreement_scope": "CPU/GPU backend agreement only",
+        "scientific_validity_claimed": False,
         **PUBLICATION_SCOPE,
         "selection_requirement": (
             "exact-workload parity before timing or optimizer selection"
         ),
-        "default_filter_epsilon_1e_12": "CPU fallback; never silently changed",
+        "authored_parameters_rewritten": False,
     }
 
 
@@ -822,32 +1009,159 @@ def validate_evidence_document(
     suites = document.get("suites")
     if not isinstance(suites, Mapping):
         raise AdmissionEvidenceError("Evidence suites are missing.")
-    expected_counts = {
-        "final_odd_164": 164,
-        "provisional_floor_rejection_36": 36,
-        "even_psf_comparison_40": 40,
+    expected_suites = {
+        "default_epsilon_checkpoints_164": (
+            164,
+            820,
+            (ADMITTED_FILTER_EPSILON_MINIMUM,),
+            DEFAULT_EPSILON_CHECKPOINTS,
+        ),
+        "legacy_branch_characterization_164": (
+            164,
+            1476,
+            (1e-8, 1e-7, 1e-6),
+            (10, 25, 50),
+        ),
+        "legacy_low_epsilon_characterization_36": (
+            36,
+            144,
+            (1e-10,),
+            (10, 25, 50, 100),
+        ),
+        "legacy_even_psf_characterization_40": (
+            40,
+            360,
+            (1e-8, 1e-7, 1e-6),
+            (5, 10, 25),
+        ),
     }
-    for name, expected_count in expected_counts.items():
+    canonical_suites: dict[str, object] = {}
+    for name, (
+        expected_count,
+        expected_result_count,
+        expected_epsilons,
+        expected_iterations,
+    ) in expected_suites.items():
         suite = _suite_mapping(suites, name)
         if suite.get("fixture_count") != expected_count:
             raise AdmissionEvidenceError(f"Suite {name!r} has a stale fixture count.")
+        if suite.get("filter_epsilons") != list(expected_epsilons):
+            raise AdmissionEvidenceError(
+                f"Suite {name!r} has a stale filter-epsilon matrix."
+            )
+        if suite.get("iterations") != list(expected_iterations):
+            raise AdmissionEvidenceError(
+                f"Suite {name!r} has a stale iteration matrix."
+            )
         results = suite.get("results")
-        if not isinstance(results, list) or len(results) != suite.get("result_count"):
+        if (
+            not isinstance(results, list)
+            or len(results) != suite.get("result_count")
+            or len(results) != expected_result_count
+        ):
             raise AdmissionEvidenceError(f"Suite {name!r} has incomplete raw results.")
+        required_result_fields = {
+            "fixture_id",
+            "filter_epsilon",
+            "iterations",
+            "shape_equal",
+            "dtype_equal",
+            "finite_masks_equal",
+            "completely_finite",
+            "cpu_nonnegative",
+            "gpu_nonnegative",
+            "cpu_peak",
+            "nrmse",
+            "max_abs",
+            "max_abs_limit",
+            "gate_score",
+            "passed",
+            "max_ulp",
+            "legacy_v1_max_abs_limit",
+            "legacy_v1_gate_score",
+            "legacy_v1_gate_passed",
+            "near_identity_nrmse",
+            "near_identity_passed",
+        }
+        if any(
+            not isinstance(item, Mapping) or not required_result_fields.issubset(item)
+            for item in results
+        ):
+            raise AdmissionEvidenceError(
+                f"Suite {name!r} is missing v2 result diagnostics."
+            )
+        fixture_ids_by_condition: dict[tuple[float, int], set[str]] = {
+            (float(epsilon), int(iteration_count)): set()
+            for epsilon in expected_epsilons
+            for iteration_count in expected_iterations
+        }
+        for index, result in enumerate(results):
+            _validate_result_gate_fields(result, suite_name=name, result_index=index)
+            epsilon = _finite_float(
+                result.get("filter_epsilon"),
+                context=f"Suite {name!r} result {index} filter_epsilon",
+            )
+            iteration_count = result.get("iterations")
+            if isinstance(iteration_count, bool) or not isinstance(
+                iteration_count, int
+            ):
+                raise AdmissionEvidenceError(
+                    f"Suite {name!r} result {index} has invalid iterations."
+                )
+            condition = (epsilon, iteration_count)
+            if condition not in fixture_ids_by_condition:
+                raise AdmissionEvidenceError(
+                    f"Suite {name!r} result {index} is outside its declared matrix."
+                )
+            fixture_id = result.get("fixture_id")
+            if not isinstance(fixture_id, str) or not fixture_id:
+                raise AdmissionEvidenceError(
+                    f"Suite {name!r} result {index} has an invalid fixture ID."
+                )
+            identifiers = fixture_ids_by_condition[condition]
+            if fixture_id in identifiers:
+                raise AdmissionEvidenceError(
+                    f"Suite {name!r} repeats fixture {fixture_id!r} for one condition."
+                )
+            identifiers.add(fixture_id)
+        fixture_sets = tuple(fixture_ids_by_condition.values())
+        if any(len(items) != expected_count for items in fixture_sets) or any(
+            items != fixture_sets[0] for items in fixture_sets[1:]
+        ):
+            raise AdmissionEvidenceError(
+                f"Suite {name!r} raw results do not cover one stable fixture set."
+            )
+        derived_summaries = _derive_suite_summaries(
+            results,
+            filter_epsilons=expected_epsilons,
+            iterations=expected_iterations,
+        )
+        _require_summaries_match_raw_results(
+            suite,
+            derived_summaries,
+            suite_name=name,
+        )
+        canonical_suites[name] = {**suite, "summaries": derived_summaries}
+    parity_gate = document.get("parity_gate")
+    if not isinstance(parity_gate, Mapping):
+        raise AdmissionEvidenceError("Evidence parity gate is missing.")
+    required_gate = {
+        "policy_id": PARITY_POLICY_ID,
+        "scope": "CPU/GPU backend agreement only",
+        "scientific_validity_claimed": False,
+        "nonnegative_outputs_required": True,
+        "nrmse_limit": NRMSE_LIMIT,
+        "max_abs_floor": MAX_ABSOLUTE_FLOOR,
+        "max_abs_peak_factor": MAX_ABSOLUTE_PEAK_FACTOR,
+    }
+    for key, expected in required_gate.items():
+        if parity_gate.get(key) != expected:
+            raise AdmissionEvidenceError(f"Evidence parity gate {key!r} is stale.")
     conclusion = document.get("conclusion")
     if not isinstance(conclusion, Mapping):
         raise AdmissionEvidenceError("Evidence conclusion is missing.")
-    required_conclusion = {
-        "required_filter_epsilon": RECOMMENDED_FILTER_EPSILON,
-        "recommended_maximum_iterations": RECOMMENDED_MAXIMUM_ITERATIONS,
-        "require_all_psf_extents_odd": True,
-        "reviewed_exact_value_passed_sampled_matrix": True,
-        "provisional_1e_10_floor_rejected": True,
-        "iterations_above_25_rejected": True,
-        "even_psf_region_rejected": True,
-        "higher_filter_epsilon_is_not_monotone": True,
-    }
-    for key, expected in required_conclusion.items():
+    expected_conclusion = _derive_conclusion(canonical_suites)
+    for key, expected in expected_conclusion.items():
         if conclusion.get(key) != expected:
             raise AdmissionEvidenceError(f"Evidence conclusion {key!r} is stale.")
     for key, expected in PUBLICATION_SCOPE.items():
@@ -858,6 +1172,109 @@ def validate_evidence_document(
         if not isinstance(provenance, Mapping):
             raise AdmissionEvidenceError("Source provenance is missing.")
         _require_source_snapshot_unchanged(provenance)
+
+
+def _validate_result_gate_fields(
+    result: Mapping[str, object],
+    *,
+    suite_name: str,
+    result_index: int,
+) -> None:
+    context = f"Suite {suite_name!r} result {result_index}"
+    booleans: dict[str, bool] = {}
+    for key in (
+        "shape_equal",
+        "dtype_equal",
+        "finite_masks_equal",
+        "completely_finite",
+        "cpu_nonnegative",
+        "gpu_nonnegative",
+    ):
+        value = result.get(key)
+        if type(value) is not bool:
+            raise AdmissionEvidenceError(f"{context} has an invalid {key!r} flag.")
+        booleans[key] = value
+    cpu_peak = _nonnegative_finite_float(result.get("cpu_peak"), context=context)
+    nrmse = _nonnegative_finite_float(result.get("nrmse"), context=context)
+    max_abs = _nonnegative_finite_float(result.get("max_abs"), context=context)
+    max_ulp = result.get("max_ulp")
+    if isinstance(max_ulp, bool) or not isinstance(max_ulp, int) or max_ulp < 0:
+        raise AdmissionEvidenceError(f"{context} has an invalid 'max_ulp' diagnostic.")
+    expected = _derive_record_gate_fields(
+        **booleans,
+        cpu_peak=cpu_peak,
+        nrmse=nrmse,
+        max_abs=max_abs,
+    )
+    for key, expected_value in expected.items():
+        actual = result.get(key)
+        if isinstance(expected_value, bool):
+            matches = type(actual) is bool and actual is expected_value
+        else:
+            matches = _numbers_match(actual, expected_value)
+        if not matches:
+            raise AdmissionEvidenceError(
+                f"{context} has a stale or inconsistent {key!r} value."
+            )
+
+
+def _require_summaries_match_raw_results(
+    suite: Mapping[str, object],
+    expected_summaries: Sequence[Mapping[str, object]],
+    *,
+    suite_name: str,
+) -> None:
+    actual_summaries = _summary_mappings(suite)
+    if len(actual_summaries) != len(expected_summaries):
+        raise AdmissionEvidenceError(
+            f"Suite {suite_name!r} summary count does not match raw results."
+        )
+    for index, (actual, expected) in enumerate(
+        zip(actual_summaries, expected_summaries, strict=True)
+    ):
+        if set(actual) != set(expected):
+            raise AdmissionEvidenceError(
+                f"Suite {suite_name!r} summary {index} fields are stale."
+            )
+        for key, expected_value in expected.items():
+            actual_value = actual.get(key)
+            if isinstance(expected_value, float):
+                matches = _numbers_match(actual_value, expected_value)
+            else:
+                matches = actual_value == expected_value
+            if not matches:
+                raise AdmissionEvidenceError(
+                    f"Suite {suite_name!r} summary {index} field {key!r} "
+                    "does not match raw results."
+                )
+
+
+def _finite_float(value: object, *, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AdmissionEvidenceError(f"{context} must be a finite number.")
+    converted = float(value)
+    if not math.isfinite(converted):
+        raise AdmissionEvidenceError(f"{context} must be a finite number.")
+    return converted
+
+
+def _nonnegative_finite_float(value: object, *, context: str) -> float:
+    converted = _finite_float(value, context=context)
+    if converted < 0.0:
+        raise AdmissionEvidenceError(f"{context} has a negative metric.")
+    return converted
+
+
+def _numbers_match(actual: object, expected: float) -> bool:
+    if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+        return False
+    actual_float = float(actual)
+    return math.isfinite(actual_float) and math.isclose(
+        actual_float,
+        float(expected),
+        rel_tol=1e-12,
+        abs_tol=1e-15,
+    )
 
 
 def render_markdown(document: Mapping[str, object]) -> str:
@@ -872,22 +1289,30 @@ def render_markdown(document: Mapping[str, object]) -> str:
         f"- Device: `{environment['cuda']['device_name']}`",
         f"- Platform: `{environment['platform']}`",
         "",
-        "This deterministic, machine-local scientific-parity evidence supports",
-        "public exposure inside the reviewed exact region on this development",
-        "branch. It is not a portable performance, cross-platform, or released-",
-        "package promotion claim, and it does not waive exact-workload parity.",
+        "This deterministic, machine-local evidence tests CPU/GPU backend agreement",
+        "between VIPP's CPU reference and CuPy backend. Passing does not establish",
+        "the restored image, PSF, iteration count, or recovered structures are",
+        "scientifically valid. It is not a portable performance, cross-platform,",
+        "or released-package promotion claim, and it does not waive exact-workload",
+        "parity.",
         "",
         "## Policy gate",
         "",
-        f"- NRMSE: `<= {NRMSE_LIMIT:g}`",
-        "- Maximum absolute error: `<= 1e-6 + 5e-6 × CPU peak`",
-        "- Shape, float32 dtype, finite masks, and complete finiteness must match.",
+        f"- NRMSE (L2/reference-L2): `<= {NRMSE_LIMIT:g}` (0.5%).",
+        "- Maximum absolute error: `<= 1e-6 + 0.005 × CPU peak`.",
+        "- Shape, float32 dtype, finite masks, complete finiteness, and",
+        "  nonnegative clipped outputs must match.",
+        f"- The former `{LEGACY_V1_POLICY_ID}` thresholds are retained as",
+        "  diagnostics only and cannot independently pass or fail v2.",
+        "- NRMSE-only `near_identity` (`<= 2e-6`) and maximum ULP are also",
+        "  diagnostic only.",
         "",
     ]
     for suite_name in (
-        "final_odd_164",
-        "provisional_floor_rejection_36",
-        "even_psf_comparison_40",
+        "default_epsilon_checkpoints_164",
+        "legacy_branch_characterization_164",
+        "legacy_low_epsilon_characterization_36",
+        "legacy_even_psf_characterization_40",
     ):
         suite = suites[suite_name]
         lines.extend(
@@ -897,9 +1322,9 @@ def render_markdown(document: Mapping[str, object]) -> str:
                 f"- Fixtures: **{suite['fixture_count']}**",
                 f"- Manifest SHA-256: `{suite['fixture_manifest_sha256']}`",
                 "",
-                "| Filter epsilon | Iterations | Failures | Worst gate score | "
-                "Worst fixture |",
-                "|---:|---:|---:|---:|:---|",
+                "| Filter epsilon | Iterations | v2 failures | v2 worst score | "
+                "v1 diagnostic failures | v1 worst score |",
+                "|---:|---:|---:|---:|---:|---:|",
             ]
         )
         for summary in suite["summaries"]:
@@ -908,27 +1333,34 @@ def render_markdown(document: Mapping[str, object]) -> str:
                 f"{summary['filter_epsilon']:.0e} | {summary['iterations']} | "
                 f"{summary['failure_count']}/{summary['case_count']} | "
                 f"{summary['worst_gate_score']:.9g} | "
-                f"`{summary['worst_fixture_id']}` |"
+                f"{summary['legacy_v1_failure_count']}/"
+                f"{summary['case_count']} | "
+                f"{summary['worst_legacy_v1_gate_score']:.9g} |"
             )
         lines.append("")
     lines.extend(
         [
-            "## Evidence-backed initial contract",
+            "## Checkpoint-backed v2 envelope",
             "",
-            f"- `filter_epsilon == {conclusion['required_filter_epsilon']:.0e}`",
-            f"- `iterations <= {conclusion['recommended_maximum_iterations']}`",
+            "- finite authored `filter_epsilon` from "
+            f"`{conclusion['admitted_filter_epsilon_minimum']:.0e}` through "
+            f"`{conclusion['admitted_filter_epsilon_maximum']:.0e}`;",
+            f"- `iterations <= {conclusion['admitted_maximum_iterations']}`;",
+            "- default-epsilon checkpoints at `10, 25, 26, 50, 100`;",
             "- every PSF extent is odd;",
             "- normalized PSF and default-safe clipping/scale controls;",
-            "- public exposure on this development branch, limited to this exact",
-            "  reviewed region; and",
+            "- public exposure on this development branch, limited to this",
+            "  checkpoint-backed reviewed envelope; and",
             "- exact-workload CPU/GPU parity before timing or optimizer selection.",
             "",
-            "Higher epsilon values are not automatically safer: the ratio update has",
-            "a threshold branch, and the 1e-7/1e-6 comparison contains parity "
-            "failures.",
-            "The authored CPU default `filter_epsilon=1e-12` remains unchanged and",
-            "uses CPU fallback. VIPP must never silently raise it to qualify a GPU "
-            "run.",
+            "These checkpoints support the reviewed envelope but do not exhaust",
+            "every epsilon and iteration combination inside it.",
+            "The older narrow gate remains useful for seeing small numerical",
+            "differences and threshold-branch sensitivity, but those diagnostics",
+            "do not define v2 admission. The authored `filter_epsilon` and iteration",
+            "count are never changed to qualify a GPU run.",
+            "The 0.5% limits are engineering non-inferiority margins for backend",
+            "agreement, not image-quality or scientific-accuracy thresholds.",
             "Cross-platform support and released-package promotion require their",
             "own validation and are not claimed by this artifact.",
             "",

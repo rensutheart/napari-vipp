@@ -16,6 +16,7 @@ from napari_vipp.core.compute import (
     ComputeRequest,
     DecisionKind,
     DecisionReason,
+    ExecutionPlan,
     ExecutionReport,
     MemoryEstimate,
     MemoryTopology,
@@ -30,21 +31,24 @@ from napari_vipp.core.compute_benchmark_adapter import (
 from napari_vipp.core.compute_benchmark_coordinator import (
     NodeBenchmarkPhase,
     NodeBenchmarkProgress,
+    NodeBenchmarkUnavailable,
 )
 from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationDeadlineExceeded,
     PipelineOptimizationEvidenceIncomplete,
-    PipelineOptimizationNotBeneficial,
+    PipelineOptimizationSelectionBasis,
     PipelineValidationRequest,
     PipelineValidationWinner,
 )
 from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
     ApplicationPipelineOptimizerCoordinator,
     PipelineOptimizerPhase,
+    _actionable_repair_refusals,
     _adaptive_cpu_stop_is_safe_for_current_assignment,
     _build_optimizer_graph,
     _optimizer_validation_node_ids,
     _pipeline_output_parity,
+    discover_pipeline_compute_repairs,
     fingerprint_pipeline_optimizer_sources,
     probe_pipeline_optimizer_environment,
 )
@@ -138,11 +142,15 @@ class _NodeBenchmarker:
         self.registry = registry
         self.observed_budgets: list[float] = []
         self.adaptive_stop_values: list[bool] = []
+        self.allow_exact_workload_test_values: list[bool] = []
 
     def prepare(self, pipeline, node_id, **kwargs):
         self.observed_budgets.append(float(kwargs["time_budget_seconds"]))
         self.adaptive_stop_values.append(
             bool(kwargs.get("adaptive_candidate_stopping", False))
+        )
+        self.allow_exact_workload_test_values.append(
+            bool(kwargs.get("allow_exact_workload_test", False))
         )
         progress = kwargs.get("progress")
         if progress is not None:
@@ -267,6 +275,13 @@ class _TimeoutNodeBenchmarker(_NodeBenchmarker):
         raise BenchmarkBudgetExceeded("node benchmark time budget exhausted")
 
 
+class _UnavailableNodeBenchmarker:
+    def prepare(self, _pipeline, _node_id, **_kwargs):
+        raise NodeBenchmarkUnavailable(
+            "The uint16 image input requires an exact float32 conversion."
+        )
+
+
 class _PrivateExecutor:
     def __init__(
         self,
@@ -358,6 +373,36 @@ class _PrivateExecutor:
         )
 
 
+class _RepairBaselineExecutor(_PrivateExecutor):
+    def __call__(self, request, **kwargs):
+        result = super().__call__(request, **kwargs)
+        assert result.pipeline is not None
+        assert result.execution_report is not None
+        repairs = discover_pipeline_compute_repairs(
+            ComputeRegistry(),
+            result.pipeline,
+            request.compute_request,
+        )
+        report = ExecutionReport(
+            request.compute_request,
+            self.environment,
+            plan=ExecutionPlan(
+                request.compute_request.fingerprint,
+                self.environment.fingerprint,
+                (),
+                result.execution_report.actual_decisions,
+                repair_suggestions=repairs,
+            ),
+            actual_decisions=result.execution_report.actual_decisions,
+        )
+        return PipelineRunResult(
+            result.run_id,
+            result.workflow,
+            pipeline=result.pipeline,
+            execution_report=report,
+        )
+
+
 def _writer_workflow():
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
@@ -368,6 +413,121 @@ def _writer_workflow():
     assert pipeline.connect(source_id, median.id).success
     assert pipeline.connect(median.id, writer.id).success
     return pipeline, source_id, median.id, writer.id
+
+
+def test_manual_rl_branches_expose_one_shared_dtype_repair_without_running_them():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    image_id = next(iter(pipeline.nodes))
+    psf = pipeline.add_node("input")
+    rl = pipeline.add_node("richardson_lucy_deconvolution")
+    rl_tv = pipeline.add_node("richardson_lucy_tv_deconvolution")
+    for node in (rl, rl_tv):
+        node.params.update(
+            spatial_mode="2D YX",
+            iterations=25,
+            filter_epsilon=1e-12,
+        )
+        assert pipeline.connect(image_id, node.id, target_port=0).success
+        assert pipeline.connect(psf.id, node.id, target_port=1).success
+    image = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    psf_data = np.ones((3, 3), dtype=np.float32)
+    psf_data /= psf_data.sum()
+    pipeline.run(
+        image,
+        source_payloads={
+            image_id: SourcePayload(image),
+            psf.id: SourcePayload(psf_data),
+        },
+        manual_mode=MANUAL_RUN_SKIP,
+    )
+    authored = {
+        node.id: (node.params["filter_epsilon"], node.params["iterations"])
+        for node in (rl, rl_tv)
+    }
+
+    repairs = discover_pipeline_compute_repairs(
+        ComputeRegistry(),
+        pipeline,
+        ComputeRequest("custom"),
+        (rl.id, rl_tv.id),
+    )
+
+    assert {item.node_id for item in repairs} == {rl.id, rl_tv.id}
+    assert all(item.input_port_index == 0 for item in repairs)
+    assert all(item.current_dtype == "uint16" for item in repairs)
+    assert all(item.target_dtype == "float32" for item in repairs)
+    assert all(item.scaling == "preserve" and item.exact for item in repairs)
+    assert all(pipeline.node_outputs[item.node_id] == [] for item in repairs)
+    assert {
+        node.id: (node.params["filter_epsilon"], node.params["iterations"])
+        for node in (rl, rl_tv)
+    } == authored
+
+    refusals = _actionable_repair_refusals(pipeline, repairs)
+    assert len(refusals) == 1
+    assert refusals[0].code == "shared_dtype_conversion_available"
+    assert "one visible Convert Dtype" in refusals[0].message
+    assert "all 2 branches" in refusals[0].message
+    assert "parameters will not be changed" in refusals[0].message
+
+
+def test_optimizer_returns_actionable_dtype_repair_instead_of_generic_refusal(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    source_id = next(iter(pipeline.nodes))
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect(source_id, gaussian.id).success
+    document = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest("custom"),
+    )
+    environment = _environment()
+    clock = _ManualClock()
+    registry = ComputeRegistry()
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_compute_environment",
+        lambda *_args, **_kwargs: (environment, ()),
+    )
+    gpu_spec = registry.implementations_for_operation("gaussian_blur")[0]
+    executor = _RepairBaselineExecutor(
+        clock,
+        environment,
+        gaussian.id,
+        "",
+        gpu_spec.implementation_id,
+    )
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+        node_benchmarker=_UnavailableNodeBenchmarker(),
+    )
+
+    with pytest.raises(PipelineOptimizationEvidenceIncomplete) as caught:
+        coordinator.optimize(
+            document,
+            {
+                source_id: SourcePayload(
+                    np.arange(64, dtype=np.uint16).reshape(8, 8)
+                )
+            },
+            ComputeRequest("custom"),
+            time_budget_seconds=20.0,
+        )
+
+    assert len(caught.value.reasons) == 1
+    reason = caught.value.reasons[0]
+    assert reason.code == "dtype_conversion_available"
+    assert "Add conversion" in reason.message
+    assert "run Find fastest again" in reason.message
+    assert "parameter will be changed" in reason.message
+    assert "No unlocked node" not in str(caught.value)
 
 
 def test_application_optimizer_is_private_writer_free_and_evidence_gated(
@@ -432,6 +592,7 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     assert progress[-1].phase is PipelineOptimizerPhase.COMPLETE
     assert node_benchmarker.observed_budgets == [pytest.approx(19.9)]
     assert node_benchmarker.adaptive_stop_values == [False]
+    assert node_benchmarker.allow_exact_workload_test_values == [True]
     assert executor.compute_requests[0].fingerprint == baseline_request.fingerprint
     assert all(
         request.mode.value == "custom" for request in executor.compute_requests[1:]
@@ -588,18 +749,30 @@ def test_close_pipeline_validation_uses_full_fifteen_rounds(
         node_benchmarker=_NodeBenchmarker(environment, registry),
     )
 
-    with pytest.raises(PipelineOptimizationNotBeneficial):
-        coordinator.optimize(
-            document,
-            {
-                source_id: SourcePayload(
-                    np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
-                )
-            },
-            ComputeRequest("custom", allow_experimental=True),
-            time_budget_seconds=20.0,
-        )
+    result = coordinator.optimize(
+        document,
+        {
+            source_id: SourcePayload(
+                np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+            )
+        },
+        ComputeRequest("custom", allow_experimental=True),
+        time_budget_seconds=20.0,
+    )
 
+    proposal = result.proposal
+    median_row = next(row for row in proposal.rows if row.node_id == median_id)
+    assert proposal.validation_winner is PipelineValidationWinner.INCONCLUSIVE
+    assert (
+        proposal.selection_basis
+        is PipelineOptimizationSelectionBasis.PAIRED_INCONCLUSIVE_RETAINED_CURRENT
+    )
+    assert proposal.validation_measurement_rounds == 15
+    assert median_row.current_implementation_id == median_row.proposed_implementation_id
+    assert median_row.current_preference == median_row.proposed_preference
+    assert dict(proposal.tested_assignment)[median_id] == gpu_spec.implementation_id
+    assert median_id in result.evidence
+    assert median_id in result.measured_node_ids
     assert len(executor.target_sets) == 33
 
 

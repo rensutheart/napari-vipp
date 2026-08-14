@@ -1,21 +1,33 @@
 # CuPy Richardson-Lucy TV admission evidence
 
+> **HISTORICAL EVIDENCE — NOT CURRENT POLICY**
+>
+> This readable summary accompanies the retained schema-v1 RL-TV artifact. It
+> has not been regenerated after the ordinary-RL v2 policy change and is not
+> current-policy admission evidence. Its raw measurements and original gate
+> scores remain unchanged for provenance. Current lambda-zero RL-TV uses the
+> official ordinary-RL v2 backend-agreement gate (0.5% NRMSE plus
+> `1e-6 + 0.005 × CPU peak`); positive-TV admission remains a separate,
+> versioned policy.
+
 - Device: `NVIDIA GeForce RTX 5090` (`cuda:0`)
 - Python / CuPy: `3.12.9` / `14.1.1`
 - Fixtures: `164` inherited adversarial + `96` independent holdout
-- Status: **all reviewed gates passed for development-branch public exposure**
+- Historical status: **all gates reviewed at generation time passed for
+  development-branch public exposure**
 
-The lambda-zero profile remains ordinary Richardson-Lucy and uses its
-strict numerical policy. The positive profile is only the exact shipped
-tuple (lambda 0.002, TV epsilon 1e-6, filter epsilon 1e-12, floor 0.05)
-at exactly 10 or 25 iterations; this is not a continuous parameter claim.
+The lambda-zero profile is ordinary Richardson-Lucy; the table below records
+its former strict v1 gate rather than the current v2 decision. The historical
+positive profile covered only the exact shipped tuple (lambda 0.002, TV
+epsilon 1e-6, filter epsilon 1e-12, floor 0.05) at exactly 10 or 25 iterations;
+this is not a continuous parameter claim.
 
 ## Numerical matrices
 
 | Profile | Iterations | Cases | Failures | Worst gate score | Threshold-active cases | Floor-active cases | Minimum raw denominator |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Lambda zero / strict RL | 10 | 260 | 0 | 0.443692 | n/a | n/a | n/a |
-| Lambda zero / strict RL | 25 | 260 | 0 | 0.942629 | n/a | n/a | n/a |
+| Lambda zero / historical v1 RL | 10 | 260 | 0 | 0.443692 | n/a | n/a | n/a |
+| Lambda zero / historical v1 RL | 25 | 260 | 0 | 0.942629 | n/a | n/a | n/a |
 | Positive shipped default | 10 | 260 | 0 | 0.457442 | 173 | 0 | 0.992914379 |
 | Positive shipped default | 25 | 260 | 0 | 0.443837 | 181 | 0 | 0.992867529 |
 
@@ -37,8 +49,9 @@ at exactly 10 or 25 iterations; this is not a continuous parameter claim.
 - Guard activity is diagnostic, not a reason to alter authored values.
   The evidence records threshold and denominator-floor activity for
   every positive-profile fixture.
-- This single-machine artifact supports public exposure for the
-  reviewed exact regions on this development branch.
+- At generation time, this single-machine artifact supported public exposure
+  for the then-reviewed exact regions on the development branch. It must not be
+  treated as regenerated v2 evidence.
 - It does not establish cross-platform support or released-package
   promotion. Calibrated bead/biological datasets, blinded review, and
   Linux/laptop evidence remain required before those broader claims.

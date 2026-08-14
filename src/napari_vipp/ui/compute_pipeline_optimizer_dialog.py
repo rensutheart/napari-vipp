@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import html
+import statistics
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from qtpy.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from qtpy.QtGui import QBrush, QColor, QKeySequence
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -30,7 +34,6 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationProposal,
     PipelineOptimizationSelectionBasis,
     PipelineOptimizationTimeoutReport,
-    PipelineValidationWinner,
 )
 
 
@@ -99,9 +102,84 @@ class PipelineOptimizerCleanupError(RuntimeError):
     cleanup_succeeded = False
 
 
+def _subtle_group_brush(widget: QWidget) -> QBrush:
+    """Return a dark/light-theme-safe tint with deliberately low contrast."""
+
+    base = widget.palette().base().color()
+    text = widget.palette().text().color()
+    fraction = _GROUP_TINT_FRACTION
+    color = QColor(
+        round(base.red() * (1.0 - fraction) + text.red() * fraction),
+        round(base.green() * (1.0 - fraction) + text.green() * fraction),
+        round(base.blue() * (1.0 - fraction) + text.blue() * fraction),
+        base.alpha(),
+    )
+    return QBrush(color)
+
+
+_PRIMARY_RESULT_COLUMNS = (
+    "Node",
+    "Implementation",
+    "Total time",
+    "Scientific check",
+    "Result",
+)
+_DETAIL_RESULT_COLUMNS = (
+    "Compute",
+    "Data movement",
+    "First run",
+    "Peak memory",
+    "Evidence",
+)
+_DETAIL_COLUMN_START = len(_PRIMARY_RESULT_COLUMNS)
+_RESULT_COLUMN_COUNT = len(_PRIMARY_RESULT_COLUMNS) + len(_DETAIL_RESULT_COLUMNS)
+_GROUP_TINT_FRACTION = 0.06
+
+
 class _PipelineOptimizerWorkerSignals(QObject):
     progress = Signal(object)
     finished = Signal(object)
+
+
+class _CopyableResultTable(QTableWidget):
+    """Read-only result table whose visible selection can be copied as TSV."""
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if event.matches(QKeySequence.Copy):
+            self.copy_selection()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def copy_selection(self) -> None:
+        indexes = tuple(self.selectedIndexes())
+        if not indexes:
+            return
+        rows = range(
+            min(index.row() for index in indexes),
+            max(index.row() for index in indexes) + 1,
+        )
+        columns = tuple(
+            column
+            for column in range(
+                min(index.column() for index in indexes),
+                max(index.column() for index in indexes) + 1,
+            )
+            if not self.isColumnHidden(column)
+        )
+        selected = {(index.row(), index.column()) for index in indexes}
+        lines: list[str] = []
+        for row in rows:
+            values: list[str] = []
+            for column in columns:
+                item = self.item(row, column)
+                values.append(
+                    item.text()
+                    if (row, column) in selected and item is not None
+                    else ""
+                )
+            lines.append("\t".join(values))
+        QApplication.clipboard().setText("\n".join(lines))
 
 
 class PipelineOptimizerWorker(QRunnable):
@@ -178,6 +256,7 @@ class PipelineOptimizerDialog(QDialog):
         parent: QWidget | None = None,
         *,
         locked_node_count: int = 0,
+        node_titles: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Find fastest pipeline")
@@ -187,6 +266,10 @@ class PipelineOptimizerDialog(QDialog):
         self._outcome: PipelineOptimizerWorkerOutcome | None = None
         self._running = False
         self._shutdown = False
+        self._node_titles = {
+            str(node_id): str(title).strip() or str(node_id)
+            for node_id, title in dict(node_titles or {}).items()
+        }
 
         self.summary_label = QLabel(
             "<b>Find the fastest scientifically valid pipeline.</b>"
@@ -264,22 +347,51 @@ class PipelineOptimizerDialog(QDialog):
         self.progress_bar = self.overall_progress_bar
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
-        self.result_table = QTableWidget(0, 7)
+        self.result_table = _CopyableResultTable(0, _RESULT_COLUMN_COUNT)
         self.result_table.setHorizontalHeaderLabels(
-            (
-                "Node",
-                "Current",
-                "Tested",
-                "Selected winner",
-                "Saved preference",
-                "Modeled timings",
-                "Status",
-            )
+            _PRIMARY_RESULT_COLUMNS + _DETAIL_RESULT_COLUMNS
         )
+        self.result_table.setAccessibleName("Per-node CPU and GPU pipeline comparison")
         self.result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.result_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.result_table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.result_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.result_table.setWordWrap(True)
+        self.result_table.setAlternatingRowColors(False)
+        self.result_table.verticalHeader().setVisible(False)
         self.result_table.setVisible(False)
-        self.result_table.horizontalHeader().setStretchLastSection(True)
+        header = self.result_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        for column in range(_DETAIL_COLUMN_START, _RESULT_COLUMN_COUNT):
+            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+            self.result_table.setColumnHidden(column, True)
+        self.result_table.setColumnWidth(0, 190)
+        header_tooltips = (
+            "Workflow node. One cell groups every implementation tested for it.",
+            "Friendly CPU or GPU name. Hover for the exact implementation ID.",
+            "Median measured time after warm-up. Hover for timing scope.",
+            "Whether this implementation reproduced the reference result.",
+            "How this implementation relates to the reviewed pipeline decision.",
+            "Resident compute time where available; otherwise the measured call time.",
+            "Measured transfer and host-materialization time.",
+            "The first measured call, before typical repeated timings.",
+            "Largest recorded memory use for this implementation.",
+            "Measured rounds and whether evidence was measured now or reused.",
+        )
+        for column, tooltip in enumerate(header_tooltips):
+            item = self.result_table.horizontalHeaderItem(column)
+            if item is not None:
+                item.setToolTip(tooltip)
+
+        self.details_button = QPushButton("Show timing details")
+        self.details_button.setAccessibleName("Show detailed pipeline timing columns")
+        self.details_button.setCheckable(True)
+        self.details_button.setVisible(False)
+        self.details_button.toggled.connect(self._set_timing_details_visible)
 
         self.analyze_button = QPushButton("Find fastest")
         self.apply_button = QPushButton("Apply measured assignment")
@@ -302,6 +414,7 @@ class PipelineOptimizerDialog(QDialog):
         layout.addWidget(self.operation_progress_label)
         layout.addWidget(self.operation_progress_bar)
         layout.addWidget(self.result_label)
+        layout.addWidget(self.details_button, 0, Qt.AlignLeft)
         layout.addWidget(self.result_table, 1)
         layout.addLayout(buttons)
 
@@ -347,12 +460,15 @@ class PipelineOptimizerDialog(QDialog):
         self.time_limit_combo.setEnabled(False)
         self.cancel_button.setVisible(True)
         self.cancel_button.setEnabled(True)
+        self._set_review_mode(False)
+        self.details_button.setChecked(False)
+        self.details_button.setVisible(False)
         self.result_table.setVisible(False)
         self.result_label.setText("")
+        self.result_label.setToolTip("")
         self.overall_progress_bar.setRange(0, 0)
         self.overall_progress_label.setText(
-            "Overall pipeline: capturing exact evidence. You can cancel at any "
-            "time."
+            "Overall pipeline: capturing exact evidence. You can cancel at any time."
         )
         self.operation_progress_bar.setRange(0, 1)
         self.operation_progress_bar.setValue(0)
@@ -398,9 +514,7 @@ class PipelineOptimizerDialog(QDialog):
             return
         self._worker.cancel()
         self.cancel_button.setEnabled(False)
-        self.overall_progress_label.setText(
-            "Overall pipeline: cancel requested."
-        )
+        self.overall_progress_label.setText("Overall pipeline: cancel requested.")
         self.operation_progress_label.setText(
             "Current operation: finishing the current synchronized call before "
             "cancelling…"
@@ -451,15 +565,34 @@ class PipelineOptimizerDialog(QDialog):
             return
         self.analyze_requested.emit()
 
+    def _set_review_mode(self, reviewing: bool) -> None:
+        """Give completed results the space previously used by progress prose."""
+
+        for widget in (
+            self.summary_label,
+            self.overall_progress_label,
+            self.overall_progress_bar,
+            self.operation_progress_label,
+            self.operation_progress_bar,
+        ):
+            widget.setVisible(not reviewing)
+
+    def _set_timing_details_visible(self, visible: bool) -> None:
+        for column in range(_DETAIL_COLUMN_START, _RESULT_COLUMN_COUNT):
+            self.result_table.setColumnHidden(column, not visible)
+        self.details_button.setText(
+            "Hide timing details" if visible else "Show timing details"
+        )
+        if self.result_table.isVisible():
+            self.result_table.resizeRowsToContents()
+
     def _on_progress(self, progress: PipelineOptimizerProgress) -> None:
         if self._shutdown:
             return
         self.overall_progress_bar.setRange(0, progress.total)
         self.overall_progress_bar.setValue(progress.completed)
         self.overall_progress_bar.setFormat("Overall %p%")
-        self.overall_progress_label.setText(
-            f"Overall pipeline: {progress.message}"
-        )
+        self.overall_progress_label.setText(f"Overall pipeline: {progress.message}")
         if progress.operation_total:
             self.operation_progress_bar.setRange(0, progress.operation_total)
             self.operation_progress_bar.setValue(progress.operation_completed)
@@ -485,14 +618,12 @@ class PipelineOptimizerDialog(QDialog):
         self.close_button.setEnabled(True)
         self.time_limit_combo.setEnabled(True)
         self.cancel_button.setVisible(False)
+        if outcome.result is None:
+            self.result_label.setToolTip("")
         if outcome.result is not None:
-            self.overall_progress_bar.setValue(
-                self.overall_progress_bar.maximum()
-            )
+            self.overall_progress_bar.setValue(self.overall_progress_bar.maximum())
             self.overall_progress_bar.setFormat("Overall 100%")
-            self.overall_progress_label.setText(
-                "Overall pipeline: analysis complete."
-            )
+            self.overall_progress_label.setText("Overall pipeline: analysis complete.")
             self.operation_progress_bar.setRange(0, 1)
             self.operation_progress_bar.setValue(1)
             self.operation_progress_bar.setFormat("Current 100%")
@@ -502,7 +633,8 @@ class PipelineOptimizerDialog(QDialog):
             self._render_result(outcome.result)
             proposal = _proposal_from_result(outcome.result)
             self.apply_button.setEnabled(
-                any(
+                _enum_value(proposal.validation_winner) != "inconclusive"
+                and any(
                     row.current_preference != row.proposed_preference
                     for row in proposal.rows
                 )
@@ -511,8 +643,7 @@ class PipelineOptimizerDialog(QDialog):
             self.apply_button.setEnabled(False)
             if outcome.cancelled:
                 self.overall_progress_label.setText(
-                    "Overall pipeline: analysis cancelled. No node preference "
-                    "changed."
+                    "Overall pipeline: analysis cancelled. No node preference changed."
                 )
                 self.overall_progress_bar.setFormat("Cancelled at %p%")
                 self.operation_progress_bar.setFormat("Cancelled at %p%")
@@ -540,8 +671,7 @@ class PipelineOptimizerDialog(QDialog):
                 "not_beneficial",
             }:
                 self.overall_progress_label.setText(
-                    "Overall pipeline: no safe pipeline-wide change is "
-                    "recommended."
+                    "Overall pipeline: no safe pipeline-wide change is recommended."
                 )
                 self.result_label.setStyleSheet("color: #fcd34d;")
                 self.result_label.setTextFormat(Qt.PlainText)
@@ -553,6 +683,7 @@ class PipelineOptimizerDialog(QDialog):
                 self.result_label.setStyleSheet("color: #fca5a5;")
                 self.result_label.setTextFormat(Qt.PlainText)
                 self.result_label.setText(outcome.error)
+            self.details_button.setVisible(False)
         self.optimizer_finished.emit(outcome)
 
     def _render_result(self, result: object) -> None:
@@ -562,86 +693,168 @@ class PipelineOptimizerDialog(QDialog):
         measured = set(getattr(result, "measured_node_ids", ()))
         rows = tuple(proposal.rows)
         tested_by_node = dict(proposal.tested_assignment)
-        self.result_table.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
-            preference = row.proposed_preference.kind.value
-            if row.proposed_preference.value:
-                preference += f":{row.proposed_preference.value}"
-            status = "Switch backend" if row.changed else "Keep measured backend"
-            if row.locked:
-                status = "Locked"
-            elif not row.eligible:
-                status = "Fixed / excluded"
-            elif (
-                proposal.validation_winner is PipelineValidationWinner.CURRENT
-                and tested_by_node.get(row.node_id)
-                != row.current_implementation_id
-            ):
-                status = "Current won final validation"
-            timing = _candidate_timing_text(evidence.get(row.node_id))
-            if row.node_id in reused:
-                timing = f"{timing} [reused]" if timing else "Exact evidence reused"
-            elif row.node_id in measured:
-                timing = f"{timing} [measured]" if timing else "Measured now"
-            values = (
-                row.node_id,
-                row.current_implementation_id,
-                tested_by_node.get(row.node_id, row.proposed_implementation_id),
-                row.proposed_implementation_id,
-                preference,
-                timing,
-                status,
+        winner = _enum_value(proposal.validation_winner)
+
+        groups: list[tuple[object, tuple[str, ...], Mapping[str, object]]] = []
+        for row in rows:
+            node_evidence = evidence.get(row.node_id)
+            record = getattr(node_evidence, "record", None)
+            candidates = tuple(getattr(record, "candidates", ()))
+            candidate_by_id = {
+                str(candidate.implementation_id): candidate for candidate in candidates
+            }
+            ordered_ids = _ordered_implementation_ids(
+                row,
+                tested_by_node.get(
+                    row.node_id,
+                    row.proposed_implementation_id,
+                ),
+                candidate_by_id,
             )
-            for column, value in enumerate(values):
-                self.result_table.setItem(
-                    row_index,
-                    column,
-                    QTableWidgetItem(str(value)),
-                )
-        self.result_table.resizeColumnsToContents()
-        self.result_table.setVisible(True)
-        changed = sum(
-            1
-            for row in rows
-            if row.current_preference != row.proposed_preference
+            groups.append((row, ordered_ids, candidate_by_id))
+
+        self.result_table.clearSpans()
+        self.result_table.setRowCount(
+            sum(len(implementation_ids) for _, implementation_ids, _ in groups)
         )
-        self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+        table_row = 0
+        alternate_brush = _subtle_group_brush(self.result_table)
+        for group_index, (row, implementation_ids, candidate_by_id) in enumerate(
+            groups
+        ):
+            first_row = table_row
+            node_title = self._node_titles.get(row.node_id, row.node_id)
+            node_item = QTableWidgetItem(node_title)
+            node_item.setToolTip(
+                f"Workflow node: {node_title}\nInternal ID: {row.node_id}"
+            )
+            node_item.setTextAlignment(int(Qt.AlignLeft | Qt.AlignVCenter))
+            node_font = node_item.font()
+            node_font.setBold(True)
+            node_item.setFont(node_font)
+            self.result_table.setItem(first_row, 0, node_item)
+
+            tested_id = tested_by_node.get(
+                row.node_id,
+                row.proposed_implementation_id,
+            )
+            evidence_source = _evidence_source_text(
+                row.node_id,
+                measured=measured,
+                reused=reused,
+                has_record=record is not None,
+            )
+            for implementation_id in implementation_ids:
+                candidate = candidate_by_id.get(implementation_id)
+                timing = _candidate_timing_display(
+                    candidate,
+                    evidence_source=evidence_source,
+                )
+                scientific_text, scientific_tooltip = _scientific_check(candidate)
+                result_text = _implementation_result_text(
+                    row,
+                    implementation_id,
+                    tested_id=tested_id,
+                    winner=winner,
+                    candidate=candidate,
+                )
+                values = (
+                    "" if table_row != first_row else node_title,
+                    _friendly_implementation_name(implementation_id),
+                    timing.total,
+                    scientific_text,
+                    result_text,
+                    timing.compute,
+                    timing.data_movement,
+                    timing.first_run,
+                    timing.peak_memory,
+                    timing.evidence,
+                )
+                for column, value in enumerate(values):
+                    if column == 0 and table_row == first_row:
+                        item = node_item
+                    else:
+                        item = QTableWidgetItem(str(value))
+                        self.result_table.setItem(table_row, column, item)
+                    if group_index % 2:
+                        item.setBackground(alternate_brush)
+                implementation_item = self.result_table.item(table_row, 1)
+                implementation_item.setToolTip(
+                    "Exact implementation ID: " + implementation_id
+                )
+                total_item = self.result_table.item(table_row, 2)
+                total_item.setToolTip(timing.total_tooltip)
+                scientific_item = self.result_table.item(table_row, 3)
+                scientific_item.setToolTip(scientific_tooltip)
+                movement_item = self.result_table.item(table_row, 6)
+                movement_item.setToolTip(timing.data_movement_tooltip)
+                evidence_item = self.result_table.item(table_row, 9)
+                evidence_item.setToolTip(timing.evidence_tooltip)
+                table_row += 1
+
+            if len(implementation_ids) > 1:
+                self.result_table.setSpan(
+                    first_row,
+                    0,
+                    len(implementation_ids),
+                    1,
+                )
+
+        self.details_button.setChecked(False)
+        self.details_button.setVisible(True)
+        self.result_table.setVisible(True)
+        self.result_table.resizeRowsToContents()
+        self.result_table.scrollToTop()
+        self._set_review_mode(True)
+        changed = sum(
+            1 for row in rows if row.current_preference != row.proposed_preference
+        )
+        self.result_label.setTextFormat(Qt.PlainText)
         if proposal.pipeline_validation_performed:
             current = proposal.validated_current_seconds
             tested = proposal.validated_proposed_seconds
-            if proposal.validation_winner is PipelineValidationWinner.CURRENT:
-                speedup = tested / current if current > 0 else float("inf")
+            rounds = proposal.validation_measurement_rounds
+            rounds_text = f"{rounds} paired round{'s' if rounds != 1 else ''}"
+            if winner == "inconclusive":
+                self.result_label.setStyleSheet("font-weight: 650;")
                 self.result_label.setText(
-                    "The current assignment won the final paired validation: "
+                    "No clear winner—current settings kept. Whole-pipeline "
+                    f"totals: current {_format_seconds(current)}; tested "
+                    f"{_format_seconds(tested)} ({rounds_text}). The difference "
+                    "was not large and certain enough to justify a change."
+                )
+                self.result_label.setToolTip(
+                    "How this was decided: VIPP changes the pipeline only when "
+                    "the measured improvement is greater than 5% or 10 ms, "
+                    "whichever is larger, and the paired lower confidence "
+                    "bound is above 1.0."
+                )
+            elif winner == "current":
+                self.result_label.setToolTip("")
+                self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+                self.result_label.setText(
+                    "Current settings were faster in final validation: "
                     f"{_format_seconds(current)} versus "
-                    f"{_format_seconds(tested)} for the model-selected "
-                    f"alternative ({speedup:.2f}× faster; lower confidence "
-                    "bound "
-                    f"{proposal.validated_current_speedup_lower_confidence_bound:.2f}×;"
-                    " "
-                    f"{proposal.validation_measurement_rounds} paired rounds). "
-                    f"{changed} measured preference(s) can still be saved; "
-                    f"{len(reused)} node benchmark(s) reused exact saved evidence."
+                    f"{_format_seconds(tested)} for the tested setup "
+                    f"({rounds_text}). {changed} measured preference"
+                    f"{'s' if changed != 1 else ''} can be saved."
                 )
             else:
-                speedup = current / tested if tested > 0 else float("inf")
+                self.result_label.setToolTip("")
+                self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
                 self.result_label.setText(
-                    f"Validated proposal: {_format_seconds(current)} → "
-                    f"{_format_seconds(tested)} ({speedup:.2f}×; lower confidence "
-                    "bound "
-                    f"{proposal.validated_speedup_lower_confidence_bound:.2f}×; "
-                    f"{proposal.validation_measurement_rounds} paired validation "
-                    "rounds). "
-                    f"{changed} measured node preference(s) would change; "
-                    f"{len(reused)} node benchmark(s) reused exact saved evidence."
+                    "Faster pipeline validated: "
+                    f"{_format_seconds(current)} current → "
+                    f"{_format_seconds(tested)} tested ({rounds_text}). "
+                    f"{changed} node preference{'s' if changed != 1 else ''} "
+                    "would change."
                 )
         else:
+            self.result_label.setToolTip("")
+            self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
             basis_type = PipelineOptimizationSelectionBasis
             conservative_basis = basis_type.CONSERVATIVE_BOUND_RETAINED_CURRENT
-            if (
-                proposal.selection_basis
-                is conservative_basis
-            ):
+            if proposal.selection_basis is conservative_basis:
                 explanation = (
                     "The current GPU assignment was retained because every "
                     "competing CPU measurement had already crossed a decisive "
@@ -654,17 +867,14 @@ class PipelineOptimizerDialog(QDialog):
                     "comparison, so no alternative pipeline timing run was needed. "
                 )
             self.result_label.setText(
-                explanation
-                + f"{changed} measured preference(s) can still be saved; "
-                f"{len(reused)} node benchmark(s) reused exact saved evidence."
+                explanation + f"Estimated whole-pipeline total: "
+                f"{_format_seconds(proposal.estimated_current_seconds)}. "
+                f"{changed} measured preference{'s' if changed != 1 else ''} "
+                "can be saved."
             )
 
     def _apply_result(self) -> None:
-        if (
-            self._shutdown
-            or self._outcome is None
-            or self._outcome.result is None
-        ):
+        if self._shutdown or self._outcome is None or self._outcome.result is None:
             return
         self.apply_requested.emit(self._outcome.result)
 
@@ -717,9 +927,7 @@ def _timeout_result_html(
             stage = stage_detail
         progress_parts: list[str] = []
         if report.node_total:
-            progress_parts.append(
-                f"node {report.node_index} of {report.node_total}"
-            )
+            progress_parts.append(f"node {report.node_index} of {report.node_total}")
         progress_parts.append(
             f"overall step {report.overall_completed} of {report.overall_total}"
         )
@@ -771,8 +979,7 @@ def _timeout_result_html(
         ),
     )
     rendered = "".join(
-        f"<li><b>{escaped(label)}:</b> {escaped(value)}</li>"
-        for label, value in items
+        f"<li><b>{escaped(label)}:</b> {escaped(value)}</li>" for label, value in items
     )
     return (
         "<p><b>Analysis timed out before a winner was determined.</b></p>"
@@ -787,6 +994,276 @@ def _proposal_from_result(result: object) -> PipelineOptimizationProposal:
     return proposal
 
 
+@dataclass(frozen=True, slots=True)
+class _CandidateTimingDisplay:
+    total: str = "—"
+    compute: str = "—"
+    data_movement: str = "—"
+    first_run: str = "—"
+    peak_memory: str = "—"
+    evidence: str = "Not measured"
+    total_tooltip: str = "No complete timing was recorded."
+    data_movement_tooltip: str = "No separate data-movement timing was recorded."
+    evidence_tooltip: str = "No complete timing evidence was recorded."
+
+
+def _enum_value(value: object) -> str:
+    return str(getattr(value, "value", value)).strip().lower()
+
+
+def _ordered_implementation_ids(
+    row: object,
+    tested_id: str,
+    candidates: Mapping[str, object],
+) -> tuple[str, ...]:
+    ordered: list[str] = []
+    for implementation_id in (
+        getattr(row, "current_implementation_id", ""),
+        tested_id,
+        getattr(row, "proposed_implementation_id", ""),
+        *candidates,
+    ):
+        normalized = str(implementation_id).strip()
+        if normalized and normalized not in ordered:
+            ordered.append(normalized)
+    return tuple(ordered)
+
+
+def _is_gpu_implementation(implementation_id: str) -> bool:
+    value = str(implementation_id).lower()
+    return any(token in value for token in ("cuda", "cupy", "cupyx", "cucim"))
+
+
+def _friendly_implementation_name(implementation_id: str) -> str:
+    value = str(implementation_id).strip()
+    lowered = value.lower()
+    if "cucim" in lowered:
+        return "GPU — cuCIM"
+    if any(token in lowered for token in ("cupy", "cupyx", "cuda")):
+        return "GPU — CuPy"
+    if lowered.startswith("cpu"):
+        return "CPU — built in"
+    return value
+
+
+def _evidence_source_text(
+    node_id: str,
+    *,
+    measured: set[str],
+    reused: set[str],
+    has_record: bool,
+) -> str:
+    if not has_record:
+        return "not measured"
+    if node_id in reused:
+        return "reused exact evidence"
+    if node_id in measured:
+        return "measured now"
+    return "saved exact evidence"
+
+
+def _scientific_check(candidate: object | None) -> tuple[str, str]:
+    if candidate is None:
+        return "Not measured", "No scientific comparison was required or recorded."
+    error = str(getattr(candidate, "error", "") or "").strip()
+    parity_passed = bool(getattr(candidate, "parity_passed", False))
+    failure_kind = _enum_value(getattr(candidate, "failure_kind", ""))
+    if failure_kind == "scientific-parity":
+        return (
+            "Did not match",
+            error
+            or "This implementation did not reproduce the reference scientific result.",
+        )
+    if failure_kind == "transient-runtime" or error:
+        return "Could not verify", error
+    if not parity_passed:
+        return (
+            "Did not match",
+            "This implementation did not reproduce the reference scientific result.",
+        )
+    return "Matches", "This implementation reproduced the reference scientific result."
+
+
+def _implementation_result_text(
+    row: object,
+    implementation_id: str,
+    *,
+    tested_id: str,
+    winner: str,
+    candidate: object | None,
+) -> str:
+    error = str(getattr(candidate, "error", "") or "").strip()
+    parity_failed = candidate is not None and not bool(
+        getattr(candidate, "parity_passed", False)
+    )
+    if error or parity_failed:
+        return "Excluded"
+
+    current_id = str(getattr(row, "current_implementation_id", ""))
+    proposed_id = str(getattr(row, "proposed_implementation_id", ""))
+    if bool(getattr(row, "locked", False)) and implementation_id == current_id:
+        return "Locked"
+    if not bool(getattr(row, "eligible", True)) and implementation_id == current_id:
+        return "Fixed"
+
+    censored = bool(getattr(candidate, "timing_censored", False))
+    if censored and implementation_id != current_id:
+        prefix = "Tested · " if implementation_id == tested_id else ""
+        return prefix + "stopped early — already slower"
+
+    if winner == "inconclusive":
+        if implementation_id == current_id == tested_id:
+            return "Current · compared"
+        if implementation_id == current_id:
+            return "Current · kept"
+        if implementation_id == tested_id:
+            return "Tested · no clear winner"
+        return "Compared"
+    if winner == "proposed":
+        if implementation_id == proposed_id:
+            return "Would use"
+        if implementation_id == current_id:
+            return "Current"
+        if implementation_id == tested_id:
+            return "Tested"
+        return "Compared"
+    if winner == "current":
+        if implementation_id == current_id:
+            return "Current · kept"
+        if implementation_id == tested_id:
+            return "Tested alternative"
+        return "Compared"
+    if implementation_id == current_id:
+        return "Current · kept"
+    if implementation_id == tested_id:
+        return "Tested"
+    return "Compared"
+
+
+def _median(values: object) -> float | None:
+    series = tuple(values or ())
+    if not series:
+        return None
+    return float(statistics.median(float(value) for value in series))
+
+
+def _format_optional_seconds(value: float | None) -> str:
+    return "—" if value is None else _format_seconds(value)
+
+
+def _format_bytes(value: int) -> str:
+    amount = float(max(int(value), 0))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024.0 or unit == "TiB":
+            return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
+        amount /= 1024.0
+    return "0 B"
+
+
+def _candidate_timing_display(
+    candidate: object | None,
+    *,
+    evidence_source: str,
+) -> _CandidateTimingDisplay:
+    if candidate is None:
+        return _CandidateTimingDisplay(evidence=evidence_source.capitalize())
+
+    implementation_id = str(getattr(candidate, "implementation_id", ""))
+    error = str(getattr(candidate, "error", "") or "").strip()
+    parity_passed = bool(getattr(candidate, "parity_passed", False))
+    valid = parity_passed and not error
+    warm = tuple(getattr(candidate, "warm_seconds", ()) or ())
+    resident = tuple(getattr(candidate, "warm_resident_seconds", ()) or ())
+    transfer = tuple(getattr(candidate, "warm_transfer_seconds", ()) or ())
+    host = tuple(getattr(candidate, "warm_host_materialization_seconds", ()) or ())
+    transfers_included = bool(getattr(candidate, "transfers_included", False))
+    timing_censored = bool(getattr(candidate, "timing_censored", False))
+    lower_bound = getattr(candidate, "timing_lower_bound_seconds", None)
+
+    warm_median = _median(warm) if valid else None
+    if timing_censored and lower_bound is not None:
+        total = f">{_format_seconds(float(lower_bound))}"
+        total_tooltip = (
+            "A safe lower bound only. Timing stopped once this implementation "
+            "was already decisively slower."
+        )
+    elif warm_median is None:
+        total = "—"
+        total_tooltip = "No complete valid repeated timing was recorded."
+    else:
+        total = _format_seconds(warm_median)
+        if _is_gpu_implementation(implementation_id) and not transfers_included:
+            total += " (compute only)"
+            total_tooltip = (
+                "Median GPU implementation time after warm-up. Transfers were "
+                "not included, so this is compute-only rather than an additive "
+                "whole-pipeline total."
+            )
+        elif transfers_included:
+            total_tooltip = (
+                "Median measured call after warm-up, including transfers for "
+                "this isolated node benchmark. Whole-pipeline transfers are "
+                "modeled once across runtime boundaries."
+            )
+        else:
+            total_tooltip = "Median measured call after warm-up."
+
+    if valid:
+        resident_median = _median(resident)
+        compute_median = resident_median
+        if compute_median is None and not transfers_included:
+            compute_median = warm_median
+    else:
+        compute_median = None
+
+    movement_values: tuple[float, ...] = ()
+    if valid and (transfer or host):
+        count = max(len(transfer), len(host))
+        movement_values = tuple(
+            (float(transfer[index]) if index < len(transfer) else 0.0)
+            + (float(host[index]) if index < len(host) else 0.0)
+            for index in range(count)
+        )
+    movement_median = _median(movement_values)
+    movement_tooltip = (
+        "Median data transfer plus host-output materialization time. The "
+        "whole-pipeline model counts shared runtime-boundary transfers only once."
+        if movement_median is not None
+        else "No separate data-movement timing was recorded."
+    )
+
+    first_run = getattr(candidate, "cold_seconds", None) if valid else None
+    peak_memory = int(getattr(candidate, "peak_memory_bytes", 0) or 0)
+    if timing_censored:
+        evidence_text = f"Lower bound · {evidence_source}"
+    elif warm:
+        count = len(warm)
+        evidence_text = f"{count} round{'s' if count != 1 else ''} · {evidence_source}"
+    elif error or not parity_passed:
+        evidence_text = "Excluded"
+    else:
+        evidence_text = evidence_source.capitalize()
+    censor_reason = str(getattr(candidate, "timing_censor_reason", "") or "").strip()
+    evidence_tooltip = censor_reason or (
+        f"Timing evidence was {evidence_source}."
+        if valid
+        else error or "No valid timing evidence was accepted."
+    )
+    return _CandidateTimingDisplay(
+        total=total,
+        compute=_format_optional_seconds(compute_median),
+        data_movement=_format_optional_seconds(movement_median),
+        first_run=_format_optional_seconds(
+            None if first_run is None else float(first_run)
+        ),
+        peak_memory=_format_bytes(peak_memory),
+        evidence=evidence_text,
+        total_tooltip=total_tooltip,
+        data_movement_tooltip=movement_tooltip,
+        evidence_tooltip=evidence_tooltip,
+    )
+
+
 def _candidate_timing_text(evidence: object) -> str:
     record = getattr(evidence, "record", None)
     candidates = getattr(record, "candidates", ())
@@ -797,9 +1274,7 @@ def _candidate_timing_text(evidence: object) -> str:
             incumbent = str(
                 getattr(candidate, "timing_censor_incumbent_id", "") or ""
             ).strip()
-            reason = str(
-                getattr(candidate, "timing_censor_reason", "") or ""
-            ).strip()
+            reason = str(getattr(candidate, "timing_censor_reason", "") or "").strip()
             if lower_bound is not None:
                 detail = (
                     f">{_format_seconds(float(lower_bound))} "

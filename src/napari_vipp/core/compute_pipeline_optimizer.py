@@ -165,12 +165,16 @@ class PipelineValidationWinner(StrEnum):
     NOT_RUN = "not-run"
     CURRENT = "current"
     PROPOSED = "proposed"
+    INCONCLUSIVE = "inconclusive"
 
 
 class PipelineOptimizationSelectionBasis(StrEnum):
     """Stable provenance for why the optimizer selected its final assignment."""
 
     PAIRED_VALIDATED_ALTERNATIVE = "paired-validated-alternative"
+    PAIRED_INCONCLUSIVE_RETAINED_CURRENT = (
+        "paired-inconclusive-retained-current"
+    )
     EXACT_MODEL_RETAINED_CURRENT = "exact-model-retained-current"
     CONSERVATIVE_BOUND_RETAINED_CURRENT = (
         "conservative-bound-retained-current"
@@ -607,20 +611,42 @@ class PipelineOptimizationProposal:
                 else PipelineOptimizationSelectionBasis.EXACT_MODEL_RETAINED_CURRENT
             )
         )
-        paired_basis = (
+        paired_alternative_basis = (
             basis
             is PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE
         )
+        paired_inconclusive_basis = (
+            basis
+            is PipelineOptimizationSelectionBasis.PAIRED_INCONCLUSIVE_RETAINED_CURRENT
+        )
+        paired_basis = paired_alternative_basis or paired_inconclusive_basis
         if self.pipeline_validation_performed != paired_basis:
             raise ValueError(
                 "selection_basis must identify paired validation exactly when "
                 "pipeline_validation_performed is true"
             )
+        if paired_inconclusive_basis != (
+            winner is PipelineValidationWinner.INCONCLUSIVE
+        ):
+            raise ValueError(
+                "an inconclusive validation winner requires the paired "
+                "inconclusive retained-current selection basis"
+            )
         if not paired_basis and winner is not PipelineValidationWinner.CURRENT:
             raise ValueError(
                 "a model-retained selection basis requires the current assignment"
             )
-        if any(row.changed for row in self.rows) and not paired_basis:
+        if paired_inconclusive_basis and any(
+            row.changed
+            or row.current_implementation_id != row.proposed_implementation_id
+            or row.current_preference != row.proposed_preference
+            for row in self.rows
+        ):
+            raise ValueError(
+                "an inconclusive paired validation must retain every current "
+                "assignment and authored preference"
+            )
+        if any(row.changed for row in self.rows) and not paired_alternative_basis:
             raise ValueError(
                 "a changed assignment requires paired whole-pipeline validation"
             )
@@ -633,10 +659,20 @@ class PipelineOptimizationProposal:
             "tested_assignment",
             _validated_assignment(tested_assignment, "tested_assignment"),
         )
+        preference_mapping = dict(self.preference_mapping)
+        if paired_inconclusive_basis:
+            retained_preferences = {
+                row.node_id: row.current_preference for row in self.rows
+            }
+            if preference_mapping != retained_preferences:
+                raise ValueError(
+                    "an inconclusive paired validation preference mapping must "
+                    "exactly retain every current node preference"
+                )
         object.__setattr__(
             self,
             "preference_mapping",
-            MappingProxyType(dict(sorted(self.preference_mapping.items()))),
+            MappingProxyType(dict(sorted(preference_mapping.items()))),
         )
 
     def is_current(
@@ -662,6 +698,11 @@ class PipelineOptimizationProposal:
 
         if request.fingerprint != self.request_fingerprint:
             raise PipelineOptimizationStale("compute request changed after analysis")
+        if (
+            self.selection_basis
+            is PipelineOptimizationSelectionBasis.PAIRED_INCONCLUSIVE_RETAINED_CURRENT
+        ):
+            return request
         preferences = dict(request.node_preferences)
         for row in self.rows:
             preference = self.preference_mapping.get(
@@ -1018,10 +1059,10 @@ class PipelineOptimizationCoordinator:
             elif proposed_wins:
                 validation_winner = PipelineValidationWinner.PROPOSED
             else:
-                raise PipelineOptimizationNotBeneficial(
-                    "Neither assignment decisively exceeded the other by the "
-                    "greater of 5% or 10 ms with a paired lower confidence "
-                    "bound above 1.0."
+                proposed_assignment = current_assignment
+                validation_winner = PipelineValidationWinner.INCONCLUSIVE
+                selection_basis = (
+                    PipelineOptimizationSelectionBasis.PAIRED_INCONCLUSIVE_RETAINED_CURRENT
                 )
         else:
             selection_basis = (
@@ -1046,14 +1087,20 @@ class PipelineOptimizationCoordinator:
         proposed_map = dict(proposed_assignment)
         rows: list[PipelineOptimizationRow] = []
         preferences: dict[str, NodeComputePreference] = {}
+        inconclusive_basis = (
+            PipelineOptimizationSelectionBasis.PAIRED_INCONCLUSIVE_RETAINED_CURRENT
+        )
         for node in node_values:
             allowed = allowed_by_node[node.node_id]
-            proposed_preference = _proposed_preference(
-                node,
-                proposed_map[node.node_id],
-                allowed,
-                host_runtime_id=transfer_profile.host_runtime_id,
-            )
+            if selection_basis is inconclusive_basis:
+                proposed_preference = node.authored_preference
+            else:
+                proposed_preference = _proposed_preference(
+                    node,
+                    proposed_map[node.node_id],
+                    allowed,
+                    host_runtime_id=transfer_profile.host_runtime_id,
+                )
             row = PipelineOptimizationRow(
                 node.node_id,
                 current_map[node.node_id],

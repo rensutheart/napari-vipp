@@ -38,10 +38,13 @@ The four policies have distinct purposes:
 | --- | --- |
 | `cpu` | Use only the authoritative host implementation. |
 | `auto` | With no exact compatible history, use reviewed `public_auto_candidate` GPU defaults wherever they pass the current safety gates. Accelerated-only history causes the next global Auto run to measure CPU once on the same execution surface; a complete pair then selects under the 1.20x/20-ms gate. This remains the new-session default. |
-| `prefer_gpu` | Consider every reviewed public GPU implementation, including `public_custom`, and use an eligible GPU without requiring it to beat CPU. |
+| `prefer_gpu` | Consider every reviewed public GPU implementation, including `public_custom`, without requiring it to beat CPU. Transfer-economics placement may keep a lightweight host-side view on CPU when uploading its complete input would be wasteful. |
 | `custom` | Apply the active per-node CPU/library/exact preferences; this is the only mode that exposes node benchmarking and `Find fastest pipeline…`. |
 
-Prefer GPU bypasses only the performance gate. Scientific parity, dtype,
+Prefer GPU bypasses CPU-versus-GPU timing evidence, but not transfer-economics
+placement. For example, host-entry Extract Channel stays on CPU when that lets
+VIPP upload one selected channel rather than the complete multichannel image.
+Scientific parity, dtype,
 parameter, shape, optional-dependency, environment, provider, and memory gates
 remain mandatory. VIPP never silently inserts a cast, changes a parameter, or
 admits a developer-hidden provider merely to place more work on GPU. Developer-hidden
@@ -56,6 +59,22 @@ A separate, user-confirmed **Add conversion** action may author a visible
 conversion is the sole blocker. That graph edit is persisted,
 provenance-visible, and undoable; it is not an implicit policy coercion. Its
 result is GPU eligibility rather than a guarantee of GPU execution.
+
+The portable **GPU Segmentation Bridge** example records this intent as
+`prefer_gpu` with visible fallback. Its initial reviewed public Custom
+implementations are `cupy-extract-channel-view-v1` and
+`cupy-binary-threshold-f32-exact-v1`; Prefer GPU may select them only when the
+complete runtime, data, parameter, memory, and scientific gates pass. A failed
+gate produces an explained CPU decision on interactive, batch, generated, and
+exported execution rather than making the workflow unportable.
+
+At a host entry, CPU Extract Channel can select one channel before upload. In a
+resident device segment, GPU Extract Channel instead returns an
+allocation-sharing view and keeps the complete multichannel allocation live.
+Consequently, one upload and one download do not necessarily mean the fewest
+transferred bytes. The one-round-trip best case also assumes one retained
+terminal result; a preview, side branch, batch output, or retained intermediate
+creates an additional legitimate materialization boundary.
 
 On native Windows, Auto, Prefer GPU, and Custom use the same CUDA-device
 admission rule: the exact pinned Python, scientific-stack, CUDA runtime,

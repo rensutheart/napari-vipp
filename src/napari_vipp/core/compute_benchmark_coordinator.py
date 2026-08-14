@@ -13,7 +13,7 @@ import importlib.metadata
 import math
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,9 +26,11 @@ from napari_vipp.core.compute import (
     BenchmarkRecord,
     ComputeEnvironment,
     ComputeRequest,
+    ExactWorkloadCandidateQualification,
     NodeComputePreference,
     NodePreferenceKind,
     canonical_digest,
+    exact_workload_identity_digest,
 )
 from napari_vipp.core.compute_benchmark import (
     ADAPTIVE_WARM_ROUNDS,
@@ -56,6 +58,7 @@ from napari_vipp.core.compute_policy import (
     ArrayFacts,
     FactCompleteness,
     estimate_candidate_memory,
+    evaluate_candidate_exact_workload_test_support,
     evaluate_candidate_support,
     evaluate_candidate_workload_support,
     evaluate_memory_support,
@@ -180,6 +183,7 @@ class NodeBenchmarkCandidateEligibility:
     supported: bool
     reason_code: str
     reason_text: str
+    exact_workload_test_allowed: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -194,6 +198,8 @@ class NodeBenchmarkCandidateEligibility:
             object.__setattr__(self, name, value)
         if not isinstance(self.supported, bool):
             raise TypeError("supported must be a boolean.")
+        if not isinstance(self.exact_workload_test_allowed, bool):
+            raise TypeError("exact_workload_test_allowed must be a boolean.")
 
 
 class NodeBenchmarkUnavailable(BenchmarkRejected):
@@ -265,6 +271,14 @@ class ApplicationNodeBenchmarkPlan:
     def key_digest(self) -> str:
         return self.registered.request.key.digest
 
+    @property
+    def exact_workload_test_implementation_ids(self) -> frozenset[str]:
+        return frozenset(
+            item.implementation_id
+            for item in self.eligibility
+            if item.exact_workload_test_allowed
+        )
+
     def preference_for(self, record: BenchmarkRecord) -> NodeComputePreference:
         if record.key != self.registered.request.key:
             raise ValueError("benchmark record does not match this exact plan.")
@@ -287,6 +301,77 @@ class ApplicationNodeBenchmarkResult:
         expected = self.plan.preference_for(self.record)
         if self.winner_preference != expected:
             raise ValueError("winner_preference does not match the benchmark record.")
+
+    def exact_workload_qualifications(
+        self,
+        *,
+        qualification_scope_digest: str,
+    ) -> frozenset[ExactWorkloadCandidateQualification]:
+        """Issue scoped proofs for soft candidates that passed node parity."""
+
+        return exact_workload_qualifications_for_benchmark(
+            self.plan,
+            self.record,
+            qualification_scope_digest=qualification_scope_digest,
+        )
+
+
+def exact_workload_qualifications_for_benchmark(
+    plan: ApplicationNodeBenchmarkPlan,
+    record: BenchmarkRecord,
+    *,
+    qualification_scope_digest: str,
+) -> frozenset[ExactWorkloadCandidateQualification]:
+    """Build private execution proofs from one exact node benchmark result."""
+
+    if not isinstance(plan, ApplicationNodeBenchmarkPlan):
+        raise TypeError("plan must be an ApplicationNodeBenchmarkPlan.")
+    if not isinstance(record, BenchmarkRecord):
+        raise TypeError("record must be a BenchmarkRecord.")
+    if record.key != plan.registered.request.key:
+        raise ValueError("benchmark record does not match this exact plan.")
+    scope_digest = str(qualification_scope_digest).strip()
+    if not scope_digest:
+        raise ValueError("qualification_scope_digest must not be empty.")
+    soft_ids = plan.exact_workload_test_implementation_ids
+    if not soft_ids:
+        return frozenset()
+    specs = {item.implementation_id: item for item in plan.admitted_specs}
+    record_digest = canonical_digest(asdict(record))
+    qualifications = set()
+    for result in record.candidates:
+        if (
+            result.implementation_id not in soft_ids
+            or not result.parity_passed
+            or result.error
+        ):
+            continue
+        spec = specs.get(result.implementation_id)
+        if spec is None:
+            raise ValueError(
+                "A soft-prequalified parity result has no exact implementation "
+                "declaration."
+            )
+        qualifications.add(
+            ExactWorkloadCandidateQualification(
+                node_id=plan.node_id,
+                operation_id=plan.operation_id,
+                implementation_id=spec.implementation_id,
+                implementation_version=spec.implementation_version,
+                workload_identity_digest=exact_workload_identity_digest(
+                    plan.registered.request.workload
+                ),
+                benchmark_workload_fingerprint=plan.workload_fingerprint,
+                compute_environment_fingerprint=plan.environment.fingerprint,
+                benchmark_environment_fingerprint=(
+                    record.key.environment_fingerprint
+                ),
+                parity_policy_id=spec.parity_policy_id,
+                benchmark_record_digest=record_digest,
+                qualification_scope_digest=scope_digest,
+            )
+        )
+    return frozenset(qualifications)
 
 
 def _record_is_complete_for_plan(
@@ -377,6 +462,7 @@ class ApplicationNodeBenchmarkCoordinator:
         paired_bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
         paired_confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
         adaptive_candidate_stopping: bool = False,
+        allow_exact_workload_test: bool = False,
         cancelled: CancelCallback | None = None,
         progress: ProgressCallback | None = None,
     ) -> ApplicationNodeBenchmarkPlan:
@@ -385,6 +471,8 @@ class ApplicationNodeBenchmarkCoordinator:
         _validate_callbacks(cancelled, progress)
         if not isinstance(adaptive_candidate_stopping, bool):
             raise TypeError("adaptive_candidate_stopping must be a boolean.")
+        if not isinstance(allow_exact_workload_test, bool):
+            raise TypeError("allow_exact_workload_test must be a boolean.")
         budget = _validated_budget(time_budget_seconds)
         started = _read_clock(self.clock)
 
@@ -427,7 +515,7 @@ class ApplicationNodeBenchmarkCoordinator:
             allow_experimental=allow_experimental,
         )
         static_supported: list[OperationComputeSpec] = []
-        decisions: dict[str, tuple[bool, str, str]] = {}
+        decisions: dict[str, tuple[bool, str, str, bool]] = {}
         for spec in all_specs:
             check_abort()
             support = evaluate_candidate_workload_support(
@@ -439,8 +527,12 @@ class ApplicationNodeBenchmarkCoordinator:
                 support.supported,
                 support.reason.value,
                 support.reason_text,
+                support.exact_workload_test_allowed,
             )
-            if support.supported:
+            if support.supported or (
+                allow_exact_workload_test
+                and support.exact_workload_test_allowed
+            ):
                 static_supported.append(spec)
 
         selected_environment = environment
@@ -482,13 +574,23 @@ class ApplicationNodeBenchmarkCoordinator:
         admitted: list[OperationComputeSpec] = []
         for spec in static_supported:
             check_abort()
-            support = evaluate_candidate_support(
-                spec,
-                workload,
-                selected_environment,
-                allow_experimental=allow_experimental,
-                array_facts=facts,
-            )
+            if allow_exact_workload_test:
+                support = evaluate_candidate_exact_workload_test_support(
+                    spec,
+                    workload,
+                    selected_environment,
+                    allow_experimental=allow_experimental,
+                    array_facts=facts,
+                )
+            else:
+                support = evaluate_candidate_support(
+                    spec,
+                    workload,
+                    selected_environment,
+                    allow_experimental=allow_experimental,
+                    array_facts=facts,
+                )
+            exact_workload_test_allowed = support.exact_workload_test_allowed
             if support.supported:
                 estimate = estimate_candidate_memory(spec, workload)
                 support = evaluate_memory_support(
@@ -501,6 +603,7 @@ class ApplicationNodeBenchmarkCoordinator:
                 support.supported,
                 support.reason.value,
                 support.reason_text,
+                exact_workload_test_allowed,
             )
             if support.supported:
                 admitted.append(spec)
@@ -1213,5 +1316,6 @@ __all__ = [
     "NodeBenchmarkProgress",
     "NodeBenchmarkUnavailable",
     "benchmark_environment_fingerprint",
+    "exact_workload_qualifications_for_benchmark",
     "stable_preference_for_benchmark_winner",
 ]

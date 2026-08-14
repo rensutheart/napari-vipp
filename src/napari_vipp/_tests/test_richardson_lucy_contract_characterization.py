@@ -13,10 +13,10 @@ from napari_vipp.core.richardson_lucy_compute import (
 
 _SPEC_DIGESTS = {
     "richardson_lucy_deconvolution": (
-        "b6e9dd5780ecf1b7e08c7bd287147051b5a6973b25d6833ffa457fb381a73609"
+        "d0aba48adc7d78e3265fe5c4f26c38e2c611509b15150721098322e8ee27eaa7"
     ),
     "richardson_lucy_tv_deconvolution": (
-        "5e206df5c616ad141b8c21e059dc98e9e13c0e37dcc0132690b4b9836edba70a"
+        "f34beed306849b9c049a3a0933a051356053edbd9cd9453ceaf8b7192d3920b1"
     ),
 }
 
@@ -160,13 +160,16 @@ def test_rl_parity_profiles_are_frozen() -> None:
 
     assert ordinary.passed is True
     assert ordinary.detail == (
-        "nrmse=2.08108797e-07 (limit=2e-06); "
-        "max_abs=9.53674316e-07 (limit=2.1e-05); max_ulp=2 (diagnostic)"
+        "nrmse=2.08108797e-07 (limit=0.005); "
+        "max_abs=9.53674316e-07 (limit=0.020001); "
+        "near_identity=true (diagnostic_nrmse_limit=2e-06); "
+        "max_ulp=2 (diagnostic)"
     )
     assert lambda_zero == ordinary
     assert positive_tv.passed is True
     assert positive_tv.detail == (
         "nrmse=0.000218202074 (limit=0.005); "
         "max_abs=0.000999927521 (limit=0.020001); "
+        "near_identity=false (diagnostic_nrmse_limit=2e-06); "
         "max_ulp=2097 (diagnostic)"
     )

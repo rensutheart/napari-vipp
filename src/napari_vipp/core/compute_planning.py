@@ -20,6 +20,7 @@ from napari_vipp.core.compute import (
     ComputeRequest,
     DecisionKind,
     DecisionReason,
+    ExactWorkloadCandidateQualification,
     ExecutionPlan,
     ExecutionSegment,
     FallbackPolicy,
@@ -30,6 +31,7 @@ from napari_vipp.core.compute import (
     NodeExecutionDecision,
     NodePreferenceKind,
     WorkloadDescriptor,
+    exact_workload_identity_digest,
 )
 from napari_vipp.core.compute_policy import (
     ArrayFacts,
@@ -38,6 +40,7 @@ from napari_vipp.core.compute_policy import (
     _evaluate_phase1_cuda_host_environment,
     estimate_candidate_memory,
     evaluate_auto_performance,
+    evaluate_candidate_exact_workload_test_support,
     evaluate_candidate_support,
     evaluate_candidate_workload_support,
     evaluate_memory_support,
@@ -132,6 +135,7 @@ class _Candidate:
     spec: OperationComputeSpec
     memory_estimate: MemoryEstimate
     evidence: PerformanceEvidence | None
+    exact_workload_qualification: ExactWorkloadCandidateQualification | None = None
 
 
 def plan_compute_decisions(
@@ -142,6 +146,10 @@ def plan_compute_decisions(
     environment: ComputeEnvironment | None = None,
     array_facts: Mapping[str, tuple[ArrayFacts, ...]] | None = None,
     performance_evidence: Mapping[tuple[str, str], PerformanceEvidence] | None = None,
+    exact_workload_qualifications: frozenset[
+        ExactWorkloadCandidateQualification
+    ] = frozenset(),
+    exact_workload_qualification_scope_digest: str = "",
 ) -> ComputePlanningResult:
     """Resolve CPU/Auto/Prefer-GPU/Custom intent for prepared workloads.
 
@@ -164,6 +172,33 @@ def plan_compute_decisions(
         raise ValueError("workload node IDs must be unique.")
     facts_by_node = dict(array_facts or {})
     evidence_by_candidate = dict(performance_evidence or {})
+    qualifications = frozenset(exact_workload_qualifications)
+    if any(
+        not isinstance(item, ExactWorkloadCandidateQualification)
+        for item in qualifications
+    ):
+        raise TypeError(
+            "exact_workload_qualifications must contain "
+            "ExactWorkloadCandidateQualification values."
+        )
+    qualification_scope = str(exact_workload_qualification_scope_digest).strip()
+    if qualifications and not qualification_scope:
+        raise ValueError(
+            "exact_workload_qualification_scope_digest is required when exact "
+            "workload qualifications are supplied."
+        )
+    if any(
+        item.qualification_scope_digest != qualification_scope
+        for item in qualifications
+    ):
+        raise ValueError(
+            "exact workload qualifications must match the active scope digest."
+        )
+    qualification_keys = tuple(item.candidate_key for item in qualifications)
+    if len(set(qualification_keys)) != len(qualification_keys):
+        raise ValueError(
+            "exact_workload_qualifications contain duplicate candidate identities."
+        )
     unknown_facts = set(facts_by_node) - set(node_ids)
     if unknown_facts:
         names = ", ".join(sorted(unknown_facts))
@@ -249,6 +284,15 @@ def plan_compute_decisions(
                 workload.operation_id,
                 preference,
             )
+            specs, residency_rejections = _residency_aware_specs(
+                selected_registry,
+                request,
+                preference,
+                workload,
+                specs,
+                decisions,
+                facts_by_node.get(workload.node_id, ()),
+            )
             candidates, rejections = _admit_candidates(
                 request,
                 preference,
@@ -257,7 +301,10 @@ def plan_compute_decisions(
                 resolved_environment,
                 facts_by_node.get(workload.node_id, ()),
                 evidence_by_candidate,
+                qualifications,
+                qualification_scope,
             )
+            rejections = (*residency_rejections, *rejections)
             selected, selection_rejection = _select_candidate(
                 request,
                 preference,
@@ -613,6 +660,10 @@ def _admit_candidates(
     environment: ComputeEnvironment,
     facts: tuple[ArrayFacts, ...],
     evidence: Mapping[tuple[str, str], PerformanceEvidence],
+    exact_workload_qualifications: frozenset[
+        ExactWorkloadCandidateQualification
+    ],
+    exact_workload_qualification_scope_digest: str,
 ) -> tuple[tuple[_Candidate, ...], tuple[SupportDecision, ...]]:
     candidates: list[_Candidate] = []
     rejections: list[SupportDecision] = []
@@ -670,6 +721,25 @@ def _admit_candidates(
             allow_experimental=request.allow_experimental,
             array_facts=facts,
         )
+        qualification = _matching_exact_workload_qualification(
+            exact_workload_qualifications,
+            workload,
+            spec,
+            environment,
+            exact_workload_qualification_scope_digest,
+        )
+        if (
+            not support.supported
+            and support.exact_workload_test_allowed
+            and qualification is not None
+        ):
+            support = evaluate_candidate_exact_workload_test_support(
+                spec,
+                workload,
+                environment,
+                allow_experimental=request.allow_experimental,
+                array_facts=facts,
+            )
         if not support.supported:
             rejections.append(support)
             continue
@@ -698,9 +768,150 @@ def _admit_candidates(
                 spec,
                 memory,
                 candidate_evidence,
+                qualification,
             )
         )
     return tuple(candidates), tuple(rejections)
+
+
+def _matching_exact_workload_qualification(
+    qualifications: frozenset[ExactWorkloadCandidateQualification],
+    workload: WorkloadDescriptor,
+    spec: OperationComputeSpec,
+    environment: ComputeEnvironment,
+    scope_digest: str,
+) -> ExactWorkloadCandidateQualification | None:
+    """Return the one exact proof matching every planner-visible identity."""
+
+    if not qualifications or not scope_digest:
+        return None
+    workload_identity = exact_workload_identity_digest(workload)
+    return next(
+        (
+            item
+            for item in qualifications
+            if item.node_id == workload.node_id
+            and item.operation_id == workload.operation_id
+            and item.implementation_id == spec.implementation_id
+            and item.implementation_version == spec.implementation_version
+            and item.workload_identity_digest == workload_identity
+            and item.compute_environment_fingerprint == environment.fingerprint
+            and item.parity_policy_id == spec.parity_policy_id
+            and item.qualification_scope_digest == scope_digest
+        ),
+        None,
+    )
+
+
+def _residency_aware_specs(
+    registry: ComputeRegistry,
+    request: ComputeRequest,
+    preference: NodeComputePreference,
+    workload: WorkloadDescriptor,
+    specs: tuple[OperationComputeSpec, ...],
+    decisions: Sequence[NodeExecutionDecision],
+    array_facts: tuple[ArrayFacts, ...],
+) -> tuple[tuple[OperationComputeSpec, ...], tuple[SupportDecision, ...]]:
+    """Keep a cheap channel slice on host unless it already receives CUDA data.
+
+    Extract Channel is an allocation-sharing device view.  At a host source,
+    selecting it merely to satisfy Prefer GPU would upload and retain every
+    channel before discarding all but one.  Keeping that first slice on CPU
+    uploads only the selected channel into the following device segment.  A
+    Custom GPU pin remains an explicit opt-in to whole-input residency.
+    """
+
+    automatic_or_prefer_intent = request.mode in {
+        ComputeMode.AUTO,
+        ComputeMode.PREFER_GPU,
+    } or (
+        request.mode is ComputeMode.CUSTOM
+        and preference.kind is NodePreferenceKind.AUTO
+    )
+    if (
+        workload.operation_id != "extract_channel"
+        or not automatic_or_prefer_intent
+        or not specs
+    ):
+        return specs, ()
+
+    support_by_spec = {
+        spec: evaluate_candidate_workload_support(
+            spec,
+            workload,
+            array_facts=array_facts,
+        )
+        for spec in specs
+    }
+    placement_eligible = tuple(
+        spec for spec, support in support_by_spec.items() if support.supported
+    )
+    if not placement_eligible:
+        # Preserve the more useful scientific/dtype/parameter rejection.  A
+        # transfer-placement explanation applies only to an otherwise usable
+        # device view.
+        return specs, ()
+
+    decisions_by_node = {decision.node_id: decision for decision in decisions}
+    predecessors = tuple(
+        decisions_by_node[node_id]
+        for node_id in workload.resident_predecessors
+        if node_id in decisions_by_node
+    )
+
+    def receives_compatible_device_array(target: OperationComputeSpec) -> bool:
+        for decision in predecessors:
+            if decision.runtime_id == CPU_RUNTIME_ID:
+                continue
+            try:
+                source = registry.implementation_spec(
+                    decision.implementation_id,
+                    decision.implementation_version,
+                    allow_experimental=request.allow_experimental,
+                )
+            except KeyError:
+                continue
+            if (
+                not source.supports_device_residency
+                or source.host_boundary
+                or source.host_finalizer_ref
+                or source.runtime_id != target.runtime_id
+                or source.array_domain != target.array_domain
+            ):
+                continue
+            if source.implementation_library_id == target.implementation_library_id:
+                return True
+            if registry.interoperability_contract(
+                target.runtime_id,
+                (
+                    source.implementation_library_id,
+                    target.implementation_library_id,
+                ),
+            ):
+                return True
+        return False
+
+    rejected = tuple(
+        spec for spec, support in support_by_spec.items() if not support.supported
+    )
+    retained = tuple(
+        spec
+        for spec in placement_eligible
+        if receives_compatible_device_array(spec)
+    )
+    if retained:
+        return (*rejected, *retained), ()
+    return rejected, (
+        SupportDecision(
+            False,
+            DecisionReason.PERFORMANCE_GATE,
+            "Extract Channel stayed on CPU to avoid uploading the complete "
+            "multichannel image merely to select one channel. If a following "
+            "GPU segment is selected, VIPP uploads only that selected channel. "
+            "A Custom GPU choice can explicitly retain the complete input on "
+            "the device.",
+        ),
+    )
 
 
 def _select_candidate(
@@ -816,7 +1027,12 @@ def _selected_decision(
     candidate: _Candidate,
     mode: ComputeMode,
 ) -> NodeExecutionDecision:
-    if mode is ComputeMode.PREFER_GPU:
+    if candidate.exact_workload_qualification is not None:
+        reason_text = (
+            f"{candidate.spec.implementation_id!r} passed exact CPU/GPU "
+            "scientific parity for this workload and optimizer identity."
+        )
+    elif mode is ComputeMode.PREFER_GPU:
         reason_text = (
             f"{candidate.spec.implementation_id!r} is scientifically eligible, "
             "available, and within the admitted memory bound. Prefer GPU selected "
@@ -851,6 +1067,11 @@ def _selected_decision(
         DecisionKind.SELECTED,
         DecisionReason.SELECTED_IMPLEMENTATION,
         reason_text,
+        benchmark_record_digest=(
+            candidate.exact_workload_qualification.benchmark_record_digest
+            if candidate.exact_workload_qualification is not None
+            else ""
+        ),
         memory_estimate=candidate.memory_estimate,
         implementation_version=candidate.spec.implementation_version,
     )

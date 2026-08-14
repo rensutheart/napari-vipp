@@ -12,6 +12,7 @@ import napari_vipp.core.compute_benchmark_adapter as adapter_module
 import napari_vipp.core.compute_benchmark_coordinator as coordinator_module
 from napari_vipp._tests.test_compute_benchmark_adapter import (
     ManualClock,
+    _FakeDeviceArray,
     _FakeRuntime,
     _two_input_rl_spec,
 )
@@ -41,15 +42,19 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     stable_preference_for_benchmark_winner,
 )
 from napari_vipp.core.compute_planning import (
+    ComputePreflightError,
     plan_compute_decisions,
     probe_compute_environment,
 )
+from napari_vipp.core.compute_policy import ArrayFacts, FactCompleteness
 from napari_vipp.core.compute_registry import ComputeRegistry
+from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
 from napari_vipp.core.operations import (
     median_filter,
     richardson_lucy_deconvolution,
 )
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
+from napari_vipp.core.workflow import serialize_workflow
 
 
 def _environment(**updates) -> ComputeEnvironment:
@@ -192,12 +197,19 @@ def _coordinator_with_fake_rl_runtime(
     runtime = _FakeRuntime(clock)
     specification = _two_input_rl_spec()
     registry = ComputeRegistry()
+    original_implementations_for_operation = (
+        registry.implementations_for_operation
+    )
     observed_gpu_inputs: list[tuple[tuple[int, ...], ...]] = []
     monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
     monkeypatch.setattr(
         registry,
         "implementations_for_operation",
-        lambda *_args, **_kwargs: (specification,),
+        lambda operation_id, **kwargs: (
+            (specification,)
+            if operation_id == specification.operation_id
+            else original_implementations_for_operation(operation_id, **kwargs)
+        ),
     )
     monkeypatch.setattr(
         registry,
@@ -874,6 +886,57 @@ def test_exact_saved_record_reuses_completed_candidate_rejection(
     assert coordinator.cached_result(plan) is None
 
 
+def test_legacy_rl_parity_record_cannot_reuse_under_v2_contract(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime, specification, _observed = (
+        _coordinator_with_fake_rl_runtime(tmp_path, monkeypatch, clock)
+    )
+    image = np.linspace(0.1, 1.0, 31 * 37, dtype=np.float32).reshape(31, 37)
+    psf = np.ones((3, 3), dtype=np.float32)
+    psf /= psf.sum(dtype=np.float32)
+    pipeline, _image_source, _psf_source, node_id = _rl_pipeline(image, psf)
+    plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+    )
+    measured = coordinator.run(plan).record
+    request = plan.registered.request
+    assert request.scientific_contract_digest
+
+    # This is the exact key emitted before scientific spec/policy IDs entered
+    # benchmark identity. Implementation ID/version and timing policy remain
+    # unchanged, just as they did across the RL v1 -> v2 parity-policy change.
+    legacy_key = replace(request, scientific_contract_digest="").key
+    assert legacy_key.implementation_ids == request.key.implementation_ids
+    assert legacy_key.policy_id != request.key.policy_id
+    cpu_id = request.reference.implementation_id
+    rejected = replace(
+        measured,
+        key=legacy_key,
+        candidates=tuple(
+            replace(
+                candidate,
+                parity_passed=False,
+                error="legacy v1 scientific mismatch",
+                failure_kind=BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY,
+            )
+            if candidate.implementation_id == specification.implementation_id
+            else candidate
+            for candidate in measured.candidates
+        ),
+        accepted_implementation_id=cpu_id,
+    )
+    coordinator.store.discard(request.key)
+    coordinator.store.put(rejected)
+
+    assert coordinator.cached_result(plan) is None
+
+
 def test_prepare_opt_in_separates_adaptive_censored_policy_identity(
     tmp_path,
     monkeypatch,
@@ -1076,6 +1139,191 @@ def test_static_ineligibility_rejects_before_runtime_probe(tmp_path, monkeypatch
     assert decision.reason_code == "workload_unsupported"
     assert "negative zero" in decision.reason_text
     assert JsonBenchmarkStore(tmp_path / "benchmarks.json").records() == ()
+
+
+def test_exact_workload_opt_in_admits_soft_rl_parameter_region(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime, specification, _observed = (
+        _coordinator_with_fake_rl_runtime(tmp_path, monkeypatch, clock)
+    )
+    image = np.linspace(0.1, 1.0, 31 * 37, dtype=np.float32).reshape(31, 37)
+    psf = np.ones((3, 3), dtype=np.float32)
+    psf /= psf.sum(dtype=np.float32)
+    pipeline, image_source, psf_source, node_id = _rl_pipeline(image, psf)
+    pipeline.set_param(node_id, "filter_epsilon", 1e-5)
+
+    with pytest.raises(NodeBenchmarkUnavailable):
+        coordinator.prepare(
+            pipeline,
+            node_id,
+            environment=_environment(),
+            allow_experimental=True,
+        )
+
+    plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        allow_exact_workload_test=True,
+    )
+
+    assert plan.admitted_specs == (specification,)
+    assert plan.eligibility[0].supported
+    assert plan.eligibility[0].exact_workload_test_allowed
+    assert plan.exact_workload_test_implementation_ids == {
+        specification.implementation_id
+    }
+
+    benchmark_result = coordinator.run(plan)
+    scope_digest = "exact-optimizer-snapshot-digest"
+    qualifications = benchmark_result.exact_workload_qualifications(
+        qualification_scope_digest=scope_digest,
+    )
+    assert len(qualifications) == 1
+    qualification = next(iter(qualifications))
+    assert qualification.candidate_key == (
+        node_id,
+        specification.implementation_id,
+    )
+
+    workload = plan.registered.request.workload
+    facts = tuple(
+        ArrayFacts(
+            value.shape,
+            value.dtype.name,
+            value.size,
+            f"exact-input-{index}",
+            completeness=FactCompleteness.COMPLETE,
+            finite_count=value.size,
+            minimum=float(value.min()),
+            maximum=float(value.max()),
+            strides=value.strides,
+            contiguous=value.flags.c_contiguous,
+        )
+        for index, value in enumerate((image, psf))
+    )
+    request = ComputeRequest(
+        mode="custom",
+        node_preferences={
+            node_id: f"implementation:{specification.implementation_id}"
+        },
+        fallback_policy="strict",
+        allow_experimental=True,
+    )
+
+    # Merely opting into the benchmark cannot weaken normal planning.  The
+    # exact parity result must be presented in its active optimizer scope.
+    with pytest.raises(ComputePreflightError):
+        plan_compute_decisions(
+            request,
+            (workload,),
+            registry=coordinator.registry,
+            environment=plan.environment,
+            array_facts={node_id: facts},
+        )
+
+    changed_workload = replace(
+        workload,
+        parameters=tuple(
+            (name, 2e-5 if name == "filter_epsilon" else value)
+            for name, value in workload.parameters
+        ),
+    )
+    with pytest.raises(ComputePreflightError):
+        plan_compute_decisions(
+            request,
+            (changed_workload,),
+            registry=coordinator.registry,
+            environment=plan.environment,
+            array_facts={node_id: facts},
+            exact_workload_qualifications=qualifications,
+            exact_workload_qualification_scope_digest=scope_digest,
+        )
+
+    planned = plan_compute_decisions(
+        request,
+        (workload,),
+        registry=coordinator.registry,
+        environment=plan.environment,
+        array_facts={node_id: facts},
+        exact_workload_qualifications=qualifications,
+        exact_workload_qualification_scope_digest=scope_digest,
+    )
+    decision = planned.decisions[0]
+    assert decision.implementation_id == specification.implementation_id
+    assert decision.decision_kind is DecisionKind.SELECTED
+    assert decision.benchmark_record_digest == qualification.benchmark_record_digest
+
+    observed_qualifications = []
+
+    def execution_planner(planning_request, workloads, **kwargs):
+        observed_qualifications.append(kwargs["exact_workload_qualifications"])
+        return plan_compute_decisions(
+            planning_request,
+            workloads,
+            registry=coordinator.registry,
+            # The fake runtime probe does not reproduce every declared host
+            # field in the benchmark environment.  Production passes the same
+            # probed snapshot to both paths; this seam keeps that invariant.
+            environment=plan.environment,
+            array_facts=kwargs["array_facts"],
+            performance_evidence=kwargs["performance_evidence"],
+            exact_workload_qualifications=kwargs[
+                "exact_workload_qualifications"
+            ],
+            exact_workload_qualification_scope_digest=kwargs[
+                "exact_workload_qualification_scope_digest"
+            ],
+        )
+
+    source_payloads = {
+        image_source: SourcePayload(image, {"axes": "YX"}, "exact image"),
+        psf_source: SourcePayload(psf, {"axes": "YX"}, "exact PSF"),
+    }
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_planning.probe_compute_environment",
+        lambda *_args, **_kwargs: (plan.environment, ()),
+    )
+    monkeypatch.setattr(
+        _FakeDeviceArray,
+        "ndim",
+        property(lambda value: value.array.ndim),
+        raising=False,
+    )
+    run_result = execute_pipeline_request(
+        PipelineRunRequest(
+            1,
+            serialize_workflow(pipeline, compute_request=request),
+            image,
+            {"axes": "YX"},
+            "exact image",
+            source_payloads,
+            compute_request=request,
+            manual_node_ids=frozenset({node_id}),
+            target_node_ids=frozenset({node_id}),
+            exact_workload_qualifications=qualifications,
+            exact_workload_qualification_scope_digest=scope_digest,
+        ),
+        compute_registry=coordinator.registry,
+        compute_planner=execution_planner,
+        raise_errors=True,
+    )
+    assert not run_result.error
+    assert run_result.failure is None
+    assert observed_qualifications == [qualifications]
+    assert run_result.execution_report is not None
+    actual_decisions = {
+        item.node_id: item
+        for item in run_result.execution_report.actual_decisions
+    }
+    assert node_id in actual_decisions, tuple(actual_decisions)
+    actual = actual_decisions[node_id]
+    assert actual.implementation_id == specification.implementation_id
+    assert actual.benchmark_record_digest == qualification.benchmark_record_digest
 
 
 def test_coordinator_import_does_not_import_optional_gpu_packages():

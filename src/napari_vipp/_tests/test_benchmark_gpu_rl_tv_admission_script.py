@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import platform
@@ -176,36 +177,53 @@ def test_positive_reference_diagnostics_preserve_production_output() -> None:
     assert np.isfinite(diagnostics["minimum_raw_denominator"])
 
 
-def test_versioned_parity_profiles_are_distinct() -> None:
+def test_official_parity_retains_near_identity_as_diagnostic_only() -> None:
     reference = np.linspace(0.0, 1.0, 64, dtype=np.float32).reshape(8, 8)
     close = reference.copy()
     close[3, 4] += np.float32(2e-4)
 
-    strict = evidence._parity_record(
+    result = evidence._parity_record(
         reference,
         close,
-        nrmse_limit=evidence.STRICT_NRMSE_LIMIT,
-        max_abs_base=evidence.STRICT_MAX_ABS_BASE,
-        max_abs_peak_factor=evidence.STRICT_MAX_ABS_PEAK_FACTOR,
-    )
-    positive = evidence._parity_record(
-        reference,
-        close,
-        nrmse_limit=evidence.POSITIVE_NRMSE_LIMIT,
-        max_abs_base=evidence.POSITIVE_MAX_ABS_BASE,
-        max_abs_peak_factor=evidence.POSITIVE_MAX_ABS_PEAK_FACTOR,
+        nrmse_limit=evidence.SCIENTIFIC_NRMSE_LIMIT,
+        max_abs_base=evidence.SCIENTIFIC_MAX_ABS_BASE,
+        max_abs_peak_factor=evidence.SCIENTIFIC_MAX_ABS_PEAK_FACTOR,
     )
 
-    assert strict["passed"] is False
-    assert positive["passed"] is True
+    assert result["passed"] is True
+    assert result["near_identity"] is False
+    assert (
+        result["near_identity_nrmse_limit"]
+        == evidence.NEAR_IDENTITY_NRMSE_LIMIT
+    )
 
 
 def test_positive_admission_contract_names_only_measured_iterations() -> None:
     contract = evidence.BENCHMARK_CONTRACT
 
+    assert evidence.SCHEMA_VERSION == 2
+    assert contract["generator"] == "vipp-rl-tv-admission-v2"
+    assert contract["lambda_zero_profile"]["iterations"] == [10, 25, 26, 50, 100]
+    assert (
+        contract["lambda_zero_profile"]["nrmse_limit"]
+        == evidence.SCIENTIFIC_NRMSE_LIMIT
+    )
+    assert (
+        contract["lambda_zero_profile"]["near_identity_diagnostic"]
+        ["affects_admission"]
+        is False
+    )
+    assert (
+        contract["lambda_zero_profile"]["parity_policy_id"]
+        == "rl-scientific-equivalence-v2"
+    )
     assert contract["positive_default_profile"]["iterations"] == [10, 25]
+    assert (
+        contract["positive_default_profile"]["parity_policy_id"]
+        == "rl-tv-scientific-equivalence-v2"
+    )
     assert contract["parameter_region"]["positive_iterations"] == [10, 25]
-    assert contract["parameter_region"]["lambda_zero_maximum_iterations"] == 25
+    assert contract["parameter_region"]["lambda_zero_maximum_iterations"] == 100
 
 
 def test_git_provenance_preserves_the_first_porcelain_path(monkeypatch) -> None:
@@ -231,10 +249,12 @@ def test_privacy_validator_rejects_private_paths() -> None:
 
 
 @amd64_evidence_validation
-def test_committed_evidence_is_current_and_renders() -> None:
+def test_committed_historical_evidence_is_structurally_valid_and_renders() -> None:
     document = json.loads(ARTIFACT.read_text(encoding="utf-8"))
 
-    evidence.validate_evidence_document(document, require_current_sources=True)
+    evidence.validate_evidence_document(document, require_current_sources=False)
+    with pytest.raises(evidence.EvidenceError, match="archival, not current"):
+        evidence.validate_evidence_document(document, require_current_sources=True)
     markdown = evidence.render_markdown(document)
 
     assert "development-branch public exposure" in markdown
@@ -264,7 +284,7 @@ def test_validation_requires_unambiguous_publication_scope() -> None:
 
 
 @amd64_evidence_validation
-def test_validate_existing_subprocess_does_not_require_cupy() -> None:
+def test_historical_validation_subprocess_does_not_require_cupy() -> None:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.pathsep.join(
         filter(
@@ -287,8 +307,11 @@ def guarded_import(name, *args, **kwargs):
     return real_import(name, *args, **kwargs)
 
 builtins.__import__ = guarded_import
+import json
 from scripts import benchmark_gpu_rl_tv_admission as evidence
-raise SystemExit(evidence.main(["--validate-existing", {str(ARTIFACT)!r}]))
+document = json.loads(open({str(ARTIFACT)!r}, encoding="utf-8").read())
+evidence.validate_evidence_document(document, require_current_sources=False)
+print("historical RL-TV evidence is structurally valid")
 """
     completed = subprocess.run(
         [sys.executable, "-c", code],
@@ -299,4 +322,159 @@ raise SystemExit(evidence.main(["--validate-existing", {str(ARTIFACT)!r}]))
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
-    assert "is current" in completed.stdout
+    assert "historical RL-TV evidence is structurally valid" in completed.stdout
+
+
+def _current_validation_document() -> dict[str, object]:
+    def parity(*, nrmse: float = 1e-4, max_abs: float = 2e-4):
+        cpu_peak = 2.0
+        max_abs_limit = evidence.SCIENTIFIC_MAX_ABS_BASE + (
+            evidence.SCIENTIFIC_MAX_ABS_PEAK_FACTOR * cpu_peak
+        )
+        return {
+            "cpu_shape": [2, 3],
+            "gpu_shape": [2, 3],
+            "cpu_dtype": "float32",
+            "gpu_dtype": "float32",
+            "cpu_nonfinite_count": 0,
+            "gpu_nonfinite_count": 0,
+            "finite_mask_mismatch_count": 0,
+            "cpu_negative_count": 0,
+            "gpu_negative_count": 0,
+            "shape_equal": True,
+            "dtype_equal": True,
+            "finite_masks_equal": True,
+            "completely_finite": True,
+            "nonnegative": True,
+            "cpu_peak": cpu_peak,
+            "nrmse": nrmse,
+            "nrmse_limit": evidence.SCIENTIFIC_NRMSE_LIMIT,
+            "max_abs": max_abs,
+            "max_abs_limit": max_abs_limit,
+            "gate_score": max(
+                nrmse / evidence.SCIENTIFIC_NRMSE_LIMIT,
+                max_abs / max_abs_limit,
+            ),
+            "near_identity": nrmse <= evidence.NEAR_IDENTITY_NRMSE_LIMIT,
+            "near_identity_nrmse_limit": evidence.NEAR_IDENTITY_NRMSE_LIMIT,
+            "passed": True,
+        }
+
+    zero_records = []
+    for iteration_count in evidence.LAMBDA_ZERO_ITERATIONS:
+        for index in range(260):
+            zero_records.append(
+                {
+                    "fixture_id": f"zero-{iteration_count}-{index}",
+                    "spatial_rank": 2,
+                    "image_shape": [2, 3],
+                    "iterations": iteration_count,
+                    "parity": parity(),
+                    "cpu_tv_equals_cpu_rl_bitwise": True,
+                    "gpu_tv_equals_gpu_rl_bitwise": True,
+                    "passed": True,
+                }
+            )
+
+    positive_records = []
+    for iteration_count in evidence.POSITIVE_ITERATIONS:
+        for index in range(260):
+            positive_records.append(
+                {
+                    "fixture_id": f"positive-{iteration_count}-{index}",
+                    "spatial_rank": 2,
+                    "image_shape": [2, 3],
+                    "iterations": iteration_count,
+                    "parity": parity(),
+                    "reference_diagnostics": {
+                        "reference_threshold_active_samples": 0,
+                        "reference_floor_active_samples": 0,
+                        "total_voxel_iterations": 6 * iteration_count,
+                        "minimum_raw_denominator": 0.9,
+                    },
+                    "passed": True,
+                }
+            )
+    return {
+        "matrices": {
+            "lambda_zero_scientific_equivalence": evidence._matrix_document(
+                zero_records,
+                iterations=evidence.LAMBDA_ZERO_ITERATIONS,
+            ),
+            "positive_shipped_default": evidence._matrix_document(
+                positive_records,
+                iterations=evidence.POSITIVE_ITERATIONS,
+                diagnostics=True,
+            ),
+        }
+    }
+
+
+def test_v2_matrix_validation_rejects_tampered_numeric_gate() -> None:
+    document = _current_validation_document()
+    matrix = document["matrices"]["positive_shipped_default"]
+    record = matrix["records"][0]
+    record["parity"]["nrmse"] = 999.0
+
+    with pytest.raises(evidence.EvidenceError, match="gate score"):
+        evidence._validate_matrix(
+            matrix,
+            expected_records=520,
+            iterations=evidence.POSITIVE_ITERATIONS,
+            lambda_zero=False,
+            nrmse_limit=evidence.SCIENTIFIC_NRMSE_LIMIT,
+            max_abs_base=evidence.SCIENTIFIC_MAX_ABS_BASE,
+            max_abs_peak_factor=evidence.SCIENTIFIC_MAX_ABS_PEAK_FACTOR,
+            require_near_identity_diagnostic=True,
+            require_raw_observations=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("gpu_dtype", "float64", "dtype_equal"),
+        ("gpu_negative_count", 1, "nonnegative"),
+        ("gpu_nonfinite_count", 1, "completely_finite"),
+        ("gpu_shape", [3, 2], "unequal shapes"),
+    ),
+)
+def test_v2_parity_validation_rejects_tampered_output_contract(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    parity = copy.deepcopy(
+        _current_validation_document()["matrices"]
+        ["lambda_zero_scientific_equivalence"]["records"][0]["parity"]
+    )
+    parity[field] = value
+
+    with pytest.raises(evidence.EvidenceError, match=message):
+        evidence._validate_parity(
+            parity,
+            nrmse_limit=evidence.SCIENTIFIC_NRMSE_LIMIT,
+            max_abs_base=evidence.SCIENTIFIC_MAX_ABS_BASE,
+            max_abs_peak_factor=evidence.SCIENTIFIC_MAX_ABS_PEAK_FACTOR,
+            require_near_identity_diagnostic=True,
+            require_raw_observations=True,
+        )
+
+
+def test_v2_matrix_validation_rejects_tampered_summary() -> None:
+    document = _current_validation_document()
+    matrix = document["matrices"]["lambda_zero_scientific_equivalence"]
+    matrix["summaries"][0]["worst_nrmse"] = 0.0
+
+    with pytest.raises(evidence.EvidenceError, match="summaries"):
+        evidence._validate_matrix(
+            matrix,
+            expected_records=1300,
+            iterations=evidence.LAMBDA_ZERO_ITERATIONS,
+            lambda_zero=True,
+            nrmse_limit=evidence.SCIENTIFIC_NRMSE_LIMIT,
+            max_abs_base=evidence.SCIENTIFIC_MAX_ABS_BASE,
+            max_abs_peak_factor=evidence.SCIENTIFIC_MAX_ABS_PEAK_FACTOR,
+            require_near_identity_diagnostic=True,
+            require_raw_observations=True,
+        )

@@ -52,6 +52,15 @@ _SCIENTIFIC_STACK = (
 )
 
 
+def _public_region_count(*library_ids: str) -> int:
+    libraries = set(library_ids)
+    return sum(
+        spec.visible_for(allow_experimental=False)
+        and spec.implementation_library_id in libraries
+        for spec in accelerator_compute_specs()
+    )
+
+
 class _FakeRuntime:
     def __init__(self, *, available: bool = True) -> None:
         self.probe_calls = 0
@@ -183,8 +192,8 @@ def test_available_report_includes_probe_memory_and_is_json_safe():
     assert runtime.probe_calls == 1
     assert runtime.snapshot_calls == 1
     assert not runtime.closed  # injected runtimes remain caller-owned
-    assert len(report.admission_regions) == 14
-    assert len(report.admitted_regions) == 10
+    assert len(report.admission_regions) == len(accelerator_compute_specs())
+    assert len(report.admitted_regions) == _public_region_count("cupy", "cupyx")
     assert report.guidance is not None
     assert report.guidance.optional
 
@@ -363,7 +372,7 @@ def test_cli_converts_unexpected_diagnostic_failure_to_json(monkeypatch, capsys)
     assert payload["details"][0].startswith("ModuleNotFoundError")
 
 
-def test_live_catalog_reports_three_distinct_layers_and_all_fourteen_regions():
+def test_live_catalog_reports_three_distinct_layers_and_every_public_region():
     runtime = _FakeRuntime()
 
     standard = _doctor(runtime, library_probes=_library_probes())
@@ -388,6 +397,8 @@ def test_live_catalog_reports_three_distinct_layers_and_all_fourteen_regions():
         "cupyx-gaussian-blur-v1",
         "cupyx-gaussian-blur-3d-v1",
         "cupyx-convert-dtype-preserve-f32-v1",
+        "cupy-binary-threshold-f32-exact-v1",
+        "cupy-extract-channel-view-v1",
         "rl-cupy-f32-v1",
         "rl-tv-cupy-f32-v1",
         "cupyx-canny-edges-exact-v1",
@@ -407,8 +418,8 @@ def test_live_catalog_reports_three_distinct_layers_and_all_fourteen_regions():
         live_ids
     )
     assert standard.status is DoctorStatus.AVAILABLE
-    assert len(standard.admitted_regions) == 10
-    assert len(complete.admitted_regions) == 14
+    assert len(standard.admitted_regions) == _public_region_count("cupy", "cupyx")
+    assert len(complete.admitted_regions) == len(accelerator_compute_specs())
     assert complete.guidance is None
 
 
@@ -421,7 +432,7 @@ def test_cuda_can_start_while_library_and_public_admission_remain_degraded():
     assert report.cuda_ready
     assert report.status is DoctorStatus.DEGRADED
     assert report.reason_code == "public_cuda_degraded"
-    assert len(report.admitted_regions) == 1
+    assert len(report.admitted_regions) == _public_region_count("cupy")
     failed = {
         region.implementation_library_id
         for region in report.admission_regions

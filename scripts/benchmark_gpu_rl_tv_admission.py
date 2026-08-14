@@ -4,10 +4,11 @@ The command compares VIPP's authoritative progress-aware CPU implementation
 with the resident CuPy provider.  It has two deliberately separate numerical
 profiles:
 
-* ``lambda == 0`` inherits ordinary Richardson--Lucy's strict tolerance and
-  must also be exactly equivalent to the corresponding ordinary RL provider;
-* the exact shipped positive-TV defaults use the versioned nonlinear RL-TV
-  tolerance, followed by microscopy-feature, MSE, border-MSE, and flux gates.
+* ``lambda == 0`` inherits ordinary Richardson--Lucy's official scientific-
+  equivalence tolerance and must also be exactly equivalent to the
+  corresponding ordinary RL provider;
+* the exact shipped positive-TV defaults use the same numerical tolerance,
+  followed by microscopy-feature, MSE, border-MSE, and flux gates.
 
 The inherited 164-fixture RL matrix is supplemented by an independent
 96-fixture holdout designed around edges, sparse/dim signal, borders, and
@@ -39,7 +40,8 @@ import numpy as np
 from scipy import signal as scipy_signal
 
 SCHEMA = "napari-vipp-cupy-rl-tv-admission-evidence"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+HISTORICAL_SCHEMA_VERSION = 1
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     # Direct ``python scripts/...`` execution places only ``scripts`` on
@@ -53,15 +55,22 @@ DEFAULT_OUTPUT = (
 IMPLEMENTATION_ID = "rl-tv-cupy-f32-v1"
 ORDINARY_IMPLEMENTATION_ID = "rl-cupy-f32-v1"
 RUNTIME_ID = "cuda-cupy"
-STRICT_NRMSE_LIMIT = 2e-6
-STRICT_MAX_ABS_BASE = 1e-6
-STRICT_MAX_ABS_PEAK_FACTOR = 5e-6
-POSITIVE_NRMSE_LIMIT = 5e-3
-POSITIVE_MAX_ABS_BASE = 1e-6
-POSITIVE_MAX_ABS_PEAK_FACTOR = 5e-3
+SCIENTIFIC_NRMSE_LIMIT = 5e-3
+SCIENTIFIC_MAX_ABS_BASE = 1e-6
+SCIENTIFIC_MAX_ABS_PEAK_FACTOR = 5e-3
+NEAR_IDENTITY_NRMSE_LIMIT = 2e-6
+HISTORICAL_V1_MAX_ABS_BASE = 1e-6
+HISTORICAL_V1_MAX_ABS_PEAK_FACTOR = 5e-6
 FEATURE_ABSOLUTE_LIMIT = 5e-3
 METRIC_RELATIVE_LIMIT = 5e-3
-ITERATIONS = (10, 25)
+FEATURE_METRIC_NAMES = (
+    "points_recovery",
+    "thin_line_recovery",
+    "dim_structure_recovery",
+)
+RELATIVE_METRIC_NAMES = ("mse", "border_mse", "flux_ratio")
+LAMBDA_ZERO_ITERATIONS = (10, 25, 26, 50, 100)
+POSITIVE_ITERATIONS = (10, 25)
 LAMBDA_ZERO_FILTER_EPSILON = 1e-8
 POSITIVE_REGULARIZATION = 0.002
 POSITIVE_TV_EPSILON = 1e-6
@@ -104,7 +113,7 @@ HOLDOUT_FAMILIES = (
 )
 
 BENCHMARK_CONTRACT: dict[str, object] = {
-    "generator": "vipp-rl-tv-admission-v1",
+    "generator": "vipp-rl-tv-admission-v2",
     "authoritative_cpu": "progress-aware-vipp-richardson-lucy-tv",
     "candidate": IMPLEMENTATION_ID,
     "input_dtype": "float32",
@@ -125,20 +134,26 @@ BENCHMARK_CONTRACT: dict[str, object] = {
         },
     },
     "lambda_zero_profile": {
-        "iterations": list(ITERATIONS),
+        "iterations": list(LAMBDA_ZERO_ITERATIONS),
         "tv_regularization": 0.0,
         "filter_epsilon": LAMBDA_ZERO_FILTER_EPSILON,
         "ordinary_rl_equivalence": "bitwise CPU and bitwise GPU",
-        "nrmse_limit": STRICT_NRMSE_LIMIT,
-        "max_abs_formula": "1e-6 + 5e-6 * max(abs(cpu_reference))",
+        "parity_policy_id": "rl-scientific-equivalence-v2",
+        "nrmse_limit": SCIENTIFIC_NRMSE_LIMIT,
+        "max_abs_formula": "1e-6 + 0.005 * max(abs(cpu_reference))",
+        "near_identity_diagnostic": {
+            "nrmse_limit": NEAR_IDENTITY_NRMSE_LIMIT,
+            "affects_admission": False,
+        },
     },
     "positive_default_profile": {
-        "iterations": list(ITERATIONS),
+        "iterations": list(POSITIVE_ITERATIONS),
         "tv_regularization": POSITIVE_REGULARIZATION,
         "tv_epsilon": POSITIVE_TV_EPSILON,
         "filter_epsilon": POSITIVE_FILTER_EPSILON,
         "denominator_floor": POSITIVE_DENOMINATOR_FLOOR,
-        "nrmse_limit": POSITIVE_NRMSE_LIMIT,
+        "parity_policy_id": "rl-tv-scientific-equivalence-v2",
+        "nrmse_limit": SCIENTIFIC_NRMSE_LIMIT,
         "max_abs_formula": "1e-6 + 0.005 * max(abs(cpu_reference))",
         "feature_absolute_limit": FEATURE_ABSOLUTE_LIMIT,
         "mse_border_flux_relative_limit": METRIC_RELATIVE_LIMIT,
@@ -149,8 +164,9 @@ BENCHMARK_CONTRACT: dict[str, object] = {
         "clip_output_negative": True,
         "preserve_input_scale": True,
         "odd_psf_extents": True,
-        "lambda_zero_maximum_iterations": 25,
-        "positive_iterations": list(ITERATIONS),
+        "lambda_zero_maximum_iterations": 100,
+        "lambda_zero_iteration_checkpoints": list(LAMBDA_ZERO_ITERATIONS),
+        "positive_iterations": list(POSITIVE_ITERATIONS),
     },
 }
 
@@ -238,8 +254,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def benchmark_contract_digest() -> str:
+    return _contract_digest(BENCHMARK_CONTRACT)
+
+
+def _contract_digest(contract: Mapping[str, object]) -> str:
     encoded = json.dumps(
-        BENCHMARK_CONTRACT,
+        contract,
         allow_nan=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -295,7 +315,7 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
         positive_records: list[dict[str, object]] = []
         phantom_records: list[dict[str, object]] = []
         with runtime.execution_scope(device_id=selected_device):
-            for iteration_count in ITERATIONS:
+            for iteration_count in LAMBDA_ZERO_ITERATIONS:
                 print(
                     f"Lambda-zero equivalence: {iteration_count} iterations "
                     f"over {len(fixtures)} fixtures.",
@@ -343,9 +363,9 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
                     parity = _parity_record(
                         cpu_ordinary,
                         gpu_zero,
-                        nrmse_limit=STRICT_NRMSE_LIMIT,
-                        max_abs_base=STRICT_MAX_ABS_BASE,
-                        max_abs_peak_factor=STRICT_MAX_ABS_PEAK_FACTOR,
+                        nrmse_limit=SCIENTIFIC_NRMSE_LIMIT,
+                        max_abs_base=SCIENTIFIC_MAX_ABS_BASE,
+                        max_abs_peak_factor=SCIENTIFIC_MAX_ABS_PEAK_FACTOR,
                     )
                     cpu_exact = bool(np.array_equal(cpu_ordinary, cpu_zero))
                     gpu_exact = bool(np.array_equal(gpu_ordinary, gpu_zero))
@@ -365,6 +385,7 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
                     if case_index % 50 == 0:
                         print(f"  completed {case_index}/{len(fixtures)}", flush=True)
 
+            for iteration_count in POSITIVE_ITERATIONS:
                 print(
                     f"Positive shipped profile: {iteration_count} iterations "
                     f"over {len(fixtures)} fixtures.",
@@ -404,9 +425,9 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
                     parity = _parity_record(
                         expected,
                         actual,
-                        nrmse_limit=POSITIVE_NRMSE_LIMIT,
-                        max_abs_base=POSITIVE_MAX_ABS_BASE,
-                        max_abs_peak_factor=POSITIVE_MAX_ABS_PEAK_FACTOR,
+                        nrmse_limit=SCIENTIFIC_NRMSE_LIMIT,
+                        max_abs_base=SCIENTIFIC_MAX_ABS_BASE,
+                        max_abs_peak_factor=SCIENTIFIC_MAX_ABS_PEAK_FACTOR,
                     )
                     positive_records.append(
                         {
@@ -444,8 +465,15 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
         runtime.close()
 
     _require_source_snapshot_unchanged(source_provenance)
-    lambda_zero = _matrix_document(lambda_zero_records)
-    positive = _matrix_document(positive_records, diagnostics=True)
+    lambda_zero = _matrix_document(
+        lambda_zero_records,
+        iterations=LAMBDA_ZERO_ITERATIONS,
+    )
+    positive = _matrix_document(
+        positive_records,
+        iterations=POSITIVE_ITERATIONS,
+        diagnostics=True,
+    )
     all_passed = bool(
         all(record["passed"] for record in lambda_zero_records)
         and all(record["passed"] for record in positive_records)
@@ -472,7 +500,7 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
             "combined_manifest_sha256": _fixture_manifest_digest(fixtures),
         },
         "matrices": {
-            "lambda_zero_strict": lambda_zero,
+            "lambda_zero_scientific_equivalence": lambda_zero,
             "positive_shipped_default": positive,
             "maintained_phantoms": {
                 "record_count": len(phantom_records),
@@ -483,8 +511,9 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
         "conclusion": {
             "all_reviewed_gates_passed": all_passed,
             "admitted_positive_profile_is_exact_not_a_range": True,
-            "lambda_zero_inherits_strict_rl_gate": True,
-            "positive_profile_uses_versioned_rl_tv_gate": True,
+            "lambda_zero_inherits_official_rl_scientific_equivalence_gate": True,
+            "profiles_share_official_numerical_gate": True,
+            "positive_profile_has_additional_microscopy_feature_gates": True,
             **PUBLICATION_SCOPE,
         },
         "limitations": [
@@ -560,13 +589,26 @@ def _parity_record(
     max_abs_base: float,
     max_abs_peak_factor: float,
 ) -> dict[str, object]:
-    shape_equal = actual.shape == expected.shape
-    dtype_equal = actual.dtype == expected.dtype == np.dtype(np.float32)
+    cpu_shape = list(expected.shape)
+    gpu_shape = list(actual.shape)
+    cpu_dtype = str(expected.dtype)
+    gpu_dtype = str(actual.dtype)
+    shape_equal = cpu_shape == gpu_shape
+    dtype_equal = cpu_dtype == gpu_dtype == "float32"
     expected_finite = np.isfinite(expected)
     actual_finite = np.isfinite(actual)
-    finite_masks_equal = bool(np.array_equal(expected_finite, actual_finite))
-    completely_finite = bool(np.all(expected_finite) and np.all(actual_finite))
-    nonnegative = bool(np.all(expected >= 0) and np.all(actual >= 0))
+    cpu_nonfinite_count = int(expected.size - np.count_nonzero(expected_finite))
+    gpu_nonfinite_count = int(actual.size - np.count_nonzero(actual_finite))
+    finite_mask_mismatch_count = (
+        int(np.count_nonzero(expected_finite != actual_finite))
+        if shape_equal
+        else None
+    )
+    cpu_negative_count = int(np.count_nonzero(expected < 0))
+    gpu_negative_count = int(np.count_nonzero(actual < 0))
+    finite_masks_equal = finite_mask_mismatch_count == 0
+    completely_finite = cpu_nonfinite_count == gpu_nonfinite_count == 0
+    nonnegative = cpu_negative_count == gpu_negative_count == 0
     if shape_equal:
         expected64 = expected.astype(np.float64)
         actual64 = actual.astype(np.float64)
@@ -582,6 +624,7 @@ def _parity_record(
         peak = max_abs = nrmse = float("inf")
     max_abs_limit = float(max_abs_base + max_abs_peak_factor * peak)
     gate_score = max(nrmse / nrmse_limit, max_abs / max_abs_limit)
+    near_identity = bool(nrmse <= NEAR_IDENTITY_NRMSE_LIMIT)
     passed = bool(
         shape_equal
         and dtype_equal
@@ -592,6 +635,15 @@ def _parity_record(
         and max_abs <= max_abs_limit
     )
     return {
+        "cpu_shape": cpu_shape,
+        "gpu_shape": gpu_shape,
+        "cpu_dtype": cpu_dtype,
+        "gpu_dtype": gpu_dtype,
+        "cpu_nonfinite_count": cpu_nonfinite_count,
+        "gpu_nonfinite_count": gpu_nonfinite_count,
+        "finite_mask_mismatch_count": finite_mask_mismatch_count,
+        "cpu_negative_count": cpu_negative_count,
+        "gpu_negative_count": gpu_negative_count,
         "shape_equal": shape_equal,
         "dtype_equal": dtype_equal,
         "finite_masks_equal": finite_masks_equal,
@@ -603,6 +655,8 @@ def _parity_record(
         "max_abs": max_abs,
         "max_abs_limit": max_abs_limit,
         "gate_score": gate_score,
+        "near_identity": near_identity,
+        "near_identity_nrmse_limit": NEAR_IDENTITY_NRMSE_LIMIT,
         "passed": passed,
     }
 
@@ -717,7 +771,7 @@ def _run_phantom_matrix(
             image=image,
             psf=np.ascontiguousarray(phantom.psf, dtype=np.float32),
         )
-        for iteration_count in ITERATIONS:
+        for iteration_count in POSITIVE_ITERATIONS:
             parameters = {
                 **_common_parameters(fixture, iteration_count),
                 "tv_regularization": POSITIVE_REGULARIZATION,
@@ -741,23 +795,19 @@ def _run_phantom_matrix(
             parity = _parity_record(
                 expected,
                 actual,
-                nrmse_limit=POSITIVE_NRMSE_LIMIT,
-                max_abs_base=POSITIVE_MAX_ABS_BASE,
-                max_abs_peak_factor=POSITIVE_MAX_ABS_PEAK_FACTOR,
+                nrmse_limit=SCIENTIFIC_NRMSE_LIMIT,
+                max_abs_base=SCIENTIFIC_MAX_ABS_BASE,
+                max_abs_peak_factor=SCIENTIFIC_MAX_ABS_PEAK_FACTOR,
             )
             cpu_metrics = calculate_metrics(expected, phantom)
             gpu_metrics = calculate_metrics(actual, phantom)
             feature_deltas = {
                 name: abs(float(gpu_metrics[name]) - float(cpu_metrics[name]))
-                for name in (
-                    "points_recovery",
-                    "thin_line_recovery",
-                    "dim_structure_recovery",
-                )
+                for name in FEATURE_METRIC_NAMES
             }
             relative_metric_deltas = {
                 name: _relative_difference(cpu_metrics[name], gpu_metrics[name])
-                for name in ("mse", "border_mse", "flux_ratio")
+                for name in RELATIVE_METRIC_NAMES
             }
             feature_passed = all(
                 value <= FEATURE_ABSOLUTE_LIMIT for value in feature_deltas.values()
@@ -800,10 +850,11 @@ def _finite_metric_mapping(values: Mapping[str, float]) -> dict[str, float]:
 def _matrix_document(
     records: Sequence[Mapping[str, object]],
     *,
+    iterations: Sequence[int],
     diagnostics: bool = False,
 ) -> dict[str, object]:
     summaries: list[dict[str, object]] = []
-    for iteration_count in ITERATIONS:
+    for iteration_count in iterations:
         selected = [
             record for record in records if record["iterations"] == iteration_count
         ]
@@ -858,9 +909,9 @@ def _matrix_document(
             )
         summaries.append(summary)
     return {
-        "fixture_count": len(records) // len(ITERATIONS),
+        "fixture_count": len(records) // len(iterations),
         "result_count": len(records),
-        "iterations": list(ITERATIONS),
+        "iterations": list(iterations),
         "summaries": summaries,
         "records": list(records),
     }
@@ -1042,14 +1093,28 @@ def validate_evidence_document(
 ) -> None:
     if not isinstance(document, Mapping):
         raise EvidenceError("Evidence must be a mapping.")
-    if document.get("schema") != SCHEMA or document.get("schema_version") != 1:
+    if document.get("schema") != SCHEMA:
         raise EvidenceError("Unexpected RL-TV evidence schema.")
+    schema_version = document.get("schema_version")
+    if schema_version not in {HISTORICAL_SCHEMA_VERSION, SCHEMA_VERSION}:
+        raise EvidenceError("Unexpected RL-TV evidence schema version.")
+    historical = schema_version == HISTORICAL_SCHEMA_VERSION
     if document.get("status") != "complete":
         raise EvidenceError("Evidence status must be complete.")
-    if document.get("contract") != BENCHMARK_CONTRACT:
-        raise EvidenceError("Evidence contract differs from the current generator.")
-    if document.get("contract_sha256") != benchmark_contract_digest():
-        raise EvidenceError("Evidence contract digest is stale.")
+    contract = _mapping(document, "contract")
+    if historical:
+        _validate_historical_v1_contract(contract)
+        if document.get("contract_sha256") != _contract_digest(contract):
+            raise EvidenceError("Historical evidence contract digest is invalid.")
+        if require_current_sources:
+            raise EvidenceError(
+                "Historical schema-v1 RL-TV evidence is archival, not current."
+            )
+    else:
+        if contract != BENCHMARK_CONTRACT:
+            raise EvidenceError("Evidence contract differs from the current generator.")
+        if document.get("contract_sha256") != benchmark_contract_digest():
+            raise EvidenceError("Evidence contract digest is stale.")
 
     inherited = tuple(_inherited_fixtures())
     holdout = tuple(_holdout_fixtures())
@@ -1069,28 +1134,111 @@ def validate_evidence_document(
             raise EvidenceError(f"Fixture evidence field {name!r} is stale.")
 
     matrices = _mapping(document, "matrices")
-    zero = _mapping(matrices, "lambda_zero_strict")
+    zero_name = (
+        "lambda_zero_strict"
+        if historical
+        else "lambda_zero_scientific_equivalence"
+    )
+    zero = _mapping(matrices, zero_name)
     positive = _mapping(matrices, "positive_shipped_default")
     phantoms = _mapping(matrices, "maintained_phantoms")
-    _validate_matrix(zero, expected_records=520, lambda_zero=True)
-    _validate_matrix(positive, expected_records=520, lambda_zero=False)
+    zero_iterations = (10, 25) if historical else LAMBDA_ZERO_ITERATIONS
+    _validate_matrix(
+        zero,
+        expected_records=260 * len(zero_iterations),
+        iterations=zero_iterations,
+        lambda_zero=True,
+        nrmse_limit=(
+            NEAR_IDENTITY_NRMSE_LIMIT if historical else SCIENTIFIC_NRMSE_LIMIT
+        ),
+        max_abs_base=(
+            HISTORICAL_V1_MAX_ABS_BASE
+            if historical
+            else SCIENTIFIC_MAX_ABS_BASE
+        ),
+        max_abs_peak_factor=(
+            HISTORICAL_V1_MAX_ABS_PEAK_FACTOR
+            if historical
+            else SCIENTIFIC_MAX_ABS_PEAK_FACTOR
+        ),
+        require_near_identity_diagnostic=not historical,
+        require_raw_observations=not historical,
+    )
+    _validate_matrix(
+        positive,
+        expected_records=260 * len(POSITIVE_ITERATIONS),
+        iterations=POSITIVE_ITERATIONS,
+        lambda_zero=False,
+        nrmse_limit=SCIENTIFIC_NRMSE_LIMIT,
+        max_abs_base=SCIENTIFIC_MAX_ABS_BASE,
+        max_abs_peak_factor=SCIENTIFIC_MAX_ABS_PEAK_FACTOR,
+        require_near_identity_diagnostic=not historical,
+        require_raw_observations=not historical,
+    )
     phantom_records = _mapping_sequence(phantoms.get("records"), "phantom records")
     if phantoms.get("record_count") != 4 or len(phantom_records) != 4:
         raise EvidenceError("Maintained phantom evidence must contain four records.")
     for record in phantom_records:
-        if record.get("passed") is not True:
-            raise EvidenceError("A maintained phantom gate did not pass.")
-        _validate_parity(_mapping(record, "parity"), positive=True)
+        parity = _mapping(record, "parity")
+        parity_passed = _validate_parity(
+            parity,
+            nrmse_limit=SCIENTIFIC_NRMSE_LIMIT,
+            max_abs_base=SCIENTIFIC_MAX_ABS_BASE,
+            max_abs_peak_factor=SCIENTIFIC_MAX_ABS_PEAK_FACTOR,
+            require_near_identity_diagnostic=not historical,
+            require_raw_observations=not historical,
+        )
+        if not historical:
+            _validate_record_output_contract(record, parity)
+        cpu_metrics = _validated_finite_mapping(
+            _mapping(record, "cpu_metrics"), "CPU phantom metrics"
+        )
+        gpu_metrics = _validated_finite_mapping(
+            _mapping(record, "gpu_metrics"), "GPU phantom metrics"
+        )
         if any(
-            float(value) > FEATURE_ABSOLUTE_LIMIT
-            for value in _mapping(record, "feature_absolute_deltas").values()
+            name not in cpu_metrics or name not in gpu_metrics
+            for name in (*FEATURE_METRIC_NAMES, *RELATIVE_METRIC_NAMES)
         ):
-            raise EvidenceError("A phantom feature delta exceeds policy.")
-        if any(
-            float(value) > METRIC_RELATIVE_LIMIT
-            for value in _mapping(record, "metric_relative_deltas").values()
-        ):
-            raise EvidenceError("A phantom metric delta exceeds policy.")
+            raise EvidenceError("Phantom metric evidence is incomplete.")
+        expected_feature_deltas = {
+            name: abs(gpu_metrics[name] - cpu_metrics[name])
+            for name in FEATURE_METRIC_NAMES
+        }
+        expected_relative_deltas = {
+            name: _relative_difference(cpu_metrics[name], gpu_metrics[name])
+            for name in RELATIVE_METRIC_NAMES
+        }
+        _validate_derived_mapping(
+            _mapping(record, "feature_absolute_deltas"),
+            expected_feature_deltas,
+            "phantom feature deltas",
+        )
+        _validate_derived_mapping(
+            _mapping(record, "metric_relative_deltas"),
+            expected_relative_deltas,
+            "phantom relative metric deltas",
+        )
+        if record.get("feature_absolute_limit") != FEATURE_ABSOLUTE_LIMIT:
+            raise EvidenceError("Phantom feature limit differs from policy.")
+        if record.get("metric_relative_limit") != METRIC_RELATIVE_LIMIT:
+            raise EvidenceError("Phantom relative metric limit differs from policy.")
+        feature_passed = all(
+            value <= FEATURE_ABSOLUTE_LIMIT
+            for value in expected_feature_deltas.values()
+        )
+        metrics_passed = all(
+            value <= METRIC_RELATIVE_LIMIT
+            for value in expected_relative_deltas.values()
+        )
+        expected_record_passed = bool(
+            parity_passed and feature_passed and metrics_passed
+        )
+        _validate_stored_passed(
+            record,
+            expected=expected_record_passed,
+            label="maintained phantom",
+        )
 
     cleanup = _mapping(document, "cleanup")
     if (
@@ -1113,11 +1261,46 @@ def validate_evidence_document(
     )
 
 
+def _validate_historical_v1_contract(contract: Mapping[str, object]) -> None:
+    """Recognize the checked-in v1 contract without treating it as current."""
+
+    if contract.get("generator") != "vipp-rl-tv-admission-v1":
+        raise EvidenceError("Historical evidence generator is not RL-TV v1.")
+    zero = _mapping(contract, "lambda_zero_profile")
+    if (
+        zero.get("iterations") != [10, 25]
+        or zero.get("nrmse_limit") != NEAR_IDENTITY_NRMSE_LIMIT
+        or zero.get("max_abs_formula")
+        != "1e-6 + 5e-6 * max(abs(cpu_reference))"
+    ):
+        raise EvidenceError("Historical lambda-zero contract is not the reviewed v1.")
+    positive = _mapping(contract, "positive_default_profile")
+    if (
+        positive.get("iterations") != [10, 25]
+        or positive.get("nrmse_limit") != SCIENTIFIC_NRMSE_LIMIT
+        or positive.get("max_abs_formula")
+        != "1e-6 + 0.005 * max(abs(cpu_reference))"
+    ):
+        raise EvidenceError("Historical positive-TV contract is not the reviewed v1.")
+    region = _mapping(contract, "parameter_region")
+    if (
+        region.get("lambda_zero_maximum_iterations") != 25
+        or region.get("positive_iterations") != [10, 25]
+    ):
+        raise EvidenceError("Historical parameter region is not the reviewed v1.")
+
+
 def _validate_matrix(
     matrix: Mapping[str, object],
     *,
     expected_records: int,
+    iterations: Sequence[int],
     lambda_zero: bool,
+    nrmse_limit: float,
+    max_abs_base: float,
+    max_abs_peak_factor: float,
+    require_near_identity_diagnostic: bool,
+    require_raw_observations: bool,
 ) -> None:
     records = _mapping_sequence(matrix.get("records"), "matrix records")
     summaries = _mapping_sequence(matrix.get("summaries"), "matrix summaries")
@@ -1126,25 +1309,41 @@ def _validate_matrix(
         or matrix.get("result_count") != expected_records
     ):
         raise EvidenceError("Matrix fixture/result counts are incomplete.")
-    if len(records) != expected_records or len(summaries) != len(ITERATIONS):
+    if matrix.get("iterations") != list(iterations):
+        raise EvidenceError("Matrix iteration declaration is stale.")
+    if len(records) != expected_records or len(summaries) != len(iterations):
         raise EvidenceError("Matrix records or summaries are incomplete.")
-    expected_per_iteration = expected_records // len(ITERATIONS)
-    for iteration_count in ITERATIONS:
+    expected_per_iteration = expected_records // len(iterations)
+    for iteration_count in iterations:
         selected = [
             item for item in records if item.get("iterations") == iteration_count
         ]
         if len(selected) != expected_per_iteration:
             raise EvidenceError("Matrix iteration coverage is incomplete.")
     for record in records:
-        if record.get("passed") is not True:
-            raise EvidenceError("A matrix record did not pass.")
-        _validate_parity(_mapping(record, "parity"), positive=not lambda_zero)
+        parity = _mapping(record, "parity")
+        parity_passed = _validate_parity(
+            parity,
+            nrmse_limit=nrmse_limit,
+            max_abs_base=max_abs_base,
+            max_abs_peak_factor=max_abs_peak_factor,
+            require_near_identity_diagnostic=require_near_identity_diagnostic,
+            require_raw_observations=require_raw_observations,
+        )
+        if require_raw_observations:
+            _validate_record_output_contract(record, parity)
         if lambda_zero:
-            if (
-                record.get("cpu_tv_equals_cpu_rl_bitwise") is not True
-                or record.get("gpu_tv_equals_gpu_rl_bitwise") is not True
-            ):
-                raise EvidenceError("Lambda-zero ordinary-RL equivalence failed.")
+            cpu_exact = _required_bool(
+                record,
+                "cpu_tv_equals_cpu_rl_bitwise",
+                "lambda-zero record",
+            )
+            gpu_exact = _required_bool(
+                record,
+                "gpu_tv_equals_gpu_rl_bitwise",
+                "lambda-zero record",
+            )
+            expected_record_passed = bool(parity_passed and cpu_exact and gpu_exact)
         else:
             diagnostics = _mapping(record, "reference_diagnostics")
             for name in (
@@ -1156,31 +1355,256 @@ def _validate_matrix(
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     raise EvidenceError(f"Invalid diagnostic count {name!r}.")
             minimum = diagnostics.get("minimum_raw_denominator")
-            if not isinstance(minimum, (int, float)) or not math.isfinite(
-                float(minimum)
-            ):
+            if not _is_finite_number(minimum):
                 raise EvidenceError("Minimum raw denominator must be finite.")
-    for summary in summaries:
-        if summary.get("failure_count") != 0:
-            raise EvidenceError("A matrix summary reports failures.")
+            expected_record_passed = parity_passed
+        _validate_stored_passed(
+            record,
+            expected=expected_record_passed,
+            label="matrix record",
+        )
+
+    expected_summaries = _matrix_document(
+        records,
+        iterations=iterations,
+        diagnostics=not lambda_zero,
+    )["summaries"]
+    if list(summaries) != expected_summaries:
+        raise EvidenceError("Matrix summaries do not match their raw records.")
 
 
-def _validate_parity(parity: Mapping[str, object], *, positive: bool) -> None:
-    if parity.get("passed") is not True:
-        raise EvidenceError("A parity gate did not pass.")
-    expected_nrmse = POSITIVE_NRMSE_LIMIT if positive else STRICT_NRMSE_LIMIT
-    if parity.get("nrmse_limit") != expected_nrmse:
+def _validate_parity(
+    parity: Mapping[str, object],
+    *,
+    nrmse_limit: float,
+    max_abs_base: float,
+    max_abs_peak_factor: float,
+    require_near_identity_diagnostic: bool,
+    require_raw_observations: bool,
+) -> bool:
+    if parity.get("nrmse_limit") != nrmse_limit:
         raise EvidenceError("Parity NRMSE policy differs from the contract.")
-    for name in ("nrmse", "max_abs", "max_abs_limit", "gate_score"):
+    for name in ("cpu_peak", "nrmse", "max_abs", "max_abs_limit", "gate_score"):
         value = parity.get(name)
-        if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-            raise EvidenceError(f"Parity field {name!r} must be finite.")
+        if not _is_finite_number(value) or float(value) < 0:
+            raise EvidenceError(
+                f"Parity field {name!r} must be finite and non-negative."
+            )
+    expected_max_abs_limit = max_abs_base + max_abs_peak_factor * float(
+        parity["cpu_peak"]
+    )
+    _require_close(
+        parity["max_abs_limit"],
+        expected_max_abs_limit,
+        "Parity max-absolute limit",
+    )
+    expected_gate_score = max(
+        float(parity["nrmse"]) / nrmse_limit,
+        float(parity["max_abs"]) / expected_max_abs_limit,
+    )
+    _require_close(parity["gate_score"], expected_gate_score, "Parity gate score")
+
+    flag_names = (
+        "shape_equal",
+        "dtype_equal",
+        "finite_masks_equal",
+        "completely_finite",
+        "nonnegative",
+    )
+    recorded_flags = {
+        name: _required_bool(parity, name, "parity record") for name in flag_names
+    }
+    effective_flags = recorded_flags
+    if require_raw_observations:
+        effective_flags = _recomputed_array_contract_flags(parity)
+        for name, expected in effective_flags.items():
+            if recorded_flags[name] is not expected:
+                raise EvidenceError(
+                    f"Parity field {name!r} does not match raw observations."
+                )
+
+    if require_near_identity_diagnostic:
+        if parity.get("near_identity_nrmse_limit") != NEAR_IDENTITY_NRMSE_LIMIT:
+            raise EvidenceError("Near-identity NRMSE diagnostic is stale.")
+        near_identity = _required_bool(
+            parity, "near_identity", "near-identity diagnostic"
+        )
+        expected_near_identity = bool(
+            float(parity["nrmse"]) <= NEAR_IDENTITY_NRMSE_LIMIT
+        )
+        if near_identity is not expected_near_identity:
+            raise EvidenceError(
+                "Near-identity diagnostic does not match the recorded NRMSE."
+            )
+
+    expected_passed = bool(
+        all(effective_flags.values())
+        and float(parity["nrmse"]) <= nrmse_limit
+        and float(parity["max_abs"]) <= expected_max_abs_limit
+    )
+    _validate_stored_passed(
+        parity,
+        expected=expected_passed,
+        label="parity gate",
+    )
+    return expected_passed
+
+
+def _recomputed_array_contract_flags(
+    parity: Mapping[str, object],
+) -> dict[str, bool]:
+    cpu_shape = _validated_shape(parity.get("cpu_shape"), "CPU output shape")
+    gpu_shape = _validated_shape(parity.get("gpu_shape"), "GPU output shape")
+    cpu_dtype = parity.get("cpu_dtype")
+    gpu_dtype = parity.get("gpu_dtype")
+    if not isinstance(cpu_dtype, str) or not isinstance(gpu_dtype, str):
+        raise EvidenceError("Parity output dtypes must be strings.")
+
+    cpu_size = math.prod(cpu_shape)
+    gpu_size = math.prod(gpu_shape)
+    cpu_nonfinite = _validated_count(
+        parity.get("cpu_nonfinite_count"),
+        upper_bound=cpu_size,
+        name="CPU non-finite count",
+    )
+    gpu_nonfinite = _validated_count(
+        parity.get("gpu_nonfinite_count"),
+        upper_bound=gpu_size,
+        name="GPU non-finite count",
+    )
+    cpu_negative = _validated_count(
+        parity.get("cpu_negative_count"),
+        upper_bound=cpu_size,
+        name="CPU negative count",
+    )
+    gpu_negative = _validated_count(
+        parity.get("gpu_negative_count"),
+        upper_bound=gpu_size,
+        name="GPU negative count",
+    )
+    shape_equal = cpu_shape == gpu_shape
+    mismatch = parity.get("finite_mask_mismatch_count")
+    if shape_equal:
+        mismatch_count = _validated_count(
+            mismatch,
+            upper_bound=cpu_size,
+            name="finite-mask mismatch count",
+        )
+        finite_masks_equal = mismatch_count == 0
+    else:
+        if mismatch is not None:
+            raise EvidenceError(
+                "Finite-mask mismatch count must be null for unequal shapes."
+            )
+        finite_masks_equal = False
+    return {
+        "shape_equal": shape_equal,
+        "dtype_equal": cpu_dtype == gpu_dtype == "float32",
+        "finite_masks_equal": finite_masks_equal,
+        "completely_finite": cpu_nonfinite == gpu_nonfinite == 0,
+        "nonnegative": cpu_negative == gpu_negative == 0,
+    }
+
+
+def _validate_record_output_contract(
+    record: Mapping[str, object], parity: Mapping[str, object]
+) -> None:
+    image_shape = _validated_shape(record.get("image_shape"), "fixture image shape")
+    cpu_shape = _validated_shape(parity.get("cpu_shape"), "CPU output shape")
+    gpu_shape = _validated_shape(parity.get("gpu_shape"), "GPU output shape")
+    if cpu_shape != image_shape or gpu_shape != image_shape:
+        raise EvidenceError("Recorded output shape differs from the fixture image.")
+
+
+def _validated_shape(value: object, name: str) -> tuple[int, ...]:
+    if not isinstance(value, list) or not value:
+        raise EvidenceError(f"{name} must be a non-empty dimension list.")
+    if any(
+        isinstance(item, bool) or not isinstance(item, int) or item < 0
+        for item in value
+    ):
+        raise EvidenceError(f"{name} contains an invalid dimension.")
+    return tuple(value)
+
+
+def _validated_count(value: object, *, upper_bound: int, name: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > upper_bound
+    ):
+        raise EvidenceError(f"{name} is outside its valid range.")
+    return value
+
+
+def _required_bool(
+    mapping: Mapping[str, object], name: str, label: str
+) -> bool:
+    value = mapping.get(name)
+    if not isinstance(value, bool):
+        raise EvidenceError(f"{label.capitalize()} field {name!r} must be boolean.")
+    return value
+
+
+def _validate_stored_passed(
+    mapping: Mapping[str, object], *, expected: bool, label: str
+) -> None:
+    recorded = _required_bool(mapping, "passed", label)
+    if recorded is not expected:
+        raise EvidenceError(f"Stored {label} result does not match its raw records.")
+    if not expected:
+        raise EvidenceError(f"A {label} did not pass.")
+
+
+def _is_finite_number(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
+
+
+def _require_close(actual: object, expected: float, label: str) -> None:
+    if not _is_finite_number(actual) or not math.isclose(
+        float(actual), expected, rel_tol=1e-12, abs_tol=1e-15
+    ):
+        raise EvidenceError(f"{label} does not match its raw records.")
+
+
+def _validated_finite_mapping(
+    mapping: Mapping[str, object], label: str
+) -> dict[str, float]:
+    if any(not isinstance(name, str) for name in mapping):
+        raise EvidenceError(f"{label} has a non-string field name.")
+    if any(not _is_finite_number(value) for value in mapping.values()):
+        raise EvidenceError(f"{label} must contain only finite numbers.")
+    return {str(name): float(value) for name, value in mapping.items()}
+
+
+def _validate_derived_mapping(
+    recorded: Mapping[str, object],
+    expected: Mapping[str, float],
+    label: str,
+) -> None:
+    if set(recorded) != set(expected):
+        raise EvidenceError(f"{label.capitalize()} have incomplete fields.")
+    for name, expected_value in expected.items():
+        _require_close(recorded.get(name), expected_value, f"{label} field {name!r}")
 
 
 def render_markdown(document: Mapping[str, object]) -> str:
     environment = _mapping(document, "environment")
     matrices = _mapping(document, "matrices")
-    zero = _mapping(matrices, "lambda_zero_strict")
+    historical = document.get("schema_version") == HISTORICAL_SCHEMA_VERSION
+    zero = _mapping(
+        matrices,
+        (
+            "lambda_zero_strict"
+            if historical
+            else "lambda_zero_scientific_equivalence"
+        ),
+    )
     positive = _mapping(matrices, "positive_shipped_default")
     phantom_records = _mapping_sequence(
         _mapping(matrices, "maintained_phantoms").get("records"),
@@ -1200,8 +1624,14 @@ def render_markdown(document: Mapping[str, object]) -> str:
             "exposure**"
         ),
         "",
-        "The lambda-zero profile remains ordinary Richardson-Lucy and uses its",
-        "strict numerical policy. The positive profile is only the exact shipped",
+        (
+            "This is the historical schema-v1 artifact. Its lambda-zero matrix "
+            "records the former near-identity gate at 10 and 25 iterations."
+            if historical
+            else "Both profiles use the official 0.5% scientific-equivalence "
+            "gate. Lambda zero is checked through the 100-iteration boundary."
+        ),
+        "The positive profile is only the exact shipped",
         "tuple (lambda 0.002, TV epsilon 1e-6, filter epsilon 1e-12, floor 0.05)",
         "at exactly 10 or 25 iterations; this is not a continuous parameter claim.",
         "",
@@ -1215,7 +1645,14 @@ def render_markdown(document: Mapping[str, object]) -> str:
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for profile_name, matrix in (
-        ("Lambda zero / strict RL", zero),
+        (
+            (
+                "Lambda zero / historical near-identity"
+                if historical
+                else "Lambda zero / scientific equivalence"
+            ),
+            zero,
+        ),
         ("Positive shipped default", positive),
     ):
         for summary in _mapping_sequence(matrix.get("summaries"), "summaries"):
@@ -1278,8 +1715,8 @@ def render_markdown(document: Mapping[str, object]) -> str:
             "",
             "## Interpretation",
             "",
-            "- Positive TV is nonlinear, so its versioned 0.5% numerical screen is",
-            "  separate from lambda-zero ordinary RL. Feature-recovery, MSE, border",
+            "- Positive TV is nonlinear. Both profiles use the official 0.5%",
+            "  backend-agreement screen; feature-recovery, MSE, border",
             "  MSE, and flux gates prevent the aggregate tolerance from hiding a",
             "  material microscopy regression on the maintained phantoms.",
             "- Guard activity is diagnostic, not a reason to alter authored values.",

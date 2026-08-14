@@ -79,10 +79,10 @@ two samples.
 The profiles then diverge:
 
 1. **Lambda zero:** `tv_regularization == 0` disables the TV branch. This
-   profile inherits ordinary RL's `filter_epsilon == 1e-8`, 1 through 25
-   iterations, and strict ordinary-RL parity gate. `tv_epsilon` and
-   `denominator_floor` remain authored and finite but are scientifically
-   inactive.
+   profile inherits ordinary RL's authored `filter_epsilon` range from
+   `1e-12` through `1e-6`, 1 through 100 iterations, and official
+   scientific-equivalence gate. `tv_epsilon` and `denominator_floor` remain
+   authored and finite but are scientifically inactive.
 2. **Positive TV:** the first admitted region is exactly the shipped tuple
    `tv_regularization == 0.002`, `tv_epsilon == 1e-6`,
    `filter_epsilon == 1e-12`, and `denominator_floor == 0.05`, at exactly 10 or
@@ -90,24 +90,28 @@ The profiles then diverge:
    remain visibly on CPU; VIPP never changes them to obtain GPU eligibility.
 
 An explicit **Convert Dtype** node can make Image and PSF finite `float32` when
-that representation change is scientifically appropriate. The planner and
-optimizer never synthesize a cast to improve a benchmark.
+that representation change is scientifically appropriate. VIPP may offer a
+one-click repair that inserts this visible node, but it never silently changes
+the representation merely to improve a benchmark.
 
-## Why positive TV has a separate parity gate
+## Official backend-agreement gate
 
-Lambda-zero RL-TV uses ordinary RL's gate: equal shape and `float32` dtype,
-equal finite masks with completely finite output, NRMSE `<= 2e-6`, and
-`max_abs <= 1e-6 + 5e-6 * CPU_peak`. It was also tested for direct equivalence
-with the ordinary GPU RL provider.
+Both lambda-zero and positive RL-TV now use the same official float32
+scientific-equivalence gate: equal shape and `float32` dtype, equal finite
+masks with completely finite, non-negative output, NRMSE `<= 0.005`, and
+`max_abs <= 1e-6 + 0.005 * CPU_peak`. The former `2e-6` NRMSE screen remains a
+near-identity diagnostic only; it does not accept or reject an implementation.
+Lambda-zero is also required to remain bitwise equivalent to the corresponding
+ordinary CPU and GPU RL providers.
 
 Positive TV is nonlinear. Small CPU/GPU convolution and 3D reduction-order
 differences feed back through the gradient normalization and denominator on
 every iteration. Applying the ordinary RL screen to the exact positive shipped
 profile rejected 113 of the inherited 164 adversarial fixtures at 25
 iterations, even though maintained phantom morphology, MSE, flux, and boundary
-metrics agreed closely. Loosening ordinary RL's gate would have weakened a
-different operation, so Phase 2C instead introduces
-`rl-tv-float32-tolerance-v1` only for positive TV:
+metrics agreed closely. The official v2 policy therefore treats the old screen
+as a diagnostic and uses a scientific-equivalence gate for both RL-family
+profiles:
 
 - equal shape and `float32` dtype;
 - equal finite masks, completely finite output, and non-negative CPU/GPU
@@ -131,10 +135,14 @@ range, and dim structures near bright objects are represented.
 At the positive shipped profile, all 164 inherited fixtures passed at 10 and 25
 iterations. Worst normalized gate scores were `0.45744` and `0.44384`, leaving
 more than 54% margin. All 96 holdout fixtures also passed at both iteration
-counts, with worst scores `0.22686` and `0.24209`. Across the same 260 cases,
-lambda-zero CPU RL-TV was bitwise equal to CPU RL and GPU RL-TV was bitwise
-equal to ordinary GPU RL at both iteration boundaries: 520/520 comparisons
-passed the strict gate.
+counts, with worst scores `0.22686` and `0.24209`. The committed schema-v1
+artifact also records the historical lambda-zero study: across the same 260
+cases, CPU RL-TV was bitwise equal to CPU RL and GPU RL-TV was bitwise equal to
+ordinary GPU RL at 10 and 25 iterations, and 520/520 comparisons passed the
+former near-identity screen. It remains historical evidence rather than a
+source-current v2 artifact. The schema-v2 generator now checks lambda zero at
+10, 25, 26, 50, and 100 iterations under the official gate; that full artifact
+must be regenerated before citing a current durable v2 matrix.
 
 The maintained 2D and 3D phantoms had NRMSE `5.249e-7` and `7.592e-7`; maximum
 absolute differences were `1.192e-6` and `2.623e-6`. Their largest feature

@@ -2,8 +2,9 @@
 """Run VIPP's complete public-GPU admission evidence plan.
 
 The operation-owned evidence generators remain authoritative.  This command
-adds the missing release-level contract: one strict manifest maps every public
-accelerator declaration to executable owners for parity, adversarial inputs,
+adds the missing release-level contract: one strict manifest maps every visible
+public accelerator declaration (Custom/Prefer-GPU and Auto candidates) to
+executable owners for parity, adversarial inputs,
 metadata, input integrity, memory, cancellation, cleanup, fallback,
 provenance, and transfer-inclusive timing.
 
@@ -211,7 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def public_accelerator_declarations() -> tuple[AcceleratorDeclaration, ...]:
-    """Read public declarations without probing or importing optional providers."""
+    """Read visible Custom and Auto declarations without optional providers."""
 
     from napari_vipp.core.compute_contracts import AdmissionTier
     from napari_vipp.core.compute_registry import ComputeRegistry
@@ -227,14 +228,18 @@ def public_accelerator_declarations() -> tuple[AcceleratorDeclaration, ...]:
                 library_id=spec.implementation_library_id,
             )
             for spec in registry.implementation_specs
-            if spec.admission_tier is AdmissionTier.PUBLIC_AUTO_CANDIDATE
+            if spec.admission_tier
+            in {
+                AdmissionTier.PUBLIC_CUSTOM,
+                AdmissionTier.PUBLIC_AUTO_CANDIDATE,
+            }
             and spec.runtime_id != "cpu-numpy"
         )
     finally:
         registry.close()
     if not declarations:
         raise AdmissionHarnessError(
-            "The executable registry has no public GPU declarations."
+            "The executable registry has no visible public GPU declarations."
         )
     return tuple(sorted(declarations, key=lambda item: item.key))
 

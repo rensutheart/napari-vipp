@@ -27,7 +27,6 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationEvidenceIncomplete,
     PipelineOptimizationIdentity,
     PipelineOptimizationNode,
-    PipelineOptimizationNotBeneficial,
     PipelineOptimizationSelectionBasis,
     PipelineOptimizationStale,
     PipelineValidationWinner,
@@ -232,6 +231,7 @@ def _validator(
     current_lower_bound: float = 0.0,
     parity_passed: bool = True,
     synchronized: bool = True,
+    measurement_rounds: int = 0,
 ):
     def validate(request):
         return PipelineAssignmentValidation(
@@ -243,6 +243,7 @@ def _validator(
             current_seconds,
             proposed_seconds,
             lower_bound,
+            measurement_rounds=measurement_rounds,
             current_speedup_lower_confidence_bound=current_lower_bound,
         )
 
@@ -784,23 +785,72 @@ def test_whole_pipeline_validation_requires_parity_and_synchronization(
     ("current_seconds", "proposed_seconds", "lower_bound"),
     [(1.0, 0.951, 1.1), (1.0, 0.8, 1.0)],
 )
-def test_validation_rejects_speedups_inside_noise_gate(
+def test_validation_returns_reviewable_inconclusive_result_inside_noise_gate(
     current_seconds,
     proposed_seconds,
     lower_bound,
 ):
     nodes = (_node("a"),)
 
-    with pytest.raises(PipelineOptimizationNotBeneficial, match="5%"):
-        _optimize(
-            nodes,
-            timings={"a": {"cpu": 10.0, "gpu": 1.0}},
-            validate=_validator(
-                current_seconds=current_seconds,
-                proposed_seconds=proposed_seconds,
-                lower_bound=lower_bound,
-            ),
+    proposal = _optimize(
+        nodes,
+        timings={"a": {"cpu": 10.0, "gpu": 1.0}},
+        validate=_validator(
+            current_seconds=current_seconds,
+            proposed_seconds=proposed_seconds,
+            lower_bound=lower_bound,
+            current_lower_bound=0.9,
+            measurement_rounds=15,
+        ),
+    )
+
+    row = proposal.rows[0]
+    assert proposal.pipeline_validation_performed
+    assert proposal.validation_winner is PipelineValidationWinner.INCONCLUSIVE
+    assert (
+        proposal.selection_basis
+        is PipelineOptimizationSelectionBasis.PAIRED_INCONCLUSIVE_RETAINED_CURRENT
+    )
+    assert proposal.validated_current_seconds == pytest.approx(current_seconds)
+    assert proposal.validated_proposed_seconds == pytest.approx(proposed_seconds)
+    assert proposal.validated_speedup_lower_confidence_bound == pytest.approx(
+        lower_bound
+    )
+    assert proposal.validated_current_speedup_lower_confidence_bound == pytest.approx(
+        0.9
+    )
+    assert proposal.validation_measurement_rounds == 15
+    assert row.current_implementation_id == "cpu"
+    assert row.proposed_implementation_id == "cpu"
+    assert dict(proposal.tested_assignment) == {"a": "gpu"}
+    assert not row.changed
+    assert row.proposed_preference == row.current_preference == AUTO
+    assert dict(proposal.preference_mapping) == {"a": AUTO}
+
+    with pytest.raises(ValueError, match="inconclusive validation winner"):
+        replace(
+            proposal,
+            validation_winner=PipelineValidationWinner.CURRENT,
         )
+
+    changed_row = replace(
+        row,
+        proposed_preference=NodeComputePreference("cpu"),
+    )
+    with pytest.raises(ValueError, match="authored preference"):
+        replace(proposal, rows=(changed_row,))
+
+    with pytest.raises(ValueError, match="exactly retain"):
+        replace(proposal, preference_mapping={})
+
+    with pytest.raises(ValueError, match="exactly retain"):
+        replace(
+            proposal,
+            preference_mapping={"a": AUTO, "unexpected-node": AUTO},
+        )
+
+    authored_request = _request(nodes)
+    assert proposal.updated_request(authored_request) is authored_request
 
 
 def test_validation_accepts_material_confident_speedup():

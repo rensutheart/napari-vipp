@@ -1,0 +1,153 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 4,
+  "execution": {
+    "compute": {
+      "mode": "prefer_gpu",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "label_connected_components_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic multichannel volume",
+        "series_index": 0,
+        "channel_colors": "Blue,Green,Red",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "extract_channel_1",
+      "operation_id": "extract_channel",
+      "params": {
+        "channel": 2
+      }
+    },
+    {
+      "id": "convert_dtype_1",
+      "operation_id": "convert_dtype",
+      "params": {
+        "output_dtype": "float32",
+        "scaling": "preserve"
+      }
+    },
+    {
+      "id": "gaussian_blur_1",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 1.2,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 18013.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "3D ZYX volume",
+        "connectivity": "Full connectivity"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "extract_channel_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_1",
+      "target": "convert_dtype_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "convert_dtype_1",
+      "target": "gaussian_blur_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gaussian_blur_1",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "label_connected_components_1",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 220.0],
+    "extract_channel_1": [360.0, 220.0],
+    "convert_dtype_1": [720.0, 220.0],
+    "gaussian_blur_1": [1080.0, 220.0],
+    "binary_threshold_1": [1440.0, 220.0],
+    "label_connected_components_1": [1800.0, 220.0]
+  },
+  "notes": [
+    {
+      "id": "note_run",
+      "text": "TEST 1 - RUN THE PORTABLE WORKFLOW\nRun the workflow on the supplied multichannel sample. PASS: the red/TRITC-like channel becomes a clean 3D mask and the final label image contains five separate objects. The workflow remains usable on a CPU-only computer.",
+      "position": [-20.0, -90.0],
+      "width": 430.0,
+      "attached_node": "input"
+    },
+    {
+      "id": "note_extract",
+      "text": "TEST 2 - UNDERSTAND CHANNEL EXTRACTION\nOn a CPU-to-GPU boundary, CPU Extract Channel can select this one ZYX channel before upload. When Extract Channel itself joins an already resident GPU segment, it makes a no-copy view of the full CZYX GPU allocation. That keeps work connected, but is not automatically the fastest choice at the first node.",
+      "position": [330.0, 540.0],
+      "width": 470.0,
+      "attached_node": "extract_channel_1"
+    },
+    {
+      "id": "note_eligibility",
+      "text": "TEST 3 - CHECK GPU ELIGIBILITY\nThis example asks for Prefer GPU. On a qualified CUDA setup, the visible float32 Preserve conversion lets the filter and later supported nodes form one GPU segment. PASS: VIPP reports what actually ran. GPU eligible is not guaranteed: data, memory, environment, and policy checks can still choose CPU.",
+      "position": [700.0, -90.0],
+      "width": 470.0,
+      "attached_node": "convert_dtype_1"
+    },
+    {
+      "id": "note_threshold",
+      "text": "TEST 4 - REVIEW THE THRESHOLD\nThe value 18013 sits inside a wide gap in this deterministic sample, away from every blurred pixel value. PASS: the mask contains 1559 foreground voxels before labeling. This margin makes CPU/GPU comparison clear for this example; it is not a recommended threshold for unrelated images.",
+      "position": [1320.0, 540.0],
+      "width": 460.0,
+      "attached_node": "binary_threshold_1"
+    },
+    {
+      "id": "note_transfer",
+      "text": "TEST 5 - READ TRANSFERS AND FALLBACK HONESTLY\nWith only the final label output retained, a fully eligible run can cross the CPU/GPU boundary once in each direction. Previewing, branching to, or retaining an intermediate result can add a download. If any GPU gate fails, VIPP explains the fallback and completes the same workflow on CPU.",
+      "position": [1780.0, -90.0],
+      "width": 460.0,
+      "attached_node": "label_connected_components_1"
+    }
+  ],
+  "tunnels": []
+}

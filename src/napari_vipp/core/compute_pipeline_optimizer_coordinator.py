@@ -26,7 +26,11 @@ from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
+    ComputeRepairAction,
+    ComputeRepairCandidate,
+    ComputeRepairSuggestion,
     ComputeRequest,
+    ExactWorkloadCandidateQualification,
     FallbackPolicy,
     NodeComputePreference,
     NodePreferenceKind,
@@ -48,6 +52,7 @@ from napari_vipp.core.compute_benchmark_adapter import (
 from napari_vipp.core.compute_benchmark_coordinator import (
     ApplicationNodeBenchmarkCoordinator,
     NodeBenchmarkUnavailable,
+    exact_workload_qualifications_for_benchmark,
 )
 from napari_vipp.core.compute_pipeline_optimizer import (
     DirectionalTransferProfile,
@@ -71,6 +76,7 @@ from napari_vipp.core.compute_planning import (
     probe_compute_environment,
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
+from napari_vipp.core.compute_repairs import potential_compute_repair_specs
 from napari_vipp.core.compute_specs import compute_specs_for
 from napari_vipp.core.execution import (
     PipelineRunRequest,
@@ -173,6 +179,11 @@ class ApplicationPipelineOptimizationResult:
     cpu_only_node_ids: tuple[str, ...]
     reused_node_ids: tuple[str, ...] = ()
     measured_node_ids: tuple[str, ...] = ()
+    repair_suggestions: tuple[ComputeRepairSuggestion, ...] = ()
+    candidate_refusals: tuple[EvidenceRefusal, ...] = ()
+    exact_workload_qualifications: frozenset[
+        ExactWorkloadCandidateQualification
+    ] = frozenset()
 
     def __post_init__(self) -> None:
         if self.proposal.identity_digest != self.identity.digest:
@@ -188,6 +199,59 @@ class ApplicationPipelineOptimizationResult:
         object.__setattr__(self, "cpu_only_node_ids", tuple(self.cpu_only_node_ids))
         object.__setattr__(self, "reused_node_ids", tuple(self.reused_node_ids))
         object.__setattr__(self, "measured_node_ids", tuple(self.measured_node_ids))
+        repairs = tuple(self.repair_suggestions)
+        refusals = tuple(self.candidate_refusals)
+        if any(not isinstance(item, ComputeRepairSuggestion) for item in repairs):
+            raise TypeError("repair_suggestions contains an invalid value")
+        if any(not isinstance(item, EvidenceRefusal) for item in refusals):
+            raise TypeError("candidate_refusals contains an invalid value")
+        object.__setattr__(self, "repair_suggestions", repairs)
+        object.__setattr__(self, "candidate_refusals", refusals)
+        qualifications = frozenset(self.exact_workload_qualifications)
+        if any(
+            not isinstance(item, ExactWorkloadCandidateQualification)
+            for item in qualifications
+        ):
+            raise TypeError(
+                "exact_workload_qualifications contains an invalid value"
+            )
+        if any(
+            item.qualification_scope_digest != self.identity.digest
+            for item in qualifications
+        ):
+            raise ValueError(
+                "exact workload qualifications do not match the optimizer identity"
+            )
+        if any(
+            item.compute_environment_fingerprint
+            != self.identity.environment_fingerprint
+            for item in qualifications
+        ):
+            raise ValueError(
+                "exact workload qualifications do not match the compute environment"
+            )
+        if any(
+            item.benchmark_environment_fingerprint
+            != self.identity.benchmark_environment_fingerprint
+            for item in qualifications
+        ):
+            raise ValueError(
+                "exact workload qualifications do not match the benchmark environment"
+            )
+        candidate_keys = tuple(item.candidate_key for item in qualifications)
+        if len(set(candidate_keys)) != len(candidate_keys):
+            raise ValueError(
+                "exact_workload_qualifications contains duplicate candidate identities"
+            )
+        object.__setattr__(self, "exact_workload_qualifications", qualifications)
+
+    @property
+    def exact_workload_qualified_candidates(self) -> frozenset[tuple[str, str]]:
+        """Return the node/implementation pairs retained by application UI."""
+
+        return frozenset(
+            item.candidate_key for item in self.exact_workload_qualifications
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +268,134 @@ class _CallbackCancelEvent:
 
     def is_set(self) -> bool:
         return bool(self._callback())
+
+
+def discover_pipeline_compute_repairs(
+    registry: ComputeRegistry,
+    pipeline: PrototypePipeline,
+    compute_request: ComputeRequest,
+    node_ids: Sequence[str] | frozenset[str] = (),
+) -> tuple[ComputeRepairSuggestion, ...]:
+    """Discover exact dtype repairs without executing a manual node.
+
+    This deliberately performs only provider-free contract evaluation against
+    inputs that the live or detached pipeline has already resolved.  It lets a
+    manual node explain a safe graph repair before that node has produced an
+    accepted result.  Runtime, memory, and final scientific admission remain
+    explicit later gates; the returned message therefore says that conversion
+    makes the node *checkable* for GPU use rather than promising execution.
+    """
+
+    if not isinstance(registry, ComputeRegistry):
+        raise TypeError("registry must be a ComputeRegistry")
+    if not isinstance(pipeline, PrototypePipeline):
+        raise TypeError("pipeline must be a PrototypePipeline")
+    if not isinstance(compute_request, ComputeRequest):
+        raise TypeError("compute_request must be a ComputeRequest")
+    requested = frozenset(str(node_id).strip() for node_id in node_ids)
+    if "" in requested:
+        raise ValueError("repair node IDs must not be empty")
+    ordered_node_ids = tuple(
+        node_id
+        for node_id in pipeline.topological_order()
+        if not requested or node_id in requested
+    )
+    detached = PrototypePipeline()
+    detached.restore_graph(
+        tuple(pipeline.nodes.values()),
+        tuple(pipeline.connections),
+        pipeline.output_tunnel_list(),
+    )
+    suggestions: list[ComputeRepairSuggestion] = []
+    for node_id in ordered_node_ids:
+        node = pipeline.nodes[node_id]
+        if not node.has_input:
+            continue
+        values_by_port = pipeline.input_data_by_port_for_node(node_id)
+        states_by_port = pipeline.input_states_by_port_for_node(node_id)
+        ports = tuple(sorted(values_by_port))
+        if not ports or any(values_by_port[port] is None for port in ports):
+            continue
+        try:
+            call = detached.prepare_node_call(
+                node_id,
+                tuple(values_by_port[port] for port in ports),
+                tuple(states_by_port.get(port) for port in ports),
+            )
+        except (TypeError, ValueError):
+            continue
+        if call is None:
+            continue
+        workload = workload_from_prepared_node_call(call)
+        candidates = potential_compute_repair_specs(
+            compute_request,
+            workload,
+            registry,
+        )
+        if not candidates:
+            continue
+        for port_index, raw_dtype in enumerate(workload.input_dtypes):
+            try:
+                current_dtype = np.dtype(raw_dtype).name
+            except (TypeError, ValueError):
+                continue
+            if current_dtype not in {"uint8", "uint16"}:
+                continue
+            selected = next(
+                (
+                    spec
+                    for spec in candidates
+                    if port_index < len(spec.input_ports)
+                    and current_dtype
+                    not in {
+                        np.dtype(value).name
+                        for value in spec.input_ports[port_index].public_dtypes
+                        if value != "*"
+                    }
+                    and "float32"
+                    in {
+                        np.dtype(value).name
+                        for value in spec.input_ports[port_index].public_dtypes
+                        if value != "*"
+                    }
+                ),
+                None,
+            )
+            if selected is None:
+                continue
+            port = selected.input_ports[port_index]
+            memory_factor = (
+                np.dtype(np.float32).itemsize // np.dtype(current_dtype).itemsize
+            )
+            suggestions.append(
+                ComputeRepairSuggestion(
+                    action=ComputeRepairAction.INSERT_CONVERT_DTYPE,
+                    node_id=node_id,
+                    operation_id=node.operation_id,
+                    input_port_index=port_index,
+                    input_port_name=port.port_name,
+                    current_dtype=current_dtype,
+                    target_dtype="float32",
+                    scaling="preserve",
+                    exact=True,
+                    message=(
+                        "A visible Convert Dtype node can remove this exact "
+                        f"{current_dtype} input blocker without changing pixel "
+                        "values. With a compatible installed GPU, this node can "
+                        "then be checked for GPU use; the converted input uses "
+                        f"{memory_factor}× as much memory."
+                    ),
+                    candidate=ComputeRepairCandidate(
+                        implementation_id=selected.implementation_id,
+                        implementation_version=selected.implementation_version,
+                        runtime_id=selected.runtime_id,
+                        implementation_library_id=(
+                            selected.implementation_library_id
+                        ),
+                    ),
+                )
+            )
+    return tuple(suggestions)
 
 
 class ApplicationPipelineOptimizerCoordinator:
@@ -415,6 +607,15 @@ class ApplicationPipelineOptimizerCoordinator:
                 "environment_identity_changed",
                 "The runtime environment changed during the private baseline.",
             )
+        baseline_plan = baseline.execution_report.plan
+        baseline_repair_suggestions = tuple(
+            suggestion
+            for suggestion in (
+                baseline_plan.repair_suggestions if baseline_plan is not None else ()
+            )
+            if suggestion.node_id in safe_ids
+            and suggestion.node_id not in optimizer_locks
+        )
 
         eligible_ids = tuple(
             node_id
@@ -433,6 +634,7 @@ class ApplicationPipelineOptimizerCoordinator:
         reused_node_ids: set[str] = set()
         measured_node_ids: set[str] = set()
         cpu_only: set[str] = set(safe_ids) - set(eligible_ids) - set(optimizer_locks)
+        candidate_refusals: list[EvidenceRefusal] = []
 
         def make_node_progress_forwarder(
             *,
@@ -543,6 +745,7 @@ class ApplicationPipelineOptimizerCoordinator:
                     allow_experimental=compute_request.allow_experimental,
                     paired_bootstrap_samples=DEFAULT_BOOTSTRAP_SAMPLES,
                     paired_bootstrap_seed=DEFAULT_BOOTSTRAP_SEED,
+                    allow_exact_workload_test=True,
                     adaptive_candidate_stopping=(
                         _adaptive_cpu_stop_is_safe_for_current_assignment(
                             decisions.get(node_id)
@@ -581,8 +784,15 @@ class ApplicationPipelineOptimizerCoordinator:
                         node_title=node.title,
                         measurement_phase="cache-reuse",
                     )
-            except NodeBenchmarkUnavailable:
+            except NodeBenchmarkUnavailable as exc:
                 cpu_only.add(node_id)
+                candidate_refusals.append(
+                    EvidenceRefusal(
+                        "gpu_candidate_ineligible",
+                        str(exc),
+                        node_id,
+                    )
+                )
                 _emit(
                     progress,
                     PipelineOptimizerPhase.BENCHMARKING,
@@ -669,6 +879,14 @@ class ApplicationPipelineOptimizerCoordinator:
             check_abort=check_abort,
         )
         if not evidence_records:
+            repair_refusals = _actionable_repair_refusals(
+                baseline_pipeline,
+                baseline_repair_suggestions,
+            )
+            if repair_refusals:
+                raise PipelineOptimizationEvidenceIncomplete(repair_refusals)
+            if candidate_refusals:
+                raise PipelineOptimizationEvidenceIncomplete(candidate_refusals)
             _refuse(
                 "no_unlocked_gpu_workload_eligible",
                 "No unlocked node has a parity-testable GPU implementation for "
@@ -703,6 +921,11 @@ class ApplicationPipelineOptimizerCoordinator:
             )
             for node_id, record in evidence_records.items()
         }
+        exact_workload_qualifications = _qualified_soft_workload_candidates(
+            identity,
+            evidence_records,
+            benchmark_plans,
+        )
 
         _emit(
             progress,
@@ -811,6 +1034,7 @@ class ApplicationPipelineOptimizerCoordinator:
                 safe_ids,
                 retained,
                 validation_request,
+                exact_workload_qualifications=exact_workload_qualifications,
                 manual_node_ids=private_manual_node_ids,
                 deadline=deadline,
                 cancelled=cancelled,
@@ -874,15 +1098,18 @@ class ApplicationPipelineOptimizerCoordinator:
             "Pipeline optimization completed; review the proposal before applying it.",
         )
         return ApplicationPipelineOptimizationResult(
-            proposal,
-            identity,
-            environment,
-            transfer_profile,
-            evidence,
-            tuple(evidence),
-            tuple(sorted(cpu_only)),
-            tuple(sorted(reused_node_ids)),
-            tuple(sorted(measured_node_ids)),
+            proposal=proposal,
+            identity=identity,
+            environment=environment,
+            transfer_profile=transfer_profile,
+            evidence=evidence,
+            benchmarked_node_ids=tuple(evidence),
+            cpu_only_node_ids=tuple(sorted(cpu_only)),
+            reused_node_ids=tuple(sorted(reused_node_ids)),
+            measured_node_ids=tuple(sorted(measured_node_ids)),
+            repair_suggestions=baseline_repair_suggestions,
+            candidate_refusals=tuple(candidate_refusals),
+            exact_workload_qualifications=exact_workload_qualifications,
         )
 
     def _execute(
@@ -897,6 +1124,10 @@ class ApplicationPipelineOptimizerCoordinator:
         prune_unretained: bool,
         cancel_callback: Callable[[], bool],
         manual_node_ids: frozenset[str] = frozenset(),
+        exact_workload_qualifications: frozenset[
+            ExactWorkloadCandidateQualification
+        ] = frozenset(),
+        exact_workload_qualification_scope_digest: str = "",
     ) -> PipelineRunResult:
         first = next(iter(source_payloads.values()))
 
@@ -908,6 +1139,14 @@ class ApplicationPipelineOptimizerCoordinator:
                 environment=environment,
                 array_facts=kwargs.get("array_facts"),
                 performance_evidence=kwargs.get("performance_evidence"),
+                exact_workload_qualifications=kwargs.get(
+                    "exact_workload_qualifications",
+                    frozenset(),
+                ),
+                exact_workload_qualification_scope_digest=kwargs.get(
+                    "exact_workload_qualification_scope_digest",
+                    "",
+                ),
             )
 
         run_request = PipelineRunRequest(
@@ -924,6 +1163,10 @@ class ApplicationPipelineOptimizerCoordinator:
             prune_unretained=prune_unretained,
             manual_node_ids=manual_node_ids,
             cancel_event=_CallbackCancelEvent(cancel_callback),
+            exact_workload_qualifications=exact_workload_qualifications,
+            exact_workload_qualification_scope_digest=(
+                exact_workload_qualification_scope_digest
+            ),
         )
         return self.executor(
             run_request,
@@ -942,6 +1185,9 @@ class ApplicationPipelineOptimizerCoordinator:
         retained: frozenset[str],
         validation: PipelineValidationRequest,
         *,
+        exact_workload_qualifications: frozenset[
+            ExactWorkloadCandidateQualification
+        ] = frozenset(),
         manual_node_ids: frozenset[str] = frozenset(),
         deadline: float,
         cancelled: CancelCallback | None,
@@ -1004,6 +1250,8 @@ class ApplicationPipelineOptimizerCoordinator:
             prune_unretained=True,
             cancel_callback=cancel_or_expired,
             manual_node_ids=manual_node_ids,
+            exact_workload_qualifications=exact_workload_qualifications,
+            exact_workload_qualification_scope_digest=validation.identity_digest,
         )
         check_abort()
         if progress is not None:
@@ -1018,6 +1266,8 @@ class ApplicationPipelineOptimizerCoordinator:
             prune_unretained=True,
             cancel_callback=cancel_or_expired,
             manual_node_ids=manual_node_ids,
+            exact_workload_qualifications=exact_workload_qualifications,
+            exact_workload_qualification_scope_digest=validation.identity_digest,
         )
         check_abort()
         if progress is not None:
@@ -1111,6 +1361,10 @@ class ApplicationPipelineOptimizerCoordinator:
                     prune_unretained=True,
                     cancel_callback=cancel_or_expired,
                     manual_node_ids=manual_node_ids,
+                    exact_workload_qualifications=exact_workload_qualifications,
+                    exact_workload_qualification_scope_digest=(
+                        validation.identity_digest
+                    ),
                 )
                 check_abort()
                 _successful_exact_pipeline(
@@ -1810,6 +2064,33 @@ def _build_optimizer_graph(
     return tuple(nodes), edges, MappingProxyType(workloads)
 
 
+def _qualified_soft_workload_candidates(
+    identity: PipelineOptimizationIdentity,
+    records: Mapping[str, object],
+    plans: Mapping[str, object],
+) -> frozenset[ExactWorkloadCandidateQualification]:
+    """Issue execution proofs only for soft candidates that passed node parity."""
+
+    qualifications: set[ExactWorkloadCandidateQualification] = set()
+    for node_id, plan in plans.items():
+        record = records.get(node_id)
+        if record is None:
+            continue
+        soft_ids = frozenset(
+            getattr(plan, "exact_workload_test_implementation_ids", ())
+        )
+        if not soft_ids:
+            continue
+        qualifications.update(
+            exact_workload_qualifications_for_benchmark(
+                plan,
+                record,
+                qualification_scope_digest=identity.digest,
+            )
+        )
+    return frozenset(qualifications)
+
+
 def _output_byte_count(pipeline: PrototypePipeline, node_id: str) -> int:
     values = tuple(pipeline.node_outputs.get(node_id, ()))
     node = pipeline.nodes[node_id]
@@ -2359,6 +2640,80 @@ def _emit(
         )
 
 
+def _actionable_repair_refusals(
+    pipeline: PrototypePipeline,
+    suggestions: Sequence[ComputeRepairSuggestion],
+) -> tuple[EvidenceRefusal, ...]:
+    """Collapse compatible branch repairs into one novice-readable action."""
+
+    grouped: dict[
+        tuple[str, int, str, str, str, str],
+        list[ComputeRepairSuggestion],
+    ] = {}
+    for suggestion in suggestions:
+        if (
+            suggestion.action is not ComputeRepairAction.INSERT_CONVERT_DTYPE
+            or not suggestion.exact
+        ):
+            continue
+        connection = next(
+            (
+                item
+                for item in pipeline.connections
+                if item.target_id == suggestion.node_id
+                and item.target_port == suggestion.input_port_index
+            ),
+            None,
+        )
+        if connection is None:
+            continue
+        key = (
+            connection.source_id,
+            connection.source_port,
+            connection.tunnel_name,
+            suggestion.current_dtype,
+            suggestion.target_dtype,
+            suggestion.scaling.casefold(),
+        )
+        grouped.setdefault(key, []).append(suggestion)
+
+    refusals: list[EvidenceRefusal] = []
+    for key, group in grouped.items():
+        source_id, _source_port, _tunnel, current, target, scaling = key
+        ordered = tuple(
+            sorted(
+                group,
+                key=lambda item: pipeline.topological_order().index(item.node_id),
+            )
+        )
+        titles = tuple(pipeline.nodes[item.node_id].title for item in ordered)
+        source_title = pipeline.nodes[source_id].title
+        if len(titles) == 1:
+            message = (
+                f"{titles[0]} can be checked on GPU after one visible Convert "
+                f"Dtype node changes its {current} input to {target} using "
+                f"{scaling.title()}. Add conversion, then run Find fastest "
+                "again. No existing node parameter will be changed."
+            )
+            code = "dtype_conversion_available"
+        else:
+            joined = (
+                f"{', '.join(titles[:-1])} and {titles[-1]}"
+                if len(titles) > 1
+                else titles[0]
+            )
+            message = (
+                f"{joined} share the same {current} input from {source_title}. "
+                f"Add one visible Convert Dtype node ({target}, "
+                f"{scaling.title()}) and use it for all {len(titles)} branches, "
+                "then run Find fastest again. Pixel values and existing node "
+                "parameters will not be changed."
+            )
+            code = "shared_dtype_conversion_available"
+        refusals.append(EvidenceRefusal(code, message))
+    return tuple(refusals)
+
+
 def _refuse(code: str, message: str, node_id: str = "") -> None:
     raise PipelineOptimizationEvidenceIncomplete(
         (EvidenceRefusal(code, message, node_id),)
@@ -2370,6 +2725,7 @@ __all__ = [
     "ApplicationPipelineOptimizerCoordinator",
     "PipelineOptimizerPhase",
     "PipelineOptimizerProgress",
+    "discover_pipeline_compute_repairs",
     "fingerprint_pipeline_optimizer_sources",
     "probe_pipeline_optimizer_environment",
 ]

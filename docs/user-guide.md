@@ -84,11 +84,13 @@ The compute selector in the main toolbar has four policies. New sessions use
 | --- | --- |
 | `Auto` | With no exact compatible history, use reviewed GPU defaults. After accelerated-only history, measure CPU once on the same execution surface; then apply the 1.20x/20-ms gate to the completed pair. |
 | `CPU` | Keep every operation on the established host implementation. |
-| `Prefer GPU` | Use a reviewed GPU implementation wherever it is scientifically eligible, even if it is only slightly faster, tied, or slower than CPU. |
+| `Prefer GPU` | Prefer a reviewed GPU implementation without requiring it to beat CPU. VIPP can keep a lightweight selection step on CPU when that avoids uploading data that would immediately be discarded. |
 | `Custom` | Expose a compact per-node preference in the Inspector wherever a GPU implementation is declared. |
 
 `Prefer GPU` considers both public Custom and public Auto-candidate
-implementations. It bypasses only the CPU-versus-GPU speed requirement. It does
+implementations. It bypasses the CPU-versus-GPU speed requirement, while
+retaining transfer-economics placement: a host-entry Extract Channel can stay
+on CPU so only the selected channel is uploaded. It does
 not bypass scientific parity, dtype, parameter, shape, optional-dependency,
 environment, or memory gates, and it never silently inserts a dtype conversion
 or alters an authored parameter. When every eligible GPU has complete
@@ -212,6 +214,23 @@ the fresh baseline plus parity and conservative exact-or-censored comparison
 evidence supports retaining it; VIPP does not describe that case as a redundant
 paired comparison against itself. GPU candidates are not discarded from one-off transfer-inclusive
 elapsed time because residency can amortize those transfers across a pipeline.
+
+Completed results are grouped by workflow node. Each implementation receives
+its own subrow, so CPU, CuPy, and cuCIM measurements are not compressed into one
+long cell. The compact view shows the typical measured total, scientific check,
+and outcome. **Show timing details** adds compute time, data movement,
+first-run cost, peak memory, and whether evidence was newly measured or reused.
+These per-node transfer observations help explain the measurements, but the
+optimizer still models shared transfers across the whole graph rather than
+adding every row independently.
+
+Sometimes a tested CPU/GPU assignment passes scientific parity but neither
+pipeline is decisively faster after the final paired comparison. VIPP reports
+this as **No clear winner**, keeps the current settings, disables Apply, and
+still leaves all completed node results available for inspection. This means
+the measured difference was not both large and certain enough to justify a
+change; it does not mean that a GPU implementation was ineligible or failed to
+run.
 
 The dialog's time limit is a wall-clock limit for the whole analysis; it is not
 a RAM or VRAM allocation. If the limit is reached, VIPP has **not** established
@@ -1121,13 +1140,15 @@ flowchart LR
     image["Image Source<br/>3D blurred volume"]
     psf["Image Source<br/>3D measured PSF"]
     prep["Prepare / Validate PSF"]
+    convert["Convert Dtype<br/>float32, Preserve"]
     rl["Richardson-Lucy<br/>Deconvolution"]
     tv["Richardson-Lucy TV<br/>Deconvolution"]
 
     psf --> prep
-    image --> rl
+    image --> convert
+    convert --> rl
     prep --> rl
-    image --> tv
+    convert --> tv
     prep --> tv
 ```
 
@@ -1138,16 +1159,21 @@ Review sequence:
 2. Select the PSF source and inspect its axes. It should be `ZYX`.
 3. Select `Prepare / Validate PSF` and confirm the output is `float32`, odd
    shaped, centered, and normalized.
-4. Select `Richardson-Lucy Deconvolution` and click `Calculate`.
-5. Select `Richardson-Lucy TV Deconvolution`, read its PSF preflight status,
+4. Select the shared `Convert Dtype` node. Confirm `float32` and `Preserve`;
+   this changes representation without rescaling the sample's numeric values.
+5. Select `Richardson-Lucy Deconvolution` and click `Calculate`.
+6. Select `Richardson-Lucy TV Deconvolution`, read its PSF preflight status,
    and click `Calculate`.
-6. Compare thumbnails, inspect outputs in napari, and check metadata.
+7. Compare thumbnails, inspect outputs in napari, and check metadata.
 
 Use ordinary RL as a comparator. Use RL-TV when ordinary RL sharpens noise too
 strongly. Both bundled comparison branches use 25 iterations; RL-TV uses the
 conservative production-like starting value `TV regularization = 0.002`. These
 are review starting points, not evidence that more iterations or nonzero TV are
-best for every acquisition.
+best for every acquisition. Both branches retain the authored
+`Filter epsilon = 1e-12` and receive exactly the same converted image and
+prepared PSF, so the side-by-side comparison does not hide a dtype, scale, or
+input difference.
 
 ## Restoration And PSF Workflows
 
@@ -1272,6 +1298,18 @@ These slider ranges are practical exploration windows, not parameter validity
 limits. The adjacent spinner accepts valid values outside its slider window and
 does not enlarge or rescale the slider. `TV regularization = 0` and `Filter
 epsilon = 0` remain available through the spinner as explicit off values.
+
+On a qualified GPU setup, VIPP compares an RL-family GPU result with the CPU
+reference using the operation's versioned backend-agreement policy. The v2
+margin is 0.5% for both reference-normalized L2 error and peak-relative maximum
+error (with a small absolute floor), alongside shape, dtype, finite-mask, and
+nonnegative-output checks. Passing means the two VIPP backends agree within
+that declared engineering margin. It does **not** show that the PSF is correct,
+that the chosen iteration is optimal, that resolution truly increased, or that
+all visible structures are scientifically valid. Review the restoration using
+appropriate reference data, residual/artifact maps, intensity or flux checks,
+resolution/noise analysis, and the downstream measurement that matters for the
+experiment.
 
 ### Restoration Caveats
 

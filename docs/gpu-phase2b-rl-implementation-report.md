@@ -12,6 +12,12 @@ for its current contracts and evidence. The Phase 2B performance study below
 was fully rerun on 2026-08-06 after the release-source hardening; its generated
 JSON and Markdown retain the new measurements and current source fingerprints.
 
+On 2026-08-14, ordinary RL backend comparison moved to
+`rl-scientific-equivalence-v2`. The policy update below supersedes the original
+v1 admission bounds while retaining the 2026-07-29/2026-08-06 measurements as
+historical near-identity diagnostics. It does not change the RL formula or
+authored workflow parameters.
+
 ## Outcome
 
 Phase 2B adds ordinary Richardson-Lucy as a normal VIPP accelerator
@@ -27,7 +33,7 @@ the substrate that a scientifically meaningful multi-input node needs:
 - exact implementation provenance through headless device execution and the
   optimizer.
 
-The validated region is no longer `developer_hidden`: it is visible in normal
+The checkpoint-backed region is no longer `developer_hidden`: it is visible in normal
 pipelines as a public candidate for `Custom`, and can participate in `Auto`
 when the exact workload/runtime has applicable benefit evidence. Unsupported
 dtype, parameter, shape, or runtime regions visibly remain on CPU. This record
@@ -50,7 +56,7 @@ each leading block independently. Image, PSF, output, and image-sized
 intermediates remain in the CuPy array domain until the execution service's
 planned host boundary.
 
-The initial workload region requires:
+The current checkpoint-backed workload envelope requires:
 
 - exactly two ordered inputs: Image then PSF;
 - explicit `float32` dtype and complete finite facts for both inputs;
@@ -61,8 +67,8 @@ The initial workload region requires:
 - odd PSF extents;
 - the default-safe PSF normalization, input/output clipping, and input-scale
   preservation options;
-- `filter_epsilon` exactly `1e-8`; and
-- 1 through 25 iterations.
+- finite authored `filter_epsilon` from `1e-12` through `1e-6`; and
+- 1 through 100 iterations.
 
 Unsupported data receives a typed CPU/fallback decision. VIPP never inserts a
 cast to win a benchmark. An authored **Convert Dtype** node may unlock ordinary
@@ -71,11 +77,13 @@ appropriate. `Scaling = Preserve` keeps representable numeric values, whereas
 the node's default `Rescale` intentionally changes the range. Users must review
 downstream thresholds, rounding, writers, cache identity, and RAM/VRAM effects.
 
-The authoritative CPU default remains `filter_epsilon=1e-12`. That default and
-every value other than the validated `1e-8` point are outside the first GPU
-region and therefore visibly remain on CPU. VIPP never changes the epsilon, and
-it never truncates a run above 25 iterations. These are scientific parameters,
-not performance hints.
+The authoritative CPU default remains `filter_epsilon=1e-12`, and it is now
+inside the v2 reviewed range. VIPP never changes epsilon or truncates an
+authored run to enter the GPU region. Values outside the range and runs above
+100 iterations visibly remain outside ordinary RL's prequalified region; they
+may be considered only by an explicit exact-workload comparison where the
+surrounding optimizer policy permits it. These are scientific parameters, not
+performance hints.
 
 Planning now propagates the fixed-`float32`, shape-preserving RL result and its
 conservative facts without inspecting a device output. The versioned
@@ -93,19 +101,40 @@ provider preserves constant initialization, zero-fill `same` convolution, PSF
 cleaning and optional normalization, epsilon behavior, input/output clipping,
 scale preservation, per-block behavior, and float32 output.
 
-The versioned `rl-float32-tolerance-v1` exact-workload gate requires:
+The versioned `rl-scientific-equivalence-v2` exact-workload gate requires:
 
 - equal shape and `float32` dtype;
 - equal finite/non-finite masks, with the admitted output completely finite;
-- NRMSE `<= 2e-6`; and
-- `max_abs <= 1e-6 + 5e-6 * max(abs(CPU reference))`.
+- nonnegative CPU and GPU output for the default clipped contract;
+- NRMSE `<= 0.005`; and
+- `max_abs <= 1e-6 + 0.005 * max(abs(CPU reference))`.
 
-Maximum float32 ULP distance is recorded for diagnosis but does not independently
-pass or fail the result. Wider calibrated real-data morphology, flux, recovery,
-and performance gates remain prerequisites for broadening the admitted region
-or making wider release/platform claims.
+NRMSE here is the L2 norm of the CPU/GPU difference divided by the L2 norm of
+the CPU reference. Maximum float32 ULP distance and the former v1 NRMSE
+`2e-6`/maximum-error result are recorded for diagnosis but do not independently
+pass or fail v2.
 
-The narrower region is evidence-driven. On the RTX 5090 development host, an
+This is an engineering non-inferiority margin between two VIPP backends. It is
+not a universal NRMSE threshold, and passing does not establish restoration
+accuracy, PSF suitability, optimal stopping, recovered resolution, absence of
+artifacts, or biological validity. Those claims need separate reference images,
+forward-model residuals, local artifact maps, frequency/noise measures, flux or
+feature measurements, and downstream task validation as appropriate.
+
+This separation follows three focused sources: the official scikit-image
+metric documentation notes that NRMSE has no standard normalization across the
+literature; Liu et al. characterize how RL's iteration-dependent recovery is
+coupled to signal, spatial frequency, and noise; and the Deconwolf benchmark
+documents the PSF, iteration, and boundary conditions needed when comparing
+accelerated deconvolution outputs. A spatially varying microscopy study also
+shows that standard deconvolution can become noisy and low-contrast where the
+PSF measured at the field center mismatches edge PSFs. See
+[scikit-image NRMSE](https://scikit-image.org/docs/stable/api/skimage.metrics.html),
+[Liu et al., 2025](https://pmc.ncbi.nlm.nih.gov/articles/PMC11751374/),
+[Wernersson et al., 2024](https://pmc.ncbi.nlm.nih.gov/articles/PMC11239506/),
+and [Ring deconvolution microscopy](https://pmc.ncbi.nlm.nih.gov/articles/PMC12165846/).
+
+The historical v1 region was evidence-driven. On the RTX 5090 development host, an
 adversarial matrix of 164 normalized nonnegative float32 2D/3D fixtures covered
 Gaussian and asymmetric positive PSFs, dark fields, high dynamic range, sparse
 and noisy beads, and multiple epsilon/iteration boundaries. At exactly `1e-8`,
@@ -115,28 +144,38 @@ monotonic: `1e-7` failed one fixture at 25 iterations, and `1e-6` failed one as
 early as 10 iterations. At 50 iterations, `1e-8` failed four fixtures. A
 separate 36-fixture matrix rejected the provisional `1e-10` point, and the
 nearby unchanged `1e-12` CPU default was not directly included in that matrix.
-It therefore remains unvalidated for GPU rather than being described as a
-measured failure; VIPP never silently changes it to qualify an authored run.
+Under v1 it therefore remained unvalidated for GPU rather than being described
+as a measured failure; VIPP never silently changed it to qualify an authored run.
 Forty even-PSF comparison fixtures had 14 failures at 25 iterations for every
-tested epsilon. The initial admission therefore uses exactly `1e-8`, at most 25
-iterations, odd PSF extents, and default-safe options. Optimizer selection still
-requires exact-workload parity evidence. Broadening any bound requires new
-versioned evidence; loosening the parity tolerance does not.
+tested epsilon. Those failures describe near-identity sensitivity; they are not
+v2 failures and are not being erased or relabeled.
 
-The fixed matrices and production-path runner are preserved in
+The v2 generator adds the authored `1e-12` epsilon on the same 164 odd-PSF
+fixtures at iteration checkpoints 10, 25, 26, 50, and 100. It retains the
+`1e-8`/`1e-7`/`1e-6`, provisional `1e-10`, and even-PSF matrices as diagnostic
+characterization under the old near-identity limits. Schema v2 records both v2
+pass/fail and v1 diagnostic scores per case. The committed v1 JSON/Markdown
+below remain historical evidence until a complete v2 artifact is generated;
+they must not be presented as if they contain the new checkpoint records.
+The checkpoint design does not exhaust every epsilon/iteration combination
+inside the envelope.
+Optimizer selection still requires exact-workload backend agreement, and
+broader release/platform claims require their own regenerated evidence.
+
+The fixed matrices and production-path runner are preserved and versioned in
 [`scripts/benchmark_gpu_rl_admission.py`](../scripts/benchmark_gpu_rl_admission.py).
-The committed [raw JSON evidence](benchmarks/rl-cupy-admission-windows-rtx5090.json)
-retains all 1,980 per-fixture comparisons, environment and source fingerprints,
-while its [readable summary](benchmarks/rl-cupy-admission-windows-rtx5090.md)
-shows the condition-level failures and worst gate scores. Reproduce or refresh
-both on a CUDA host with:
+The committed [raw v1 JSON evidence](benchmarks/rl-cupy-admission-windows-rtx5090.json)
+retains all 1,980 historical per-fixture comparisons, environment and source
+fingerprints, while its [readable v1 summary](benchmarks/rl-cupy-admission-windows-rtx5090.md)
+shows the former condition-level failures and worst gate scores. Generate the
+complete v2 replacement on a CUDA host with:
 
 ```powershell
 .\.venv-gpu-cu13\Scripts\python.exe scripts\benchmark_gpu_rl_admission.py
 ```
 
-CPU-only systems can verify that the committed artifact still matches the
-generator and scientific source snapshot without importing CuPy:
+After a v2 artifact is generated, CPU-only systems can verify its generator
+contract and scientific source snapshot without importing CuPy:
 
 ```powershell
 .\.venv-gpu-cu13\Scripts\python.exe scripts\benchmark_gpu_rl_admission.py `
@@ -260,13 +299,14 @@ separate gates and must not be inferred from this development-host result.
 
 ## Current limitations and open hardening
 
-- Ordinary GPU RL's exact validated region is publicly visible in Custom and
+- Ordinary GPU RL's checkpoint-backed envelope is publicly visible in Custom and
   is an Auto candidate. This does not admit parameters outside that region or
   claim portable performance on unmeasured hardware.
-- The CPU default epsilon (`1e-12`), all epsilon values other than `1e-8`, and
-  authored runs above 25 iterations are intentionally CPU-only in the first GPU
-  region. A future numerical study should broaden this without changing CPU
-  defaults or tolerances.
+- The v2 ordinary-RL envelope includes the CPU default epsilon and extends through
+  `1e-6` and 100 iterations only for the declared finite-float32, odd-PSF,
+  default-safe contract. Even PSFs, nondefault safety options, out-of-range
+  epsilon, and longer runs remain outside the prequalified region. Exact-workload
+  agreement does not validate restoration quality.
 - RL-TV is implemented separately in Phase 2C and its validated profiles are
   public candidates under the same region-specific rule.
 - Exact node benchmarking supports ordered multi-input calls only when there is
@@ -293,10 +333,14 @@ separate gates and must not be inferred from this development-host result.
 These items are deliberately tracked separately from the operation-family
 queue below; completing Phase 2B does not silently close them:
 
-- [ ] Broaden ordinary RL away from `filter_epsilon=1e-8`, beyond 25 iterations,
-  to even PSFs, or to nondefault safety options only through a new numerical
-  policy study. The CPU default and
-  production parity tolerance must not be changed merely to expand GPU use.
+- [ ] Generate, review, and commit the complete schema-v2 ordinary-RL artifact
+  with `filter_epsilon=1e-12` checkpoints at 10, 25, 26, 50, and 100
+  iterations. Keep the v1 near-identity matrices as diagnostics rather than
+  rewriting their historical results.
+- [ ] Broaden ordinary RL to even PSFs, nondefault safety options, epsilon
+  outside `1e-12..1e-6`, or runs beyond 100 only through a separately versioned
+  numerical study. Never alter CPU defaults or authored parameters merely to
+  expand GPU use.
 - [ ] Replace the UI optimizer's separately captured workflow, sources,
   retention, compute request, locks, and baseline assignment with one immutable
   capture object created at one coherent boundary.
