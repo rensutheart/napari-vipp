@@ -1,6 +1,6 @@
 # Windows Installer Field Acceptance
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-14
 
 Use this page for a tagged VIPP installer on a fresh Windows account. It is a
 short evidence record, not an installation guide. The ordinary installation
@@ -78,6 +78,37 @@ If optional cuCIM is included in this acceptance run:
 - [ ] `Install VIPP cuCIM.cmd` built cuCIM locally for this exact VIPP environment.
 - [ ] Compute Doctor changed only the optional cuCIM and admitted-coverage results
       that the add-on genuinely enabled.
+
+Result: pass / fail
+
+What was confusing, if anything:
+
+## 0.13.0a7 guided-GPU feature smoke
+
+Complete these checks in a qualified CUDA installation. Repeat the portable
+example on CPU-only if that route is part of this acceptance run; a visible CPU
+explanation is a pass where the exact GPU region is unavailable.
+
+- [ ] Open **Portable GPU Segmentation Bridge**, calculate the graph, and
+      confirm that the 19-voxel speck is removed, 31 enclosed cavity voxels are
+      restored, and the final component volumes are 685, 599, 595, and 561.
+- [ ] Inspect the execution report rather than relying on badges. Each eligible
+      threshold and boolean-cleanup step records its actual implementation;
+      any fallback names the unsupported dtype, parameter, or environment.
+- [ ] Temporarily feed a `uint16` image directly into a reviewed float32 GPU
+      operation. Confirm that its **GPU tip** explains the lossless conversion,
+      **Add conversion** inserts a visible **Convert Dtype** node on the correct
+      input, and one Undo restores the original graph.
+- [ ] In **Prefer GPU**, calculate the affected node and confirm that an
+      applicable GPU tip remains available afterward instead of disappearing
+      because a CPU result was cached.
+- [ ] Run **Find fastest pipeline** in a Custom workflow. Confirm that results
+      are grouped by node and implementation, and that completed measurements
+      remain inspectable even if VIPP says neither assignment is decisively
+      faster and leaves the saved backends unchanged.
+- [ ] Open the bundled 3D RL/RL-TV example and confirm that both branches retain
+      25 iterations and `filter_epsilon=1e-12`; GPU eligibility must not rewrite
+      either authored value.
 
 Result: pass / fail
 

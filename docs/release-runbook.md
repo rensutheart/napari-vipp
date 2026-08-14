@@ -1,6 +1,6 @@
 # VIPP Alpha Release Runbook
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-14
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 publishing the companion documentation site, and confirming discovery on
@@ -10,8 +10,8 @@ napari hub.
 
 - Target package version: set `<version>` from the release milestone before
   starting; do not reuse the current package version by accident.
-- Current published release: `0.13.0a5`.
-- Current prepared target: `0.13.0a6`.
+- Current published release: `0.13.0a6`.
+- Current prepared target: `0.13.0a7`.
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -129,8 +129,8 @@ distribution decision before freezing the commit:
    installation, compute, and validation pages that ordinary users cannot
    install cuCIM and that the affected providers normally remain on CPU.
 
-VIPP 0.13.0a1 through the published 0.13.0a5 use option 2, and the prepared
-0.13.0a6 target retains that decision. Every user builds and keeps their own
+VIPP 0.13.0a1 through the published 0.13.0a6 use option 2, and the prepared
+0.13.0a7 target retains that decision. Every user builds and keeps their own
 archive; policy allows a per-user archive SHA only when its installed payload,
 pinned source/recipe, environment, and workload pass the exact reviewed gates.
 
@@ -184,14 +184,27 @@ those checklist items remain separate release gates.
 
 ## 3. Freeze And Tag The Exact Release Commit
 
-Only tag after the versioned candidate is reviewed, pushed, clean, and green in
-GitHub Actions. Confirm that it contains the current `origin/main` and record
-the immutable commit id:
+Merge the reviewed release-candidate pull request into `main` before tagging,
+then wait for the final `main` GitHub Actions run to pass. The protected PyPI
+workflow requires the release tag to be an ancestor of `origin/main`; a tag on
+an unmerged release branch is not publishable. Update the local checkout to the
+exact remote `main` commit:
 
 ```powershell
 git fetch origin --tags
+git switch main
+git pull --ff-only origin main
 git status --short
-git merge-base --is-ancestor origin/main HEAD
+```
+
+Only tag after that versioned `main` candidate is reviewed, pushed, clean, and
+green in GitHub Actions. Confirm that `HEAD` equals the current `origin/main`
+and record the immutable commit id:
+
+```powershell
+if ((git rev-parse HEAD).Trim() -ne (git rev-parse origin/main).Trim()) {
+    throw "HEAD is not the exact origin/main release commit"
+}
 git rev-parse HEAD
 git tag -a "v<version>" -m "napari-vipp <version> alpha"
 git rev-parse "v<version>^{}"
@@ -377,9 +390,9 @@ levels of evidence:
   a pass. An optional `VIPP_CUCIM_CANARY_WORK_ROOT` retains the large pinned
   source/build cache.
 
-Keep `VIPP_CUCIM_CANARY_TAG` on `v0.13.0a5` until the complete next prerelease
+Keep `VIPP_CUCIM_CANARY_TAG` on `v0.13.0a6` until the complete next prerelease
 and its cuCIM ZIP are public. Then move it to that exact published tag (the
-prepared target is `v0.13.0a6`). A skipped real-CUDA job is truthful static
+prepared target is `v0.13.0a7`). A skipped real-CUDA job is truthful static
 bundle evidence only; it must never be recorded as a GPU build, installation,
 Compute Doctor, or operation acceptance pass.
 

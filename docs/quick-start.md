@@ -8,25 +8,30 @@ The normal VIPP experience is one Windows installer: download the explicitly
 named unsigned `.exe`, verify it, review the proposed location and compute
 option, and launch VIPP from the shortcuts it creates.
 
-**[Download the VIPP 0.13.0a6 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a6/VIPP-Setup-0.13.0a6-Windows-x86_64-UNSIGNED.exe)**
+The `0.13.0a7` links below become valid only after the official prerelease and
+its checksum sidecars are public. Until then, use the published `0.13.0a6`
+release or an explicitly marked development checkout; never download a guessed
+release asset.
+
+**[Download the VIPP 0.13.0a7 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a7/VIPP-Setup-0.13.0a7-Windows-x86_64-UNSIGNED.exe)**
 
 Use only the file attached to the official
-[`v0.13.0a6` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a6).
+[`v0.13.0a7` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a7).
 This alpha is intentionally not Authenticode-signed. **Unknown publisher** and
 a **Windows protected your PC** warning are therefore expected. The same
 release includes the SHA-256 checksum and release manifest.
 
-1. Download both `VIPP-Setup-0.13.0a6-Windows-x86_64-UNSIGNED.exe` and
-   `SHA256SUMS-Windows-0.13.0a6.txt` from the official release.
+1. Download both `VIPP-Setup-0.13.0a7-Windows-x86_64-UNSIGNED.exe` and
+   `SHA256SUMS-Windows-0.13.0a7.txt` from the official release.
 2. Open PowerShell in the download folder and run:
 
    ```powershell
    Get-FileHash -Algorithm SHA256 `
-     .\VIPP-Setup-0.13.0a6-Windows-x86_64-UNSIGNED.exe
+     .\VIPP-Setup-0.13.0a7-Windows-x86_64-UNSIGNED.exe
    ```
 
    The 64-character hash must exactly match the hash beside that filename in
-   `SHA256SUMS-Windows-0.13.0a6.txt`. Stop and delete the installer if it does
+   `SHA256SUMS-Windows-0.13.0a7.txt`. Stop and delete the installer if it does
    not match.
 3. Double-click the installer. If Windows shows **Windows protected your PC**,
    select **More info**, confirm the app name ends in `-UNSIGNED.exe` and the
@@ -109,16 +114,16 @@ cuCIM Windows installer performs its verified build locally after the standard
 VIPP CUDA environment is working; cuCIM is not required to start VIPP or use
 the other qualified CuPy/CuPyX GPU operations.
 
-To add cuCIM to a working `0.13.0a6` CUDA installation:
+To add cuCIM to a working `0.13.0a7` CUDA installation:
 
 1. Download
-   [`napari-vipp-cucim-installer-0.13.0a6-windows.zip`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a6/napari-vipp-cucim-installer-0.13.0a6-windows.zip)
-   and `SHA256SUMS-Windows-0.13.0a6.txt` from the same official release.
+   [`napari-vipp-cucim-installer-0.13.0a7-windows.zip`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a7/napari-vipp-cucim-installer-0.13.0a7-windows.zip)
+   and `SHA256SUMS-Windows-0.13.0a7.txt` from the same official release.
 2. In PowerShell, run:
 
    ```powershell
    Get-FileHash -Algorithm SHA256 `
-     .\napari-vipp-cucim-installer-0.13.0a6-windows.zip
+     .\napari-vipp-cucim-installer-0.13.0a7-windows.zip
    ```
 
    Compare the result with the line for that ZIP in the downloaded checksum
@@ -130,7 +135,7 @@ To add cuCIM to a working `0.13.0a6` CUDA installation:
    result and its provenance, and admits it only after real CUDA/cuCIM probes
    pass. The first build can take a long time.
 
-The complete [Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a6/getting-started/windows-cuda/)
+The complete [Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a7/getting-started/windows-cuda/)
 also retains the source-checkout procedure as an Advanced alternative. Do not
 run either cuCIM route until the standard CUDA Compute Doctor passes, and do
 not share the private wheel produced on one computer with another user.
@@ -142,12 +147,12 @@ or when installing on Linux or macOS.
 
 ### CPU On Windows, Linux, Or macOS
 
-VIPP `0.13.0a6` supports CPython 3.12 and 3.13. Create and activate a dedicated
+VIPP `0.13.0a7` supports CPython 3.12 and 3.13. Create and activate a dedicated
 virtual environment first; do not install the application into a global/base
 Python. Then run:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a6"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a7"
 vipp
 ```
 
@@ -161,7 +166,7 @@ The current CUDA route requires native 64-bit Windows and CPython 3.12:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a6"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a7"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -175,7 +180,7 @@ probes all ordinals before choosing its default; the installer must identify
 any failing ordinal. Unsupported work stays on CPU with an explanation.
 
 For troubleshooting or the Advanced source-checkout route, follow the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a6/getting-started/windows-cuda/).
+[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a7/getting-started/windows-cuda/).
 
 ### Existing napari Environment (Advanced)
 
@@ -184,7 +189,7 @@ Python explicitly. A conservative CPU update is:
 
 ```powershell
 $napariPython = "C:\Path\To\napari-env\Scripts\python.exe"
-& $napariPython -m pip install "napari-vipp==0.13.0a6"
+& $napariPython -m pip install "napari-vipp==0.13.0a7"
 & $napariPython -m pip check
 ```
 

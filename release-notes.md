@@ -1,47 +1,48 @@
-# VIPP 0.13.0a6
+# VIPP 0.13.0a7
 
-VIPP 0.13.0a6 is a substantial usability and reliability release. It makes everyday graph editing faster, gives users a much clearer answer about whether GPU acceleration is actually available, improves multi-series and microscope-file handling, and adds stronger installation and release checks.
+VIPP 0.13.0a7 makes GPU acceleration easier to understand, inspect, and apply. It can explain when a visible dtype conversion is the only thing preventing a node from using a reviewed GPU implementation, add that ordinary conversion in the correct place with one click, and keep the change fully reviewable and undoable.
 
-VIPP remains alpha software. Keep the original data and workflow, test representative images, and review important outputs before using them for scientific conclusions or publication.
+This remains alpha software. Keep the original data and workflow, test representative images, and review important outputs before using them for scientific conclusions or publication. A GPU agreement check establishes agreement with VIPP's CPU implementation in a stated region; it does not by itself validate the input data, parameters, PSF, or biological interpretation.
 
 ## Features added
 
-### Easier graph editing and reuse
+### A clearer path from a GPU blocker to a safe repair
 
-- Select several nodes and move, copy, paste, or delete them as a group.
-- Copy a node or connected group and paste it on the canvas. VIPP keeps internal connections, applicable tunnels, notes, positions, and settings while assigning safe new identities.
-- Right-click a matching node and use **Paste Values** to transfer its settings. VIPP only enables this for the same operation, validates the change first, and makes the whole transfer one undoable action.
-- Add a processing step before an existing named tunnel without rebuilding the downstream graph. Use **Insert node before tunnel**, drop a compatible palette item onto the tunnel, or drag a loose node onto it.
-- Open **Graph Editing Acceptance Check** from the example chooser for an annotated workflow that explains exactly what to test.
+- Nodes now show a subtle **GPU tip** when input dtype is the only remaining blocker for an otherwise reviewed GPU implementation.
+- Selecting the node explains the exact conversion and memory trade-off. **Add conversion** inserts a normal, visible **Convert Dtype** node on the affected input only. The insertion is one Undo action and does not silently alter shared branches or authored processing parameters.
+- The tip remains available in **Prefer GPU** after calculation, rather than disappearing when a CPU result has been cached.
+- The lossless `uint8`/`uint16` to `float32` **Preserve** conversion itself can remain GPU-resident with the following reviewed operation, avoiding an unnecessary device round trip.
 
-### GPU setup that explains itself
+### Optimizer results that can actually be read
 
-- Compute Doctor now reports three separate things in plain language: whether CUDA works, whether optional GPU libraries such as cuCIM are ready, and which of VIPP's 13 reviewed GPU regions this computer can actually use.
-- The window presents one recommended next step and keeps technical detail collapsed unless it is needed.
-- A privacy-redacted support report can be saved for troubleshooting without exposing local paths, credentials, node identities, or machine fingerprints.
-- A new strict qualification runner checks every public GPU implementation for scientific agreement, difficult inputs, metadata, input safety, memory, cancellation, cleanup, fallback, provenance, and complete-workflow timing.
+- **Find fastest pipeline** now keeps completed scientific and timing results visible even when CPU and GPU are too close to name a safe winner. In that case VIPP leaves the saved backend unchanged and explains why.
+- Results are grouped by node, with one subrow per tested CPU, CuPy, or cuCIM implementation. The main view emphasizes total time, scientific agreement, and outcome; optional detail shows compute, transfer, first-run cost, memory, and evidence information.
 
-### Better support for real microscope collections
+### A connected GPU segmentation path
 
-- Imaris `.ims` files can use the shared optional microscope/BioIO reader route.
-- Multi-series containers become clearly named batch items. The selected series remains visible in browsing, output names, manifests, and provenance. The `.ims`, metadata, and multi-series work incorporates and hardens contributions from Tom Naber in pull requests [#8](https://github.com/rensutheart/napari-vipp/pull/8), [#10](https://github.com/rensutheart/napari-vipp/pull/10), and [#13](https://github.com/rensutheart/napari-vipp/pull/13).
-- The new **Set Microscope Metadata** node records up to three emission wavelengths, objective numerical aperture, and immersion refractive index without changing image pixels. A value of zero leaves existing metadata unchanged.
+- Added reviewed GPU implementations for scalar `float32` **Binary Threshold** and explicitly described **Extract Channel** inputs.
+- Added reviewed boolean-mask GPU implementations for **Remove Small Objects** in resolved 2D/3D Face/Full connectivity regions and **Fill Holes** when `max_hole_size` is zero.
+- The annotated **Portable GPU Segmentation Bridge** example connects channel selection, dtype conversion, Gaussian blur, thresholding, mask cleanup, and connected components. It remains usable on CPU when an accelerator or an exact GPU region is unavailable.
+- Integer-label small-object cleanup and positive bounded-hole-size cleanup deliberately remain on CPU with a visible explanation.
 
-### Stronger installation and packaging checks
+### Broader Richardson-Lucy agreement without parameter rewriting
 
-- Clean wheel and source-package installations are now checked across Windows, Linux, and macOS on supported Python versions, instead of testing a package only inside a development environment.
-- The separate Windows cuCIM bundle has a scheduled reproducibility check. A protected real-GPU canary is also defined for a trusted Windows GPU runner; a skipped hardware job is never presented as a successful GPU test.
-- A new field-acceptance checklist records fresh CPU and CUDA installation, paths with spaces and non-English characters, interrupted-install rollback, repair, update, uninstall, and a novice's first workflow. Anything not actually tested stays marked **not run**.
+- Ordinary Richardson-Lucy GPU eligibility now covers finite authored `filter_epsilon` values from `1e-12` through `1e-6` and 1 through 100 iterations in the reviewed odd-PSF/default-safe region. Lambda-zero RL-TV inherits that region; positive-TV runs retain their narrower reviewed points.
+- CPU/GPU comparison now uses a documented 0.5% agreement policy with finite, nonnegative outputs and matching shape/dtype requirements. The former much tighter near-identity observations remain useful diagnostics rather than an arbitrary scientific validity boundary.
+- VIPP never changes the authored epsilon or iteration count merely to qualify a GPU call. The bundled 3D RL/RL-TV example keeps 25 iterations and `filter_epsilon=1e-12` on both branches.
 
 ## Bug fixes
 
-- CPU and Prefer GPU now both ignore deliberately loose graph fragments during normal calculation. This fixes the Graph Editing Acceptance Check and prevents disconnected demonstration nodes from being treated as runnable workflow branches.
-- Multi-series batch execution now reads the selected series rather than silently falling back to the container's first series, and generated names remain collision-safe.
-- Parameter pasting is transactional: invalid settings, interface refresh failures, and dynamic-port conflicts leave the target node and workflow unchanged.
+- Ordinary finite decimal Binary Threshold values no longer look GPU-ineligible merely because whole-pipeline timings cannot justify a backend change.
+- GPU conversion suggestions now fail closed if their saved candidate no longer exists, the input changed, or Custom mode explicitly selected another implementation.
+- Conversion repairs placed through a named tunnel stay beside the affected subscriber instead of moving an unrelated source or branch.
+- A scientifically successful but speed-inconclusive optimizer run is no longer presented as an eligibility failure with its measurements hidden.
 
 ## Windows installation
 
-For the shortest route, download `VIPP-Setup-0.13.0a6-Windows-x86_64-UNSIGNED.exe` and `SHA256SUMS-Windows-0.13.0a6.txt` from this GitHub release. Verify the SHA-256 value before opening the installer.
+The a7-specific links and downloads are valid only after the official `v0.13.0a7` GitHub prerelease is published. Until that release and its checksum sidecars exist, use the public 0.13.0a6 release or an explicitly marked development checkout; do not treat a guessed a7 asset URL as a download.
+
+For the shortest route, download `VIPP-Setup-0.13.0a7-Windows-x86_64-UNSIGNED.exe` and `SHA256SUMS-Windows-0.13.0a7.txt` from this GitHub release. Verify the SHA-256 value before opening the installer.
 
 This alpha is intentionally not Authenticode-signed. Windows will show **Unknown publisher** and may show **Windows protected your PC**. After verifying the official checksum, select **More info > Run anyway**. Stop if the checksum differs or antivirus reports a threat; never disable Windows security. If organizational policy does not allow the unsigned installer, use the manual installation route in the Quick Start.
 
@@ -49,25 +50,25 @@ The managed installer can install CPU or compatible NVIDIA CUDA 13 environments,
 
 ## Optional cuCIM
 
-Users who want the cuCIM-backed operations can download `napari-vipp-cucim-installer-0.13.0a6-windows.zip` from this release after installing the normal CUDA edition. The bundle contains no cuCIM wheel: it builds the pinned source locally for that user, verifies the result, and installs the private wheel into the selected VIPP environment. Extract the ZIP before running `Install VIPP cuCIM.cmd`. If updating from 0.13.0a5, update VIPP first and rebuild cuCIM with the matching a6 bundle; do not reuse the a5 bundle or move its private wheel between environments.
+After a standard CUDA installation passes Compute Doctor, users who need the cuCIM-backed operations can download `napari-vipp-cucim-installer-0.13.0a7-windows.zip` from the same release. The bundle contains no cuCIM wheel: it builds the pinned source locally, verifies the result, and installs the private wheel only into the selected VIPP environment. Rebuild it with the matching a7 bundle after upgrading; do not reuse an a6 private wheel or copy one between environments.
 
 ## Manual installation or upgrade
 
 VIPP supports CPython 3.12 and 3.13 for CPU use. In PowerShell, Command Prompt, or a terminal with the intended environment activated:
 
 ```text
-python -m pip install --upgrade "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a6"
+python -m pip install --upgrade "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a7"
 vipp
 ```
 
-For the supported native-Windows CUDA 13 route, use CPython 3.12 and follow the versioned Windows CUDA guide instead of mixing CUDA packages manually. Preserve the old environment and open copies of important workflows first. This release continues to read workflow schema 3 and writes schema 4; its batch configuration and manifest schema remain version 3.
+For the supported native-Windows CUDA 13 route, use CPython 3.12 and follow the versioned Windows CUDA guide instead of mixing CUDA packages manually. Preserve the old environment and copies of important workflows first. This release continues to read workflow schema 3 and writes schema 4; batch configuration and manifest schema remain version 3.
 
-When upgrading an installer-managed 0.13.0a5 installation, run the a6 installer, select the same CPU or CUDA route and managed location, review the detected update, and let setup retain the old working copy until a6 passes its checks. You can instead keep a5 and a6 side by side by choosing a new managed location. Do not point setup at an unrelated manually managed napari environment.
+When upgrading an installer-managed 0.13.0a6 installation, run the a7 installer, select the same CPU or CUDA route and managed location, review the detected update, and let setup retain the old working copy until a7 passes its checks. You can instead keep a6 and a7 side by side by choosing a new managed location. Do not point setup at an unrelated manually managed napari environment.
 
 ## What we validated
 
-The complete source suite passed locally with 4,572 tests passing, five environment-dependent tests skipped, and two documented expected failures. The strict RTX 5090 quick qualification covered all 13 public GPU implementations across all 10 required evidence areas (130 of 130 mappings), and Compute Doctor admitted all 13 reviewed GPU regions on that reference system. Clean wheel and source-package installation tests, package metadata checks, documentation tests, and build checks also passed.
+The complete source suite for the merged feature candidate passed with 5,021 tests passing, five environment-dependent tests skipped, and two documented expected failures. All 13 pull-request CI jobs passed across Windows, Linux, and macOS on supported Python versions, including clean wheel and source archive installation. The strict admission catalogue accounts for 18 public GPU implementations and 23 executable evidence owners.
 
-Those results do not replace testing the exact published installer on another computer. If you are helping test this release, use the [Windows field-acceptance checklist](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a6/docs/windows-installer-field-acceptance.md) and report only what you actually exercised.
+RTX 5090 development evidence covers the connected segmentation corridor with one upload and one terminal download when only the final result is retained, plus exact CPU agreement in the admitted mask-cleanup regions. This does not claim qualification on every NVIDIA model or platform. The public support matrix remains scoped, and exact tagged installer acceptance is recorded separately from editable-checkout or pull-request testing.
 
-See the [Quick Start](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a6/docs/quick-start.md), [GPU Guide](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a6/docs/gpu-guide.md), [full changelog](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a6/CHANGELOG.md#0130a6---2026-08-13), and [roadmap](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a6/docs/planning.md) for more detail.
+See the [Quick Start](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/docs/quick-start.md), [GPU Guide](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/docs/gpu-guide.md), [full changelog](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/CHANGELOG.md#0130a7---2026-08-14), and [roadmap](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/docs/planning.md) for complete scopes and remaining qualification work.

@@ -13,7 +13,7 @@ your data and acquisition settings.
 ## Start VIPP
 
 Begin with the [installer-first quick start](quick-start.md). The explicitly
-unsigned Windows `.exe` is the recommended ordinary-user route for `0.13.0a6`;
+unsigned Windows `.exe` is the recommended ordinary-user route for `0.13.0a7`;
 verify its published SHA-256 before accepting Windows' **Unknown publisher**
 warning. Manual pip
 installation remains available for Linux, macOS, and advanced use. Installing
