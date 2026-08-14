@@ -2,7 +2,7 @@
 
 VIPP `0.13.0a7` contains both the read-only installation planner and a
 transactional managed-environment executor behind a novice-facing Windows
-setup window. The 0.13.0a7 release executable is built from the immutable
+setup window. The 0.13.0a7 release executable must be built from the immutable
 `v0.13.0a7` tag with that tag's exact wheel, published only with an explicit
 `-UNSIGNED` filename, and bound to its release manifest and SHA-256 checksum.
 Windows therefore reports **Unknown publisher** for this alpha; the

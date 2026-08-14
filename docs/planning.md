@@ -102,11 +102,15 @@ not displace the source, scale, validation, and reproducibility foundations.
   branded launch profiles, the in-napari loading host, the separate local-build
   cuCIM bundle, and the staged Windows/Linux/macOS installer plan.
 
-## Current Public Baseline
+## Prepared Release Target And Current Public Baseline
 
-Current alpha release: `0.13.0a7`.
+Current published alpha release: `0.13.0a6`.
 
-The public baseline includes:
+Prepared release target: `0.13.0a7`. It does not become the public baseline
+until the immutable tag, GitHub artifacts, numbered manual, and PyPI package
+have all passed the release checks.
+
+The prepared `0.13.0a7` candidate extends the public baseline to include:
 
 - workflow schema 4 with portable CPU/Auto/Prefer-GPU/Custom intent and durable
   per-node preferences;
@@ -716,10 +720,19 @@ human-readable release notes.
 | `0.13.0a4` | Architecture-based GPU admission | The exact device-model allowlist was replaced by current compute-capability, runtime, driver, environment, provider, and scientific-region gates; the GPU model remains provenance. |
 | `0.13.0a5` | Desktop launch and installer foundation | Branded Automatic, CPU-only, and Prefer-GPU launch profiles, an in-napari loading host, deterministic non-mutating install plans, a transactional apply engine, and a per-user Windows bootstrapper. |
 | `0.13.0a6` | Graph reuse, clearer GPU diagnosis, and field hardening | Multi-node graph copy/paste and exact value transfer, insertion before tunnels, Compute Doctor 2.0, complete public-GPU admission orchestration, clean distribution checks, Imaris and multi-series source improvements, and microscope metadata editing. |
-| `0.13.0a7` | Guided GPU repairs and a connected segmentation corridor | One-click visible dtype repairs, persistent Prefer-GPU guidance, readable inconclusive optimizer evidence, versioned RL agreement, and reviewed threshold plus boolean mask-cleanup implementations in a portable example. |
 
 See the [changelog](../CHANGELOG.md) and versioned release notes for full
 delivered detail.
+
+### Prepared Milestone
+
+| Version | Theme | Intended durable outcome |
+| --- | --- | --- |
+| `0.13.0a7` | Guided GPU repairs and a connected segmentation corridor | One-click visible dtype repairs, persistent Prefer-GPU guidance, readable inconclusive optimizer evidence, versioned RL agreement, and reviewed threshold plus boolean mask-cleanup implementations in a portable example. |
+
+This milestone moves to the released table only after its immutable tag,
+GitHub assets, numbered manual, PyPI package, and public verification are
+complete.
 
 ### Planned Source-Identity Alpha: `0.14.0a1`
 

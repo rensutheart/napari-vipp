@@ -478,14 +478,14 @@ Record that the GitHub prerelease is already public and skip the later
 manual or uploading to PyPI; never publish a temporary or unsigned download at
 the final asset name.
 
-Next, dispatch the companion repository's numbered documentation deployment:
+Next, publish the numbered manual without moving the stable alias:
 
 ```powershell
 gh workflow run docs-deploy.yml `
   --repo rensutheart/vipp-mkdocs `
   --ref main `
   -f version="<version>" `
-  -f make_stable=true
+  -f make_stable=false
 ```
 
 Wait for that exact `workflow_dispatch` run to succeed. Before any package
@@ -520,6 +520,21 @@ Post-upload validation:
 - Confirm README renders alpha disclaimer
 - Confirm license metadata shows BSD-3-Clause terms
 - Confirm `Requires-Python` and optional GPU extras match the tagged metadata
+
+Only after PyPI validation succeeds, promote the already-reviewed numbered
+manual to the stable alias:
+
+```powershell
+gh workflow run docs-deploy.yml `
+  --repo rensutheart/vipp-mkdocs `
+  --ref main `
+  -f version="<version>" `
+  -f make_stable=true
+```
+
+Wait for that second documentation run to succeed. Verify both the numbered
+manual and the stable/default entry point; do not move `stable` while the
+matching package is unavailable from PyPI.
 
 Prepare the release notes body below in a temporary file, then create the
 release with GitHub CLI (or use the equivalent GitHub UI fields). Skip this
