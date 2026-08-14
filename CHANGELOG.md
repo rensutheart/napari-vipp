@@ -89,6 +89,27 @@ portable reference and visible fallback outside every exact admitted region.
 
 ### Bug Fixes
 
+- The Windows one-click installer now accepts only the exact per-track roots
+  below the canonical Local App Data directory returned by
+  `SHGetKnownFolderPath(FOLDERID_LocalAppData)`: `VIPP\environments\cpu` and
+  `VIPP\environments\cuda13`. Custom managed roots are not accepted. If the
+  canonical path contains non-ASCII characters, CUDA one-click setup is
+  unavailable before environment creation or package download and the UI
+  offers CPU; the fixed CPU root remains Unicode-safe. Expert-selected existing
+  environments remain a separate non-mutating route. An installer-owned CUDA
+  copy already in an incompatible path is not updated or repaired in place,
+  and setup does not claim that a second managed CUDA copy can coexist.
+- On Windows, when the effective temporary directory used by Python contains a
+  non-ASCII character, VIPP now forces CuPy's in-memory compilation cache for
+  that process. This avoids the affected temporary-source filename path, but
+  disables CuPy's disk kernel cache for that process, so Compute Doctor or the
+  first GPU work can incur compilation again in each new process. An RTX 5090
+  development observation was about 52 seconds cold versus 0.87 seconds for a
+  same-process refresh; these are reference measurements, not guarantees. The
+  scientific kernels and results are unchanged.
+- A failed CuPy kernel compilation now preserves the real `CompileException`
+  and its cause. Probe cleanup no longer masks that failure with a false
+  512-byte private-pool leak report caused by traceback-held arrays.
 - GPU conversion suggestions now fail closed when their saved candidate no
   longer exists, the input changed, or Custom mode explicitly selects CPU or a
   different GPU implementation.

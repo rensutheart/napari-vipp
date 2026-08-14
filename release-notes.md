@@ -48,6 +48,10 @@ This alpha is intentionally not Authenticode-signed. Windows will show **Unknown
 
 The managed installer can install CPU or compatible NVIDIA CUDA 13 environments, keep CPU and GPU installations side by side, create launch shortcuts, repair or update an owned installation, and remove it without touching unrelated Python or napari environments. The standard CUDA installation includes the reviewed CuPy/CuPyX route and works without optional cuCIM.
 
+One-click setup accepts only the exact per-track roots beneath the canonical Windows Local App Data directory returned by `SHGetKnownFolderPath(FOLDERID_LocalAppData)`: `VIPP\environments\cpu` and `VIPP\environments\cuda13`. Custom managed roots are not accepted. CUDA requires the complete canonical path to contain ASCII characters in this release. If it does not, one-click CUDA is unavailable and the UI offers CPU; the fixed CPU root remains supported. Expert-selected existing environments remain separate and unchanged.
+
+The CUDA root and Windows temporary directory are separate. If Python's effective temporary directory contains a non-ASCII character, VIPP uses process-local in-memory CuPy compilation. CuPy's disk kernel cache is then off for that process, so Compute Doctor or the first GPU work may pay the cold compilation cost again in a new process; scientific kernels and results are unchanged. One RTX 5090 reference check took about 52 seconds cold and about 0.87 seconds when refreshed in the same process; those observations are not a performance guarantee. A failed kernel compile now preserves the real CuPy `CompileException` instead of masking it as a false 512-byte private-pool leak.
+
 ## Optional cuCIM
 
 After a standard CUDA installation passes Compute Doctor, users who need the cuCIM-backed operations can download `napari-vipp-cucim-installer-0.13.0a7-windows.zip` from the same release. The bundle contains no cuCIM wheel: it builds the pinned source locally, verifies the result, and installs the private wheel only into the selected VIPP environment. Rebuild it with the matching a7 bundle after upgrading; do not reuse an a6 private wheel or copy one between environments.
@@ -63,11 +67,11 @@ vipp
 
 For the supported native-Windows CUDA 13 route, use CPython 3.12 and follow the versioned Windows CUDA guide instead of mixing CUDA packages manually. Preserve the old environment and copies of important workflows first. This release continues to read workflow schema 3 and writes schema 4; batch configuration and manifest schema remain version 3.
 
-When upgrading an installer-managed 0.13.0a6 installation, run the a7 installer, select the same CPU or CUDA route and managed location, review the detected update, and let setup retain the old working copy until a7 passes its checks. You can instead keep a6 and a7 side by side by choosing a new managed location. Do not point setup at an unrelated manually managed napari environment.
+When upgrading an installer-managed 0.13.0a6 installation, run the a7 installer, select the same CPU or CUDA route, review the copy detected at that track's fixed root, and let setup retain the old working copy until a7 passes its checks. CPU and CUDA tracks can coexist, but two managed versions of the same track cannot. An installer-owned CUDA copy under an incompatible root is not moved or repaired in place; after any separately recorded recovery from a prior interrupted transaction, the newly blocked selection performs no new mutation. Remove that copy only through its ownership-bound uninstaller. Do not point setup at an unrelated manually managed napari environment.
 
 ## What we validated
 
-The complete source suite for the merged feature candidate passed with 5,021 tests passing, five environment-dependent tests skipped, and two documented expected failures. All 13 pull-request CI jobs passed across Windows, Linux, and macOS on supported Python versions, including clean wheel and source archive installation. The strict admission catalogue accounts for 18 public GPU implementations and 23 executable evidence owners.
+The complete source suite for the release candidate passed with 5,084 tests passing, five environment-dependent tests skipped, and two documented expected failures. All 13 pull-request CI jobs passed across Windows, Linux, and macOS on supported Python versions, including clean wheel and source archive installation. The strict admission catalogue accounts for 18 public GPU implementations and 23 executable evidence owners.
 
 RTX 5090 development evidence covers the connected segmentation corridor with one upload and one terminal download when only the final result is retained, plus exact CPU agreement in the admitted mask-cleanup regions. This does not claim qualification on every NVIDIA model or platform. The public support matrix remains scoped, and exact tagged-installer acceptance is a separate release gate that editable-checkout or pull-request testing cannot satisfy.
 

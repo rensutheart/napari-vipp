@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import subprocess
 import threading
 from collections.abc import Callable, Mapping
@@ -16,6 +17,7 @@ from napari_vipp.installer.discovery import (
     discover_installation,
 )
 from napari_vipp.installer.frontend import (
+    BlockedAction,
     InstallationCancelled,
     InstallerSelection,
     InstallOutcome,
@@ -33,7 +35,13 @@ from napari_vipp.installer.models import (
     ReleaseSpec,
     ShortcutScope,
 )
-from napari_vipp.installer.ownership import OwnershipState, inspect_ownership
+from napari_vipp.installer.ownership import (
+    MANAGED_ENVIRONMENTS_DIRECTORY,
+    OWNERSHIP_DIRECTORY,
+    OwnershipInspection,
+    OwnershipState,
+    inspect_ownership,
+)
 from napari_vipp.installer.payload import bundled_release_spec
 from napari_vipp.installer.planner import create_install_plan
 from napari_vipp.installer.python_discovery import (
@@ -79,6 +87,16 @@ _ERROR_FRIENDLY_TEXT = {
     "install_target_parent_invalid": (
         "The selected installation location is not available."
     ),
+    "managed_root_canonical_unavailable": (
+        "Windows could not provide this account's canonical managed location."
+    ),
+    "managed_root_not_canonical": (
+        "One-click setup accepts only VIPP's canonical per-account location."
+    ),
+    "cuda13_environment_root_non_ascii": (
+        "The NVIDIA GPU option needs an installation location that uses standard "
+        "English letters, numbers, and punctuation. Spaces are supported."
+    ),
 }
 
 
@@ -96,6 +114,7 @@ class WindowsInstallerBackend:
         candidate_finder: Callable[..., tuple[PythonCandidate, ...]] = (
             discover_python_candidates
         ),
+        registry_backend: object | None = None,
     ) -> None:
         self._preferred_python = (
             Path(preferred_python) if preferred_python is not None else None
@@ -105,6 +124,8 @@ class WindowsInstallerBackend:
         self._services = services or default_services()
         self._environ = dict(os.environ if environ is None else environ)
         self._candidate_finder = candidate_finder
+        self._registry_backend = registry_backend
+        self._local_app_data = _known_local_app_data(self._services)
 
     def inspect(
         self,
@@ -119,9 +140,82 @@ class WindowsInstallerBackend:
         release = self._release or bundled_release_spec()
         if selection.existing_python is not None:
             return self._inspect_existing_route(selection, release)
+        if self._local_app_data is None:
+            displayed_target = selection.install_root or Path(
+                self._environ.get("LOCALAPPDATA", str(Path.home()))
+            )
+            return PreparedInstall(
+                kind=TargetKind.BLOCKED,
+                target=displayed_target,
+                release_version=release.version,
+                track=_explicit_track(selection.track),
+                plain_summary=(
+                    "Setup could not verify this account's private Windows "
+                    "application-data folder."
+                ),
+                technical_details=(
+                    "The Windows LocalAppData Known Folder lookup returned no "
+                    "path. Setup did not trust the LOCALAPPDATA environment "
+                    "variable as an installation or recovery authority."
+                ),
+                reason=(
+                    "Check again after Windows LocalAppData is available. One-click "
+                    "setup does not accept an environment-variable or custom-folder "
+                    "substitute for this Windows identity boundary."
+                ),
+                blocked_action=BlockedAction.RETRY,
+            )
+        explicit_track = _explicit_track(selection.track)
+        selected_owned = (
+            self._owned_installation(selection)
+            if selection.install_root is not None
+            else None
+        )
+        if (
+            selection.install_root is not None
+            and (
+                explicit_track is None
+                or not _same_path(
+                    selection.install_root,
+                    _default_install_root(self._local_app_data, explicit_track),
+                )
+            )
+            and selected_owned is None
+        ):
+            return self._custom_managed_root_block(selection, release)
 
+        # Durable recovery completes or rolls back a transaction that already
+        # began in an earlier setup run.  It deliberately precedes new-plan
+        # validation: a newly selected blocker must not strand owned residue or
+        # weaken the previous installation's recovery guarantee.
         self._recover_interrupted(selection)
         owned = self._owned_installation(selection)
+        if (
+            selection.install_root is not None
+            and owned is None
+            and (
+                explicit_track is None
+                or not _same_path(
+                    selection.install_root,
+                    _default_install_root(self._local_app_data, explicit_track),
+                )
+            )
+        ):
+            return self._custom_managed_root_block(selection, release)
+        if owned is not None and not _same_path(
+            owned.record.managed_root,
+            _default_install_root(self._local_app_data, owned.record.track),
+        ):
+            return self._owned_root_migration_block(
+                owned,
+                release=release,
+                technical_details=(
+                    "A validated installer-owned installation uses a legacy custom "
+                    "managed root. Its prior ownership-bound transaction recovery "
+                    "completed before the exact default-root boundary was enforced; "
+                    "package resolution did not run."
+                ),
+            )
         candidates = self._python_candidates(owned)
         progress(
             ProgressUpdate(
@@ -149,7 +243,7 @@ class WindowsInstallerBackend:
                 owned.record.managed_root
                 if owned is not None
                 else selection.install_root
-                or _default_install_root(self._environ, track)
+                or _default_install_root(self._local_app_data, track)
             )
             python_requirement = (
                 "64-bit Python 3.12"
@@ -172,6 +266,7 @@ class WindowsInstallerBackend:
                 ),
                 reason="Python is required before VIPP can be installed.",
                 help_url=PYTHON_DOWNLOAD_URL,
+                blocked_action=BlockedAction.OPEN_HELP,
             )
 
         progress(
@@ -185,20 +280,53 @@ class WindowsInstallerBackend:
         foreign = _plan_is_foreign(plan)
         if foreign or not plan.ready:
             details = _join_details(fallback_note, plan.to_json())
+            cuda_path_blocked = _plan_has_error(
+                plan,
+                "cuda13_environment_root_non_ascii",
+            )
+            summary = (
+                "Setup found files in this folder that it did not create. "
+                "For safety, it will not replace or remove them."
+                if foreign
+                else _friendly_plan_error(plan)
+            )
+            reason = _first_remediation(plan)
+            owned_migration_blocked = owned is not None and cuda_path_blocked
+            if owned_migration_blocked:
+                assert owned is not None
+                summary, reason = _owned_cuda_path_migration_guidance(
+                    release_version=release.version,
+                    installed_version=owned.record.version,
+                    track=owned.record.track,
+                )
+            action = (
+                BlockedAction.USE_CPU
+                if cuda_path_blocked and owned is None
+                else BlockedAction.RETRY
+            )
+            fallback: dict[str, object] = {}
+            if owned_migration_blocked:
+                assert owned is not None
+                action, fallback_note = self._owned_uninstall_action(owned)
+                reason = _join_details(reason, fallback_note)
+                if action is BlockedAction.RUN_OWNED_UNINSTALLER:
+                    assert owned.record is not None
+                    fallback = {
+                        "ownership_manifest_sha256": owned.manifest_sha256,
+                        "owned_uninstaller_path": owned.record.uninstaller_path,
+                        "owned_uninstaller_sha256": owned.record.uninstaller_sha256,
+                    }
             return PreparedInstall(
                 kind=TargetKind.FOREIGN if foreign else TargetKind.BLOCKED,
                 target=plan.discovery.filesystem.target,
                 release_version=release.version,
                 track=plan.request.track,
-                plain_summary=(
-                    "Setup found files in this folder that it did not create. "
-                    "For safety, it will not replace or remove them."
-                    if foreign
-                    else _friendly_plan_error(plan)
-                ),
+                plain_summary=summary,
                 technical_details=details,
                 required_free_bytes=plan.required_free_bytes,
-                reason=_first_remediation(plan),
+                reason=reason,
+                blocked_action=action,
+                **fallback,
             )
 
         progress(
@@ -320,11 +448,74 @@ class WindowsInstallerBackend:
             creationflags=creationflags,
         )
 
+    def open_owned_uninstaller(self, prepared: PreparedInstall) -> None:
+        """Revalidate and launch one exact ownership-recorded uninstaller."""
+
+        if prepared.blocked_action is not BlockedAction.RUN_OWNED_UNINSTALLER:
+            raise RuntimeError("No owned uninstaller was reviewed for this action.")
+        inspection = inspect_ownership(prepared.target)
+        record = inspection.record
+        if (
+            inspection.state is not OwnershipState.VALID
+            or record is None
+            or not secrets.compare_digest(
+                inspection.manifest_sha256,
+                prepared.ownership_manifest_sha256,
+            )
+            or record.uninstaller_path is None
+            or not _same_path(
+                record.uninstaller_path,
+                prepared.owned_uninstaller_path,
+            )
+            or not secrets.compare_digest(
+                record.uninstaller_sha256,
+                prepared.owned_uninstaller_sha256,
+            )
+        ):
+            raise RuntimeError(
+                "The owned installation or uninstaller changed after review."
+            )
+        from napari_vipp.installer.uninstall import registry_plan_from_record
+
+        plan = registry_plan_from_record(record, inspection.manifest_sha256)
+        if not self._uninstaller_is_in_trusted_cache(plan.uninstaller_path):
+            raise RuntimeError(
+                "The ownership-recorded uninstaller is outside this account's "
+                "trusted VIPP installer cache."
+            )
+        creationflags = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+        )
+        subprocess.Popen(
+            (
+                str(plan.uninstaller_path),
+                "--uninstall",
+                "--managed-root",
+                str(plan.managed_root),
+            ),
+            cwd=str(plan.uninstaller_path.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            shell=False,
+            creationflags=creationflags,
+        )
+
     def _selected_engine(self):
         if self._engine is None:
             from napari_vipp.installer.engine import ManagedInstallerEngine
 
-            self._engine = ManagedInstallerEngine()
+            state_root = (
+                self._local_app_data / "VIPP" / "installer"
+                if self._local_app_data is not None
+                else None
+            )
+            self._engine = ManagedInstallerEngine(
+                state_root=state_root,
+                registry_backend=self._registry_backend,
+                known_folder_probe=self._services.known_folder_probe,
+            )
         return self._engine
 
     def _python_candidates(self, owned) -> tuple[PythonCandidate, ...]:
@@ -359,7 +550,9 @@ class WindowsInstallerBackend:
                 if explicit is not None
                 else (ComputeTrack.CUDA13, ComputeTrack.CPU)
             )
-            roots = [_default_install_root(self._environ, track) for track in tracks]
+            roots = [
+                _default_install_root(self._local_app_data, track) for track in tracks
+            ]
         for root in roots:
             inspection = inspect_ownership(root)
             if inspection.state is OwnershipState.VALID:
@@ -367,9 +560,6 @@ class WindowsInstallerBackend:
         return None
 
     def _recover_interrupted(self, selection: InstallerSelection) -> None:
-        recover = getattr(self._selected_engine(), "recover_interrupted", None)
-        if not callable(recover):
-            return
         if selection.install_root is not None:
             roots = (selection.install_root,)
         else:
@@ -380,16 +570,22 @@ class WindowsInstallerBackend:
                 else (ComputeTrack.CUDA13, ComputeTrack.CPU)
             )
             roots = tuple(
-                _default_install_root(self._environ, track) for track in tracks
+                _default_install_root(self._local_app_data, track) for track in tracks
             )
         for root in roots:
-            result = recover(root)
-            if getattr(result, "completed", True) is False:
-                errors = "; ".join(getattr(result, "errors", ()))
-                raise RuntimeError(
-                    "An interrupted VIPP setup needs manual cleanup before setup "
-                    f"can continue. {errors}"
-                )
+            self._recover_interrupted_root(root)
+
+    def _recover_interrupted_root(self, root: Path) -> None:
+        recover = getattr(self._selected_engine(), "recover_interrupted", None)
+        if not callable(recover):
+            return
+        result = recover(root)
+        if getattr(result, "completed", True) is False:
+            errors = "; ".join(getattr(result, "errors", ()))
+            raise RuntimeError(
+                "An interrupted VIPP setup needs manual cleanup before setup "
+                f"can continue. {errors}"
+            )
 
     def _recommended_plan(
         self,
@@ -432,6 +628,14 @@ class WindowsInstallerBackend:
         )
         if cuda_plan is not None and cuda_plan.ready:
             return cuda_plan, ""
+        if _only_error_is(
+            cuda_plan,
+            "cuda13_environment_root_non_ascii",
+        ):
+            # A qualifying GPU should not silently disappear merely because
+            # its default per-account folder is incompatible with NVRTC. Keep
+            # the correctable blocker visible and offer the fixed CPU route.
+            return cuda_plan, ""
         cpu_plan = self._make_plan(
             selection,
             release,
@@ -461,7 +665,11 @@ class WindowsInstallerBackend:
             mode=InstallMode.MANAGED,
             track=track,
             python=candidate.executable,
-            install_root=selection.install_root,
+            install_root=(
+                selection.install_root
+                if selection.install_root is not None
+                else _default_install_root(self._local_app_data, track)
+            ),
             shortcut_scope=(
                 ShortcutScope.BOTH
                 if selection.create_desktop_shortcut
@@ -475,6 +683,69 @@ class WindowsInstallerBackend:
         )
         return create_install_plan(request, discovery=discovery, release=release)
 
+    @staticmethod
+    def _custom_managed_root_block(
+        selection: InstallerSelection,
+        release: ReleaseSpec,
+    ) -> PreparedInstall:
+        assert selection.install_root is not None
+        return PreparedInstall(
+            kind=TargetKind.BLOCKED,
+            target=selection.install_root,
+            release_version=release.version,
+            track=_explicit_track(selection.track),
+            plain_summary=(
+                "One-click setup uses only VIPP's exact per-account Windows "
+                "default folder. Custom managed folders are not accepted by this "
+                "release."
+            ),
+            technical_details=(
+                "The custom managed root was rejected before package resolution or "
+                "new filesystem mutation. If an earlier owned transaction was "
+                "present, its separately authorized recovery completed first. The "
+                "canonical root comes from FOLDERID_LocalAppData, not LOCALAPPDATA."
+            ),
+            reason=(
+                "Use the default location. Expert existing environments remain a "
+                "separate, plan-only workflow that setup does not mutate."
+            ),
+            blocked_action=BlockedAction.USE_DEFAULT_LOCATION,
+        )
+
+    def _owned_root_migration_block(
+        self,
+        inspection: OwnershipInspection,
+        *,
+        release: ReleaseSpec,
+        technical_details: str,
+    ) -> PreparedInstall:
+        assert inspection.record is not None
+        record = inspection.record
+        summary, reason = _owned_cuda_path_migration_guidance(
+            release_version=release.version,
+            installed_version=record.version,
+            track=record.track,
+        )
+        action, fallback_note = self._owned_uninstall_action(inspection)
+        fallback: dict[str, object] = {}
+        if action is BlockedAction.RUN_OWNED_UNINSTALLER:
+            fallback = {
+                "ownership_manifest_sha256": inspection.manifest_sha256,
+                "owned_uninstaller_path": record.uninstaller_path,
+                "owned_uninstaller_sha256": record.uninstaller_sha256,
+            }
+        return PreparedInstall(
+            kind=TargetKind.BLOCKED,
+            target=record.managed_root,
+            release_version=release.version,
+            track=record.track,
+            plain_summary=summary,
+            technical_details=technical_details,
+            reason=_join_details(reason, fallback_note),
+            blocked_action=action,
+            **fallback,
+        )
+
     def _inspect_existing_route(
         self,
         selection: InstallerSelection,
@@ -482,11 +753,117 @@ class WindowsInstallerBackend:
     ) -> PreparedInstall:
         assert selection.existing_python is not None
         root = selection.existing_python.parent.parent
+        owned = self._owned_existing_installation(selection.existing_python)
+        if owned is not None:
+            assert owned.record is not None
+            managed_root = owned.record.managed_root
+            prior_track = owned.record.track
+            self._recover_interrupted_root(managed_root)
+            owned = inspect_ownership(managed_root)
+            if owned.state is OwnershipState.ABSENT:
+                use_cpu = (
+                    prior_track is ComputeTrack.CUDA13
+                    and self._local_app_data is not None
+                    and not str(
+                        _default_install_root(
+                            self._local_app_data,
+                            ComputeTrack.CUDA13,
+                        )
+                    ).isascii()
+                )
+                return PreparedInstall(
+                    kind=TargetKind.BLOCKED,
+                    target=managed_root,
+                    release_version=release.version,
+                    track=prior_track,
+                    plain_summary=(
+                        "Setup safely completed or rolled back the earlier owned "
+                        "transaction. That incomplete managed installation is no "
+                        "longer registered."
+                    ),
+                    technical_details=(
+                        "Ownership-bound recovery ran before the selected existing-"
+                        "environment route. Package resolution did not run."
+                    ),
+                    reason=(
+                        "Use CPU one-click setup."
+                        if use_cpu
+                        else "Use the exact default one-click location."
+                    ),
+                    blocked_action=(
+                        BlockedAction.USE_CPU
+                        if use_cpu
+                        else BlockedAction.USE_DEFAULT_LOCATION
+                    ),
+                )
+            if owned.state is not OwnershipState.VALID or owned.record is None:
+                raise RuntimeError(
+                    "An interrupted VIPP setup changed the owned installation "
+                    "boundary unexpectedly. Manual cleanup is required before "
+                    "setup can continue."
+                )
+            track = owned.record.track
+            canonical_root = (
+                _default_install_root(self._local_app_data, track)
+                if self._local_app_data is not None
+                else None
+            )
+            if canonical_root is None or not _same_path(
+                managed_root,
+                canonical_root,
+            ):
+                return self._owned_root_migration_block(
+                    owned,
+                    release=release,
+                    technical_details=(
+                        "The selected Python belongs to a validated installer-owned "
+                        "legacy custom environment. Recovery of its managed root "
+                        "completed before the exact default-root boundary was "
+                        "enforced; package resolution did not run."
+                    ),
+                )
+            if track is ComputeTrack.CUDA13 and not str(managed_root).isascii():
+                return self._owned_root_migration_block(
+                    owned,
+                    release=release,
+                    technical_details=(
+                        "The selected Python belongs to a validated installer-owned "
+                        "CUDA environment. Recovery of its managed root completed "
+                        "before the non-ASCII path boundary was enforced; package "
+                        "resolution did not run."
+                    ),
+                )
+        else:
+            track = _explicit_track(selection.track)
+        if track is ComputeTrack.CUDA13 and not str(root).isascii():
+            return PreparedInstall(
+                kind=TargetKind.BLOCKED,
+                target=root,
+                release_version=release.version,
+                track=track,
+                plain_summary=(
+                    "The selected existing CUDA environment uses a Windows path "
+                    "that CuPy 14.1.1 cannot use reliably. Setup has left that "
+                    "environment completely unchanged."
+                ),
+                technical_details=(
+                    "The existing-environment route was rejected before package "
+                    "resolution because its environment root contains a non-ASCII "
+                    "character."
+                ),
+                reason=(
+                    "Use CPU one-click setup, or follow the expert instructions for "
+                    "a separate CUDA environment whose complete path is ASCII-only. "
+                    "Setup will not move, rename, or edit the selected virtual "
+                    "environment; spaces are supported."
+                ),
+                blocked_action=BlockedAction.USE_CPU,
+            )
         return PreparedInstall(
             kind=TargetKind.BLOCKED,
             target=root,
             release_version=release.version,
-            track=_explicit_track(selection.track) or ComputeTrack.CPU,
+            track=track,
             plain_summary=(
                 "The one-click setup keeps existing napari environments unchanged. "
                 "Use the recommended managed location, or follow the expert "
@@ -497,7 +874,99 @@ class WindowsInstallerBackend:
                 "enabled in this setup build."
             ),
             reason="Choose the recommended managed installation for automatic setup.",
+            blocked_action=BlockedAction.USE_DEFAULT_LOCATION,
         )
+
+    def _owned_uninstall_action(
+        self,
+        inspection: OwnershipInspection,
+    ) -> tuple[BlockedAction, str]:
+        record = inspection.record
+        if record is None:
+            return BlockedAction.OPEN_INSTALLED_APPS, ""
+        try:
+            from napari_vipp.installer.uninstall import (
+                WindowsRegistryBackend,
+                registry_plan_from_record,
+            )
+
+            plan = registry_plan_from_record(record, inspection.manifest_sha256)
+        except Exception as exc:
+            return (
+                BlockedAction.OPEN_INSTALLED_APPS,
+                "The ownership-recorded fallback uninstaller could not be "
+                f"verified ({exc}). If VIPP is not listed in Installed apps, "
+                "contact support instead of moving or deleting the folder.",
+            )
+        registry = self._registry_backend or WindowsRegistryBackend()
+        try:
+            current = registry.read_values(plan.key)
+        except Exception:
+            current = None
+        expected = {name.casefold(): value for name, value in plan.values}
+        observed = (
+            {name.casefold(): value for name, value in current.items()}
+            if current is not None
+            else None
+        )
+        if observed == expected:
+            return BlockedAction.OPEN_INSTALLED_APPS, ""
+        if not self._uninstaller_is_in_trusted_cache(plan.uninstaller_path):
+            return (
+                BlockedAction.OPEN_INSTALLED_APPS,
+                "Windows Installed apps does not contain the exact ownership-bound "
+                "VIPP entry, and the ownership-recorded executable is outside this "
+                "account's trusted VIPP installer cache. Setup will not run it. If "
+                "VIPP is not listed in Installed apps, contact support instead of "
+                "moving, deleting, or opening files from the old folder.",
+            )
+        return (
+            BlockedAction.RUN_OWNED_UNINSTALLER,
+            "Windows Installed apps does not contain the exact ownership-bound "
+            "VIPP entry. Setup verified the cached VIPP uninstaller recorded by "
+            f"this installation at {plan.uninstaller_path} and can open it "
+            "directly; it will ask for confirmation before removal.",
+        )
+
+    def _uninstaller_is_in_trusted_cache(self, executable: Path) -> bool:
+        if self._local_app_data is None:
+            return False
+        cache_root = self._local_app_data / "VIPP" / "installer" / "cache"
+        return not _same_path(executable, cache_root) and _same_or_descendant(
+            executable,
+            cache_root,
+        )
+
+    @staticmethod
+    def _owned_existing_installation(
+        executable: Path,
+    ) -> OwnershipInspection | None:
+        """Return exact managed ownership without walking arbitrary ancestors."""
+
+        selected = Path(executable)
+        if (
+            selected.name.casefold() != "python.exe"
+            or selected.parent.name.casefold() != "scripts"
+        ):
+            return None
+        environment = selected.parent.parent
+        environments = environment.parent
+        state_root = environments.parent
+        if (
+            environments.name.casefold() != MANAGED_ENVIRONMENTS_DIRECTORY.casefold()
+            or state_root.name.casefold() != OWNERSHIP_DIRECTORY.casefold()
+        ):
+            return None
+        inspection = inspect_ownership(state_root.parent)
+        if inspection.state is not OwnershipState.VALID or inspection.record is None:
+            return None
+        owned_environments = (
+            inspection.record.environment_root,
+            *inspection.record.retired_environment_roots,
+        )
+        if not any(_same_path(environment, owned) for owned in owned_environments):
+            return None
+        return inspection
 
     @staticmethod
     def _check_cancelled(cancellation: threading.Event) -> None:
@@ -603,7 +1072,8 @@ def _transaction_summary(
     if kind is TargetKind.FOREIGN:
         return (
             "Setup found files it did not create and will not overwrite or remove "
-            "them. Choose another location to continue."
+            "them. Move those files yourself if appropriate, then choose Check "
+            "again; one-click setup has no alternate managed root."
         )
     return "Setup cannot safely use the selected location."
 
@@ -662,7 +1132,10 @@ def _installation_decision_message(kind: TargetKind) -> str:
         TargetKind.REPAIR: "Checks finished. Setup recommends repairing VIPP.",
         TargetKind.CURRENT: "Checks finished. VIPP is ready to open.",
         TargetKind.NEWER: "Checks finished. The newer VIPP version will be kept.",
-        TargetKind.FOREIGN: "Checks finished. Choose another installation folder.",
+        TargetKind.FOREIGN: (
+            "Checks finished. Move the unexpected files yourself if appropriate, "
+            "then choose Check again."
+        ),
         TargetKind.BLOCKED: "Checks finished. Setup needs your attention.",
     }[kind]
 
@@ -702,12 +1175,20 @@ def _stable_launch_directory(
 
 
 def _same_or_descendant(path: Path, parent: Path) -> bool:
+    candidate = os.path.abspath(path)
+    boundary = os.path.abspath(parent)
     try:
-        return os.path.normcase(os.path.commonpath((path, parent))) == os.path.normcase(
-            os.path.abspath(parent)
-        )
+        return os.path.normcase(
+            os.path.commonpath((candidate, boundary))
+        ) == os.path.normcase(boundary)
     except ValueError:
         return False
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
+        os.path.abspath(right)
+    )
 
 
 def _result_cancelled(result: object) -> bool:
@@ -752,6 +1233,54 @@ def _plan_is_foreign(plan: InstallPlan) -> bool:
     return any(issue.code in foreign_codes for issue in plan.issues)
 
 
+def _plan_has_error(plan: InstallPlan, code: str) -> bool:
+    return any(
+        issue.code == code and issue.severity is IssueSeverity.ERROR
+        for issue in plan.issues
+    )
+
+
+def _only_error_is(plan: InstallPlan | None, code: str) -> bool:
+    if plan is None:
+        return False
+    errors = {
+        issue.code for issue in plan.issues if issue.severity is IssueSeverity.ERROR
+    }
+    return errors == {code}
+
+
+def _owned_cuda_path_migration_guidance(
+    *,
+    release_version: str,
+    installed_version: str,
+    track: ComputeTrack,
+) -> tuple[str, str]:
+    option = "VIPP (GPU)" if track is ComputeTrack.CUDA13 else "VIPP (CPU)"
+    follow_up = (
+        "Setup will use the exact per-account Windows default. If that path is not "
+        "ASCII-only, use CPU one-click setup or follow the expert existing-CUDA-"
+        "environment instructions"
+        if track is ComputeTrack.CUDA13
+        else "Setup will use the exact per-account Windows default"
+    )
+    summary = (
+        f"VIPP {installed_version} is installed in a managed location that this "
+        f"{release_version} setup cannot safely update or repair in place. The "
+        "new migration selection made no change to that installation. Any earlier "
+        "interrupted setup recovery was completed or rolled back first and is "
+        "recorded separately."
+    )
+    reason = (
+        f"Use the safe removal action below to uninstall {option} first. After its "
+        f"ownership-bound removal finishes, run setup again. {follow_up}. "
+        "Do not move or rename the old virtual environment, and do "
+        "not try to install a second managed copy for the same CPU/GPU option "
+        "before removing it: each option has one Apps entry and fixed shortcut "
+        "names."
+    )
+    return summary, reason
+
+
 def _friendly_plan_error(plan: InstallPlan | None) -> str:
     if plan is None:
         return "Setup could not find the software required for this option."
@@ -789,13 +1318,31 @@ def _explicit_track(choice: TrackChoice) -> ComputeTrack | None:
 
 
 def _default_install_root(
-    environ: Mapping[str, str],
+    local_app_data: Path | None,
     track: ComputeTrack,
 ) -> Path:
-    base = environ.get("LOCALAPPDATA")
-    local = Path(base) if base else Path.home() / "AppData" / "Local"
+    if local_app_data is None:
+        raise RuntimeError(
+            "The Windows LocalAppData Known Folder could not be verified."
+        )
     suffix = "cuda13" if track is ComputeTrack.CUDA13 else "cpu"
-    return local / "VIPP" / "environments" / suffix
+    return local_app_data / "VIPP" / "environments" / suffix
+
+
+def _known_local_app_data(services: DiscoveryServices) -> Path | None:
+    probe = services.known_folder_probe
+    if probe is None:
+        return None
+    try:
+        path = probe("local_app_data")
+    except Exception:
+        return None
+    if path is None:
+        return None
+    selected = Path(os.path.abspath(path))
+    if str(selected).startswith(("\\\\", "//")):
+        return None
+    return selected
 
 
 def _optional_int(value: Any) -> int | None:

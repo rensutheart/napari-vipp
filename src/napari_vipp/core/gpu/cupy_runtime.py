@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import importlib
+import os
 import platform
 import struct
 import sys
+import tempfile
 import threading
-from collections.abc import Callable, Hashable, Iterator
+import traceback as traceback_module
+from collections.abc import Callable, Hashable, Iterator, MutableMapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import ModuleType
@@ -26,6 +29,12 @@ from napari_vipp.core.compute_registry import (
 
 _MIB = 1024 * 1024
 _DEFAULT_RESERVE_BYTES = 512 * _MIB
+_CUPY_CACHE_POLICY_LOCK = threading.RLock()
+_CUPY_CACHE_FINGERPRINT_KEYS = (
+    "cupy_cache_in_memory",
+    "cupy_cache_reason",
+    "cupy_cache_non_ascii_path_kinds",
+)
 
 
 class InvalidCUDADeviceError(ValueError):
@@ -153,6 +162,7 @@ class CuPyRuntime:
             struct.calcsize("P") * 8 if pointer_bits is None else pointer_bits
         )
         self._cupy: object | None = None
+        self._cupy_cache_metadata: tuple[tuple[str, str], ...] = ()
         self._ndimage: object | None = None
         self._probe_result: RuntimeProbeResult | None = None
         self._lock = threading.RLock()
@@ -178,10 +188,25 @@ class CuPyRuntime:
                     "runtime_closed", "This runtime instance has been closed."
                 )
             if self._unhealthy_message:
-                return self._remember_unavailable(
-                    "runtime_unhealthy", self._unhealthy_message
-                )
-            if self._probe_result is not None and not refresh:
+                message = self._unhealthy_message
+                if self._cupy is not None:
+                    try:
+                        self._refresh_cupy_cache_policy_unlocked(self._cupy)
+                    except Exception as exc:
+                        # The runtime is already unusable. Preserve that
+                        # fail-closed result, but never attach a cache-policy
+                        # claim which could no longer be revalidated.
+                        self._cupy_cache_metadata = ()
+                        message += (
+                            " CuPy cache-policy revalidation also failed: "
+                            + _exception_summary(exc)
+                        )
+                return self._remember_unavailable("runtime_unhealthy", message)
+            # A cached failure before CuPy loaded has no process-wide cache
+            # policy to revalidate.  Once CuPy has loaded, every probe must
+            # pass through ``_load_cupy`` so an external environment mutation
+            # cannot leave cached availability or metadata stale.
+            if self._probe_result is not None and not refresh and self._cupy is None:
                 return self._probe_result
             compatibility = self._compatibility_failure()
             if compatibility is not None:
@@ -203,6 +228,9 @@ class CuPyRuntime:
                     reason,
                     f"CuPy could not be loaded: {_exception_summary(exc)}",
                 )
+        with self._lock:
+            if self._probe_result is not None and not refresh:
+                return self._probe_result
         try:
             ndimage = self._load_ndimage()
         except Exception as exc:
@@ -309,6 +337,9 @@ class CuPyRuntime:
                     for device in devices
                 ],
             }
+            cache_policy = _cupy_cache_fingerprint_metadata(self._cupy_cache_metadata)
+            if cache_policy:
+                fingerprint_payload["cupy_cache_policy"] = cache_policy
             self._probe_result = RuntimeProbeResult(
                 runtime_id=self.runtime_id,
                 available=True,
@@ -324,6 +355,7 @@ class CuPyRuntime:
                 metadata=(
                     ("driver_version", driver_version),
                     ("cuda_runtime_version", runtime_version),
+                    *self._cupy_cache_metadata,
                 ),
             )
             return self._probe_result
@@ -795,6 +827,10 @@ class CuPyRuntime:
             self._probe_result = None
             self._ndimage = None
             self._cupy = None
+            # Once this instance drops CuPy it can no longer revalidate a
+            # process-wide environment setting, so a later closed probe must
+            # not claim the last observed effective cache policy.
+            self._cupy_cache_metadata = ()
             self._closed = True
             if cleanup_failed:
                 error = CUDACleanupError(self._unhealthy_message)
@@ -926,8 +962,36 @@ class CuPyRuntime:
             if self._closed:
                 raise RuntimeError("This CuPy runtime instance has been closed.")
             if self._cupy is None:
-                self._cupy = self._module_loader("cupy")
+                cupy = self._module_loader("cupy")
+                self._cupy = cupy
+            else:
+                cupy = self._cupy
+            self._refresh_cupy_cache_policy_unlocked(cupy)
             return self._cupy
+
+    def _refresh_cupy_cache_policy_unlocked(self, cupy: object) -> None:
+        """Reassert process policy and invalidate stale probe provenance."""
+
+        metadata = _configure_windows_unicode_safe_cupy_cache(
+            cupy,
+            platform_name=self._platform_name,
+            environment=os.environ,
+            temp_paths=_effective_temp_paths(),
+        )
+        previous = dict(self._cupy_cache_metadata)
+        current = dict(metadata)
+        if (
+            current.get("cupy_cache_reason") == "windows_non_ascii_runtime_path"
+            and previous.get("cupy_cache_explicit_setting_overridden") == "true"
+            and "cupy_cache_explicit_setting_overridden" not in current
+        ):
+            metadata = (
+                *metadata,
+                ("cupy_cache_explicit_setting_overridden", "true"),
+            )
+        if metadata != self._cupy_cache_metadata:
+            self._cupy_cache_metadata = metadata
+            self._probe_result = None
 
     def _load_ndimage(self) -> object:
         with self._lock:
@@ -977,28 +1041,25 @@ class CuPyRuntime:
     def _exercise_runtime(
         self, cupy: object, ndimage: object, *, device_index: int
     ) -> None:
-        values: list[object] = []
-        source = None
-        frequency = None
         with cupy.cuda.Device(device_index):
             pool = cupy.cuda.MemoryPool()
             fft_cache_policy = _FFTPlanCachePolicy.disable(cupy)
             try:
                 with cupy.cuda.using_allocator(pool.malloc):
                     try:
-                        source = cupy.arange(64, dtype=cupy.float32).reshape((8, 8))
-                        values.append(source)
-                        values.append(ndimage.gaussian_filter(source, sigma=1.0))
-                        values.append(ndimage.median_filter(source, size=3))
-                        frequency = cupy.fft.rfftn(source)
-                        values.append(frequency)
-                        values.append(cupy.fft.irfftn(frequency, s=source.shape))
+                        _run_probe_operations(cupy, ndimage)
+                    except BaseException as exc:
+                        # A CuPy compiler/kernel exception can retain its input
+                        # arrays through traceback frames.  Those probe-owned
+                        # references must be released before judging the private
+                        # pool; otherwise the cleanup error masks the real CUDA
+                        # failure as a false leak.  Preserve the exception chain
+                        # and type for classification, but detach its frames.
+                        body_error = _detach_exception_tracebacks(exc)
+                    else:
+                        body_error = None
+                    try:
                         cupy.cuda.get_current_stream().synchronize()
-                    finally:
-                        cupy.cuda.get_current_stream().synchronize()
-                        values.clear()
-                        source = None
-                        frequency = None
                         pool.free_all_blocks()
                         cupy.cuda.get_current_stream().synchronize()
                         live = int(pool.used_bytes())
@@ -1008,27 +1069,36 @@ class CuPyRuntime:
                                 "CuPy probe leaked its private memory pool "
                                 f"(live={live}, reserved={reserved} bytes)."
                             )
+                    except BaseException as cleanup_error:
+                        if body_error is not None:
+                            raise cleanup_error from body_error
+                        raise
+                    if body_error is not None:
+                        raise body_error
             finally:
                 fft_cache_policy.restore()
 
     def _remember_unavailable(
         self, reason_code: str, message: str, *, version: str = ""
     ) -> RuntimeProbeResult:
+        fingerprint_payload: dict[str, object] = {
+            "runtime_id": self.runtime_id,
+            "platform": self._platform_name,
+            "python": self._python_version,
+            "reason": reason_code,
+            "version": version,
+        }
+        cache_policy = _cupy_cache_fingerprint_metadata(self._cupy_cache_metadata)
+        if cache_policy:
+            fingerprint_payload["cupy_cache_policy"] = cache_policy
         self._probe_result = RuntimeProbeResult(
             runtime_id=self.runtime_id,
             available=False,
             version=version,
             reason_code=reason_code,
             message=message,
-            environment_fingerprint=canonical_digest(
-                {
-                    "runtime_id": self.runtime_id,
-                    "platform": self._platform_name,
-                    "python": self._python_version,
-                    "reason": reason_code,
-                    "version": version,
-                }
-            ),
+            environment_fingerprint=canonical_digest(fingerprint_payload),
+            metadata=self._cupy_cache_metadata,
         )
         return self._probe_result
 
@@ -1055,6 +1125,153 @@ def create_runtime() -> CuPyRuntime:
     """Create the built-in lazy CuPy runtime."""
 
     return CuPyRuntime()
+
+
+def _run_probe_operations(cupy: object, ndimage: object) -> None:
+    """Exercise the runtime in a frame that ends before pool verification."""
+
+    source = cupy.arange(64, dtype=cupy.float32).reshape((8, 8))
+    gaussian = ndimage.gaussian_filter(source, sigma=1.0)
+    median = ndimage.median_filter(source, size=3)
+    frequency = cupy.fft.rfftn(source)
+    restored = cupy.fft.irfftn(frequency, s=source.shape)
+    cupy.cuda.get_current_stream().synchronize()
+    # Keep every result alive through synchronization.  Returning then drops
+    # all probe-owned arrays before the caller frees and verifies its pool.
+    _ = gaussian, median, restored
+
+
+def _detach_exception_tracebacks(exc: BaseException) -> BaseException:
+    """Release failed-probe frame locals while preserving exception identity."""
+
+    for chained in _exception_chain(exc):
+        traceback = chained.__traceback__
+        if traceback is not None:
+            traceback_module.clear_frames(traceback)
+            chained.__traceback__ = None
+    return exc
+
+
+def _configure_windows_unicode_safe_cupy_cache(
+    cupy: object,
+    *,
+    platform_name: str,
+    environment: MutableMapping[str, str],
+    temp_paths: tuple[str, ...],
+) -> tuple[tuple[str, str], ...]:
+    """Atomically derive and enforce the process-wide CuPy cache policy."""
+
+    with _CUPY_CACHE_POLICY_LOCK:
+        return _configure_windows_unicode_safe_cupy_cache_unlocked(
+            cupy,
+            platform_name=platform_name,
+            environment=environment,
+            temp_paths=temp_paths,
+        )
+
+
+def _configure_windows_unicode_safe_cupy_cache_unlocked(
+    cupy: object,
+    *,
+    platform_name: str,
+    environment: MutableMapping[str, str],
+    temp_paths: tuple[str, ...],
+) -> tuple[tuple[str, str], ...]:
+    """Keep NVRTC temporary source filenames off non-ASCII Windows paths.
+
+    CuPy 14.1.1's Windows NVRTC bridge can encode a Unicode source filename
+    as mojibake before the compiler opens it.  In-memory caching prevents that
+    temporary source-file round trip.  This is a process-wide safety setting:
+    when required, an explicit ``CUPY_CACHE_IN_MEMORY=0`` is deliberately
+    overridden rather than allowing a later, misleading kernel failure.
+
+    In-memory caching cannot repair a non-ASCII compiler include path by
+    itself.  Such a path still receives this setting, but the normal runtime
+    probe remains fail-closed if NVRTC cannot open an installed header.
+    """
+
+    previous = environment.get("CUPY_CACHE_IN_MEMORY")
+    if not platform_name.startswith("win32"):
+        if not _cupy_cache_in_memory_enabled(previous):
+            return ()
+        return (
+            ("cupy_cache_in_memory", "1"),
+            ("cupy_cache_reason", "process_in_memory_setting"),
+        )
+    candidates: list[tuple[str, object]] = [
+        *(("temp", path) for path in temp_paths),
+        ("cupy_module", getattr(cupy, "__file__", "")),
+    ]
+    # CuPy's internal include tree is below its package root, covered by
+    # ``__file__`` / ``__path__``.  ``sys.prefix``, the user's home directory,
+    # and ``CUPY_CACHE_DIR`` are intentionally not compiler-path candidates:
+    # they need not be on an NVRTC path, and CuPy accesses its cubin cache with
+    # Unicode-safe Python file I/O.
+    module_paths = getattr(cupy, "__path__", ())
+    try:
+        candidates.extend(("cupy_module", path) for path in module_paths)
+    except TypeError:
+        candidates.append(("cupy_module", module_paths))
+    affected = tuple(
+        dict.fromkeys(
+            label for label, path in candidates if _path_contains_non_ascii(path)
+        )
+    )
+    if not affected:
+        if not _cupy_cache_in_memory_enabled(previous):
+            return ()
+        return (
+            ("cupy_cache_in_memory", "1"),
+            ("cupy_cache_reason", "process_in_memory_setting"),
+        )
+    environment["CUPY_CACHE_IN_MEMORY"] = "1"
+    metadata = [
+        ("cupy_cache_in_memory", "1"),
+        ("cupy_cache_reason", "windows_non_ascii_runtime_path"),
+        ("cupy_cache_non_ascii_path_kinds", ",".join(affected)),
+    ]
+    if previous is not None and not _cupy_cache_in_memory_enabled(previous):
+        metadata.append(("cupy_cache_explicit_setting_overridden", "true"))
+    return tuple(metadata)
+
+
+def _cupy_cache_fingerprint_metadata(
+    metadata: tuple[tuple[str, str], ...],
+) -> dict[str, str]:
+    """Return only effective cache state which can change runtime behavior."""
+
+    values = dict(metadata)
+    return {key: values[key] for key in _CUPY_CACHE_FINGERPRINT_KEYS if key in values}
+
+
+def _cupy_cache_in_memory_enabled(value: str | None) -> bool:
+    """Match CuPy 14's integer-valued cache environment parsing."""
+
+    if value is None or not value:
+        return False
+    try:
+        return int(value) == 1
+    except ValueError:
+        return False
+
+
+def _effective_temp_paths() -> tuple[str, ...]:
+    """Return the source-file root Python tempfile will actually select.
+
+    CuPy's NVRTC bridge uses ``TemporaryDirectory()`` without an explicit
+    directory.  ``tempfile.gettempdir()`` is therefore the effective path;
+    other TEMP/TMP variables may be present but inactive and must not force a
+    process-wide in-memory cache policy.
+    """
+
+    return (tempfile.gettempdir(),)
+
+
+def _path_contains_non_ascii(path: object) -> bool:
+    try:
+        return not os.fspath(path).isascii()
+    except TypeError:
+        return False
 
 
 def _fft_plan_cache(cupy: object) -> object:

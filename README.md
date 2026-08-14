@@ -60,6 +60,26 @@ least 1 GiB there. Setup names the exact location if that check fails. The
 standard GPU installation works without cuCIM; that optional add-on is installed
 separately afterward.
 
+For `0.13.0a7`, one-click managed installation uses only two fixed per-track
+roots. Windows supplies the canonical Local App Data directory through
+`SHGetKnownFolderPath(FOLDERID_LocalAppData)`; setup appends
+`VIPP\environments\cpu` or `VIPP\environments\cuda13`. Custom managed roots are
+not accepted. The CUDA path must contain ASCII characters only because the
+pinned CuPy 14.1.1 runtime cannot reliably compile CUDA kernels from a Windows
+environment path containing characters such as `Å` or `é`. Spaces are
+supported. If canonical Local App Data contains a non-ASCII character, the
+one-click CUDA route is unavailable and setup offers CPU instead. The fixed CPU
+root remains supported with Unicode paths.
+
+Expert-selected existing environments remain a separate, non-mutating route;
+setup does not move, edit, or turn them into managed installations. If an older
+installer-owned CUDA copy is already in an incompatible path, setup will not
+update or repair it in place. After any separately recorded recovery from an
+earlier interrupted transaction, the newly blocked selection performs no new
+mutation of that copy. It can be removed through its ownership-bound Windows
+Apps uninstaller, but this account cannot use one-click CUDA until its canonical
+Local App Data path is ASCII-compatible.
+
 > **Unsigned alpha:** this release is intentionally not Authenticode-signed,
 > so Windows will show **Unknown publisher** and may show
 > **Windows protected your PC**. Download only the explicitly named

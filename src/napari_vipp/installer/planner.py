@@ -353,6 +353,88 @@ def _validate_target(
     issues: list[PlanIssue],
 ) -> None:
     filesystem = discovery.filesystem
+    windows_managed = (
+        request.mode is InstallMode.MANAGED
+        and discovery.host.sys_platform == "win32"
+        and discovery.host.platform_system.casefold() == "windows"
+    )
+    if windows_managed and filesystem.canonical_managed_root is None:
+        issues.append(
+            PlanIssue(
+                code="managed_root_canonical_unavailable",
+                severity=IssueSeverity.ERROR,
+                subject="install_root",
+                message=(
+                    filesystem.canonical_managed_root_error
+                    or "Windows did not return the canonical LocalAppData folder."
+                ),
+                remediation=(
+                    "Restore this account's Windows Local App Data known folder "
+                    "before using one-click setup. A custom managed substitute is "
+                    "not accepted."
+                ),
+            )
+        )
+    elif (
+        windows_managed
+        and filesystem.canonical_managed_root is not None
+        and not _same_path(
+            filesystem.target,
+            filesystem.canonical_managed_root,
+        )
+    ):
+        issues.append(
+            PlanIssue(
+                code="managed_root_not_canonical",
+                severity=IssueSeverity.ERROR,
+                subject="install_root",
+                message=(
+                    "Windows one-click setup accepts only VIPP's exact canonical "
+                    "per-account managed folder for this CPU/GPU option."
+                ),
+                remediation=(
+                    "Remove the custom install-root selection and use the canonical "
+                    "Windows Local App Data location."
+                ),
+                details=(
+                    ("selected", str(filesystem.target)),
+                    ("required", str(filesystem.canonical_managed_root)),
+                ),
+            )
+        )
+    if (
+        request.track is ComputeTrack.CUDA13
+        and discovery.host.sys_platform == "win32"
+        and discovery.host.platform_system.casefold() == "windows"
+        and not str(filesystem.target).isascii()
+    ):
+        managed = request.mode is InstallMode.MANAGED
+        issues.append(
+            PlanIssue(
+                code="cuda13_environment_root_non_ascii",
+                severity=IssueSeverity.ERROR,
+                subject="install_root" if managed else "environment",
+                message=(
+                    "The CUDA environment location contains a non-ASCII "
+                    "character. CuPy 14.1.1 cannot reliably compile CUDA kernels "
+                    "from that Windows path."
+                ),
+                remediation=(
+                    (
+                        "Use the CPU one-click option on this account, or follow "
+                        "the expert existing-environment instructions for a CUDA "
+                        "environment whose complete path is ASCII-only."
+                    )
+                    if managed
+                    else (
+                        "Create a fresh CUDA environment in a path using standard "
+                        "English letters, numbers, and punctuation. Do not move or "
+                        "rename the existing virtual environment; spaces are "
+                        "supported."
+                    )
+                ),
+            )
+        )
     if filesystem.target_protected:
         issues.append(
             PlanIssue(
@@ -360,7 +442,10 @@ def _validate_target(
                 severity=IssueSeverity.ERROR,
                 subject="install_root",
                 message=filesystem.target_protection_reason,
-                remediation="Choose a dedicated VIPP environment directory.",
+                remediation=(
+                    "Restore the canonical VIPP managed-folder boundary. Expert "
+                    "existing environments remain a separate workflow."
+                ),
             )
         )
     if filesystem.target_reparse_point:
@@ -373,7 +458,10 @@ def _validate_target(
                     "The installation target or one of its existing parents is a "
                     "symbolic link, junction, or other reparse point."
                 ),
-                remediation="Choose a direct, non-redirecting local path.",
+                remediation=(
+                    "Remove the redirection from the canonical managed path, or use "
+                    "a direct local environment through the expert workflow."
+                ),
             )
         )
     if (
@@ -389,7 +477,10 @@ def _validate_target(
                     "The nearest existing installation-target ancestor is not an "
                     "accessible directory."
                 ),
-                remediation="Choose a path beneath an existing local directory.",
+                remediation=(
+                    "Repair the canonical Windows Local App Data path before using "
+                    "one-click setup."
+                ),
                 details=(
                     (
                         "nearest_existing_ancestor",
@@ -413,15 +504,15 @@ def _validate_target(
                             "valid VIPP installer ownership record."
                         ),
                         remediation=(
-                            "Choose a new directory. The installer will not overwrite "
-                            "an unowned or unrecognized folder."
+                            "Move or remove that folder yourself only if appropriate, "
+                            "then retry. One-click setup will not overwrite it or "
+                            "switch to another managed root."
                         ),
                         details=(("ownership_error", detail),) if detail else (),
                     )
                 )
             elif ownership is not None and (
-                ownership.distribution.casefold()
-                != release.distribution.casefold()
+                ownership.distribution.casefold() != release.distribution.casefold()
                 or ownership.track is not request.track
             ):
                 issues.append(
@@ -474,10 +565,7 @@ def _validate_existing_environment(
                 ),
             )
         )
-    elif (
-        python.pyvenv_cfg_present
-        and python.include_system_site_packages is not False
-    ):
+    elif python.pyvenv_cfg_present and python.include_system_site_packages is not False:
         issues.append(
             PlanIssue(
                 code="system_site_packages_not_supported",
@@ -509,12 +597,9 @@ def _validate_existing_environment(
                 ),
             )
         )
-    if (
-        python.executable is not None
-        and (
-            python.base_executable is None
-            or _same_path(python.executable, python.base_executable)
-        )
+    if python.executable is not None and (
+        python.base_executable is None
+        or _same_path(python.executable, python.base_executable)
     ):
         issues.append(
             PlanIssue(
@@ -615,9 +700,7 @@ def _validate_existing_environment(
         )
 
     binding_names = tuple(
-        name
-        for name in ("pyqt6", "pyside6", "pyqt5", "pyside2")
-        if packages.get(name)
+        name for name in ("pyqt6", "pyside6", "pyqt5", "pyside2") if packages.get(name)
     )
     if SUPPORTED_QT_BINDING not in binding_names:
         issues.append(
@@ -775,9 +858,7 @@ def _validate_cuda(
         )
     minimum_cc = _compute_capability(policy.minimum_nvidia_compute_capability)
     unsupported = tuple(
-        device
-        for device in nvidia.devices
-        if device.compute_capability < minimum_cc
+        device for device in nvidia.devices if device.compute_capability < minimum_cc
     )
     if unsupported:
         found = ", ".join(
@@ -900,10 +981,7 @@ def _validate_shortcuts(
                 details=(
                     (
                         "paths",
-                        [
-                            str(path)
-                            for path in discovery.filesystem.shortcut_conflicts
-                        ],
+                        [str(path) for path in discovery.filesystem.shortcut_conflicts],
                     ),
                 ),
             )

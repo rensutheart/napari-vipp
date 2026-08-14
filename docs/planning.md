@@ -372,7 +372,13 @@ The remaining Priority 1 items are deliberately field qualification, not
 unfinished implementation:
 
 - run the exact published executable on a fresh qualified-CUDA Windows account,
-  including live paths with spaces and non-ASCII characters;
+  including a live path with spaces and the pre-download guidance from a
+  rejected non-ASCII canonical CUDA path in Automatic and explicit CUDA modes;
+  verify exact per-track Local-App-Data roots, rejection of every custom
+  managed root, the offered CPU route, a separate non-mutating
+  existing-environment review, plus separately recorded prior-transaction
+  recovery and the Installed-apps action for an older owned incompatible CUDA
+  copy, while retaining separate Unicode-path coverage on CPU;
 - exercise exact-artifact cancellation and terminal network-failure rollback
   while proving that a previous working copy remains usable;
 - complete the timed novice path through installation, Compute Doctor, a first
@@ -776,7 +782,8 @@ Release gate:
 - the README, quick start, release notes, and versioned manual lead with the
   exact installer asset; terminal and planner commands remain secondary;
 - clean CPU and real qualified-GPU installs pass from the tagged artifact on
-  fresh Windows accounts, including spaces and Unicode paths; and
+  fresh Windows accounts, including spaces on both routes, Unicode on CPU, and
+  the `0.13.0a7` ASCII-only CUDA preflight guidance; and
 - cuCIM remains a separately downloaded optional local-build add-on after the
   standard CUDA environment passes acceptance.
 
@@ -806,7 +813,8 @@ Engineering delivered in this release:
 Remaining field release gate:
 
 - exact-artifact Windows CPU and CUDA routes are independently reproduced on
-  fresh accounts, including spaces and Unicode paths plus bounded rollback;
+  fresh accounts, including spaces on both routes, Unicode on CPU, the fixed
+  canonical CUDA-root boundary, and bounded rollback;
 - the timed novice path and first small pilot are recorded;
 - addressed batch preview/cancellation reports are verified by their reporters
   or equivalent macOS environments and then closed or retained with an exact

@@ -1961,9 +1961,17 @@ class ManagedInstallerEngine:
         if self._state_root is not None:
             selected = self._state_root
         else:
-            local = os.environ.get("LOCALAPPDATA")
-            base = Path(local) if local else Path.home() / "AppData" / "Local"
-            selected = base / "VIPP" / "installer"
+            try:
+                local_app_data = self._known_folder_probe("local_app_data")
+            except Exception as exc:
+                raise InstallerEngineError(
+                    "Windows LocalAppData Known Folder lookup failed."
+                ) from exc
+            if local_app_data is None:
+                raise InstallerEngineError(
+                    "Windows did not return FOLDERID_LocalAppData for installer state."
+                )
+            selected = Path(local_app_data) / "VIPP" / "installer"
         if _same_path(selected, target) or _is_relative_to(selected, target):
             raise InstallerEngineError(
                 "Installer logs must be stored outside the managed environment."
@@ -2456,12 +2464,7 @@ def _prepare_persistent_setup(
         _path_key(inspection.target).encode("utf-8")
     ).hexdigest()
     if destination is None:
-        from napari_vipp.installer.payload import persistent_setup_path
-
-        base_destination = persistent_setup_path(
-            version=version,
-            artifact_sha256=digest,
-        )
+        base_destination = state_root / "cache" / version / digest / "VIPP-Setup.exe"
         cache_root = base_destination.parents[2]
         destination = (
             cache_root

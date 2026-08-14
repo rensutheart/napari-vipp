@@ -42,6 +42,21 @@ ordinal 0 as its default, every visible device must meet that architecture
 floor; device ordinals are retained in the plan. The installer still runs the
 complete VIPP compute doctor before it activates an installation.
 
+For `0.13.0a7`, one-click managed setup calls
+`SHGetKnownFolderPath(FOLDERID_LocalAppData)` and accepts only the exact track
+roots `VIPP\environments\cpu` and `VIPP\environments\cuda13` beneath that
+canonical directory. A custom managed root is a blocking request, not an
+alternate installation route. The complete CUDA path must contain ASCII
+characters because CuPy 14.1.1 cannot reliably compile NVRTC kernels when its
+Windows environment include path contains non-ASCII characters. Spaces remain
+supported. If canonical Local App Data is non-ASCII, CUDA one-click setup is
+unavailable before dependency resolution, environment creation, or download,
+and the UI offers CPU. The fixed CPU root remains Unicode-safe.
+
+An expert-selected existing environment remains a separate, non-mutating
+route. The planner can inspect it and report an incompatible CUDA path, but it
+never moves, renames, edits, or converts that environment into a managed copy.
+
 This means a mixed-generation workstation that also exposes a pre-Turing GPU
 is blocked in this first installer slice even when another visible GPU
 qualifies. Future per-device selection must be implemented in the runtime and
@@ -52,14 +67,14 @@ local-build add-on used after the ordinary CUDA environment passes acceptance.
 
 ## Managed Install, Update, And Repair
 
-The setup program recommends one private managed environment and requires only
+The setup program uses one fixed managed environment per track and requires only
 one consequential confirmation. Before confirmation it discovers the computer,
 resolves the exact binary packages, verifies their SHA-256 digests, and shows a
 plain summary; package detail remains under **Advanced details**. Apply uses the
 reviewed, hash-locked resolution rather than resolving a second time.
 Changing an install-relevant selection after reviewâ€”the compute track,
-installation location, selected existing environment, or desktop-shortcut
-choiceâ€”invalidates that prepared transaction. The setup window disables Apply
+selected existing environment, or desktop-shortcut choiceâ€”invalidates that
+prepared transaction. The setup window disables Apply
 and requires **Check these settings** again, so an earlier review or one-use
 authorization cannot be applied to different settings.
 
@@ -75,7 +90,19 @@ states:
 | Same healthy version | **Open VIPP**, with **Repair** available |
 | Same damaged version | **Repair VIPP** into a clean environment |
 | Newer installer-owned version | Open it; never downgrade automatically |
-| Non-empty unowned directory or unowned shortcut | Block and choose a separate location; never overwrite |
+| Non-empty unowned directory or unowned shortcut | Block; never overwrite or switch to a custom managed root |
+
+An older installer-owned CUDA copy whose managed root contains non-ASCII
+characters is not an ordinary in-place update or repair. After completing and
+recording any recovery from a prior interrupted transaction, the newly blocked
+selection performs no new mutation of its environment, ownership record, or
+shortcuts and offers **Open Installed apps**. The user may uninstall **VIPP
+(GPU)** through its ownership-bound remover, but setup does not offer another
+managed root. If canonical Local App Data is non-ASCII, one-click CUDA remains
+unavailable and the UI offers CPU. A second managed CUDA copy cannot safely
+coexist because that track has one Apps & Features key and shared shortcut
+names. Setup never relocates the old virtual environment and does not claim an
+in-place or fallback migration.
 
 An installation-specific ownership record is the only authority for replacing
 shortcuts or retiring environments. Cancellation or failure before commit
@@ -100,8 +127,19 @@ but it does not automatically modify that environment.
 
 ## Inspect A Plan
 
-Run the source-current command from an installed VIPP environment. Paths with
-spaces and non-ASCII characters are accepted as normal single arguments.
+Run the source-current command from an installed VIPP environment. Spaces are
+accepted as normal single arguments on every route. CPU paths may contain
+Unicode characters; a managed or existing CUDA 13 environment root containing
+non-ASCII characters is reported as a blocking preflight issue as described
+above. Managed `--install-root` accepts only the exact canonical root; these
+examples mirror the Windows known-folder result rather than offering a custom
+location.
+
+```powershell
+$localAppData = [Environment]::GetFolderPath(
+  [Environment+SpecialFolder]::LocalApplicationData
+)
+```
 
 Managed CPU:
 
@@ -110,7 +148,7 @@ vipp-install-plan plan `
   --mode managed `
   --track cpu `
   --base-python "C:\Path\To\Python313\python.exe" `
-  --install-root "$env:LOCALAPPDATA\VIPP\environments\cpu"
+  --install-root (Join-Path $localAppData "VIPP\environments\cpu")
 ```
 
 Managed CUDA 13:
@@ -120,7 +158,7 @@ vipp-install-plan plan `
   --mode managed `
   --track cuda13 `
   --base-python "C:\Path\To\Python312\python.exe" `
-  --install-root "$env:LOCALAPPDATA\VIPP\environments\cuda13"
+  --install-root (Join-Path $localAppData "VIPP\environments\cuda13")
 ```
 
 Existing napari virtual environment:
@@ -163,6 +201,11 @@ Reserved Windows device names, alternate-data-stream syntax, invalid/control
 characters, and components ending in a period or space are also rejected
 before path access.
 
+For managed mode, discovery obtains canonical Local App Data from the Windows
+known-folder API and derives the exact per-track root. A caller-supplied path
+that differs from that value is rejected before resolution or mutation; setup
+does not search for or create an alternate managed location.
+
 Every planner document is schema `napari-vipp-install-plan`, version 1, and
 explicitly records `plan_only: true` and `mutation_performed: false`. It contains:
 
@@ -201,3 +244,10 @@ and SHA-256 values, and enables Apply only after a one-use confirmation bound to
 that immutable resolution. The planner JSON therefore remains an honest
 read-only artifact even though the complete setup application can continue to
 an authorized transaction.
+
+Before it reviews a new plan, graphical setup also completes any durable
+rollback journal left by an earlier interrupted setup. That recovery may remove
+only residue already authorized by the prior transaction; it is not a mutation
+from the newly selected plan. A CUDA path blocker still prevents all new
+dependency resolution, download, environment creation, shortcut, and registry
+work.

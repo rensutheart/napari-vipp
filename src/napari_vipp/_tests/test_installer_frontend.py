@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from napari_vipp.installer.frontend import (
+    BlockedAction,
     InstallationCancelled,
     InstallerController,
     InstallerScreen,
@@ -34,6 +35,7 @@ class _Backend:
         self.inspect_calls = []
         self.apply_calls = []
         self.opened = []
+        self.opened_uninstallers = []
         self.cancel_apply = False
         self.cancel_after_success = False
         self.inspect_error = None
@@ -73,6 +75,9 @@ class _Backend:
 
     def open_vipp(self, launcher):
         self.opened.append(launcher)
+
+    def open_owned_uninstaller(self, prepared):
+        self.opened_uninstallers.append(prepared)
 
 
 def _prepared(kind: TargetKind, tmp_path: Path) -> PreparedInstall:
@@ -212,8 +217,98 @@ def test_unowned_or_blocked_target_can_never_be_confirmed(tmp_path, kind):
     assert backend.apply_calls == []
     assert workers == []
     if kind is TargetKind.FOREIGN:
-        assert controller.state.primary_label == "Choose another location"
+        assert controller.state.primary_label == "Check again"
         assert "Nothing has been changed" in controller.state.status_message
+
+
+def test_cuda_path_blocker_exposes_typed_cpu_action(tmp_path):
+    workers = []
+    prepared = replace(
+        _prepared(TargetKind.BLOCKED, tmp_path),
+        track=ComputeTrack.CUDA13,
+        blocked_action=BlockedAction.USE_CPU,
+        reason="Use CPU one-click setup on this Windows account.",
+    )
+    controller = InstallerController(
+        _Backend(prepared),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+
+    controller.start()
+    workers.pop(0)()
+
+    assert controller.state.screen is InstallerScreen.BLOCKED
+    assert controller.state.blocked_action is BlockedAction.USE_CPU
+    assert controller.state.primary_label == "Use CPU"
+    assert "CPU one-click" in controller.state.status_message
+
+
+def test_custom_managed_root_exposes_typed_default_location_action(tmp_path):
+    workers = []
+    prepared = replace(
+        _prepared(TargetKind.BLOCKED, tmp_path),
+        blocked_action=BlockedAction.USE_DEFAULT_LOCATION,
+        reason="Use VIPP's exact per-account Windows default folder.",
+    )
+    controller = InstallerController(
+        _Backend(prepared),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+
+    controller.start()
+    workers.pop(0)()
+
+    assert controller.state.blocked_action is BlockedAction.USE_DEFAULT_LOCATION
+    assert controller.state.primary_label == "Use default location"
+
+
+def test_hash_bound_uninstaller_action_is_typed_and_controller_owned(tmp_path):
+    workers = []
+    prepared = replace(
+        _prepared(TargetKind.BLOCKED, tmp_path),
+        blocked_action=BlockedAction.RUN_OWNED_UNINSTALLER,
+        ownership_manifest_sha256="a" * 64,
+        owned_uninstaller_path=tmp_path / "cache" / "VIPP-Setup.exe",
+        owned_uninstaller_sha256="b" * 64,
+    )
+    backend = _Backend(prepared)
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+
+    controller.start()
+    workers.pop(0)()
+    controller.open_owned_uninstaller()
+
+    assert controller.state.primary_label == "Open VIPP uninstaller"
+    assert backend.opened_uninstallers == [prepared]
+
+
+def test_owned_cuda_path_blocker_exposes_installed_apps_action(tmp_path):
+    workers = []
+    prepared = replace(
+        _prepared(TargetKind.BLOCKED, tmp_path),
+        track=ComputeTrack.CUDA13,
+        blocked_action=BlockedAction.OPEN_INSTALLED_APPS,
+        reason="Uninstall VIPP (GPU) first, then run setup again.",
+    )
+    controller = InstallerController(
+        _Backend(prepared),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+
+    controller.start()
+    workers.pop(0)()
+
+    assert controller.state.screen is InstallerScreen.BLOCKED
+    assert controller.state.blocked_action is BlockedAction.OPEN_INSTALLED_APPS
+    assert controller.state.primary_label == "Open Installed apps"
+    assert "Uninstall VIPP (GPU) first" in controller.state.status_message
 
 
 def test_newer_version_is_openable_but_never_downgraded_or_repaired(tmp_path):
@@ -362,9 +457,7 @@ def test_transient_package_timeout_during_apply_has_plain_retry_guidance(tmp_pat
     workers.pop(0)()
 
     assert controller.state.screen is InstallerScreen.FAILED
-    assert controller.state.headline == (
-        "VIPP setup could not download its components"
-    )
+    assert controller.state.headline == ("VIPP setup could not download its components")
     assert "Check the internet connection" in controller.state.message
     assert "choose Try again" in controller.state.message
     assert "ReadTimeoutError" not in controller.state.message
@@ -469,9 +562,7 @@ def test_edit_during_initial_check_cannot_publish_or_apply_old_selection(tmp_pat
     [
         InstallerSelection(track="cpu"),
         InstallerSelection(create_desktop_shortcut=False),
-        InstallerSelection(
-            existing_python=Path("C:/selected-venv/Scripts/python.exe")
-        ),
+        InstallerSelection(existing_python=Path("C:/selected-venv/Scripts/python.exe")),
     ],
 )
 def test_every_install_relevant_selection_change_revokes_confirmation(

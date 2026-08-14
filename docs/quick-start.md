@@ -44,8 +44,8 @@ release includes the SHA-256 checksum and release manifest.
 
 After that one-time Windows warning, the ordinary setup flow is:
 
-1. Keep the recommended private VIPP environment. The one-click installer does
-   not modify an existing napari environment.
+1. Keep the fixed managed VIPP environment. The one-click installer does not
+   modify an existing napari environment or accept a custom managed root.
 2. Leave **Automatic** selected for the simplest setup. To choose manually,
    expand **Advanced details**, then use **Computer use** to select **CPU** or
    **NVIDIA GPU**. CPU works on every supported Windows computer. Automatic
@@ -53,13 +53,22 @@ After that one-time Windows warning, the ordinary setup flow is:
    package, memory, and scientific gates can be satisfied. The explicit NVIDIA
    choice stays visible, but setup will block installation and explain what is
    missing if those checks do not pass.
-3. In **Reviewed settings**, confirm the exact installation location, the CPU
+3. In **Reviewed settings**, confirm the fixed installation location, the CPU
    or NVIDIA CUDA 13 route, and whether shortcuts will be added to the Start
    Menu only or to both the Start Menu and Desktop. Select **Install**, then
    wait for setup and its final checks to finish. If you change the
-   computer-use choice, installation location, or desktop-shortcut choice,
+   computer-use choice or desktop-shortcut choice,
    select **Check these settings** again. Setup will not enable **Install** for
-   settings it has not checked.
+   settings it has not checked. Windows obtains canonical Local App Data with
+   `SHGetKnownFolderPath(FOLDERID_LocalAppData)`; one-click setup uses only
+   `VIPP\environments\cpu` or `VIPP\environments\cuda13` beneath it. Custom
+   managed roots are not accepted. In `0.13.0a7`, the complete CUDA path must
+   use ASCII characters only because CuPy 14.1.1 cannot reliably compile CUDA
+   kernels from a Windows environment path containing characters such as `Å`
+   or `é`. Spaces are supported. If canonical Local App Data contains a
+   non-ASCII character, one-click CUDA is unavailable before environment
+   creation or package download and setup offers CPU. The fixed CPU path
+   remains Unicode-safe.
 4. For a CPU installation, open **VIPP** from the created shortcut. A CUDA
    installation instead provides **VIPP Automatic**, **VIPP CPU**, and
    **VIPP Prefer GPU** shortcuts; start with **VIPP Automatic**.
@@ -70,10 +79,23 @@ kept until the replacement passes its checks. To repair the same healthy
 version, rerun that version's VIPP setup `.exe`; its reviewed screen offers
 **Open VIPP** and **Repair**. A newer version is not downgraded.
 Files, folders, shortcuts, or napari environments that the installer does not
-own are never overwritten; setup asks for a separate managed location instead.
+own are never overwritten; setup blocks rather than choosing another managed
+location.
 Managed CPU and CUDA installations can coexist. Remove either one later from
 **Windows Settings > Apps > Installed apps**; each has its own ownership-bound
 uninstaller and the other installation is left intact.
+
+An installer-owned CUDA copy already stored in a non-ASCII path is a special
+case: `0.13.0a7` will not update or repair it in place. Graphical setup may
+first complete and record recovery from an earlier interrupted transaction;
+after that separate recovery, the newly blocked selection performs no new
+mutation of the old copy, shortcuts, or ownership record. Do not move or rename
+its virtual environment or start a second managed CUDA installation: the CUDA
+track has one Windows Apps entry and shared shortcut names. Select **Open
+Installed apps**, uninstall **VIPP (GPU)**, and let that ownership-bound removal
+finish. If canonical Local App Data is non-ASCII, this account still cannot use
+one-click CUDA; setup offers CPU. This is a deliberate release boundary, not
+an in-place or fallback migration.
 
 Automatic and Prefer GPU never guarantee that every node runs on a GPU. VIPP
 uses CPU whenever an operation, datatype, parameter, environment, or memory
@@ -105,8 +127,8 @@ then retries only a limited number of times; 120 seconds is not a limit on the
 total download or installation time. If a temporary network problem still
 stops setup, the incomplete new copy is rolled back and any previous working
 VIPP remains active.
-After the connection recovers, **Try again** rechecks the computer-use,
-location, and shortcut choices currently shown and presents them for review
+After the connection recovers, **Try again** rechecks the computer-use and
+shortcut choices currently shown and presents them for review
 before **Install** can be selected again.
 
 The standard GPU installation works without cuCIM. The optional, separate
@@ -163,6 +185,8 @@ Windows and Linux.
 
 The current CUDA route requires native 64-bit Windows and CPython 3.12:
 
+Run these commands from an ASCII-only working directory:
+
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
@@ -170,6 +194,10 @@ py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
+
+This advanced manual environment is separate from one-click management. The
+installer does not move or edit it. Create a fresh manual environment rather
+than moving or renaming one whose complete path is incompatible.
 
 The GPU model is recorded for reproducibility rather than checked against a
 model allowlist. The current public gate requires NVIDIA compute capability

@@ -152,11 +152,7 @@ class ReleaseSpec:
                 else ("app",)
             )
         else:
-            extras = (
-                ("gpu-cuda13",)
-                if request.track is ComputeTrack.CUDA13
-                else ()
-        )
+            extras = ("gpu-cuda13",) if request.track is ComputeTrack.CUDA13 else ()
         rendered_extras = f"[{','.join(extras)}]" if extras else ""
         if self.wheel_path is not None:
             return f"{self.wheel_path}{rendered_extras}"
@@ -423,6 +419,8 @@ class FilesystemSnapshot:
     managed_ownership: ManagedOwnershipSnapshot | None = None
     managed_ownership_error: str = ""
     ownership_manifest_exists: bool = False
+    canonical_managed_root: Path | None = None
+    canonical_managed_root_error: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "target", Path(self.target))
@@ -443,6 +441,12 @@ class FilesystemSnapshot:
                 self,
                 "start_menu_directory",
                 Path(self.start_menu_directory),
+            )
+        if self.canonical_managed_root is not None:
+            object.__setattr__(
+                self,
+                "canonical_managed_root",
+                Path(self.canonical_managed_root),
             )
         object.__setattr__(
             self,
@@ -483,9 +487,7 @@ class FilesystemSnapshot:
                 str(self.desktop_directory) if self.desktop_directory else None
             ),
             "start_menu_directory": (
-                str(self.start_menu_directory)
-                if self.start_menu_directory
-                else None
+                str(self.start_menu_directory) if self.start_menu_directory else None
             ),
             "shortcut_conflicts": [str(path) for path in self.shortcut_conflicts],
             "unsafe_shortcut_directories": [
@@ -498,6 +500,12 @@ class FilesystemSnapshot:
             ),
             "managed_ownership_error": self.managed_ownership_error,
             "ownership_manifest_exists": self.ownership_manifest_exists,
+            "canonical_managed_root": (
+                str(self.canonical_managed_root)
+                if self.canonical_managed_root is not None
+                else None
+            ),
+            "canonical_managed_root_error": self.canonical_managed_root_error,
         }
 
 
@@ -574,9 +582,7 @@ class PlanIssue:
             "subject": self.subject,
             "message": self.message,
             "remediation": self.remediation,
-            "details": {
-                key: _copy_json_value(value) for key, value in self.details
-            },
+            "details": {key: _copy_json_value(value) for key, value in self.details},
         }
 
 
@@ -701,9 +707,7 @@ class InstallPlan:
 
     @property
     def ready(self) -> bool:
-        return not any(
-            issue.severity is IssueSeverity.ERROR for issue in self.issues
-        )
+        return not any(issue.severity is IssueSeverity.ERROR for issue in self.issues)
 
     @property
     def status(self) -> PlanStatus:
@@ -753,8 +757,7 @@ class InstallPlan:
             "cucim": {
                 "included": False,
                 "note": (
-                    "cuCIM remains an optional separate Windows local-build "
-                    "installer."
+                    "cuCIM remains an optional separate Windows local-build installer."
                 ),
             },
             "shortcuts": [shortcut.as_dict() for shortcut in self.shortcuts],
