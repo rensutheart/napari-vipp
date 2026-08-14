@@ -252,7 +252,17 @@ def discover_installation(
             environment,
         ),
     )
-    target = _installation_target(request, python_snapshot, environment)
+    canonical_managed_root, canonical_managed_root_error = (
+        _canonical_managed_root(request, selected_services)
+        if host.sys_platform == "win32" and host.platform_system.casefold() == "windows"
+        else (None, "")
+    )
+    target = _installation_target(
+        request,
+        python_snapshot,
+        environment,
+        canonical_managed_root=canonical_managed_root,
+    )
     target_path_error = (
         _expanded_windows_path_issue(request.install_root, environment)
         if request.mode is InstallMode.MANAGED and request.install_root is not None
@@ -274,8 +284,7 @@ def discover_installation(
             tuple(
                 directory
                 for directory in shortcut_directories
-                if directory is not None
-                and _windows_path_issue(str(directory))
+                if directory is not None and _windows_path_issue(str(directory))
             )
             if request.shortcut_directory is None
             else tuple(
@@ -290,6 +299,8 @@ def discover_installation(
         ),
         environment=environment,
         services=selected_services,
+        canonical_managed_root=canonical_managed_root,
+        canonical_managed_root_error=canonical_managed_root_error,
     )
     nvidia: NvidiaSnapshot | None = None
     if request.track is ComputeTrack.CUDA13:
@@ -398,9 +409,7 @@ def _discover_python(
                 environment_root=environment_root,
                 site_packages=site_packages,
                 pyvenv_cfg_present=pyvenv.present,
-                include_system_site_packages=(
-                    pyvenv.include_system_site_packages
-                ),
+                include_system_site_packages=(pyvenv.include_system_site_packages),
                 pyvenv_cfg_error=pyvenv.error,
                 error="The selected virtual-environment configuration is invalid.",
             )
@@ -414,9 +423,7 @@ def _discover_python(
                 environment_root=environment_root,
                 site_packages=site_packages,
                 pyvenv_cfg_present=pyvenv.present,
-                include_system_site_packages=(
-                    pyvenv.include_system_site_packages
-                ),
+                include_system_site_packages=(pyvenv.include_system_site_packages),
                 error=unsafe_base,
             )
     try:
@@ -465,9 +472,7 @@ def _discover_python(
                 environment_root=environment_root,
                 site_packages=site_packages,
                 pyvenv_cfg_present=pyvenv.present,
-                include_system_site_packages=(
-                    pyvenv.include_system_site_packages
-                ),
+                include_system_site_packages=(pyvenv.include_system_site_packages),
                 error=unsafe_reported_base,
             )
 
@@ -746,6 +751,8 @@ def _discover_filesystem(
     invalid_shortcut_directories: tuple[Path, ...],
     environment: Mapping[str, str],
     services: DiscoveryServices,
+    canonical_managed_root: Path | None,
+    canonical_managed_root_error: str,
 ) -> FilesystemSnapshot:
     target_remote = False if target_path_error else _path_is_remote(target, services)
     protected, protection_reason = _protected_target(
@@ -813,9 +820,7 @@ def _discover_filesystem(
         ownership = inspect_ownership(target)
         ownership_manifest_exists = ownership.state is not OwnershipState.ABSENT
         if ownership.state is OwnershipState.VALID and ownership.record is not None:
-            managed_ownership = ownership.record.to_snapshot(
-                ownership.manifest_sha256
-            )
+            managed_ownership = ownership.record.to_snapshot(ownership.manifest_sha256)
         elif ownership.state is OwnershipState.INVALID:
             managed_ownership_error = ownership.error
     nearest_ancestor: Path | None = None
@@ -907,6 +912,8 @@ def _discover_filesystem(
         managed_ownership=managed_ownership,
         managed_ownership_error=managed_ownership_error,
         ownership_manifest_exists=ownership_manifest_exists,
+        canonical_managed_root=canonical_managed_root,
+        canonical_managed_root_error=canonical_managed_root_error,
     )
 
 
@@ -914,6 +921,8 @@ def _installation_target(
     request: InstallRequest,
     python_snapshot: PythonSnapshot,
     environment: Mapping[str, str],
+    *,
+    canonical_managed_root: Path | None = None,
 ) -> Path:
     if request.mode is InstallMode.EXISTING:
         if python_snapshot.environment_root is not None:
@@ -922,6 +931,8 @@ def _installation_target(
         return _absolute_path(requested.parent.parent)
     if request.install_root is not None:
         return _expand_path(request.install_root, environment)
+    if canonical_managed_root is not None:
+        return canonical_managed_root
     local_app_data = environment.get("LOCALAPPDATA")
     if local_app_data:
         root = Path(os.path.expandvars(local_app_data))
@@ -929,6 +940,24 @@ def _installation_target(
         root = Path.home() / "AppData" / "Local"
     suffix = "cuda13" if request.track is ComputeTrack.CUDA13 else "cpu"
     return _absolute_path(root / "VIPP" / "environments" / suffix)
+
+
+def _canonical_managed_root(
+    request: InstallRequest,
+    services: DiscoveryServices,
+) -> tuple[Path | None, str]:
+    if request.mode is not InstallMode.MANAGED:
+        return None, ""
+    probe = services.known_folder_probe or _windows_known_folder
+    try:
+        local_app_data = probe("local_app_data")
+    except Exception as exc:
+        return None, f"Windows LocalAppData Known Folder lookup failed: {exc}"
+    if local_app_data is None:
+        return None, "Windows did not return FOLDERID_LocalAppData."
+    root = _absolute_path(Path(local_app_data))
+    suffix = "cuda13" if request.track is ComputeTrack.CUDA13 else "cpu"
+    return root / "VIPP" / "environments" / suffix, ""
 
 
 def _shortcut_directories(
@@ -964,6 +993,7 @@ def _windows_known_folder(folder: str) -> Path | None:
             "desktop": "B4BFCC3A-DB2C-424C-B029-7FE99A87C641",
             "programs": "A77F5D77-2E2B-44C3-A6A2-ABA601054A51",
             "documents": "FDD39AD0-238F-46AF-ADB4-6C85480369C7",
+            "local_app_data": "F1B32785-6FBA-4FCF-9D55-7B8E7F157091",
         }[folder]
 
         class _Guid(ctypes.Structure):
@@ -1021,9 +1051,7 @@ def _planned_shortcut_destinations(
         if start_menu_directory is not None:
             directories.append(start_menu_directory)
     return tuple(
-        directory / f"{label}.lnk"
-        for directory in directories
-        for label in labels
+        directory / f"{label}.lnk" for directory in directories for label in labels
     )
 
 

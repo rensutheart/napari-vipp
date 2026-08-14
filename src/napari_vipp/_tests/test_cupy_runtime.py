@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import weakref
 from contextlib import contextmanager
@@ -358,7 +359,7 @@ class _FakeNdimage:
         return _FakeArray(self.cupy, value._value.copy())
 
 
-def _fake_runtime():
+def _fake_runtime(*, platform_name: str = "win32"):
     cupy = _FakeCuPy()
     ndimage = _FakeNdimage(cupy)
     imports: list[str] = []
@@ -373,7 +374,7 @@ def _fake_runtime():
 
     runtime = CuPyRuntime(
         module_loader=load,
-        platform_name="win32",
+        platform_name=platform_name,
         python_implementation="CPython",
         python_version=(3, 12),
         pointer_bits=64,
@@ -417,6 +418,351 @@ def test_successful_probe_is_real_cached_and_json_safe():
     assert json.loads(json.dumps(result.as_dict()))["available"] is True
     assert runtime.probe() is result
     assert isinstance(runtime, RuntimeProtocol)
+
+
+def test_probe_compile_failure_releases_traceback_owned_private_array():
+    runtime, cupy, _imports = _fake_runtime()
+
+    def fail_compile(value, *, sigma):
+        assert value.nbytes
+        assert sigma == 1.0
+        raise _FakeCompileException("synthetic compiler diagnostic")
+
+    runtime._ndimage = SimpleNamespace(gaussian_filter=fail_compile)
+
+    result = runtime.probe(refresh=True)
+
+    assert not result.available
+    assert result.reason_code == "cuda_kernel_compile_failure"
+    assert "synthetic compiler diagnostic" in result.message
+    assert "leaked its private memory pool" not in result.message
+    probe_pool = cupy.pools[-1]
+    assert probe_pool.used_bytes() == 0
+    assert probe_pool.total_bytes() == 0
+
+
+def test_probe_still_fails_closed_for_library_retained_private_array():
+    runtime, cupy, _imports = _fake_runtime()
+    retained = []
+    original_ndimage = runtime._load_ndimage()
+
+    def retain_input(value, *, sigma):
+        retained.append(value)
+        return original_ndimage.gaussian_filter(value, sigma=sigma)
+
+    runtime._ndimage = SimpleNamespace(
+        gaussian_filter=retain_input,
+        median_filter=original_ndimage.median_filter,
+    )
+
+    result = runtime.probe(refresh=True)
+
+    assert not result.available
+    assert "leaked its private memory pool" in result.message
+    probe_pool = cupy.pools[-1]
+    assert probe_pool.used_bytes() > 0
+    assert probe_pool.total_bytes() >= probe_pool.used_bytes()
+    retained.clear()
+
+
+def _set_fake_windows_runtime_paths(monkeypatch, *, unicode_temp: bool) -> None:
+    temp_path = r"C:\Temp\VIPP Ångström" if unicode_temp else r"C:\Temp\VIPP"
+    monkeypatch.setattr(
+        cupy_runtime_module,
+        "_effective_temp_paths",
+        lambda: (temp_path,),
+    )
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+
+
+def test_cached_refresh_and_scope_reassert_unicode_cache_policy(monkeypatch):
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=True)
+    runtime, _cupy, _imports = _fake_runtime()
+
+    first = runtime.probe()
+    assert first.available
+    assert os.environ["CUPY_CACHE_IN_MEMORY"] == "1"
+
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+    cached = runtime.probe()
+    assert cached is first
+    assert os.environ["CUPY_CACHE_IN_MEMORY"] == "1"
+    assert dict(cached.metadata)["cupy_cache_in_memory"] == "1"
+
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+    refreshed = runtime.probe(refresh=True)
+    assert refreshed.available
+    assert os.environ["CUPY_CACHE_IN_MEMORY"] == "1"
+    assert dict(refreshed.metadata)["cupy_cache_in_memory"] == "1"
+
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+    with runtime.execution_scope(
+        memory_limit_bytes=128 * 1024**2,
+        safety_reserve_bytes=0,
+    ):
+        assert os.environ["CUPY_CACHE_IN_MEMORY"] == "1"
+
+    runtime.close()
+
+
+def test_unhealthy_probe_reasserts_unicode_cache_policy_after_external_reset(
+    monkeypatch,
+):
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=True)
+    runtime, _cupy, _imports = _fake_runtime()
+    assert runtime.probe().available
+    runtime._mark_unhealthy("synthetic cleanup failure")
+
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+    result = runtime.probe(refresh=True)
+
+    assert not result.available
+    assert result.reason_code == "runtime_unhealthy"
+    assert os.environ["CUPY_CACHE_IN_MEMORY"] == "1"
+    assert dict(result.metadata)["cupy_cache_in_memory"] == "1"
+    assert dict(result.metadata)["cupy_cache_non_ascii_path_kinds"] == "temp"
+    runtime.close()
+
+
+def test_closed_runtime_drops_unverifiable_cache_policy_metadata(monkeypatch):
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=True)
+    runtime, _cupy, _imports = _fake_runtime()
+    assert runtime.probe().available
+    runtime.close()
+
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+    closed = runtime.probe(refresh=True)
+    pristine, _pristine_cupy, pristine_imports = _fake_runtime()
+    pristine.close()
+    pristine_closed = pristine.probe(refresh=True)
+
+    assert closed.reason_code == "runtime_closed"
+    assert closed.metadata == ()
+    assert os.environ["CUPY_CACHE_IN_MEMORY"] == "0"
+    assert closed.environment_fingerprint == pristine_closed.environment_fingerprint
+    assert pristine_imports == []
+
+
+def test_unicode_cache_policy_changes_runtime_probe_fingerprint(monkeypatch):
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=False)
+    ascii_runtime, _ascii_cupy, _ascii_imports = _fake_runtime()
+    ascii_result = ascii_runtime.probe()
+
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=True)
+    unicode_runtime, _unicode_cupy, _unicode_imports = _fake_runtime()
+    unicode_result = unicode_runtime.probe()
+
+    assert ascii_result.available
+    assert unicode_result.available
+    assert "cupy_cache_in_memory" not in dict(ascii_result.metadata)
+    assert dict(unicode_result.metadata)["cupy_cache_in_memory"] == "1"
+    assert (
+        ascii_result.environment_fingerprint != unicode_result.environment_fingerprint
+    )
+
+    ascii_runtime.close()
+    unicode_runtime.close()
+
+
+def test_runtime_path_change_reclassifies_effective_process_cache(monkeypatch):
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=True)
+    runtime, _cupy, _imports = _fake_runtime()
+    unicode_result = runtime.probe()
+
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=False)
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "1")
+    ascii_result = runtime.probe()
+
+    assert ascii_result is not unicode_result
+    ascii_metadata = dict(ascii_result.metadata)
+    assert ascii_metadata["cupy_cache_in_memory"] == "1"
+    assert ascii_metadata["cupy_cache_reason"] == "process_in_memory_setting"
+    assert "cupy_cache_non_ascii_path_kinds" not in ascii_metadata
+    assert "cupy_cache_explicit_setting_overridden" not in ascii_metadata
+    assert (
+        ascii_result.environment_fingerprint != unicode_result.environment_fingerprint
+    )
+    runtime.close()
+
+
+def test_unavailable_probe_retains_unicode_cache_policy_and_fingerprint(monkeypatch):
+    def fail_compile(value, *, sigma):
+        assert value.nbytes
+        assert sigma == 1.0
+        raise _FakeCompileException("synthetic compiler diagnostic")
+
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=False)
+    ascii_runtime, _ascii_cupy, _ascii_imports = _fake_runtime()
+    ascii_runtime._ndimage = SimpleNamespace(gaussian_filter=fail_compile)
+    ascii_result = ascii_runtime.probe(refresh=True)
+
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=True)
+    unicode_runtime, _unicode_cupy, _unicode_imports = _fake_runtime()
+    unicode_runtime._ndimage = SimpleNamespace(gaussian_filter=fail_compile)
+    unicode_result = unicode_runtime.probe(refresh=True)
+
+    assert not ascii_result.available
+    assert not unicode_result.available
+    assert ascii_result.reason_code == "cuda_kernel_compile_failure"
+    assert unicode_result.reason_code == "cuda_kernel_compile_failure"
+    assert "cupy_cache_in_memory" not in dict(ascii_result.metadata)
+    assert dict(unicode_result.metadata) == {
+        "cupy_cache_explicit_setting_overridden": "true",
+        "cupy_cache_in_memory": "1",
+        "cupy_cache_non_ascii_path_kinds": "temp",
+        "cupy_cache_reason": "windows_non_ascii_runtime_path",
+    }
+    assert (
+        ascii_result.environment_fingerprint != unicode_result.environment_fingerprint
+    )
+
+    ascii_runtime.close()
+    unicode_runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("path_kind", "path_value"),
+    [
+        ("temp", r"C:\Temp\Ångström"),
+        ("cupy_module", r"C:\VIPP Ångström\site-packages\cupy\__init__.py"),
+    ],
+)
+def test_windows_non_ascii_runtime_path_forces_process_in_memory_cache(
+    path_kind, path_value
+):
+    cupy = SimpleNamespace(
+        __file__=(
+            path_value
+            if path_kind == "cupy_module"
+            else r"C:\VIPP\site-packages\cupy\__init__.py"
+        ),
+        __path__=(),
+    )
+    environment = {"CUPY_CACHE_IN_MEMORY": "0"}
+
+    metadata = cupy_runtime_module._configure_windows_unicode_safe_cupy_cache(
+        cupy,
+        platform_name="win32",
+        environment=environment,
+        temp_paths=(path_value if path_kind == "temp" else r"C:\Temp",),
+    )
+
+    assert environment["CUPY_CACHE_IN_MEMORY"] == "1"
+    assert dict(metadata) == {
+        "cupy_cache_in_memory": "1",
+        "cupy_cache_reason": "windows_non_ascii_runtime_path",
+        "cupy_cache_non_ascii_path_kinds": path_kind,
+        "cupy_cache_explicit_setting_overridden": "true",
+    }
+
+
+def test_unicode_python_io_paths_do_not_force_in_memory_cache(monkeypatch):
+    cupy = SimpleNamespace(
+        __file__=r"C:\VIPP\site-packages\cupy\__init__.py",
+        __path__=(r"C:\VIPP\site-packages\cupy",),
+    )
+    environment = {
+        "CUPY_CACHE_IN_MEMORY": "0",
+        "CUPY_CACHE_DIR": r"C:\Kernel cache\Ångström",
+        "HOME": r"C:\Users\Ångström",
+        "USERPROFILE": r"C:\Users\Ångström",
+        "TEMP": r"C:\Inactive temp\Ångström",
+        "TMP": r"C:\Inactive tmp\Ångström",
+        "TMPDIR": r"C:\Inactive tmpdir\Ångström",
+    }
+    monkeypatch.setattr(cupy_runtime_module.sys, "prefix", r"C:\VIPP Ångström")
+
+    metadata = cupy_runtime_module._configure_windows_unicode_safe_cupy_cache(
+        cupy,
+        platform_name="win32",
+        environment=environment,
+        temp_paths=(r"C:\Temp",),
+    )
+
+    assert environment["CUPY_CACHE_IN_MEMORY"] == "0"
+    assert metadata == ()
+
+
+def test_unicode_home_keeps_disk_cache_across_runtime_refresh(monkeypatch):
+    _set_fake_windows_runtime_paths(monkeypatch, unicode_temp=False)
+    for name in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(name, r"C:\Users\Ångström")
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        monkeypatch.setenv(name, rf"C:\Inactive {name}\Ångström")
+    monkeypatch.setenv("CUPY_CACHE_DIR", r"C:\Kernel cache\Ångström")
+    monkeypatch.setattr(cupy_runtime_module.sys, "prefix", r"C:\VIPP Ångström")
+    runtime, cupy, _imports = _fake_runtime()
+    cupy.__file__ = r"C:\VIPP\site-packages\cupy\__init__.py"
+    cupy.__path__ = (r"C:\VIPP\site-packages\cupy",)
+
+    first = runtime.probe(refresh=True)
+    refreshed = runtime.probe(refresh=True)
+
+    assert first.available
+    assert refreshed.available
+    assert os.environ["CUPY_CACHE_IN_MEMORY"] == "0"
+    assert "cupy_cache_in_memory" not in dict(first.metadata)
+    assert refreshed.environment_fingerprint == first.environment_fingerprint
+    runtime.close()
+
+
+def test_non_windows_unicode_compiler_paths_do_not_change_cache_setting():
+    environment = {"CUPY_CACHE_IN_MEMORY": "0"}
+
+    non_windows_metadata = (
+        cupy_runtime_module._configure_windows_unicode_safe_cupy_cache(
+            SimpleNamespace(__file__="/tmp/Ångström/cupy/__init__.py", __path__=()),
+            platform_name="linux",
+            environment=environment,
+            temp_paths=("/tmp/Ångström",),
+        )
+    )
+
+    assert environment == {"CUPY_CACHE_IN_MEMORY": "0"}
+    assert non_windows_metadata == ()
+
+
+def test_non_windows_process_in_memory_setting_updates_probe_provenance(monkeypatch):
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "1")
+    runtime, _cupy, _imports = _fake_runtime(platform_name="linux")
+
+    in_memory = runtime.probe()
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+    on_disk = runtime.probe()
+
+    assert in_memory.available
+    assert dict(in_memory.metadata)["cupy_cache_reason"] == (
+        "process_in_memory_setting"
+    )
+    assert on_disk.available
+    assert "cupy_cache_in_memory" not in dict(on_disk.metadata)
+    assert in_memory.environment_fingerprint != on_disk.environment_fingerprint
+    runtime.close()
+
+
+def test_required_in_memory_cache_setting_remains_process_wide():
+    cupy = SimpleNamespace(__file__=r"C:\VIPP Ångström\cupy\__init__.py")
+    environment = {}
+
+    first = cupy_runtime_module._configure_windows_unicode_safe_cupy_cache(
+        cupy,
+        platform_name="win32",
+        environment=environment,
+        temp_paths=(r"C:\Temp",),
+    )
+    second = cupy_runtime_module._configure_windows_unicode_safe_cupy_cache(
+        SimpleNamespace(__file__=r"C:\VIPP\cupy\__init__.py"),
+        platform_name="win32",
+        environment=environment,
+        temp_paths=(r"C:\Temp",),
+    )
+
+    assert dict(first)["cupy_cache_in_memory"] == "1"
+    assert dict(second) == {
+        "cupy_cache_in_memory": "1",
+        "cupy_cache_reason": "process_in_memory_setting",
+    }
+    assert environment["CUPY_CACHE_IN_MEMORY"] == "1"
 
 
 def test_private_scope_transfers_accounts_and_releases():
@@ -830,6 +1176,170 @@ def test_close_before_probe_does_not_import_cupy_and_is_idempotent():
 
     assert imports == []
     assert runtime.probe().reason_code == "runtime_closed"
+
+
+@pytest.mark.real_cuda
+def test_real_unicode_temp_policy_survives_refresh_and_novel_raw_kernel(
+    monkeypatch,
+    tmp_path,
+):
+    if sys.platform != "win32":
+        pytest.skip("The CuPy Unicode temporary-path defect is Windows-specific.")
+    cupy = pytest.importorskip("cupy")
+    unicode_temp = tmp_path / "VIPP Ångström"
+    unicode_temp.mkdir()
+    kernel_cache = tmp_path / "fresh-kernel-cache"
+    kernel_cache.mkdir()
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        monkeypatch.setenv(name, str(unicode_temp))
+    monkeypatch.setenv("CUPY_CACHE_DIR", str(kernel_cache))
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+    monkeypatch.setattr(tempfile, "tempdir", None)
+
+    runtime = CuPyRuntime()
+    first = runtime.probe(refresh=True)
+    assert first.available, first.message
+    assert os.environ["CUPY_CACHE_IN_MEMORY"] == "1"
+    assert dict(first.metadata)["cupy_cache_non_ascii_path_kinds"] == "temp"
+
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+    refreshed = runtime.probe(refresh=True)
+    assert refreshed.available
+    assert os.environ["CUPY_CACHE_IN_MEMORY"] == "1"
+    assert refreshed.environment_fingerprint == first.environment_fingerprint
+
+    monkeypatch.setenv("CUPY_CACHE_IN_MEMORY", "0")
+    with runtime.execution_scope(
+        device_id=refreshed.selected_device_id,
+        memory_limit_bytes=128 * 1024**2,
+        safety_reserve_bytes=0,
+    ):
+        assert os.environ["CUPY_CACHE_IN_MEMORY"] == "1"
+        source = runtime.to_device(
+            np.arange(7, dtype=np.float32),
+            device_id=refreshed.selected_device_id,
+        )
+        output = cupy.empty_like(source)
+        runtime.allocation_identity(output)
+        kernel = cupy.RawKernel(
+            r"""
+            extern "C" __global__
+            void vipp_unicode_cache_reassertion_v1(
+                const float* source, float* output
+            ) {
+                int index = blockDim.x * blockIdx.x + threadIdx.x;
+                if (index < 7) output[index] = source[index] + 7.0f;
+            }
+            """,
+            "vipp_unicode_cache_reassertion_v1",
+        )
+        kernel((1,), (32,), (source, output))
+        runtime.synchronize(device_id=refreshed.selected_device_id)
+        np.testing.assert_array_equal(
+            runtime.to_host(output),
+            np.arange(7, dtype=np.float32) + 7.0,
+        )
+        runtime.release(output)
+        runtime.release(source)
+        del output, source
+
+    runtime.close()
+
+
+@pytest.mark.real_cuda
+def test_real_unicode_home_uses_disk_cache_for_novel_raw_kernel(tmp_path):
+    if sys.platform != "win32":
+        pytest.skip("The CuPy Unicode path policy is Windows-specific.")
+    pytest.importorskip("cupy")
+    ascii_temp = tmp_path / "ascii-temp"
+    ascii_temp.mkdir()
+    unicode_home = tmp_path / "Home Ångström"
+    unicode_home.mkdir()
+    unicode_cache = unicode_home / "CuPy kernel cache"
+    assert str(ascii_temp).isascii()
+
+    environment = os.environ.copy()
+    source_root = Path(__file__).resolve().parents[2]
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(source_root), environment.get("PYTHONPATH", "")))
+    )
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        environment[name] = str(ascii_temp)
+    for name in ("HOME", "USERPROFILE"):
+        environment[name] = str(unicode_home)
+    environment["CUPY_CACHE_DIR"] = str(unicode_cache)
+    environment["CUPY_CACHE_IN_MEMORY"] = "0"
+    environment["PYTHONIOENCODING"] = "utf-8"
+    code = r'''
+import json
+import os
+import tempfile
+from pathlib import Path
+
+import cupy
+import numpy as np
+
+from napari_vipp.core.gpu.cupy_runtime import CuPyRuntime
+
+assert tempfile.gettempdir().isascii(), tempfile.gettempdir()
+assert os.fspath(cupy.__file__).isascii(), cupy.__file__
+assert all(os.fspath(path).isascii() for path in cupy.__path__), tuple(cupy.__path__)
+runtime = CuPyRuntime()
+probe = runtime.probe(refresh=True)
+assert probe.available, probe.message
+assert os.environ["CUPY_CACHE_IN_MEMORY"] == "0"
+assert "cupy_cache_in_memory" not in dict(probe.metadata)
+with runtime.execution_scope(
+    device_id=probe.selected_device_id,
+    memory_limit_bytes=128 * 1024**2,
+    safety_reserve_bytes=0,
+):
+    source = runtime.to_device(
+        np.arange(7, dtype=np.float32),
+        device_id=probe.selected_device_id,
+    )
+    output = cupy.empty_like(source)
+    runtime.allocation_identity(output)
+    kernel = cupy.RawKernel(
+        r"""
+        extern "C" __global__
+        void vipp_unicode_home_disk_cache_v1(
+            const float* source, float* output
+        ) {
+            int index = blockDim.x * blockIdx.x + threadIdx.x;
+            if (index < 7) output[index] = source[index] + 11.0f;
+        }
+        """,
+        "vipp_unicode_home_disk_cache_v1",
+    )
+    kernel((1,), (32,), (source, output))
+    runtime.synchronize(device_id=probe.selected_device_id)
+    np.testing.assert_array_equal(
+        runtime.to_host(output),
+        np.arange(7, dtype=np.float32) + 11.0,
+    )
+    runtime.release(output)
+    runtime.release(source)
+    del output, source
+runtime.close()
+cache_files = tuple(Path(os.environ["CUPY_CACHE_DIR"]).rglob("*.cubin"))
+assert cache_files, "CuPy did not write its expected disk-cache cubin"
+print(json.dumps({"cache_files": len(cache_files), "policy": "disk"}))
+'''
+
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        env=environment,
+        timeout=180,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    payload = json.loads(completed.stdout.splitlines()[-1])
+    assert payload["policy"] == "disk"
+    assert payload["cache_files"] > 0
 
 
 def test_real_fft_work_areas_leave_no_private_residue_and_runtime_reuses():

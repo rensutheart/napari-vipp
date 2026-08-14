@@ -33,6 +33,15 @@ Stop if the filename, tag, or checksum does not match the official GitHub
 release. An alpha installer may show **Unknown publisher**, but it must also say
 `UNSIGNED` in its filename and the warning must match the release instructions.
 
+For `0.13.0a7`, Windows supplies canonical Local App Data through
+`SHGetKnownFolderPath(FOLDERID_LocalAppData)`. Managed setup accepts only
+`VIPP\environments\cpu` or `VIPP\environments\cuda13` beneath it; custom
+managed roots are rejected. The fixed CPU location supports spaces and
+non-ASCII characters. CUDA supports spaces but requires the complete canonical
+path to be ASCII because of the pinned CuPy 14.1.1 NVRTC path limitation. If
+canonical Local App Data is non-ASCII, setup must make one-click CUDA
+unavailable before environment creation or download and offer CPU.
+
 ## CPU route
 
 Complete this on an account without an existing VIPP installation.
@@ -61,6 +70,15 @@ Complete this on a machine that satisfies the published CUDA requirements.
 - Compute Doctor support-report filename retained privately:
 
 - [ ] The installer offered CUDA only after checking the machine.
+- [ ] The managed CUDA location exactly matched canonical Local App Data plus
+      `VIPP\environments\cuda13`; spaces, if present, did not prevent setup.
+- [ ] Supplying any other managed root was rejected before resolution or
+      download; setup did not expose a custom-location chooser.
+- [ ] If canonical Local App Data contained a non-ASCII character, one-click
+      CUDA was unavailable and setup offered the fixed CPU route instead.
+- [ ] Reviewing an expert-selected existing CUDA environment remained a
+      separate non-mutating operation and never suggested moving, editing, or
+      converting that environment into a managed installation.
 - [ ] Installation completed and the Automatic, CPU, and Prefer-GPU shortcuts opened.
 - [ ] Compute Doctor separately reported **CUDA and GPU**, **Optional cuCIM**, and
       **VIPP GPU coverage**.
@@ -70,6 +88,12 @@ Complete this on a machine that satisfies the published CUDA requirements.
       fallback and still produced the correct result.
 - [ ] The same workflow completed through Automatic and CPU-only launch profiles.
 - [ ] Repair/update preserved the working setup.
+- [ ] For an installer-owned CUDA copy already under a non-ASCII root, setup
+      separately reported any recovery from a prior interrupted transaction;
+      after that recovery, the newly blocked selection performed no new
+      mutation. Setup clearly opened Installed apps for ownership-bound removal
+      and did not offer a second or custom managed CUDA copy or describe an
+      in-place/fallback migration.
 - [ ] Uninstall removed VIPP-owned shortcuts and files without removing unrelated data.
 
 If optional cuCIM is included in this acceptance run:
@@ -148,7 +172,9 @@ Record each answer as **yes**, **partly**, or **no**, followed by one short note
 
 - CPU fresh-account route: pass / fail / not run
 - CUDA fresh-account route: pass / fail / not run
-- Spaces and non-ASCII path coverage: pass / fail / not run
+- Spaces path coverage: pass / fail / not run
+- CPU non-ASCII path coverage: pass / fail / not run
+- CUDA non-ASCII preflight guidance: pass / fail / not run
 - Cancellation rollback: pass / fail / not run
 - Network-failure rollback: pass / fail / not run
 - Novice path: pass / fail / not run

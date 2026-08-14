@@ -9,6 +9,7 @@ import pytest
 
 from napari_vipp.installer import gui as gui_module
 from napari_vipp.installer.frontend import (
+    BlockedAction,
     InstallerScreen,
     InstallerSelection,
     InstallerViewState,
@@ -39,6 +40,9 @@ class _Controller:
 
     def open_vipp(self):
         self.calls.append("open")
+
+    def open_owned_uninstaller(self):
+        self.calls.append("open-uninstaller")
 
     def retry(self):
         self.calls.append("retry")
@@ -102,7 +106,13 @@ class _Canvas:
         return self.height
 
 
-def _state(screen, *, kind=None, help_url=""):
+def _state(
+    screen,
+    *,
+    kind=None,
+    help_url="",
+    blocked_action=BlockedAction.RETRY,
+):
     return InstallerViewState(
         screen=screen,
         headline="headline",
@@ -111,6 +121,7 @@ def _state(screen, *, kind=None, help_url=""):
         primary_enabled=True,
         target_kind=kind,
         help_url=help_url,
+        blocked_action=blocked_action,
     )
 
 
@@ -118,11 +129,23 @@ def _window(state):
     window = object.__new__(InstallerWindow)
     window._state = state
     window._controller = _Controller()
-    window._browse_calls = 0
-    window._browse_location = lambda: setattr(
+    window._installed_apps_calls = 0
+    window._open_installed_apps = lambda: setattr(
         window,
-        "_browse_calls",
-        window._browse_calls + 1,
+        "_installed_apps_calls",
+        window._installed_apps_calls + 1,
+    )
+    window._default_calls = 0
+    window._use_default_location = lambda: setattr(
+        window,
+        "_default_calls",
+        window._default_calls + 1,
+    )
+    window._cpu_calls = 0
+    window._use_cpu = lambda: setattr(
+        window,
+        "_cpu_calls",
+        window._cpu_calls + 1,
     )
     return window
 
@@ -189,13 +212,137 @@ def test_ready_and_success_primary_actions_are_unambiguous():
     assert success._controller.calls == ["open"]
 
 
-def test_foreign_target_routes_to_separate_location_not_confirmation():
+def test_foreign_canonical_target_retries_without_exposing_custom_location():
     window = _window(_state(InstallerScreen.BLOCKED, kind=TargetKind.FOREIGN))
 
     window._primary_requested()
 
-    assert window._browse_calls == 1
+    assert window._controller.calls == ["retry"]
+
+
+def test_owned_cuda_blocker_routes_to_installed_apps_not_location_chooser():
+    window = _window(
+        _state(
+            InstallerScreen.BLOCKED,
+            kind=TargetKind.BLOCKED,
+            blocked_action=BlockedAction.OPEN_INSTALLED_APPS,
+        )
+    )
+
+    window._primary_requested()
+
+    assert window._installed_apps_calls == 1
     assert window._controller.calls == []
+
+
+@pytest.mark.parametrize(
+    ("action", "attribute"),
+    [
+        (BlockedAction.USE_DEFAULT_LOCATION, "_default_calls"),
+        (BlockedAction.USE_CPU, "_cpu_calls"),
+    ],
+)
+def test_exact_default_boundary_actions_are_typed(action, attribute):
+    window = _window(
+        _state(
+            InstallerScreen.BLOCKED,
+            kind=TargetKind.BLOCKED,
+            blocked_action=action,
+        )
+    )
+
+    window._primary_requested()
+
+    assert getattr(window, attribute) == 1
+    assert window._controller.calls == []
+
+
+def test_owned_uninstaller_action_stays_inside_controller_boundary():
+    window = _window(
+        _state(
+            InstallerScreen.BLOCKED,
+            kind=TargetKind.BLOCKED,
+            blocked_action=BlockedAction.RUN_OWNED_UNINSTALLER,
+        )
+    )
+
+    window._primary_requested()
+
+    assert window._controller.calls == ["open-uninstaller"]
+    assert window._installed_apps_calls == 0
+
+
+def test_open_installed_apps_uses_windows_settings_uri(monkeypatch):
+    opened = []
+    monkeypatch.setattr(gui_module.os, "startfile", opened.append, raising=False)
+    window = object.__new__(InstallerWindow)
+
+    window._open_installed_apps()
+
+    assert opened == ["ms-settings:appsfeatures"]
+
+
+def test_open_installed_apps_failure_keeps_manual_remediation_visible(monkeypatch):
+    def fail_to_open(_uri):
+        raise OSError("synthetic settings failure")
+
+    errors = []
+    monkeypatch.setattr(gui_module.os, "startfile", fail_to_open, raising=False)
+    window = object.__new__(InstallerWindow)
+    window.root = object()
+    window._messagebox = SimpleNamespace(
+        showerror=lambda title, message, **kwargs: errors.append(
+            (title, message, kwargs)
+        )
+    )
+
+    window._open_installed_apps()
+
+    assert len(errors) == 1
+    title, message, kwargs = errors[0]
+    assert title == "Open Installed apps"
+    assert "Settings > Apps > Installed apps" in message
+    assert "remove VIPP (GPU)" in message
+    assert kwargs == {"parent": window.root}
+
+
+def test_use_default_switches_existing_environment_to_fixed_managed_route(
+    tmp_path,
+):
+    existing_python = tmp_path / "Existing Å" / "Scripts" / "python.exe"
+    window = object.__new__(InstallerWindow)
+    window.root = object()
+    window._suppress_setting_events = False
+    window._existing_environment = _Value(True)
+    window._existing_python = existing_python
+    window._existing_label = _Widget()
+    window._install_root = _Value("")
+    window._track = _Value("Recommended automatically")
+    window._desktop_shortcut = _Value(True)
+    window._selection = InstallerSelection(existing_python=existing_python)
+    window._controller = _Controller()
+    window._primary = _Widget()
+    window._secondary = _Widget()
+    window._status = _Value()
+    window._activity = _Value()
+    window._status_history = []
+    window._state = _state(InstallerScreen.BLOCKED, kind=TargetKind.BLOCKED)
+    window._elapsed_seconds = lambda: 0
+    rendered_details = []
+    window._replace_details = rendered_details.append
+
+    window._use_default_location()
+
+    assert window._existing_environment.get() is False
+    assert window._existing_python is None
+    assert window._existing_label.configured[-1] == {
+        "text": "No existing environment selected."
+    }
+    assert window._install_root.get() == ""
+    assert rendered_details
+    assert "Requested location: recommended managed location" in rendered_details[-1]
+    assert "Existing environment Python:" not in rendered_details[-1]
+    assert window._controller.calls[-1][0] == "start"
 
 
 def test_current_secondary_action_is_explicit_repair():
@@ -416,27 +563,20 @@ def test_mousewheel_scrolls_only_an_overflowing_page():
         (-1, 1),
     ):
         assert (
-            window._content_mousewheel(
-                SimpleNamespace(delta=delta, widget=object())
-            )
+            window._content_mousewheel(SimpleNamespace(delta=delta, widget=object()))
             == "break"
         )
         assert canvas.scrolls[-1] == (steps, "units")
 
     assert (
-        window._content_mousewheel(
-            SimpleNamespace(delta=-120, widget=window._details)
-        )
+        window._content_mousewheel(SimpleNamespace(delta=-120, widget=window._details))
         is None
     )
     assert len(canvas.scrolls) == 6
 
     canvas.bounds = (0, 0, 640, 500)
     assert (
-        window._content_mousewheel(
-            SimpleNamespace(delta=-120, widget=object())
-        )
-        is None
+        window._content_mousewheel(SimpleNamespace(delta=-120, widget=object())) is None
     )
     assert len(canvas.scrolls) == 6
 
@@ -562,6 +702,8 @@ def test_form_edit_invalidates_plan_and_check_uses_exact_visible_values(tmp_path
     window._state = _state(InstallerScreen.READY, kind=TargetKind.NEW)
     window._record_status = lambda message: window._status_history.append(message)
     window._elapsed_seconds = lambda: 0
+    rendered_details = []
+    window._replace_details = rendered_details.append
 
     window._mark_settings_dirty()
 
@@ -573,6 +715,10 @@ def test_form_edit_invalidates_plan_and_check_uses_exact_visible_values(tmp_path
     assert window._primary.configured[-1] == {"state": "disabled"}
     assert window._secondary.configured[-1] == {"state": "disabled"}
     assert not any(call == "confirm" for call in window._controller.calls)
+    assert rendered_details
+    assert (
+        f"Requested location: {tmp_path / 'custom GPU root'}" in (rendered_details[-1])
+    )
 
     window._check_settings_requested()
 

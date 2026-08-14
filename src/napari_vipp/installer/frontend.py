@@ -52,6 +52,17 @@ class TrackChoice(StrEnum):
     CUDA13 = "cuda13"
 
 
+class BlockedAction(StrEnum):
+    """Typed primary action for a blocked installer decision."""
+
+    RETRY = "retry"
+    OPEN_HELP = "open_help"
+    OPEN_INSTALLED_APPS = "open_installed_apps"
+    RUN_OWNED_UNINSTALLER = "run_owned_uninstaller"
+    USE_DEFAULT_LOCATION = "use_default_location"
+    USE_CPU = "use_cpu"
+
+
 @dataclass(frozen=True, slots=True)
 class InstallerSelection:
     """User-adjustable settings; defaults require no technical decisions."""
@@ -97,7 +108,7 @@ class PreparedInstall:
     kind: TargetKind
     target: Path
     release_version: str
-    track: ComputeTrack
+    track: ComputeTrack | None
     plain_summary: str
     technical_details: str
     payload: object | None = field(default=None, repr=False, compare=False)
@@ -106,19 +117,48 @@ class PreparedInstall:
     launcher: Path | None = None
     reason: str = ""
     help_url: str = ""
+    blocked_action: BlockedAction = BlockedAction.RETRY
+    ownership_manifest_sha256: str = ""
+    owned_uninstaller_path: Path | None = None
+    owned_uninstaller_sha256: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", TargetKind(self.kind))
         object.__setattr__(self, "target", Path(self.target))
-        object.__setattr__(self, "track", ComputeTrack(self.track))
+        if self.track is not None:
+            object.__setattr__(self, "track", ComputeTrack(self.track))
+        object.__setattr__(self, "blocked_action", BlockedAction(self.blocked_action))
         if self.launcher is not None:
             object.__setattr__(self, "launcher", Path(self.launcher))
+        if self.owned_uninstaller_path is not None:
+            object.__setattr__(
+                self,
+                "owned_uninstaller_path",
+                Path(self.owned_uninstaller_path),
+            )
+        fallback_values = (
+            self.ownership_manifest_sha256,
+            self.owned_uninstaller_path,
+            self.owned_uninstaller_sha256,
+        )
+        if any(fallback_values) != all(fallback_values):
+            raise ValueError(
+                "An owned uninstaller fallback requires its path and both hashes."
+            )
+        if self.blocked_action is BlockedAction.RUN_OWNED_UNINSTALLER and not all(
+            fallback_values
+        ):
+            raise ValueError(
+                "The owned-uninstaller action requires a hash-bound fallback."
+            )
         if self.kind in {
             TargetKind.NEW,
             TargetKind.UPDATE,
             TargetKind.REPAIR,
-        } and self.payload is None:
-            raise ValueError(f"{self.kind.value} requires an executable transaction.")
+        } and (self.payload is None or self.track is None):
+            raise ValueError(
+                f"{self.kind.value} requires a track and executable transaction."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +205,8 @@ class InstallerBackend(Protocol):
 
     def open_vipp(self, launcher: Path) -> None: ...
 
+    def open_owned_uninstaller(self, prepared: PreparedInstall) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class InstallerViewState:
@@ -185,6 +227,11 @@ class InstallerViewState:
     target: Path | None = None
     track: ComputeTrack | None = None
     help_url: str = ""
+    blocked_action: BlockedAction = BlockedAction.RETRY
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "screen", InstallerScreen(self.screen))
+        object.__setattr__(self, "blocked_action", BlockedAction(self.blocked_action))
 
 
 StateListener = Callable[[InstallerViewState], None]
@@ -339,7 +386,8 @@ class InstallerController:
             if (
                 prepared is None
                 or self._prepared_selection != self._selection
-                or prepared.kind not in {
+                or prepared.kind
+                not in {
                     TargetKind.NEW,
                     TargetKind.UPDATE,
                     TargetKind.REPAIR,
@@ -465,6 +513,27 @@ class InstallerController:
                 (
                     "The installation is still present. Try its desktop shortcut, "
                     "or retry."
+                ),
+                exc,
+            )
+
+    def open_owned_uninstaller(self) -> None:
+        """Launch only the hash-bound uninstaller from the reviewed blocker."""
+
+        with self._lock:
+            if self.busy or self._prepared is None:
+                return
+            prepared = self._prepared
+            if prepared.blocked_action is not BlockedAction.RUN_OWNED_UNINSTALLER:
+                return
+        try:
+            self._backend.open_owned_uninstaller(prepared)
+        except Exception as exc:  # pragma: no cover - defensive platform boundary
+            self._fail(
+                "The VIPP uninstaller could not be opened",
+                (
+                    "Nothing was removed. Check the technical details or use "
+                    "Windows Installed apps if VIPP is listed there."
                 ),
                 exc,
             )
@@ -711,22 +780,37 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
                 prepared.plain_summary
                 or "Setup found files it did not create and will not overwrite them."
             ),
-            primary_label="Choose another location",
+            primary_label="Check again",
             primary_enabled=True,
             secondary_label="Close",
             secondary_enabled=True,
             status_message="Nothing has been changed.",
+            blocked_action=BlockedAction.RETRY,
             **common,
         )
+    blocked_action = prepared.blocked_action
+    if prepared.help_url and blocked_action is BlockedAction.RETRY:
+        blocked_action = BlockedAction.OPEN_HELP
+    primary_label = {
+        BlockedAction.OPEN_HELP: "Get Python",
+        BlockedAction.OPEN_INSTALLED_APPS: "Open Installed apps",
+        BlockedAction.RUN_OWNED_UNINSTALLER: "Open VIPP uninstaller",
+        BlockedAction.USE_DEFAULT_LOCATION: "Use default location",
+        BlockedAction.USE_CPU: "Use CPU",
+        BlockedAction.RETRY: "Check again",
+    }[blocked_action]
     return InstallerViewState(
         screen=InstallerScreen.BLOCKED,
         headline="VIPP cannot be installed yet",
         message=prepared.plain_summary,
-        primary_label="Get Python" if prepared.help_url else "Check again",
+        primary_label=primary_label,
         primary_enabled=True,
-        secondary_label="Check again" if prepared.help_url else "Close",
+        secondary_label=(
+            "Check again" if blocked_action is BlockedAction.OPEN_HELP else "Close"
+        ),
         secondary_enabled=True,
         status_message=prepared.reason or "Nothing has been changed.",
+        blocked_action=blocked_action,
         **common,
     )
 
@@ -823,6 +907,7 @@ def _plain_apply_failure(exc: Exception) -> tuple[str, str]:
 
 
 __all__ = [
+    "BlockedAction",
     "InstallOutcome",
     "InstallationCancelled",
     "InstallerBackend",

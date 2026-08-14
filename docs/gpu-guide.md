@@ -61,8 +61,41 @@ CMake.
 ## Install And Verify
 
 The explicitly unsigned Windows installer is the normal 0.13.0a7 route. Follow
-the checksum and Windows-warning steps in the [Quick Start](quick-start.md), or
-use this manual dedicated CUDA 13 environment route:
+the checksum and Windows-warning steps in the [Quick Start](quick-start.md).
+
+One-click setup derives Windows Local App Data through
+`SHGetKnownFolderPath(FOLDERID_LocalAppData)` and accepts only the exact
+per-track roots below it: `VIPP\environments\cpu` and
+`VIPP\environments\cuda13`. It does not accept a custom managed root. The
+complete CUDA path must use ASCII characters in this release because CuPy
+14.1.1 cannot reliably compile CUDA kernels from a Windows environment path
+containing non-ASCII characters. Spaces are supported. If canonical Local App
+Data contains a non-ASCII character, one-click CUDA is unavailable before
+environment creation or package download and the UI offers CPU. The fixed CPU
+root remains Unicode-safe.
+
+An expert-selected existing environment remains a separate, non-mutating
+route. The installer can inspect it but does not move, rename, edit, or convert
+it into a managed installation.
+
+### Non-ASCII Windows temporary directories
+
+The installation root and Python's effective temporary directory are separate
+paths. If the effective temporary directory contains a non-ASCII character,
+VIPP sets `CUPY_CACHE_IN_MEMORY=1` before CuPy compiles kernels. This keeps the
+affected NVRTC temporary source operation in memory. It also turns off CuPy's
+disk kernel cache for that process, so Compute Doctor or the first GPU work can
+pay the compilation cost again after VIPP is closed and reopened.
+
+On the development RTX 5090, one reference run took about 52 seconds from a
+cold process and about 0.87 seconds for a refresh in that same process. These
+figures describe that machine and workload; they are not a speed guarantee.
+Only where compiled kernels are cached changes. The scientific kernels and
+their results do not change. If compilation itself fails, Compute Doctor now
+preserves the real CuPy `CompileException` instead of replacing it with a false
+512-byte private-pool leak message caused by traceback-held probe arrays.
+
+For advanced use, verify a manual dedicated CUDA 13 environment with:
 
 ```powershell
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13

@@ -145,13 +145,14 @@ def _plan(
     release: ReleaseSpec,
     *,
     shortcut_directory: Path | None = None,
+    track: ComputeTrack = ComputeTrack.CPU,
 ):
     scope = (
         ShortcutScope.DESKTOP if shortcut_directory is not None else ShortcutScope.NONE
     )
     request = InstallRequest(
         mode=InstallMode.MANAGED,
-        track=ComputeTrack.CPU,
+        track=track,
         python=target.parent / "base-python.exe",
         install_root=target,
         shortcut_scope=scope,
@@ -192,6 +193,7 @@ def _plan(
             ),
             managed_ownership_error=ownership.error,
             ownership_manifest_exists=ownership.record is not None,
+            canonical_managed_root=target,
         ),
     )
     return create_install_plan(request, discovery=snapshot, release=release)
@@ -347,6 +349,73 @@ def _engine_with_setup(
     )
 
 
+def test_state_root_controls_default_uninstaller_cache_when_localappdata_is_spoofed(
+    tmp_path,
+    monkeypatch,
+):
+    trusted_state = tmp_path / "trusted" / "VIPP" / "installer"
+    spoofed = tmp_path / "spoofed"
+    setup_source = tmp_path / "signed-release-setup.exe"
+    setup_source.write_bytes(b"signed setup")
+    documents = tmp_path / "Documents"
+    documents.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(spoofed))
+    engine = ManagedInstallerEngine(
+        runner=_FakeRunner(),
+        state_root=trusted_state,
+        now=lambda: _NOW,
+        identifier=lambda: _RUN_ID,
+        approved_artifact_hosts=(
+            "pypi.org",
+            "files.pythonhosted.org",
+            "packages.example",
+        ),
+        setup_source=setup_source,
+        registry_backend=_MemoryRegistry(),
+        known_folder_probe=lambda name: {
+            "documents": documents,
+            "desktop": tmp_path / "Desktop",
+            "programs": tmp_path / "Programs",
+        }.get(name),
+    )
+
+    prepared = engine.prepare(_plan(tmp_path / "managed", _release()))
+
+    assert prepared.persistent_setup_path is not None
+    assert prepared.persistent_setup_path.is_relative_to(trusted_state / "cache")
+    assert not prepared.persistent_setup_path.is_relative_to(spoofed)
+
+
+@pytest.mark.parametrize("track", [ComputeTrack.CPU, ComputeTrack.CUDA13])
+def test_engine_rejects_noncanonical_windows_managed_plan_before_resolution(
+    tmp_path,
+    track,
+):
+    custom = tmp_path / "custom"
+    canonical = tmp_path / "known" / "VIPP" / "environments" / track.value
+    original = _plan(custom, _release(), track=track)
+    discovery = replace(
+        original.discovery,
+        filesystem=replace(
+            original.discovery.filesystem,
+            canonical_managed_root=canonical,
+        ),
+    )
+    blocked = create_install_plan(
+        original.request,
+        discovery=discovery,
+        release=original.release,
+    )
+    runner = _FakeRunner()
+    engine = _engine(tmp_path, runner)
+
+    with pytest.raises(PreparationError, match="exact canonical"):
+        engine.prepare(blocked)
+
+    assert runner.calls == []
+    assert not custom.exists()
+
+
 def test_classifies_new_update_current_repair_newer_and_foreign(tmp_path):
     release = _release()
     new = inspect_managed_target(
@@ -452,6 +521,25 @@ def test_apply_requires_one_use_explicit_authorization(tmp_path):
     assert result.launcher_path is not None and result.launcher_path.is_file()
     with pytest.raises(AuthorizationError, match="already been used"):
         engine.apply(prepared, authorization)
+
+
+def test_managed_cpu_unicode_root_completes_full_transaction_lifecycle(tmp_path):
+    target = tmp_path / "VIPP CPU – Zoë 李"
+    runner = _FakeRunner()
+    engine = _engine(tmp_path, runner)
+    prepared = engine.prepare(_plan(target, _release()))
+
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+    )
+
+    assert result.status is InstallStatus.SUCCEEDED
+    assert result.managed_root == target
+    ownership = inspect_ownership(target)
+    assert ownership.record is not None
+    assert ownership.record.managed_root == target
+    assert ownership.record.track is ComputeTrack.CPU
 
 
 def test_apply_uses_permanent_versioned_environment_and_exact_lock(tmp_path):

@@ -17,6 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from napari_vipp.installer.frontend import (
+    BlockedAction,
     InstallerBackend,
     InstallerController,
     InstallerScreen,
@@ -41,6 +42,7 @@ _HEADER_LEFT_PADDING = 22
 _HEADER_INLINE_GAP = 14
 _HEADER_RIGHT_PADDING = 18
 _STATUS_HISTORY_LIMIT = 12
+_INSTALLED_APPS_URI = "ms-settings:appsfeatures"
 _STAGE_LABELS = {
     InstallerScreen.CHECKING: "Checking this computer",
     InstallerScreen.READY: "Ready for approval",
@@ -208,9 +210,7 @@ class InstallerWindow:
         self._secondary_text = tk.StringVar(value="Close")
         self._show_advanced = tk.BooleanVar(value=False)
         self._track = tk.StringVar(value=_LABEL_FOR_TRACK[self._selection.track])
-        self._install_root = tk.StringVar(
-            value=str(self._selection.install_root or "")
-        )
+        self._install_root = tk.StringVar(value=str(self._selection.install_root or ""))
         self._desktop_shortcut = tk.BooleanVar(
             value=self._selection.create_desktop_shortcut
         )
@@ -533,28 +533,22 @@ class InstallerWindow:
 
         ttk.Label(
             parent,
-            text="Installation location (leave blank for the recommended location)",
+            text="Managed location",
             font=("Segoe UI Semibold", 9),
         ).grid(row=2, column=0, columnspan=2, sticky="w")
-        self._install_root_control = ttk.Entry(
+        self._install_root_control = ttk.Label(
             parent,
-            textvariable=self._install_root,
+            text=(
+                "Fixed to VIPP's per-account Windows Local App Data folder for "
+                "one-click setup."
+            ),
+            wraplength=520,
         )
         self._install_root_control.grid(
             row=3,
             column=0,
+            columnspan=2,
             sticky="ew",
-            pady=(3, 10),
-        )
-        self._browse_location_button = ttk.Button(
-            parent,
-            text="Browse…",
-            command=self._browse_location,
-        )
-        self._browse_location_button.grid(
-            row=3,
-            column=1,
-            padx=(8, 0),
             pady=(3, 10),
         )
 
@@ -696,9 +690,7 @@ class InstallerWindow:
             else f"{state.progress_fraction * 100:.0f}%"
         )
         shortcut_request = (
-            "requested"
-            if self._selection.create_desktop_shortcut
-            else "not requested"
+            "requested" if self._selection.create_desktop_shortcut else "not requested"
         )
         current_activity = state.status_message or "Waiting for the next check"
         facts = [f"VIPP Setup version: {_installed_version()}"]
@@ -725,11 +717,7 @@ class InstallerWindow:
         if state.target is not None:
             facts.append(f"Resolved location: {state.target}")
         if state.track is not None:
-            label = (
-                _CUDA13_TRACK_LABEL
-                if state.track.value == "cuda13"
-                else "CPU"
-            )
+            label = _CUDA13_TRACK_LABEL if state.track.value == "cuda13" else "CPU"
             facts.append(f"Computer use: {label}")
         if state.target_kind is not None:
             facts.append(f"Setup state: {state.target_kind.value}")
@@ -836,9 +824,13 @@ class InstallerWindow:
             or bounds[3] - bounds[1] <= self._content_canvas.winfo_height()
         ):
             return None
-        steps = -max(1, abs(delta) // 120) if delta > 0 else max(
-            1,
-            abs(delta) // 120,
+        steps = (
+            -max(1, abs(delta) // 120)
+            if delta > 0
+            else max(
+                1,
+                abs(delta) // 120,
+            )
         )
         self._content_canvas.yview_scroll(steps, "units")
         return "break"
@@ -867,9 +859,15 @@ class InstallerWindow:
         elif state.screen in {InstallerScreen.CURRENT, InstallerScreen.SUCCESS}:
             self._controller.open_vipp()
         elif state.screen is InstallerScreen.BLOCKED:
-            if state.target_kind is TargetKind.FOREIGN:
-                self._browse_location()
-            elif state.help_url:
+            if state.blocked_action is BlockedAction.OPEN_INSTALLED_APPS:
+                self._open_installed_apps()
+            elif state.blocked_action is BlockedAction.RUN_OWNED_UNINSTALLER:
+                self._controller.open_owned_uninstaller()
+            elif state.blocked_action is BlockedAction.USE_DEFAULT_LOCATION:
+                self._use_default_location()
+            elif state.blocked_action is BlockedAction.USE_CPU:
+                self._use_cpu()
+            elif state.blocked_action is BlockedAction.OPEN_HELP and state.help_url:
                 webbrowser.open(state.help_url)
             else:
                 self._controller.retry()
@@ -891,22 +889,47 @@ class InstallerWindow:
         else:
             self._close_requested()
 
-    def _browse_location(self) -> None:
-        selected = self._filedialog.askdirectory(
-            parent=self.root,
-            title="Choose a separate folder for VIPP",
-            mustexist=False,
-        )
-        if not selected:
-            return
+    def _use_default_location(self) -> None:
         self._suppress_setting_events = True
         try:
             self._existing_environment.set(False)
             self._existing_python = None
-            self._install_root.set(selected)
+            self._install_root.set("")
         finally:
             self._suppress_setting_events = False
+        self._existing_label.configure(text=self._existing_environment_text())
         self._mark_settings_dirty()
+        self._check_settings_requested()
+
+    def _use_cpu(self) -> None:
+        self._suppress_setting_events = True
+        try:
+            self._track.set(_LABEL_FOR_TRACK[TrackChoice.CPU])
+            self._existing_environment.set(False)
+            self._existing_python = None
+            self._install_root.set("")
+        finally:
+            self._suppress_setting_events = False
+        self._existing_label.configure(text=self._existing_environment_text())
+        self._mark_settings_dirty()
+        self._check_settings_requested()
+
+    def _open_installed_apps(self) -> None:
+        try:
+            startfile = getattr(os, "startfile", None)
+            if callable(startfile):
+                startfile(_INSTALLED_APPS_URI)
+            elif not webbrowser.open(_INSTALLED_APPS_URI):
+                raise OSError("Windows did not open the Installed apps page.")
+        except (OSError, RuntimeError, ValueError, webbrowser.Error) as exc:
+            self._messagebox.showerror(
+                "Open Installed apps",
+                (
+                    "Windows Settings could not be opened. Open Settings > Apps > "
+                    f"Installed apps manually and remove VIPP (GPU).\n\n{exc}"
+                ),
+                parent=self.root,
+            )
 
     def _existing_environment_changed(self) -> None:
         if self._existing_environment.get():
@@ -986,6 +1009,8 @@ class InstallerWindow:
                 elapsed_seconds=self._elapsed_seconds(),
             )
         )
+        if self._state is not None:
+            self._replace_details(self._rendered_details(self._state))
 
     def _set_settings_enabled(self, state: InstallerViewState) -> None:
         """Keep install settings immutable while files may be changing."""
@@ -995,8 +1020,6 @@ class InstallerWindow:
             InstallerScreen.CANCELLING,
         }
         self._track_control.configure(state="readonly" if mutable else "disabled")
-        self._set_enabled(self._install_root_control, mutable)
-        self._set_enabled(self._browse_location_button, mutable)
         self._set_enabled(self._desktop_shortcut_control, mutable)
         checkable = mutable and state.screen is not InstallerScreen.CHECKING
         self._set_enabled(self._check_settings, checkable)

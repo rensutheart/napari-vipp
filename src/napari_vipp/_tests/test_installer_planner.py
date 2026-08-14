@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -140,6 +141,7 @@ def _filesystem(
         desktop_directory=target.parent / "Desktop",
         start_menu_directory=target.parent / "Start Menu" / "VIPP",
         shortcut_conflicts=conflicts,
+        canonical_managed_root=target,
     )
 
 
@@ -299,17 +301,13 @@ def test_managed_cpu_plan_is_ready_and_cpu_only(tmp_path, minor):
     assert plan.ready
     assert document["status"] == "ready"
     assert document["release"]["requirement"] == "napari-vipp[app]==0.13.0a7"
-    assert [shortcut["label"] for shortcut in document["shortcuts"]] == [
-        "VIPP"
-    ]
+    assert [shortcut["label"] for shortcut in document["shortcuts"]] == ["VIPP"]
     assert [action["id"] for action in document["proposed_actions"]] == [
         "create_managed_environment",
         "ensure_managed_pip",
         "install_vipp_release",
     ]
-    assert "verify_cuda13" not in {
-        action["id"] for action in document["acceptance"]
-    }
+    assert "verify_cuda13" not in {action["id"] for action in document["acceptance"]}
     assert document["rollback"]["kind"] == "owned-managed-environment"
     assert document["ready_for_resolution"] is True
     assert document["resolution_required"] is True
@@ -345,13 +343,104 @@ def test_managed_cuda13_accepts_any_qualified_nvidia_model(
         "VIPP CPU",
         "VIPP Prefer GPU",
     }
-    assert "verify_cuda13" in {
-        action["id"] for action in document["acceptance"]
-    }
+    assert "verify_cuda13" in {action["id"] for action in document["acceptance"]}
     serialized = plan.to_json().casefold()
     assert "system cuda toolkit" not in serialized
     assert document["cucim"]["included"] is False
     assert device_name.casefold() in serialized
+
+
+def test_managed_cuda13_rejects_non_ascii_root_without_mutation(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "VIPP GPU Ångström"
+    request = _request(target, track=ComputeTrack.CUDA13)
+    discovery = _snapshot(target, request=request, gpu=_gpu())
+    before = _tree_manifest(tmp_path)
+
+    with monkeypatch.context() as guarded:
+        _install_mutation_guards(guarded, block_subprocess=True)
+        plan = create_install_plan(
+            request,
+            discovery=discovery,
+            release=_release(),
+        )
+
+    issue = next(
+        issue
+        for issue in plan.issues
+        if issue.code == "cuda13_environment_root_non_ascii"
+    )
+    assert not plan.ready
+    assert issue.subject == "install_root"
+    assert "CuPy 14.1.1" in issue.message
+    assert "CPU one-click option" in issue.remediation
+    assert _tree_manifest(tmp_path) == before
+    assert not target.exists()
+
+
+def test_managed_cuda13_accepts_ascii_root_with_spaces():
+    target = Path("C:/VIPP GPU Acceptance")
+    request = _request(target, track=ComputeTrack.CUDA13)
+    discovery = _snapshot(target, request=request, gpu=_gpu())
+
+    plan = create_install_plan(request, discovery=discovery, release=_release())
+
+    assert plan.ready
+    assert "cuda13_environment_root_non_ascii" not in {
+        issue.code for issue in plan.issues
+    }
+
+
+def test_managed_cpu_accepts_non_ascii_root():
+    target = Path("C:/VIPP CPU Ångström")
+    request = _request(target, track=ComputeTrack.CPU)
+    discovery = _snapshot(target, request=request)
+
+    plan = create_install_plan(request, discovery=discovery, release=_release())
+
+    assert plan.ready
+    assert "cuda13_environment_root_non_ascii" not in {
+        issue.code for issue in plan.issues
+    }
+
+
+def test_existing_cuda_rejects_non_ascii_environment_root():
+    root = Path("C:/Users/Ångström/Existing CUDA")
+    selected_python = root / "Scripts" / "python.exe"
+    request = _request(
+        root,
+        mode=InstallMode.EXISTING,
+        track=ComputeTrack.CUDA13,
+        python=selected_python,
+    )
+    discovery = _snapshot(
+        root,
+        request=request,
+        python=_python(
+            executable=selected_python,
+            environment_root=root,
+            packages=(
+                InstalledPackage("napari", "0.6.4"),
+                InstalledPackage("PyQt6", "6.9.1"),
+            ),
+        ),
+        gpu=_gpu(),
+        filesystem=_filesystem(root, exists=True),
+    )
+
+    plan = create_install_plan(request, discovery=discovery, release=_release())
+
+    issue = next(
+        issue
+        for issue in plan.issues
+        if issue.code == "cuda13_environment_root_non_ascii"
+    )
+    assert not plan.ready
+    assert issue.subject == "environment"
+    assert "fresh CUDA environment" in issue.remediation
+    assert "Do not move or rename" in issue.remediation
 
 
 def test_existing_napari_plan_does_not_create_or_upgrade_environment(tmp_path):
@@ -380,13 +469,9 @@ def test_existing_napari_plan_does_not_create_or_upgrade_environment(tmp_path):
     plan = create_install_plan(request, discovery=discovery, release=_release())
 
     assert plan.ready
-    assert [action.action_id for action in plan.actions] == [
-        "install_vipp_release"
-    ]
+    assert [action.action_id for action in plan.actions] == ["install_vipp_release"]
     assert all(action.argv[0] == str(selected_python) for action in plan.actions)
-    assert all(
-        action.argv[0] == str(selected_python) for action in plan.acceptance
-    )
+    assert all(action.argv[0] == str(selected_python) for action in plan.acceptance)
     assert all(change.name != "napari" for change in plan.package_changes)
     assert plan.rollback.kind == "existing-environment-package-snapshot-required"
     assert plan.rollback.preserved_paths == (root,)
@@ -652,9 +737,7 @@ def test_existing_environment_rejects_inherited_system_packages(tmp_path):
     plan = create_install_plan(request, discovery=discovery, release=_release())
 
     assert not plan.ready
-    assert "system_site_packages_not_supported" in {
-        issue.code for issue in plan.issues
-    }
+    assert "system_site_packages_not_supported" in {issue.code for issue in plan.issues}
 
 
 def test_stale_discovery_snapshot_is_never_ready(tmp_path):
@@ -755,10 +838,10 @@ def test_disk_boundary_is_exact_and_cuda_reserve_is_larger(tmp_path):
     assert cpu_release.managed_cuda_min_free_bytes > cpu_required
 
 
-def test_paths_with_spaces_and_unicode_are_lossless(tmp_path):
-    target = tmp_path / "VIPP Research – Zoë 李" / "Managed GPU"
-    request = _request(target, track=ComputeTrack.CUDA13)
-    discovery = _snapshot(target, gpu=_gpu())
+def test_cpu_paths_with_spaces_and_unicode_are_lossless(tmp_path):
+    target = tmp_path / "VIPP Research – Zoë 李" / "Managed CPU"
+    request = _request(target, track=ComputeTrack.CPU)
+    discovery = _snapshot(target, request=request)
 
     plan = create_install_plan(request, discovery=discovery, release=_release())
     document = json.loads(plan.to_json())
@@ -1070,8 +1153,8 @@ def test_discovery_rejects_redirected_python_before_executing_it(tmp_path):
     selected_python.touch()
     calls: list[Path] = []
     services = DiscoveryServices(
-        interpreter_probe=lambda path: calls.append(path) or pytest.fail(
-            "redirected Python must not execute"
+        interpreter_probe=lambda path: (
+            calls.append(path) or pytest.fail("redirected Python must not execute")
         ),
         package_probe=lambda _path: (),
         nvidia_probe=_gpu,
@@ -1113,8 +1196,9 @@ def test_existing_environment_config_is_checked_before_python_runs(tmp_path):
         scope=ShortcutScope.NONE,
     )
     services = DiscoveryServices(
-        interpreter_probe=lambda path: calls.append(path) or pytest.fail(
-            "unsafe environment Python must not execute"
+        interpreter_probe=lambda path: (
+            calls.append(path)
+            or pytest.fail("unsafe environment Python must not execute")
         ),
         package_probe=lambda _path: (),
         nvidia_probe=_gpu,
@@ -1135,9 +1219,7 @@ def test_existing_environment_config_is_checked_before_python_runs(tmp_path):
 
     assert calls == []
     assert not plan.ready
-    assert "existing_environment_redirected" in {
-        issue.code for issue in plan.issues
-    }
+    assert "existing_environment_redirected" in {issue.code for issue in plan.issues}
 
 
 def test_existing_environment_base_is_checked_before_python_runs(tmp_path):
@@ -1158,8 +1240,8 @@ def test_existing_environment_base_is_checked_before_python_runs(tmp_path):
         scope=ShortcutScope.NONE,
     )
     services = DiscoveryServices(
-        interpreter_probe=lambda path: calls.append(path) or pytest.fail(
-            "unsafe base Python must not execute"
+        interpreter_probe=lambda path: (
+            calls.append(path) or pytest.fail("unsafe base Python must not execute")
         ),
         package_probe=lambda _path: (),
         nvidia_probe=_gpu,
@@ -1180,9 +1262,7 @@ def test_existing_environment_base_is_checked_before_python_runs(tmp_path):
 
     assert calls == []
     assert not plan.ready
-    assert "existing_environment_redirected" in {
-        issue.code for issue in plan.issues
-    }
+    assert "existing_environment_redirected" in {issue.code for issue in plan.issues}
 
 
 def test_existing_environment_rejects_reported_base_mismatch(tmp_path):
@@ -1215,6 +1295,7 @@ def test_existing_environment_rejects_reported_base_mismatch(tmp_path):
         nvidia_probe=_gpu,
         disk_probe=lambda _path: 20 * 1024**3,
         reparse_probe=lambda _path: False,
+        known_folder_probe=lambda name: tmp_path if name == "local_app_data" else None,
         remote_path_probe=lambda _path: False,
     )
 
@@ -1229,9 +1310,7 @@ def test_existing_environment_rejects_reported_base_mismatch(tmp_path):
     plan = create_install_plan(request, discovery=discovery, release=_release())
 
     assert not plan.ready
-    assert "existing_environment_redirected" in {
-        issue.code for issue in plan.issues
-    }
+    assert "existing_environment_redirected" in {issue.code for issue in plan.issues}
 
 
 @pytest.mark.parametrize(
@@ -1337,9 +1416,7 @@ def test_discovery_rejects_file_as_target_ancestor(tmp_path):
     plan = create_install_plan(request, discovery=discovery, release=_release())
 
     assert not plan.ready
-    assert "install_target_parent_invalid" in {
-        issue.code for issue in plan.issues
-    }
+    assert "install_target_parent_invalid" in {issue.code for issue in plan.issues}
 
 
 def test_discovery_skips_target_io_for_invalid_windows_name(tmp_path, monkeypatch):
@@ -1517,9 +1594,7 @@ def test_existing_discovery_parses_system_site_packages_flag(tmp_path):
 
     assert discovery.python.include_system_site_packages is True
     assert not plan.ready
-    assert "system_site_packages_not_supported" in {
-        issue.code for issue in plan.issues
-    }
+    assert "system_site_packages_not_supported" in {issue.code for issue in plan.issues}
 
 
 def test_both_shortcut_scopes_reject_one_explicit_directory(tmp_path):
@@ -1540,9 +1615,94 @@ def test_both_shortcut_scopes_reject_one_explicit_directory(tmp_path):
     )
 
     assert not plan.ready
-    assert "ambiguous_shortcut_directory" in {
-        issue.code for issue in plan.issues
+    assert "ambiguous_shortcut_directory" in {issue.code for issue in plan.issues}
+
+
+@pytest.mark.parametrize("track", [ComputeTrack.CPU, ComputeTrack.CUDA13])
+def test_windows_managed_custom_root_is_blocked_by_canonical_discovery_fact(
+    tmp_path,
+    track,
+):
+    custom = tmp_path / "custom"
+    canonical = tmp_path / "known" / "VIPP" / "environments" / track.value
+    request = _request(custom, track=track)
+    filesystem = replace(
+        _filesystem(custom),
+        canonical_managed_root=canonical,
+    )
+
+    plan = create_install_plan(
+        request,
+        discovery=_snapshot(
+            custom,
+            request=request,
+            filesystem=filesystem,
+            gpu=_gpu() if track is ComputeTrack.CUDA13 else None,
+        ),
+        release=_release(),
+    )
+
+    assert not plan.ready
+    assert "managed_root_not_canonical" in {issue.code for issue in plan.issues}
+
+
+@pytest.mark.parametrize("track", ["cpu", "cuda13"])
+def test_cli_rejects_custom_root_using_known_folder_not_spoofed_environment(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    track,
+):
+    selected_python = tmp_path / "Python312" / "python.exe"
+    selected_python.parent.mkdir()
+    selected_python.touch()
+    trusted = tmp_path / "trusted"
+    spoofed = tmp_path / "spoofed"
+    custom = tmp_path / "custom"
+    monkeypatch.setenv("LOCALAPPDATA", str(spoofed))
+    services = DiscoveryServices(
+        interpreter_probe=lambda path: InterpreterProbe(
+            executable=path,
+            implementation="cpython",
+            version=(3, 12, 10),
+            pointer_bits=64,
+        ),
+        package_probe=lambda _path: (),
+        nvidia_probe=_gpu,
+        disk_probe=lambda _path: 20 * 1024**3,
+        reparse_probe=lambda _path: False,
+        known_folder_probe=lambda name: trusted if name == "local_app_data" else None,
+    )
+
+    exit_code = cli.main(
+        [
+            "plan",
+            "--mode",
+            "managed",
+            "--track",
+            track,
+            "--base-python",
+            str(selected_python),
+            "--install-root",
+            str(custom),
+            "--shortcuts",
+            "none",
+        ],
+        services=services,
+        release=_release(),
+        host=HostSnapshot("win32", "Windows", "AMD64"),
+    )
+    document = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert "managed_root_not_canonical" in {
+        issue["code"] for issue in document["issues"]
     }
+    assert document["discovery"]["filesystem"]["canonical_managed_root"] == str(
+        trusted / "VIPP" / "environments" / track
+    )
+    assert not custom.exists()
+    assert not spoofed.exists()
 
 
 def test_cli_returns_ready_blocked_and_discovery_failure_codes(
@@ -1564,6 +1724,7 @@ def test_cli_returns_ready_blocked_and_discovery_failure_codes(
         nvidia_probe=_gpu,
         disk_probe=lambda _path: 20 * 1024**3,
         reparse_probe=lambda _path: False,
+        known_folder_probe=lambda name: tmp_path if name == "local_app_data" else None,
     )
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
@@ -1578,8 +1739,6 @@ def test_cli_returns_ready_blocked_and_discovery_failure_codes(
             "cpu",
             "--base-python",
             str(selected_python),
-            "--install-root",
-            str(tmp_path / "ready"),
             "--shortcuts",
             "none",
         ],
@@ -1600,6 +1759,7 @@ def test_cli_returns_ready_blocked_and_discovery_failure_codes(
         nvidia_probe=_gpu,
         disk_probe=lambda _path: 20 * 1024**3,
         reparse_probe=lambda _path: False,
+        known_folder_probe=base_services.known_folder_probe,
     )
     blocked_code = cli.main(
         [
@@ -1610,8 +1770,6 @@ def test_cli_returns_ready_blocked_and_discovery_failure_codes(
             "cpu",
             "--base-python",
             str(selected_python),
-            "--install-root",
-            str(tmp_path / "blocked"),
             "--shortcuts",
             "none",
         ],
@@ -1629,6 +1787,7 @@ def test_cli_returns_ready_blocked_and_discovery_failure_codes(
         ),
         disk_probe=base_services.disk_probe,
         reparse_probe=base_services.reparse_probe,
+        known_folder_probe=base_services.known_folder_probe,
     )
     failed_code = cli.main(
         [
@@ -1639,8 +1798,6 @@ def test_cli_returns_ready_blocked_and_discovery_failure_codes(
             "cuda13",
             "--base-python",
             str(selected_python),
-            "--install-root",
-            str(tmp_path / "failed"),
             "--shortcuts",
             "none",
         ],
@@ -1656,9 +1813,62 @@ def test_cli_returns_ready_blocked_and_discovery_failure_codes(
     assert blocked_document["status"] == "blocked"
     assert failed_code == 3
     assert failed_document["status"] == "discovery_failed"
-    assert not (tmp_path / "ready").exists()
-    assert not (tmp_path / "blocked").exists()
-    assert not (tmp_path / "failed").exists()
+    assert not (tmp_path / "VIPP").exists()
+
+
+def test_cli_blocks_default_cuda_root_under_non_ascii_localappdata(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    selected_python = tmp_path / "Python312" / "python.exe"
+    selected_python.parent.mkdir()
+    selected_python.touch()
+    local_app_data = tmp_path / "Profile Ångström" / "AppData" / "Local"
+    local_app_data.mkdir(parents=True)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    services = DiscoveryServices(
+        interpreter_probe=lambda path: InterpreterProbe(
+            executable=path,
+            implementation="cpython",
+            version=(3, 12, 10),
+            pointer_bits=64,
+        ),
+        package_probe=lambda _path: (),
+        nvidia_probe=_gpu,
+        disk_probe=lambda _path: 20 * 1024**3,
+        reparse_probe=lambda _path: False,
+        remote_path_probe=lambda _path: False,
+        known_folder_probe=lambda name: (
+            local_app_data if name == "local_app_data" else None
+        ),
+    )
+
+    exit_code = cli.main(
+        [
+            "plan",
+            "--mode",
+            "managed",
+            "--track",
+            "cuda13",
+            "--base-python",
+            str(selected_python),
+            "--shortcuts",
+            "none",
+        ],
+        services=services,
+        release=_release(),
+        host=HostSnapshot("win32", "Windows", "AMD64"),
+    )
+    document = json.loads(capsys.readouterr().out)
+    target = local_app_data / "VIPP" / "environments" / "cuda13"
+
+    assert exit_code == 2
+    assert document["status"] == "blocked"
+    assert "cuda13_environment_root_non_ascii" in {
+        issue["code"] for issue in document["issues"]
+    }
+    assert not target.exists()
 
 
 def test_cli_invalid_request_is_json_and_exit_two(capsys):
@@ -1713,8 +1923,7 @@ def test_module_cli_executes_without_creating_target(tmp_path):
     )
 
     document = json.loads(completed.stdout)
-    expected_code = 0 if sys.platform == "win32" else 2
-    assert completed.returncode == expected_code, completed.stderr
+    assert completed.returncode == 2, completed.stderr
     assert document["schema"] == "napari-vipp-install-plan"
     assert document["mutation_performed"] is False
     assert document["ready_for_apply"] is False
