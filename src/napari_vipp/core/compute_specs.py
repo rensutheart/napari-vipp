@@ -274,6 +274,156 @@ def _convert_dtype_spec() -> OperationComputeSpec:
     )
 
 
+def _binary_threshold_spec() -> OperationComputeSpec:
+    """Return the exact resident float32-to-bool comparison contract."""
+
+    boundary_policy_id = "strict-greater-elementwise-v1"
+    precision_policy_id = "binary-threshold-ieee-f32-exact-v1"
+    input_port = ComputePortContract(
+        0,
+        ValueKind.ARRAY,
+        port_name="image",
+        public_dtypes=("float32",),
+        internal_dtypes=("float32",),
+        accumulation_dtype="float32",
+        value_domain="ieee-float32-image-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="ieee-comparison-v1",
+        rounding_policy_id=precision_policy_id,
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    output_port = ComputePortContract(
+        0,
+        ValueKind.MASK,
+        port_name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        accumulation_dtype="bool",
+        value_domain="binary-mask-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="fixed:bool",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="finite-output-v1",
+        rounding_policy_id="mask-bitwise-v1",
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    return OperationComputeSpec(
+        operation_id="binary_threshold",
+        implementation_id="cupy-binary-threshold-f32-exact-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupy",
+        callable_ref=(
+            "napari_vipp.core.gpu.cupy_binary_threshold:binary_threshold"
+        ),
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_CUSTOM,
+        validated_environment_policy_id=(
+            "cuda-cupy-core-14.1.1-cpython312-windows-native-v1"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id="binary-threshold-f32-scalar-parameters-v1",
+        workload_policy_id="binary-threshold-f32-scalar-exact-v1",
+        parity_policy_id="mask-bitwise-v1",
+        memory_model_id="cupy-binary-threshold-memory-v1",
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        progress_policy_id="monolithic-sync-progress-v1",
+        cancellation_policy_id="monolithic-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(1, 2, 3),
+        supports_device_residency=True,
+        limitations=(
+            "float32-scalar-input-only-v1",
+            "nonfinite-authored-threshold-remains-cpu-v1",
+        ),
+    )
+
+
+def _extract_channel_spec() -> OperationComputeSpec:
+    """Return the allocation-sharing semantic channel-view contract."""
+
+    public_dtypes = ("bool", "uint8", "uint16", "float32")
+    shape_policy_id = "extract-channel-semantic-axis-v1"
+    boundary_policy_id = "semantic-channel-view-v1"
+    input_port = ComputePortContract(
+        0,
+        ValueKind.ARRAY,
+        port_name="image",
+        public_dtypes=public_dtypes,
+        internal_dtypes=("same",),
+        accumulation_dtype="same",
+        value_domain="microscopy-image-with-semantic-channel-axis-v1",
+        shape_policy_id=shape_policy_id,
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="preserve-values-v1",
+        rounding_policy_id="array-bitwise-v1",
+        overflow_policy_id="preserve-public-dtype-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="array-bitwise-v1",
+    )
+    output_port = ComputePortContract(
+        0,
+        ValueKind.IMAGE,
+        port_name="channel",
+        public_dtypes=public_dtypes,
+        internal_dtypes=("same",),
+        accumulation_dtype="same",
+        value_domain="selected-microscopy-channel-v1",
+        shape_policy_id=shape_policy_id,
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="preserve-values-v1",
+        rounding_policy_id="array-bitwise-v1",
+        overflow_policy_id="preserve-public-dtype-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="array-bitwise-v1",
+    )
+    return OperationComputeSpec(
+        operation_id="extract_channel",
+        implementation_id="cupy-extract-channel-view-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupy",
+        callable_ref="napari_vipp.core.gpu.cupy_extract_channel:extract_channel",
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_CUSTOM,
+        validated_environment_policy_id=(
+            "cuda-cupy-core-14.1.1-cpython312-windows-native-v1"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id="extract-channel-semantic-axis-parameters-v1",
+        workload_policy_id="extract-channel-semantic-axis-view-v1",
+        parity_policy_id="array-bitwise-v1",
+        memory_model_id="cupy-allocation-sharing-view-v1",
+        shape_policy_id=shape_policy_id,
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="array-bitwise-v1",
+        progress_policy_id="constant-time-view-progress-v1",
+        cancellation_policy_id="constant-time-view-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(1, 2, 3),
+        supports_device_residency=True,
+        limitations=(
+            "semantic-channel-axis-required-v1",
+            "automatic-host-entry-slice-remains-cpu-v1",
+            "allocation-sharing-view-v1",
+        ),
+    )
+
+
 def _mask_port(
     port_index: int,
     *,
@@ -572,6 +722,114 @@ def _connected_components_spec() -> OperationComputeSpec:
     )
 
 
+def _mask_cleanup_spec(operation_id: str) -> OperationComputeSpec:
+    """Return one exact, resident boolean-mask cleanup contract."""
+
+    declarations = {
+        "fill_holes": {
+            "implementation_id": "cupyx-fill-holes-all-v1",
+            "callable_ref": "napari_vipp.core.gpu.cupy_fill_holes:fill_holes",
+            "parameter_policy_id": "fill-holes-all-parameters-v1",
+            "workload_policy_id": "fill-holes-bool-all-2d-3d-v1",
+            "memory_model_id": "cupyx-fill-holes-memory-v1",
+            "boundary_policy_id": "scipy-binary-fill-holes-connectivity-v1",
+            "limitations": (
+                "bool-mask-public-v1",
+                "maximum-hole-size-zero-only-v1",
+                "int32-padded-spatial-block-under-2pow31-minus-2-v1",
+                "independent-leading-spatial-blocks-v1",
+            ),
+        },
+        "remove_small_objects": {
+            "implementation_id": "cupyx-remove-small-objects-bool-v1",
+            "callable_ref": (
+                "napari_vipp.core.gpu.cupy_remove_small_objects:"
+                "remove_small_objects"
+            ),
+            "parameter_policy_id": "remove-small-objects-bool-parameters-v1",
+            "workload_policy_id": "remove-small-objects-bool-2d-3d-v1",
+            "memory_model_id": "cupyx-remove-small-objects-memory-v1",
+            "boundary_policy_id": "scipy-connected-component-size-filter-v1",
+            "limitations": (
+                "bool-mask-public-v1",
+                "integer-label-preservation-remains-cpu-v1",
+                "int32-spatial-block-under-2pow31-minus-2-v1",
+                "independent-leading-spatial-blocks-v1",
+            ),
+        },
+    }
+    try:
+        declaration = declarations[operation_id]
+    except KeyError as exc:
+        raise ValueError(f"Unknown mask cleanup operation {operation_id!r}.") from exc
+
+    boundary_policy_id = str(declaration["boundary_policy_id"])
+    precision_policy_id = "mask-bitwise-v1"
+    input_port = ComputePortContract(
+        0,
+        ValueKind.MASK,
+        port_name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        accumulation_dtype="bool",
+        value_domain="binary-mask-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="finite-only-v1",
+        rounding_policy_id=precision_policy_id,
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    output_port = ComputePortContract(
+        0,
+        ValueKind.MASK,
+        port_name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        accumulation_dtype="bool",
+        value_domain="binary-mask-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="fixed:bool",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="finite-output-v1",
+        rounding_policy_id=precision_policy_id,
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    return OperationComputeSpec(
+        operation_id=operation_id,
+        implementation_id=str(declaration["implementation_id"]),
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref=str(declaration["callable_ref"]),
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_CUSTOM,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id=str(declaration["parameter_policy_id"]),
+        workload_policy_id=str(declaration["workload_policy_id"]),
+        parity_policy_id="mask-bitwise-v1",
+        memory_model_id=str(declaration["memory_model_id"]),
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        progress_policy_id="spatial-block-sync-progress-v1",
+        cancellation_policy_id="spatial-block-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2, 3),
+        supports_device_residency=True,
+        limitations=tuple(declaration["limitations"]),
+    )
+
+
 def _measurement_labels_port() -> ComputePortContract:
     """Return the exact resident-label input contract for basic measurements."""
 
@@ -718,10 +976,14 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _gaussian_spec(three_dimensional=False),
     _gaussian_spec(three_dimensional=True),
     _convert_dtype_spec(),
+    _binary_threshold_spec(),
+    _extract_channel_spec(),
     *richardson_lucy_compute_specs(),
     _canny_spec(),
     _otsu_spec(),
     _sigma_filter_spec(),
+    _mask_cleanup_spec("fill_holes"),
+    _mask_cleanup_spec("remove_small_objects"),
     _connected_components_spec(),
     _measurements_spec(include_intensity=False),
     _measurements_spec(include_intensity=True),

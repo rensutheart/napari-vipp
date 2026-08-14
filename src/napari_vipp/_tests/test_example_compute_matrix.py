@@ -312,7 +312,16 @@ def _execute_example(spec, sample_catalog, mode: ComputeMode):
         if mode is ComputeMode.CPU:
             assert decision.reason is DecisionReason.EXPLICIT_CPU
         elif decision.node_id not in source_node_ids:
-            assert decision.reason in safe_prefer_gpu_reasons
+            allowed_reasons = safe_prefer_gpu_reasons
+            if decision.operation_id == "extract_channel":
+                # At a host entry, CPU extraction uploads only the selected
+                # channel. Prefer GPU bypasses benchmark speed gates, but it
+                # does not force a larger full-source transfer merely to use
+                # the resident allocation-sharing view.
+                allowed_reasons = allowed_reasons | {
+                    DecisionReason.PERFORMANCE_GATE,
+                }
+            assert decision.reason in allowed_reasons
     for connection in completed.connections:
         assert connection.source_port < len(
             completed.output_ports(connection.source_id)
@@ -494,7 +503,7 @@ def test_fresh_example_cpu_and_prefer_gpu_outputs_match(spec, sample_catalog):
 
 
 def test_compute_matrix_covers_every_bundled_example():
-    assert len(EXAMPLE_WORKFLOWS) == 14
+    assert len(EXAMPLE_WORKFLOWS) == 15
     ids = [spec.id for spec in EXAMPLE_WORKFLOWS]
     filenames = [spec.filename for spec in EXAMPLE_WORKFLOWS]
     assert len(ids) == len(set(ids))
@@ -638,8 +647,7 @@ def test_full_synthetic_batch_demo_completes_in_each_compute_mode(tmp_path, mode
             continue
 
         no_implementation_nodes = {
-            "binary_threshold_1",
-            "binary_threshold_2",
+            "logical_and_1",
             "add_images_1",
         }
         assert all(

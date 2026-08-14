@@ -24,8 +24,10 @@ from napari_vipp.core.compute_contracts import (
     ValueKind,
 )
 
-RICHARDSON_LUCY_FILTER_EPSILON = 1e-8
-RICHARDSON_LUCY_MAXIMUM_ITERATIONS = 25
+RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON = 1e-12
+RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON = 1e-6
+RICHARDSON_LUCY_FILTER_EPSILON = RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON
+RICHARDSON_LUCY_MAXIMUM_ITERATIONS = 100
 RICHARDSON_LUCY_TV_FILTER_EPSILON = 1e-12
 RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS = 25
 RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS = frozenset({10, 25})
@@ -41,13 +43,21 @@ RICHARDSON_LUCY_MEMORY_MODEL_IDS = frozenset(
 )
 RICHARDSON_LUCY_POLICY_IDS = MappingProxyType(
     {
-        "parameter": frozenset({"rl-parameters-v1", "rl-tv-parameters-v1"}),
-        "workload": frozenset({"rl-finite-f32-v1", "rl-tv-finite-f32-v1"}),
-        "parity": frozenset({"rl-float32-tolerance-v1", "rl-tv-float32-tolerance-v1"}),
+        "parameter": frozenset({"rl-parameters-v2", "rl-tv-parameters-v2"}),
+        "workload": frozenset({"rl-finite-f32-v2", "rl-tv-finite-f32-v2"}),
+        "parity": frozenset(
+            {
+                "rl-scientific-equivalence-v2",
+                "rl-tv-scientific-equivalence-v2",
+            }
+        ),
         "memory": RICHARDSON_LUCY_MEMORY_MODEL_IDS,
         "conversion": frozenset({"cupyx-rl-float32-identity-v1"}),
         "rounding": frozenset(
-            {"rl-float32-tolerance-v1", "rl-tv-float32-tolerance-v1"}
+            {
+                "rl-scientific-equivalence-v2",
+                "rl-tv-scientific-equivalence-v2",
+            }
         ),
         "overflow": frozenset({"finite-float32-cleanup-v1"}),
         "boundary": frozenset(
@@ -77,6 +87,7 @@ class RegionRejection:
 
     reason_text: str
     fallback_allowed: bool = True
+    exact_workload_test_allowed: bool = False
 
 
 def richardson_lucy_compute_specs() -> tuple[OperationComputeSpec, ...]:
@@ -92,7 +103,7 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
         "internal_dtypes": ("float32",),
         "conversion_policy_id": "cupyx-rl-float32-identity-v1",
         "nonfinite_policy_id": "finite-only-v1",
-        "rounding_policy_id": "rl-float32-tolerance-v1",
+        "rounding_policy_id": "rl-scientific-equivalence-v2",
         "overflow_policy_id": "finite-float32-cleanup-v1",
         "boundary_policy_id": "scipy-signal-zero-fill-same-v1",
         "precision_policy_id": "rl-float32-v1",
@@ -110,7 +121,7 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
         output_dtype_policy_id="dtype-same-v1",
         conversion_policy_id="cupyx-rl-float32-identity-v1",
         nonfinite_policy_id="finite-only-v1",
-        rounding_policy_id="rl-float32-tolerance-v1",
+        rounding_policy_id="rl-scientific-equivalence-v2",
         overflow_policy_id="finite-float32-cleanup-v1",
         boundary_policy_id="scipy-signal-zero-fill-same-v1",
         precision_policy_id="rl-float32-v1",
@@ -127,7 +138,7 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
         output_dtype_policy_id="fixed:float32",
         conversion_policy_id="cupyx-rl-float32-identity-v1",
         nonfinite_policy_id="finite-output-v1",
-        rounding_policy_id="rl-float32-tolerance-v1",
+        rounding_policy_id="rl-scientific-equivalence-v2",
         overflow_policy_id="finite-float32-cleanup-v1",
         boundary_policy_id="scipy-signal-zero-fill-same-v1",
         precision_policy_id="rl-float32-v1",
@@ -147,9 +158,9 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
         ),
         input_ports=(image_input, psf_input),
         output_ports=(image_output,),
-        parameter_policy_id="rl-parameters-v1",
-        workload_policy_id="rl-finite-f32-v1",
-        parity_policy_id="rl-float32-tolerance-v1",
+        parameter_policy_id="rl-parameters-v2",
+        workload_policy_id="rl-finite-f32-v2",
+        parity_policy_id="rl-scientific-equivalence-v2",
         memory_model_id="cupyx-richardson-lucy-fft-memory-v2",
         shape_policy_id="shape-preserving-v1",
         boundary_policy_id="scipy-signal-zero-fill-same-v1",
@@ -162,8 +173,8 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
         limitations=(
             "finite-only",
             "float32-only-v1",
-            "filter-epsilon-exactly-1e-8-v1",
-            "iterations-at-most-25-v1",
+            "filter-epsilon-1e-12-through-1e-6-v2",
+            "iterations-at-most-100-v2",
             "odd-psf-extents-v1",
             "default-safe-options-v1",
         ),
@@ -178,7 +189,7 @@ def _richardson_lucy_tv_spec(
     def tv_port(port: ComputePortContract) -> ComputePortContract:
         return replace(
             port,
-            rounding_policy_id="rl-tv-float32-tolerance-v1",
+            rounding_policy_id="rl-tv-scientific-equivalence-v2",
             boundary_policy_id=boundary_policy_id,
             precision_policy_id="rl-tv-float32-v1",
         )
@@ -192,17 +203,17 @@ def _richardson_lucy_tv_spec(
         ),
         input_ports=tuple(tv_port(port) for port in ordinary.input_ports),
         output_ports=tuple(tv_port(port) for port in ordinary.output_ports),
-        parameter_policy_id="rl-tv-parameters-v1",
-        workload_policy_id="rl-tv-finite-f32-v1",
-        parity_policy_id="rl-tv-float32-tolerance-v1",
+        parameter_policy_id="rl-tv-parameters-v2",
+        workload_policy_id="rl-tv-finite-f32-v2",
+        parity_policy_id="rl-tv-scientific-equivalence-v2",
         memory_model_id="cupyx-richardson-lucy-tv-fft-memory-v1",
         boundary_policy_id=boundary_policy_id,
         precision_policy_id="rl-tv-float32-v1",
         limitations=(
             "finite-only",
             "float32-only-v1",
-            "validated-rl-tv-profiles-v1",
-            "lambda-zero-iterations-at-most-25-v1",
+            "validated-rl-tv-profiles-v2",
+            "lambda-zero-iterations-at-most-100-v2",
             "positive-tv-iterations-10-or-25-v1",
             "odd-psf-extents-v1",
             "default-safe-options-v1",
@@ -251,7 +262,8 @@ def evaluate_richardson_lucy_region(
         array_facts,
         operation_name="Richardson-Lucy",
         maximum_iterations=RICHARDSON_LUCY_MAXIMUM_ITERATIONS,
-        admitted_filter_epsilon=RICHARDSON_LUCY_FILTER_EPSILON,
+        minimum_filter_epsilon=RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON,
+        maximum_filter_epsilon=RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON,
     )
 
 
@@ -273,15 +285,25 @@ def evaluate_richardson_lucy_tv_region(
         workload,
         array_facts,
         operation_name="Richardson-Lucy TV",
-        maximum_iterations=RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS,
-        admitted_filter_epsilon=(
-            RICHARDSON_LUCY_FILTER_EPSILON
+        maximum_iterations=(
+            RICHARDSON_LUCY_MAXIMUM_ITERATIONS
+            if lambda_zero
+            else RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS
+        ),
+        minimum_filter_epsilon=(
+            RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON
+            if lambda_zero
+            else RICHARDSON_LUCY_TV_FILTER_EPSILON
+        ),
+        maximum_filter_epsilon=(
+            RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON
             if lambda_zero
             else RICHARDSON_LUCY_TV_FILTER_EPSILON
         ),
     )
-    if common is not None:
+    if common is not None and not common.exact_workload_test_allowed:
         return common
+    soft_rejections = [] if common is None else [common]
 
     for parameter_name, default, display_name in (
         ("tv_epsilon", RICHARDSON_LUCY_TV_EPSILON, "TV epsilon"),
@@ -297,17 +319,20 @@ def evaluate_richardson_lucy_tv_region(
                 fallback_allowed=False,
             )
     if lambda_zero:
-        return None
+        return _combined_soft_rejection(soft_rejections)
 
     iterations = parameters.get("iterations", 25)
     if iterations not in RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS:
         reviewed = ", ".join(
             str(value) for value in sorted(RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS)
         )
-        return _reject(
-            "The initial positive-TV GPU region is validated only for "
-            f"{reviewed} iterations. This authored iteration count remains on "
-            "CPU until the nonlinear trajectory matrix passes."
+        soft_rejections.append(
+            _reject(
+                "The initial positive-TV GPU region is validated only for "
+                f"{reviewed} iterations. This authored iteration count remains "
+                "on CPU until exact-workload scientific equivalence is tested.",
+                exact_workload_test_allowed=True,
+            )
         )
 
     image_shape = workload.input_shapes[0]
@@ -321,10 +346,15 @@ def evaluate_richardson_lucy_tv_region(
             fallback_allowed=False,
         )
     if regularization != RICHARDSON_LUCY_TV_REGULARIZATION:
-        return _reject(
-            "The initial positive-TV GPU region is validated only for the shipped "
-            f"TV regularization value {RICHARDSON_LUCY_TV_REGULARIZATION:g}. This "
-            "authored value remains on CPU until the wider numerical matrix passes."
+        soft_rejections.append(
+            _reject(
+                "The initial positive-TV GPU region is validated only for the "
+                "shipped TV regularization value "
+                f"{RICHARDSON_LUCY_TV_REGULARIZATION:g}. This authored value "
+                "remains on CPU until exact-workload scientific equivalence is "
+                "tested.",
+                exact_workload_test_allowed=True,
+            )
         )
     admitted_values = (
         ("tv_epsilon", RICHARDSON_LUCY_TV_EPSILON, "TV epsilon"),
@@ -342,12 +372,16 @@ def evaluate_richardson_lucy_tv_region(
                 fallback_allowed=False,
             )
         if value != default:
-            return _reject(
-                "The initial Richardson-Lucy TV GPU region is validated only "
-                f"for the shipped {display_name} value {default:g}. This authored "
-                "value remains on CPU until the wider numerical matrix passes."
+            soft_rejections.append(
+                _reject(
+                    "The initial Richardson-Lucy TV GPU region is validated only "
+                    f"for the shipped {display_name} value {default:g}. This "
+                    "authored value remains on CPU until exact-workload scientific "
+                    "equivalence is tested.",
+                    exact_workload_test_allowed=True,
+                )
             )
-    return None
+    return _combined_soft_rejection(soft_rejections)
 
 
 def _deconvolution_region_policy(
@@ -356,7 +390,8 @@ def _deconvolution_region_policy(
     *,
     operation_name: str,
     maximum_iterations: int,
-    admitted_filter_epsilon: float,
+    minimum_filter_epsilon: float,
+    maximum_filter_epsilon: float,
 ) -> RegionRejection | None:
     if len(workload.input_shapes) != 2 or len(workload.input_dtypes) != 2:
         return _reject(
@@ -419,12 +454,16 @@ def _deconvolution_region_policy(
             f"{operation_name} iterations must be an integer.",
             fallback_allowed=False,
         )
+    soft_rejections: list[RegionRejection] = []
     if not 1 <= iterations <= maximum_iterations:
-        return _reject(
-            f"{operation_name} GPU execution is initially validated for 1 through "
-            f"{maximum_iterations} iterations. Longer authored "
-            "runs remain on CPU because iterative cross-library roundoff has not "
-            "passed the production parity gate."
+        soft_rejections.append(
+            _reject(
+                f"{operation_name} GPU execution is broadly prequalified for 1 "
+                f"through {maximum_iterations} iterations. This authored count "
+                "can still be benchmarked on its exact image and PSF before GPU "
+                "use.",
+                exact_workload_test_allowed=True,
+            )
         )
     safety_flags = (
         "normalize_psf",
@@ -450,12 +489,25 @@ def _deconvolution_region_policy(
             + "."
         )
     filter_epsilon = _finite_number(parameters.get("filter_epsilon", 1e-12))
-    if filter_epsilon != admitted_filter_epsilon:
+    if filter_epsilon is None or filter_epsilon < 0:
         return _reject(
-            f"{operation_name} GPU execution is initially validated only for "
-            f"filter epsilon exactly {admitted_filter_epsilon:g}. Other "
-            "authored values remain on CPU because threshold-branch behavior "
-            "is not monotonic across the tested adversarial matrix."
+            f"{operation_name} filter epsilon must be finite and non-negative.",
+            fallback_allowed=False,
+        )
+    if not minimum_filter_epsilon <= filter_epsilon <= maximum_filter_epsilon:
+        interval = (
+            f"exactly {minimum_filter_epsilon:g}"
+            if minimum_filter_epsilon == maximum_filter_epsilon
+            else f"{minimum_filter_epsilon:g} through {maximum_filter_epsilon:g}"
+        )
+        soft_rejections.append(
+            _reject(
+                f"{operation_name} GPU execution is broadly prequalified for "
+                f"filter epsilon {interval}. This authored value can still be "
+                "benchmarked against CPU on the exact image and PSF before GPU "
+                "use.",
+                exact_workload_test_allowed=True,
+            )
         )
     if len(array_facts) == 2:
         psf_facts = array_facts[1]
@@ -471,7 +523,24 @@ def _deconvolution_region_policy(
                 "The finite PSF has no positive mass above the validation floor.",
                 fallback_allowed=False,
             )
-    return None
+    return _combined_soft_rejection(soft_rejections)
+
+
+def _combined_soft_rejection(
+    rejections: list[RegionRejection],
+) -> RegionRejection | None:
+    """Return accumulated soft boundaries only after all hard gates pass."""
+
+    if not rejections:
+        return None
+    if any(not item.exact_workload_test_allowed for item in rejections):
+        raise ValueError("Only soft exact-workload rejections may be combined.")
+    reasons = tuple(dict.fromkeys(item.reason_text for item in rejections))
+    return RegionRejection(
+        " ".join(reasons),
+        fallback_allowed=all(item.fallback_allowed for item in rejections),
+        exact_workload_test_allowed=True,
+    )
 
 
 def estimate_richardson_lucy_memory(
@@ -630,13 +699,24 @@ def _dtype_name(value: object) -> str:
         return str(value).strip()
 
 
-def _reject(reason_text: str, *, fallback_allowed: bool = True) -> RegionRejection:
-    return RegionRejection(reason_text, fallback_allowed=fallback_allowed)
+def _reject(
+    reason_text: str,
+    *,
+    fallback_allowed: bool = True,
+    exact_workload_test_allowed: bool = False,
+) -> RegionRejection:
+    return RegionRejection(
+        reason_text,
+        fallback_allowed=fallback_allowed,
+        exact_workload_test_allowed=exact_workload_test_allowed,
+    )
 
 
 __all__ = [
     "RICHARDSON_LUCY_FILTER_EPSILON",
+    "RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON",
     "RICHARDSON_LUCY_MAXIMUM_ITERATIONS",
+    "RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON",
     "RICHARDSON_LUCY_MEMORY_MODEL_IDS",
     "RICHARDSON_LUCY_POLICY_IDS",
     "RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR",

@@ -49,6 +49,14 @@
       }
     },
     {
+      "id": "convert_dtype_1",
+      "operation_id": "convert_dtype",
+      "params": {
+        "output_dtype": "float32",
+        "scaling": "preserve"
+      }
+    },
+    {
       "id": "richardson_lucy_deconvolution_1",
       "operation_id": "richardson_lucy_deconvolution",
       "params": {
@@ -87,6 +95,12 @@
     },
     {
       "source": "input",
+      "target": "convert_dtype_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "convert_dtype_1",
       "target": "richardson_lucy_deconvolution_1",
       "target_port": 0,
       "source_port": 0
@@ -99,7 +113,7 @@
       "tunnel": "Prepared 3D PSF"
     },
     {
-      "source": "input",
+      "source": "convert_dtype_1",
       "target": "richardson_lucy_tv_deconvolution_1",
       "target_port": 0,
       "source_port": 0
@@ -123,6 +137,7 @@
     "input": [0.0, 240.0],
     "input_2": [0.0, 560.0],
     "prepare_validate_psf_1": [400.0, 560.0],
+    "convert_dtype_1": [400.0, 160.0],
     "richardson_lucy_deconvolution_1": [820.0, 160.0],
     "richardson_lucy_tv_deconvolution_1": [820.0, 540.0]
   },
@@ -140,6 +155,13 @@
       "position": [1150.0, 610.0],
       "width": 340.0,
       "attached_node": "richardson_lucy_tv_deconvolution_1"
+    },
+    {
+      "id": "note_3",
+      "text": "One shared Preserve conversion makes the uint16 sample float32 before both restoration branches. It does not rescale intensities or change either branch's 25 iterations or 1e-12 filter epsilon. GPU eligibility and CPU/GPU agreement do not establish that the restored image is scientifically valid.",
+      "position": [0.0, 80.0],
+      "width": 390.0,
+      "attached_node": "convert_dtype_1"
     }
   ],
   "view": {

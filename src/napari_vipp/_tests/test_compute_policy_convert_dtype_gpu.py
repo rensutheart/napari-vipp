@@ -83,6 +83,17 @@ def test_lossless_integer_to_float32_preserve_is_admitted_without_fact_scan(
     assert not decision.requires_complete_facts
 
 
+def test_non_native_uint16_remains_a_safe_authoritative_cpu_conversion() -> None:
+    decision = evaluate_candidate_workload_support(
+        _gpu_spec(),
+        _workload(dtype=">u2"),
+    )
+
+    assert not decision.supported
+    assert decision.fallback_allowed
+    assert "native-endian" in decision.reason_text
+
+
 @pytest.mark.parametrize(
     ("dtype", "output_dtype", "scaling"),
     (

@@ -29,6 +29,7 @@ from napari_vipp.core.compute_policy import (
     estimate_candidate_memory,
     evaluate_auto_performance,
     evaluate_candidate_environment_support,
+    evaluate_candidate_exact_workload_test_support,
     evaluate_candidate_support,
     evaluate_candidate_workload_support,
     propagate_output_descriptors,
@@ -999,6 +1000,7 @@ def _rl_workload(
     psf_dtype="float32",
     spatial_ndim=2,
     iterations=25,
+    filter_epsilon=1e-8,
 ):
     return WorkloadDescriptor(
         "rl-node",
@@ -1012,7 +1014,7 @@ def _rl_workload(
             ("clip_negative_input", True),
             ("clip_output_negative", True),
             ("preserve_input_scale", True),
-            ("filter_epsilon", 1e-8),
+            ("filter_epsilon", filter_epsilon),
         ),
         resolved_spatial_ndim=spatial_ndim,
     )
@@ -1118,45 +1120,122 @@ def test_richardson_lucy_rejects_invalid_psf_geometry_and_empty_mass():
     assert "positive mass" in empty_psf.reason_text
 
 
-@pytest.mark.parametrize("epsilon", (1e-10, 1e-7, 1e-6))
-def test_richardson_lucy_rejects_epsilon_outside_validated_point(epsilon):
+@pytest.mark.parametrize("epsilon", (1e-12, 1e-10, 1e-8, 1e-7, 1e-6))
+def test_richardson_lucy_admits_checkpoint_backed_epsilon_envelope(epsilon):
     spec = _builtin_spec("richardson_lucy_deconvolution")
 
-    outside_point = evaluate_candidate_support(
+    decision = evaluate_candidate_support(
         spec,
-        replace(
-            _rl_workload(),
-            parameters=tuple(
-                (name, epsilon if name == "filter_epsilon" else value)
-                for name, value in _rl_workload().parameters
-            ),
+        _rl_workload(filter_epsilon=epsilon),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+
+    assert decision.supported
+
+
+@pytest.mark.parametrize("epsilon", (0.0, 1e-5))
+def test_richardson_lucy_outside_epsilon_envelope_requires_exact_workload_test(
+    epsilon,
+):
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+    workload = _rl_workload(filter_epsilon=epsilon)
+
+    normal = evaluate_candidate_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+    exact = evaluate_candidate_exact_workload_test_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+
+    assert not normal.supported
+    assert normal.fallback_allowed
+    assert normal.exact_workload_test_allowed
+    assert "1e-12 through 1e-06" in normal.reason_text
+    assert exact.supported
+    assert exact.exact_workload_test_allowed
+    assert "exact CPU/GPU" in exact.reason_text
+
+
+@pytest.mark.parametrize("iterations", (26, 50, 100))
+def test_richardson_lucy_admits_broader_iteration_envelope(iterations):
+    decision = evaluate_candidate_support(
+        _builtin_spec("richardson_lucy_deconvolution"),
+        _rl_workload(iterations=iterations),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+
+    assert decision.supported
+
+
+def test_richardson_lucy_above_iteration_envelope_requires_exact_workload_test():
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+    workload = _rl_workload(iterations=101)
+    normal = evaluate_candidate_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+    exact = evaluate_candidate_exact_workload_test_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+
+    assert not normal.supported
+    assert normal.fallback_allowed
+    assert normal.exact_workload_test_allowed
+    assert "1 through 100" in normal.reason_text
+    assert exact.supported
+    assert exact.exact_workload_test_allowed
+
+
+def test_richardson_lucy_soft_iteration_boundary_cannot_bypass_safety_flags():
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+    base = _rl_workload(iterations=101)
+    workload = replace(
+        base,
+        parameters=tuple(
+            (name, False if name == "preserve_input_scale" else value)
+            for name, value in base.parameters
         ),
-        _cuda_environment(),
-        allow_experimental=True,
-        array_facts=_rl_facts(),
     )
 
-    assert not outside_point.supported
-    assert outside_point.fallback_allowed
-    assert "exactly 1e-08" in outside_point.reason_text
-    assert "not monotonic" in outside_point.reason_text
-
-
-def test_richardson_lucy_rejects_iterations_above_validated_parity_region():
-    spec = _builtin_spec("richardson_lucy_deconvolution")
-
-    too_many = evaluate_candidate_support(
+    normal = evaluate_candidate_support(
         spec,
-        _rl_workload(iterations=26),
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+    exact = evaluate_candidate_exact_workload_test_support(
+        spec,
+        workload,
         _cuda_environment(),
         allow_experimental=True,
         array_facts=_rl_facts(),
     )
 
-    assert not too_many.supported
-    assert too_many.fallback_allowed
-    assert "1 through 25" in too_many.reason_text
-    assert "roundoff" in too_many.reason_text
+    assert not normal.supported
+    assert not normal.exact_workload_test_allowed
+    assert "preserve_input_scale" in normal.reason_text
+    assert not exact.supported
+    assert not exact.exact_workload_test_allowed
 
 
 def test_richardson_lucy_rejects_even_psf_and_nondefault_safety_options():
@@ -1184,10 +1263,21 @@ def test_richardson_lucy_rejects_even_psf_and_nondefault_safety_options():
 
     assert not even_psf.supported
     assert even_psf.fallback_allowed
+    assert not even_psf.exact_workload_test_allowed
     assert "odd PSF extents" in even_psf.reason_text
     assert not unsafe_options.supported
     assert unsafe_options.fallback_allowed
+    assert not unsafe_options.exact_workload_test_allowed
     assert "preserve_input_scale" in unsafe_options.reason_text
+
+    even_exact = evaluate_candidate_exact_workload_test_support(
+        spec,
+        _rl_workload(psf_shape=(8, 9)),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(psf_shape=(8, 9)),
+    )
+    assert not even_exact.supported
 
 
 def test_richardson_lucy_projects_fixed_float32_output_and_conservative_memory():
@@ -1315,6 +1405,7 @@ def test_richardson_lucy_tv_positive_profile_admits_only_measured_iterations():
         )
         assert not decision.supported
         assert decision.fallback_allowed
+        assert decision.exact_workload_test_allowed
         assert "10, 25 iterations" in decision.reason_text
 
 
@@ -1352,6 +1443,7 @@ def test_richardson_lucy_tv_rejects_parameters_outside_initial_profile(
 
     assert not decision.supported
     assert decision.fallback_allowed
+    assert decision.exact_workload_test_allowed
     assert text in decision.reason_text
 
 
@@ -1378,12 +1470,46 @@ def test_richardson_lucy_tv_rejects_singleton_gradient_axis_and_long_runs():
     assert "at least two samples" in singleton_decision.reason_text
     assert not long_run.supported
     assert long_run.fallback_allowed
+    assert long_run.exact_workload_test_allowed
     assert "1 through 25" in long_run.reason_text
 
 
-def test_richardson_lucy_tv_lambda_zero_inherits_the_ordinary_rl_profile():
+def test_richardson_lucy_tv_soft_iteration_boundary_cannot_bypass_geometry():
     spec = _builtin_spec("richardson_lucy_tv_deconvolution")
-    workload = _rl_tv_workload()
+    workload = _rl_tv_workload(
+        image_shape=(3, 1, 64),
+        psf_shape=(1, 9),
+        iterations=26,
+    )
+    facts = _rl_facts(image_shape=(3, 1, 64), psf_shape=(1, 9))
+
+    normal = evaluate_candidate_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=facts,
+    )
+    exact = evaluate_candidate_exact_workload_test_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=facts,
+    )
+
+    assert not normal.supported
+    assert not normal.fallback_allowed
+    assert not normal.exact_workload_test_allowed
+    assert "at least two samples" in normal.reason_text
+    assert not exact.supported
+    assert not exact.fallback_allowed
+    assert not exact.exact_workload_test_allowed
+
+
+def test_richardson_lucy_tv_lambda_zero_inherits_broad_ordinary_rl_profile():
+    spec = _builtin_spec("richardson_lucy_tv_deconvolution")
+    workload = _rl_tv_workload(iterations=100)
     lambda_zero = replace(
         workload,
         parameters=tuple(
@@ -1391,7 +1517,7 @@ def test_richardson_lucy_tv_lambda_zero_inherits_the_ordinary_rl_profile():
                 name,
                 0.0
                 if name == "tv_regularization"
-                else 1e-8
+                else 1e-12
                 if name == "filter_epsilon"
                 else 1e-3
                 if name == "tv_epsilon"
@@ -1413,7 +1539,7 @@ def test_richardson_lucy_tv_lambda_zero_inherits_the_ordinary_rl_profile():
     tv_estimate = estimate_candidate_memory(spec, lambda_zero)
     ordinary_estimate = estimate_candidate_memory(
         _builtin_spec("richardson_lucy_deconvolution"),
-        _rl_workload(),
+        _rl_workload(iterations=100, filter_epsilon=1e-12),
     )
 
     assert accepted.supported

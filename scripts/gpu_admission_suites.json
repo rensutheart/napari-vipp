@@ -57,6 +57,20 @@
       "library_id": "cupyx"
     },
     {
+      "operation_id": "binary_threshold",
+      "implementation_id": "cupy-binary-threshold-f32-exact-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupy"
+    },
+    {
+      "operation_id": "extract_channel",
+      "implementation_id": "cupy-extract-channel-view-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupy"
+    },
+    {
       "operation_id": "richardson_lucy_deconvolution",
       "implementation_id": "rl-cupy-f32-v1",
       "implementation_version": "1",
@@ -94,6 +108,20 @@
     {
       "operation_id": "label_connected_components",
       "implementation_id": "cupyx-connected-components-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "fill_holes",
+      "implementation_id": "cupyx-fill-holes-all-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "remove_small_objects",
+      "implementation_id": "cupyx-remove-small-objects-bool-v1",
       "implementation_version": "1",
       "runtime_id": "cuda-cupy",
       "library_id": "cupyx"
@@ -191,7 +219,7 @@
       },
       "artifact": "rl-admission.json",
       "artifact_schema": "napari-vipp-cupy-rl-admission-evidence",
-      "artifact_schema_version": 1
+      "artifact_schema_version": 2
     },
     {
       "id": "rl-performance-evidence",
@@ -237,7 +265,7 @@
       },
       "artifact": "rl-tv-admission.json",
       "artifact_schema": "napari-vipp-cupy-rl-tv-admission-evidence",
-      "artifact_schema_version": 1
+      "artifact_schema_version": 2
     },
     {
       "id": "rl-tv-performance-evidence",
@@ -350,6 +378,51 @@
       "artifact_schema_version": null
     },
     {
+      "id": "segmentation-bridge-evidence",
+      "kind": "evidence",
+      "implementations": [
+        "binary_threshold::cupy-binary-threshold-f32-exact-v1",
+        "extract_channel::cupy-extract-channel-view-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata",
+        "input_integrity", "memory", "cancellation", "cleanup", "fallback",
+        "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_segmentation_bridge.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_segmentation_bridge.py", "--profile", "quick", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_segmentation_bridge.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "segmentation-bridge.json",
+      "artifact_schema": "napari-vipp-cupy-segmentation-bridge-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "segmentation-bridge-provider-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "binary_threshold::cupy-binary-threshold-f32-exact-v1",
+        "extract_channel::cupy-extract-channel-view-v1"
+      ],
+      "facets": [
+        "metadata", "input_integrity", "cancellation", "cleanup",
+        "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py",
+        "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py", "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py", "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
       "id": "sigma-evidence",
       "kind": "evidence",
       "implementations": ["sigma_filter::cupy-sigma-filter-v1"],
@@ -393,6 +466,69 @@
       "profile_commands": {
         "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_connected_components_provider.py"],
         "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_connected_components_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "mask-cleanup-evidence",
+      "kind": "evidence",
+      "implementations": [
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata",
+        "input_integrity", "memory", "cancellation", "cleanup", "fallback",
+        "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_mask_cleanup.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_mask_cleanup.py", "--profile", "quick", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_mask_cleanup.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "mask-cleanup.json",
+      "artifact_schema": "napari-vipp-cupyx-mask-cleanup-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "mask-cleanup-provider-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1"
+      ],
+      "facets": ["adversarial_workloads", "input_integrity", "cancellation"],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_fill_holes_provider.py",
+        "src/napari_vipp/_tests/test_gpu_remove_small_objects_provider.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_fill_holes_provider.py", "src/napari_vipp/_tests/test_gpu_remove_small_objects_provider.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_fill_holes_provider.py", "src/napari_vipp/_tests/test_gpu_remove_small_objects_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "mask-cleanup-execution-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "metadata", "input_integrity", "cleanup",
+        "provenance"
+      ],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"]
       },
       "artifact": null,
       "artifact_schema": null,

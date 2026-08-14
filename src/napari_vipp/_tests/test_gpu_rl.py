@@ -20,8 +20,7 @@ from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.richardson_lucy import (
     richardson_lucy_deconvolution as cpu_rl,
 )
-
-RL_FLOAT32_NRMSE_LIMIT = 2e-6
+from napari_vipp.core.richardson_lucy_parity import richardson_lucy_float32_parity
 
 
 class _FakeStream:
@@ -358,6 +357,25 @@ def test_real_gpu_float32_parity_and_residency(
     _assert_float32_parity(expected, real_cupy.asnumpy(output))
 
 
+def test_real_gpu_broad_envelope_checkpoint_at_100_iterations(real_cupy):
+    image = _image((19, 23), seed=557)
+    psf = _psf((5, 7), seed=563)
+    kwargs = {
+        "spatial_mode": "2D YX",
+        "iterations": 100,
+        "filter_epsilon": 1e-12,
+    }
+
+    expected = cpu_rl([image, psf], **kwargs)
+    output = cupy_rl.richardson_lucy_deconvolution(
+        [real_cupy.asarray(image), real_cupy.asarray(psf)],
+        **kwargs,
+    )
+    real_cupy.cuda.get_current_stream().synchronize()
+
+    _assert_float32_parity(expected, real_cupy.asnumpy(output))
+
+
 def test_real_gpu_progress_is_synchronized_and_cancellable(real_cupy):
     image = real_cupy.asarray(_image((2, 13, 15), seed=601))
     psf = real_cupy.asarray(_psf((5, 5), seed=607))
@@ -484,23 +502,5 @@ def test_real_gpu_512_fft_peak_fits_versioned_memory_estimate(real_cupy):
 
 
 def _assert_float32_parity(expected: np.ndarray, actual: np.ndarray) -> None:
-    assert actual.shape == expected.shape
-    assert actual.dtype == expected.dtype == np.dtype(np.float32)
-    assert np.isfinite(actual).all()
-    expected64 = expected.astype(np.float64)
-    actual64 = actual.astype(np.float64)
-    difference = actual64 - expected64
-    peak = float(np.max(np.abs(expected64), initial=0.0))
-    max_abs = float(np.max(np.abs(difference), initial=0.0))
-    max_abs_limit = 1e-6 + 5e-6 * peak
-    denominator = max(
-        float(np.linalg.norm(expected64.ravel())),
-        float(np.sqrt(expected64.size) * 1e-12),
-    )
-    nrmse = float(np.linalg.norm(difference.ravel()) / denominator)
-    assert nrmse <= RL_FLOAT32_NRMSE_LIMIT, (
-        f"Richardson-Lucy NRMSE {nrmse:.9g} exceeds {RL_FLOAT32_NRMSE_LIMIT:.9g}."
-    )
-    assert max_abs <= max_abs_limit, (
-        f"Richardson-Lucy max abs error {max_abs:.9g} exceeds {max_abs_limit:.9g}."
-    )
+    result = richardson_lucy_float32_parity(expected, actual)
+    assert result.passed, result.detail

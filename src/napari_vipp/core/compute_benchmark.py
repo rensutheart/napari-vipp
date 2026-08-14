@@ -382,6 +382,7 @@ class NodeBenchmarkRequest:
         repr=False,
         compare=False,
     )
+    scientific_contract_digest: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.workload, WorkloadDescriptor):
@@ -392,6 +393,7 @@ class NodeBenchmarkRequest:
             raise TypeError("bind_operation_progress must be callable or None.")
         environment = str(self.environment_fingerprint).strip()
         policy = str(self.benchmark_policy_id).strip()
+        scientific_contract = str(self.scientific_contract_digest).strip()
         if not environment or not policy:
             raise ValueError(
                 "environment_fingerprint and benchmark_policy_id must not be empty."
@@ -464,6 +466,11 @@ class NodeBenchmarkRequest:
             raise ValueError("benchmark implementation IDs must be unique.")
         object.__setattr__(self, "environment_fingerprint", environment)
         object.__setattr__(self, "benchmark_policy_id", policy)
+        object.__setattr__(
+            self,
+            "scientific_contract_digest",
+            scientific_contract,
+        )
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(self, "device_id", device_id)
         if budget is not None:
@@ -502,6 +509,14 @@ class NodeBenchmarkRequest:
                 else None
             ),
         }
+        if self.scientific_contract_digest:
+            # Production adapters bind the parity/workload/precision contract
+            # separately from persisted record schema. An older record whose
+            # implementation token happens to match therefore cannot survive a
+            # scientific-policy revision.
+            effective_profile["scientific_contract_digest"] = (
+                self.scientific_contract_digest
+            )
         if self.adaptive_candidate_stopping:
             # Keep the legacy/non-adaptive exact identity stable.  Only the
             # opt-in censored policy needs a distinct key.

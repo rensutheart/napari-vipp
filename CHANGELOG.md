@@ -15,6 +15,61 @@
   trade-off; **Add conversion** inserts a normal visible node on the affected
   input only, with one-step Undo and no silent change to shared branches.
 
+#### Richardson-Lucy Backend Agreement
+
+- Versioned the ordinary RL and RL-TV CPU/GPU comparison as the explicit
+  `rl-scientific-equivalence-v2` / `rl-tv-scientific-equivalence-v2` policy:
+  equal shape and `float32` dtype, identical finite masks, completely finite
+  and nonnegative clipped outputs, NRMSE no greater than `0.005`, and maximum
+  absolute error no greater than `1e-6 + 0.005 * CPU reference peak`.
+- The former `2e-6` near-identity result and maximum-ULP observations remain
+  diagnostics only. The 0.5% limits establish backend agreement against VIPP's
+  CPU implementation; they are not a universal image-quality threshold and do
+  not validate the PSF, iteration count, recovered resolution, or biological
+  interpretation.
+- Expanded ordinary RL's checkpoint-backed, odd-PSF/default-safe envelope to
+  finite authored `filter_epsilon` values from `1e-12` through `1e-6` and 1
+  through 100 iterations; lambda-zero RL-TV inherits it. Exact-workload
+  comparison still runs before optimizer selection, and VIPP never rewrites
+  epsilon or iteration count to qualify a GPU call. Positive-TV runs retain
+  their narrow shipped-profile points.
+- Updated the bundled 3D RL/RL-TV comparison so one visible `float32` Preserve
+  conversion feeds both branches without rescaling the sample. Both branches
+  retain 25 iterations and `filter_epsilon=1e-12`.
+
+#### A Connected GPU Segmentation Path
+
+- Added reviewed Custom/Prefer-GPU implementations for **Binary Threshold**
+  on scalar `float32` images and **Extract Channel** on explicitly described
+  channel axes. Binary Threshold creates an exact resident boolean mask;
+  Extract Channel exposes the selected channel as an allocation-sharing GPU
+  view when its input is already resident.
+- Prefer GPU now keeps a host-entry Extract Channel on CPU so VIPP uploads only
+  the selected channel, rather than moving and retaining the complete
+  multichannel source merely to perform a cheap slice. An explicit Custom GPU
+  choice can still request whole-input residency.
+- Added the annotated **Portable GPU Segmentation Bridge** example, which runs
+  from Extract Channel through the exact Preserve conversion, Gaussian Blur,
+  Binary Threshold, boolean **Remove Small Objects**, **Fill Holes**, and
+  Connected Components while remaining usable with transparent CPU fallback.
+- Added reviewed Custom/Prefer-GPU CuPyX implementations for boolean **Remove
+  Small Objects** in resolved 2D/3D Face/Full connectivity regions and **Fill
+  Holes** in the exact `max_hole_size = 0` region. Integer-label cleanup and
+  bounded-hole-size cleanup remain on the authoritative CPU path with a visible
+  explanation.
+
+#### Results You Can Actually Read
+
+- **Find fastest pipeline** now keeps a completed comparison visible even when
+  CPU and GPU are too close to name a safe winner. In that case the current
+  settings stay unchanged, but the scientific checks and measured timings
+  remain available for inspection.
+- Replaced the dense one-row-per-node timing cell with a grouped result view:
+  each node has one clear heading and a separate subrow for every tested CPU,
+  CuPy, or cuCIM implementation. The compact view emphasizes total time,
+  scientific agreement, and the outcome; optional details expose compute time,
+  data movement, first-run cost, memory, and evidence provenance.
+
 ### Bug Fixes
 
 - GPU conversion suggestions now fail closed when their saved candidate no
@@ -22,15 +77,31 @@
   different GPU implementation.
 - Tunnel-backed repairs are placed beside the affected subscriber without
   moving a distant tunnel source or unrelated downstream branches.
+- A scientifically successful but speed-inconclusive optimizer run is no
+  longer presented like a GPU eligibility failure with its measurements
+  hidden. In particular, ordinary finite decimal Binary Threshold values stay
+  eligible for the reviewed CuPy implementation even when whole-pipeline
+  timing cannot justify changing the saved backend.
 
 ### Validation
 
-- Expanded the strict admission catalogue to 14 public GPU implementations
-  and 18 executable evidence owners. Added exact parity, adversarial input,
+- Expanded the strict admission catalogue to 18 public GPU implementations
+  and 23 executable evidence owners. Added exact parity, adversarial input,
   metadata, integrity, memory, cancellation, cleanup, fallback, provenance,
-  and end-to-end timing coverage for Convert Dtype.
+  and end-to-end timing coverage for Convert Dtype and the boolean mask-cleanup
+  corridor.
 - Added a real-CUDA corridor check proving **Convert Dtype → Gaussian Blur**
   executes as one resident segment with one upload and one download.
+- Added exact and margin-safe real-CUDA segmentation corridor checks proving
+  the channel view, threshold, Remove Small Objects, and Fill Holes can remain
+  resident through Connected Components with one upload and one terminal
+  download. A separate retained-intermediate check records the intentional
+  second download instead of hiding it.
+- Versioned the ordinary RL admission-evidence schema and generator for the
+  v2 agreement gate. The next auditable matrix includes the authored `1e-12`
+  epsilon at 10, 25, 26, 50, and 100 iterations while retaining the old
+  epsilon/iteration matrices as near-identity diagnostics; the historical v1
+  artifact remains labeled as such rather than being relabeled as v2 evidence.
 
 ## 0.13.0a6 - 2026-08-13
 

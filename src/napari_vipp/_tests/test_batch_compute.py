@@ -38,7 +38,9 @@ from napari_vipp.core.compute import (
     MemoryEstimate,
     MemoryTopology,
     NodeExecutionDecision,
+    WorkloadDescriptor,
 )
+from napari_vipp.core.compute_planning import plan_compute_decisions
 from napari_vipp.core.execution import (
     PipelineExecutionFailure,
     PipelineRunResult,
@@ -137,6 +139,214 @@ def _generic_stack_batch(
         compute_request=ComputeRequest(mode=mode),
     )
     return workflow, config
+
+
+def test_batch_config_roundtrip_preserves_segmentation_bridge_compute_intent(
+    tmp_path,
+):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    np.save(inputs / "mask-source.npy", np.zeros((32, 48), dtype=np.float32))
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    remove_small = pipeline.add_node("remove_small_objects")
+    fill = pipeline.add_node("fill_holes")
+    components = pipeline.add_node("label_connected_components")
+    output = pipeline.add_node("batch_output")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.set_param(remove_small.id, "min_size", 8)
+    pipeline.set_param(remove_small.id, "spatial_mode", "2D YX")
+    pipeline.set_param(remove_small.id, "connectivity", "Face connected")
+    pipeline.set_param(fill.id, "max_hole_size", 0)
+    pipeline.set_param(fill.id, "spatial_mode", "2D YX")
+    pipeline.set_param(fill.id, "connectivity", "Face connected")
+    pipeline.set_param(components.id, "spatial_mode", "2D YX")
+    pipeline.set_param(components.id, "connectivity", "Full connectivity")
+    pipeline.set_param(output.id, "tag", "labels")
+    pipeline.set_param(output.id, "format", "npy")
+    assert pipeline.connect("input", threshold.id).success
+    assert pipeline.connect(threshold.id, remove_small.id).success
+    assert pipeline.connect(remove_small.id, fill.id).success
+    assert pipeline.connect(fill.id, components.id).success
+    assert pipeline.connect(components.id, output.id).success
+
+    workflow = serialize_workflow(pipeline)
+    request = ComputeRequest(
+        mode=ComputeMode.CUSTOM,
+        node_preferences={
+            threshold.id: (
+                "implementation:cupy-binary-threshold-f32-exact-v1"
+            ),
+            remove_small.id: (
+                "implementation:cupyx-remove-small-objects-bool-v1"
+            ),
+            fill.id: "implementation:cupyx-fill-holes-all-v1",
+            components.id: "implementation:cupyx-connected-components-v1",
+        },
+        fallback_policy="visible",
+    )
+    configured = BatchConfig(
+        workflow_file=Path("workflow.json"),
+        workflow_sha256=scientific_workflow_hash(workflow),
+        output_dir=tmp_path / "outputs",
+        sources=(BatchSourceConfig("input", "Input", inputs, "*.npy"),),
+        outputs=(
+            BatchOutputConfig(
+                output.id,
+                output.title,
+                "labels",
+                "image",
+                "npy",
+                "",
+                "{source_stem}__{tag}",
+            ),
+        ),
+        default_image_format="npy",
+        save_python_script=False,
+        compute_request=request,
+    )
+    config_path = tmp_path / BATCH_CONFIG_FILENAME
+
+    save_batch_config(config_path, configured)
+    loaded = load_batch_config(config_path)
+
+    assert loaded.compute_request == request
+    assert workflow["version"] == 4
+    assert loaded.workflow_sha256 == scientific_workflow_hash(workflow)
+    assert {
+        node["id"]: node["operation_id"] for node in workflow["nodes"]
+    } == {
+        "input": "input",
+        threshold.id: "binary_threshold",
+        remove_small.id: "remove_small_objects",
+        fill.id: "fill_holes",
+        components.id: "label_connected_components",
+        output.id: "batch_output",
+    }
+    assert [
+        (connection["source"], connection["target"])
+        for connection in workflow["connections"]
+    ] == [
+        ("input", threshold.id),
+        (threshold.id, remove_small.id),
+        (remove_small.id, fill.id),
+        (fill.id, components.id),
+        (components.id, output.id),
+    ]
+
+    shape = (32, 48)
+    workloads = (
+        WorkloadDescriptor(
+            threshold.id,
+            "binary_threshold",
+            (shape,),
+            ("float32",),
+            parameters=(("channel_axis", None), ("threshold", 0.5)),
+            resolved_spatial_ndim=2,
+            resident_successors=(remove_small.id,),
+        ),
+        WorkloadDescriptor(
+            remove_small.id,
+            "remove_small_objects",
+            (shape,),
+            ("bool",),
+            parameters=(
+                ("min_size", 8),
+                ("spatial_mode", "2D YX"),
+                ("connectivity", "Face connected"),
+            ),
+            resolved_spatial_ndim=2,
+            resident_predecessors=(threshold.id,),
+            resident_successors=(fill.id,),
+        ),
+        WorkloadDescriptor(
+            fill.id,
+            "fill_holes",
+            (shape,),
+            ("bool",),
+            parameters=(
+                ("max_hole_size", 0),
+                ("spatial_mode", "2D YX"),
+                ("connectivity", "Face connected"),
+            ),
+            resolved_spatial_ndim=2,
+            resident_predecessors=(remove_small.id,),
+            resident_successors=(components.id,),
+        ),
+        WorkloadDescriptor(
+            components.id,
+            "label_connected_components",
+            (shape,),
+            ("bool",),
+            parameters=(
+                ("spatial_mode", "2D YX"),
+                ("connectivity", "Full connectivity"),
+            ),
+            resolved_spatial_ndim=2,
+            resident_predecessors=(fill.id,),
+            required_host_boundaries=1,
+        ),
+    )
+    environment = ComputeEnvironment(
+        os_name="Windows",
+        python_implementation="CPython",
+        python_version="3.12",
+        python_abi="cpython-312",
+        runtime_ids=("cpu-numpy", "cuda-cupy"),
+        implementation_libraries=("cpu", "cupy", "cupyx"),
+        runtime_versions=(
+            ("cuda-cupy", "14.1.1"),
+            ("cupy", "14.1.1"),
+            ("cupyx", "14.1.1"),
+        ),
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
+        runtime_probe_fingerprints=(("cuda-cupy", "test-fingerprint"),),
+        runtime_metadata=(
+            (
+                "cuda-cupy",
+                (
+                    ("cuda_runtime_version", "13020"),
+                    ("driver_version", "13030"),
+                ),
+            ),
+        ),
+        driver_version="13030",
+        device_id="cuda:0",
+        device_name="NVIDIA GeForce RTX 5090",
+        device_class="nvidia-cuda",
+        device_metadata=(("compute_capability", "12.0"),),
+        memory_topology="discrete",
+        total_accelerator_memory_bytes=16 * 1024**3,
+        probe_status="available",
+    )
+
+    planned = plan_compute_decisions(
+        loaded.compute_request,
+        workloads,
+        environment=environment,
+    )
+
+    assert {
+        decision.node_id: (decision.runtime_id, decision.implementation_id)
+        for decision in planned.decisions
+    } == {
+        threshold.id: (
+            "cuda-cupy",
+            "cupy-binary-threshold-f32-exact-v1",
+        ),
+        remove_small.id: (
+            "cuda-cupy",
+            "cupyx-remove-small-objects-bool-v1",
+        ),
+        fill.id: ("cuda-cupy", "cupyx-fill-holes-all-v1"),
+        components.id: ("cuda-cupy", "cupyx-connected-components-v1"),
+    }
 
 
 def test_batch_config_v3_roundtrip_and_v1_v2_migration_preserve_replay(tmp_path):

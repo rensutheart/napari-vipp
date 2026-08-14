@@ -356,6 +356,7 @@ def _candidate_spec(**updates) -> OperationComputeSpec:
 def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
     accelerator_specs = accelerator_compute_specs()
     assert {spec.operation_id for spec in accelerator_specs} == {
+        "binary_threshold",
         "canny_edges",
         "rolling_ball_background",
         "subtract_background",
@@ -363,16 +364,31 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         "gaussian_blur",
         "gaussian_blur_3d",
         "convert_dtype",
+        "extract_channel",
         "otsu_threshold",
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",
         "sigma_filter",
+        "fill_holes",
+        "remove_small_objects",
         "label_connected_components",
         "measure_objects",
         "measure_objects_intensity",
     }
+    custom_ids = {
+        spec.implementation_id
+        for spec in accelerator_specs
+        if spec.admission_tier is AdmissionTier.PUBLIC_CUSTOM
+    }
+    assert custom_ids == {
+        "cupy-binary-threshold-f32-exact-v1",
+        "cupy-extract-channel-view-v1",
+        "cupyx-fill-holes-all-v1",
+        "cupyx-remove-small-objects-bool-v1",
+    }
     assert all(
-        spec.admission_tier is AdmissionTier.PUBLIC_AUTO_CANDIDATE
+        spec.admission_tier
+        in {AdmissionTier.PUBLIC_AUTO_CANDIDATE, AdmissionTier.PUBLIC_CUSTOM}
         for spec in accelerator_specs
     )
     assert all(spec.runtime_id == "cuda-cupy" for spec in accelerator_specs)
@@ -395,7 +411,14 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         port.boundary_policy_id == expected_tv_boundary
         for port in (*richardson_lucy_tv.input_ports, *richardson_lucy_tv.output_ports)
     )
-    assert "iterations-at-most-25-v1" in richardson_lucy.limitations
+    assert "iterations-at-most-100-v2" in richardson_lucy.limitations
+    assert richardson_lucy.parity_policy_id == "rl-scientific-equivalence-v2"
+    assert richardson_lucy_tv.parity_policy_id == (
+        "rl-tv-scientific-equivalence-v2"
+    )
+    assert "lambda-zero-iterations-at-most-100-v2" in (
+        richardson_lucy_tv.limitations
+    )
     assert "positive-tv-iterations-10-or-25-v1" in richardson_lucy_tv.limitations
     measurements = tuple(
         spec

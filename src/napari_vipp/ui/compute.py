@@ -58,8 +58,9 @@ COMPUTE_MODE_OPTIONS = (
         ComputeMode.PREFER_GPU,
         "Prefer GPU",
         (
-            "Use a scientifically eligible GPU implementation wherever possible, "
-            "even when it is not faster than CPU."
+            "Prefer a scientifically eligible GPU implementation without requiring "
+            "it to beat CPU. VIPP may keep a lightweight data-selection step on "
+            "CPU when that avoids uploading data that would immediately be discarded."
         ),
     ),
     ComputeModeOption(

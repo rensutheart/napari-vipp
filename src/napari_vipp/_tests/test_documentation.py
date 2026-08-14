@@ -235,6 +235,29 @@ def test_safe_gpu_dtype_repair_is_explained_consistently():
     assert "never silently insert casts" in roadmap
 
 
+def test_portable_gpu_segmentation_bridge_is_explained_consistently():
+    documents = (
+        REPO_ROOT / "docs" / "gpu-guide.md",
+        REPO_ROOT / "docs" / "durable-gpu-execution.md",
+    )
+
+    for document in documents:
+        text = " ".join(document.read_text(encoding="utf-8").split())
+        assert "cupy-extract-channel-view-v1" in text, document.name
+        assert "cupy-binary-threshold-f32-exact-v1" in text, document.name
+        assert "cupyx-remove-small-objects-bool-v1" in text, document.name
+        assert "cupyx-fill-holes-all-v1" in text, document.name
+        assert "integer labels" in text.lower(), document.name
+        assert "positive" in text and "hole" in text.lower(), document.name
+        assert "allocation-sharing view" in text, document.name
+        assert "one upload and one download" in text or (
+            "one host-to-device and one device-to-host" in text
+        ), document.name
+        assert "retained terminal" in text, document.name
+        assert "Prefer GPU" in text, document.name
+        assert "fallback" in text, document.name
+
+
 def test_installer_plan_prioritizes_nontechnical_managed_users():
     desktop_plan = (
         REPO_ROOT / "docs" / "desktop-startup-and-installer-plan.md"

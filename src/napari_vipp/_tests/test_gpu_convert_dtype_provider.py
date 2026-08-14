@@ -210,6 +210,20 @@ def test_fake_provider_handles_empty_constant_and_noncontiguous_inputs(fake_cupy
     np.testing.assert_array_equal(base, before)
 
 
+def test_provider_rejects_non_native_input_before_cupy_upload(fake_cupy):
+    del fake_cupy
+    values = np.arange(12, dtype=np.uint16).astype(
+        np.dtype(np.uint16).newbyteorder("S")
+    )
+
+    with pytest.raises(ValueError, match="requires native-endian input"):
+        provider.convert_dtype(
+            values,
+            output_dtype="float32",
+            scaling="preserve",
+        )
+
+
 def test_progress_reports_only_synchronized_completion_and_honours_cancellation(
     fake_cupy,
 ) -> None:

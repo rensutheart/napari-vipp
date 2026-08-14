@@ -115,6 +115,7 @@ from napari_vipp.core.compute import (
     ComputeRequest,
     DecisionKind,
     DecisionReason,
+    ExactWorkloadCandidateQualification,
     ExecutionPlan,
     ExecutionReport,
     FallbackPolicy,
@@ -707,7 +708,10 @@ def test_compute_toolbar_defaults_to_auto_and_shows_actual_compute_badges(qtbot)
     assert "scientifically eligible" in str(
         widget.compute_mode_combo.itemData(prefer_gpu_index, Qt.ToolTipRole)
     )
-    assert "even when it is not faster" in str(
+    assert "without requiring it to beat CPU" in str(
+        widget.compute_mode_combo.itemData(prefer_gpu_index, Qt.ToolTipRole)
+    )
+    assert "data-selection step on CPU" in str(
         widget.compute_mode_combo.itemData(prefer_gpu_index, Qt.ToolTipRole)
     )
     assert "Prefer GPU" in widget.compute_mode_combo.toolTip()
@@ -1192,14 +1196,29 @@ def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
     retention_fingerprint = canonical_digest(
         sorted(widget._cache_retention_node_ids())
     )
+    qualification = ExactWorkloadCandidateQualification(
+        node_id="gaussian",
+        operation_id="gaussian_blur",
+        implementation_id="implementation-a",
+        implementation_version="1",
+        workload_identity_digest="workload-a",
+        benchmark_workload_fingerprint="benchmark-workload-a",
+        compute_environment_fingerprint="environment-a",
+        benchmark_environment_fingerprint="benchmark-a",
+        parity_policy_id="parity-a",
+        benchmark_record_digest="record-a",
+        qualification_scope_digest="scope-a",
+    )
     result = SimpleNamespace(
         proposal=_Proposal(),
         identity=SimpleNamespace(
+            digest="scope-a",
             environment_fingerprint="environment-a",
             benchmark_environment_fingerprint="benchmark-a",
             cache_retention_fingerprint=retention_fingerprint,
             source_fingerprint="source-a",
         ),
+        exact_workload_qualifications=frozenset({qualification}),
     )
     undo_count = len(widget._undo_stack)
 
@@ -1212,10 +1231,23 @@ def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
         "cupyx",
     )
     assert len(widget._undo_stack) == undo_count + 1
+    assert widget._exact_workload_qualifications == {qualification}
+    assert widget._exact_workload_qualification_scope_digest == "scope-a"
+    qualified_workflow = deepcopy(
+        serialize_workflow(
+            widget.pipeline,
+            compute_request=widget._current_compute_request(),
+        )
+    )
+    assert widget._validated_exact_workload_qualifications(
+        qualified_workflow,
+        widget._pipeline_optimizer_source_signature,
+    ) == (frozenset({qualification}), "scope-a")
 
     widget.undo()
 
     assert "gaussian" not in widget._compute_node_preferences
+    assert not widget._exact_workload_qualifications
 
     widget._apply_pipeline_optimizer_result(
         SimpleNamespace(
@@ -1346,6 +1378,111 @@ def test_pipeline_optimizer_rejects_stale_review_result(qtbot):
 
     assert widget._compute_node_preferences == {}
     assert "Analyze the pipeline again" in widget.status_label.text()
+
+
+def test_background_run_forwards_only_source_current_exact_qualification(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    payloads, _layers = widget._source_payloads_for_pipeline()
+    workflow = deepcopy(
+        serialize_workflow(
+            widget.pipeline,
+            compute_request=widget._current_compute_request(),
+        )
+    )
+    qualification = ExactWorkloadCandidateQualification(
+        node_id="gaussian",
+        operation_id="gaussian_blur",
+        implementation_id="implementation-a",
+        implementation_version="1",
+        workload_identity_digest="workload-a",
+        benchmark_workload_fingerprint="benchmark-workload-a",
+        compute_environment_fingerprint="environment-a",
+        benchmark_environment_fingerprint="benchmark-environment-a",
+        parity_policy_id="parity-a",
+        benchmark_record_digest="record-a",
+        qualification_scope_digest="scope-a",
+    )
+    widget._exact_workload_qualifications = frozenset({qualification})
+    widget._exact_workload_qualification_scope_digest = "scope-a"
+    widget._exact_workload_qualification_workflow_fingerprint = canonical_digest(
+        workflow
+    )
+    source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        payloads,
+    )
+    widget._exact_workload_qualification_source_signature = source_signature
+
+    widget._start_background_pipeline_run(
+        None,
+        None,
+        "",
+        dict(payloads),
+        None,
+        "input volume",
+        source_signature,
+        {"gaussian"},
+    )
+
+    assert len(pool.workers) == 1
+    request = pool.workers[0].request
+    assert request.exact_workload_qualifications == {qualification}
+    assert request.exact_workload_qualification_scope_digest == "scope-a"
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(request.run_id, {}, cancelled=True)
+    )
+
+    # A changed source revision invalidates the private proof before dispatch.
+    changed_payloads = dict(payloads)
+    source_id, original = next(iter(changed_payloads.items()))
+    changed_data = np.array(original.data, copy=True)
+    changed_data.flat[0] += 1
+    changed_payloads[source_id] = replace(
+        original,
+        data=changed_data,
+        revision_token=replace(
+            original.revision_token,
+            revision=original.revision_token.revision + 1,
+        ),
+    )
+    pool.workers.clear()
+    widget._exact_workload_qualifications = frozenset({qualification})
+    widget._exact_workload_qualification_scope_digest = "scope-a"
+    widget._exact_workload_qualification_source_signature = source_signature
+    widget._exact_workload_qualification_workflow_fingerprint = canonical_digest(
+        workflow
+    )
+    changed_source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        changed_payloads,
+    )
+    widget._start_background_pipeline_run(
+        None,
+        None,
+        "",
+        changed_payloads,
+        None,
+        "input volume",
+        changed_source_signature,
+        {"gaussian"},
+    )
+
+    assert len(pool.workers) == 1
+    stale_request = pool.workers[0].request
+    assert not stale_request.exact_workload_qualifications
+    assert stale_request.exact_workload_qualification_scope_digest == ""
+    assert not widget._exact_workload_qualifications
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(stale_request.run_id, {}, cancelled=True)
+    )
 
 
 def test_pipeline_optimizer_dispatch_failure_clears_review_baseline(
@@ -1662,6 +1799,45 @@ def test_optimizer_cleanup_failure_quarantines_all_compute(qtbot):
     assert "Restart VIPP" in widget._compute_runtime_quarantined_reason
     assert not widget.compute_mode_combo.isEnabled()
     assert "proposed assignment" in widget.status_label.text()
+
+
+def test_inconclusive_optimizer_result_keeps_measurements_reviewable(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._pipeline_run_pending = False
+    proposal = SimpleNamespace(
+        rows=(),
+        pipeline_validation_performed=True,
+        validation_winner=SimpleNamespace(value="inconclusive"),
+    )
+
+    widget._on_pipeline_optimizer_finished(
+        PipelineOptimizerWorkerOutcome(
+            result=SimpleNamespace(proposal=proposal),
+        )
+    )
+
+    assert "neither pipeline was clearly faster" in widget.status_label.text()
+    assert "complete measurements remain available" in widget.status_label.text()
+    assert widget.status_label.property("messageSeverity") == "info"
+
+
+def test_inconclusive_optimizer_result_cannot_be_applied_programmatically(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    before = dict(widget._compute_node_preferences)
+    proposal = SimpleNamespace(
+        validation_winner=SimpleNamespace(value="inconclusive"),
+    )
+
+    widget._apply_pipeline_optimizer_result(
+        SimpleNamespace(proposal=proposal),
+    )
+
+    assert widget._compute_node_preferences == before
+    assert "no clear speed winner" in widget.status_label.text().lower()
+    assert "current settings remain unchanged" in widget.status_label.text().lower()
+    assert widget.status_label.property("messageSeverity") == "info"
 
 
 def test_pending_graph_work_reports_active_optimizer_owner(qtbot):
@@ -2089,12 +2265,292 @@ def test_dtype_repair_report_offers_one_click_atomic_visible_conversion(qtbot):
         connection.source_id == "input" and connection.target_id == "gaussian"
         for connection in widget.pipeline.connections
     )
-    assert "eligible for GPU consideration" in widget.status_label.text()
+    assert "ready for Find fastest" in widget.status_label.text()
 
     widget.undo()
 
     assert set(widget.pipeline.nodes) == before_nodes
     assert tuple(widget.pipeline.connections) == before_connections
+
+
+def test_prefer_gpu_manual_rl_repair_tips_survive_dirty_and_cpu_report(qtbot):
+    image = np.ones((9, 48, 56), dtype=np.uint16)
+    psf = np.ones((3, 5, 5), dtype=np.float32)
+    psf /= np.sum(psf, dtype=np.float32)
+    widget = VippWidget(
+        _Viewer(image),
+        defer_initial_run=True,
+        initial_compute_mode="prefer_gpu",
+    )
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+
+    def seed_output(node_id, value):
+        state = image_state_from_array(value)
+        widget.pipeline.outputs[node_id] = value
+        widget.pipeline.output_states[node_id] = state
+        widget.pipeline.node_outputs[node_id] = [value]
+        widget.pipeline.node_output_states[node_id] = [state]
+        widget.pipeline.completed_node_ids.add(node_id)
+
+    seed_output("input", image)
+    psf_source = widget.pipeline.add_node("input")
+    seed_output(psf_source.id, psf)
+    rl = widget.pipeline.add_node("richardson_lucy_deconvolution")
+    rl_tv = widget.pipeline.add_node("richardson_lucy_tv_deconvolution")
+    deconvolution_nodes = (rl, rl_tv)
+    for node in deconvolution_nodes:
+        widget.pipeline.set_param(node.id, "spatial_mode", "3D ZYX")
+        widget.pipeline.set_param(node.id, "iterations", 25)
+        widget.pipeline.set_param(node.id, "filter_epsilon", 1e-12)
+        assert widget.pipeline.connect("input", node.id, target_port=0).success
+        assert widget.pipeline.connect(psf_source.id, node.id, target_port=1).success
+    widget.graph_view.build_graph(
+        widget.pipeline.nodes.values(),
+        widget.pipeline.connections,
+    )
+    widget.graph_view.select_node(rl.id)
+
+    def assert_repair_tips_visible():
+        for node in deconvolution_nodes:
+            badge = widget.graph_view._cards[node.id].optimization_badge
+            assert not badge.isHidden()
+            assert badge.text() == "GPU tip"
+            assert "available but has not been applied" in badge.toolTip()
+        assert not widget.compute_repair_panel.isHidden()
+        assert widget.add_compute_conversion_button.isEnabled()
+
+    widget._sync_all_compute_repair_hints()
+    widget._sync_selected_compute_repair()
+    assert_repair_tips_visible()
+
+    # Graph and compute-policy invalidation used to clear both card tips before
+    # the selected-node inspector lazily rediscovered the exact same repairs.
+    widget._mark_pipeline_branches_dirty({rl.id, rl_tv.id})
+    assert_repair_tips_visible()
+
+    request = ComputeRequest(mode="prefer_gpu")
+    environment = ComputeEnvironment(
+        runtime_ids=("cpu-numpy", "cuda-cupy"),
+        implementation_libraries=("cpu", "cupy"),
+        device_id="cuda:0",
+        device_name="Test GPU",
+        device_class="nvidia-cuda",
+    )
+    cpu_decisions = tuple(
+        NodeExecutionDecision(
+            node.id,
+            node.operation_id,
+            NodeComputePreference(),
+            "cpu-numpy",
+            "cpu",
+            f"cpu-{node.operation_id}-v1",
+            DecisionKind.FALLBACK_CPU,
+            DecisionReason.VISIBLE_FALLBACK,
+            "The integer input used visible CPU fallback.",
+            fallback_reason=FallbackReason.WORKLOAD_UNSUPPORTED,
+        )
+        for node in deconvolution_nodes
+    )
+    widget._accept_execution_report(
+        ExecutionReport(
+            request,
+            environment,
+            plan=ExecutionPlan(
+                request.fingerprint,
+                environment.fingerprint,
+                (),
+                cpu_decisions,
+                repair_suggestions=(),
+            ),
+            actual_decisions=cpu_decisions,
+        )
+    )
+
+    # A CPU result and unapplied GPU optimization advice describe different
+    # facts, so both must remain visible after Calculate.
+    for node in deconvolution_nodes:
+        assert "CPU" in widget.graph_view._cards[node.id].compute_badge.text()
+    assert_repair_tips_visible()
+
+    conversion = widget.pipeline.add_node("convert_dtype")
+    widget.pipeline.set_param(conversion.id, "output_dtype", "float32")
+    widget.pipeline.set_param(conversion.id, "scaling", "preserve")
+    converted = image.astype(np.float32)
+    seed_output(conversion.id, converted)
+    assert widget.pipeline.connect("input", conversion.id).success
+    for node in deconvolution_nodes:
+        assert widget.pipeline.disconnect("input", node.id, 0)
+        assert widget.pipeline.connect(conversion.id, node.id, target_port=0).success
+    widget.graph_view.build_graph(
+        widget.pipeline.nodes.values(),
+        widget.pipeline.connections,
+    )
+    widget.graph_view.select_node(rl.id)
+    widget._sync_all_compute_repair_hints()
+    widget._sync_selected_compute_repair()
+
+    assert all(
+        widget.graph_view._cards[node.id].optimization_badge.isHidden()
+        for node in deconvolution_nodes
+    )
+    assert widget.compute_repair_panel.isHidden()
+
+    # Re-expose the uint16 input, then prove an explicit Custom CPU choice also
+    # makes the GPU advice inapplicable rather than merely hiding stale paint.
+    for node in deconvolution_nodes:
+        assert widget.pipeline.disconnect(conversion.id, node.id, 0)
+        assert widget.pipeline.connect("input", node.id, target_port=0).success
+    widget._compute_mode = ComputeMode.PREFER_GPU
+    widget._sync_all_compute_repair_hints()
+    widget._sync_selected_compute_repair()
+    assert_repair_tips_visible()
+    widget._compute_mode = ComputeMode.CUSTOM
+    widget._compute_node_preferences.update(
+        {node.id: NodeComputePreference("cpu") for node in deconvolution_nodes}
+    )
+    widget._sync_all_compute_repair_hints()
+    widget._sync_selected_compute_repair()
+
+    assert all(
+        widget.graph_view._cards[node.id].optimization_badge.isHidden()
+        for node in deconvolution_nodes
+    )
+    assert widget.compute_repair_panel.isHidden()
+
+
+def test_dtype_repair_inserts_one_shared_conversion_for_sibling_branches(qtbot):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    sibling = widget.add_node_from_palette("gaussian_blur")
+    widget._connect_nodes("input", sibling.id)
+    widget.graph_view.select_node("gaussian")
+    authored = {
+        node_id: dict(widget.pipeline.nodes[node_id].params)
+        for node_id in ("gaussian", sibling.id)
+    }
+
+    def suggestion(node_id: str) -> ComputeRepairSuggestion:
+        return ComputeRepairSuggestion(
+            "insert_convert_dtype",
+            node_id,
+            "gaussian_blur",
+            0,
+            "image",
+            "uint16",
+            "float32",
+            "preserve",
+            True,
+            "One exact conversion can make this node checkable on GPU.",
+            ComputeRepairCandidate(
+                "cupyx-gaussian-blur-v1",
+                "1",
+                "cuda-cupy",
+                "cupyx",
+            ),
+        )
+
+    widget._compute_repair_suggestions.update(
+        {
+            "gaussian": suggestion("gaussian"),
+            sibling.id: suggestion(sibling.id),
+        }
+    )
+    widget._sync_all_compute_repair_hints()
+    widget._sync_selected_compute_repair()
+    before_nodes = set(widget.pipeline.nodes)
+    before_connections = tuple(widget.pipeline.connections)
+
+    assert "One visible Convert Dtype" in widget.compute_repair_label.text()
+    assert "both branches" in widget.compute_repair_label.text()
+    widget.add_compute_conversion_button.click()
+
+    added = set(widget.pipeline.nodes) - before_nodes
+    assert len(added) == 1
+    conversion_id = added.pop()
+    assert widget.pipeline.nodes[conversion_id].operation_id == "convert_dtype"
+    assert widget.pipeline.nodes[conversion_id].params == {
+        "output_dtype": "float32",
+        "scaling": "preserve",
+    }
+    assert sum(
+        connection.source_id == "input"
+        and connection.target_id == conversion_id
+        for connection in widget.pipeline.connections
+    ) == 1
+    assert {
+        connection.target_id
+        for connection in widget.pipeline.connections
+        if connection.source_id == conversion_id
+    } == {"gaussian", sibling.id}
+    assert not any(
+        connection.source_id == "input"
+        and connection.target_id in {"gaussian", sibling.id}
+        for connection in widget.pipeline.connections
+    )
+    assert {
+        node_id: dict(widget.pipeline.nodes[node_id].params)
+        for node_id in ("gaussian", sibling.id)
+    } == authored
+    assert "2 compatible branches" in widget.status_label.text()
+    assert "one step" in widget.status_label.text()
+
+    widget.undo()
+
+    assert set(widget.pipeline.nodes) == before_nodes
+    assert tuple(widget.pipeline.connections) == before_connections
+
+
+def test_optimizer_dtype_refusal_keeps_one_click_repair_actionable(qtbot):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._pipeline_run_pending = False
+    widget._compute_repair_suggestions["gaussian"] = ComputeRepairSuggestion(
+        "insert_convert_dtype",
+        "gaussian",
+        "gaussian_blur",
+        0,
+        "image",
+        "uint16",
+        "float32",
+        "preserve",
+        True,
+        "A safe exact conversion is available.",
+        ComputeRepairCandidate(
+            "cupyx-gaussian-blur-v1",
+            "1",
+            "cuda-cupy",
+            "cupyx",
+        ),
+    )
+    widget.graph_view.select_node("gaussian")
+
+    widget._on_pipeline_optimizer_finished(
+        PipelineOptimizerWorkerOutcome(
+            error="generic candidate wall that should not replace the action",
+            reason_code="evidence_incomplete",
+        )
+    )
+
+    assert "one fixable input issue" in widget.status_label.text()
+    assert "Add conversion" in widget.status_label.text()
+    assert "epsilon" in widget.status_label.text()
+    assert "generic candidate wall" not in widget.status_label.text()
+    assert not widget.compute_repair_panel.isHidden()
+    assert widget.add_compute_conversion_button.isEnabled()
+
+
+def test_optimizer_apply_without_result_is_a_safe_noop(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    before = dict(widget._compute_node_preferences)
+
+    widget._apply_pipeline_optimizer_result(None)
+
+    assert widget._compute_node_preferences == before
+    assert "no completed Find fastest result" in widget.status_label.text()
 
 
 def test_dtype_repair_on_tunnel_input_changes_only_that_subscriber(qtbot):
@@ -2207,10 +2663,11 @@ def test_dtype_repair_is_hidden_for_custom_cpu_intent(qtbot):
     assert widget.graph_view._cards["gaussian"].optimization_badge.isHidden()
 
 
-def test_dtype_repair_ui_rejects_unknown_candidate_identity(qtbot):
+def test_dtype_repair_ui_rejects_unknown_candidate_identity(qtbot, monkeypatch):
     widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
     qtbot.addWidget(widget)
     widget.run_pipeline = lambda *args, **kwargs: None
+    monkeypatch.setattr(widget, "_refresh_proactive_compute_repairs", lambda: ())
     widget._compute_repair_suggestions["gaussian"] = ComputeRepairSuggestion(
         "insert_convert_dtype",
         "gaussian",
@@ -9239,6 +9696,12 @@ def test_composite_to_rgb_inspector_exposes_auto_manual_channel_mapping(qtbot):
     node = widget.add_node_from_palette("composite_to_rgb")
     saved_auto_params = dict(node.params)
     widget._connect_nodes("input", node.id)
+    widget.run_pipeline(force_sync=True)
+    qtbot.waitUntil(
+        lambda: widget.pipeline.outputs[node.id] is not None
+        and float(np.asarray(widget.pipeline.outputs[node.id]).max()) == 3000.0,
+        timeout=30_000,
+    )
     widget.graph_view.select_node(node.id)
 
     axis_mode = widget._parameter_widgets["channel_axis_mode"]
@@ -9305,6 +9768,11 @@ def test_composite_to_rgb_inspector_exposes_auto_manual_channel_mapping(qtbot):
     widget._parameter_widgets["channel_color_2"].combo.setCurrentText("Unassigned")
     widget._debounce_timer.stop()
     widget.run_pipeline(force_sync=True)
+    qtbot.waitUntil(
+        lambda: widget.pipeline.outputs[node.id] is not None
+        and float(np.asarray(widget.pipeline.outputs[node.id]).max()) == 2000.0,
+        timeout=30_000,
+    )
 
     assert widget.pipeline.nodes[node.id].params["channel_axis"] == 0
     assert widget.pipeline.nodes[node.id].params["channel_axis_mode"] == "Manual"

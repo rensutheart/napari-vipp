@@ -67,13 +67,52 @@ def test_checked_in_manifest_maps_every_public_declaration_and_facet(harness):
     )
     owners = harness._facet_owner_map(manifest.runners)
 
-    assert len(declarations) == 14
+    assert len(declarations) == 18
     assert {item.key for item in manifest.implementations} == {
         item.key for item in declarations
     }
     for declaration in declarations:
         assert set(owners[declaration.key]) == set(harness.REQUIRED_FACETS)
         assert all(owners[declaration.key].values())
+
+
+def test_custom_public_bridge_regions_are_evidence_mapped_in_both_profiles(harness):
+    declarations = harness.public_accelerator_declarations()
+    manifest = harness.load_suite_manifest(
+        MANIFEST_PATH,
+        declarations=declarations,
+        project_root=PROJECT_ROOT,
+    )
+    bridge = {
+        "binary_threshold::cupy-binary-threshold-f32-exact-v1",
+        "extract_channel::cupy-extract-channel-view-v1",
+    }
+    assert bridge <= {item.key for item in declarations}
+    runners = {
+        runner.runner_id: runner
+        for runner in manifest.runners
+        if bridge <= set(runner.implementations)
+    }
+    assert {
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts",
+    } <= set(runners)
+    evidence = runners["segmentation-bridge-evidence"]
+    contracts = runners["segmentation-bridge-provider-contracts"]
+    assert set(evidence.facets) == set(harness.REQUIRED_FACETS)
+    for profile in harness.PROFILES:
+        assert (
+            "scripts/benchmark_gpu_segmentation_bridge.py"
+            in evidence.profile_commands[profile]
+        )
+        assert (
+            "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py"
+            in contracts.profile_commands[profile]
+        )
+        assert (
+            "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py"
+            in contracts.profile_commands[profile]
+        )
 
 
 def test_convert_dtype_runs_focused_evidence_and_contract_owners_in_both_profiles(
@@ -99,16 +138,69 @@ def test_convert_dtype_runs_focused_evidence_and_contract_owners_in_both_profile
     evidence = runners["convert-dtype-evidence"]
     contracts = runners["convert-dtype-provider-contracts"]
     assert set(evidence.facets) == set(harness.REQUIRED_FACETS)
-    assert "scripts/benchmark_gpu_convert_dtype.py" in evidence.profile_commands[
-        "quick"
-    ]
-    assert "scripts/benchmark_gpu_convert_dtype.py" in evidence.profile_commands[
-        "full"
-    ]
+    assert (
+        "scripts/benchmark_gpu_convert_dtype.py" in evidence.profile_commands["quick"]
+    )
+    assert "scripts/benchmark_gpu_convert_dtype.py" in evidence.profile_commands["full"]
     for profile in harness.PROFILES:
         assert (
             "src/napari_vipp/_tests/test_gpu_convert_dtype_provider.py"
             in contracts.profile_commands[profile]
+        )
+
+
+def test_mask_cleanup_runs_strict_evidence_and_both_provider_owners(
+    harness,
+):
+    manifest = harness.load_suite_manifest(
+        MANIFEST_PATH,
+        declarations=harness.public_accelerator_declarations(),
+        project_root=PROJECT_ROOT,
+    )
+    cleanup = {
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1",
+    }
+    runners = {
+        runner.runner_id: runner
+        for runner in manifest.runners
+        if cleanup <= set(runner.implementations)
+    }
+
+    assert {
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts",
+        "mask-cleanup-provider-contracts",
+    } <= set(runners)
+    evidence = runners["mask-cleanup-evidence"]
+    execution = runners["mask-cleanup-execution-contracts"]
+    contracts = runners["mask-cleanup-provider-contracts"]
+    assert set(evidence.facets) == set(harness.REQUIRED_FACETS)
+    assert "provenance" in execution.facets
+    assert "transfer_inclusive_timing" not in execution.facets
+    assert "transfer_inclusive_timing" in evidence.facets
+    for profile in harness.PROFILES:
+        assert (
+            "scripts/benchmark_gpu_mask_cleanup.py"
+            in evidence.profile_commands[profile]
+        )
+        assert (
+            "src/napari_vipp/_tests/test_gpu_fill_holes_provider.py"
+            in contracts.profile_commands[profile]
+        )
+        assert (
+            "src/napari_vipp/_tests/test_gpu_remove_small_objects_provider.py"
+            in contracts.profile_commands[profile]
+        )
+        assert (
+            "src/napari_vipp/_tests/test_gpu_execution_integration.py::"
+            "test_real_segmentation_cleanup_corridor_is_one_cuda_segment"
+            in execution.profile_commands[profile]
+        )
+        assert (
+            "src/napari_vipp/_tests/test_gpu_execution_integration.py::"
+            "test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"
+            in execution.profile_commands[profile]
         )
 
 
@@ -163,9 +255,7 @@ def test_manifest_rejects_a_stale_executable_declaration(harness, tmp_path):
         )
 
 
-def test_manifest_rejects_a_facet_owner_not_executed_by_its_runner(
-    harness, tmp_path
-):
+def test_manifest_rejects_a_facet_owner_not_executed_by_its_runner(harness, tmp_path):
     document = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     runner = next(
         item

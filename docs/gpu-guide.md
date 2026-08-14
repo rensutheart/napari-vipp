@@ -23,7 +23,7 @@ their accelerator policies are qualified separately.
 | --- | --- |
 | **Auto** | Chooses between reviewed CPU and GPU assignments using compatible machine-local evidence and workload gates. CPU can correctly win. |
 | **CPU** | Uses the authoritative host implementations throughout the workflow. |
-| **Prefer GPU** | Requests every scientifically and operationally eligible public GPU implementation, even when CPU may be faster; ineligible nodes visibly use CPU. |
+| **Prefer GPU** | Requests reviewed public GPU implementations without requiring them to beat CPU. VIPP can still keep a lightweight selection step on CPU when that avoids uploading data that would immediately be discarded; every such choice is shown. |
 | **Custom** | Exposes per-node CPU/library choices, node benchmarking, locks, and **Find fastest pipeline…**. |
 
 The badge on a completed node reports what actually ran, not merely what was
@@ -113,9 +113,10 @@ qualification-only track and must never share an environment with CUDA 13.
 Public GPU candidates currently cover reviewed regions of:
 
 - Rolling-Ball Background and Subtract Background;
+- Extract Channel and exact Preserve conversion to `float32`;
 - Gaussian and median filtering;
 - Richardson-Lucy and Richardson-Lucy TV deconvolution;
-- Canny and Otsu thresholding;
+- fixed Binary, Canny, and Otsu thresholding;
 - Sigma Filter;
 - Connected Components; and
 - the basic **Measure Objects** and **Measure Objects + Intensity** schemas.
@@ -126,6 +127,40 @@ exact-label promises for reviewed integer operations, and narrow validated
 parameter profiles for nonlinear RL-TV. Consult the operation's CPU decision
 reason and the implementation records below rather than changing scientific
 parameters solely to unlock acceleration.
+
+### Richardson-Lucy agreement policy
+
+Ordinary RL uses the versioned `rl-scientific-equivalence-v2` CPU/GPU gate.
+For the default clipped contract, CPU and GPU results must have the same shape
+and `float32` dtype, identical finite masks, completely finite and nonnegative
+values, NRMSE no greater than `0.005`, and maximum absolute error no greater
+than `1e-6 + 0.005 * max(abs(CPU reference))`. RL-TV uses the corresponding
+`rl-tv-scientific-equivalence-v2` policy. The older ordinary-RL `2e-6` NRMSE
+result and maximum-ULP observations remain visible diagnostics only.
+
+The 0.5% values are backend-agreement margins. They do not prove that a
+restoration is accurate, that the PSF matches the acquisition, that the chosen
+iteration is appropriate, or that sharpened structures are real. Those
+questions require image- and experiment-specific checks such as local error or
+artifact maps, forward-model residuals, resolution/noise behavior, intensity or
+flux measurements, and the downstream biological measurement.
+
+The checkpoint-backed ordinary-RL workload envelope covers finite authored
+`filter_epsilon` values from `1e-12` through `1e-6` and 1 through 100
+iterations when the other finite-`float32`, odd-PSF, and default-safe gates
+pass. Exact-workload comparison is still required before optimizer selection.
+VIPP does not raise epsilon, truncate iterations, or otherwise change an
+authored restoration to make it GPU eligible.
+
+The checkpoint matrix is not an exhaustive sample of every epsilon/iteration
+pair inside that envelope. The lambda-zero RL-TV profile inherits this envelope;
+positive-TV runs remain limited to the exact shipped profile at 10 and 25
+iterations, pending their own exact-workload test.
+
+Softly out-of-envelope values retain their exact authored parameters and may be
+considered by **Find fastest pipeline...** through an exact-workload comparison.
+Invalid input facts, rank or dtype, even PSFs, and nondefault safety controls
+remain hard exclusions.
 
 An explicit **Convert Dtype** node may make a longer GPU-resident segment
 eligible, but conversion changes the public workflow representation and can
@@ -146,6 +181,44 @@ workload policy, memory, runtime health, or another eligibility gate may still
 select CPU or produce a visible fallback. The shortcut is not offered on a
 CPU-only/unqualified environment or for a lossy, clipping, or rescaling
 conversion that needs scientific review.
+
+## Portable Segmentation Bridge Example
+
+Open **Portable GPU Segmentation Bridge** from **Open example...**, or launch
+`gpu-segmentation`. Its annotated path is Extract Channel, Convert Dtype,
+Gaussian Blur, Binary Threshold, boolean Remove Small Objects, Fill Holes, and
+3D Connected Components. It opens in Prefer GPU mode, so the same saved
+workflow remains usable on CPU-only and partially eligible systems with a
+visible explanation for every fallback. Its dedicated sample contains four
+objects, one 19-voxel speck removed by the 22-voxel boundary, and 31 enclosed
+cavity voxels restored by Fill Holes.
+
+The initial Extract Channel and Binary Threshold implementations are reviewed
+public Custom/Prefer-GPU candidates, identified as
+`cupy-extract-channel-view-v1` and
+`cupy-binary-threshold-f32-exact-v1`. The boolean cleanup implementations are
+`cupyx-remove-small-objects-bool-v1` and `cupyx-fill-holes-all-v1`. Remove Small
+Objects initially accepts boolean masks only; integer labels stay on CPU
+so label identities are never silently changed. Fill Holes initially accepts
+only `max_hole_size = 0`, which means fill every enclosed cavity; positive
+size-limited cleanup stays on CPU. Passing these local eligibility gates means
+that Prefer GPU may select them; it does not guarantee that Auto or every
+workload will do so. The example's threshold is deliberately placed inside a
+wide gap in its deterministic sample. That makes the review result stable but
+does not make the threshold appropriate for unrelated images.
+
+Where channel extraction happens changes the cost. If Extract Channel runs on
+CPU at the host entry, VIPP can upload only the selected ZYX channel. If it runs
+inside an already resident GPU segment, it creates an allocation-sharing view
+without copying the channel, while the full CZYX device allocation remains
+live. The resident choice is therefore not automatically faster at the first
+node even though it can keep a longer GPU segment connected.
+
+The example can use one host-to-device and one device-to-host boundary only
+when the final label image is the single retained terminal result. Previewing,
+branching to, or retaining intermediate outputs can require additional
+downloads. VIPP reports the actual implementations and transfers rather than
+turning this best case into a blanket promise.
 
 ## Optional cuCIM Add-on
 
@@ -181,6 +254,13 @@ before offering a changed assignment. Analysis changes nothing by itself. A
 reviewed proposal is revalidated against the graph, inputs, parameters,
 compute intent, locks, source bytes/metadata, and current accelerator
 environment before one undoable Apply action.
+
+The result view groups implementations beneath each node and keeps the main
+comparison concise. Optional timing details separate compute, observed data
+movement, first-run cost, memory, and evidence provenance. If final paired
+timing is too close to call, VIPP keeps the current assignment and disables
+Apply, but it still shows the completed CPU/GPU results. **No clear winner** is
+a speed conclusion, not a claim that the GPU implementation could not run.
 
 Timing evidence is machine- and workload-local. A censored early-stopped CPU
 measurement is reported as a lower bound rather than an exact reusable time.

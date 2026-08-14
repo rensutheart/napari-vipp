@@ -71,6 +71,7 @@ LABEL_OPERATIONS = {
 KIND_PRESERVING_OPERATIONS = {
     "rescale_axes",
     "clear_border_objects",
+    "remove_small_objects",
     "set_microscope_metadata",
     "set_pixel_size",
 }

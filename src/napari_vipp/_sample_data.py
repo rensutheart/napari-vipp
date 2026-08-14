@@ -39,6 +39,7 @@ def make_sample_data():
         _measured_psf_sample(),
         _deconvolution_volume_sample(),
         _measured_psf_3d_sample(),
+        _gpu_segmentation_cleanup_sample(),
     ]
 
 
@@ -63,6 +64,59 @@ def _multichannel_volume_sample(z, y, x, rng):
                 "FITC-like neurites",
                 "TRITC-like puncta",
             ],
+            **_ome_image_metadata("CZYX", data.shape),
+        },
+    }
+    return data, metadata, "image"
+
+
+def _gpu_segmentation_cleanup_sample():
+    """Return four 3D objects plus one speck and one enclosed cavity."""
+
+    z, y, x = np.indices((12, 96, 128), dtype=np.float32)
+    cleanup = np.zeros((12, 96, 128), dtype=np.float32)
+
+    def ellipsoid(center, radii):
+        return (
+            ((z - center[0]) / radii[0]) ** 2
+            + ((y - center[1]) / radii[1]) ** 2
+            + ((x - center[2]) / radii[2]) ** 2
+            <= 1
+        )
+
+    for center, radii, intensity in (
+        ((3, 22, 24), (2.5, 7, 8), 42_000),
+        ((8, 24, 76), (2.5, 8, 7), 38_000),
+        ((4, 66, 44), (2.5, 7, 7), 46_000),
+        ((8, 68, 96), (2.5, 8, 8), 40_000),
+    ):
+        cleanup[ellipsoid(center, radii)] = intensity
+
+    # The first object has one robust enclosed cavity after Gaussian filtering.
+    cleanup[ellipsoid((3, 22, 24), (1.2, 3.5, 3.5))] = 0
+    # This 19-voxel source sphere remains a 19-voxel isolated mask component
+    # at the example threshold, just below its authored 22-voxel cutoff.
+    cleanup[ellipsoid((6, 45, 112), (1.5, 1.5, 1.5))] = 65_535
+
+    data = np.stack(
+        (
+            np.zeros_like(cleanup),
+            np.zeros_like(cleanup),
+            cleanup,
+        ),
+        axis=0,
+    ).astype(np.uint16)
+    metadata = {
+        "name": "VIPP synthetic GPU segmentation cleanup",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Deterministic four-object volume with one removable speck "
+                "and one fillable cavity for the GPU segmentation example."
+            ),
+            "channel_names": ["Empty control 1", "Empty control 2", "Cleanup mask"],
             **_ome_image_metadata("CZYX", data.shape),
         },
     }

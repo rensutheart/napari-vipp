@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-14
 
 This is the concise source of truth for VIPP's product direction, active
 priorities, and intended release order. Detailed implementation contracts and
@@ -188,16 +188,17 @@ CPU/Auto/Prefer-GPU/Custom and per-node/benchmark contracts, unified
 execution, the dedicated CUDA development/doctor path, and production-parity
 Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian adapters. Phase 2B
 also has a public-candidate ordinary CuPy Richardson-Lucy backend, ordered
-multi-input exact benchmarking, and per-device accelerator coordination; its
-initial finite-float32 region deliberately keeps the CPU's `1e-12` epsilon
-default, epsilon values other than the validated `1e-8` point, and runs above
-25 iterations on CPU pending broader numerical evidence. Phase 2C adds a
+multi-input exact benchmarking, and per-device accelerator coordination. Its
+checkpoint-backed finite-float32, odd-PSF, default-safe envelope now covers authored
+`filter_epsilon` values from `1e-12` through `1e-6` and 1 through 100
+iterations under `rl-scientific-equivalence-v2`; parameters are never rewritten
+to enter the region. Phase 2C adds a
 public-candidate CuPy RL-TV provider without changing the existing formula,
 sign, central-gradient stencil, initialization, padding, floor, or defaults.
 Its lambda-zero profile inherits ordinary RL's strict gate; its initial
 positive-TV profile covers only the exact shipped parameter tuple at the
 measured 10- and 25-iteration points under a separately versioned nonlinear
-parity study. Lambda-zero retains ordinary RL's 1–25 range. Phase 3A adds
+parity study. Lambda-zero inherits ordinary RL's expanded region. Phase 3A adds
 implemented, exact-mask CuPy/CuPyX Canny and Otsu providers with explicit luma,
 stack/slice, progress, cancellation, memory, and CPU-fallback contracts. Their
 validated regions are normal public `Auto`/`Custom` candidates;
@@ -236,6 +237,16 @@ the VIPP version, GPU model, compute capability, driver API, CUDA runtime,
 CuPy/cuCIM versions, authoritative CPU scientific-stack versions, workflow,
 parameters, and actual per-node implementations recorded by execution
 provenance.
+
+RL-family v2 agreement uses NRMSE `<= 0.005` together with
+`max_abs <= 1e-6 + 0.005 * max(abs(CPU reference))`, plus equal shape and
+`float32` dtype, identical finite masks, completely finite results, and
+nonnegative output for the default clipped contract. The previous ordinary-RL
+NRMSE `2e-6` result and maximum ULP remain diagnostics, not admission gates.
+This 0.5% margin is an engineering comparison against VIPP's CPU backend. It is
+not a scientific-validity or image-quality threshold; PSF suitability,
+iteration stopping, artifacts, recovered resolution, intensity fidelity, and
+downstream measurements require separate validation.
 Machine-local large-stack timing now records 45.03x, 85.06x, and 94.58x paired
 median speedups on the RTX 5090 for one real 8.51-million-voxel ND2 volume and
 16.78/67.11-million-voxel 3D shape stresses, respectively. Those short
@@ -255,11 +266,18 @@ checks. See the
 [Canny/Otsu evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md); these are
 single-host descriptive measurements, not portable Auto choices.
 The toolbar now has the CPU/Auto/Prefer-GPU/Custom policy slice. Prefer GPU
-uses every reviewed eligible accelerator region without applying Auto's speed
-gate; Custom retains node choices and benchmarking. Actual backend badges and
+considers every reviewed eligible accelerator region without applying Auto's
+CPU-versus-GPU timing gate, while retaining transfer-economics placement so a
+lightweight host view does not upload data that it will immediately discard.
+Custom retains node choices and benchmarking. Actual backend badges and
 the single message strip distinguish major and actionable paths by severity.
 Optimizer UI lifecycle/snapshot hardening continues alongside the maintained
 next order.
+Completed but speed-inconclusive optimizer comparisons remain reviewable: the
+current assignment is retained with no Apply action, while a node-grouped table
+shows every tested implementation and offers optional compute, transfer,
+first-run, memory, and evidence details. This prevents a whole-pipeline timing
+tie from being mistaken for GPU ineligibility.
 RL/RL-TV evidence ownership is isolated from broad shared-file hashes;
 Measurements and durable batch/generated/export execution are implemented.
 The maintained next order is native-Linux evidence, broader multi-device
@@ -324,13 +342,22 @@ ran from a dirty feature worktree, its temporary artifacts are integration
 evidence only; they were not promoted into the canonical benchmark record or
 used to broaden public support.
 
-The current Convert Dtype development branch expands that catalogue to 14
-public GPU implementations, 18 executable owners, and all 140 required
-implementation/facet mappings. Its strict RTX 5090 `quick` run passed on
-2026-08-13 in 989.4 seconds (aggregate SHA-256
+The integrated Convert Dtype Preserve region expanded the then-current
+catalogue to 14 public GPU implementations, 18 executable owners, and all 140
+required implementation/facet mappings. That strict RTX 5090 `quick` run
+passed on 2026-08-13 in 989.4 seconds (aggregate SHA-256
 `c31b230b1ccf67cfc2c5c65d66b55391bf6e421f0e5b71023b5d6463791cffe9`).
-This remains dirty-worktree integration evidence until repeated from an
-immutable candidate commit; it does not by itself broaden supported hardware.
+It remains dirty-worktree integration evidence until repeated from an immutable
+candidate commit; it does not by itself broaden supported hardware or describe
+later additions to the live catalogue.
+
+The current mask-cleanup development slice expands the live strict catalogue
+to 18 public GPU implementations and 23 executable owners. Its RTX 5090 quick
+evidence passed exact parity, lifecycle, memory, provenance, and
+transfer-inclusive timing checks from the feature worktree. The resulting
+artifact remains temporary integration evidence until the suite is repeated
+from an immutable candidate commit; it does not promote these Custom regions
+to Auto or broaden the supported hardware matrix.
 
 The remaining Priority 1 items are deliberately field qualification, not
 unfinished implementation:
@@ -380,11 +407,18 @@ Feature Sequence A's first release-blocking implementation wave contains only
 what is needed to close and validate the standard corridor:
 
 1. explicit `Convert Dtype`: the exact `uint8`/`uint16` to `float32` Preserve
-   region and its visible one-click repair are implemented in the current
-   development branch; bool, carefully bounded clip semantics, and any later
-   rescale promotion remain separate evidence-gated regions;
-2. a residency-preserving Extract Channel/view bridge and Binary Threshold; and
-3. the selected Fill Holes, Remove Small Objects, and label-output bridges.
+   region and its visible one-click repair are integrated; bool, carefully
+   bounded clip semantics, and any later rescale promotion remain separate
+   evidence-gated regions;
+2. the initial exact Extract Channel allocation-sharing view and scalar
+   `float32` Binary Threshold regions enter as reviewed public Custom/Prefer-GPU
+   candidates; Auto promotion still requires multi-device, transfer-inclusive
+   evidence;
+3. boolean Remove Small Objects and the exact fill-all-holes region enter as
+   reviewed public Custom/Prefer-GPU candidates, while integer-label cleanup
+   and positive bounded-hole sizes remain visible CPU regions; and
+4. the existing exact int32 Connected Components output closes and verifies
+   the label-output bridge without inventing another node.
 
 Crop, Select Axis Slice, Reorder Axes, Clip, Mask Image, logical/arithmetic
 operations, projections, broader binary morphology, label cleanup, additional
@@ -435,7 +469,12 @@ become Auto candidates only after multi-device, transfer-inclusive evidence.
 The principal success measures are whole-workflow wall time, host/device transfer
 count and bytes, observed peak VRAM, cancellation/cleanup behavior, visible
 fallback rate, and scientific parity. A canonical linear GPU workflow should
-aim for one host-to-device and one device-to-host boundary.
+aim for one host-to-device and one device-to-host boundary when only one terminal
+output is retained. Previewing, branching to, or retaining intermediate results
+creates additional legitimate boundaries. At a host entry, CPU Extract Channel
+can reduce a multichannel source before upload; a resident GPU Extract Channel
+instead keeps the full source allocation alive and exposes an allocation-sharing
+view. Transfer count and transferred bytes must therefore both be reported.
 
 ### 3. First-Class Source Items And Acquisition Metadata
 
@@ -580,6 +619,15 @@ the continuous gate above; this priority turns that evidence into maintained,
 publication-grade packs. Each pack should contain public or synthetic inputs,
 expected values and tolerances, exact parameter mappings, regenerating scripts,
 tables/figures, limitations, and publication-facing method text.
+
+For RL-family floating-point admission, the declared 0.5% NRMSE and
+peak-relative maximum-error bounds answer only whether two VIPP backends agree
+closely enough. NRMSE normalization, ROI, scaling, and preprocessing must be
+reported, and no single NRMSE cutoff should be reused as proof of restoration
+quality. Publication-grade deconvolution packs therefore combine pixel/error
+maps with forward-model residuals, frequency/resolution behavior, flux and
+feature measurements, representative PSF/SNR variation, and downstream task
+outcomes.
 
 The maintained validation queue is:
 

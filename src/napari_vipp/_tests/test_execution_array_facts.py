@@ -47,7 +47,11 @@ from napari_vipp.core.execution import (
     PipelineRunRequest,
     execute_pipeline_request,
 )
-from napari_vipp.core.metadata import AxisMetadata, image_state_from_array
+from napari_vipp.core.metadata import (
+    AxisMetadata,
+    ChannelMetadata,
+    image_state_from_array,
+)
 from napari_vipp.core.operations import canny_edges as cpu_canny_edges
 from napari_vipp.core.operations import otsu_threshold as cpu_otsu_threshold
 from napari_vipp.core.pipeline import (
@@ -1580,7 +1584,10 @@ def test_deconvolution_projects_its_finite_nonnegative_output_theorem(operation_
     assert propagated.maximum is None
 
 
-@pytest.mark.parametrize("operation_id", ("canny_edges", "otsu_threshold"))
+@pytest.mark.parametrize(
+    "operation_id",
+    ("binary_threshold", "canny_edges", "otsu_threshold"),
+)
 def test_segmentation_projects_exact_boolean_facts(operation_id):
     source = execution_module._complete_array_facts(
         np.array([[np.nan, -1.0], [1.0, np.inf]], dtype=np.float32),
@@ -1601,6 +1608,179 @@ def test_segmentation_projects_exact_boolean_facts(operation_id):
     assert propagated.dtype == "bool"
     assert propagated.all_finite is True
     assert {"nonnegative", "no-negative-zero"} <= set(propagated.guarantees)
+
+
+def test_extract_channel_projects_only_proven_subset_facts_without_extrema():
+    finite_source = execution_module._complete_array_facts(
+        np.arange(2 * 3 * 5, dtype=np.float32).reshape(2, 3, 5),
+        revision_fingerprint="finite-channel-source",
+    )
+    partly_nonfinite_source = execution_module._complete_array_facts(
+        np.asarray(
+            [
+                [[0.0, 1.0], [2.0, 3.0]],
+                [[np.nan, 4.0], [5.0, 6.0]],
+            ],
+            dtype=np.float32,
+        ),
+        revision_fingerprint="nonfinite-channel-source",
+    )
+
+    finite = execution_module._propagate_shape_preserving_facts(
+        "extract_channel",
+        finite_source,
+        {"channel": 1},
+        output_port=OutputPortKey("channel", 0),
+        output_shape=(3, 5),
+        output_dtype="float32",
+    )
+    uncertain = execution_module._propagate_shape_preserving_facts(
+        "extract_channel",
+        partly_nonfinite_source,
+        {"channel": 0},
+        output_port=OutputPortKey("channel", 0),
+        output_shape=(2, 2),
+        output_dtype="float32",
+    )
+
+    assert finite is not None
+    assert finite.shape == (3, 5)
+    assert finite.dtype == "float32"
+    assert finite.element_count == 15
+    assert finite.all_finite is True
+    assert {"nonnegative", "no-negative-zero"} <= set(finite.guarantees)
+    assert finite.minimum is None
+    assert finite.maximum is None
+    assert uncertain is not None
+    assert uncertain.shape == (2, 2)
+    assert uncertain.element_count == 4
+    assert uncertain.all_finite is None
+    assert uncertain.minimum is None
+    assert uncertain.maximum is None
+
+
+def test_extract_channel_planning_and_resident_metadata_match_exactly():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node("extract_channel")
+    pipeline.set_param(node.id, "channel", -1)
+    assert pipeline.connect("input", node.id).success
+    data = np.zeros((2, 3, 5, 7), dtype=np.uint16)
+    axes = (
+        AxisMetadata("t", "time", "s", 2.0, 4.0),
+        AxisMetadata("c", "channel"),
+        AxisMetadata("y", "space", "µm", 0.4, 1.25),
+        AxisMetadata("x", "space", "µm", 0.6, -2.5),
+    )
+    channels = (
+        ChannelMetadata(name="DAPI", emission_wavelength=461.0),
+        ChannelMetadata(name="FITC", emission_wavelength=519.0),
+        ChannelMetadata(name="TRITC", emission_wavelength=573.0),
+    )
+    state = image_state_from_array(
+        data,
+        axes=axes,
+        channels=channels,
+        history=("Imported calibrated TCYX source",),
+    )
+    assert state is not None
+    call = pipeline.prepare_node_call(node.id, (data,), (state,))
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "extract_channel",
+        call,
+        (data.shape,),
+        (data.dtype.name,),
+    )
+
+    assert projected is not None
+    ((description, output_state),) = projected
+    assert description.shape == (2, 5, 7)
+    assert description.dtype == np.dtype(np.uint16)
+    assert output_state is not None
+    assert output_state.shape == (2, 5, 7)
+    assert output_state.dtype == "uint16"
+    assert output_state.axes == (state.axes[0], state.axes[2], state.axes[3])
+    assert output_state.channels == (channels[2],)
+    assert output_state.kind == "intensity image"
+    assert output_state.history == (
+        "Imported calibrated TCYX source",
+        "Extract Channel: selected channel -1",
+    )
+
+    with ComputeRegistry() as registry:
+        implementation = registry.implementations_for_operation(
+            "extract_channel",
+            allow_experimental=False,
+        )[0]
+    (resident_state,) = execution_module._predict_device_node_states(
+        pipeline,
+        call,
+        implementation,
+        (np.zeros(description.shape, dtype=np.uint16),),
+    )
+    assert resident_state == output_state
+
+    with pytest.raises(RuntimeError, match="shape or dtype contract"):
+        execution_module._predict_device_node_states(
+            pipeline,
+            call,
+            implementation,
+            (np.zeros(data.shape, dtype=np.uint16),),
+        )
+    with pytest.raises(RuntimeError, match="shape or dtype contract"):
+        execution_module._predict_device_node_states(
+            pipeline,
+            call,
+            implementation,
+            (np.zeros(description.shape, dtype=np.float32),),
+        )
+
+
+def test_binary_threshold_resident_metadata_is_shape_preserving_bool():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node("binary_threshold")
+    assert pipeline.connect("input", node.id).success
+    data = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+    axes = (
+        AxisMetadata("y", "space", "µm", 0.4, 1.25),
+        AxisMetadata("x", "space", "µm", 0.6, -2.5),
+    )
+    state = image_state_from_array(
+        data,
+        axes=axes,
+        history=("Imported calibrated YX source",),
+    )
+    assert state is not None
+    call = pipeline.prepare_node_call(node.id, (data,), (state,))
+    with ComputeRegistry() as registry:
+        implementation = registry.implementations_for_operation(
+            "binary_threshold",
+            allow_experimental=False,
+        )[0]
+
+    (resident_state,) = execution_module._predict_device_node_states(
+        pipeline,
+        call,
+        implementation,
+        (np.zeros(data.shape, dtype=bool),),
+    )
+
+    assert resident_state is not None
+    assert resident_state.shape == data.shape
+    assert resident_state.dtype == "bool"
+    assert resident_state.axes == state.axes
+    assert resident_state.kind == "binary mask"
+    assert resident_state.history[-1] == "Binary Threshold"
+    with pytest.raises(RuntimeError, match="shape-preserving bool-mask contract"):
+        execution_module._predict_device_node_states(
+            pipeline,
+            call,
+            implementation,
+            (np.zeros(data.shape, dtype=np.float32),),
+        )
 
 
 @pytest.mark.parametrize("operation_id", ("canny_edges", "otsu_threshold"))

@@ -66,3 +66,56 @@ def test_deconvolution_examples_use_conservative_production_like_settings():
         )
         notes = " ".join(note["text"] for note in document["notes"])
         assert "production-like" in notes
+
+
+def test_3d_deconvolution_example_shares_one_preserve_conversion():
+    filename = "synthetic-3d-deconvolution-rl-tv.json"
+    document = json.loads((REPOSITORY_EXAMPLES_DIR / filename).read_text())
+    conversion_nodes = [
+        node for node in document["nodes"] if node["operation_id"] == "convert_dtype"
+    ]
+
+    assert len(conversion_nodes) == 1
+    conversion = conversion_nodes[0]
+    assert conversion["params"] == {
+        "output_dtype": "float32",
+        "scaling": "preserve",
+    }
+    connections = {
+        (
+            item["source"],
+            item["target"],
+            item["source_port"],
+            item["target_port"],
+        )
+        for item in document["connections"]
+    }
+    assert ("input", conversion["id"], 0, 0) in connections
+    assert (
+        conversion["id"],
+        "richardson_lucy_deconvolution_1",
+        0,
+        0,
+    ) in connections
+    assert (
+        conversion["id"],
+        "richardson_lucy_tv_deconvolution_1",
+        0,
+        0,
+    ) in connections
+    assert not any(
+        source == "input" and target.startswith("richardson_lucy")
+        for source, target, _source_port, _target_port in connections
+    )
+
+    nodes = {node["id"]: node for node in document["nodes"]}
+    for node_id in (
+        "richardson_lucy_deconvolution_1",
+        "richardson_lucy_tv_deconvolution_1",
+    ):
+        assert nodes[node_id]["params"]["iterations"] == 25
+        assert nodes[node_id]["params"]["filter_epsilon"] == 1e-12
+
+    notes = " ".join(note["text"] for note in document["notes"])
+    assert "does not rescale intensities" in notes
+    assert "scientifically valid" in notes

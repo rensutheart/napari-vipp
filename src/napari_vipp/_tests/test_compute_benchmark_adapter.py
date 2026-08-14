@@ -1118,6 +1118,54 @@ def test_progress_is_removed_before_deepcopy_and_policy_label_is_exact(
     assert custom.request.key.digest != production.request.key.digest
 
 
+def test_rl_benchmark_key_binds_scientific_parity_policy(monkeypatch):
+    clock = ManualClock()
+    runtime = _FakeRuntime(clock)
+    registry = ComputeRegistry()
+    v2_spec = _two_input_rl_spec()
+    v1_spec = replace(v2_spec, parity_policy_id="rl-scientific-equivalence-v1")
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    image = np.arange(7 * 9, dtype=np.float32).reshape(7, 9) / 63
+    psf = np.ones((3, 3), dtype=np.float32) / 9
+    call = PreparedNodeCall(
+        "rl-contract-node",
+        "richardson_lucy_deconvolution",
+        lambda inputs, **_kwargs: np.asarray(inputs[0]),
+        (image, psf),
+        kwargs={
+            "iterations": 3,
+            "filter_epsilon": 1e-12,
+            "resolved_spatial_ndim": 2,
+            "progress": None,
+        },
+        multiple_inputs=True,
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "_validate_admitted_spec",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def build(spec):
+        return build_registered_node_benchmark(
+            call,
+            admitted_specs=(spec,),
+            registry=registry,
+            environment_fingerprint="same-exact-environment",
+            allow_experimental=True,
+            clock=clock,
+        ).request
+
+    v1 = build(v1_spec)
+    v2 = build(v2_spec)
+
+    assert v1.key.implementation_ids == v2.key.implementation_ids
+    assert v1.benchmark_policy_id == v2.benchmark_policy_id
+    assert v1.scientific_contract_digest != v2.scientific_contract_digest
+    assert v1.key.policy_id != v2.key.policy_id
+    assert v1.key.digest != v2.key.digest
+
+
 def test_exact_key_separates_resolved_device_and_memory_scope(monkeypatch):
     clock = ManualClock()
     runtime = _FakeRuntime(clock)
@@ -1346,8 +1394,10 @@ def test_exact_parity_checks_signed_zero_bits_and_gaussian_uses_both_gates():
 
     rl_reference = np.linspace(0.0, 2.0, 256, dtype=np.float32).reshape(16, 16)
     rl_within = rl_reference + np.float32(2e-7)
+    rl_scientifically_equivalent = rl_reference.copy()
+    rl_scientifically_equivalent[8, 8] += np.float32(1e-3)
     rl_outside = rl_reference.copy()
-    rl_outside[8, 8] += np.float32(1e-2)
+    rl_outside[8, 8] += np.float32(2e-2)
 
     rl_accepted = operation_parity(
         "richardson_lucy_deconvolution",
@@ -1359,9 +1409,16 @@ def test_exact_parity_checks_signed_zero_bits_and_gaussian_uses_both_gates():
         rl_reference,
         rl_outside,
     )
+    rl_not_near_identical = operation_parity(
+        "richardson_lucy_deconvolution",
+        rl_reference,
+        rl_scientifically_equivalent,
+    )
 
     assert rl_accepted.passed
     assert "nrmse=" in rl_accepted.detail and "max_ulp=" in rl_accepted.detail
+    assert rl_not_near_identical.passed
+    assert "near_identity=false" in rl_not_near_identical.detail
     assert not rl_rejected.passed
     assert "max_abs=" in rl_rejected.detail
 
@@ -1393,7 +1450,8 @@ def test_exact_parity_checks_signed_zero_bits_and_gaussian_uses_both_gates():
     assert tv_positive.passed
     assert "limit=0.005" in tv_positive.detail
     assert not tv_positive_rejected.passed
-    assert not tv_lambda_zero.passed
+    assert tv_lambda_zero.passed
+    assert "near_identity=false" in tv_lambda_zero.detail
     assert not operation_parity(
         "richardson_lucy_tv_deconvolution",
         rl_reference,

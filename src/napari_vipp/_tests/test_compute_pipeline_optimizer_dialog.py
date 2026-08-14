@@ -2,12 +2,18 @@ from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QAbstractItemView, QApplication
 
-from napari_vipp.core.compute import NodeComputePreference
+from napari_vipp.core.compute import (
+    BenchmarkCandidateFailureKind,
+    BenchmarkCandidateResult,
+    NodeComputePreference,
+)
 from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationDeadlineExceeded,
     PipelineOptimizationProposal,
     PipelineOptimizationRow,
+    PipelineOptimizationSelectionBasis,
     PipelineOptimizationTimeoutReport,
     PipelineValidationWinner,
 )
@@ -16,7 +22,10 @@ from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     PipelineOptimizerProgress,
     PipelineOptimizerWorker,
     PipelineOptimizerWorkerOutcome,
+    _candidate_timing_display,
     _candidate_timing_text,
+    _scientific_check,
+    _subtle_group_brush,
 )
 
 
@@ -232,7 +241,7 @@ def test_dialog_rolls_back_running_state_when_worker_dispatch_fails(qtbot):
 
 
 def test_current_validation_winner_keeps_tested_alternative_visible(qtbot):
-    dialog = PipelineOptimizerDialog()
+    dialog = PipelineOptimizerDialog(node_titles={"node-a": "Gaussian Blur"})
     qtbot.addWidget(dialog)
     cpu = NodeComputePreference("cpu")
     row = PipelineOptimizationRow(
@@ -264,10 +273,318 @@ def test_current_validation_winner_keeps_tested_alternative_visible(qtbot):
 
     dialog._render_result(SimpleNamespace(proposal=proposal, evidence={}))
 
-    assert dialog.result_table.item(0, 2).text() == "gpu-a"
-    assert dialog.result_table.item(0, 3).text() == "cpu-a"
-    assert "Current won final validation" in dialog.result_table.item(0, 6).text()
-    assert "current assignment won" in dialog.result_label.text().lower()
+    assert dialog.result_table.rowCount() == 2
+    assert dialog.result_table.item(0, 0).text() == "Gaussian Blur"
+    assert dialog.result_table.item(0, 1).text() == "CPU — built in"
+    assert "Exact implementation ID: cpu-a" in (
+        dialog.result_table.item(0, 1).toolTip()
+    )
+    assert dialog.result_table.item(0, 4).text() == "Current · kept"
+    assert dialog.result_table.item(1, 1).text() == "gpu-a"
+    assert dialog.result_table.item(1, 4).text() == "Tested alternative"
+    assert "current settings were faster" in dialog.result_label.text().lower()
+
+
+def _candidate(
+    implementation_id,
+    *,
+    warm,
+    resident=(),
+    transfer=(),
+    host=(),
+    cold=None,
+    transfers_included=False,
+    peak=0,
+):
+    return BenchmarkCandidateResult(
+        implementation_id=implementation_id,
+        parity_passed=True,
+        cold_seconds=cold,
+        warm_seconds=tuple(warm),
+        peak_memory_bytes=peak,
+        synchronized=True,
+        transfers_included=transfers_included,
+        warm_transfer_seconds=tuple(transfer),
+        warm_resident_seconds=tuple(resident),
+        warm_host_materialization_seconds=tuple(host),
+    )
+
+
+def _inconclusive_result(*, evidence):
+    current = NodeComputePreference("cpu")
+    row = PipelineOptimizationRow(
+        "binary",
+        "cpu-binary-threshold-v1",
+        "cpu-binary-threshold-v1",
+        current,
+        current,
+        False,
+        True,
+    )
+    proposal = PipelineOptimizationProposal(
+        "identity",
+        "request",
+        (("binary", "cpu-binary-threshold-v1"),),
+        (row,),
+        {"binary": current},
+        0.0824,
+        0.0819,
+        0.0824,
+        0.0819,
+        0.99,
+        True,
+        15,
+        0.98,
+        PipelineValidationWinner.INCONCLUSIVE,
+        (("binary", "cupy-binary-threshold-f32-exact-v1"),),
+        PipelineOptimizationSelectionBasis.PAIRED_INCONCLUSIVE_RETAINED_CURRENT,
+    )
+    return SimpleNamespace(
+        proposal=proposal,
+        evidence={"binary": evidence},
+        measured_node_ids=("binary",),
+        reused_node_ids=(),
+    )
+
+
+def test_grouped_results_are_novice_readable_selectable_and_expandable(qtbot):
+    cpu = _candidate(
+        "cpu-binary-threshold-v1",
+        warm=(0.0018, 0.0020, 0.0019),
+        cold=0.004,
+        peak=1024,
+    )
+    gpu = _candidate(
+        "cupy-binary-threshold-f32-exact-v1",
+        warm=(0.0013, 0.0014, 0.0012),
+        resident=(0.0007, 0.0008, 0.0006),
+        transfer=(0.0004, 0.0004, 0.0004),
+        host=(0.0002, 0.0002, 0.0002),
+        cold=0.025,
+        transfers_included=True,
+        peak=2 * 1024 * 1024,
+    )
+    evidence = SimpleNamespace(record=SimpleNamespace(candidates=(cpu, gpu)))
+    dialog = PipelineOptimizerDialog(node_titles={"binary": "Binary Threshold"})
+    qtbot.addWidget(dialog)
+
+    dialog._on_finished(
+        PipelineOptimizerWorkerOutcome(result=_inconclusive_result(evidence=evidence))
+    )
+
+    table = dialog.result_table
+    assert table.rowCount() == 2
+    assert table.columnCount() == 10
+    assert table.selectionMode() == QAbstractItemView.ExtendedSelection
+    assert table.item(0, 0).text() == "Binary Threshold"
+    assert table.rowSpan(0, 0) == 2
+    assert table.item(0, 1).text() == "CPU — built in"
+    assert table.item(1, 1).text() == "GPU — CuPy"
+    assert table.item(0, 3).text() == "Matches"
+    assert table.item(0, 4).text() == "Current · kept"
+    assert table.item(1, 4).text() == "Tested · no clear winner"
+    assert dialog.result_label.text().startswith(
+        "No clear winner—current settings kept."
+    )
+    assert "not large and certain enough to justify a change" in (
+        dialog.result_label.text()
+    )
+    assert "82.4 ms" in dialog.result_label.text()
+    assert "81.9 ms" in dialog.result_label.text()
+    assert "15 paired rounds" in dialog.result_label.text()
+    assert "greater than 5% or 10 ms" in dialog.result_label.toolTip()
+    assert not dialog.apply_button.isEnabled()
+    assert dialog.summary_label.isHidden()
+    assert dialog.overall_progress_bar.isHidden()
+    assert dialog.operation_progress_bar.isHidden()
+
+    assert table.isColumnHidden(5)
+    assert dialog.details_button.text() == "Show timing details"
+    dialog.details_button.click()
+    assert not table.isColumnHidden(5)
+    assert table.item(1, 5).text() == "700.0 µs"
+    assert table.item(1, 6).text() == "600.0 µs"
+    assert table.item(1, 7).text() == "25.0 ms"
+    assert table.item(1, 8).text() == "2.0 MiB"
+    assert table.item(1, 9).text() == "3 rounds · measured now"
+    assert dialog.details_button.text() == "Hide timing details"
+
+    QApplication.clipboard().clear()
+    table.item(0, 1).setSelected(True)
+    table.item(0, 2).setSelected(True)
+    table.copy_selection()
+    assert QApplication.clipboard().text() == "CPU — built in\t1.9 ms"
+
+
+def test_scientific_parity_failure_is_not_mislabeled_as_runtime_failure():
+    parity_detail = "Maximum absolute difference exceeded the accepted tolerance."
+    parity_failure = BenchmarkCandidateResult(
+        implementation_id="cupy-parity-failure",
+        parity_passed=False,
+        cold_seconds=None,
+        warm_seconds=(),
+        error=parity_detail,
+        failure_kind=BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY,
+    )
+    runtime_detail = "CUDA runtime could not launch the kernel."
+    runtime_failure = BenchmarkCandidateResult(
+        implementation_id="cupy-runtime-failure",
+        parity_passed=False,
+        cold_seconds=None,
+        warm_seconds=(),
+        error=runtime_detail,
+        failure_kind=BenchmarkCandidateFailureKind.TRANSIENT_RUNTIME,
+    )
+
+    assert _scientific_check(parity_failure) == ("Did not match", parity_detail)
+    assert _scientific_check(runtime_failure) == (
+        "Could not verify",
+        runtime_detail,
+    )
+
+
+def test_later_failed_retry_clears_inconclusive_decision_tooltip(qtbot):
+    dialog = PipelineOptimizerDialog()
+    qtbot.addWidget(dialog)
+    evidence = SimpleNamespace(
+        record=SimpleNamespace(
+            candidates=(
+                _candidate(
+                    "cpu-binary-threshold-v1",
+                    warm=(0.001,),
+                ),
+                _candidate(
+                    "cupy-binary-threshold-f32-exact-v1",
+                    warm=(0.0005,),
+                ),
+            )
+        )
+    )
+    dialog._on_finished(
+        PipelineOptimizerWorkerOutcome(result=_inconclusive_result(evidence=evidence))
+    )
+    assert "greater than 5% or 10 ms" in dialog.result_label.toolTip()
+
+    dialog._on_finished(
+        PipelineOptimizerWorkerOutcome(
+            error="The optimizer runtime failed.",
+            reason_code="optimizer_failed",
+        )
+    )
+
+    assert dialog.result_label.toolTip() == ""
+    assert dialog.result_label.text() == "The optimizer runtime failed."
+
+
+def test_next_analysis_restores_intro_and_progress_after_result_review(qtbot):
+    dialog = PipelineOptimizerDialog()
+    qtbot.addWidget(dialog)
+    evidence = SimpleNamespace(
+        record=SimpleNamespace(
+            candidates=(
+                _candidate(
+                    "cpu-binary-threshold-v1",
+                    warm=(0.001,),
+                ),
+                _candidate(
+                    "cupy-binary-threshold-f32-exact-v1",
+                    warm=(0.0005,),
+                ),
+            )
+        )
+    )
+    dialog._render_result(_inconclusive_result(evidence=evidence))
+    assert dialog.summary_label.isHidden()
+
+    worker = PipelineOptimizerWorker(lambda _cancelled, _progress: object())
+
+    class CapturingPool:
+        workers = []
+
+        @classmethod
+        def start(cls, queued_worker):
+            cls.workers.append(queued_worker)
+
+    dialog.start(worker, CapturingPool())
+
+    assert not dialog.summary_label.isHidden()
+    assert not dialog.overall_progress_bar.isHidden()
+    assert not dialog.operation_progress_bar.isHidden()
+    assert dialog.result_table.isHidden()
+    assert dialog.details_button.isHidden()
+
+
+def test_gpu_total_is_labeled_compute_only_without_transfers():
+    display = _candidate_timing_display(
+        _candidate(
+            "cupy-binary-threshold-f32-exact-v1",
+            warm=(0.001, 0.0012, 0.0011),
+            resident=(0.0008, 0.0009, 0.0007),
+            transfers_included=False,
+        ),
+        evidence_source="measured now",
+    )
+
+    assert display.total == "1.1 ms (compute only)"
+    assert "rather than an additive whole-pipeline total" in display.total_tooltip
+    assert display.data_movement == "—"
+
+
+def test_fixed_cpu_only_node_without_benchmark_is_truthfully_not_measured(qtbot):
+    cpu = NodeComputePreference("cpu")
+    row = PipelineOptimizationRow(
+        "writer",
+        "cpu-batch-output-v1",
+        "cpu-batch-output-v1",
+        cpu,
+        cpu,
+        False,
+        False,
+    )
+    proposal = PipelineOptimizationProposal(
+        "identity",
+        "request",
+        (("writer", "cpu-batch-output-v1"),),
+        (row,),
+        {"writer": cpu},
+        0.01,
+        0.01,
+        0.01,
+        0.01,
+        1.0,
+        False,
+        0,
+        1.0,
+        PipelineValidationWinner.CURRENT,
+        (("writer", "cpu-batch-output-v1"),),
+        PipelineOptimizationSelectionBasis.EXACT_MODEL_RETAINED_CURRENT,
+    )
+    dialog = PipelineOptimizerDialog(node_titles={"writer": "Batch Output"})
+    qtbot.addWidget(dialog)
+
+    dialog._render_result(SimpleNamespace(proposal=proposal, evidence={}))
+
+    assert dialog.result_table.rowCount() == 1
+    assert dialog.result_table.item(0, 0).text() == "Batch Output"
+    assert dialog.result_table.item(0, 2).text() == "—"
+    assert dialog.result_table.item(0, 3).text() == "Not measured"
+    assert dialog.result_table.item(0, 4).text() == "Fixed"
+    assert dialog.result_table.item(0, 9).text() == "Not measured"
+    assert "saved exact evidence" not in (dialog.result_table.item(0, 9).text().lower())
+
+
+def test_node_group_tint_is_deliberately_subtle(qtbot):
+    dialog = PipelineOptimizerDialog()
+    qtbot.addWidget(dialog)
+    base = dialog.result_table.palette().base().color()
+    tint = _subtle_group_brush(dialog.result_table).color()
+    maximum_channel_delta = max(
+        abs(base.red() - tint.red()),
+        abs(base.green() - tint.green()),
+        abs(base.blue() - tint.blue()),
+    )
+
+    assert 0 < maximum_channel_delta <= 16
 
 
 def test_modeled_timing_text_prefers_gpu_resident_series():

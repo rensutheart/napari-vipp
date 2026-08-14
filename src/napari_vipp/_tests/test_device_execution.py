@@ -247,6 +247,14 @@ def _device_copy(value: _FakeDeviceArray, **_kwargs) -> _FakeDeviceArray:
     return value.runtime.allocate(value.payload)
 
 
+def _device_alias(value: _FakeDeviceArray, **_kwargs) -> _FakeDeviceArray:
+    """Model a provider view with the same underlying allocation identity."""
+
+    assert not value.released
+    value.runtime.operation_count += 1
+    return value
+
+
 def _device_richardson_lucy(
     values: list[_FakeDeviceArray],
     **_kwargs,
@@ -584,6 +592,44 @@ def test_linear_segment_keeps_intermediate_on_device_and_returns_host_only():
     assert all(
         not runtime.is_device_value(value) for value in result.host_values.values()
     )
+    registry.close()
+
+
+def test_allocation_sharing_view_stays_live_and_releases_its_allocation_once():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    extract = pipeline.add_node("extract_channel")
+    assert pipeline.connect("input", extract.id).success
+
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("extract_channel", _device_alias),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    data = np.arange(2 * 5 * 7, dtype=np.uint16).reshape(2, 5, 7)
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+    )
+
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(extract.id, 0)],
+        data,
+    )
+    assert runtime.host_to_device_count == 1
+    assert runtime.device_to_host_count == 1
+    assert runtime.operation_count == 1
+    assert runtime.release_count == 1
+    assert runtime.live == {}
     registry.close()
 
 

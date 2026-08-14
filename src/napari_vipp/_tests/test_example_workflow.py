@@ -80,6 +80,11 @@ GRAPH_AUTHORING_EXAMPLE_WORKFLOW = (
     / "examples"
     / "graph-authoring-acceptance.json"
 )
+GPU_SEGMENTATION_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-gpu-segmentation-bridge.json"
+)
 
 
 def _restore_workflow(pipeline: PrototypePipeline, workflow: dict) -> None:
@@ -150,6 +155,77 @@ def test_graph_authoring_acceptance_workflow_records_each_manual_invariant():
     assert "float32 and Preserve" in note_text
     assert "GPU eligible, not guaranteed" in note_text
     assert "CPU-only system" in note_text
+
+
+def test_gpu_segmentation_bridge_is_portable_annotated_and_scientifically_stable():
+    workflow = load_workflow(GPU_SEGMENTATION_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    _restore_workflow(pipeline, workflow)
+
+    assert workflow["compute_request"].mode is ComputeMode.PREFER_GPU
+    assert workflow["compute_request"].fallback_policy.value == "visible"
+    assert [
+        pipeline.nodes[node_id].operation_id
+        for node_id in pipeline.topological_order()
+    ] == [
+        "input",
+        "extract_channel",
+        "convert_dtype",
+        "gaussian_blur",
+        "binary_threshold",
+        "remove_small_objects",
+        "fill_holes",
+        "label_connected_components",
+    ]
+
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic GPU segmentation cleanup"
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+
+    extracted = outputs["extract_channel_1"]
+    converted = outputs["convert_dtype_1"]
+    mask = outputs["binary_threshold_1"]
+    cleaned = outputs["remove_small_objects_1"]
+    filled = outputs["fill_holes_1"]
+    labels = outputs["label_connected_components_1"]
+    extracted_state = pipeline.output_states["extract_channel_1"]
+
+    np.testing.assert_array_equal(extracted, data[2], strict=True)
+    np.testing.assert_array_equal(converted, data[2].astype(np.float32), strict=True)
+    assert extracted_state.axis_order == "ZYX"
+    assert len(extracted_state.channels) == 1
+    assert extracted_state.channels[0].color == 0xFF0000
+    assert mask.dtype == bool
+    assert int(np.count_nonzero(mask)) == 2428
+    assert cleaned.dtype == bool
+    assert int(np.count_nonzero(cleaned)) == 2409
+    assert int(np.count_nonzero(filled)) == 2440
+    assert int(np.count_nonzero(filled & ~cleaned)) == 31
+    assert labels.dtype == np.int32
+    assert int(labels.max()) == 4
+    assert sorted(_label_volumes(labels).values(), reverse=True) == [
+        685,
+        599,
+        595,
+        561,
+    ]
+
+    note_text = " ".join(note["text"] for note in workflow["notes"])
+    assert all(f"TEST {index}" in note_text for index in range(1, 7))
+    assert "GPU eligible is not guaranteed" in note_text
+    assert "CPU-to-GPU boundary" in note_text
+    assert "no-copy view" in note_text
+    assert "19-voxel speck disappears" in note_text
+    assert "restores 31 enclosed 3D background voxels" in note_text
+    assert "only the final label output retained" in note_text
+    assert "explains the fallback" in note_text
 
 
 def test_synthetic_batch_provenance_workflow_loads_and_runs_exactly():
@@ -850,6 +926,22 @@ def test_synthetic_3d_deconvolution_workflow_loads_and_runs():
     )
     assert pipeline.input_ports("richardson_lucy_deconvolution_1")[0].label == "Image"
     assert pipeline.input_ports("richardson_lucy_deconvolution_1")[1].label == "PSF"
+    direct_connections = {
+        (connection.source_id, connection.target_id, connection.target_port)
+        for connection in pipeline.connections
+        if not connection.tunnel_name
+    }
+    assert ("input", "convert_dtype_1", 0) in direct_connections
+    assert (
+        "convert_dtype_1",
+        "richardson_lucy_deconvolution_1",
+        0,
+    ) in direct_connections
+    assert (
+        "convert_dtype_1",
+        "richardson_lucy_tv_deconvolution_1",
+        0,
+    ) in direct_connections
     assert pipeline.tunnel_connection_for_input(
         "richardson_lucy_deconvolution_1",
         1,
@@ -880,6 +972,7 @@ def test_synthetic_3d_deconvolution_workflow_loads_and_runs():
     )
 
     prepared_psf = outputs["prepare_validate_psf_1"]
+    converted = outputs["convert_dtype_1"]
     rl = outputs["richardson_lucy_deconvolution_1"]
     tv = outputs["richardson_lucy_tv_deconvolution_1"]
     tv_state = pipeline.output_states["richardson_lucy_tv_deconvolution_1"]
@@ -895,6 +988,14 @@ def test_synthetic_3d_deconvolution_workflow_loads_and_runs():
     assert prepared_psf.shape == psf.shape
     assert np.isclose(float(prepared_psf.sum()), 1.0)
     assert prepared_psf[center] == prepared_psf.max()
+    assert converted.dtype == np.float32
+    assert np.array_equal(converted, image.astype(np.float32))
+    assert pipeline.nodes["richardson_lucy_deconvolution_1"].params[
+        "filter_epsilon"
+    ] == 1e-12
+    assert pipeline.nodes["richardson_lucy_tv_deconvolution_1"].params[
+        "filter_epsilon"
+    ] == 1e-12
     assert rl.shape == image.shape
     assert tv.shape == image.shape
     assert rl.dtype == np.float32

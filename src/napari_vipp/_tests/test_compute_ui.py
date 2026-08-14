@@ -149,7 +149,8 @@ def test_strict_custom_intent_rejects_previous_fallback_result():
         option for option in COMPUTE_MODE_OPTIONS if option.mode.value == "prefer_gpu"
     )
     assert "scientifically eligible" in prefer_gpu.description
-    assert "even when it is not faster" in prefer_gpu.description
+    assert "without requiring it to beat CPU" in prefer_gpu.description
+    assert "data-selection step on CPU" in prefer_gpu.description
 
 
 def test_node_preference_value_round_trip_preserves_stable_identifiers():
