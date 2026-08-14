@@ -912,7 +912,9 @@ def test_real_interpreter_probe_is_isolated_and_reports_selected_python():
     assert probe.base_executable.is_file()
 
 
-def test_package_metadata_scan_filters_without_importing_packages(tmp_path):
+def test_package_metadata_scan_filters_without_importing_packages(
+    tmp_path, monkeypatch
+):
     site_packages = tmp_path / "site-packages"
     napari_info = site_packages / "napari-0.6.4.dist-info"
     vipp_info = site_packages / "napari_vipp-0.13.0a6.dist-info"
@@ -934,6 +936,13 @@ def test_package_metadata_scan_filters_without_importing_packages(tmp_path):
     (unrelated_info / "METADATA").write_text(
         "Metadata-Version: 2.1\nName: unrelated\nVersion: 1.0\n",
         encoding="utf-8",
+    )
+
+    real_distributions = discovery_module.importlib.metadata.distributions
+    monkeypatch.setattr(
+        discovery_module.importlib.metadata,
+        "distributions",
+        lambda *, path: tuple(reversed(tuple(real_distributions(path=path)))),
     )
 
     packages = discovery_module._scan_relevant_packages(site_packages)
