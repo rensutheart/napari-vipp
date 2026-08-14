@@ -2568,6 +2568,8 @@ def test_export_preserves_segmentation_bridge_custom_implementation_ids():
     pipeline.reset_empty_graph()
     extract = pipeline.add_node("extract_channel")
     threshold = pipeline.add_node("binary_threshold")
+    remove_small = pipeline.add_node("remove_small_objects")
+    fill = pipeline.add_node("fill_holes")
     request = ComputeRequest(
         mode="custom",
         node_preferences={
@@ -2575,6 +2577,10 @@ def test_export_preserves_segmentation_bridge_custom_implementation_ids():
             threshold.id: (
                 "implementation:cupy-binary-threshold-f32-exact-v1"
             ),
+            remove_small.id: (
+                "implementation:cupyx-remove-small-objects-bool-v1"
+            ),
+            fill.id: "implementation:cupyx-fill-holes-all-v1",
         },
         fallback_policy="visible",
     )
@@ -2584,9 +2590,12 @@ def test_export_preserves_segmentation_bridge_custom_implementation_ids():
     exec(compile(code, "<exported>", "exec"), namespace)
     embedded = json.loads(namespace["_WORKFLOW_JSON"])
 
+    assert embedded["version"] == 4
     assert embedded["execution"]["compute"]["node_preferences"] == {
         extract.id: "implementation:cupy-extract-channel-view-v1",
         threshold.id: "implementation:cupy-binary-threshold-f32-exact-v1",
+        remove_small.id: "implementation:cupyx-remove-small-objects-bool-v1",
+        fill.id: "implementation:cupyx-fill-holes-all-v1",
     }
 
 

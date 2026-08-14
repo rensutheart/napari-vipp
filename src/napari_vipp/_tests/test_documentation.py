@@ -245,6 +245,10 @@ def test_portable_gpu_segmentation_bridge_is_explained_consistently():
         text = " ".join(document.read_text(encoding="utf-8").split())
         assert "cupy-extract-channel-view-v1" in text, document.name
         assert "cupy-binary-threshold-f32-exact-v1" in text, document.name
+        assert "cupyx-remove-small-objects-bool-v1" in text, document.name
+        assert "cupyx-fill-holes-all-v1" in text, document.name
+        assert "integer labels" in text.lower(), document.name
+        assert "positive" in text and "hole" in text.lower(), document.name
         assert "allocation-sharing view" in text, document.name
         assert "one upload and one download" in text or (
             "one host-to-device and one device-to-host" in text

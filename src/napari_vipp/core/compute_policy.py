@@ -48,6 +48,9 @@ from napari_vipp.core.richardson_lucy_compute import (
 OTSU_DEFAULT_HISTOGRAM_BINS = 256
 OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS = 65_536
 CONNECTED_COMPONENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
+MASK_CLEANUP_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
+FILL_HOLES_WORKSPACE_BYTES_PER_PADDED_SPATIAL_ELEMENT = 13
+REMOVE_SMALL_OBJECTS_WORKSPACE_BYTES_PER_SPATIAL_ELEMENT = 32
 MEASUREMENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
 SIGMA_FILTER_FLOAT32_SQUARE_LIMIT = float(
     np.float32(math.sqrt(float(np.finfo(np.float32).max)))
@@ -1173,6 +1176,45 @@ def estimate_candidate_memory(
         # reserve seven additional bytes for the largest active block to cover
         # union-find roots, sorting, and a non-contiguous block copy.
         workspace = block_elements * 7
+    elif spec.memory_model_id in {
+        "cupyx-fill-holes-memory-v1",
+        "cupyx-remove-small-objects-memory-v1",
+    }:
+        spatial_ndim = workload.resolved_spatial_ndim
+        if spatial_ndim not in {2, 3}:
+            raise ValueError(
+                "Mask-cleanup memory estimation requires a resolved 2D or 3D "
+                "spatial rank."
+            )
+        shape = workload.input_shapes[0]
+        if len(shape) < spatial_ndim:
+            raise ValueError("Mask-cleanup spatial rank exceeds the input rank.")
+        block_elements = math.prod(shape[-spatial_ndim:])
+        if spec.memory_model_id == "cupyx-fill-holes-memory-v1":
+            # Complete authored bool input/output arrays are counted below.
+            # CuPyX's explicit-connectivity propagation can retain an inverted
+            # mask, propagation frontier, alternating morphology buffers, and
+            # internal index/status storage for the largest active block.
+            # Leading blocks execute serially, so that deliberately generous
+            # allowance does not scale with their count.
+            padded_block_elements = math.prod(
+                extent + 2 for extent in shape[-spatial_ndim:]
+            )
+            workspace = (
+                padded_block_elements
+                * FILL_HOLES_WORKSPACE_BYTES_PER_PADDED_SPATIAL_ELEMENT
+            )
+        else:
+            # In addition to complete bool input/output arrays, the largest
+            # active block can retain int32 component labels and union-find
+            # workspace plus worst-case int64 counts, a bool keep table, and
+            # gather/staging buffers. A checkerboard can approach one component
+            # per two pixels, so this model must be materially larger than the
+            # connected-components public-int32-output model.
+            workspace = (
+                block_elements
+                * REMOVE_SMALL_OBJECTS_WORKSPACE_BYTES_PER_SPATIAL_ELEMENT
+            )
     elif spec.memory_model_id == "cucim-basic-measurements-memory-v1":
         layout = _basic_measurement_layout_for_workload(workload)
         block_elements = math.prod(layout.spatial_shape)
@@ -1770,6 +1812,139 @@ def _connected_components_region_policy(
     return None
 
 
+def _mask_cleanup_common_region_policy(
+    workload: WorkloadDescriptor,
+    *,
+    operation_title: str,
+) -> tuple[dict[str, object], SupportDecision | None]:
+    """Validate shared exact boolean-mask spatial cleanup boundaries."""
+
+    if len(workload.input_shapes) != 1 or len(workload.input_dtypes) != 1:
+        return {}, _workload_rejection(
+            f"{operation_title} requires exactly one mask input.",
+            fallback_allowed=False,
+        )
+    try:
+        dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return {}, _workload_rejection(
+            f"{operation_title} requires a concrete NumPy-compatible input dtype.",
+            fallback_allowed=False,
+        )
+    if dtype != np.dtype(bool):
+        if workload.operation_id == "fill_holes" or np.issubdtype(dtype, np.integer):
+            return {}, _workload_rejection(
+                f"The initial {operation_title} GPU region requires a boolean mask; "
+                "authoritative numeric coercion or integer-label preservation "
+                "remains on CPU."
+            )
+        return {}, _workload_rejection(
+            f"{operation_title} requires a boolean mask or integer label image.",
+            fallback_allowed=False,
+        )
+
+    spatial_ndim = workload.resolved_spatial_ndim
+    if spatial_ndim not in {2, 3}:
+        return {}, _workload_rejection(
+            f"{operation_title} GPU execution requires a resolved 2D or 3D "
+            "spatial rank.",
+            fallback_allowed=False,
+        )
+    shape = workload.input_shapes[0]
+    if len(shape) < spatial_ndim:
+        return {}, _workload_rejection(
+            f"{operation_title} spatial rank exceeds the input rank.",
+            fallback_allowed=False,
+        )
+
+    parameters = dict(workload.parameters)
+    mode = str(parameters.get("spatial_mode", "Auto from axes")).strip().casefold()
+    declared_rank = {
+        "auto from axes": spatial_ndim,
+        "2d yx": 2,
+        "2d per xy slice (advanced)": 2,
+        "3d zyx": 3,
+        "3d zyx volume": 3,
+    }.get(mode)
+    if declared_rank is None or declared_rank != spatial_ndim:
+        return {}, _workload_rejection(
+            f"{operation_title} spatial parameters disagree with the resolved rank.",
+            fallback_allowed=False,
+        )
+    connectivity = (
+        str(parameters.get("connectivity", "Face connected")).strip().casefold()
+    )
+    if connectivity not in {"face connected", "full connectivity"}:
+        return {}, _workload_rejection(
+            "Connectivity must be 'Face connected' or 'Full connectivity'.",
+            fallback_allowed=False,
+        )
+
+    block_elements = math.prod(shape[-spatial_ndim:])
+    safety_elements = (
+        math.prod(extent + 2 for extent in shape[-spatial_ndim:])
+        if workload.operation_id == "fill_holes"
+        else block_elements
+    )
+    if safety_elements >= MASK_CLEANUP_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:
+        element_scope = (
+            "padded spatial" if workload.operation_id == "fill_holes" else "spatial"
+        )
+        return {}, _workload_rejection(
+            f"Each {operation_title} GPU spatial block must contain fewer than "
+            f"{MASK_CLEANUP_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:,} elements so the "
+            f"internal exact CuPyX int32 {element_scope} component path remains "
+            "valid."
+        )
+    return parameters, None
+
+
+def _fill_holes_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    parameters, rejection = _mask_cleanup_common_region_policy(
+        workload,
+        operation_title="Fill Holes",
+    )
+    if rejection is not None:
+        return rejection
+    raw_maximum = parameters.get("max_hole_size", 0)
+    maximum = _canonical_nonnegative_integer(raw_maximum)
+    if maximum is None:
+        return _workload_rejection(
+            "Fill Holes maximum hole size must be an integer.",
+            fallback_allowed=False,
+        )
+    if int(raw_maximum) != 0:
+        return _workload_rejection(
+            "The initial Fill Holes GPU region fills every enclosed hole. "
+            "Only an authored maximum hole size of 0 is admitted; canonicalized "
+            "negative values and positive size-limited filling remain on the "
+            "authoritative CPU path."
+        )
+    return None
+
+
+def _remove_small_objects_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    parameters, rejection = _mask_cleanup_common_region_policy(
+        workload,
+        operation_title="Remove Small Objects",
+    )
+    if rejection is not None:
+        return rejection
+    minimum = _canonical_nonnegative_integer(parameters.get("min_size", 10))
+    if minimum is None:
+        return _workload_rejection(
+            "Remove Small Objects minimum size must be an integer.",
+            fallback_allowed=False,
+        )
+    return None
+
+
 def _basic_measurements_region_policy(
     workload: WorkloadDescriptor,
     array_facts: tuple[ArrayFacts, ...],
@@ -1941,6 +2116,10 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "rl-tv-parameters-v2": _richardson_lucy_tv_region_policy,
         "canny-parameters-v1": _canny_region_policy,
         "otsu-parameters-v1": _otsu_region_policy,
+        "fill-holes-all-parameters-v1": _fill_holes_region_policy,
+        "remove-small-objects-bool-parameters-v1": (
+            _remove_small_objects_region_policy
+        ),
         "connected-components-parameters-v1": (_connected_components_region_policy),
         "basic-measurements-parameters-v1": _basic_measurements_region_policy,
     }
@@ -2312,6 +2491,14 @@ def _finite_number(value: object) -> float | None:
     return converted if math.isfinite(converted) else None
 
 
+def _canonical_nonnegative_integer(value: object) -> int | None:
+    """Return the operation's typed nonnegative integer or reject bad authoring."""
+
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        return None
+    return max(int(value), 0)
+
+
 def _histogram_bin_count(value: object) -> int | None:
     if isinstance(value, (bool, np.bool_)):
         return None
@@ -2545,6 +2732,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             *RICHARDSON_LUCY_POLICY_IDS["parameter"],
             "canny-parameters-v1",
             "otsu-parameters-v1",
+            "fill-holes-all-parameters-v1",
+            "remove-small-objects-bool-parameters-v1",
             "connected-components-parameters-v1",
             "basic-measurements-parameters-v1",
         },
@@ -2561,6 +2750,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             *RICHARDSON_LUCY_POLICY_IDS["workload"],
             "canny-exact-bool-u8-u16-v2",
             "otsu-real-exact-v1",
+            "fill-holes-bool-all-2d-3d-v1",
+            "remove-small-objects-bool-2d-3d-v1",
             "connected-components-bool-2d-3d-v1",
             "measurements-int32-basic-2d-3d-v1",
             "measurements-int32-bool-u8-u16-finite-f32-basic-2d-3d-v1",
@@ -2590,6 +2781,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             *RICHARDSON_LUCY_POLICY_IDS["memory"],
             "cupyx-canny-exact-memory-v1",
             "cupy-otsu-histogram-memory-v1",
+            "cupyx-fill-holes-memory-v1",
+            "cupyx-remove-small-objects-memory-v1",
             "cupyx-connected-components-memory-v1",
             "cucim-basic-measurements-memory-v1",
         },
@@ -2682,6 +2875,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "skimage-canny-constant-zero-v1",
             "otsu-strict-greater-finite-mask-v1",
             "scipy-binary-connectivity-v1",
+            "scipy-binary-fill-holes-connectivity-v1",
+            "scipy-connected-component-size-filter-v1",
             "measurement-leading-spatial-blocks-v1",
         },
         PolicyKind.PRECISION: {
@@ -2693,6 +2888,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "integer-to-float32-exact-v1",
             "binary-threshold-ieee-f32-exact-v1",
             "array-bitwise-v1",
+            "mask-bitwise-v1",
             *RICHARDSON_LUCY_POLICY_IDS["precision"],
             "canny-exact-mask-v1",
             "otsu-exact-mask-v1",
@@ -2787,6 +2983,7 @@ __all__ = [
     "CUDA_ENVIRONMENT_POLICIES",
     "CONNECTED_COMPONENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS",
     "DEFAULT_POLICY_CATALOG",
+    "FILL_HOLES_WORKSPACE_BYTES_PER_PADDED_SPATIAL_ELEMENT",
     "FactCompleteness",
     "PerformanceDecision",
     "PerformanceEvidence",
@@ -2794,6 +2991,7 @@ __all__ = [
     "PHASE1_CUCIM_SOURCE_COMMIT",
     "PHASE1_CUCIM_SOURCE_TAG",
     "PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256",
+    "MASK_CLEANUP_MAXIMUM_SPATIAL_BLOCK_ELEMENTS",
     "PolicyCatalog",
     "PolicyKind",
     "RICHARDSON_LUCY_MAXIMUM_ITERATIONS",
@@ -2806,6 +3004,7 @@ __all__ = [
     "RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS",
     "RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS",
     "RICHARDSON_LUCY_TV_REGULARIZATION",
+    "REMOVE_SMALL_OBJECTS_WORKSPACE_BYTES_PER_SPATIAL_ELEMENT",
     "SIGMA_FILTER_FLOAT32_SQUARE_LIMIT",
     "SupportDecision",
     "ValueDescriptor",

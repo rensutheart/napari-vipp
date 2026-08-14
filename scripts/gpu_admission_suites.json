@@ -113,6 +113,20 @@
       "library_id": "cupyx"
     },
     {
+      "operation_id": "fill_holes",
+      "implementation_id": "cupyx-fill-holes-all-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
+      "operation_id": "remove_small_objects",
+      "implementation_id": "cupyx-remove-small-objects-bool-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
+    },
+    {
       "operation_id": "measure_objects",
       "implementation_id": "cucim-measure-objects-basic-v1",
       "implementation_version": "1",
@@ -452,6 +466,69 @@
       "profile_commands": {
         "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_connected_components_provider.py"],
         "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_connected_components_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "mask-cleanup-evidence",
+      "kind": "evidence",
+      "implementations": [
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata",
+        "input_integrity", "memory", "cancellation", "cleanup", "fallback",
+        "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_mask_cleanup.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_mask_cleanup.py", "--profile", "quick", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_mask_cleanup.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "mask-cleanup.json",
+      "artifact_schema": "napari-vipp-cupyx-mask-cleanup-evidence",
+      "artifact_schema_version": 1
+    },
+    {
+      "id": "mask-cleanup-provider-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1"
+      ],
+      "facets": ["adversarial_workloads", "input_integrity", "cancellation"],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_fill_holes_provider.py",
+        "src/napari_vipp/_tests/test_gpu_remove_small_objects_provider.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_fill_holes_provider.py", "src/napari_vipp/_tests/test_gpu_remove_small_objects_provider.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_fill_holes_provider.py", "src/napari_vipp/_tests/test_gpu_remove_small_objects_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "mask-cleanup-execution-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "metadata", "input_integrity", "cleanup",
+        "provenance"
+      ],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"]
       },
       "artifact": null,
       "artifact_schema": null,

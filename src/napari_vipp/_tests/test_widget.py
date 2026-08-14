@@ -9697,6 +9697,11 @@ def test_composite_to_rgb_inspector_exposes_auto_manual_channel_mapping(qtbot):
     saved_auto_params = dict(node.params)
     widget._connect_nodes("input", node.id)
     widget.run_pipeline(force_sync=True)
+    qtbot.waitUntil(
+        lambda: widget.pipeline.outputs[node.id] is not None
+        and float(np.asarray(widget.pipeline.outputs[node.id]).max()) == 3000.0,
+        timeout=30_000,
+    )
     widget.graph_view.select_node(node.id)
 
     axis_mode = widget._parameter_widgets["channel_axis_mode"]
@@ -9763,6 +9768,11 @@ def test_composite_to_rgb_inspector_exposes_auto_manual_channel_mapping(qtbot):
     widget._parameter_widgets["channel_color_2"].combo.setCurrentText("Unassigned")
     widget._debounce_timer.stop()
     widget.run_pipeline(force_sync=True)
+    qtbot.waitUntil(
+        lambda: widget.pipeline.outputs[node.id] is not None
+        and float(np.asarray(widget.pipeline.outputs[node.id]).max()) == 2000.0,
+        timeout=30_000,
+    )
 
     assert widget.pipeline.nodes[node.id].params["channel_axis"] == 0
     assert widget.pipeline.nodes[node.id].params["channel_axis_mode"] == "Manual"

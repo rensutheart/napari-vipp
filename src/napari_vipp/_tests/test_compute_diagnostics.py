@@ -405,6 +405,8 @@ def test_live_catalog_reports_three_distinct_layers_and_every_public_region():
         "cupy-otsu-threshold-exact-v1",
         "cupy-sigma-filter-v1",
         "cupyx-connected-components-v1",
+        "cupyx-remove-small-objects-bool-v1",
+        "cupyx-fill-holes-all-v1",
         "cucim-measure-objects-basic-v1",
         "cucim-measure-objects-intensity-basic-v1",
     }

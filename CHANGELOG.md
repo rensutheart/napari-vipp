@@ -50,8 +50,13 @@
   choice can still request whole-input residency.
 - Added the annotated **Portable GPU Segmentation Bridge** example, which runs
   from Extract Channel through the exact Preserve conversion, Gaussian Blur,
-  Binary Threshold, and Connected Components while remaining usable with
-  transparent CPU fallback.
+  Binary Threshold, boolean **Remove Small Objects**, **Fill Holes**, and
+  Connected Components while remaining usable with transparent CPU fallback.
+- Added reviewed Custom/Prefer-GPU CuPyX implementations for boolean **Remove
+  Small Objects** in resolved 2D/3D Face/Full connectivity regions and **Fill
+  Holes** in the exact `max_hole_size = 0` region. Integer-label cleanup and
+  bounded-hole-size cleanup remain on the authoritative CPU path with a visible
+  explanation.
 
 #### Results You Can Actually Read
 
@@ -80,15 +85,18 @@
 
 ### Validation
 
-- Expanded the strict admission catalogue to 16 public GPU implementations
-  and 20 executable evidence owners. Added exact parity, adversarial input,
+- Expanded the strict admission catalogue to 18 public GPU implementations
+  and 23 executable evidence owners. Added exact parity, adversarial input,
   metadata, integrity, memory, cancellation, cleanup, fallback, provenance,
-  and end-to-end timing coverage for Convert Dtype.
+  and end-to-end timing coverage for Convert Dtype and the boolean mask-cleanup
+  corridor.
 - Added a real-CUDA corridor check proving **Convert Dtype → Gaussian Blur**
   executes as one resident segment with one upload and one download.
 - Added exact and margin-safe real-CUDA segmentation corridor checks proving
-  the new channel view and threshold can remain resident through Connected
-  Components with one upload and one terminal download.
+  the channel view, threshold, Remove Small Objects, and Fill Holes can remain
+  resident through Connected Components with one upload and one terminal
+  download. A separate retained-intermediate check records the intentional
+  second download instead of hiding it.
 - Versioned the ordinary RL admission-evidence schema and generator for the
   v2 agreement gate. The next auditable matrix includes the authored `1e-12`
   epsilon at 10, 25, 26, 50, and 100 iterations while retaining the old

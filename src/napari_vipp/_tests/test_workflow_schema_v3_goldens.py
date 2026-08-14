@@ -46,7 +46,7 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
         "e994ba035f124802dc3d75cc9aaaaf8c1139f4e48dcf57dc0a1113b07e692bb9"
     ),
     "synthetic-gpu-segmentation-bridge.json": (
-        "ab89dbaf08e3657dcb4d14fc7a30e45dc4253d724927198c5059bd61e72f48af"
+        "599f8346ce68cc92233fbd7ec3136e9d720a9c126ef17642d3c649acca29aa46"
     ),
     "synthetic-measurement-summary.json": (
         "34ada05bf06ba895a6e33fcba913fa7272f3c7ba9feb50809dbc95e967db20f8"

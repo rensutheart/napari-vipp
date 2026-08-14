@@ -63,8 +63,11 @@ result is GPU eligibility rather than a guarantee of GPU execution.
 The portable **GPU Segmentation Bridge** example records this intent as
 `prefer_gpu` with visible fallback. Its initial reviewed public Custom
 implementations are `cupy-extract-channel-view-v1` and
-`cupy-binary-threshold-f32-exact-v1`; Prefer GPU may select them only when the
-complete runtime, data, parameter, memory, and scientific gates pass. A failed
+`cupy-binary-threshold-f32-exact-v1`, followed by the narrow boolean cleanup
+implementations `cupyx-remove-small-objects-bool-v1` and
+`cupyx-fill-holes-all-v1`; Prefer GPU may select them only when the complete
+runtime, data, parameter, memory, and scientific gates pass. The first cleanup
+region leaves integer labels and positive bounded-hole sizes on CPU. A failed
 gate produces an explained CPU decision on interactive, batch, generated, and
 exported execution rather than making the workflow unportable.
 

@@ -82,11 +82,19 @@ EXACT_PARITY_OPERATION_IDS = frozenset(
         "extract_channel",
         "median_filter",
         "otsu_threshold",
+        "fill_holes",
+        "remove_small_objects",
         "label_connected_components",
     }
 )
 EXACT_MASK_PARITY_OPERATION_IDS = frozenset(
-    {"binary_threshold", "canny_edges", "otsu_threshold"}
+    {
+        "binary_threshold",
+        "canny_edges",
+        "otsu_threshold",
+        "fill_holes",
+        "remove_small_objects",
+    }
 )
 EXACT_LABEL_PARITY_OPERATION_IDS = frozenset({"label_connected_components"})
 BACKGROUND_PARITY_OPERATION_IDS = frozenset(

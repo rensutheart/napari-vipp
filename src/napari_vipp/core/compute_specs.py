@@ -722,6 +722,114 @@ def _connected_components_spec() -> OperationComputeSpec:
     )
 
 
+def _mask_cleanup_spec(operation_id: str) -> OperationComputeSpec:
+    """Return one exact, resident boolean-mask cleanup contract."""
+
+    declarations = {
+        "fill_holes": {
+            "implementation_id": "cupyx-fill-holes-all-v1",
+            "callable_ref": "napari_vipp.core.gpu.cupy_fill_holes:fill_holes",
+            "parameter_policy_id": "fill-holes-all-parameters-v1",
+            "workload_policy_id": "fill-holes-bool-all-2d-3d-v1",
+            "memory_model_id": "cupyx-fill-holes-memory-v1",
+            "boundary_policy_id": "scipy-binary-fill-holes-connectivity-v1",
+            "limitations": (
+                "bool-mask-public-v1",
+                "maximum-hole-size-zero-only-v1",
+                "int32-padded-spatial-block-under-2pow31-minus-2-v1",
+                "independent-leading-spatial-blocks-v1",
+            ),
+        },
+        "remove_small_objects": {
+            "implementation_id": "cupyx-remove-small-objects-bool-v1",
+            "callable_ref": (
+                "napari_vipp.core.gpu.cupy_remove_small_objects:"
+                "remove_small_objects"
+            ),
+            "parameter_policy_id": "remove-small-objects-bool-parameters-v1",
+            "workload_policy_id": "remove-small-objects-bool-2d-3d-v1",
+            "memory_model_id": "cupyx-remove-small-objects-memory-v1",
+            "boundary_policy_id": "scipy-connected-component-size-filter-v1",
+            "limitations": (
+                "bool-mask-public-v1",
+                "integer-label-preservation-remains-cpu-v1",
+                "int32-spatial-block-under-2pow31-minus-2-v1",
+                "independent-leading-spatial-blocks-v1",
+            ),
+        },
+    }
+    try:
+        declaration = declarations[operation_id]
+    except KeyError as exc:
+        raise ValueError(f"Unknown mask cleanup operation {operation_id!r}.") from exc
+
+    boundary_policy_id = str(declaration["boundary_policy_id"])
+    precision_policy_id = "mask-bitwise-v1"
+    input_port = ComputePortContract(
+        0,
+        ValueKind.MASK,
+        port_name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        accumulation_dtype="bool",
+        value_domain="binary-mask-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="finite-only-v1",
+        rounding_policy_id=precision_policy_id,
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    output_port = ComputePortContract(
+        0,
+        ValueKind.MASK,
+        port_name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        accumulation_dtype="bool",
+        value_domain="binary-mask-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="fixed:bool",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="finite-output-v1",
+        rounding_policy_id=precision_policy_id,
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    return OperationComputeSpec(
+        operation_id=operation_id,
+        implementation_id=str(declaration["implementation_id"]),
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref=str(declaration["callable_ref"]),
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_CUSTOM,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id=str(declaration["parameter_policy_id"]),
+        workload_policy_id=str(declaration["workload_policy_id"]),
+        parity_policy_id="mask-bitwise-v1",
+        memory_model_id=str(declaration["memory_model_id"]),
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        progress_policy_id="spatial-block-sync-progress-v1",
+        cancellation_policy_id="spatial-block-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2, 3),
+        supports_device_residency=True,
+        limitations=tuple(declaration["limitations"]),
+    )
+
+
 def _measurement_labels_port() -> ComputePortContract:
     """Return the exact resident-label input contract for basic measurements."""
 
@@ -874,6 +982,8 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _canny_spec(),
     _otsu_spec(),
     _sigma_filter_spec(),
+    _mask_cleanup_spec("fill_holes"),
+    _mask_cleanup_spec("remove_small_objects"),
     _connected_components_spec(),
     _measurements_spec(include_intensity=False),
     _measurements_spec(include_intensity=True),

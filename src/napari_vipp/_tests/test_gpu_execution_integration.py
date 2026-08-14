@@ -2251,12 +2251,16 @@ def test_real_convert_dtype_gaussian_corridor_uses_one_device_round_trip(
         registry.close()
 
 
-@pytest.mark.parametrize("include_gaussian", (False, True))
-def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
+@pytest.mark.parametrize(
+    ("include_gaussian", "retain_cleanup"),
+    ((False, False), (True, False), (False, True)),
+)
+def test_real_segmentation_cleanup_corridor_is_one_cuda_segment(
     monkeypatch,
     include_gaussian,
+    retain_cleanup,
 ):
-    """Prove the new channel view and threshold bridge preserve one residency."""
+    """Prove the complete reviewed segmentation corridor stays resident."""
 
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
@@ -2278,6 +2282,8 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
         conversion = pipeline.add_node("convert_dtype")
         gaussian = pipeline.add_node("gaussian_blur") if include_gaussian else None
         threshold = pipeline.add_node("binary_threshold")
+        remove_small = pipeline.add_node("remove_small_objects")
+        fill = pipeline.add_node("fill_holes")
         components = pipeline.add_node("label_connected_components")
         pipeline.set_param(extract.id, "channel", 1)
         pipeline.set_param(conversion.id, "output_dtype", "float32")
@@ -2289,6 +2295,12 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
             "threshold",
             777.125 if include_gaussian else 1000.0,
         )
+        pipeline.set_param(remove_small.id, "min_size", 8)
+        pipeline.set_param(remove_small.id, "spatial_mode", "2D YX")
+        pipeline.set_param(remove_small.id, "connectivity", "Face connected")
+        pipeline.set_param(fill.id, "max_hole_size", 0)
+        pipeline.set_param(fill.id, "spatial_mode", "2D YX")
+        pipeline.set_param(fill.id, "connectivity", "Face connected")
         pipeline.set_param(components.id, "spatial_mode", "2D YX")
         pipeline.set_param(components.id, "connectivity", "Full connectivity")
         assert pipeline.connect("input", extract.id).success
@@ -2298,13 +2310,19 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
             assert pipeline.connect(previous, gaussian.id).success
             previous = gaussian.id
         assert pipeline.connect(previous, threshold.id).success
-        assert pipeline.connect(threshold.id, components.id).success
+        assert pipeline.connect(threshold.id, remove_small.id).success
+        assert pipeline.connect(remove_small.id, fill.id).success
+        assert pipeline.connect(fill.id, components.id).success
 
         data = np.zeros((3, 64, 80), dtype=np.uint16)
         data[1, 8:24, 10:28] = 4000
         data[1, 36:57, 45:71] = 3000
+        data[1, 4, 4] = 4000
+        if not include_gaussian:
+            data[1, 14, 18] = 0
         before = data.copy()
         pipeline.run(data, input_metadata={"axes": "CYX"})
+        expected_fill = pipeline.outputs[fill.id].copy()
         expected = pipeline.outputs[components.id].copy()
         if gaussian is not None:
             gaussian_output = np.asarray(pipeline.outputs[gaussian.id])
@@ -2339,6 +2357,10 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
                 "implementation:cupyx-convert-dtype-preserve-f32-v1"
             ),
             threshold.id: "implementation:cupy-binary-threshold-f32-exact-v1",
+            remove_small.id: (
+                "implementation:cupyx-remove-small-objects-bool-v1"
+            ),
+            fill.id: "implementation:cupyx-fill-holes-all-v1",
             components.id: "implementation:cupyx-connected-components-v1",
         }
         if gaussian is not None:
@@ -2355,7 +2377,9 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
                 pipeline,
                 data,
                 compute_request,
-                retain_node_ids=frozenset({components.id}),
+                retain_node_ids=frozenset(
+                    {components.id, *([fill.id] if retain_cleanup else [])}
+                ),
                 prune_unretained=True,
             ),
             input_metadata={"axes": "CYX"},
@@ -2370,11 +2394,20 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
         expected_node_ids = [extract.id, conversion.id]
         if gaussian is not None:
             expected_node_ids.append(gaussian.id)
-        expected_node_ids.extend((threshold.id, components.id))
+        expected_node_ids.extend(
+            (threshold.id, remove_small.id, fill.id, components.id)
+        )
         assert [
             (segment.runtime_id, segment.node_ids)
             for segment in result.execution_report.plan.segments
         ] == [("cuda-cupy", tuple(expected_node_ids))]
+        (segment,) = result.execution_report.plan.segments
+        assert {
+            (port.node_id, port.port_index) for port in segment.exit_ports
+        } == {
+            (components.id, 0),
+            *({(fill.id, 0)} if retain_cleanup else set()),
+        }
         decisions = {
             decision.node_id: decision
             for decision in result.execution_report.actual_decisions
@@ -2392,6 +2425,8 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
                 else {}
             ),
             threshold.id: "cupy-binary-threshold-f32-exact-v1",
+            remove_small.id: "cupyx-remove-small-objects-bool-v1",
+            fill.id: "cupyx-fill-holes-all-v1",
             components.id: "cupyx-connected-components-v1",
         }
         assert all(
@@ -2400,7 +2435,28 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
             and not decision.fallback_used
             for decision in decisions.values()
         )
-        assert transfers == {"host_to_device": 1, "device_to_host": 1}
+        assert transfers == {
+            "host_to_device": 1,
+            "device_to_host": 2 if retain_cleanup else 1,
+        }
+        retained_ids = {components.id, *([fill.id] if retain_cleanup else [])}
+        assert all(
+            result.pipeline.outputs[node_id] is None
+            for node_id in set(expected_node_ids) - retained_ids
+        )
+        if retain_cleanup:
+            np.testing.assert_array_equal(
+                result.pipeline.outputs[fill.id],
+                expected_fill,
+                strict=True,
+            )
+            fill_state = result.pipeline.output_states[fill.id]
+            assert fill_state.dtype == "bool"
+            assert fill_state.kind == "binary mask"
+            assert fill_state.history[-2:] == (
+                "Remove Small Objects",
+                "Fill Holes",
+            )
         np.testing.assert_array_equal(
             result.pipeline.outputs[components.id],
             expected,
@@ -2412,7 +2468,12 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
         assert state.dtype == "int32"
         assert tuple(axis.name for axis in state.axes) == ("y", "x")
         assert state.channels == ()
-        assert state.history[-1].startswith("Label Connected Components")
+        assert state.kind == "label image"
+        assert state.history[-3:] == (
+            "Remove Small Objects",
+            "Fill Holes",
+            "Label Connected Components",
+        )
         # Pruned intermediates remain represented by exact execution-report
         # decisions without forcing extra D2H transfers. The retained terminal
         # additionally carries its committed node provenance.
@@ -2420,12 +2481,142 @@ def test_real_extract_convert_threshold_components_corridor_is_one_cuda_segment(
         assert provenance.actual_implementation.implementation_id == (
             decisions[components.id].implementation_id
         )
+        assert set(result.pipeline.node_compute_provenance) == retained_ids
+        if retain_cleanup:
+            assert result.pipeline.node_compute_provenance[
+                fill.id
+            ].actual_implementation.implementation_id == (
+                "cupyx-fill-holes-all-v1"
+            )
         _assert_private_cuda_scope_clean(
             runtime,
             runtime_probe.selected_device_id,
         )
     finally:
         registry.close()
+
+
+def test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance(
+    tmp_path,
+):
+    """Generated workflow-v4 Python must execute both exact cleanup IDs."""
+
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+    registry = ComputeRegistry()
+    try:
+        runtime_probe = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not runtime_probe.available or not runtime_probe.selected_device_id:
+            pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
+        library_probe = registry.probe_library("cupyx", refresh=True)
+        if not library_probe.available:
+            pytest.skip(library_probe.message or "CuPyX is unavailable.")
+    finally:
+        registry.close()
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    remove_small = pipeline.add_node("remove_small_objects")
+    fill = pipeline.add_node("fill_holes")
+    components = pipeline.add_node("label_connected_components")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.set_param(remove_small.id, "min_size", 3)
+    pipeline.set_param(remove_small.id, "spatial_mode", "2D YX")
+    pipeline.set_param(remove_small.id, "connectivity", "Face connected")
+    pipeline.set_param(fill.id, "max_hole_size", 0)
+    pipeline.set_param(fill.id, "spatial_mode", "2D YX")
+    pipeline.set_param(fill.id, "connectivity", "Face connected")
+    pipeline.set_param(components.id, "spatial_mode", "2D YX")
+    pipeline.set_param(components.id, "connectivity", "Full connectivity")
+    assert pipeline.connect("input", threshold.id).success
+    assert pipeline.connect(threshold.id, remove_small.id).success
+    assert pipeline.connect(remove_small.id, fill.id).success
+    assert pipeline.connect(fill.id, components.id).success
+
+    source = np.zeros((31, 37), dtype=np.float32)
+    source[4:15, 5:17] = 1.0
+    source[9, 10] = 0.0
+    source[22:28, 24:34] = 2.0
+    source[2, 32] = 1.0
+    before = source.copy()
+    pipeline.run(source, input_metadata={"axes": "YX"})
+    expected = pipeline.outputs[components.id].copy()
+
+    preferences = {
+        threshold.id: "implementation:cupy-binary-threshold-f32-exact-v1",
+        remove_small.id: "implementation:cupyx-remove-small-objects-bool-v1",
+        fill.id: "implementation:cupyx-fill-holes-all-v1",
+        components.id: "implementation:cupyx-connected-components-v1",
+    }
+    compute_request = ComputeRequest(
+        mode=ComputeMode.CUSTOM,
+        node_preferences=preferences,
+        runtime_id="cuda-cupy",
+        device_id=runtime_probe.selected_device_id,
+        fallback_policy=FallbackPolicy.STRICT,
+    )
+    script_path = tmp_path / "generated-segmentation-cleanup.py"
+    script_path.write_text(
+        export_pipeline_to_python(pipeline, compute_request=compute_request),
+        encoding="utf-8",
+    )
+    module_spec = importlib.util.spec_from_file_location(
+        "vipp_generated_cleanup_integration",
+        script_path,
+    )
+    assert module_spec is not None and module_spec.loader is not None
+    generated = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(generated)
+    embedded = json.loads(generated._WORKFLOW_JSON)
+
+    assert embedded["version"] == 4
+    assert embedded["execution"]["compute"]["mode"] == "custom"
+    assert embedded["execution"]["compute"]["node_preferences"] == preferences
+
+    results = generated.run_pipeline(
+        source,
+        input_metadata={"axes": "YX"},
+    )
+
+    report = results.execution_report
+    assert report is not None
+    assert report.cleanup_succeeded
+    assert report.fallback_records == ()
+    assert len(report.plan.segments) == 1
+    assert report.plan.segments[0].node_ids == (
+        threshold.id,
+        remove_small.id,
+        fill.id,
+        components.id,
+    )
+    np.testing.assert_array_equal(results[components.id], expected, strict=True)
+    np.testing.assert_array_equal(source, before, strict=True)
+    assert results.output_states[remove_small.id].dtype == "bool"
+    assert results.output_states[remove_small.id].kind == "binary mask"
+    assert results.output_states[fill.id].dtype == "bool"
+    assert results.output_states[fill.id].kind == "binary mask"
+    assert results.output_states[components.id].dtype == "int32"
+    assert results.output_states[components.id].kind == "label image"
+
+    by_node = {
+        item["node_id"]: item for item in results.execution_provenance["nodes"]
+    }
+    for node_id, implementation_id in (
+        (remove_small.id, "cupyx-remove-small-objects-bool-v1"),
+        (fill.id, "cupyx-fill-holes-all-v1"),
+    ):
+        identity = by_node[node_id]["actual_implementation"]
+        assert by_node[node_id]["decision_kind"] == "selected"
+        assert identity["runtime_id"] == "cuda-cupy"
+        assert identity["implementation_library_id"] == "cupyx"
+        assert identity["implementation_id"] == implementation_id
+        assert identity["implementation_version"] == "1"
+        assert results.node_compute_provenance[
+            node_id
+        ].actual_implementation.implementation_id == implementation_id
+    assert results.execution_provenance["fallback_records"] == []
+    assert results.execution_provenance["cleanup_succeeded"] is True
 
 
 @pytest.mark.parametrize("mode", (ComputeMode.AUTO, ComputeMode.PREFER_GPU))

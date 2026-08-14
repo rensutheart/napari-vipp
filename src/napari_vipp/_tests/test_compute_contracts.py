@@ -369,6 +369,8 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",
         "sigma_filter",
+        "fill_holes",
+        "remove_small_objects",
         "label_connected_components",
         "measure_objects",
         "measure_objects_intensity",
@@ -381,6 +383,8 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
     assert custom_ids == {
         "cupy-binary-threshold-f32-exact-v1",
         "cupy-extract-channel-view-v1",
+        "cupyx-fill-holes-all-v1",
+        "cupyx-remove-small-objects-bool-v1",
     }
     assert all(
         spec.admission_tier

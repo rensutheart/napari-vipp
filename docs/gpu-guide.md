@@ -186,15 +186,23 @@ conversion that needs scientific review.
 
 Open **Portable GPU Segmentation Bridge** from **Open example...**, or launch
 `gpu-segmentation`. Its annotated path is Extract Channel, Convert Dtype,
-Gaussian Blur, Binary Threshold, and 3D Connected Components. It opens in
-Prefer GPU mode, so the same saved workflow remains usable on CPU-only and
-partially eligible systems with a visible explanation for every fallback.
+Gaussian Blur, Binary Threshold, boolean Remove Small Objects, Fill Holes, and
+3D Connected Components. It opens in Prefer GPU mode, so the same saved
+workflow remains usable on CPU-only and partially eligible systems with a
+visible explanation for every fallback. Its dedicated sample contains four
+objects, one 19-voxel speck removed by the 22-voxel boundary, and 31 enclosed
+cavity voxels restored by Fill Holes.
 
 The initial Extract Channel and Binary Threshold implementations are reviewed
 public Custom/Prefer-GPU candidates, identified as
 `cupy-extract-channel-view-v1` and
-`cupy-binary-threshold-f32-exact-v1`. Passing their local eligibility gates
-means that Prefer GPU may select them; it does not guarantee that Auto or every
+`cupy-binary-threshold-f32-exact-v1`. The boolean cleanup implementations are
+`cupyx-remove-small-objects-bool-v1` and `cupyx-fill-holes-all-v1`. Remove Small
+Objects initially accepts boolean masks only; integer labels stay on CPU
+so label identities are never silently changed. Fill Holes initially accepts
+only `max_hole_size = 0`, which means fill every enclosed cavity; positive
+size-limited cleanup stays on CPU. Passing these local eligibility gates means
+that Prefer GPU may select them; it does not guarantee that Auto or every
 workload will do so. The example's threshold is deliberately placed inside a
 wide gap in its deterministic sample. That makes the review result stable but
 does not make the threshold appropriate for unrelated images.

@@ -173,13 +173,15 @@ def test_gpu_segmentation_bridge_is_portable_annotated_and_scientifically_stable
         "convert_dtype",
         "gaussian_blur",
         "binary_threshold",
+        "remove_small_objects",
+        "fill_holes",
         "label_connected_components",
     ]
 
     data, layer_kwargs, _layer_type = next(
         sample
         for sample in make_sample_data()
-        if sample[1]["name"] == "VIPP synthetic multichannel volume"
+        if sample[1]["name"] == "VIPP synthetic GPU segmentation cleanup"
     )
     outputs = pipeline.run(
         data,
@@ -190,6 +192,8 @@ def test_gpu_segmentation_bridge_is_portable_annotated_and_scientifically_stable
     extracted = outputs["extract_channel_1"]
     converted = outputs["convert_dtype_1"]
     mask = outputs["binary_threshold_1"]
+    cleaned = outputs["remove_small_objects_1"]
+    filled = outputs["fill_holes_1"]
     labels = outputs["label_connected_components_1"]
     extracted_state = pipeline.output_states["extract_channel_1"]
 
@@ -199,22 +203,27 @@ def test_gpu_segmentation_bridge_is_portable_annotated_and_scientifically_stable
     assert len(extracted_state.channels) == 1
     assert extracted_state.channels[0].color == 0xFF0000
     assert mask.dtype == bool
-    assert int(np.count_nonzero(mask)) == 1559
+    assert int(np.count_nonzero(mask)) == 2428
+    assert cleaned.dtype == bool
+    assert int(np.count_nonzero(cleaned)) == 2409
+    assert int(np.count_nonzero(filled)) == 2440
+    assert int(np.count_nonzero(filled & ~cleaned)) == 31
     assert labels.dtype == np.int32
-    assert int(labels.max()) == 5
+    assert int(labels.max()) == 4
     assert sorted(_label_volumes(labels).values(), reverse=True) == [
-        425,
-        424,
-        418,
-        271,
-        21,
+        685,
+        599,
+        595,
+        561,
     ]
 
     note_text = " ".join(note["text"] for note in workflow["notes"])
-    assert all(f"TEST {index}" in note_text for index in range(1, 6))
+    assert all(f"TEST {index}" in note_text for index in range(1, 7))
     assert "GPU eligible is not guaranteed" in note_text
     assert "CPU-to-GPU boundary" in note_text
     assert "no-copy view" in note_text
+    assert "19-voxel speck disappears" in note_text
+    assert "restores 31 enclosed 3D background voxels" in note_text
     assert "only the final label output retained" in note_text
     assert "explains the fallback" in note_text
 

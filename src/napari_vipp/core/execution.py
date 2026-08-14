@@ -107,6 +107,8 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "sigma_filter",
         "canny_edges",
         "otsu_threshold",
+        "fill_holes",
+        "remove_small_objects",
         "label_connected_components",
         "prepare_validate_psf",
         "richardson_lucy_deconvolution",
@@ -2379,11 +2381,10 @@ def _predict_device_node_states(
         output_dtype_policy_ids=output_dtype_policy_ids,
     )
     if implementation.shape_policy_id == "shape-preserving-v1":
-        if implementation.operation_id == "binary_threshold":
+        if output_dtype_policy_ids == ("fixed:bool",):
             if len(outputs) != 1 or len(call.inputs) != 1:
                 raise RuntimeError(
-                    "Resident Binary Threshold metadata requires one input and one "
-                    "output."
+                    "Resident boolean-mask metadata requires one input and one output."
                 )
             expected_shape = tuple(int(size) for size in call.inputs[0].shape)
             actual_shape = tuple(int(size) for size in outputs[0].shape)
@@ -2391,8 +2392,8 @@ def _predict_device_node_states(
                 bool
             ):
                 raise RuntimeError(
-                    "The resident Binary Threshold output violated its declared "
-                    "shape-preserving bool-mask contract."
+                    f"The resident {implementation.operation_id!r} output violated "
+                    "its declared shape-preserving bool-mask contract."
                 )
         return states
     if implementation.shape_policy_id != "scalar-plane-luma-mask-v1":
@@ -3327,13 +3328,32 @@ def _propagate_shape_preserving_facts(
         else:
             guarantees.discard("nonnegative")
             guarantees.discard("no-negative-zero")
-    elif operation_id in {"binary_threshold", "canny_edges", "otsu_threshold"}:
+    elif operation_id in {
+        "binary_threshold",
+        "canny_edges",
+        "otsu_threshold",
+        "fill_holes",
+    }:
         # These reviewed segmentation providers return an exact boolean mask.
         # Boolean output is finite by construction and cannot contain negative
         # values or a signed zero, independent of the source's numeric range.
         finite_count = output_elements
         completeness = FactCompleteness.COMPLETE
         guarantees.update(("nonnegative", "no-negative-zero"))
+    elif operation_id == "remove_small_objects":
+        # The operation preserves a bool mask or a non-negative integer label
+        # dtype. The promoted GPU region is bool-only, while authoritative CPU
+        # label cleanup still benefits from the exact kind/finiteness theorem.
+        if resolved_dtype is None or not (
+            resolved_dtype == np.dtype(bool)
+            or np.issubdtype(resolved_dtype, np.integer)
+        ):
+            return None
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.update(("nonnegative", "no-negative-zero"))
+        if resolved_dtype != np.dtype(bool):
+            guarantees.add("integer-labels")
     elif operation_id == "label_connected_components":
         # Successful CPU and GPU paths return an exact int32 label image.
         # Label extrema and counts remain data-dependent, but finiteness,

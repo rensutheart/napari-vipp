@@ -54,10 +54,11 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "Segmentation & Labels",
         "Portable GPU Segmentation Bridge",
         "synthetic-gpu-segmentation-bridge.json",
-        ("VIPP synthetic multichannel volume",),
+        ("VIPP synthetic GPU segmentation cleanup",),
         "Follow annotated checks through channel extraction, an exact float32 "
-        "conversion, filtering, fixed thresholding, and 3D connected components. "
-        "Prefer GPU remains portable because every fallback is visible.",
+        "conversion, filtering, fixed thresholding, boolean cleanup, and 3D "
+        "connected components. Prefer GPU remains portable because every "
+        "fallback is visible.",
     ),
     ExampleWorkflowSpec(
         "object-intensity",

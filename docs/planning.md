@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-14
 
 This is the concise source of truth for VIPP's product direction, active
 priorities, and intended release order. Detailed implementation contracts and
@@ -351,6 +351,14 @@ It remains dirty-worktree integration evidence until repeated from an immutable
 candidate commit; it does not by itself broaden supported hardware or describe
 later additions to the live catalogue.
 
+The current mask-cleanup development slice expands the live strict catalogue
+to 18 public GPU implementations and 23 executable owners. Its RTX 5090 quick
+evidence passed exact parity, lifecycle, memory, provenance, and
+transfer-inclusive timing checks from the feature worktree. The resulting
+artifact remains temporary integration evidence until the suite is repeated
+from an immutable candidate commit; it does not promote these Custom regions
+to Auto or broaden the supported hardware matrix.
+
 The remaining Priority 1 items are deliberately field qualification, not
 unfinished implementation:
 
@@ -405,8 +413,12 @@ what is needed to close and validate the standard corridor:
 2. the initial exact Extract Channel allocation-sharing view and scalar
    `float32` Binary Threshold regions enter as reviewed public Custom/Prefer-GPU
    candidates; Auto promotion still requires multi-device, transfer-inclusive
-   evidence; and
-3. the selected Fill Holes, Remove Small Objects, and label-output bridges.
+   evidence;
+3. boolean Remove Small Objects and the exact fill-all-holes region enter as
+   reviewed public Custom/Prefer-GPU candidates, while integer-label cleanup
+   and positive bounded-hole sizes remain visible CPU regions; and
+4. the existing exact int32 Connected Components output closes and verifies
+   the label-output bridge without inventing another node.
 
 Crop, Select Axis Slice, Reorder Axes, Clip, Mask Image, logical/arithmetic
 operations, projections, broader binary morphology, label cleanup, additional
