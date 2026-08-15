@@ -4,12 +4,31 @@
 
 ## Verification
 
-<!-- List focused tests, the full suite, and any manual UI checks performed. -->
+<!-- List focused tests and any manual checks for the behavior changed here.
+The exact-commit CI matrix owns the routine full-suite and package checks. -->
 
 - [ ] `python -m npe2 validate src/napari_vipp/napari.yaml`
 - [ ] `python -m ruff check .`
 - [ ] Relevant tests pass
-- [ ] Full test suite passes, or the reason it was not run is explained
+
+## Release Impact
+
+<!-- Check only domains changed by this PR. The release operator takes the
+union of these declarations for every PR merged since the prior public tag.
+An unchecked domain may carry its existing qualification evidence forward.
+Shared infrastructure can affect more than one domain. -->
+
+- [ ] Core/UI behavior
+- [ ] Workflow, schema, batch, or provenance
+- [ ] GPU/scientific provider or shared compute infrastructure
+- [ ] Windows installer, repair, update, rollback, or ownership
+- [ ] Runtime dependencies or build toolchain
+- [ ] Packaging or release automation
+- [ ] Documentation or site content
+
+<!-- Name any carried-forward baseline or write "None": -->
+
+Carried-forward qualification:
 
 ## Scientific And User Impact
 
