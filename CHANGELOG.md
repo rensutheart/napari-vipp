@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- Simplified the Windows GPU installer status text to state its 15 GiB free
+  disk-space requirement directly without referring to VRAM.
+
 ## 0.13.0a7 - 2026-08-14
 
 ### Release Overview

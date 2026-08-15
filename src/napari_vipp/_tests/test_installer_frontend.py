@@ -160,10 +160,10 @@ def test_gpu_install_explains_that_the_large_download_can_pause(tmp_path):
     controller.start()
     workers.pop(0)()
     assert controller.state.status_message == (
-        "Setup will use GPU acceleration. It needs at least 15 GiB free on the "
-        "installation drive during setup. This is disk storage, not GPU "
-        "memory (VRAM). Windows temporary files and VIPP installer records also "
-        "need at least 5 GiB free on every drive they use."
+        "Setup will use GPU acceleration and needs at least 15 GiB of free disk "
+        "space on the installation drive during setup. Windows temporary files "
+        "and VIPP installer records also need at least 5 GiB free on every drive "
+        "they use."
     )
     controller.confirm()
 
