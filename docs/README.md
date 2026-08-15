@@ -55,8 +55,11 @@ reviewing VIPP itself.
   export, and known gaps.
 - [Release notes](../CHANGELOG.md): categorized compatibility, architecture,
   scientific-behavior, workflow, UI, and validation changes by version.
-- [Release runbook](release-runbook.md): alpha release verification and
-  publication steps.
+- [Release runbook](release-runbook.md): risk-based alpha, release-candidate,
+  and production publication with change-triggered gates.
+- [Release qualification baseline](release-qualification-baseline.md):
+  reusable installer, GPU, schema, packaging, and documentation evidence plus
+  exact invalidation rules.
 - [Windows installer field acceptance](windows-installer-field-acceptance.md):
   a short record for exact-artifact CPU, CUDA, rollback, path, and novice checks.
 - [Windows setup packaging](../packaging/windows/README.md): the same-tag wheel,

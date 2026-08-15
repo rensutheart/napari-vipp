@@ -45,5 +45,7 @@ cuCIM is never part of the primary EXE. When selected, its deterministic
 no-wheel local-build ZIP is a separate companion release asset. Finalization
 binds that ZIP's version, source commit, and SHA-256 into the release manifest.
 
-The complete operator sequence and clean-machine acceptance gates are in the
-[release runbook](../../docs/release-runbook.md).
+The canonical release build commands and risk-based gate selection are in the
+[release runbook](../../docs/release-runbook.md). Full clean-machine lifecycle
+acceptance is a conditional release-candidate/production or installer-change
+procedure, not a requirement for every iterative alpha.
