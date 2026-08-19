@@ -314,7 +314,41 @@ not deferred until a later milestone:
   that work enables a roadmap outcome. Define first-class points, transforms,
   and surfaces before adding dependent algorithm families.
 
-### 1. Field Hardening And Supported Compute Reach
+### 1. Coherent Toolbar And Settings Experience
+
+The next release must clean up the toolbar and Settings menu as one connected
+user experience. Their current controls feel disjointed and are not always
+intuitive to discover or interpret, particularly as controls move between the
+toolbar and Settings at narrower widths. Reorganize related actions and
+preferences into clear, predictable groups, use consistent labels and state
+presentation, and add familiar icons where they improve recognition without
+making the interface ambiguous or visually busy. Preserve keyboard access,
+tooltips, responsive behavior, and explicit compute-policy semantics while
+bringing the layout and terminology into a coherent whole. The detailed UI
+work packages are tracked in [app-improvements-plan.md](app-improvements-plan.md).
+
+Release acceptance should include a focused toolbar/Settings usability pass on
+the novice Windows path and a regression check that every existing action
+remains reachable, has an understandable label or tooltip, and retains its
+current behavior after reorganization.
+
+The next release must also make accelerator choice observable and controllable:
+users should be able to see which qualifying GPU VIPP is using, select among
+available supported devices where the environment permits it, and distinguish
+the compute device from the host display or integrated graphics device. The
+active device, provider, and actual per-node backend should be visible in the
+compute status and diagnostic surfaces, with clear explanations when a node
+stays on CPU or when data crosses host/device boundaries.
+
+The release should investigate and reduce avoidable transfer and synchronization
+overhead in GPU workflows, starting with cuCIM Subtract Background and
+interactive parameter updates. Instrument host-to-device/device-to-host copies,
+residency, synchronization, initialization, and queueing before optimizing;
+then retain compatible data on the selected device and avoid repeated staging
+where correctness, cancellation, memory limits, and cleanup remain intact. See
+the existing [Prefer GPU tuning issue](https://github.com/rensutheart/napari-vipp/issues/27).
+
+### 2. Field Hardening And Supported Compute Reach
 
 Priority 1 engineering is delivered in `0.13.0a6`:
 
