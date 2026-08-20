@@ -490,8 +490,8 @@ def test_registered_adapter_is_transactional_synchronized_and_memory_observed(
     record = NodeBenchmarkService(clock=clock).benchmark(built.request)
 
     results = {result.implementation_id: result for result in record.candidates}
-    candidate = results["cupyx-median-filter-v1"]
-    assert record.accepted_implementation_id == "cupyx-median-filter-v1"
+    candidate = results["cupy-median-filter-v1"]
+    assert record.accepted_implementation_id == "cupy-median-filter-v1"
     assert candidate.parity_passed
     assert candidate.cold_seconds == pytest.approx(0.044)
     assert candidate.warm_seconds == pytest.approx((0.044,) * 7)
@@ -514,12 +514,12 @@ def test_registered_adapter_is_transactional_synchronized_and_memory_observed(
     )
     # cold/parity + one untimed warmup + seven paired rounds
     assert runtime.scope_count == 9
-    assert len(built.observations.runs("cupyx-median-filter-v1")) == 9
+    assert len(built.observations.runs("cupy-median-filter-v1")) == 9
     assert all(
         observation.cleanup_succeeded
         and observation.terminal_snapshot.runtime_live_bytes == 0
         and observation.terminal_snapshot.runtime_reserved_bytes == 0
-        for observation in built.observations.runs("cupyx-median-filter-v1")
+        for observation in built.observations.runs("cupy-median-filter-v1")
     )
     assert runtime.live == {}
     assert set(runtime.release_counts.values()) == {1}
@@ -1066,7 +1066,7 @@ def test_aliasing_input_and_output_allocation_is_released_once(monkeypatch):
     candidate = next(
         result
         for result in record.candidates
-        if result.implementation_id == "cupyx-median-filter-v1"
+        if result.implementation_id == "cupy-median-filter-v1"
     )
     assert candidate.parity_passed
     assert runtime.scope_count == 9

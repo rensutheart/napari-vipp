@@ -7,6 +7,7 @@ import sys
 import numpy as np
 import pytest
 
+import napari_vipp.core.gpu.cupy_median as cupy_median
 from napari_vipp.core.gpu.cupy_median import median_filter as gpu_median_filter
 from napari_vipp.core.operations import median_filter as cpu_median_filter
 
@@ -145,6 +146,53 @@ def test_device_input_is_not_mutated_and_output_remains_device_resident(cupy_mod
     assert output.data.ptr != device.data.ptr
     cupy_module.testing.assert_array_equal(device, expected_input)
     expected = cpu_median_filter(cupy_module.asnumpy(device), size=3)
+    _assert_bitwise_equal(expected, cupy_module.asnumpy(output))
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
+def test_unseen_sizes_reuse_one_runtime_sized_program_and_remain_exact(
+    cupy_module,
+    monkeypatch,
+    dtype,
+):
+    host = _finite_fixture(dtype, (17, 19))
+    device = cupy_module.asarray(host)
+    raw_kernel = cupy_module.RawKernel
+    compiled_sources: list[str] = []
+
+    def tracked_raw_kernel(source, *args, **kwargs):
+        compiled_sources.append(source)
+        return raw_kernel(source, *args, **kwargs)
+
+    cupy_median._median_filter_kernel.cache_clear()
+    monkeypatch.setattr(cupy_module, "RawKernel", tracked_raw_kernel)
+    try:
+        for size in (1, 3, 5, 7, 9, 5, 3, 1):
+            output = gpu_median_filter(device, size=size)
+            expected = cpu_median_filter(host, size=size)
+            _assert_bitwise_equal(expected, cupy_module.asnumpy(output))
+    finally:
+        cupy_median._median_filter_kernel.cache_clear()
+
+    assert len(compiled_sources) == 1
+    assert "const int footprint_size" in compiled_sources[0]
+
+
+def test_float32_subnormal_ordering_remains_bitwise_exact(cupy_module):
+    smallest = np.nextafter(np.float32(0), np.float32(1), dtype=np.float32)
+    host = np.array(
+        [
+            [-3 * smallest, -smallest, np.float32(0), smallest, 3 * smallest],
+            [np.float32(-2), np.float32(-1), np.float32(0), 1, 2],
+            [3, 2, 1, np.float32(0), -1],
+            [smallest, np.float32(0), -smallest, 4, -4],
+            [7, 6, 5, -5, -6],
+        ],
+        dtype=np.float32,
+    )
+    expected = cpu_median_filter(host, size=3)
+    output = gpu_median_filter(cupy_module.asarray(host), size=3)
+
     _assert_bitwise_equal(expected, cupy_module.asnumpy(output))
 
 

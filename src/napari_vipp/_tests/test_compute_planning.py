@@ -39,7 +39,7 @@ from napari_vipp.core.compute_registry import (
 from napari_vipp.core.compute_specs import AdmissionTier, compute_specs_for
 
 
-def _environment(*, runtime=True, libraries=("cpu", "cupyx", "cucim")):
+def _environment(*, runtime=True, libraries=("cpu", "cupy", "cupyx", "cucim")):
     return ComputeEnvironment(
         os_name="Windows",
         python_implementation="CPython",
@@ -48,7 +48,13 @@ def _environment(*, runtime=True, libraries=("cpu", "cupyx", "cucim")):
         runtime_ids=("cpu-numpy", "cuda-cupy") if runtime else ("cpu-numpy",),
         implementation_libraries=libraries,
         runtime_versions=(
-            (("cuda-cupy", "14.1.1"), ("cupyx", "14.1.1")) if runtime else ()
+            (
+                ("cuda-cupy", "14.1.1"),
+                ("cupy", "14.1.1"),
+                ("cupyx", "14.1.1"),
+            )
+            if runtime
+            else ()
         ),
         scientific_stack_versions=(
             ("numpy", "2.5.1"),
@@ -249,20 +255,20 @@ def test_custom_exact_and_library_preferences_bypass_auto_threshold():
     facts = {"node": _facts(workload)}
 
     exact = plan_compute_decisions(
-        _request("implementation:cupyx-gaussian-blur-v1"),
+        _request("implementation:cupy-gaussian-blur-v1"),
         (workload,),
         environment=_environment(),
         array_facts=facts,
     )
     library = plan_compute_decisions(
-        _request("library:cupyx"),
+        _request("library:cupy"),
         (workload,),
         environment=_environment(),
         array_facts=facts,
     )
 
-    assert exact.decisions[0].implementation_id == "cupyx-gaussian-blur-v1"
-    assert library.decisions[0].implementation_library_id == "cupyx"
+    assert exact.decisions[0].implementation_id == "cupy-gaussian-blur-v1"
+    assert library.decisions[0].implementation_library_id == "cupy"
     assert exact.decisions[0].decision_kind is DecisionKind.SELECTED
     assert library.decisions[0].decision_kind is DecisionKind.SELECTED
 
@@ -295,7 +301,7 @@ def test_compatible_secondary_nvidia_device_is_admitted_in_every_gpu_mode():
         array_facts=facts,
     )
     pinned = plan_compute_decisions(
-        _request("library:cupyx"),
+        _request("library:cupy"),
         (workload,),
         environment=secondary,
         array_facts=facts,
@@ -326,14 +332,14 @@ def test_compatible_device_keeps_auto_performance_semantics():
         device_metadata=(("compute_capability", "8.9"),),
     )
     slow = {
-        ("node", "cupyx-gaussian-blur-v1"): PerformanceEvidence(
+        ("node", "cupy-gaussian-blur-v1"): PerformanceEvidence(
             0.2,
             0.19,
             lower_confidence_speedup=1.01,
         )
     }
     fast = {
-        ("node", "cupyx-gaussian-blur-v1"): PerformanceEvidence(
+        ("node", "cupy-gaussian-blur-v1"): PerformanceEvidence(
             0.2,
             0.1,
             lower_confidence_speedup=1.5,
@@ -362,7 +368,7 @@ def test_compatible_device_keeps_auto_performance_semantics():
         performance_evidence=slow,
     )
     pinned = plan_compute_decisions(
-        _request("library:cupyx"),
+        _request("library:cupy"),
         (workload,),
         environment=environment,
         array_facts=facts,
@@ -472,7 +478,7 @@ def test_best_gpu_and_library_choose_fastest_of_multiple_valid_candidates():
     )[0]
     alternate = replace(
         primary,
-        implementation_id="cupyx-gaussian-blur-alternate-v1",
+        implementation_id="cupy-gaussian-blur-alternate-v1",
         implementation_version="2",
     )
     registry = ComputeRegistry(implementation_specs=(primary, alternate))
@@ -486,7 +492,7 @@ def test_best_gpu_and_library_choose_fastest_of_multiple_valid_candidates():
         ),
     }
 
-    for preference in ("best_gpu", "library:cupyx"):
+    for preference in ("best_gpu", "library:cupy"):
         result = plan_compute_decisions(
             _request(preference),
             (workload,),
@@ -496,7 +502,7 @@ def test_best_gpu_and_library_choose_fastest_of_multiple_valid_candidates():
             performance_evidence=evidence,
         )
         assert (
-            result.decisions[0].implementation_id == "cupyx-gaussian-blur-alternate-v1"
+            result.decisions[0].implementation_id == "cupy-gaussian-blur-alternate-v1"
         )
     registry.close()
 
@@ -506,7 +512,7 @@ def test_best_gpu_and_library_choose_fastest_of_multiple_valid_candidates():
     (
         {},
         {
-            ("node", "cupyx-gaussian-blur-v1"): PerformanceEvidence(
+            ("node", "cupy-gaussian-blur-v1"): PerformanceEvidence(
                 cpu_seconds=1.0,
                 candidate_seconds=2.0,
                 lower_confidence_speedup=0.4,
@@ -528,7 +534,7 @@ def test_prefer_gpu_bypasses_cpu_performance_gate(evidence):
 
     decision = result.decisions[0]
     assert decision.decision_kind is DecisionKind.SELECTED
-    assert decision.implementation_id == "cupyx-gaussian-blur-v1"
+    assert decision.implementation_id == "cupy-gaussian-blur-v1"
     assert decision.reason is DecisionReason.SELECTED_IMPLEMENTATION
 
 
@@ -633,7 +639,7 @@ def test_auto_uses_reviewed_default_without_evidence_and_measured_candidate_with
         environment=_environment(),
         array_facts={"node": _facts(workload)},
         performance_evidence={
-            ("node", "cupyx-gaussian-blur-v1"): PerformanceEvidence(
+            ("node", "cupy-gaussian-blur-v1"): PerformanceEvidence(
                 0.2,
                 0.1,
                 lower_confidence_speedup=1.5,
@@ -643,9 +649,7 @@ def test_auto_uses_reviewed_default_without_evidence_and_measured_candidate_with
 
     assert without_evidence.decisions[0].decision_kind is DecisionKind.SELECTED
     assert not without_evidence.decisions[0].fallback_used
-    assert without_evidence.decisions[0].implementation_id == (
-        "cupyx-gaussian-blur-v1"
-    )
+    assert without_evidence.decisions[0].implementation_id == ("cupy-gaussian-blur-v1")
     assert "reviewed Auto default" in without_evidence.decisions[0].reason_text
     assert with_evidence.decisions[0].decision_kind is DecisionKind.SELECTED
 
@@ -670,7 +674,7 @@ def test_unforced_auto_applies_reviewed_default_or_measured_performance_gate(
     expected_reason,
 ):
     performance_evidence = (
-        {} if evidence is None else {("node", "cupyx-gaussian-blur-v1"): evidence}
+        {} if evidence is None else {("node", "cupy-gaussian-blur-v1"): evidence}
     )
 
     result = plan_compute_decisions(
@@ -689,7 +693,7 @@ def test_viable_auto_evidence_still_requires_complete_scientific_facts():
         (_workload(),),
         environment=_environment(),
         performance_evidence={
-            ("node", "cupyx-gaussian-blur-v1"): PerformanceEvidence(
+            ("node", "cupy-gaussian-blur-v1"): PerformanceEvidence(
                 0.2,
                 0.1,
                 lower_confidence_speedup=1.5,
@@ -723,7 +727,7 @@ def test_visible_forced_preference_has_typed_fallback_and_warning(
 ):
     workload = _workload()
     result = plan_compute_decisions(
-        _request("library:cupyx"),
+        _request("library:cupy"),
         (workload,),
         environment=environment,
         array_facts={"node": _facts(workload)},
@@ -754,7 +758,7 @@ def test_exact_public_gpu_pin_has_visible_cpu_fallback_for_unvalidated_cpu_stack
 ):
     workload = _workload()
     result = plan_compute_decisions(
-        _request("library:cupyx"),
+        _request("library:cupy"),
         (workload,),
         environment=replace(
             _environment(),
@@ -776,7 +780,7 @@ def test_strict_forced_preference_fails_complete_preflight():
 
     with pytest.raises(ComputePreflightError) as error:
         plan_compute_decisions(
-            _request("library:cupyx", fallback="strict"),
+            _request("library:cupy", fallback="strict"),
             (workload,),
             environment=_environment(libraries=("cpu",)),
             array_facts={"node": _facts(workload)},
@@ -790,7 +794,7 @@ def test_unresolved_upstream_workload_defers_gpu_even_for_strict_preference():
     workload = replace(_workload(), inputs_resolved=False)
 
     result = plan_compute_decisions(
-        _request("library:cupyx", fallback="strict"),
+        _request("library:cupy", fallback="strict"),
         (workload,),
         environment=_environment(),
     )
@@ -930,7 +934,7 @@ def test_exact_hidden_candidate_is_unavailable_without_experimental_flag():
     registry = ComputeRegistry(implementation_specs=(hidden,))
     result = plan_compute_decisions(
         _request(
-            "implementation:cupyx-gaussian-blur-v1",
+            "implementation:cupy-gaussian-blur-v1",
             allow_experimental=False,
         ),
         (_workload(),),
@@ -1033,9 +1037,9 @@ def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatc
         )
 
     def library_probe(library_id):
-        if library_id == "cupyx":
+        if library_id == "cupy":
             return ImplementationLibraryProbeResult(
-                "cupyx",
+                "cupy",
                 True,
                 version="14.1.1",
             )
@@ -1053,7 +1057,7 @@ def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatc
             0
         ],
         compute_specs_for(
-            "rolling_ball_background",
+            "measure_objects",
             include_cpu=False,
             allow_experimental=True,
         )[0],

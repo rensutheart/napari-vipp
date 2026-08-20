@@ -198,7 +198,7 @@ def test_complete_samples_require_matching_production_round_target():
             reference=SimpleNamespace(implementation_id="cpu-gaussian_blur-v1")
         )
     )
-    spec = SimpleNamespace(implementation_id="cupyx-gaussian-blur-v1")
+    spec = SimpleNamespace(implementation_id="cupy-gaussian-blur-v1")
 
     def record(cpu_rounds, gpu_rounds):
         return SimpleNamespace(
@@ -208,7 +208,7 @@ def test_complete_samples_require_matching_production_round_target():
                     warm_seconds=(0.1,) * cpu_rounds,
                 ),
                 SimpleNamespace(
-                    implementation_id="cupyx-gaussian-blur-v1",
+                    implementation_id="cupy-gaussian-blur-v1",
                     warm_seconds=(0.05,) * gpu_rounds,
                 ),
             )

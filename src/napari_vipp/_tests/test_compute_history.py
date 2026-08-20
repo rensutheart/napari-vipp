@@ -29,7 +29,7 @@ from napari_vipp.core.compute_history import (
 def _environment(*, driver_version: str = "555.42") -> ComputeEnvironment:
     return ComputeEnvironment(
         runtime_ids=("cpu-numpy", "cuda-cupy"),
-        implementation_libraries=("cpu", "cupyx"),
+        implementation_libraries=("cpu", "cupy"),
         runtime_versions=(("cuda-cupy", "13.0"),),
         runtime_probe_fingerprints=(("cuda-cupy", "runtime-probe"),),
         driver_version=driver_version,
@@ -53,8 +53,8 @@ def _decision(
             operation_id,
             NodeComputePreference(),
             "cuda-cupy",
-            "cupyx",
-            "cupyx-gaussian-blur-v1",
+            "cupy",
+            "cupy-gaussian-blur-v1",
             DecisionKind.SELECTED,
             DecisionReason.SELECTED_IMPLEMENTATION,
             "The compatible GPU implementation was selected.",

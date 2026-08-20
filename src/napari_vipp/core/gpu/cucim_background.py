@@ -1,8 +1,10 @@
-"""Device-resident cuCIM adapters for VIPP rolling-ball operations.
+"""Device-resident CUDA adapters for VIPP rolling-ball operations.
 
 The optional CUDA stack is imported only when an adapter is called.  These
-functions reproduce the public CPU operations around cuCIM's primitive; they
-do not expose the raw primitive as a VIPP implementation.
+functions reproduce the public CPU operations without exposing provider
+primitives as VIPP implementations.  The rolling-ball radius is a runtime
+kernel argument so interactive edits do not compile a new CUDA program for
+every previously unseen radius.
 """
 
 from __future__ import annotations
@@ -14,15 +16,450 @@ from types import ModuleType
 
 import numpy as np
 
+_THREADS_PER_BLOCK = 256
+_MAXIMUM_BLOCKS = 65_535
+_KERNEL_OPTIONS = (
+    "--std=c++11",
+    "--fmad=false",
+    "--prec-div=true",
+    "--prec-sqrt=true",
+)
+_FLOAT32_CONVERSION_HELPERS = r"""
+    __device__ __forceinline__ double vipp_background_float_to_double(
+        const float value)
+    {
+        const unsigned int bits = __float_as_uint(value);
+        const unsigned int magnitude = bits & 0x7fffffffU;
+        if (magnitude != 0U && magnitude < 0x00800000U) {
+            double converted = ldexp((double)magnitude, -149);
+            return (bits & 0x80000000U) ? -converted : converted;
+        }
+        return (double)value;
+    }
+
+    __device__ __forceinline__ float vipp_background_double_to_float(
+        const double value)
+    {
+        const double magnitude = fabs(value);
+        if (magnitude > 0.0
+            && magnitude < 1.17549435082228750796873653722224568e-38) {
+            // NVRTC/CUDA float arithmetic can flush subnormal values. Build
+            // those results from their IEEE-754 bits so the CPU contract is
+            // preserved without transferring the image to the host.
+            unsigned int mantissa =
+                __double2uint_rn(ldexp(magnitude, 149));
+            if (mantissa > 0x00800000U) {
+                mantissa = 0x00800000U;
+            }
+            const unsigned int sign =
+                signbit(value) ? 0x80000000U : 0U;
+            return __uint_as_float(sign | mantissa);
+        }
+        return (float)value;
+    }
+"""
+
 
 @cache
-def _gpu_modules() -> tuple[ModuleType, ModuleType, ModuleType]:
+def _gpu_modules() -> tuple[ModuleType, ModuleType]:
     """Load optional providers only for explicit accelerator execution."""
 
     cupy = importlib.import_module("cupy")
     ndimage = importlib.import_module("cupyx.scipy.ndimage")
-    restoration = importlib.import_module("cucim.skimage.restoration")
-    return cupy, ndimage, restoration
+    return cupy, ndimage
+
+
+@cache
+def _float32_uniform_filter_axis_kernel(cupy):
+    """Return SciPy's rolling size-three float32 smoothing kernel.
+
+    One thread owns one complete axis line.  That deliberately mirrors
+    ``NI_UniformFilter1D``: initialize the first reflected window, then add
+    the entering sample before subtracting the leaving sample.  A thread per
+    output value would perform three independent additions and can differ by
+    an ULP from SciPy even when all values are ordinary finite floats.
+    """
+
+    source = rf"""
+        {_FLOAT32_CONVERSION_HELPERS}
+
+        extern "C" __global__
+        void vipp_background_uniform_filter_axis_float32_v2(
+            const float* input_values,
+            float* output_values,
+            const unsigned long long line_count,
+            const long long axis_length,
+            const long long inner_stride)
+        {{
+            unsigned long long line =
+                (unsigned long long)blockDim.x * blockIdx.x + threadIdx.x;
+            const unsigned long long stride =
+                (unsigned long long)blockDim.x * gridDim.x;
+            for (; line < line_count; line += stride) {{
+                const long long outer = (long long)line / inner_stride;
+                const long long inner = (long long)line % inner_stride;
+                const long long base =
+                    outer * axis_length * inner_stride + inner;
+                const long long second = axis_length > 1 ? 1 : 0;
+                double total =
+                    2.0 * vipp_background_float_to_double(input_values[base])
+                    + vipp_background_float_to_double(
+                        input_values[base + second * inner_stride]);
+                output_values[base] =
+                    vipp_background_double_to_float(total / 3.0);
+                for (long long coordinate = 1;
+                     coordinate < axis_length;
+                     ++coordinate) {{
+                    const long long entering =
+                        coordinate + 1 < axis_length
+                        ? coordinate + 1
+                        : axis_length - 1;
+                    const long long leaving = coordinate > 1
+                        ? coordinate - 2
+                        : 0;
+                    total += vipp_background_float_to_double(
+                        input_values[base + entering * inner_stride]);
+                    total -= vipp_background_float_to_double(
+                        input_values[base + leaving * inner_stride]);
+                    output_values[base + coordinate * inner_stride] =
+                        vipp_background_double_to_float(total / 3.0);
+                }}
+            }}
+        }}
+    """
+    return cupy.RawKernel(
+        source,
+        "vipp_background_uniform_filter_axis_float32_v2",
+        options=_KERNEL_OPTIONS,
+    )
+
+
+@cache
+def _float32_light_transform_kernel(cupy):
+    """Return the subnormal-preserving light-background affine transform."""
+
+    source = rf"""
+        {_FLOAT32_CONVERSION_HELPERS}
+
+        extern "C" __global__
+        void vipp_background_light_transform_float32_v1(
+            const float* input_values,
+            float* output_values,
+            const unsigned long long value_count,
+            const float* low_value,
+            const float* high_value)
+        {{
+            // NumPy's weak-scalar expression rounds the offset to float32
+            // before subtracting the array.  Preserve that intermediate
+            // rounding while using software conversion for subnormals.
+            const float offset_value = vipp_background_double_to_float(
+                vipp_background_float_to_double(low_value[0])
+                + vipp_background_float_to_double(high_value[0]));
+            const double offset =
+                vipp_background_float_to_double(offset_value);
+            unsigned long long index =
+                (unsigned long long)blockDim.x * blockIdx.x + threadIdx.x;
+            const unsigned long long stride =
+                (unsigned long long)blockDim.x * gridDim.x;
+            for (; index < value_count; index += stride) {{
+                output_values[index] = vipp_background_double_to_float(
+                    offset
+                    - vipp_background_float_to_double(input_values[index]));
+            }}
+        }}
+    """
+    return cupy.RawKernel(
+        source,
+        "vipp_background_light_transform_float32_v1",
+        options=_KERNEL_OPTIONS,
+    )
+
+
+@cache
+def _float32_subtract_kernel(cupy):
+    """Return exact float32 subtraction without subnormal flush-to-zero."""
+
+    source = rf"""
+        {_FLOAT32_CONVERSION_HELPERS}
+
+        extern "C" __global__
+        void vipp_background_subtract_float32_v1(
+            const float* values,
+            const float* background,
+            float* output_values,
+            const unsigned long long value_count,
+            const int light_background,
+            const int clip_negative)
+        {{
+            unsigned long long index =
+                (unsigned long long)blockDim.x * blockIdx.x + threadIdx.x;
+            const unsigned long long stride =
+                (unsigned long long)blockDim.x * gridDim.x;
+            for (; index < value_count; index += stride) {{
+                const double value = light_background
+                    ? vipp_background_float_to_double(background[index])
+                        - vipp_background_float_to_double(values[index])
+                    : vipp_background_float_to_double(values[index])
+                        - vipp_background_float_to_double(background[index]);
+                const double clipped = clip_negative && value <= 0.0
+                    ? 0.0
+                    : value;
+                output_values[index] =
+                    vipp_background_double_to_float(clipped);
+            }}
+        }}
+    """
+    return cupy.RawKernel(
+        source,
+        "vipp_background_subtract_float32_v1",
+        options=_KERNEL_OPTIONS,
+    )
+
+
+@cache
+def _float32_zero_bound_tie_kernel(cupy):
+    """Return NumPy-compatible signed-zero tie correction for min/max."""
+
+    source = r"""
+        extern "C" __global__
+        void vipp_background_float32_zero_bound_tie_v1(
+            const float* values,
+            const unsigned long long value_count,
+            float* low_value,
+            float* high_value)
+        {
+            if (blockIdx.x != 0 || threadIdx.x != 0) {
+                return;
+            }
+            const unsigned int low_bits = __float_as_uint(low_value[0]);
+            const unsigned int high_bits = __float_as_uint(high_value[0]);
+            if ((low_bits & 0x7fffffffU) != 0U
+                || (high_bits & 0x7fffffffU) != 0U) {
+                return;
+            }
+            for (unsigned long long index = value_count;
+                 index > 0;
+                 --index) {
+                const float value = values[index - 1];
+                if (isfinite(value)) {
+                    const unsigned int bits = __float_as_uint(value);
+                    if ((bits & 0x7fffffffU) == 0U) {
+                        low_value[0] = value;
+                        high_value[0] = value;
+                    }
+                    return;
+                }
+            }
+        }
+    """
+    return cupy.RawKernel(
+        source,
+        "vipp_background_float32_zero_bound_tie_v1",
+        options=_KERNEL_OPTIONS,
+    )
+
+
+@cache
+def _dynamic_rolling_ball_kernel(cupy, spatial_ndim: int, dtype_name: str):
+    """Return one radius-independent erosion kernel for a spatial rank.
+
+    cuCIM constructs a radius-sized footprint and delegates to CuPyX's
+    generated grey-erosion kernel.  CuPyX embeds the footprint shape in the
+    CUDA source, so each new interactive radius incurs another compilation.
+    Here the radius and array extents are scalar runtime inputs.  The source
+    varies only with the reviewed spatial rank (one, two, or three) and the
+    float32/float64 workspace dtype.
+
+    The inner calculation is the same non-flat spherical erosion used by
+    cuCIM: ``min(image - (sqrt(radius**2 - distance**2) - radius))`` over
+    in-bounds points inside the ball.  Omitting out-of-bounds candidates is
+    equivalent to its constant ``+inf`` boundary mode.
+    """
+
+    ndim = int(spatial_ndim)
+    if ndim not in {1, 2, 3}:
+        raise ValueError("Dynamic rolling-ball erosion supports one to three axes.")
+    ctype_by_dtype = {"float32": "float", "float64": "double"}
+    try:
+        ctype = ctype_by_dtype[dtype_name]
+    except KeyError as exc:  # pragma: no cover - private invariant
+        raise TypeError(
+            f"Unsupported rolling-ball workspace dtype {dtype_name!r}."
+        ) from exc
+    square_root = "sqrtf" if dtype_name == "float32" else "sqrt"
+
+    coordinate_lines = ["long long remainder = (long long)index;"]
+    for axis in range(ndim - 1, 0, -1):
+        coordinate_lines.extend(
+            (
+                f"long long coordinate_{axis} = remainder % extent_{axis};",
+                f"remainder /= extent_{axis};",
+            )
+        )
+    coordinate_lines.append("long long coordinate_0 = remainder;")
+
+    distance = " + ".join(f"distance_{axis}" for axis in range(ndim))
+    source_index_lines = ["long long source_index = position_0;"]
+    for axis in range(1, ndim):
+        source_index_lines.append(
+            f"source_index = source_index * extent_{axis} + position_{axis};"
+        )
+    body = "\n".join(
+        (
+            f"{ctype} distance_square = {distance};",
+            "if (distance_square > radius_square) {",
+            "    continue;",
+            "}",
+            *source_index_lines,
+            f"{ctype} structure = {square_root}(radius_square - distance_square) "
+            "- radius_value;",
+            f"{ctype} candidate = input_values[source_index] - structure;",
+            "if (candidate < best) {",
+            "    best = candidate;",
+            "}",
+        )
+    )
+    for axis in range(ndim - 1, -1, -1):
+        body = "\n".join(
+            (
+                f"for (int delta_{axis} = -radius; delta_{axis} <= radius; "
+                f"++delta_{axis}) {{",
+                f"    long long position_{axis} = coordinate_{axis} + delta_{axis};",
+                f"    if (position_{axis} < 0 || position_{axis} >= extent_{axis}) {{",
+                "        continue;",
+                "    }",
+                f"    {ctype} offset_{axis} = ({ctype})delta_{axis};",
+                f"    {ctype} distance_{axis} = offset_{axis} * offset_{axis};",
+                body,
+                "}",
+            )
+        )
+
+    kernel_name = f"vipp_dynamic_rolling_ball_{ndim}d_{dtype_name}_v1"
+    store_line = (
+        "output_values[index] = "
+        "((__float_as_uint(best) & 0x7fffffffU) == 0U) "
+        "? __uint_as_float(0U) : best;"
+        if dtype_name == "float32"
+        else "output_values[index] = best == 0.0 ? 0.0 : best;"
+    )
+    operation = "\n".join(
+        (
+            'extern "C" __global__',
+            f"void {kernel_name}(",
+            f"    const {ctype}* input_values,",
+            f"    {ctype}* output_values,",
+            "    const unsigned long long value_count,",
+            *(f"    const long long extent_{axis}," for axis in range(ndim)),
+            "    const int radius)",
+            "{",
+            "    unsigned long long index =",
+            "        (unsigned long long)blockDim.x * blockIdx.x + threadIdx.x;",
+            "    const unsigned long long stride =",
+            "        (unsigned long long)blockDim.x * gridDim.x;",
+            "    for (; index < value_count; index += stride) {",
+            *(f"        {line}" for line in coordinate_lines),
+            f"        {ctype} radius_value = ({ctype})radius;",
+            f"        {ctype} radius_square = radius_value * radius_value;",
+            f"        {ctype} best = input_values[index];",
+            *(f"        {line}" for line in body.splitlines()),
+            f"        {store_line}",
+            "    }",
+            "}",
+        )
+    )
+    return cupy.RawKernel(
+        operation,
+        kernel_name,
+        options=_KERNEL_OPTIONS,
+    )
+
+
+def _dynamic_rolling_ball(values, radius_pixels: int, *, cupy):
+    """Apply exact spherical erosion with radius supplied at launch time."""
+
+    contiguous = cupy.ascontiguousarray(values)
+    dtype_name = np.dtype(contiguous.dtype).name
+    kernel = _dynamic_rolling_ball_kernel(cupy, contiguous.ndim, dtype_name)
+    extents = tuple(np.int64(extent) for extent in contiguous.shape)
+    output = cupy.empty_like(contiguous)
+    blocks = min(
+        max((int(contiguous.size) + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK, 1),
+        _MAXIMUM_BLOCKS,
+    )
+    kernel(
+        (blocks,),
+        (_THREADS_PER_BLOCK,),
+        (
+            contiguous,
+            output,
+            np.uint64(contiguous.size),
+            *extents,
+            np.int32(radius_pixels),
+        ),
+    )
+    return output
+
+
+def _launch_1d_kernel(kernel, value_count: int, arguments) -> None:
+    """Launch a bounded grid for one output thread per logical value."""
+
+    blocks = min(
+        max((int(value_count) + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK, 1),
+        _MAXIMUM_BLOCKS,
+    )
+    kernel(
+        (blocks,),
+        (_THREADS_PER_BLOCK,),
+        arguments,
+    )
+
+
+def _float32_light_transform(values, low, high, *, cupy):
+    """Compute ``low + high - values`` without flushing subnormals."""
+
+    contiguous = cupy.ascontiguousarray(values)
+    output = cupy.empty_like(contiguous)
+    _launch_1d_kernel(
+        _float32_light_transform_kernel(cupy),
+        int(contiguous.size),
+        (
+            contiguous,
+            output,
+            np.uint64(contiguous.size),
+            low,
+            high,
+        ),
+    )
+    return output
+
+
+def _subtract_float32(
+    values,
+    background,
+    *,
+    light_background: bool,
+    clip_negative: bool,
+    cupy,
+):
+    """Apply authoritative float32 subtraction with exact tiny-value handling."""
+
+    contiguous_values = cupy.ascontiguousarray(values)
+    contiguous_background = cupy.ascontiguousarray(background)
+    output = cupy.empty_like(contiguous_values)
+    _launch_1d_kernel(
+        _float32_subtract_kernel(cupy),
+        int(contiguous_values.size),
+        (
+            contiguous_values,
+            contiguous_background,
+            output,
+            np.uint64(contiguous_values.size),
+            np.int32(bool(light_background)),
+            np.int32(bool(clip_negative)),
+        ),
+    )
+    return output
 
 
 def rolling_ball_background(
@@ -37,7 +474,8 @@ def rolling_ball_background(
 ):
     """Estimate VIPP's rolling-ball background in the common CuPy domain."""
 
-    cupy, ndimage, restoration = _gpu_modules()
+    cupy, ndimage = _gpu_modules()
+    _require_native_endian_input(data, operation="Rolling-ball background")
     array = cupy.asarray(data)
     channel_axis = _validated_channel_axis(
         channel_axis,
@@ -57,7 +495,6 @@ def rolling_ball_background(
         progress=progress,
         cupy=cupy,
         ndimage=ndimage,
-        restoration=restoration,
     )
     return _restore_numeric_dtype(background, array, cupy=cupy)
 
@@ -75,7 +512,8 @@ def subtract_background(
 ):
     """Subtract VIPP's rolling-ball background without leaving the GPU."""
 
-    cupy, ndimage, restoration = _gpu_modules()
+    cupy, ndimage = _gpu_modules()
+    _require_native_endian_input(data, operation="Subtract background")
     array = cupy.asarray(data)
     channel_axis = _validated_channel_axis(
         channel_axis,
@@ -95,13 +533,33 @@ def subtract_background(
         progress=progress,
         cupy=cupy,
         ndimage=ndimage,
-        restoration=restoration,
     )
     values = array.astype(background.dtype, copy=False)
-    corrected = background - values if bool(light_background) else values - background
-    if bool(clip_negative):
-        corrected = cupy.maximum(corrected, 0)
+    if array.dtype == cupy.float32:
+        corrected = _subtract_float32(
+            values,
+            background,
+            light_background=bool(light_background),
+            clip_negative=bool(clip_negative),
+            cupy=cupy,
+        )
+    else:
+        corrected = (
+            background - values if bool(light_background) else values - background
+        )
+        if bool(clip_negative):
+            corrected = cupy.maximum(corrected, 0)
     return _restore_numeric_dtype(corrected, array, cupy=cupy)
+
+
+def _require_native_endian_input(data, *, operation: str) -> None:
+    """Fail closed before CuPy silently normalizes a foreign byte order."""
+
+    source_dtype = getattr(data, "dtype", None)
+    if source_dtype is not None and not np.dtype(source_dtype).isnative:
+        raise ValueError(
+            f"{operation} GPU execution requires native-endian input data."
+        )
 
 
 def _estimate_background(
@@ -116,7 +574,6 @@ def _estimate_background(
     progress,
     cupy,
     ndimage,
-    restoration,
 ):
     if array.ndim == 0:
         output_dtype = cupy.float64 if array.dtype == cupy.float64 else cupy.float32
@@ -141,7 +598,6 @@ def _estimate_background(
             output_dtype=output_dtype,
             cupy=cupy,
             ndimage=ndimage,
-            restoration=restoration,
         )
 
     if channel_axis is not None:
@@ -189,12 +645,10 @@ def _background_block(
     output_dtype,
     cupy,
     ndimage,
-    restoration,
 ):
     values = block.astype(output_dtype, copy=True)
     if values.size == 0:
         return values
-
     low, high = _finite_bounds(values, cupy=cupy)
     finite = cupy.isfinite(values)
     safe = cupy.where(
@@ -218,18 +672,42 @@ def _background_block(
             default_low=low,
             default_high=high,
         )
-        offset = low + high
-        inverted = offset - safe
-        background = offset - restoration.rolling_ball(
-            inverted,
-            radius=radius_pixels,
-        )
+        if output_dtype == cupy.float32:
+            inverted = _float32_light_transform(safe, low, high, cupy=cupy)
+            background = _float32_light_transform(
+                _dynamic_rolling_ball(
+                    inverted,
+                    radius_pixels,
+                    cupy=cupy,
+                ),
+                low,
+                high,
+                cupy=cupy,
+            )
+        else:
+            offset = low + high
+            inverted = offset - safe
+            background = offset - _dynamic_rolling_ball(
+                inverted,
+                radius_pixels,
+                cupy=cupy,
+            )
     else:
-        background = restoration.rolling_ball(safe, radius=radius_pixels)
+        background = _dynamic_rolling_ball(
+            safe,
+            radius_pixels,
+            cupy=cupy,
+        )
     return background.astype(output_dtype, copy=False)
 
 
-def _uniform_filter_size_three(values, *, output_dtype, cupy, ndimage):
+def _uniform_filter_size_three(
+    values,
+    *,
+    output_dtype,
+    cupy,
+    ndimage,
+):
     """Match SciPy's double accumulator and per-axis public dtype cast.
 
     CuPyX's multidimensional ``uniform_filter`` accumulates float32 inputs in
@@ -238,6 +716,27 @@ def _uniform_filter_size_three(values, *, output_dtype, cupy, ndimage):
     that rounded intermediate into the next axis.  This separable device path
     preserves those semantics without transferring image data to the host.
     """
+
+    if output_dtype == cupy.float32:
+        result = cupy.ascontiguousarray(values)
+        kernel = _float32_uniform_filter_axis_kernel(cupy)
+        for axis in range(values.ndim):
+            filtered = cupy.empty_like(result)
+            inner_stride = int(np.prod(result.shape[axis + 1 :], dtype=np.int64))
+            line_count = int(result.size) // int(result.shape[axis])
+            _launch_1d_kernel(
+                kernel,
+                line_count,
+                (
+                    result,
+                    filtered,
+                    np.uint64(line_count),
+                    np.int64(result.shape[axis]),
+                    np.int64(inner_stride),
+                ),
+            )
+            result = filtered
+        return result
 
     result = values
     for axis in range(values.ndim):
@@ -266,6 +765,22 @@ def _finite_bounds(
     any_finite = cupy.any(finite)
     low_candidate = cupy.min(cupy.where(finite, values, cupy.inf))
     high_candidate = cupy.max(cupy.where(finite, values, -cupy.inf))
+    if values.dtype == cupy.float32:
+        # NumPy keeps the last equal zero lane, while CuPy may select another
+        # reduction lane.  The sign is observable in light-background output.
+        # This fixed kernel returns immediately for ordinary nonzero bounds and
+        # only scans backward when every finite value compares equal to zero.
+        contiguous = cupy.ascontiguousarray(values)
+        _float32_zero_bound_tie_kernel(cupy)(
+            (1,),
+            (1,),
+            (
+                contiguous,
+                np.uint64(contiguous.size),
+                low_candidate,
+                high_candidate,
+            ),
+        )
     zero = values.dtype.type(0)
     low_fallback = zero if default_low is None else default_low
     high_fallback = zero if default_high is None else default_high
@@ -319,7 +834,7 @@ def _apply_spatial_blocks(
 def _synchronize_completed_block(cupy, progress) -> None:
     """Make a block's output assignment real before exposing its completion."""
 
-    # Keep this boundary even without a reporter: cuCIM/CuPy kernels and the
+    # Keep this boundary even without a reporter: CuPy kernels and the
     # final assignment are asynchronous, and every block must surface failures
     # before the operation advances to the next block.
     cupy.cuda.get_current_stream().synchronize()

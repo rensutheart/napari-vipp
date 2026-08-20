@@ -369,7 +369,7 @@ def test_pyinstaller_spec_embeds_wheel_policy_licenses_and_branding():
     assert "VIPP_INSTALLER_WHEEL" in spec
     assert "VIPP_INSTALLER_LICENSE_DIRECTORY" in spec
     assert "VIPP_INSTALLER_LOGO" in spec
-    assert "phase1-gpu-public-v8.json" in spec
+    assert "phase1-gpu-public-v9.json" in spec
     assert "icon=str(ICON)" in spec
     assert "console=False" in spec
     assert "uac_admin=False" in spec

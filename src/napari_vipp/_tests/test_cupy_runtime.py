@@ -299,6 +299,7 @@ class _FakeFFT:
 class _FakeCuPy:
     __version__ = "14.1.1"
     float32 = np.float32
+    float64 = np.float64
     ndarray = _FakeArray
 
     def __init__(self) -> None:
@@ -357,6 +358,13 @@ class _FakeNdimage:
     def median_filter(self, value, *, size):
         assert size == 3
         return _FakeArray(self.cupy, value._value.copy())
+
+    def uniform_filter1d(self, value, *, size, axis, output, mode):
+        assert size == 3
+        assert axis == 0
+        assert output is self.cupy.float64
+        assert mode == "nearest"
+        return _FakeArray(self.cupy, value._value.astype(np.float64, copy=True))
 
 
 def _fake_runtime(*, platform_name: str = "win32"):
@@ -453,6 +461,7 @@ def test_probe_still_fails_closed_for_library_retained_private_array():
     runtime._ndimage = SimpleNamespace(
         gaussian_filter=retain_input,
         median_filter=original_ndimage.median_filter,
+        uniform_filter1d=original_ndimage.uniform_filter1d,
     )
 
     result = runtime.probe(refresh=True)

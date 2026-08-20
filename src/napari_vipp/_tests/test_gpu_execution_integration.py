@@ -222,7 +222,7 @@ class _StaticPlanner:
             request,
             ComputeEnvironment(
                 runtime_ids=("cpu-numpy", "cuda-cupy"),
-                implementation_libraries=("cpu", "cupyx", "cucim"),
+                implementation_libraries=("cpu", "cupy", "cupyx", "cucim"),
                 device_id="cuda:0",
                 device_name="NVIDIA GeForce RTX 5090",
                 device_class="nvidia-cuda",
@@ -770,10 +770,10 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         if expected_device:
             assert selected is not None
             assert expected_device.casefold() in selected.display_name.casefold()
-        library = registry.probe_library("cupyx", refresh=True)
+        library = registry.probe_library("cupy", refresh=True)
         if not library.available:
             pytest.fail(
-                "Real CUDA batch smoke requested, but CuPyX is unavailable: "
+                "Real CUDA batch smoke requested, but CuPy is unavailable: "
                 + library.message
             )
 
@@ -802,8 +802,8 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         request = ComputeRequest(
             mode=ComputeMode.CUSTOM,
             node_preferences={
-                gaussian.id: "implementation:cupyx-gaussian-blur-v1",
-                median.id: "implementation:cupyx-median-filter-v1",
+                gaussian.id: "implementation:cupy-gaussian-blur-v1",
+                median.id: "implementation:cupy-median-filter-v1",
                 output.id: "cpu",
             },
             runtime_id="cuda-cupy",
@@ -856,14 +856,14 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
                 node["node_id"]: node for node in item["execution"]["nodes"]
             }
             for node_id, implementation_id in (
-                (gaussian.id, "cupyx-gaussian-blur-v1"),
-                (median.id, "cupyx-median-filter-v1"),
+                (gaussian.id, "cupy-gaussian-blur-v1"),
+                (median.id, "cupy-median-filter-v1"),
             ):
                 node = by_node[node_id]
                 identity = node["actual_implementation"]
                 assert node["decision_kind"] == "selected"
                 assert identity["runtime_id"] == "cuda-cupy"
-                assert identity["implementation_library_id"] == "cupyx"
+                assert identity["implementation_library_id"] == "cupy"
                 assert identity["implementation_id"] == implementation_id
                 assert identity["implementation_version"]
             segments = item["execution"]["plan"]["segments"]
@@ -967,10 +967,10 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
         if expected_device:
             assert selected is not None
             assert expected_device.casefold() in selected.display_name.casefold()
-        library = registry.probe_library("cupyx", refresh=True)
+        library = registry.probe_library("cupy", refresh=True)
         if not library.available:
             pytest.fail(
-                "Real CUDA smoke requested, but CuPyX is unavailable: "
+                "Real CUDA smoke requested, but CuPy is unavailable: "
                 + library.message
             )
     finally:
@@ -988,8 +988,8 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
     gpu_request = ComputeRequest(
         mode=ComputeMode.CUSTOM,
         node_preferences={
-            median.id: "implementation:cupyx-median-filter-v1",
-            gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+            median.id: "implementation:cupy-median-filter-v1",
+            gaussian.id: "implementation:cupy-gaussian-blur-v1",
         },
         runtime_id="cuda-cupy",
         device_id=probe.selected_device_id,
@@ -1025,8 +1025,8 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
     assert embedded_request["mode"] == "custom"
     assert embedded_request["fallback_policy"] == "strict"
     assert embedded_request["node_preferences"] == {
-        median.id: "implementation:cupyx-median-filter-v1",
-        gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+        median.id: "implementation:cupy-median-filter-v1",
+        gaussian.id: "implementation:cupy-gaussian-blur-v1",
     }
 
     # Generated execution owns its registry, so observe the actual provider
@@ -1073,13 +1073,13 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
         decision.node_id: decision for decision in report.actual_decisions
     }
     for node_id, implementation_id in (
-        (median.id, "cupyx-median-filter-v1"),
-        (gaussian.id, "cupyx-gaussian-blur-v1"),
+        (median.id, "cupy-median-filter-v1"),
+        (gaussian.id, "cupy-gaussian-blur-v1"),
     ):
         decision = decisions[node_id]
         assert decision.decision_kind is DecisionKind.SELECTED
         assert decision.runtime_id == "cuda-cupy"
-        assert decision.implementation_library_id == "cupyx"
+        assert decision.implementation_library_id == "cupy"
         assert decision.implementation_id == implementation_id
         exact = next(
             item
@@ -2057,8 +2057,6 @@ def test_real_headless_measurements_pipeline_finalizes_public_table_and_cleans(
 def test_real_headless_background_gaussian_median_forms_one_device_segment():
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
-    if importlib.util.find_spec("cucim") is None:
-        pytest.skip("The optional cuCIM wheel is not installed.")
     try:
         import cupy
 
@@ -2069,7 +2067,7 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
         pytest.skip(f"A working CUDA device is unavailable: {exc}")
     registry = ComputeRegistry()
     try:
-        for library_id in ("cucim", "cupyx"):
+        for library_id in ("cupy", "cupyx"):
             library_probe = registry.probe_library(library_id)
             if not library_probe.available:
                 pytest.skip(
@@ -2097,9 +2095,9 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
     compute_request = ComputeRequest(
         mode=ComputeMode.CUSTOM,
         node_preferences={
-            background.id: ("implementation:cucim-subtract_background-v2"),
-            gaussian.id: "implementation:cupyx-gaussian-blur-v1",
-            median.id: "implementation:cupyx-median-filter-v1",
+            background.id: ("implementation:cupy-subtract-background-v1"),
+            gaussian.id: "implementation:cupy-gaussian-blur-v1",
+            median.id: "implementation:cupy-median-filter-v1",
         },
         runtime_id="cuda-cupy",
         device_id="cuda:0",
@@ -2194,7 +2192,7 @@ def test_real_convert_dtype_gaussian_corridor_uses_one_device_round_trip(
                 conversion.id: (
                     "implementation:cupyx-convert-dtype-preserve-f32-v1"
                 ),
-                gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+                gaussian.id: "implementation:cupy-gaussian-blur-v1",
             },
             runtime_id="cuda-cupy",
             device_id=runtime_probe.selected_device_id,
@@ -2228,7 +2226,7 @@ def test_real_convert_dtype_gaussian_corridor_uses_one_device_round_trip(
             "cupyx-convert-dtype-preserve-f32-v1"
         )
         assert decisions[gaussian.id].implementation_id == (
-            "cupyx-gaussian-blur-v1"
+            "cupy-gaussian-blur-v1"
         )
         assert all(
             decision.runtime_id == "cuda-cupy"
@@ -2364,7 +2362,7 @@ def test_real_segmentation_cleanup_corridor_is_one_cuda_segment(
             components.id: "implementation:cupyx-connected-components-v1",
         }
         if gaussian is not None:
-            preferences[gaussian.id] = "implementation:cupyx-gaussian-blur-v1"
+            preferences[gaussian.id] = "implementation:cupy-gaussian-blur-v1"
         compute_request = ComputeRequest(
             mode=ComputeMode.CUSTOM,
             node_preferences=preferences,
@@ -2420,7 +2418,7 @@ def test_real_segmentation_cleanup_corridor_is_one_cuda_segment(
             extract.id: "cupy-extract-channel-view-v1",
             conversion.id: "cupyx-convert-dtype-preserve-f32-v1",
             **(
-                {gaussian.id: "cupyx-gaussian-blur-v1"}
+                {gaussian.id: "cupy-gaussian-blur-v1"}
                 if gaussian is not None
                 else {}
             ),
@@ -2623,8 +2621,6 @@ def test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance(
 def test_real_gpu_modes_run_every_eligible_node_without_benchmark_evidence(mode):
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
-    if importlib.util.find_spec("cucim") is None:
-        pytest.skip("The optional cuCIM wheel is not installed.")
     try:
         import cupy
 
@@ -2635,11 +2631,18 @@ def test_real_gpu_modes_run_every_eligible_node_without_benchmark_evidence(mode)
         pytest.skip(f"A working CUDA device is unavailable: {exc}")
     registry = ComputeRegistry()
     try:
-        cucim_probe = registry.probe_library("cucim", refresh=True)
+        library_probes = tuple(
+            registry.probe_library(library_id, refresh=True)
+            for library_id in ("cupy", "cupyx")
+        )
     finally:
         registry.close()
-    if not cucim_probe.available:
-        pytest.skip(cucim_probe.message or "cuCIM is not policy-admitted.")
+    for library_probe in library_probes:
+        if not library_probe.available:
+            pytest.skip(
+                library_probe.message
+                or f"{library_probe.library_id} is not policy-admitted."
+            )
 
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
@@ -2684,10 +2687,10 @@ def test_real_gpu_modes_run_every_eligible_node_without_benchmark_evidence(mode)
     }
     assert decisions[extract.id].implementation_id == "cpu-extract_channel-v1"
     assert decisions[background.id].implementation_id == (
-        "cucim-subtract_background-v2"
+        "cupy-subtract-background-v1"
     )
     assert decisions[gaussian.id].implementation_id == "cpu-gaussian_blur-v1"
-    assert decisions[median.id].implementation_id == "cupyx-median-filter-v1"
+    assert decisions[median.id].implementation_id == "cupy-median-filter-v1"
     assert all(not decision.fallback_used for decision in decisions.values())
     assert not result.execution_report.fallback_records
     np.testing.assert_array_equal(result.pipeline.outputs[median.id], expected)

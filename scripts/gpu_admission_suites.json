@@ -16,38 +16,38 @@
   "implementations": [
     {
       "operation_id": "rolling_ball_background",
-      "implementation_id": "cucim-rolling_ball_background-v2",
-      "implementation_version": "2",
+      "implementation_id": "cupy-rolling-ball-background-v1",
+      "implementation_version": "1",
       "runtime_id": "cuda-cupy",
-      "library_id": "cucim"
+      "library_id": "cupy"
     },
     {
       "operation_id": "subtract_background",
-      "implementation_id": "cucim-subtract_background-v2",
-      "implementation_version": "2",
+      "implementation_id": "cupy-subtract-background-v1",
+      "implementation_version": "1",
       "runtime_id": "cuda-cupy",
-      "library_id": "cucim"
+      "library_id": "cupy"
     },
     {
       "operation_id": "median_filter",
-      "implementation_id": "cupyx-median-filter-v1",
+      "implementation_id": "cupy-median-filter-v1",
       "implementation_version": "1",
       "runtime_id": "cuda-cupy",
-      "library_id": "cupyx"
+      "library_id": "cupy"
     },
     {
       "operation_id": "gaussian_blur",
-      "implementation_id": "cupyx-gaussian-blur-v1",
+      "implementation_id": "cupy-gaussian-blur-v1",
       "implementation_version": "1",
       "runtime_id": "cuda-cupy",
-      "library_id": "cupyx"
+      "library_id": "cupy"
     },
     {
       "operation_id": "gaussian_blur_3d",
-      "implementation_id": "cupyx-gaussian-blur-3d-v1",
+      "implementation_id": "cupy-gaussian-blur-3d-v1",
       "implementation_version": "1",
       "runtime_id": "cuda-cupy",
-      "library_id": "cupyx"
+      "library_id": "cupy"
     },
     {
       "operation_id": "convert_dtype",
@@ -146,11 +146,11 @@
       "id": "core-production-evidence",
       "kind": "evidence",
       "implementations": [
-        "rolling_ball_background::cucim-rolling_ball_background-v2",
-        "subtract_background::cucim-subtract_background-v2",
-        "median_filter::cupyx-median-filter-v1",
-        "gaussian_blur::cupyx-gaussian-blur-v1",
-        "gaussian_blur_3d::cupyx-gaussian-blur-3d-v1"
+        "rolling_ball_background::cupy-rolling-ball-background-v1",
+        "subtract_background::cupy-subtract-background-v1",
+        "median_filter::cupy-median-filter-v1",
+        "gaussian_blur::cupy-gaussian-blur-v1",
+        "gaussian_blur_3d::cupy-gaussian-blur-3d-v1"
       ],
       "facets": [
         "cpu_oracle_parity",
@@ -172,11 +172,11 @@
       "id": "core-provider-contracts",
       "kind": "pytest",
       "implementations": [
-        "rolling_ball_background::cucim-rolling_ball_background-v2",
-        "subtract_background::cucim-subtract_background-v2",
-        "median_filter::cupyx-median-filter-v1",
-        "gaussian_blur::cupyx-gaussian-blur-v1",
-        "gaussian_blur_3d::cupyx-gaussian-blur-3d-v1"
+        "rolling_ball_background::cupy-rolling-ball-background-v1",
+        "subtract_background::cupy-subtract-background-v1",
+        "median_filter::cupy-median-filter-v1",
+        "gaussian_blur::cupy-gaussian-blur-v1",
+        "gaussian_blur_3d::cupy-gaussian-blur-3d-v1"
       ],
       "facets": ["adversarial_workloads", "metadata", "input_integrity", "cancellation"],
       "owner_paths": [
@@ -575,11 +575,11 @@
       "id": "public-fallback-policy-contracts",
       "kind": "pytest",
       "implementations": [
-        "rolling_ball_background::cucim-rolling_ball_background-v2",
-        "subtract_background::cucim-subtract_background-v2",
-        "median_filter::cupyx-median-filter-v1",
-        "gaussian_blur::cupyx-gaussian-blur-v1",
-        "gaussian_blur_3d::cupyx-gaussian-blur-3d-v1",
+        "rolling_ball_background::cupy-rolling-ball-background-v1",
+        "subtract_background::cupy-subtract-background-v1",
+        "median_filter::cupy-median-filter-v1",
+        "gaussian_blur::cupy-gaussian-blur-v1",
+        "gaussian_blur_3d::cupy-gaussian-blur-3d-v1",
         "convert_dtype::cupyx-convert-dtype-preserve-f32-v1",
         "richardson_lucy_deconvolution::rl-cupy-f32-v1",
         "richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1",

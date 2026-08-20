@@ -696,7 +696,7 @@ def test_float32_finite_only_candidates_scan_once(
         (ComputeMode.AUTO, None),
         (ComputeMode.PREFER_GPU, None),
         (ComputeMode.CUSTOM, "auto"),
-        (ComputeMode.CUSTOM, "library:cupyx"),
+        (ComputeMode.CUSTOM, "library:cupy"),
     ),
 )
 def test_compatible_device_candidate_scans_required_facts_once(

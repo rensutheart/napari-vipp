@@ -13,6 +13,20 @@ validated, and the gates that intentionally remain closed. The normative
 product sequence and promotion criteria remain in the
 [production GPU implementation plan](gpu-production-implementation-plan.md).
 
+### Current interactive-filter update
+
+The current development tree supersedes the original provider implementations
+for five interactive operations without changing their admitted scientific
+regions. Rolling-Ball Background and Subtract Background now use a
+radius-independent CuPy RawKernel, Median Filter uses a size-independent CuPy
+radix-selection RawKernel, and float32 Gaussian Blur 2D/3D uses one
+radius-independent separable CuPy RawKernel. A new authored radius, odd filter
+size, or Gaussian sigma is a runtime argument rather than a new CUDA program,
+removing the measured multi-second compilation pause during tuning. The exact
+live identities and memory models are recorded in
+`phase1-gpu-public-v9.json`; v8 and the older benchmark records remain
+immutable historical evidence.
+
 ## Delivered substrate
 
 - Provider-neutral Phase 1-era CPU, Auto, and Custom requests, including
@@ -66,11 +80,11 @@ product sequence and promotion criteria remain in the
 
 | VIPP operation | GPU library | Admitted public dtypes | Spatial region | Phase 1 exclusions |
 | --- | --- | --- | --- | --- |
-| Rolling-Ball Background | cuCIM | `uint8`, `uint16`, `float32` | reviewed 2D and 3D semantics | other dtypes and out-of-bound radii use CPU |
-| Subtract Background | cuCIM | `uint8`, `uint16`, `float32` | reviewed 2D and 3D semantics | other dtypes and out-of-bound radii use CPU |
-| Median Filter | CuPyX | `uint8`, `uint16`, finite `float32` | 2D | float64, non-finite float32, and negative-zero-sensitive inputs use CPU |
-| Gaussian Blur | CuPyX | finite `float32` | 2D | integer, float64, and non-finite inputs use CPU |
-| Gaussian Blur 3D | CuPyX | finite `float32` | 3D | integer, float64, and non-finite inputs use CPU |
+| Rolling-Ball Background | CuPy | `uint8`, `uint16`, `float32` | reviewed 2D and 3D semantics | other dtypes and out-of-bound radii use CPU |
+| Subtract Background | CuPy | `uint8`, `uint16`, `float32` | reviewed 2D and 3D semantics | other dtypes and out-of-bound radii use CPU |
+| Median Filter | CuPy | `uint8`, `uint16`, finite `float32` | 2D | float64, non-finite float32, and negative-zero-sensitive inputs use CPU |
+| Gaussian Blur | CuPy | finite `float32` | 2D | integer, float64, and non-finite inputs use CPU |
+| Gaussian Blur 3D | CuPy | finite `float32` | 3D | integer, float64, and non-finite inputs use CPU |
 
 Integer background and median regions are bitwise gated. Float32 background
 preserves dtype, shape, finite/non-finite masks, exact zero masks, and zero sign,
@@ -148,9 +162,10 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda1
 powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda13
 ```
 
-The CuPyX operations need no cuCIM wheel. To enable the public background
-candidates inside their exact validated environment, build the reviewed source
-recipe and keep its wheel and manifest together:
+The CuPy and CuPyX filtering operations need no cuCIM wheel. To enable the
+separately reviewed cuCIM measurement candidates inside their exact validated
+environment, build the reviewed source recipe and keep its wheel and manifest
+together:
 
 ```powershell
 $python312 = py -3.12 -c "import sys; print(sys.executable)"

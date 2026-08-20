@@ -101,9 +101,7 @@ def _coerce_compute_badge_kind(
 ) -> ComputeBadgeKind:
     if isinstance(value, ComputeBadgeKind):
         return value
-    normalized = (
-        str(value).strip().casefold().replace("-", "_").replace(" ", "_")
-    )
+    normalized = str(value).strip().casefold().replace("-", "_").replace(" ", "_")
     aliases = {
         "gpu_·_cupy": ComputeBadgeKind.CUPY,
         "gpu_cupy": ComputeBadgeKind.CUPY,
@@ -422,9 +420,7 @@ class NodeCard(QFrame):
         ) == margins:
             return
         self.card_layout.setContentsMargins(*margins)
-        self.setMinimumWidth(
-            self.BASE_MINIMUM_WIDTH + left_gutter + right_gutter
-        )
+        self.setMinimumWidth(self.BASE_MINIMUM_WIDTH + left_gutter + right_gutter)
         self.card_layout.invalidate()
         self.updateGeometry()
         self.adjustSize()
@@ -603,6 +599,7 @@ class NodeCard(QFrame):
         if thumbnail is None:
             self.preview.setText("Preview off")
             self.preview.clear_source_pixmap()
+            self.preview.setAccessibleDescription("")
             return
 
         thumb = np.ascontiguousarray(thumbnail[..., :3].astype(np.uint8, copy=False))
@@ -611,6 +608,26 @@ class NodeCard(QFrame):
         pixmap = QPixmap.fromImage(qimage)
         self.preview.setText("")
         self.preview.set_source_pixmap(pixmap)
+        self.preview.setAccessibleDescription("")
+
+    def set_thumbnail_pending(
+        self,
+        text: str = "Calculating preview…",
+        *,
+        accessible_description: str = "",
+    ) -> None:
+        """Show an intentional first-load state without replacing valid pixels."""
+
+        if not self._preview_enabled or self.preview.has_source_pixmap():
+            return
+        self.preview.setText(str(text or "Calculating preview…"))
+        self.preview.setAccessibleDescription(
+            str(accessible_description or "").strip()
+            or (
+                "A complete thumbnail is not available yet. "
+                "VIPP is waiting for final thumbnail contrast statistics."
+            )
+        )
 
     def set_thumbnail_stats_tooltip(self, tooltip: str = "") -> bool:
         """Keep detailed presentation provenance discoverable without card chrome."""
@@ -619,9 +636,8 @@ class NodeCard(QFrame):
             return False
         self._thumbnail_stats_tooltip = detail
         self.preview.setToolTip(detail)
-        # The selected-node inspector owns the accessible status description.
-        # Avoid announcing the same provenance again when focus visits the image.
-        self.preview.setAccessibleDescription("")
+        # Final pixmaps clear this description in set_thumbnail(). Pending or
+        # unavailable first-load states own it because their inspector is hidden.
         return True
 
     def set_metadata_summary(self, text: str) -> None:
@@ -849,9 +865,7 @@ class NodeCard(QFrame):
             return "Tuning in isolation"
         if self._execution_state == "ready":
             return (
-                "Auto result ready"
-                if self._auto_recalculate
-                else "Cached result ready"
+                "Auto result ready" if self._auto_recalculate else "Cached result ready"
             )
         if self._execution_state == "running":
             return "Calculating..."
@@ -1310,9 +1324,7 @@ class PortItem(QGraphicsEllipseItem):
         elif self._tunnel_highlight_role:
             radius = max(radius, self.hover_radius)
             pen_color = (
-                "#fbbf24"
-                if self._tunnel_highlight_role == "source"
-                else "#93c5fd"
+                "#fbbf24" if self._tunnel_highlight_role == "source" else "#93c5fd"
             )
             pen_width = 3.0
         if self._drop_state == "compatible":
@@ -1639,14 +1651,12 @@ class NodeProxy(QGraphicsProxyWidget):
                     event.modifiers(),
                     preserve_group_for_drag=True,
                 )
-                self._drag_group_start_positions = (
-                    view._selected_node_start_positions(self.node_id)
+                self._drag_group_start_positions = view._selected_node_start_positions(
+                    self.node_id
                 )
             else:
                 self.setSelected(True)
-                self._drag_group_start_positions = {
-                    self.node_id: QPointF(self.pos())
-                }
+                self._drag_group_start_positions = {self.node_id: QPointF(self.pos())}
             if card is not None:
                 card.setCursor(Qt.ClosedHandCursor)
             self._drag_start_scene = QPointF(event.scenePos())
@@ -1694,8 +1704,7 @@ class NodeProxy(QGraphicsProxyWidget):
                 self._dragging
                 and start_pos is not None
                 and (
-                    abs(end_pos.x() - start_pos.x())
-                    + abs(end_pos.y() - start_pos.y())
+                    abs(end_pos.x() - start_pos.x()) + abs(end_pos.y() - start_pos.y())
                 )
                 > 0.001
             )
@@ -1912,11 +1921,7 @@ class ConnectionItem(QGraphicsPathItem):
         )
         if route_key == self._last_route_key:
             return
-        obstacles = (
-            view.connection_obstacle_rects(self)
-            if view is not None
-            else ()
-        )
+        obstacles = view.connection_obstacle_rects(self) if view is not None else ()
         self.setPath(_wire_path(start, end, obstacles=obstacles))
         self._last_route_key = route_key
 
@@ -2121,18 +2126,27 @@ class PipelineGraphView(QGraphicsView):
         self._highlighted_tunnel_insert_port: PortItem | None = None
         self._highlighted_tunnel_insert_name = ""
         self._highlighted_tunnel_insert_state: str | None = None
-        self._connection_insert_validator: Callable[
-            [str, tuple[str, str, int, int]],
-            tuple[str, str],
-        ] | None = None
-        self._tunnel_reroute_validator: Callable[
-            [str, str, int],
-            tuple[str, str],
-        ] | None = None
-        self._tunnel_insert_validator: Callable[
-            [str, str, str],
-            tuple[str, str],
-        ] | None = None
+        self._connection_insert_validator: (
+            Callable[
+                [str, tuple[str, str, int, int]],
+                tuple[str, str],
+            ]
+            | None
+        ) = None
+        self._tunnel_reroute_validator: (
+            Callable[
+                [str, str, int],
+                tuple[str, str],
+            ]
+            | None
+        ) = None
+        self._tunnel_insert_validator: (
+            Callable[
+                [str, str, str],
+                tuple[str, str],
+            ]
+            | None
+        ) = None
         self._connection_dragging = False
         self._panning = False
         self._pan_start = QPoint()
@@ -2617,8 +2631,7 @@ class PipelineGraphView(QGraphicsView):
 
     def set_connection_insert_validator(
         self,
-        validator: Callable[[str, tuple[str, str, int, int]], tuple[str, str]]
-        | None,
+        validator: Callable[[str, tuple[str, str, int, int]], tuple[str, str]] | None,
     ) -> None:
         self._connection_insert_validator = validator
 
@@ -2723,9 +2736,7 @@ class PipelineGraphView(QGraphicsView):
         if proxy is None or proxy.connections:
             return False
         tunnel_ports = tuple(self._tunnel_source_ports.values()) + tuple(
-            port
-            for ports in self._tunnel_subscriber_ports.values()
-            for port in ports
+            port for ports in self._tunnel_subscriber_ports.values() for port in ports
         )
         return all(port.node_id != node_id for port in tunnel_ports)
 
@@ -2777,11 +2788,15 @@ class PipelineGraphView(QGraphicsView):
     def _connection_route_rect(self, connection: ConnectionItem) -> QRectF:
         start = connection.source.port_scene_pos("output", connection.source_port)
         end = connection.target.port_scene_pos("input", connection.target_port)
-        corridor = QRectF(start, end).normalized().adjusted(
-            -180.0,
-            -240.0,
-            180.0,
-            240.0,
+        corridor = (
+            QRectF(start, end)
+            .normalized()
+            .adjusted(
+                -180.0,
+                -240.0,
+                180.0,
+                240.0,
+            )
         )
         return corridor.united(connection.sceneBoundingRect())
 
@@ -2976,9 +2991,7 @@ class PipelineGraphView(QGraphicsView):
 
     def set_search_matches(self, node_ids) -> None:
         self._search_match_node_ids = {
-            str(node_id)
-            for node_id in node_ids or ()
-            if str(node_id) in self._proxies
+            str(node_id) for node_id in node_ids or () if str(node_id) in self._proxies
         }
         for node_id, card in self._cards.items():
             card.set_search_highlight(node_id in self._search_match_node_ids)
@@ -3097,10 +3110,7 @@ class PipelineGraphView(QGraphicsView):
             if (
                 item.source_id == source_id
                 and item.target_id == target_id
-                and (
-                    target_port is None
-                    or item.target_port == int(target_port)
-                )
+                and (target_port is None or item.target_port == int(target_port))
             ):
                 self.delete_connection_item(item, notify=notify)
 
@@ -3128,6 +3138,28 @@ class PipelineGraphView(QGraphicsView):
         card = self._cards.get(node_id)
         if card is not None:
             card.set_thumbnail(thumbnail)
+            card.update()
+        proxy = self._proxies.get(node_id)
+        if proxy is not None:
+            proxy.update()
+        if self.scene is not None:
+            self.scene.update()
+
+    def set_thumbnail_pending(
+        self,
+        node_id: str,
+        text: str = "Calculating preview…",
+        *,
+        accessible_description: str = "",
+    ) -> None:
+        """Retain an existing thumbnail or show a deliberate loading message."""
+
+        card = self._cards.get(node_id)
+        if card is not None:
+            card.set_thumbnail_pending(
+                text,
+                accessible_description=accessible_description,
+            )
             card.update()
         proxy = self._proxies.get(node_id)
         if proxy is not None:
@@ -3707,7 +3739,9 @@ class PipelineGraphView(QGraphicsView):
             delta = pos - self._pan_start
             self.horizontalScrollBar().setValue(self._pan_h_value - delta.x())
             self.verticalScrollBar().setValue(self._pan_v_value - delta.y())
-            self._ensure_scene_space_for_rect(self.mapToScene(self.viewport().rect()).boundingRect())
+            self._ensure_scene_space_for_rect(
+                self.mapToScene(self.viewport().rect()).boundingRect()
+            )
             event.accept()
             return
         if self._pending_source is None and not self._active_tunnel_name:
@@ -3717,10 +3751,7 @@ class PipelineGraphView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
-        if (
-            self._pending_tunnel_source is not None
-            and event.button() == Qt.LeftButton
-        ):
+        if self._pending_tunnel_source is not None and event.button() == Qt.LeftButton:
             self.release_tunnel_reroute(
                 self.mapToScene(_point_from_event(event)),
             )
@@ -3739,11 +3770,7 @@ class PipelineGraphView(QGraphicsView):
 
     def selected_node_ids(self) -> tuple[str, ...]:
         """Return selected node ids in stable graph order."""
-        return tuple(
-            node_id
-            for node_id, card in self._cards.items()
-            if card._selected
-        )
+        return tuple(node_id for node_id, card in self._cards.items() if card._selected)
 
     def primary_node_id(self) -> str | None:
         """Return the most recently selected node used by the inspector."""
@@ -3811,11 +3838,7 @@ class PipelineGraphView(QGraphicsView):
             selected.add(node_id)
             primary = node_id
         else:
-            if (
-                preserve_group_for_drag
-                and node_id in selected
-                and len(selected) > 1
-            ):
+            if preserve_group_for_drag and node_id in selected and len(selected) > 1:
                 self._set_node_selection(selected, node_id)
                 return True
             selected = {node_id}
@@ -3828,9 +3851,7 @@ class PipelineGraphView(QGraphicsView):
         selected_node_ids: set[str],
         primary_node_id: str | None,
     ) -> None:
-        selected = {
-            node_id for node_id in selected_node_ids if node_id in self._cards
-        }
+        selected = {node_id for node_id in selected_node_ids if node_id in self._cards}
         if primary_node_id not in selected:
             primary_node_id = next(
                 (
@@ -3882,9 +3903,7 @@ class PipelineGraphView(QGraphicsView):
         selected_count = len(selected_node_ids)
         menu = QMenu(self)
         copy_label = (
-            "Copy node"
-            if selected_count == 1
-            else f"Copy {selected_count} nodes"
+            "Copy node" if selected_count == 1 else f"Copy {selected_count} nodes"
         )
         copy_action = menu.addAction(copy_label)
         paste_values_action = menu.addAction("Paste values")
@@ -4036,9 +4055,7 @@ class PipelineGraphView(QGraphicsView):
             current = item.parentItem()
             while current is not None:
                 if isinstance(current, PortItem):
-                    name = str(
-                        getattr(current, "_tunnel_label", "") or ""
-                    ).strip()
+                    name = str(getattr(current, "_tunnel_label", "") or "").strip()
                     if not name:
                         break
                     center = item.mapToScene(item.boundingRect().center())
@@ -4224,9 +4241,7 @@ class PipelineGraphView(QGraphicsView):
         target_proxy = self._proxies.get(target_port.node_id)
         if target_proxy is None:
             return False
-        return _types_compatible(
-            self._pending_source.data_type, target_port.data_type
-        )
+        return _types_compatible(self._pending_source.data_type, target_port.data_type)
 
     def _update_tunnel_reroute_feedback(self, scene_pos: QPointF) -> None:
         target = self._output_port_at(scene_pos)
@@ -4768,10 +4783,7 @@ def _node_input_port_labels(node) -> list[str]:
     count = _node_input_port_count(node)
     if getattr(node, "operation_id", "") == "combine_channels":
         colors = _channel_color_names(node)
-        return [
-            f"Channel {index + 1}: {colors[index]}"
-            for index in range(count)
-        ]
+        return [f"Channel {index + 1}: {colors[index]}" for index in range(count)]
     spec = _operation_spec_for_node(node)
     if spec is not None:
         labels = [port.label for port in spec.input_ports]

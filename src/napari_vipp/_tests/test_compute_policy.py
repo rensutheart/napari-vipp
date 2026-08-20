@@ -13,6 +13,7 @@ from napari_vipp.core.compute import (
 )
 from napari_vipp.core.compute_policy import (
     CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID,
+    CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_ENVIRONMENT_POLICIES,
     PHASE1_CUCIM_BUILD_RECIPE_ID,
@@ -49,6 +50,61 @@ def test_synthesized_cpu_spec_uses_registered_policies():
 def test_all_builtin_accelerator_specs_use_versioned_registered_policies():
     for spec in accelerator_compute_specs():
         validate_spec_policy_references(spec)
+
+
+def test_dynamic_filter_specs_use_exact_v9_cupy_identities():
+    expected = {
+        "rolling_ball_background": (
+            "cupy-rolling-ball-background-v1",
+            "cupy-dynamic-background-memory-v1",
+            "background-float-workspace-restore-v1",
+        ),
+        "subtract_background": (
+            "cupy-subtract-background-v1",
+            "cupy-dynamic-background-memory-v1",
+            "background-float-workspace-restore-v1",
+        ),
+        "median_filter": (
+            "cupy-median-filter-v1",
+            "cupy-radix-median-memory-v1",
+            "cupy-median-identity-v1",
+        ),
+        "gaussian_blur": (
+            "cupy-gaussian-blur-v1",
+            "cupy-dynamic-gaussian-memory-v1",
+            "cupy-gaussian-float32-v1",
+        ),
+        "gaussian_blur_3d": (
+            "cupy-gaussian-blur-3d-v1",
+            "cupy-dynamic-gaussian-memory-v1",
+            "cupy-gaussian-float32-v1",
+        ),
+    }
+
+    for operation_id, (
+        implementation_id,
+        memory_model_id,
+        conversion_policy_id,
+    ) in expected.items():
+        spec = compute_specs_for(
+            operation_id,
+            include_cpu=False,
+            allow_experimental=True,
+        )[0]
+        assert spec.implementation_id == implementation_id
+        assert spec.implementation_version == "1"
+        assert spec.implementation_library_id == "cupy"
+        assert (
+            spec.validated_environment_policy_id
+            == CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID
+        )
+        assert spec.memory_model_id == memory_model_id
+        assert {port.conversion_policy_id for port in spec.input_ports} == {
+            conversion_policy_id
+        }
+        assert {port.conversion_policy_id for port in spec.output_ports} == {
+            conversion_policy_id
+        }
 
 
 def test_unknown_policy_reference_fails_declaration_validation():
@@ -104,9 +160,10 @@ def _cuda_environment(**updates):
         "python_version": "3.12",
         "python_abi": "cpython-312",
         "runtime_ids": ("cpu-numpy", "cuda-cupy"),
-        "implementation_libraries": ("cpu", "cupyx"),
+        "implementation_libraries": ("cpu", "cupy", "cupyx"),
         "runtime_versions": (
             ("cuda-cupy", "14.1.1"),
+            ("cupy", "14.1.1"),
             ("cupyx", "14.1.1"),
         ),
         "scientific_stack_versions": (
@@ -575,28 +632,13 @@ def _cucim_environment_with_metadata(**updates):
     )
 
 
-def _background_workload():
-    return WorkloadDescriptor(
-        node_id="node-1",
-        operation_id="rolling_ball_background",
-        input_shapes=((31, 37),),
-        input_dtypes=("float32",),
-        parameters=(("radius", 5),),
-        resolved_spatial_ndim=2,
+def _synthetic_cucim_spec():
+    return replace(
+        _gpu_spec(),
+        implementation_id="synthetic-cucim-provider-probe-v1",
+        implementation_library_id="cucim",
+        validated_environment_policy_id=(CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID),
     )
-
-
-def _cucim_spec():
-    spec = compute_specs_for(
-        "rolling_ball_background",
-        include_cpu=False,
-        allow_experimental=True,
-    )[0]
-    assert (
-        spec.validated_environment_policy_id
-        == CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID
-    )
-    return spec
 
 
 def test_compatible_device_admission_preserves_cupy_and_cucim_provenance():
@@ -637,8 +679,8 @@ def test_compatible_device_admission_preserves_cupy_and_cucim_provenance():
             allow_experimental=True,
         ),
         evaluate_candidate_support(
-            _cucim_spec(),
-            _background_workload(),
+            _synthetic_cucim_spec(),
+            _workload(),
             cucim_environment,
             allow_experimental=True,
         ),
@@ -662,8 +704,8 @@ def test_cucim_environment_policy_accepts_local_artifacts_with_pinned_payload(
     )
 
     decision = evaluate_candidate_support(
-        _cucim_spec(),
-        _background_workload(),
+        _synthetic_cucim_spec(),
+        _workload(),
         environment,
         allow_experimental=True,
     )
@@ -722,8 +764,8 @@ def test_cucim_environment_policy_accepts_local_artifacts_with_pinned_payload(
 )
 def test_cucim_environment_policy_rejects_unapproved_provenance(environment):
     decision = evaluate_candidate_support(
-        _cucim_spec(),
-        _background_workload(),
+        _synthetic_cucim_spec(),
+        _workload(),
         environment,
         allow_experimental=True,
     )
@@ -734,7 +776,7 @@ def test_cucim_environment_policy_rejects_unapproved_provenance(environment):
 
 def test_exact_environment_policies_reject_runtime_library_relabeling():
     relabeled_cucim = replace(
-        _cucim_spec(),
+        _synthetic_cucim_spec(),
         validated_environment_policy_id=CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
     )
     relabeled_cupyx = replace(
@@ -745,7 +787,7 @@ def test_exact_environment_policies_reject_runtime_library_relabeling():
     for spec, workload, environment in (
         (
             relabeled_cucim,
-            _background_workload(),
+            _workload(),
             _cucim_environment(
                 runtime_versions=(("cuda-cupy", "14.1.1"),),
                 implementation_library_metadata=(),
@@ -873,7 +915,7 @@ def _operation_facts(
 
 def test_background_policy_uses_public_2d_and_conservative_3d_radius_bounds():
     spec = _builtin_spec("rolling_ball_background")
-    environment = _cucim_environment()
+    environment = _cuda_environment()
 
     two_dimensional = evaluate_candidate_support(
         spec,
@@ -912,6 +954,30 @@ def test_background_policy_uses_public_2d_and_conservative_3d_radius_bounds():
     assert three_dimensional.supported
     assert not too_large_3d.supported
     assert "1..50" in too_large_3d.reason_text
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "dtype"),
+    (("rolling_ball_background", ">u2"), ("subtract_background", ">f4")),
+)
+def test_background_policy_rejects_non_native_endian_inputs(
+    operation_id,
+    dtype,
+):
+    decision = evaluate_candidate_support(
+        _builtin_spec(operation_id),
+        _operation_workload(
+            operation_id,
+            dtype=dtype,
+            parameters=(("radius", 2.0), ("spatial_mode", "2D YX")),
+            spatial_ndim=2,
+        ),
+        _cuda_environment(),
+        allow_experimental=True,
+    )
+
+    assert not decision.supported
+    assert "native-endian" in decision.reason_text
 
 
 def test_median_float32_requires_complete_no_negative_zero_proof():
@@ -1343,9 +1409,9 @@ def test_richardson_lucy_fft_memory_model_scales_for_near_image_sized_3d_psf():
         padded_real_elements * np.dtype(np.float32).itemsize
         + 3 * padded_complex_elements * np.dtype(np.complex64).itemsize
     )
-    resident_bytes = (
-        2 * np.prod((32, 32, 32)) + np.prod((31, 31, 31))
-    ) * np.dtype(np.float32).itemsize
+    resident_bytes = (2 * np.prod((32, 32, 32)) + np.prod((31, 31, 31))) * np.dtype(
+        np.float32
+    ).itemsize
 
     assert large.total_device_peak_bytes > small.total_device_peak_bytes
     assert large.total_device_peak_bytes >= resident_bytes + explicit_fft_array_bytes
@@ -1581,7 +1647,7 @@ def test_richardson_lucy_tv_projects_float32_and_reserves_tv_workspaces():
     assert tv_estimate.total_device_peak_bytes > rl_estimate.total_device_peak_bytes
 
 
-def test_background_memory_model_scales_with_radius_and_spatial_rank():
+def test_dynamic_background_memory_model_is_radius_independent_and_scales_with_image():
     spec = _builtin_spec("rolling_ball_background")
     small = estimate_candidate_memory(
         spec,
@@ -1614,6 +1680,60 @@ def test_background_memory_model_scales_with_radius_and_spatial_rank():
         ),
     )
 
-    assert small.model_id == "cucim-background-memory-v1"
-    assert wide.total_device_peak_bytes > small.total_device_peak_bytes
+    assert small.model_id == "cupy-dynamic-background-memory-v1"
+    assert wide.total_device_peak_bytes == small.total_device_peak_bytes
     assert volumetric.total_device_peak_bytes > small.total_device_peak_bytes
+
+
+def test_radix_median_memory_model_is_filter_size_independent():
+    spec = _builtin_spec("median_filter")
+    small = estimate_candidate_memory(
+        spec,
+        _operation_workload(
+            "median_filter",
+            dtype="uint16",
+            parameters=(("size", 1),),
+            spatial_ndim=2,
+        ),
+    )
+    wide = estimate_candidate_memory(
+        spec,
+        _operation_workload(
+            "median_filter",
+            dtype="uint16",
+            parameters=(("size", 51),),
+            spatial_ndim=2,
+        ),
+    )
+
+    assert small.model_id == "cupy-radix-median-memory-v1"
+    assert wide.total_device_peak_bytes == small.total_device_peak_bytes
+
+
+def test_dynamic_gaussian_memory_models_runtime_weights_and_one_image_intermediate():
+    spec = _builtin_spec("gaussian_blur")
+    inactive = estimate_candidate_memory(
+        spec,
+        _operation_workload(
+            "gaussian_blur",
+            shape=(64, 64),
+            dtype="float32",
+            parameters=(("sigma", 0.0),),
+            spatial_ndim=2,
+        ),
+    )
+    active = estimate_candidate_memory(
+        spec,
+        _operation_workload(
+            "gaussian_blur",
+            shape=(64, 64),
+            dtype="float32",
+            parameters=(("sigma", 12.0),),
+            spatial_ndim=2,
+        ),
+    )
+
+    image_bytes = 64 * 64 * 4
+    assert active.model_id == "cupy-dynamic-gaussian-memory-v1"
+    assert inactive.total_device_peak_bytes == image_bytes * 2
+    assert active.total_device_peak_bytes == image_bytes * 3 + 2 * 512

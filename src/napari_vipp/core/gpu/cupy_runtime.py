@@ -348,8 +348,8 @@ class CuPyRuntime:
                 selected_device_id=devices[0].device_id,
                 reason_code="available",
                 message=(
-                    "CuPy completed allocation, Gaussian, median, and FFT "
-                    "convolution probes."
+                    "CuPy completed allocation, Gaussian, median, fixed-size "
+                    "uniform smoothing, and FFT convolution probes."
                 ),
                 environment_fingerprint=canonical_digest(fingerprint_payload),
                 metadata=(
@@ -1133,12 +1133,19 @@ def _run_probe_operations(cupy: object, ndimage: object) -> None:
     source = cupy.arange(64, dtype=cupy.float32).reshape((8, 8))
     gaussian = ndimage.gaussian_filter(source, sigma=1.0)
     median = ndimage.median_filter(source, size=3)
+    smoothed = ndimage.uniform_filter1d(
+        source,
+        size=3,
+        axis=0,
+        output=cupy.float64,
+        mode="nearest",
+    )
     frequency = cupy.fft.rfftn(source)
     restored = cupy.fft.irfftn(frequency, s=source.shape)
     cupy.cuda.get_current_stream().synchronize()
     # Keep every result alive through synchronization.  Returning then drops
     # all probe-owned arrays before the caller frees and verifies its pool.
-    _ = gaussian, median, restored
+    _ = gaussian, median, smoothed, restored
 
 
 def _detach_exception_tracebacks(exc: BaseException) -> BaseException:

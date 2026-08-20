@@ -500,6 +500,43 @@ def test_thumbnail_retains_full_render_detail_for_device_aware_painting(qtbot):
     assert np.count_nonzero(np.diff(scanline.astype(np.int16))) == 719
 
 
+def test_thumbnail_pending_preserves_complete_pixels_and_marks_first_load(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+
+    view.set_thumbnail_pending("gaussian")
+
+    assert not view.node_has_thumbnail("gaussian")
+    assert card.preview.text() == "Calculating preview…"
+    assert "not available yet" in card.preview.accessibleDescription()
+
+    view.set_thumbnail(
+        "gaussian",
+        np.full((24, 32, 3), 73, dtype=np.uint8),
+    )
+    committed_key = card.preview.source_pixmap().cacheKey()
+    view.set_thumbnail_pending("gaussian")
+
+    assert view.node_has_thumbnail("gaussian")
+    assert card.preview.source_pixmap().cacheKey() == committed_key
+    assert card.preview.text() == ""
+    assert card.preview.accessibleDescription() == ""
+
+    view.set_thumbnail("gaussian", None)
+    view.set_thumbnail_pending(
+        "gaussian",
+        "Preview unavailable",
+        accessible_description="Exact thumbnail statistics failed: test failure.",
+    )
+
+    assert card.preview.text() == "Preview unavailable"
+    assert card.preview.accessibleDescription() == (
+        "Exact thumbnail statistics failed: test failure."
+    )
+    assert "waiting" not in card.preview.accessibleDescription().casefold()
+
+
 def test_thumbnail_statistics_detail_is_nonvisual_and_keeps_card_compact(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)

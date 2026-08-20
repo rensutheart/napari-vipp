@@ -80,7 +80,15 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     SourcePayload,
 )
-from napari_vipp.core.progress import OperationCancelled
+from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.thumbnail_statistics import (
+    EXACT_FLOAT32_MINMAX_GPU_ALGORITHM_ID,
+    EXACT_FLOAT32_PERCENTILE_GPU_ALGORITHM_ID,
+    ThumbnailStatisticsBackend,
+    ThumbnailStatisticsCleanupError,
+    ThumbnailStatisticsDecision,
+    ThumbnailStatisticsResult,
+)
 from napari_vipp.core.workflow import deserialize_workflow
 
 if TYPE_CHECKING:
@@ -174,6 +182,176 @@ class _ArrayDescription:
         return len(self.shape)
 
 
+def _normalized_resident_thumbnail_contrast_mode(value: object) -> str:
+    """Return the public thumbnail mode spelling used by observations."""
+
+    text = str(value or "").strip().casefold()
+    if text == "percentile":
+        return "Percentile"
+    if text in {
+        "min-max",
+        "minmax",
+        "minimum-maximum",
+        "minimum maximum",
+    }:
+        return "Min-max"
+    if text == "raw":
+        return "Raw"
+    raise ValueError(
+        "Resident thumbnail contrast_mode must be Percentile, Min-max, or Raw."
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ResidentThumbnailStatisticsRequest:
+    """One explicitly budgeted presentation request for a resident output."""
+
+    node_id: str
+    output_port: int = 0
+    contrast_mode: str = "Percentile"
+    minimum_scanned_bytes: int = 0
+    gpu_contract_warm: bool = False
+
+    def __post_init__(self) -> None:
+        node_id = str(self.node_id).strip()
+        if not node_id:
+            raise ValueError("Resident thumbnail node_id must not be empty.")
+        if (
+            isinstance(self.output_port, bool)
+            or not isinstance(self.output_port, Integral)
+            or int(self.output_port) < 0
+        ):
+            raise ValueError(
+                "Resident thumbnail output_port must be a non-negative integer."
+            )
+        if (
+            isinstance(self.minimum_scanned_bytes, bool)
+            or not isinstance(self.minimum_scanned_bytes, Integral)
+            or int(self.minimum_scanned_bytes) < 0
+        ):
+            raise ValueError(
+                "Resident thumbnail minimum_scanned_bytes must be a "
+                "non-negative integer."
+            )
+        if not isinstance(self.gpu_contract_warm, bool):
+            raise TypeError("Resident thumbnail gpu_contract_warm must be a boolean.")
+        contrast_mode = _normalized_resident_thumbnail_contrast_mode(self.contrast_mode)
+        object.__setattr__(self, "node_id", node_id)
+        object.__setattr__(self, "output_port", int(self.output_port))
+        object.__setattr__(
+            self,
+            "minimum_scanned_bytes",
+            int(self.minimum_scanned_bytes),
+        )
+        object.__setattr__(self, "contrast_mode", contrast_mode)
+
+    @property
+    def port(self) -> OutputPortKey:
+        """Return the exact graph output requested by the presentation layer."""
+
+        return OutputPortKey(self.node_id, self.output_port)
+
+
+@dataclass(frozen=True, slots=True)
+class ResidentThumbnailStatisticsObservation:
+    """Host-only thumbnail statistics captured while one output was resident."""
+
+    node_id: str
+    output_port: int
+    contrast_mode: str
+    result: ThumbnailStatisticsResult
+
+    def __post_init__(self) -> None:
+        node_id = str(self.node_id).strip()
+        if not node_id:
+            raise ValueError("Resident thumbnail observation node_id is required.")
+        if (
+            isinstance(self.output_port, bool)
+            or not isinstance(self.output_port, Integral)
+            or int(self.output_port) < 0
+        ):
+            raise ValueError(
+                "Resident thumbnail observation output_port must be non-negative."
+            )
+        if not isinstance(self.result, ThumbnailStatisticsResult):
+            raise TypeError(
+                "Resident thumbnail observation result must be a "
+                "ThumbnailStatisticsResult."
+            )
+        contrast_mode = _normalized_resident_thumbnail_contrast_mode(self.contrast_mode)
+        if (
+            self.result.input_path != "resident_borrow"
+            or self.result.logical_input_host_to_device_bytes != 0
+        ):
+            raise ValueError(
+                "Resident thumbnail observations must describe a zero-upload "
+                "resident borrow."
+            )
+        immutable_limits = _immutable_resident_thumbnail_limits(self.result.limits)
+        object.__setattr__(self, "node_id", node_id)
+        object.__setattr__(self, "output_port", int(self.output_port))
+        object.__setattr__(self, "contrast_mode", contrast_mode)
+        object.__setattr__(
+            self,
+            "result",
+            replace(self.result, limits=immutable_limits),
+        )
+
+    @property
+    def port(self) -> OutputPortKey:
+        """Return the exact graph output described by this observation."""
+
+        return OutputPortKey(self.node_id, self.output_port)
+
+
+def _immutable_resident_thumbnail_limits(limits):
+    """Detach provider limits into immutable host scalar tuples."""
+
+    if limits is None:
+        return None
+    values = np.asarray(limits, dtype=np.float64)
+    if values.shape == (2,):
+        return (float(values[0]), float(values[1]))
+    if values.ndim == 2 and values.shape[1:] == (2,):
+        return tuple((float(row[0]), float(row[1])) for row in values)
+    raise ValueError(
+        "Resident thumbnail limits must be one pair or a sequence of pairs."
+    )
+
+
+def _normalized_resident_thumbnail_observations(
+    observations: Sequence[ResidentThumbnailStatisticsObservation],
+    *,
+    node_id: str | None = None,
+) -> tuple[ResidentThumbnailStatisticsObservation, ...]:
+    normalized = tuple(observations)
+    if any(
+        not isinstance(item, ResidentThumbnailStatisticsObservation)
+        for item in normalized
+    ):
+        raise TypeError(
+            "resident_thumbnail_statistics must contain "
+            "ResidentThumbnailStatisticsObservation values."
+        )
+    if node_id is not None and any(item.node_id != node_id for item in normalized):
+        raise ValueError(
+            "A node result may carry resident thumbnail observations only for "
+            "that node."
+        )
+    ordered = tuple(
+        sorted(
+            normalized,
+            key=lambda item: (item.node_id, item.output_port),
+        )
+    )
+    ports = tuple(item.port for item in ordered)
+    if len(set(ports)) != len(ports):
+        raise ValueError(
+            "resident_thumbnail_statistics contains duplicate output ports."
+        )
+    return ordered
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineRunRequest:
     """Graph document, stable inputs, caches, and one execution policy."""
@@ -193,9 +371,9 @@ class PipelineRunRequest:
     completed_node_ids: frozenset[str] = frozenset()
     cached_execution_states: dict[str, str] | None = None
     cached_execution_messages: dict[str, str] | None = None
-    cached_compute_provenance: (
-        Mapping[str, CachedNodeComputeProvenance] | None
-    ) = field(default=None, repr=False, compare=False)
+    cached_compute_provenance: Mapping[str, CachedNodeComputeProvenance] | None = field(
+        default=None, repr=False, compare=False
+    )
     manual_node_ids: frozenset[str] | None = None
     target_node_ids: frozenset[str] | None = None
     retain_node_ids: frozenset[str] = frozenset()
@@ -214,9 +392,9 @@ class PipelineRunRequest:
         ]
         | None
     ) = field(default=None, repr=False, compare=False)
-    exact_workload_qualifications: frozenset[
-        ExactWorkloadCandidateQualification
-    ] = field(default=frozenset(), repr=False, compare=False)
+    exact_workload_qualifications: frozenset[ExactWorkloadCandidateQualification] = (
+        field(default=frozenset(), repr=False, compare=False)
+    )
     exact_workload_qualification_scope_digest: str = field(
         default="",
         repr=False,
@@ -227,6 +405,9 @@ class PipelineRunRequest:
         repr=False,
         compare=False,
     )
+    resident_thumbnail_statistics_request: ResidentThumbnailStatisticsRequest | None = (
+        field(default=None, repr=False, compare=False)
+    )
 
     def __post_init__(self) -> None:
         raw_provenance = self.cached_compute_provenance
@@ -234,9 +415,7 @@ class PipelineRunRequest:
             normalized_provenance: dict[str, CachedNodeComputeProvenance] = {}
         else:
             if not isinstance(raw_provenance, Mapping):
-                raise TypeError(
-                    "cached_compute_provenance must be a mapping or None."
-                )
+                raise TypeError("cached_compute_provenance must be a mapping or None.")
             normalized_provenance = {}
             for raw_node_id, provenance in raw_provenance.items():
                 node_id = str(raw_node_id).strip()
@@ -326,8 +505,7 @@ class PipelineRunRequest:
         qualification_keys = tuple(item.candidate_key for item in qualifications)
         if len(set(qualification_keys)) != len(qualification_keys):
             raise ValueError(
-                "exact_workload_qualifications contain duplicate candidate "
-                "identities."
+                "exact_workload_qualifications contain duplicate candidate identities."
             )
         object.__setattr__(self, "exact_workload_qualifications", qualifications)
         object.__setattr__(
@@ -341,6 +519,15 @@ class PipelineRunRequest:
             if not history_path:
                 raise ValueError("performance_history_path must not be blank.")
         object.__setattr__(self, "performance_history_path", history_path)
+        resident_request = self.resident_thumbnail_statistics_request
+        if resident_request is not None and not isinstance(
+            resident_request,
+            ResidentThumbnailStatisticsRequest,
+        ):
+            raise TypeError(
+                "resident_thumbnail_statistics_request must be a "
+                "ResidentThumbnailStatisticsRequest or None."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,6 +625,12 @@ class AcceleratorCleanupError(RuntimeError):
         )
 
 
+class ResidentThumbnailStatisticsCleanupError(RuntimeError):
+    """A resident presentation scan could not release its GPU scratch."""
+
+    cleanup_succeeded = False
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineRunResult:
     """Success, cancellation, or explicit error from one execution attempt."""
@@ -450,6 +643,19 @@ class PipelineRunResult:
     source_revisions: tuple[object, ...] = ()
     execution_report: ExecutionReport | None = None
     failure: PipelineExecutionFailure | None = None
+    resident_thumbnail_statistics: tuple[
+        ResidentThumbnailStatisticsObservation,
+        ...,
+    ] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "resident_thumbnail_statistics",
+            _normalized_resident_thumbnail_observations(
+                self.resident_thumbnail_statistics
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,6 +672,20 @@ class PipelineNodeResult:
     execution_state: str
     execution_message: str = ""
     source_revisions: tuple[object, ...] = ()
+    resident_thumbnail_statistics: tuple[
+        ResidentThumbnailStatisticsObservation,
+        ...,
+    ] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "resident_thumbnail_statistics",
+            _normalized_resident_thumbnail_observations(
+                self.resident_thumbnail_statistics,
+                node_id=self.node_id,
+            ),
+        )
 
 
 NodeFinishedCallback = Callable[[PipelineNodeResult], None]
@@ -501,6 +721,8 @@ def execute_pipeline_request(
     timing_execution_surface = ""
     timing_runnable_node_ids: frozenset[str] = frozenset()
     timing_warnings: list[str] = []
+    resident_thumbnail_statistics: list[ResidentThumbnailStatisticsObservation] = []
+    resident_thumbnail_observer_seconds = [0.0]
 
     def call_observer(callback, *args) -> None:
         nonlocal observer_seconds
@@ -549,9 +771,7 @@ def execute_pipeline_request(
             request,
             cancel_callback=cancel_callback,
         )
-        registered_specs = tuple(
-            getattr(compute_registry, "implementation_specs", ())
-        )
+        registered_specs = tuple(getattr(compute_registry, "implementation_specs", ()))
         _hydrate_cached_pipeline_outputs(
             pipeline,
             request,
@@ -568,32 +788,26 @@ def execute_pipeline_request(
         timing_runnable_node_ids = frozenset(
             node_id
             for node_id in timing_schedule.runnable_node_ids
-            if pipeline.operation_spec(
-                pipeline.nodes[node_id].operation_id
-            ).has_input
+            if pipeline.operation_spec(pipeline.nodes[node_id].operation_id).has_input
         )
         if request.performance_history_path is not None:
             try:
-                timing_workload_fingerprint = (
-                    _pipeline_timing_workload_fingerprint(
-                        pipeline,
-                        timing_runnable_node_ids,
-                        retain_node_ids=request.retain_node_ids,
-                        prune_unretained=request.prune_unretained,
-                        manual_node_ids=request.manual_node_ids,
-                        target_node_ids=request.target_node_ids,
-                        compute_request=request.compute_request,
-                        source_scientific_contexts=source_scientific_contexts,
-                        cancel_callback=cancel_callback,
-                    )
+                timing_workload_fingerprint = _pipeline_timing_workload_fingerprint(
+                    pipeline,
+                    timing_runnable_node_ids,
+                    retain_node_ids=request.retain_node_ids,
+                    prune_unretained=request.prune_unretained,
+                    manual_node_ids=request.manual_node_ids,
+                    target_node_ids=request.target_node_ids,
+                    compute_request=request.compute_request,
+                    source_scientific_contexts=source_scientific_contexts,
+                    cancel_callback=cancel_callback,
                 )
                 if timing_workload_fingerprint:
                     timing_store = JsonPipelineTimingStore(
                         request.performance_history_path
                     )
-                    timing_host_environment_fingerprint = (
-                        host_performance_fingerprint()
-                    )
+                    timing_host_environment_fingerprint = host_performance_fingerprint()
                     timing_execution_surface = (
                         "direct-cpu-v1"
                         if request.compute_request.mode is ComputeMode.CPU
@@ -636,6 +850,11 @@ def execute_pipeline_request(
                         "",
                     ),
                     source_revisions=request.source_revisions,
+                    resident_thumbnail_statistics=tuple(
+                        item
+                        for item in resident_thumbnail_statistics
+                        if item.node_id == node_id
+                    ),
                 )
             )
 
@@ -665,9 +884,8 @@ def execute_pipeline_request(
                 # provenance and backend decisions for the prefix that really
                 # completed so an interactive caller can safely publish those
                 # sibling results even though a later node failed.
-                completed_cpu_node_ids = (
-                    set(timing_schedule.runnable_node_ids)
-                    & set(pipeline.completed_node_ids)
+                completed_cpu_node_ids = set(timing_schedule.runnable_node_ids) & set(
+                    pipeline.completed_node_ids
                 )
                 try:
                     partial_decisions = _publish_cpu_compute_provenance(
@@ -705,6 +923,7 @@ def execute_pipeline_request(
                 node_started_callback=observed_node_started_callback,
                 node_finished_callback=publish_node_result,
                 progress_callback=observed_progress_callback,
+                resident_progress_callback=progress_callback,
                 cancel_callback=cancel_callback,
                 compute_registry=compute_registry,
                 compute_planner=compute_planner,
@@ -720,7 +939,10 @@ def execute_pipeline_request(
                     timing_host_environment_fingerprint
                 ),
                 timing_execution_surface=timing_execution_surface,
+                resident_thumbnail_statistics=resident_thumbnail_statistics,
+                resident_observer_seconds=resident_thumbnail_observer_seconds,
             )
+            observer_seconds += resident_thumbnail_observer_seconds[0]
     except OperationCancelled as exc:
         failure = _pipeline_execution_failure(
             exc,
@@ -771,10 +993,7 @@ def execute_pipeline_request(
         and run_started is not None
         and execution_report.cleanup_succeeded
         and not execution_report.fallback_records
-        and not any(
-            decision.fallback_used
-            for decision in timing_decisions
-        )
+        and not any(decision.fallback_used for decision in timing_decisions)
         and not any(
             decision.reason is DecisionReason.HISTORICAL_PERFORMANCE
             for decision in timing_decisions
@@ -786,9 +1005,7 @@ def execute_pipeline_request(
             timing_store.append(
                 PipelineTimingSample.completed_run(
                     workload_fingerprint=timing_workload_fingerprint,
-                    host_environment_fingerprint=(
-                        timing_host_environment_fingerprint
-                    ),
+                    host_environment_fingerprint=(timing_host_environment_fingerprint),
                     environment=execution_report.environment,
                     decisions=timing_decisions,
                     elapsed_seconds=max(
@@ -805,9 +1022,7 @@ def execute_pipeline_request(
             ):
                 learned_choice = timing_store.choose(
                     workload_fingerprint=timing_workload_fingerprint,
-                    host_environment_fingerprint=(
-                        timing_host_environment_fingerprint
-                    ),
+                    host_environment_fingerprint=(timing_host_environment_fingerprint),
                     accelerator_environment_fingerprint=(
                         execution_report.environment.fingerprint
                     ),
@@ -843,6 +1058,7 @@ def execute_pipeline_request(
         pipeline,
         source_revisions=request.source_revisions,
         execution_report=execution_report,
+        resident_thumbnail_statistics=tuple(resident_thumbnail_statistics),
     )
 
 
@@ -980,6 +1196,7 @@ def _execute_accelerated_pipeline(
     node_started_callback: NodeStartedCallback | None,
     node_finished_callback: Callable[[str], None] | None,
     progress_callback: ProgressCallback | None,
+    resident_progress_callback: ProgressCallback | None,
     cancel_callback: Callable[[], bool] | None,
     compute_registry: ComputeRegistry | None,
     compute_planner: ComputePlanner | None,
@@ -989,6 +1206,8 @@ def _execute_accelerated_pipeline(
     timing_workload_fingerprint: str,
     timing_host_environment_fingerprint: str,
     timing_execution_surface: str,
+    resident_thumbnail_statistics: list[ResidentThumbnailStatisticsObservation],
+    resident_observer_seconds: list[float],
 ) -> ExecutionReport:
     """Plan and atomically commit one non-CPU headless execution."""
     # Accelerator modules remain behind this branch so the default CPU path
@@ -1073,9 +1292,7 @@ def _execute_accelerated_pipeline(
             try:
                 candidate_choice = timing_store.choose(
                     workload_fingerprint=timing_workload_fingerprint,
-                    host_environment_fingerprint=(
-                        timing_host_environment_fingerprint
-                    ),
+                    host_environment_fingerprint=(timing_host_environment_fingerprint),
                     accelerator_environment_fingerprint=(
                         preflight_environment.fingerprint
                     ),
@@ -1083,9 +1300,7 @@ def _execute_accelerated_pipeline(
                 )
                 coverage = timing_store.coverage(
                     workload_fingerprint=timing_workload_fingerprint,
-                    host_environment_fingerprint=(
-                        timing_host_environment_fingerprint
-                    ),
+                    host_environment_fingerprint=(timing_host_environment_fingerprint),
                     accelerator_environment_fingerprint=(
                         preflight_environment.fingerprint
                     ),
@@ -1196,6 +1411,18 @@ def _execute_accelerated_pipeline(
             target_node_ids=request.target_node_ids,
             retained_ports=retained_ports,
         )
+        resident_request = request.resident_thumbnail_statistics_request
+        if (
+            request.compute_request.mode is not ComputeMode.PREFER_GPU
+            or resident_request is None
+            or not resident_request.gpu_contract_warm
+        ):
+            resident_request = None
+        pending_resident_statistics: dict[
+            OutputPortKey,
+            ResidentThumbnailStatisticsObservation,
+        ] = {}
+        resident_cleanup_failure_message: str | None = None
         calls_by_node: dict[str, PreparedNodeCall] = {}
         started_node_ids: set[str] = set()
 
@@ -1278,15 +1505,92 @@ def _execute_accelerated_pipeline(
             for port_index, state in enumerate(states):
                 state_by_port[OutputPortKey(node_id, port_index)] = state
 
-        device_result = execute_device_plan(
-            device_plan,
-            pipeline,
-            registry,
-            effective_compute_request,
-            host_values=host_values,
-            prepare_call=prepare_call,
-            cancel_callback=cancel_callback,
-            node_outputs_callback=observe_outputs,
+        def observe_resident_output(
+            port: OutputPortKey,
+            device_value: object,
+            runtime: object,
+            device_id: str,
+        ) -> None:
+            nonlocal resident_cleanup_failure_message
+            resident_started = perf_counter()
+            try:
+                if resident_request is None or port != resident_request.port:
+                    return
+                output_ports = pipeline.output_ports(port.node_id)
+                if not 0 <= port.port_index < len(output_ports):
+                    return
+                operation_id = pipeline.nodes[port.node_id].operation_id
+                reporter = (
+                    None
+                    if resident_progress_callback is None
+                    else lambda update: resident_progress_callback(
+                        operation_id,
+                        update.current,
+                        update.total,
+                        update.message,
+                    )
+                )
+                try:
+                    observation = _resident_thumbnail_statistics_observation(
+                        resident_request,
+                        compute_mode=request.compute_request.mode,
+                        output_type=output_ports[port.port_index].output_type,
+                        output_state=state_by_port.get(port),
+                        device_value=device_value,
+                        runtime=runtime,
+                        device_id=device_id,
+                        progress=ProgressContext(
+                            cancelled=cancel_callback,
+                            reporter=reporter,
+                        ),
+                    )
+                except ResidentThumbnailStatisticsCleanupError as exc:
+                    # Store only detached text.  The provider exception/traceback
+                    # must not outlive the active private allocator scope.
+                    resident_cleanup_failure_message = str(exc)
+                    raise
+                if observation is not None:
+                    pending_resident_statistics[port] = observation
+            finally:
+                resident_observer_seconds[0] += max(
+                    0.0,
+                    perf_counter() - resident_started,
+                )
+
+        try:
+            device_result = execute_device_plan(
+                device_plan,
+                pipeline,
+                registry,
+                effective_compute_request,
+                host_values=host_values,
+                prepare_call=prepare_call,
+                cancel_callback=cancel_callback,
+                node_outputs_callback=observe_outputs,
+                resident_output_callback=(
+                    observe_resident_output if resident_request is not None else None
+                ),
+            )
+        except BaseException:
+            if resident_cleanup_failure_message is not None:
+                raise ResidentThumbnailStatisticsCleanupError(
+                    resident_cleanup_failure_message
+                ) from None
+            raise
+
+        fallback_node_ids = {
+            node_id
+            for segment in device_plan.segments
+            if segment.segment_id in device_result.fallback_segment_ids
+            for node_id in segment.node_ids
+        }
+        resident_thumbnail_statistics.extend(
+            observation
+            for port, observation in sorted(
+                pending_resident_statistics.items(),
+                key=lambda item: (item[0].node_id, item[0].port_index),
+            )
+            if port.node_id not in fallback_node_ids
         )
 
         for node_id in pipeline.topological_order():
@@ -1372,6 +1676,226 @@ def _execute_accelerated_pipeline(
     return report
 
 
+def _resident_thumbnail_statistics_observation(
+    request: ResidentThumbnailStatisticsRequest,
+    *,
+    compute_mode: ComputeMode,
+    output_type: str,
+    output_state: object,
+    device_value: object,
+    runtime: object,
+    device_id: str,
+    progress: ProgressContext,
+) -> ResidentThumbnailStatisticsObservation | None:
+    """Softly observe one eligible borrowed float32 output on CUDA/CuPy."""
+
+    if (
+        compute_mode is not ComputeMode.PREFER_GPU
+        or not request.gpu_contract_warm
+        or request.contrast_mode == "Raw"
+        or str(output_type).strip().casefold() not in {"image", "array", "any"}
+        or str(getattr(runtime, "runtime_id", "")).strip() != "cuda-cupy"
+        or not isinstance(output_state, _metadata.ImageState)
+    ):
+        return None
+    shape = _resident_device_shape(device_value)
+    if shape is None or tuple(output_state.shape) != shape:
+        return None
+    try:
+        device_dtype = np.dtype(device_value.dtype)
+        state_dtype = np.dtype(output_state.dtype)
+        actual_nbytes = int(device_value.nbytes)
+        scanned_values = int(device_value.size)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    if (
+        device_dtype != np.dtype(np.float32)
+        or state_dtype != device_dtype
+        or actual_nbytes < request.minimum_scanned_bytes
+        or actual_nbytes < 0
+        or scanned_values < 0
+        or actual_nbytes != scanned_values * device_dtype.itemsize
+        or not _resident_image_state_is_presentable(output_state)
+    ):
+        return None
+    channel_contract = _explicit_resident_channel_axis(output_state, len(shape))
+    if channel_contract is None:
+        return None
+    channel_axis = channel_contract[0]
+    started = perf_counter()
+    try:
+        provider_result = _exact_float32_thumbnail_limits_from_device(
+            runtime,
+            device_value,
+            device_id=str(device_id).strip(),
+            channel_axis=channel_axis,
+            contrast_mode=request.contrast_mode,
+            progress=progress,
+        )
+        auxiliary_host_to_device_bytes = _nonnegative_resident_count(
+            provider_result.auxiliary_host_to_device_bytes,
+            "auxiliary_host_to_device_bytes",
+        )
+        device_to_host_bytes = _nonnegative_resident_count(
+            provider_result.device_to_host_bytes,
+            "device_to_host_bytes",
+        )
+        device_to_host_values = _nonnegative_resident_count(
+            provider_result.device_to_host_values,
+            "device_to_host_values",
+        )
+        limits = _immutable_resident_thumbnail_limits(provider_result.limits)
+        _validate_resident_thumbnail_limit_channels(
+            limits,
+            channel_axis=channel_axis,
+            shape=shape,
+        )
+    except OperationCancelled:
+        raise
+    except Exception as exc:
+        if (
+            isinstance(exc, ThumbnailStatisticsCleanupError)
+            or getattr(
+                exc,
+                "cleanup_succeeded",
+                None,
+            )
+            is False
+        ):
+            raise ResidentThumbnailStatisticsCleanupError(
+                "Resident thumbnail GPU scratch cleanup failed; restart "
+                "accelerator work before retrying."
+            ) from None
+        # Presentation is optional.  Dependency/import/provider failures are
+        # a soft miss and must not replace a valid scientific result.
+        return None
+    decision = ThumbnailStatisticsDecision(
+        backend=ThumbnailStatisticsBackend.GPU_CUPY,
+        reason_code="resident_float32_warm_contract",
+        reason=(
+            "A requested warm float32 thumbnail scan reused the current "
+            "CUDA/CuPy output without uploading it again."
+        ),
+        scanned_values=scanned_values,
+        scanned_bytes=actual_nbytes,
+        threshold_bytes=request.minimum_scanned_bytes,
+        gpu_warm=request.gpu_contract_warm,
+        host_staging_bytes=0,
+    )
+    result = ThumbnailStatisticsResult(
+        limits=limits,
+        decision=decision,
+        actual_backend=ThumbnailStatisticsBackend.GPU_CUPY,
+        algorithm_id=(
+            EXACT_FLOAT32_MINMAX_GPU_ALGORITHM_ID
+            if request.contrast_mode == "Min-max"
+            else EXACT_FLOAT32_PERCENTILE_GPU_ALGORITHM_ID
+        ),
+        elapsed_seconds=max(0.0, perf_counter() - started),
+        runtime_id="cuda-cupy",
+        device_id=str(device_id).strip(),
+        requested_compute_mode=ComputeMode.PREFER_GPU,
+        input_path="resident_borrow",
+        logical_input_host_to_device_bytes=0,
+        auxiliary_host_to_device_bytes=auxiliary_host_to_device_bytes,
+        device_to_host_bytes=device_to_host_bytes,
+        device_to_host_values=device_to_host_values,
+    )
+    return ResidentThumbnailStatisticsObservation(
+        node_id=request.node_id,
+        output_port=request.output_port,
+        contrast_mode=request.contrast_mode,
+        result=result,
+    )
+
+
+def _resident_device_shape(value: object) -> tuple[int, ...] | None:
+    try:
+        shape = tuple(int(size) for size in value.shape)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    if any(size < 0 for size in shape):
+        return None
+    return shape
+
+
+def _resident_image_state_is_presentable(state: _metadata.ImageState) -> bool:
+    kind = str(state.kind).strip().casefold()
+    return kind.endswith("image") and "label" not in kind
+
+
+def _explicit_resident_channel_axis(
+    state: _metadata.ImageState,
+    ndim: int,
+) -> tuple[int | None] | None:
+    axes = tuple(state.axes)
+    if len(axes) != ndim:
+        return None
+    candidates = tuple(
+        index
+        for index, axis in enumerate(axes)
+        if axis.is_explicit
+        and (
+            str(axis.type).strip().casefold() == "channel"
+            or str(axis.name).strip().casefold() in {"c", "channel", "rgb", "rgba"}
+        )
+    )
+    if len(candidates) > 1:
+        return None
+    return (candidates[0] if candidates else None,)
+
+
+def _nonnegative_resident_count(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise TypeError(f"{name} must be a non-negative integer.")
+    normalized = int(value)
+    if normalized < 0:
+        raise ValueError(f"{name} must be a non-negative integer.")
+    return normalized
+
+
+def _validate_resident_thumbnail_limit_channels(
+    limits: object,
+    *,
+    channel_axis: int | None,
+    shape: tuple[int, ...],
+) -> None:
+    """Require one exact limit pair per declared presentation channel."""
+
+    values = np.asarray(limits, dtype=np.float64)
+    expected_shape = (2,) if channel_axis is None else (int(shape[channel_axis]), 2)
+    if values.shape != expected_shape:
+        raise ValueError(
+            "Resident thumbnail statistics returned a channel-limit shape "
+            f"of {values.shape}; expected {expected_shape}."
+        )
+
+
+def _exact_float32_thumbnail_limits_from_device(
+    runtime: object,
+    device_value: object,
+    *,
+    device_id: str,
+    channel_axis: int | None,
+    contrast_mode: str,
+    progress: ProgressContext,
+):
+    """Late import seam for the production CuPy resident-statistics adapter."""
+
+    from napari_vipp.core.gpu.cupy_thumbnail_statistics import (
+        exact_float32_thumbnail_limits_from_device,
+    )
+
+    return exact_float32_thumbnail_limits_from_device(
+        runtime,
+        device_value,
+        device_id=device_id,
+        channel_axis=channel_axis,
+        contrast_mode=contrast_mode,
+        progress=progress,
+    )
+
+
 def _default_compute_planner() -> ComputePlanner:
     from napari_vipp.core.compute_planning import plan_compute_decisions
 
@@ -1389,12 +1913,8 @@ def _historical_auto_compute_request(
     if choice is None or request.mode is not ComputeMode.AUTO:
         return request
     workloads_by_node = {item.node_id: item for item in workloads}
-    decisions_by_node = {
-        item.node_id: item for item in choice.assignment.decisions
-    }
-    if not decisions_by_node or not set(decisions_by_node).issubset(
-        workloads_by_node
-    ):
+    decisions_by_node = {item.node_id: item for item in choice.assignment.decisions}
+    if not decisions_by_node or not set(decisions_by_node).issubset(workloads_by_node):
         return request
     specs_by_id = {
         item.implementation_id: item for item in registry.implementation_specs
@@ -1407,8 +1927,7 @@ def _historical_auto_compute_request(
         if decision.runtime_id == "cpu-numpy":
             if (
                 decision.implementation_library_id != "cpu"
-                or decision.implementation_id
-                != f"cpu-{workload.operation_id}-v1"
+                or decision.implementation_id != f"cpu-{workload.operation_id}-v1"
                 or decision.implementation_version != "1"
             ):
                 return request
@@ -1422,8 +1941,7 @@ def _historical_auto_compute_request(
             or implementation.runtime_id != decision.runtime_id
             or implementation.implementation_library_id
             != decision.implementation_library_id
-            or implementation.implementation_version
-            != decision.implementation_version
+            or implementation.implementation_version != decision.implementation_version
             or not implementation.eligible_for_auto(
                 allow_experimental=request.allow_experimental
             )
@@ -1513,9 +2031,7 @@ def _mark_historical_auto_planning(
 ) -> object | None:
     """Restore public Auto intent and attach exact timing evidence provenance."""
 
-    expected = {
-        item.node_id: item for item in choice.assignment.decisions
-    }
+    expected = {item.node_id: item for item in choice.assignment.decisions}
     decisions_by_node = {item.node_id: item for item in planning.decisions}
     if not set(expected).issubset(decisions_by_node):
         return None
@@ -1528,8 +2044,7 @@ def _mark_historical_auto_planning(
         or decision.implementation_library_id
         != expected[node_id].implementation_library_id
         or decision.implementation_id != expected[node_id].implementation_id
-        or decision.implementation_version
-        != expected[node_id].implementation_version
+        or decision.implementation_version != expected[node_id].implementation_version
     ]
     if mismatches:
         return None
@@ -1541,9 +2056,7 @@ def _mark_historical_auto_planning(
         decisions.append(
             replace(
                 decision,
-                requested_preference=NodeComputePreference(
-                    NodePreferenceKind.AUTO
-                ),
+                requested_preference=NodeComputePreference(NodePreferenceKind.AUTO),
                 reason=DecisionReason.HISTORICAL_PERFORMANCE,
                 reason_text=choice.reason,
                 performance_evidence_kind="completed_pipeline_timing",
@@ -1571,9 +2084,7 @@ def _mark_auto_cpu_exploration_planning(
         decisions.append(
             replace(
                 decision,
-                requested_preference=NodeComputePreference(
-                    NodePreferenceKind.AUTO
-                ),
+                requested_preference=NodeComputePreference(NodePreferenceKind.AUTO),
                 reason=DecisionReason.PERFORMANCE_EXPLORATION,
                 reason_text=(
                     "Auto already has a compatible accelerated timing but needs "
@@ -1616,16 +2127,11 @@ def _pipeline_timing_workload_fingerprint(
         runnable = set(runnable_node_ids)
         cached_boundaries = []
         for connection in pipeline.connections:
-            if (
-                connection.target_id not in runnable
-                or connection.source_id in runnable
-            ):
+            if connection.target_id not in runnable or connection.source_id in runnable:
                 continue
             source_node = pipeline.nodes[connection.source_id]
             if pipeline.operation_spec(source_node.operation_id).has_input:
-                provenance = pipeline.node_compute_provenance.get(
-                    connection.source_id
-                )
+                provenance = pipeline.node_compute_provenance.get(connection.source_id)
                 if provenance is None:
                     return ""
                 result_context = provenance.result_context_fingerprint
@@ -1884,9 +2390,7 @@ def _assemble_workloads(
                 continue
             if pipeline._node_accepts_multiple_inputs(node):
                 required = pipeline._required_inputs_for(node)
-                connected_ports = {
-                    connection.target_port for connection in connections
-                }
+                connected_ports = {connection.target_port for connection in connections}
                 if any(port not in connected_ports for port in range(required)):
                     continue
         input_shapes: list[tuple[int, ...]] = []
@@ -2032,13 +2536,17 @@ def _assemble_workloads(
                     )
                     if propagated is not None:
                         facts_by_port[port] = propagated
-        elif planning_call is not None and (
-            projection_spec := _shape_preserving_device_projection(
-                registry,
-                node.operation_id,
-                allow_experimental,
+        elif (
+            planning_call is not None
+            and (
+                projection_spec := _shape_preserving_device_projection(
+                    registry,
+                    node.operation_id,
+                    allow_experimental,
+                )
             )
-        ) is not None:
+            is not None
+        ):
             projected_descriptors = propagate_output_descriptors(
                 projection_spec,
                 tuple(
@@ -2055,8 +2563,7 @@ def _assemble_workloads(
             predicted_states = pipeline.predict_shape_preserving_node_states(
                 planning_call,
                 output_dtype_policy_ids=tuple(
-                    port.output_dtype_policy_id
-                    for port in projection_spec.output_ports
+                    port.output_dtype_policy_id for port in projection_spec.output_ports
                 ),
             )
             for port_index, (predicted_state, descriptor) in enumerate(
@@ -2118,9 +2625,7 @@ def _project_host_planning_outputs(
     contract_results = None
     if operation_id in _EXACT_HOST_AXIS_CONTRACT_OPERATIONS:
         try:
-            contract_results = pipeline._axis_contract_transform_results(
-                planning_call
-            )
+            contract_results = pipeline._axis_contract_transform_results(planning_call)
         except (TypeError, ValueError):
             return None
         if contract_results is None:
@@ -2167,8 +2672,7 @@ def _project_host_planning_outputs(
             return None
         output_shape = tuple(
             size + 1
-            if bool(planning_call.kwargs.get("force_odd_shape", True))
-            and size % 2 == 0
+            if bool(planning_call.kwargs.get("force_odd_shape", True)) and size % 2 == 0
             else size
             for size in input_shape
         )
@@ -2213,9 +2717,7 @@ def _project_host_planning_outputs(
                     base_state,
                     shape=output_shape,
                     axes=axes,
-                    channels=(
-                        () if channel_axis is not None else base_state.channels
-                    ),
+                    channels=(() if channel_axis is not None else base_state.channels),
                     memory=_metadata._memory_label(
                         int(np.prod(output_shape, dtype=np.int64))
                         * np.dtype(bool).itemsize
@@ -2257,8 +2759,7 @@ def _project_host_planning_outputs(
                     output_axes,
                 ),
                 memory=_metadata._memory_label(
-                    int(np.prod(output_shape, dtype=np.int64))
-                    * output_dtype.itemsize
+                    int(np.prod(output_shape, dtype=np.int64)) * output_dtype.itemsize
                 ),
                 value_pattern="",
             )
@@ -2287,8 +2788,7 @@ def _extract_channel_output_projection(
             (
                 index
                 for index, axis_name in enumerate(axis_names[: len(input_shape)])
-                if str(axis_name).strip().casefold()
-                in {"c", "channel", "rgb", "rgba"}
+                if str(axis_name).strip().casefold() in {"c", "channel", "rgb", "rgba"}
             ),
             None,
         )
@@ -2620,10 +3120,7 @@ def _candidate_specs_for_workload(
         if request.mode is ComputeMode.CUSTOM
         else NodeComputePreference(NodePreferenceKind.AUTO)
     )
-    if (
-        request.mode is ComputeMode.CUSTOM
-        and preference.kind is NodePreferenceKind.CPU
-    ):
+    if request.mode is ComputeMode.CUSTOM and preference.kind is NodePreferenceKind.CPU:
         return ()
     implementations = registry.implementations_for_operation(
         workload.operation_id,
@@ -3046,9 +3543,7 @@ def _shape_and_dtype(value: object, state: object) -> tuple[tuple[int, ...], str
         raw_dtype = getattr(state, "dtype", "object")
     try:
         resolved_dtype = np.dtype(raw_dtype)
-        dtype = (
-            resolved_dtype.name if resolved_dtype.isnative else resolved_dtype.str
-        )
+        dtype = resolved_dtype.name if resolved_dtype.isnative else resolved_dtype.str
     except (TypeError, ValueError):
         dtype = "object"
     return shape, dtype
@@ -3245,9 +3740,9 @@ def _propagate_shape_preserving_facts(
             guarantees.discard("no-negative-zero")
     elif operation_id == "convert_dtype":
         source_dtype = np.dtype(facts.dtype)
-        output_dtype_parameter = str(
-            parameters.get("output_dtype", "uint8")
-        ).strip().casefold()
+        output_dtype_parameter = (
+            str(parameters.get("output_dtype", "uint8")).strip().casefold()
+        )
         scaling = str(parameters.get("scaling", "rescale")).strip().casefold()
         if (
             source_dtype not in {np.dtype(np.uint8), np.dtype(np.uint16)}
@@ -3360,9 +3855,7 @@ def _propagate_shape_preserving_facts(
         # integrality, and sign are output theorems that require no host scan.
         finite_count = output_elements
         completeness = FactCompleteness.COMPLETE
-        guarantees.update(
-            ("integer-labels", "nonnegative", "no-negative-zero")
-        )
+        guarantees.update(("integer-labels", "nonnegative", "no-negative-zero"))
 
     # Exact extrema are generally not propagated because each operation can
     # change them. Sigma Filter is the narrow exception above: its branch
@@ -3953,8 +4446,7 @@ def _scientific_identity_value(
         if is_dataclass(value) and not isinstance(value, type):
             return {
                 "type": (
-                    f"dataclass:{type(value).__module__}."
-                    f"{type(value).__qualname__}"
+                    f"dataclass:{type(value).__module__}.{type(value).__qualname__}"
                 ),
                 "fields": [
                     {
@@ -3987,9 +4479,7 @@ def _scientific_identity_value(
             entries.sort(key=lambda pair: canonical_digest(pair[0]))
             return {
                 "type": f"mapping:{type(value).__module__}.{type(value).__qualname__}",
-                "entries": [
-                    {"key": key, "value": item} for key, item in entries
-                ],
+                "entries": [{"key": key, "value": item} for key, item in entries],
             }
         if isinstance(value, (tuple, list)):
             return {
@@ -4127,10 +4617,7 @@ def _publish_cpu_compute_provenance(
         if node_id not in scheduled_node_ids:
             continue
         node = pipeline.nodes.get(node_id)
-        if (
-            node is None
-            or not pipeline.operation_spec(node.operation_id).has_input
-        ):
+        if node is None or not pipeline.operation_spec(node.operation_id).has_input:
             continue
         preference = request.compute_request.preference_for(node_id)
         decisions.append(
@@ -4155,9 +4642,7 @@ def _publish_cpu_compute_provenance(
         decisions,
         source_scientific_contexts=source_scientific_contexts,
         cancel_callback=(
-            request.cancel_event.is_set
-            if request.cancel_event is not None
-            else None
+            request.cancel_event.is_set if request.cancel_event is not None else None
         ),
     )
     return tuple(decisions)
@@ -4223,8 +4708,7 @@ def _publish_actual_compute_provenance(
                         (
                             spec
                             for spec in implementation_specs
-                            if spec.implementation_id
-                            == decision.implementation_id
+                            if spec.implementation_id == decision.implementation_id
                             and spec.operation_id == decision.operation_id
                             and spec.runtime_id == decision.runtime_id
                             and spec.implementation_library_id
@@ -4241,9 +4725,8 @@ def _publish_actual_compute_provenance(
                 except (KeyError, TypeError, ValueError):
                     continue
         resolved_provenance[node_id] = provenance
-        if (
-            node_id in pipeline.completed_node_ids
-            and pipeline._has_cached_output(node_id)
+        if node_id in pipeline.completed_node_ids and pipeline._has_cached_output(
+            node_id
         ):
             published_provenance[node_id] = provenance
     pipeline.node_compute_provenance = published_provenance
@@ -4259,5 +4742,8 @@ __all__ = [
     "PipelineRunRequest",
     "PipelineRunResult",
     "ProgressCallback",
+    "ResidentThumbnailStatisticsCleanupError",
+    "ResidentThumbnailStatisticsObservation",
+    "ResidentThumbnailStatisticsRequest",
     "execute_pipeline_request",
 ]

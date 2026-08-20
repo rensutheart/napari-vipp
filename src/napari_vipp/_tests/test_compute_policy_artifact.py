@@ -44,7 +44,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     policy = load_phase1_compute_policy()
 
     assert policy.policy_id == PHASE1_POLICY_ID
-    assert policy.policy_version == 8
+    assert policy.policy_version == 9
     assert policy.content_sha256 == PHASE1_POLICY_SHA256
     assert policy.phase == "phase1"
     assert policy.status == "public-validated"
@@ -53,17 +53,17 @@ def test_loads_versioned_policy_through_installed_package_resources():
     assert not policy.exposure.developer_enablement_required
 
     with pytest.raises(FrozenInstanceError):
-        policy.policy_version = 8  # type: ignore[misc]
+        policy.policy_version = 9  # type: ignore[misc]
 
 
 def test_phase1_operation_ids_and_conservative_settings_are_exact():
     policy = load_phase1_compute_policy()
     expected_implementations = {
-        "rolling_ball_background": "cucim-rolling_ball_background-v2",
-        "subtract_background": "cucim-subtract_background-v2",
-        "median_filter": "cupyx-median-filter-v1",
-        "gaussian_blur": "cupyx-gaussian-blur-v1",
-        "gaussian_blur_3d": "cupyx-gaussian-blur-3d-v1",
+        "rolling_ball_background": "cupy-rolling-ball-background-v1",
+        "subtract_background": "cupy-subtract-background-v1",
+        "median_filter": "cupy-median-filter-v1",
+        "gaussian_blur": "cupy-gaussian-blur-v1",
+        "gaussian_blur_3d": "cupy-gaussian-blur-3d-v1",
         "sigma_filter": "cupy-sigma-filter-v1",
         "label_connected_components": "cupyx-connected-components-v1",
         "measure_objects": "cucim-measure-objects-basic-v1",
@@ -138,9 +138,7 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
         "d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667"
     )
     assert platform.cucim_source_tag == "v26.06.00"
-    assert platform.cucim_source_commit == (
-        "3c15781c207eab93a317dd9803a6e726fe01f7c4"
-    )
+    assert platform.cucim_source_commit == ("3c15781c207eab93a317dd9803a6e726fe01f7c4")
     assert platform.cucim_build_recipe_id == "napari-vipp-cucim-windows-v1"
     assert platform.validated_environment_policy_ids == (
         "cuda-cupy-14.1.1-cpython312-windows-native-v3",
@@ -328,7 +326,7 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
     )
 
 
-def test_v8_broadens_hardware_and_legacy_resources_are_byte_stable():
+def test_v9_updates_dynamic_filters_and_background_endian_region_only():
     package = resources.files("napari_vipp.compute_policies")
     historical_sha256 = {
         "phase1-gpu-developer-v1.json": (
@@ -352,6 +350,9 @@ def test_v8_broadens_hardware_and_legacy_resources_are_byte_stable():
         "phase1-gpu-public-v7.json": (
             "c921c49bc1993dabb71c440af8f08e739bf2d7a8808e0a0a6975082a23530877"
         ),
+        "phase1-gpu-public-v8.json": (
+            "b31c93407939ae289fee36eb809f995e4bb6d23df3df89854bfad0717880570b"
+        ),
     }
     for name, expected_digest in historical_sha256.items():
         resource = package.joinpath(name)
@@ -363,13 +364,156 @@ def test_v8_broadens_hardware_and_legacy_resources_are_byte_stable():
     v5 = json.loads(package.joinpath("phase1-gpu-public-v5.json").read_bytes())
     v6 = json.loads(package.joinpath("phase1-gpu-public-v6.json").read_bytes())
     v7 = json.loads(package.joinpath("phase1-gpu-public-v7.json").read_bytes())
-    v8 = _resource_document()
+    v8 = json.loads(package.joinpath("phase1-gpu-public-v8.json").read_bytes())
+    v9 = _resource_document()
     assert v8["policy"]["operations"] == v7["policy"]["operations"]
     v8_platform = v8["policy"]["platform_admission"]
     assert v8_platform["minimum_driver_version"] == "13030"
     assert v8_platform["nvidia_device_class"] == "nvidia-cuda"
     assert v8_platform["minimum_nvidia_compute_capability"] == "7.5"
     assert len(v8_platform["reference_validation_devices"]) == 2
+
+    assert set(v9) == set(v8)
+    assert v9["schema_id"] == v8["schema_id"]
+    assert v9["policy_id"] == "phase1-gpu-public-v9"
+    assert v9["policy_version"] == 9
+    assert v9["content_sha256"] == PHASE1_POLICY_SHA256
+    assert {
+        key: value for key, value in v9["policy"].items() if key != "operations"
+    } == {key: value for key, value in v8["policy"].items() if key != "operations"}
+
+    v8_operations = {
+        operation["operation_id"]: operation for operation in v8["policy"]["operations"]
+    }
+    v9_operations = {
+        operation["operation_id"]: operation for operation in v9["policy"]["operations"]
+    }
+    assert list(v9_operations) == list(v8_operations)
+    assert all(
+        set(v9_operations[operation_id]) == set(v8_operations[operation_id])
+        for operation_id in v9_operations
+    )
+    changed_fields = {
+        operation_id: {
+            key
+            for key in v9_operations[operation_id]
+            if v9_operations[operation_id][key] != v8_operations[operation_id][key]
+        }
+        for operation_id in v9_operations
+    }
+    assert changed_fields == {
+        "rolling_ball_background": {
+            "implementation_id",
+            "implementation_version",
+            "implementation_library_id",
+            "environment_policy_id",
+            "memory_model_id",
+            "support_summary",
+        },
+        "subtract_background": {
+            "implementation_id",
+            "implementation_version",
+            "implementation_library_id",
+            "environment_policy_id",
+            "memory_model_id",
+            "support_summary",
+        },
+        "median_filter": {
+            "implementation_id",
+            "implementation_library_id",
+            "environment_policy_id",
+            "memory_model_id",
+        },
+        "gaussian_blur": {
+            "implementation_id",
+            "implementation_library_id",
+            "environment_policy_id",
+            "memory_model_id",
+        },
+        "gaussian_blur_3d": {
+            "implementation_id",
+            "implementation_library_id",
+            "environment_policy_id",
+            "memory_model_id",
+        },
+        "sigma_filter": set(),
+        "label_connected_components": set(),
+        "measure_objects": set(),
+        "measure_objects_intensity": set(),
+    }
+    assert {
+        operation_id: {
+            field: v9_operations[operation_id][field]
+            for field in changed_fields[operation_id]
+            if field != "support_summary"
+        }
+        for operation_id in (
+            "rolling_ball_background",
+            "subtract_background",
+            "median_filter",
+            "gaussian_blur",
+            "gaussian_blur_3d",
+        )
+    } == {
+        "rolling_ball_background": {
+            "implementation_id": "cupy-rolling-ball-background-v1",
+            "implementation_version": "1",
+            "implementation_library_id": "cupy",
+            "environment_policy_id": (
+                "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+            ),
+            "memory_model_id": "cupy-dynamic-background-memory-v1",
+        },
+        "subtract_background": {
+            "implementation_id": "cupy-subtract-background-v1",
+            "implementation_version": "1",
+            "implementation_library_id": "cupy",
+            "environment_policy_id": (
+                "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+            ),
+            "memory_model_id": "cupy-dynamic-background-memory-v1",
+        },
+        "median_filter": {
+            "implementation_id": "cupy-median-filter-v1",
+            "implementation_library_id": "cupy",
+            "environment_policy_id": (
+                "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+            ),
+            "memory_model_id": "cupy-radix-median-memory-v1",
+        },
+        "gaussian_blur": {
+            "implementation_id": "cupy-gaussian-blur-v1",
+            "implementation_library_id": "cupy",
+            "environment_policy_id": (
+                "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+            ),
+            "memory_model_id": "cupy-dynamic-gaussian-memory-v1",
+        },
+        "gaussian_blur_3d": {
+            "implementation_id": "cupy-gaussian-blur-3d-v1",
+            "implementation_library_id": "cupy",
+            "environment_policy_id": (
+                "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+            ),
+            "memory_model_id": "cupy-dynamic-gaussian-memory-v1",
+        },
+    }
+    for operation_id in ("rolling_ball_background", "subtract_background"):
+        v8_summary = v8_operations[operation_id]["support_summary"]
+        v9_summary = v9_operations[operation_id]["support_summary"]
+        assert {
+            key: value
+            for key, value in v9_summary.items()
+            if key != "explicit_cpu_regions"
+        } == {
+            key: value
+            for key, value in v8_summary.items()
+            if key != "explicit_cpu_regions"
+        }
+        assert v9_summary["explicit_cpu_regions"] == [
+            *v8_summary["explicit_cpu_regions"],
+            "non-native-endian-v1",
+        ]
     assert v4["policy"]["operations"][:-1] == v3["policy"]["operations"]
     sigma = v4["policy"]["operations"][-1]
     assert sigma["operation_id"] == "sigma_filter"
@@ -407,9 +551,7 @@ def test_v8_broadens_hardware_and_legacy_resources_are_byte_stable():
     del v7_platform["cucim_source_tag"]
     del v7_platform["cucim_source_commit"]
     del v7_platform["cucim_build_recipe_id"]
-    v7_platform["cucim_artifact_sha256"] = v6_platform[
-        "cucim_artifact_sha256"
-    ]
+    v7_platform["cucim_artifact_sha256"] = v6_platform["cucim_artifact_sha256"]
     assert v7_as_v6 == v6
 
     v6_as_v5 = copy.deepcopy(v6)
@@ -488,23 +630,23 @@ def test_strict_schema_rejects_malformed_platform_provenance(
         parse_compute_policy_artifact(_encoded(invalid))
 
 
-def test_loader_accepts_only_the_pinned_v8_identity_and_version():
+def test_loader_accepts_only_the_pinned_v9_identity_and_version():
     package = resources.files("napari_vipp.compute_policies")
-    signed_v6 = package.joinpath("phase1-gpu-public-v6.json").read_bytes()
+    signed_v8 = package.joinpath("phase1-gpu-public-v8.json").read_bytes()
     with pytest.raises(ComputePolicyArtifactError, match="Unsupported Phase 1 policy"):
-        parse_compute_policy_artifact(signed_v6)
+        parse_compute_policy_artifact(signed_v8)
 
     wrong_version = copy.deepcopy(_resource_document())
-    wrong_version["policy_version"] = 9
+    wrong_version["policy_version"] = 10
     _resign(wrong_version)
     with pytest.raises(
         ComputePolicyArtifactError,
-        match="Unsupported Phase 1 policy version 9",
+        match="Unsupported Phase 1 policy version 10",
     ):
         parse_compute_policy_artifact(_encoded(wrong_version))
 
 
-def test_valid_but_changed_v8_record_cannot_be_resigned_in_place():
+def test_valid_but_changed_v9_record_cannot_be_resigned_in_place():
     changed = copy.deepcopy(_resource_document())
     changed["policy"]["auto_selection"]["non_local_minimum_saving_ms"] = 21.0  # type: ignore[index]
     _resign(changed)

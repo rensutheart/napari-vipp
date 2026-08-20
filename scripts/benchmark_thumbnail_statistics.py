@@ -8,7 +8,9 @@ The following calls use the same production ``ThumbnailStatisticsEngine`` and
 are reported separately as warm calls.  CPU and GPU limits must agree exactly.
 
 The default matrix brackets the conservative uint8/uint16 production
-thresholds.  ``--nd2`` optionally adds one real, channel-selected stack.  The
+thresholds.  ``--dtypes float32`` adds the qualified floating-point path
+without making its extra bounded radix passes part of every routine
+calibration.  ``--nd2`` optionally adds one real, channel-selected stack.  The
 private path, filename, pixels, hashes, and calculated limits are never written
 to the JSON artifact or human summary.
 """
@@ -38,6 +40,7 @@ SCHEMA_VERSION = 1
 WORKER_MARKER = "VIPP_THUMBNAIL_BENCHMARK_RESULT="
 DEFAULT_SIZES_MIB = (2, 4, 8, 32, 128, 256, 384, 512)
 DEFAULT_DTYPES = ("uint8", "uint16")
+SUPPORTED_DTYPES = (*DEFAULT_DTYPES, "float32")
 DEFAULT_CPU_ROUNDS = 3
 DEFAULT_WARM_GPU_ROUNDS = 3
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -79,7 +82,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dtypes",
         default=",".join(DEFAULT_DTYPES),
-        help="Comma-separated synthetic dtypes: uint8,uint16.",
+        help="Comma-separated synthetic dtypes: uint8,uint16,float32.",
     )
     parser.add_argument(
         "--cpu-rounds",
@@ -147,8 +150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _run_worker_from_arguments(args)
         except Exception as exc:
             print(
-                "Thumbnail benchmark worker failed: "
-                f"{type(exc).__name__}: {exc}",
+                f"Thumbnail benchmark worker failed: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return 3
@@ -191,8 +193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if written is not None:
         print(f"\nJSON evidence: {written}")
     gpu_missing = any(
-        result["gpu"]["status"] != "available"
-        for result in document["results"]
+        result["gpu"]["status"] != "available" for result in document["results"]
     )
     return 4 if args.require_gpu and gpu_missing else 0
 
@@ -235,8 +236,7 @@ def run_benchmark(
             else "private ND2 channel stack"
         )
         print(
-            f"[{index}/{len(specs)}] {label}: "
-            "fresh-process cold + warm timing...",
+            f"[{index}/{len(specs)}] {label}: fresh-process cold + warm timing...",
             flush=True,
         )
         result = _invoke_worker(
@@ -453,10 +453,13 @@ def _benchmark_array(
             "reason_code": cold.fallback_reason_code or cold.decision.reason_code,
             "fallback_elapsed_seconds": float(cold.elapsed_seconds),
             "cold_seconds": None,
+            "cold_transfer": _transfer_record(cold),
             "warm_samples_seconds": [],
+            "warm_transfers": [],
             "warm_median_seconds": None,
             "runtime_id": cold.runtime_id,
             "device_id": cold.device_id,
+            "algorithm_id": str(getattr(cold, "algorithm_id", "")),
         }
     else:
         parity = _limits_equal(cold.limits, reference)
@@ -466,8 +469,7 @@ def _benchmark_array(
             gpu_engine.calculate(gpu_request) for _ in range(warm_gpu_rounds)
         ]
         if any(
-            result.actual_backend is not Backend.GPU_CUPY
-            for result in warm_results
+            result.actual_backend is not Backend.GPU_CUPY for result in warm_results
         ):
             raise BenchmarkError("A warm production GPU timing unexpectedly fell back.")
         if any(not _limits_equal(result.limits, reference) for result in warm_results):
@@ -478,10 +480,13 @@ def _benchmark_array(
             "reason_code": "",
             "fallback_elapsed_seconds": None,
             "cold_seconds": float(cold.elapsed_seconds),
+            "cold_transfer": _transfer_record(cold),
             "warm_samples_seconds": warm_samples,
+            "warm_transfers": [_transfer_record(result) for result in warm_results],
             "warm_median_seconds": float(statistics.median(warm_samples)),
             "runtime_id": cold.runtime_id,
             "device_id": cold.device_id,
+            "algorithm_id": str(getattr(cold, "algorithm_id", "")),
         }
 
     auto_after = gpu_engine.select(auto_request)
@@ -552,22 +557,69 @@ def _decision_record(decision: Any) -> dict[str, object]:
     }
 
 
+def _transfer_record(result: Any) -> dict[str, object]:
+    """Return privacy-safe logical transfer observations from production."""
+
+    return {
+        "input_path": str(getattr(result, "input_path", "")),
+        "logical_input_host_to_device_bytes": int(
+            getattr(result, "logical_input_host_to_device_bytes", 0)
+        ),
+        "auxiliary_host_to_device_bytes": int(
+            getattr(result, "auxiliary_host_to_device_bytes", 0)
+        ),
+        "device_to_host_bytes": int(getattr(result, "device_to_host_bytes", 0)),
+        "device_to_host_values": int(getattr(result, "device_to_host_values", 0)),
+    }
+
+
 def _synthetic_stack(dtype_name: str, size_mib: int) -> np.ndarray:
     dtype = np.dtype(dtype_name)
     byte_count = int(size_mib) * 1024**2
     element_count = byte_count // dtype.itemsize
     if element_count * dtype.itemsize != byte_count:
         raise ValueError("Synthetic byte size is not divisible by the dtype size.")
-    # Both native dtypes produce exactly size_mib logical planes and a useful
-    # stack shape while retaining the requested byte count.
-    plane_shape = (1024, 1024) if dtype == np.dtype(np.uint8) else (512, 1024)
+    # Every supported native dtype produces one MiB per logical plane while
+    # retaining a useful stack shape and the requested exact byte count.
+    plane_shapes = {
+        np.dtype(np.uint8): (1024, 1024),
+        np.dtype(np.uint16): (512, 1024),
+        np.dtype(np.float32): (256, 1024),
+    }
+    try:
+        plane_shape = plane_shapes[dtype]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported synthetic dtype: {dtype_name!r}.") from exc
     plane_elements = int(np.prod(plane_shape))
     planes, remainder = divmod(element_count, plane_elements)
     if remainder or planes < 1:
         raise ValueError("Synthetic size cannot be represented as the test stack.")
     values = np.empty(element_count, dtype=dtype)
     chunk_elements = min(element_count, 1024**2)
-    pattern = np.arange(chunk_elements, dtype=dtype)
+    if dtype == np.dtype(np.float32):
+        # Sparse bit-constructed edge values exercise the exact float policy
+        # without relying on host conversions that could erase signed zero or
+        # subnormals.  The remainder is a representative finite distribution.
+        indices = np.arange(chunk_elements, dtype=np.uint32)
+        pattern = (
+            (indices % np.uint32(4096)).astype(np.float32) - np.float32(64.0)
+        ) / np.float32(7.0)
+        special_bits = np.asarray(
+            (
+                0x00000000,  # +0
+                0x80000000,  # -0
+                0x00000001,  # smallest positive subnormal
+                0x80000001,  # smallest negative subnormal
+                0x00800000,  # smallest positive normal
+                0x7F800000,  # +inf (excluded)
+                0xFF800000,  # -inf (clipped when finite negatives exist)
+                0x7FC00001,  # NaN (excluded)
+            ),
+            dtype=np.uint32,
+        ).view(np.float32)
+        pattern[: special_bits.size] = special_bits
+    else:
+        pattern = np.arange(chunk_elements, dtype=dtype)
     for start in range(0, element_count, chunk_elements):
         stop = min(start + chunk_elements, element_count)
         values[start:stop] = pattern[: stop - start]
@@ -622,10 +674,14 @@ def _load_private_nd2(
     if hasattr(selected, "compute"):
         selected = selected.compute()
     data = np.ascontiguousarray(np.asarray(selected))
-    if data.dtype not in {np.dtype(np.uint8), np.dtype(np.uint16)}:
+    if data.dtype not in {
+        np.dtype(np.uint8),
+        np.dtype(np.uint16),
+        np.dtype(np.float32),
+    }:
         raise BenchmarkError(
-            "The selected ND2 channel must already be native uint8 or uint16; "
-            "the calibration does not synthesize a cast."
+            "The selected ND2 channel must already be native uint8, uint16, "
+            "or float32; the calibration does not synthesize a cast."
         )
     return data, {
         "source_kind": "private-nd2-channel-stack",
@@ -669,7 +725,9 @@ def _observed_crossovers(
         )
         available = [case for case in cases if case["gpu"]["status"] == "available"]
         cold_thresholds = {
-            int(case["production_auto_policy"]["before_gpu_evidence"]["threshold_bytes"])
+            int(
+                case["production_auto_policy"]["before_gpu_evidence"]["threshold_bytes"]
+            )
             for case in cases
             if "production_auto_policy" in case
         }
@@ -779,9 +837,7 @@ def _format_bytes(value: object) -> str:
 def _parse_sizes_mib(text: str) -> tuple[int, ...]:
     try:
         values = tuple(
-            int(part.strip())
-            for part in str(text).split(",")
-            if part.strip()
+            int(part.strip()) for part in str(text).split(",") if part.strip()
         )
     except ValueError as exc:
         raise ValueError("--sizes-mib must contain comma-separated integers.") from exc
@@ -794,12 +850,10 @@ def _parse_sizes_mib(text: str) -> tuple[int, ...]:
 
 def _parse_dtypes(text: str) -> tuple[str, ...]:
     values = tuple(
-        part.strip().lower()
-        for part in str(text).split(",")
-        if part.strip()
+        part.strip().lower() for part in str(text).split(",") if part.strip()
     )
-    if not values or any(value not in DEFAULT_DTYPES for value in values):
-        raise ValueError("--dtypes must contain uint8 and/or uint16.")
+    if not values or any(value not in SUPPORTED_DTYPES for value in values):
+        raise ValueError("--dtypes must contain uint8, uint16, and/or float32.")
     if len(values) != len(set(values)):
         raise ValueError("--dtypes values must be unique.")
     return values

@@ -228,7 +228,7 @@ def test_manifest_rejects_a_required_facet_without_an_executable_owner(
         if runner["id"] == "public-fallback-policy-contracts"
     )
     policy["implementations"].remove(
-        "rolling_ball_background::cucim-rolling_ball_background-v2"
+        "rolling_ball_background::cupy-rolling-ball-background-v1"
     )
     path = tmp_path / "missing-facet.json"
     path.write_text(json.dumps(document), encoding="utf-8")

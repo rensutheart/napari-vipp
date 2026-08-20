@@ -21,6 +21,10 @@ from napari_vipp.core.progress import OperationCancelled, ProgressContext
 
 THUMBNAIL_PERCENTILE_RANGE = (0.5, 99.9)
 EXACT_UINT_HISTOGRAM_ALGORITHM_ID = "exact-native-uint-histogram-numpy-linear-v1"
+EXACT_FLOAT32_PERCENTILE_GPU_ALGORITHM_ID = (
+    "exact-float32-cupy-order-statistics-numpy-linear-v1"
+)
+EXACT_FLOAT32_MINMAX_GPU_ALGORITHM_ID = "exact-float32-cupy-bitwise-minmax-v1"
 EXACT_NATIVE_MINMAX_ALGORITHM_ID = "exact-native-minmax-chunked-v1"
 NUMPY_PERCENTILE_ALGORITHM_ID = "numpy-float32-percentile-v1"
 # Kept as a compatibility alias for exported provenance readers.  New results
@@ -40,6 +44,11 @@ DEFAULT_COLD_GPU_THRESHOLD_BYTES = DEFAULT_COLD_UINT16_GPU_THRESHOLD_BYTES
 DEFAULT_WARM_GPU_THRESHOLD_BYTES = 32 * 1024**2
 _GPU_RUNTIME_ID = "cuda-cupy"
 _GPU_MEMORY_OVERHEAD_BYTES = 8 * 1024**2
+_FLOAT32_FIXED_DEVICE_WORKSPACE_BYTES = (
+    5 * np.dtype(np.uint64).itemsize
+    + 4 * 256 * np.dtype(np.uint64).itemsize
+    + 4 * np.dtype(np.uint32).itemsize
+)
 _MAX_GPU_HISTOGRAM_COUNTER_BYTES = 64 * 1024**2
 _STABLE_GPU_UNAVAILABLE_REASON_CODES = frozenset(
     {
@@ -129,6 +138,12 @@ class ThumbnailStatisticsResult:
     device_id: str = ""
     fallback_reason_code: str = ""
     fallback_message: str = ""
+    requested_compute_mode: ComputeMode = ComputeMode.AUTO
+    input_path: str = ""
+    logical_input_host_to_device_bytes: int = 0
+    auxiliary_host_to_device_bytes: int = 0
+    device_to_host_bytes: int = 0
+    device_to_host_values: int = 0
 
     @property
     def used_fallback(self) -> bool:
@@ -249,9 +264,7 @@ class _ProgressRange(ProgressContext):
             return
         local_total = max(int(total), 0)
         fraction = (
-            min(max(float(current) / local_total, 0.0), 1.0)
-            if local_total > 0
-            else 0.0
+            min(max(float(current) / local_total, 0.0), 1.0) if local_total > 0 else 0.0
         )
         mapped = self._start + int(round(self._span * fraction))
         self._delegate.report(mapped, self._total, message)
@@ -259,29 +272,35 @@ class _ProgressRange(ProgressContext):
 
 @dataclass(frozen=True, slots=True)
 class _GPUAttempt:
-    counts: np.ndarray | None
+    payload: np.ndarray | None
     runtime_id: str = ""
     device_id: str = ""
     failure_reason_code: str = ""
     failure_message: str = ""
+    algorithm_id: str = ""
+    input_path: str = ""
+    logical_input_host_to_device_bytes: int = 0
+    auxiliary_host_to_device_bytes: int = 0
+    device_to_host_bytes: int = 0
+    device_to_host_values: int = 0
 
 
 class ThumbnailStatisticsEngine:
     """Select and execute exact thumbnail statistics without retaining a runtime.
 
-    ``gpu_warm`` is process-session evidence that this engine has completed the
-    thumbnail histogram kernel at least once.  It changes only the conservative
-    Auto crossover; every request still receives its own private runtime scope,
-    and every registry is closed before :meth:`calculate` returns.
+    ``gpu_warm`` is process-session evidence that this engine has completed at
+    least one thumbnail GPU contract.  Percentile and min-max warmth remain
+    separate because the float32 paths compile and execute different kernels.
+    Warmth changes only the conservative Auto crossover; every request still
+    receives its own private runtime scope, and every registry is closed before
+    :meth:`calculate` returns.
     """
 
     def __init__(
         self,
         *,
         cold_gpu_threshold_bytes: int | None = None,
-        cold_uint8_gpu_threshold_bytes: int = (
-            DEFAULT_COLD_UINT8_GPU_THRESHOLD_BYTES
-        ),
+        cold_uint8_gpu_threshold_bytes: int = (DEFAULT_COLD_UINT8_GPU_THRESHOLD_BYTES),
         cold_uint16_gpu_threshold_bytes: int = (
             DEFAULT_COLD_UINT16_GPU_THRESHOLD_BYTES
         ),
@@ -328,14 +347,28 @@ class ThumbnailStatisticsEngine:
             raise TypeError("clock must be callable.")
         self._registry_factory = registry_factory
         self._clock = clock
-        self._warm_gpu_dtypes: set[np.dtype] = set()
+        self._warm_gpu_contracts: set[tuple[np.dtype, str]] = set()
         self._stable_gpu_unavailable: tuple[str, str] | None = None
 
     @property
     def gpu_warm(self) -> bool:
-        """Return whether this engine has completed any CuPy histogram kernel."""
+        """Return whether this engine has completed any supported GPU contract."""
 
-        return bool(self._warm_gpu_dtypes)
+        return bool(self._warm_gpu_contracts)
+
+    def gpu_contract_is_warm(self, dtype: object, contrast_mode: str) -> bool:
+        """Return whether this exact supported dtype/mode contract is warm."""
+
+        try:
+            contract = _supported_gpu_warm_contract(dtype, contrast_mode)
+        except (TypeError, ValueError):
+            return False
+        return contract in self._warm_gpu_contracts
+
+    def record_resident_gpu_success(self, dtype: object, contrast_mode: str) -> None:
+        """Record successful in-scope GPU statistics for one supported contract."""
+
+        self._warm_gpu_contracts.add(_supported_gpu_warm_contract(dtype, contrast_mode))
 
     def reset_accelerator_capability(self) -> None:
         """Retry a previously unavailable CUDA capability on the next request.
@@ -376,13 +409,12 @@ class ThumbnailStatisticsEngine:
         scanned_values = int(arr.size) if scan_required else 0
         scanned_bytes = int(arr.nbytes) if scan_required else 0
         host_staging_bytes = (
-            int(arr.nbytes)
-            if scan_required and not bool(arr.flags.c_contiguous)
-            else 0
+            int(arr.nbytes) if scan_required and not bool(arr.flags.c_contiguous) else 0
         )
         mode = request.compute_mode
         effective_auto = mode in {ComputeMode.AUTO, ComputeMode.CUSTOM}
-        gpu_warm = arr.dtype in self._warm_gpu_dtypes
+        warm_contract = (arr.dtype, _contrast_mode_key(request.contrast_mode))
+        gpu_warm = warm_contract in self._warm_gpu_contracts
         threshold = (
             self._warm_gpu_threshold_bytes
             if gpu_warm
@@ -414,7 +446,7 @@ class ThumbnailStatisticsEngine:
                 gpu_warm,
                 0,
             )
-        gpu_ineligible_reason = _gpu_histogram_ineligibility(
+        gpu_ineligible_reason = _gpu_statistics_ineligibility(
             arr,
             request.contrast_mode,
             request.data_kind,
@@ -433,14 +465,18 @@ class ThumbnailStatisticsEngine:
                 host_staging_bytes,
             )
 
-        required_device_bytes = _estimated_gpu_bytes(arr, normalized_axis)
+        required_device_bytes = _estimated_gpu_bytes(
+            arr,
+            normalized_axis,
+            contrast_mode=request.contrast_mode,
+        )
         memory_cap = request.accelerator_memory_cap_bytes
         if memory_cap is not None and required_device_bytes > memory_cap:
             return ThumbnailStatisticsDecision(
                 ThumbnailStatisticsBackend.CPU_NUMPY,
                 "gpu_memory_cap_insufficient",
                 "The configured accelerator memory cap is smaller than the "
-                "bounded thumbnail histogram allocation estimate.",
+                "bounded thumbnail-statistics allocation estimate.",
                 scanned_values,
                 scanned_bytes,
                 threshold,
@@ -561,6 +597,7 @@ class ThumbnailStatisticsEngine:
                 _elapsed(self._clock, started),
                 fallback_reason_code=fallback_reason_code,
                 fallback_message=fallback_message,
+                requested_compute_mode=request.compute_mode,
             )
 
         gpu_progress = _TrackingProgress(progress)
@@ -569,20 +606,36 @@ class ThumbnailStatisticsEngine:
             arr,
             progress=gpu_progress,
         )
-        if attempt.counts is not None:
-            limits = _limits_from_counts(
-                attempt.counts,
-                contrast_mode=request.contrast_mode,
+        if attempt.payload is not None:
+            if attempt.algorithm_id == EXACT_UINT_HISTOGRAM_ALGORITHM_ID:
+                limits = _limits_from_counts(
+                    attempt.payload,
+                    contrast_mode=request.contrast_mode,
+                )
+            else:
+                limits = _limits_from_float32_gpu_payload(
+                    attempt.payload,
+                    channel_axis=request.channel_axis,
+                )
+            self._warm_gpu_contracts.add(
+                (arr.dtype, _contrast_mode_key(request.contrast_mode))
             )
-            self._warm_gpu_dtypes.add(arr.dtype)
             return ThumbnailStatisticsResult(
                 limits,
                 decision,
                 ThumbnailStatisticsBackend.GPU_CUPY,
-                EXACT_UINT_HISTOGRAM_ALGORITHM_ID,
+                attempt.algorithm_id,
                 _elapsed(self._clock, started),
                 runtime_id=attempt.runtime_id,
                 device_id=attempt.device_id,
+                requested_compute_mode=request.compute_mode,
+                input_path=attempt.input_path,
+                logical_input_host_to_device_bytes=(
+                    attempt.logical_input_host_to_device_bytes
+                ),
+                auxiliary_host_to_device_bytes=(attempt.auxiliary_host_to_device_bytes),
+                device_to_host_bytes=attempt.device_to_host_bytes,
+                device_to_host_values=attempt.device_to_host_values,
             )
 
         fallback_progress = _FallbackProgress(
@@ -607,6 +660,7 @@ class ThumbnailStatisticsEngine:
             device_id=attempt.device_id,
             fallback_reason_code=attempt.failure_reason_code,
             fallback_message=attempt.failure_message,
+            requested_compute_mode=request.compute_mode,
         )
 
     def _calculate_gpu_counts(
@@ -620,7 +674,11 @@ class ThumbnailStatisticsEngine:
         runtime = None
         runtime_id = _GPU_RUNTIME_ID
         device_id = request.device_id
-        counts = None
+        payload = None
+        algorithm_id = ""
+        auxiliary_host_to_device_bytes = 0
+        device_to_host_bytes = 0
+        device_to_host_values = 0
         failure_info = None
         pending_error: BaseException | None = None
         try:
@@ -657,13 +715,38 @@ class ThumbnailStatisticsEngine:
                     memory_limit_bytes=request.accelerator_memory_cap_bytes,
                     safety_reserve_bytes=request.accelerator_safety_reserve_bytes,
                 ):
-                    counts = _calculate_cupy_counts(
-                        runtime,
-                        arr,
-                        device_id=device_id,
-                        channel_axis=request.channel_axis,
-                        progress=progress,
-                    )
+                    if arr.dtype == np.dtype(np.float32):
+                        float_result = _calculate_cupy_float32_limits(
+                            runtime,
+                            arr,
+                            device_id=device_id,
+                            channel_axis=request.channel_axis,
+                            contrast_mode=request.contrast_mode,
+                            progress=progress,
+                        )
+                        payload = float_result.limits
+                        auxiliary_host_to_device_bytes = int(
+                            float_result.auxiliary_host_to_device_bytes
+                        )
+                        device_to_host_bytes = int(float_result.device_to_host_bytes)
+                        device_to_host_values = int(float_result.device_to_host_values)
+                        algorithm_id = (
+                            EXACT_FLOAT32_MINMAX_GPU_ALGORITHM_ID
+                            if _contrast_mode_key(request.contrast_mode) == "minmax"
+                            else EXACT_FLOAT32_PERCENTILE_GPU_ALGORITHM_ID
+                        )
+                    else:
+                        payload = _calculate_cupy_counts(
+                            runtime,
+                            arr,
+                            device_id=device_id,
+                            channel_axis=request.channel_axis,
+                            progress=progress,
+                        )
+                        algorithm_id = EXACT_UINT_HISTOGRAM_ALGORITHM_ID
+                        host_counts = np.asarray(payload)
+                        device_to_host_bytes = int(host_counts.nbytes)
+                        device_to_host_values = int(host_counts.size)
             except BaseException as exc:
                 pending_error = exc
                 if not isinstance(exc, OperationCancelled):
@@ -685,7 +768,18 @@ class ThumbnailStatisticsEngine:
                     ) from (pending_error or cleanup_exc)
 
         if pending_error is None:
-            return _GPUAttempt(np.asarray(counts), runtime_id, device_id)
+            host_payload = np.asarray(payload)
+            return _GPUAttempt(
+                host_payload,
+                runtime_id,
+                device_id,
+                algorithm_id=algorithm_id,
+                input_path="host_upload",
+                logical_input_host_to_device_bytes=int(arr.nbytes),
+                auxiliary_host_to_device_bytes=auxiliary_host_to_device_bytes,
+                device_to_host_bytes=device_to_host_bytes,
+                device_to_host_values=device_to_host_values,
+            )
         if isinstance(pending_error, OperationCancelled):
             raise pending_error
         if failure_info is not None and (
@@ -909,9 +1003,7 @@ def _numpy_scalar_limits(
         return (0.0, 0.0)
 
     mode = _contrast_mode_key(contrast_mode)
-    if mode == "raw" and (
-        arr.dtype == bool or np.issubdtype(arr.dtype, np.integer)
-    ):
+    if mode == "raw" and (arr.dtype == bool or np.issubdtype(arr.dtype, np.integer)):
         return None
     workspace = _build_float_percentile_workspace(
         arr,
@@ -1205,6 +1297,21 @@ def _limits_from_counts(
     )
 
 
+def _limits_from_float32_gpu_payload(
+    payload: np.ndarray,
+    *,
+    channel_axis: int | None,
+) -> ThumbnailContrastLimits:
+    values = np.asarray(payload, dtype=np.float64)
+    if channel_axis is None:
+        if values.shape != (2,):
+            raise ValueError("Scalar GPU thumbnail limits must have shape (2,).")
+        return (float(values[0]), float(values[1]))
+    if values.ndim != 2 or values.shape[1] != 2:
+        raise ValueError("Channel GPU thumbnail limits must have shape (channels, 2).")
+    return tuple((float(row[0]), float(row[1])) for row in values)
+
+
 def _scalar_limits_from_counts(
     counts: np.ndarray,
     *,
@@ -1275,29 +1382,62 @@ def _calculate_cupy_counts(
     )
 
 
+def _calculate_cupy_float32_limits(
+    runtime,
+    arr: np.ndarray,
+    *,
+    device_id: str,
+    channel_axis: int | None,
+    contrast_mode: str,
+    progress: ProgressContext | None,
+) -> object:
+    # Importing this adapter is itself deferred until the selector has chosen
+    # GPU and the registry probe has succeeded.
+    from napari_vipp.core.gpu.cupy_thumbnail_statistics import (
+        exact_float32_thumbnail_limits,
+    )
+
+    return exact_float32_thumbnail_limits(
+        runtime,
+        arr,
+        device_id=device_id,
+        channel_axis=channel_axis,
+        contrast_mode=contrast_mode,
+        progress=progress,
+    )
+
+
 def _default_registry_factory():
     from napari_vipp.core.compute_registry import ComputeRegistry
 
     return ComputeRegistry()
 
 
-def _gpu_histogram_ineligibility(
+def _gpu_statistics_ineligibility(
     arr: np.ndarray,
     contrast_mode: str,
     data_kind: str,
     channel_axis: int | None,
 ) -> tuple[str, str] | None:
-    if _contrast_mode_key(contrast_mode) != "percentile":
+    mode = _contrast_mode_key(contrast_mode)
+    is_native_uint = arr.dtype in {np.dtype(np.uint8), np.dtype(np.uint16)}
+    is_float32 = arr.dtype == np.dtype(np.float32)
+    if mode == "raw":
         return (
             "gpu_ineligible",
-            "Min-max uses the faster exact chunked CPU reduction; the CuPy "
-            "histogram is reserved for percentile statistics.",
+            "Raw thumbnail limits use the exact chunked CPU reduction.",
         )
-    if arr.dtype not in {np.dtype(np.uint8), np.dtype(np.uint16)}:
+    if mode == "minmax" and not is_float32:
         return (
             "gpu_ineligible",
-            "Exact GPU thumbnail percentiles currently support native uint8 "
-            "and uint16 image data.",
+            "Integer and non-float32 min-max use the faster exact chunked CPU "
+            "reduction.",
+        )
+    if mode == "percentile" and not (is_native_uint or is_float32):
+        return (
+            "gpu_ineligible",
+            "Exact GPU thumbnail percentiles support native uint8, uint16, "
+            "and float32 image data.",
         )
     if _data_kind_key(data_kind) in {
         "label",
@@ -1310,8 +1450,10 @@ def _gpu_histogram_ineligibility(
             "gpu_ineligible",
             "This thumbnail data kind does not use GPU percentile statistics.",
         )
-    counter_bytes = _estimated_histogram_counter_bytes(arr, channel_axis)
-    if counter_bytes > _MAX_GPU_HISTOGRAM_COUNTER_BYTES:
+    counter_bytes = (
+        _estimated_histogram_counter_bytes(arr, channel_axis) if is_native_uint else 0
+    )
+    if is_native_uint and counter_bytes > _MAX_GPU_HISTOGRAM_COUNTER_BYTES:
         return (
             "gpu_counter_allocation_too_large",
             "The channel histogram counter matrix would exceed the bounded "
@@ -1334,7 +1476,26 @@ def _scan_required(arr: np.ndarray, contrast_mode: str, data_kind: str) -> bool:
     return True
 
 
-def _estimated_gpu_bytes(arr: np.ndarray, channel_axis: int | None) -> int:
+def _estimated_gpu_bytes(
+    arr: np.ndarray,
+    channel_axis: int | None,
+    *,
+    contrast_mode: str,
+) -> int:
+    if arr.dtype == np.dtype(np.float32):
+        del contrast_mode
+        normalized_axis = _normalized_channel_axis_or_none(channel_axis, arr.ndim)
+        channel_copy_bytes = (
+            0
+            if normalized_axis in {None, 0}
+            else int(arr.nbytes) // max(int(arr.shape[normalized_axis]), 1)
+        )
+        return (
+            int(arr.nbytes)
+            + channel_copy_bytes
+            + _FLOAT32_FIXED_DEVICE_WORKSPACE_BYTES
+            + _GPU_MEMORY_OVERHEAD_BYTES
+        )
     return (
         int(arr.nbytes)
         + _estimated_histogram_counter_bytes(arr, channel_axis)
@@ -1396,6 +1557,28 @@ def _contrast_mode_key(contrast_mode: str) -> str:
     return "percentile"
 
 
+def _supported_gpu_warm_contract(
+    dtype: object,
+    contrast_mode: str,
+) -> tuple[np.dtype, str]:
+    try:
+        resolved_dtype = np.dtype(dtype)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("dtype must describe a NumPy scalar type.") from exc
+    mode = _contrast_mode_key(contrast_mode)
+    supported = (
+        mode == "percentile"
+        and resolved_dtype
+        in {np.dtype(np.uint8), np.dtype(np.uint16), np.dtype(np.float32)}
+    ) or (mode == "minmax" and resolved_dtype == np.dtype(np.float32))
+    if not supported:
+        raise ValueError(
+            "GPU thumbnail warmth supports uint8/uint16 Percentile and "
+            "float32 Percentile or Min-max contracts."
+        )
+    return resolved_dtype, mode
+
+
 def _data_kind_key(data_kind: str) -> str:
     return str(data_kind or "").strip().lower()
 
@@ -1431,6 +1614,8 @@ __all__ = [
     "DEFAULT_COLD_UINT16_GPU_THRESHOLD_BYTES",
     "DEFAULT_CPU_CHUNK_ELEMENTS",
     "DEFAULT_WARM_GPU_THRESHOLD_BYTES",
+    "EXACT_FLOAT32_MINMAX_GPU_ALGORITHM_ID",
+    "EXACT_FLOAT32_PERCENTILE_GPU_ALGORITHM_ID",
     "EXACT_NATIVE_MINMAX_ALGORITHM_ID",
     "EXACT_UINT_HISTOGRAM_ALGORITHM_ID",
     "NUMPY_MINMAX_ALGORITHM_ID",

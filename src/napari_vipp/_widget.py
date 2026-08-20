@@ -174,6 +174,12 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.execution import (
     PipelineRunResult as PipelineRunResult,
 )
+from napari_vipp.core.execution import (
+    ResidentThumbnailStatisticsObservation as ResidentThumbnailStatisticsObservation,
+)
+from napari_vipp.core.execution import (
+    ResidentThumbnailStatisticsRequest as ResidentThumbnailStatisticsRequest,
+)
 from napari_vipp.core.export import (
     export_batch_runner_to_python,
     export_pipeline_to_python,
@@ -598,6 +604,11 @@ THUMBNAIL_CONTRAST_CACHE_MAX_ENTRIES = 512
 THUMBNAIL_INLINE_CPU_MAX_BYTES = 1 * 1024 * 1024
 THUMBNAIL_INLINE_CPU_MAX_REQUESTS = 8
 THUMBNAIL_INLINE_CPU_MAX_CHANNEL_LANES = 8
+# RTX 5090 screening measured the first material benefit from avoiding the
+# redundant thumbnail H2D at 128 MiB (24.8 ms / 26.7%).  Smaller outputs keep
+# the pre-emptible asynchronous path so resident presentation work cannot make
+# ordinary rapid edits wait for an in-scope statistics scan.
+RESIDENT_THUMBNAIL_MIN_BYTES = 128 * 1024 * 1024
 
 
 if TYPE_CHECKING:
@@ -656,6 +667,7 @@ class _CollectionBatchJobContext:
     validation_config_path: Path | None
     total: int
     graph_refresh_pending: bool = False
+
 
 RESCALE_VALUE_PARAMETERS = {"in_low_value", "in_high_value"}
 RESCALE_PERCENTILE_PARAMETERS = {"in_low_percentile", "in_high_percentile"}
@@ -746,6 +758,27 @@ THUMBNAIL_STATS_INSPECTOR_COLORS = {
     ThumbnailStatsBadgeKind.CPU_FALLBACK: "#fbbf24",
     ThumbnailStatsBadgeKind.ERROR: "#f87171",
 }
+THUMBNAIL_STATS_DEFAULT_SUMMARIES = {
+    ThumbnailStatsBadgeKind.PENDING: (
+        "Thumbnail contrast is calculating; the previous complete preview "
+        "remains visible."
+    ),
+    ThumbnailStatsBadgeKind.CPU: (
+        "Thumbnail contrast used CPU; scientific node processing is shown separately."
+    ),
+    ThumbnailStatsBadgeKind.GPU: (
+        "Thumbnail contrast used GPU; scientific node processing is shown separately."
+    ),
+    ThumbnailStatsBadgeKind.CPU_FALLBACK: (
+        "Thumbnail contrast used CPU because GPU statistics were unavailable."
+    ),
+    ThumbnailStatsBadgeKind.ERROR: (
+        "Thumbnail contrast could not update; the previous complete preview was kept."
+    ),
+}
+THUMBNAIL_STATUS_SUMMARY_MAX_CHARS = 160
+THUMBNAIL_STATUS_SUMMARY_MAX_PIXELS = 640
+THUMBNAIL_DETAIL_WRAP_COLUMNS = 88
 COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS = {
     "richardson_lucy_deconvolution",
     "richardson_lucy_tv_deconvolution",
@@ -757,8 +790,84 @@ class _ThumbnailStatisticsPresentation:
     """Inspector-facing identity for presentation-only thumbnail work."""
 
     kind: ThumbnailStatsBadgeKind
+    summary: str
     detail: str
     accessible_description: str
+
+
+def _bounded_thumbnail_status_summary(summary: str) -> str:
+    """Return a single concise sentence suitable for Qt's one-line status bar."""
+
+    normalized = " ".join(str(summary or "").split())
+    if len(normalized) <= THUMBNAIL_STATUS_SUMMARY_MAX_CHARS:
+        return normalized
+    return textwrap.shorten(
+        normalized,
+        width=THUMBNAIL_STATUS_SUMMARY_MAX_CHARS,
+        placeholder="…",
+    )
+
+
+def _wrapped_thumbnail_detail(detail: str) -> str:
+    """Keep technical hover text inspectable on ordinary-width screens."""
+
+    return "\n".join(
+        textwrap.fill(
+            line,
+            width=THUMBNAIL_DETAIL_WRAP_COLUMNS,
+            replace_whitespace=False,
+            drop_whitespace=True,
+        )
+        if line
+        else ""
+        for line in str(detail or "").splitlines()
+    ).strip()
+
+
+def _cached_thumbnail_status_summary(summary: str) -> str:
+    """Mark an accepted cached result without lengthening its technical detail."""
+
+    normalized = " ".join(str(summary or "").split())
+    if normalized.startswith("Cached "):
+        return normalized
+    prefix = "Thumbnail contrast"
+    if normalized.startswith(prefix):
+        return f"Cached thumbnail contrast{normalized[len(prefix) :]}"
+    return f"Cached result: {normalized}"
+
+
+def _thumbnail_compute_mode_label(mode: ComputeMode) -> str:
+    return {
+        ComputeMode.CPU: "CPU",
+        ComputeMode.PREFER_GPU: "Prefer GPU",
+        ComputeMode.CUSTOM: "Custom",
+    }.get(mode, "Auto")
+
+
+def _thumbnail_fallback_status_summary(reason_code: str) -> str:
+    code = str(reason_code or "").strip().casefold()
+    if code in {"gpu_ineligible", "gpu_counter_allocation_too_large"}:
+        return (
+            "Thumbnail contrast used CPU because this preview is not supported "
+            "by GPU statistics."
+        )
+    if "memory" in code or "allocation" in code:
+        return (
+            "Thumbnail contrast used CPU because the GPU memory limit was not "
+            "sufficient."
+        )
+    if code in {
+        "dependency_missing",
+        "gpu_session_unavailable",
+        "runtime_unavailable",
+        "cupy_missing",
+        "no_cuda_device",
+    }:
+        return (
+            "Thumbnail contrast used CPU because GPU statistics are unavailable "
+            "in this session."
+        )
+    return "Thumbnail contrast used CPU after the GPU statistics attempt failed."
 
 
 def _toolbar_icon(kind: str) -> QIcon:
@@ -902,20 +1011,6 @@ AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
     0.05,
     2,
 )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 class PythonSyntaxHighlighter(QSyntaxHighlighter):
@@ -1367,9 +1462,7 @@ class VippWidget(QWidget):
         self._active_colocalization_scatter_run_id: int | None = None
         self._active_colocalization_scatter_key: tuple | None = None
         self._active_colocalization_scatter_density_key: tuple | None = None
-        self._active_colocalization_scatter_cancel_event: (
-            threading.Event | None
-        ) = None
+        self._active_colocalization_scatter_cancel_event: threading.Event | None = None
         self._pending_colocalization_scatter_request: (
             ColocalizationScatterRequest | None
         ) = None
@@ -1383,9 +1476,7 @@ class VippWidget(QWidget):
             tuple,
             ColocalizationScatterDensity,
         ] = {}
-        self._colocalization_scatter_dialog: (
-            ColocalizationScatterDialog | None
-        ) = None
+        self._colocalization_scatter_dialog: ColocalizationScatterDialog | None = None
         self._auto_contrast_serial = 0
         self._active_auto_contrast_run_id: int | None = None
         self._active_auto_contrast_key: tuple | None = None
@@ -1460,9 +1551,7 @@ class VippWidget(QWidget):
         self._thumbnail_resolution = load_thumbnail_resolution()
         self.thumbnail_resolution_combo.setCurrentIndex(
             max(
-                self.thumbnail_resolution_combo.findData(
-                    self._thumbnail_resolution.id
-                ),
+                self.thumbnail_resolution_combo.findData(self._thumbnail_resolution.id),
                 0,
             )
         )
@@ -1642,9 +1731,7 @@ class VippWidget(QWidget):
                 PortLabelMode.HIDE_ALL.value,
             ]
         )
-        self.port_label_mode_combo.setCurrentText(
-            PortLabelMode.AMBIGUOUS_ONLY.value
-        )
+        self.port_label_mode_combo.setCurrentText(PortLabelMode.AMBIGUOUS_ONLY.value)
         self.port_label_mode_combo.setToolTip(
             "Show port names only on ambiguous multi-port nodes, on every node, "
             "or nowhere on the graph."
@@ -1678,9 +1765,7 @@ class VippWidget(QWidget):
             "Available only in Custom mode."
         )
         self.optimize_pipeline_button.setVisible(False)
-        self.strict_compute_checkbox = QCheckBox(
-            "Fail if a selected GPU cannot run"
-        )
+        self.strict_compute_checkbox = QCheckBox("Fail if a selected GPU cannot run")
         self.strict_compute_checkbox.setChecked(False)
         self.strict_compute_checkbox.setToolTip(
             "When enabled, an unavailable explicitly selected GPU implementation "
@@ -1757,9 +1842,7 @@ class VippWidget(QWidget):
         )
         self.graph_search_edit.setMaximumWidth(260)
         self.graph_search_focus_button = QPushButton("Focus")
-        self.graph_search_focus_button.setToolTip(
-            "Focus the next graph search match."
-        )
+        self.graph_search_focus_button.setToolTip("Focus the next graph search match.")
         self.graph_search_focus_button.setEnabled(False)
         self.graph_search_status = QLabel("")
         self.graph_search_status.setMinimumWidth(72)
@@ -1772,12 +1855,8 @@ class VippWidget(QWidget):
         self.graph_view.set_connection_insert_validator(
             self._connection_insert_preview_state
         )
-        self.graph_view.set_tunnel_reroute_validator(
-            self._tunnel_reroute_preview_state
-        )
-        self.graph_view.set_tunnel_insert_validator(
-            self._tunnel_insert_preview_state
-        )
+        self.graph_view.set_tunnel_reroute_validator(self._tunnel_reroute_preview_state)
+        self.graph_view.set_tunnel_insert_validator(self._tunnel_insert_preview_state)
         self.graph_view.setMinimumHeight(80)
         self.graph_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         self.workflow_tab_bar = WorkflowTabBar(self)
@@ -1824,9 +1903,7 @@ class VippWidget(QWidget):
         self.reset_inspect_display_button.setIcon(_toolbar_icon("reset"))
         self.reset_inspect_display_button.setIconSize(QSize(18, 18))
         self.reset_inspect_display_button.setFixedSize(24, 24)
-        self.reset_inspect_display_button.setAccessibleName(
-            "Reset Inspect display"
-        )
+        self.reset_inspect_display_button.setAccessibleName("Reset Inspect display")
         self.reset_inspect_display_button.setToolTip(
             "Reset this node's VIPP Inspect napari display settings to defaults."
         )
@@ -1880,9 +1957,7 @@ class VippWidget(QWidget):
         )
         self.isolated_tuning_status = QLabel("Downstream paused")
         self.isolated_tuning_status.setWordWrap(True)
-        self.isolated_tuning_status.setStyleSheet(
-            "color: #fde68a; font-weight: 650;"
-        )
+        self.isolated_tuning_status.setStyleSheet("color: #fde68a; font-weight: 650;")
         self.apply_isolated_tuning_button = QPushButton("Apply and continue")
         self.cancel_isolated_tuning_button = QPushButton("Cancel tuning")
         self.isolated_tuning_panel.setVisible(False)
@@ -2036,9 +2111,7 @@ class VippWidget(QWidget):
         self.label_volume_plot = HistogramPlot()
         self.label_volume_group.setHidden(True)
         self.colocalization_scatter_group = QGroupBox("Colocalization Scatter")
-        self.colocalization_scatter_summary = QLabel(
-            "Connect two channel inputs."
-        )
+        self.colocalization_scatter_summary = QLabel("Connect two channel inputs.")
         self.colocalization_scatter_summary.setWordWrap(True)
         self.colocalization_scatter_summary.setMinimumHeight(42)
         self.colocalization_scatter_colormap_combo = QComboBox()
@@ -2596,8 +2669,7 @@ class VippWidget(QWidget):
             include_compute_status=False,
         )
         hide_zoom = 0 < width and (
-            width <= self.TOOLBAR_HIDE_ZOOM_WIDTH
-            or width < zoom_required_width
+            width <= self.TOOLBAR_HIDE_ZOOM_WIDTH or width < zoom_required_width
         )
         status_required_width = self._toolbar_stage_required_width(
             hide_dropdowns=hide_dropdowns,
@@ -2611,10 +2683,7 @@ class VippWidget(QWidget):
             and (
                 width < self.TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH
                 or width < status_required_width
-                or (
-                    long_compute_status
-                    and width < self.TOOLBAR_HIDE_CHECKBOXES_WIDTH
-                )
+                or (long_compute_status and width < self.TOOLBAR_HIDE_CHECKBOXES_WIDTH)
             )
         )
         hide_checkboxes = True
@@ -2639,12 +2708,8 @@ class VippWidget(QWidget):
         )
         for widget in self._toolbar_settings_widgets:
             widget.setVisible(True)
-        self._toolbar_zoom_separator.setVisible(
-            not hide_dropdowns and not hide_zoom
-        )
-        self._toolbar_action_separator.setVisible(
-            not hide_dropdowns or not hide_zoom
-        )
+        self._toolbar_zoom_separator.setVisible(not hide_dropdowns and not hide_zoom)
+        self._toolbar_action_separator.setVisible(not hide_dropdowns or not hide_zoom)
         self.auto_structure_button.setText(
             "Structure" if hide_dropdowns or hide_zoom else "Auto structure graph"
         )
@@ -2715,8 +2780,7 @@ class VippWidget(QWidget):
         )
         if not self.optimize_pipeline_button.isHidden():
             required += (
-                layout.spacing()
-                + self.optimize_pipeline_button.sizeHint().width()
+                layout.spacing() + self.optimize_pipeline_button.sizeHint().width()
             )
         if include_status:
             required += layout.spacing() + self.compute_status_label.sizeHint().width()
@@ -2739,16 +2803,13 @@ class VippWidget(QWidget):
             "Fail if a selected GPU cannot run",
             self.strict_compute_checkbox,
         )
-        strict_compute_action.setEnabled(
-            self._compute_mode is ComputeMode.CUSTOM
-        )
+        strict_compute_action.setEnabled(self._compute_mode is ComputeMode.CUSTOM)
         strict_compute_action.setToolTip(
             "Available only in Custom mode for explicitly required GPU choices."
         )
         compute_setup_action = menu.addAction("Compute setup and memory…")
         compute_setup_action.setToolTip(
-            "Verify optional GPU support and inspect RAM or VRAM without "
-            "blocking VIPP."
+            "Verify optional GPU support and inspect RAM or VRAM without blocking VIPP."
         )
         compute_setup_action.triggered.connect(self._show_compute_setup_dialog)
         if self._compute_mode is ComputeMode.CUSTOM:
@@ -3022,9 +3083,7 @@ class VippWidget(QWidget):
         auto_layout.addLayout(auto_form)
         auto_layout.addWidget(self.auto_contrast_button)
         layout.addWidget(self.auto_contrast_group)
-        colocalization_scatter_layout = QVBoxLayout(
-            self.colocalization_scatter_group
-        )
+        colocalization_scatter_layout = QVBoxLayout(self.colocalization_scatter_group)
         colocalization_scatter_layout.addWidget(self.colocalization_scatter_summary)
         colocalization_scatter_controls = QWidget()
         colocalization_scatter_controls_layout = QHBoxLayout(
@@ -3108,15 +3167,9 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.activateTabRequested.connect(
             self._on_workflow_tab_activation_requested
         )
-        self.workflow_tab_bar.closeTabRequested.connect(
-            self._close_workflow_tab
-        )
-        self.workflow_tab_bar.renameTabRequested.connect(
-            self._rename_workflow_tab
-        )
-        self.workflow_tab_bar.tabsReordered.connect(
-            self._reorder_workflow_tabs
-        )
+        self.workflow_tab_bar.closeTabRequested.connect(self._close_workflow_tab)
+        self.workflow_tab_bar.renameTabRequested.connect(self._rename_workflow_tab)
+        self.workflow_tab_bar.tabsReordered.connect(self._reorder_workflow_tabs)
         self.open_example_button.clicked.connect(self._open_example_workflow_dialog)
         self.auto_structure_button.clicked.connect(self._auto_structure_graph)
         self.refresh_button.clicked.connect(self._refresh_and_run)
@@ -3130,9 +3183,7 @@ class VippWidget(QWidget):
         self.batch_button.clicked.connect(
             lambda _checked=False: self._batch_collection_dialog()
         )
-        self.leave_batch_button.clicked.connect(
-            self._leave_collection_batch_workspace
-        )
+        self.leave_batch_button.clicked.connect(self._leave_collection_batch_workspace)
         self.batch_navigator.itemSelected.connect(
             self._preview_interactive_collection_batch_item
         )
@@ -3155,9 +3206,7 @@ class VippWidget(QWidget):
         self.add_compute_conversion_button.clicked.connect(
             self._apply_selected_compute_repair
         )
-        self.optimize_pipeline_button.clicked.connect(
-            self._show_pipeline_optimizer
-        )
+        self.optimize_pipeline_button.clicked.connect(self._show_pipeline_optimizer)
         self.strict_compute_checkbox.toggled.connect(self._on_strict_compute_toggled)
         self.cache_mode_combo.currentTextChanged.connect(self._on_cache_mode_changed)
         self.memory_guard_checkbox.toggled.connect(
@@ -3189,15 +3238,9 @@ class VippWidget(QWidget):
         self.graph_zoom_reset_button.clicked.connect(self._reset_graph_zoom)
         self.view_dims_bar.value_changed.connect(self._on_view_dim_changed)
         self.calculate_button.clicked.connect(self._calculate_selected_node)
-        self.isolated_tuning_checkbox.toggled.connect(
-            self._on_isolated_tuning_toggled
-        )
-        self.apply_isolated_tuning_button.clicked.connect(
-            self._apply_isolated_tuning
-        )
-        self.cancel_isolated_tuning_button.clicked.connect(
-            self._cancel_isolated_tuning
-        )
+        self.isolated_tuning_checkbox.toggled.connect(self._on_isolated_tuning_toggled)
+        self.apply_isolated_tuning_button.clicked.connect(self._apply_isolated_tuning)
+        self.cancel_isolated_tuning_button.clicked.connect(self._cancel_isolated_tuning)
         self.auto_recalculate_checkbox.toggled.connect(
             self._on_auto_recalculate_toggled
         )
@@ -3244,7 +3287,9 @@ class VippWidget(QWidget):
         self.right_panel_toggle.clicked.connect(self._toggle_right_panel)
         self.palette_search.textChanged.connect(self.palette.set_filter_text)
         self.graph_search_edit.textChanged.connect(self._on_graph_search_changed)
-        self.graph_search_edit.returnPressed.connect(self._focus_next_graph_search_match)
+        self.graph_search_edit.returnPressed.connect(
+            self._focus_next_graph_search_match
+        )
         self.graph_search_focus_button.clicked.connect(
             self._focus_next_graph_search_match
         )
@@ -3283,9 +3328,7 @@ class VippWidget(QWidget):
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
         self.graph_view.port_context_requested.connect(self._show_port_context_menu)
         self.graph_view.tunnel_selected.connect(self._on_graph_tunnel_selected)
-        self.graph_view.tunnel_reroute_requested.connect(
-            self._reroute_output_tunnel
-        )
+        self.graph_view.tunnel_reroute_requested.connect(self._reroute_output_tunnel)
         self.graph_view.tunnel_insert_requested.connect(
             self._insert_node_before_tunnel_from_menu
         )
@@ -3449,9 +3492,7 @@ class VippWidget(QWidget):
                     "Cancellation is still cleaning up CPU/GPU resources. Wait "
                     "for it to finish before changing compute policy."
                 )
-            return (
-                "Cancel the current calculation before changing compute policy."
-            )
+            return "Cancel the current calculation before changing compute policy."
         if self._active_source_load_id is not None:
             return "Wait for the current source load before changing compute policy."
         if self._pending_collection_batch_start is not None:
@@ -3543,8 +3584,7 @@ class VippWidget(QWidget):
                     "Choose how presentation-only full-stack thumbnail statistics "
                     "run. Auto selects per result from dtype and byte size; CPU "
                     "never initializes CUDA; Prefer GPU uses CuPy when eligible "
-                    "with a visible fallback."
-                    + effective_note
+                    "with a visible fallback." + effective_note
                 )
             )
         custom_editable = editable and self._compute_mode is ComputeMode.CUSTOM
@@ -3595,6 +3635,7 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         self._compute_mode = mode
         self._thumbnail_statistics_engine.reset_accelerator_capability()
+        self._refresh_current_thumbnail_statistics_presentations()
         self._push_undo_if_changed(before)
         self._sync_all_compute_repair_hints()
         if mode is ComputeMode.CUSTOM:
@@ -3792,8 +3833,7 @@ class VippWidget(QWidget):
         with QSignalBlocker(self.node_compute_optimizer_lock_checkbox):
             self.node_compute_optimizer_lock_checkbox.setEnabled(lock_available)
             self.node_compute_optimizer_lock_checkbox.setChecked(
-                lock_available
-                and node_id in self._compute_optimizer_locked_node_ids
+                lock_available and node_id in self._compute_optimizer_locked_node_ids
             )
         if lock_available:
             if node_id in self._compute_optimizer_locked_node_ids:
@@ -3839,9 +3879,7 @@ class VippWidget(QWidget):
             return
         shared = self._shared_compute_repairs(suggestion)
         if len(shared) > 1:
-            titles = tuple(
-                self.pipeline.nodes[item.node_id].title for item in shared
-            )
+            titles = tuple(self.pipeline.nodes[item.node_id].title for item in shared)
             self.compute_repair_label.setText(
                 f"{', '.join(titles[:-1])} and {titles[-1]} use the same "
                 f"{suggestion.current_dtype} input. One visible Convert Dtype "
@@ -3993,8 +4031,7 @@ class VippWidget(QWidget):
                 return False
             if (
                 preference.kind is NodePreferenceKind.LIBRARY
-                and preference.value
-                != suggestion.candidate.implementation_library_id
+                and preference.value != suggestion.candidate.implementation_library_id
             ):
                 return False
             if (
@@ -4495,9 +4532,7 @@ class VippWidget(QWidget):
             ):
                 return None
             if decision.runtime_id == "cpu-numpy":
-                preferences[node_id] = NodeComputePreference(
-                    NodePreferenceKind.CPU
-                )
+                preferences[node_id] = NodeComputePreference(NodePreferenceKind.CPU)
             else:
                 preferences[node_id] = NodeComputePreference(
                     NodePreferenceKind.IMPLEMENTATION,
@@ -4709,13 +4744,9 @@ class VippWidget(QWidget):
                 for node_id in self.pipeline.topological_order()
             },
         )
-        dialog.analyze_requested.connect(
-            self._start_pipeline_optimizer_analysis
-        )
+        dialog.analyze_requested.connect(self._start_pipeline_optimizer_analysis)
         dialog.apply_requested.connect(self._apply_pipeline_optimizer_result)
-        dialog.optimizer_finished.connect(
-            self._on_pipeline_optimizer_finished
-        )
+        dialog.optimizer_finished.connect(self._on_pipeline_optimizer_finished)
         dialog.finished.connect(self._on_pipeline_optimizer_dialog_finished)
         self._pipeline_optimizer_dialog = dialog
         self._sync_pipeline_optimizer_action()
@@ -4740,8 +4771,8 @@ class VippWidget(QWidget):
             if not source_payloads:
                 raise ValueError("No Image Source has a resolved payload.")
             compute_request = self._current_compute_request()
-            baseline_compute_request = (
-                self._retained_optimizer_baseline_request(compute_request)
+            baseline_compute_request = self._retained_optimizer_baseline_request(
+                compute_request
             )
             workflow = deepcopy(
                 serialize_workflow(
@@ -4836,9 +4867,7 @@ class VippWidget(QWidget):
                                 getattr(progress, "operation_message", "")
                             ),
                             node_id=str(getattr(progress, "node_id", "")),
-                            node_title=str(
-                                getattr(progress, "node_title", "")
-                            ),
+                            node_title=str(getattr(progress, "node_title", "")),
                             implementation_id=str(
                                 getattr(progress, "implementation_id", "")
                             ),
@@ -4926,8 +4955,7 @@ class VippWidget(QWidget):
                             )
                     raise PipelineOptimizerCleanupError(
                         "Find fastest could not safely release its CPU/GPU "
-                        f"runtime: {type(exc).__name__}: {exc}."
-                        + rollback_detail
+                        f"runtime: {type(exc).__name__}: {exc}." + rollback_detail
                     ) from exc
                 finally:
                     if benchmark_store is not None and original_store_put is not None:
@@ -4975,18 +5003,13 @@ class VippWidget(QWidget):
             self._set_status(
                 self._compute_runtime_quarantined_reason
                 + " No proposed assignment was accepted. "
-                + (
-                    outcome.error
-                    or "Newly measured timing evidence was not retained."
-                ),
+                + (outcome.error or "Newly measured timing evidence was not retained."),
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
             return
         if outcome.result is not None:
-            for suggestion in tuple(
-                getattr(outcome.result, "repair_suggestions", ())
-            ):
+            for suggestion in tuple(getattr(outcome.result, "repair_suggestions", ())):
                 if self._compute_repair_is_current(suggestion):
                     self._compute_repair_suggestions[suggestion.node_id] = suggestion
             self._sync_all_compute_repair_hints()
@@ -5384,8 +5407,8 @@ class VippWidget(QWidget):
             self._exact_workload_qualification_source_signature = (
                 verified_source_signature
             )
-            self._exact_workload_qualification_workflow_fingerprint = (
-                canonical_digest(qualified_workflow)
+            self._exact_workload_qualification_workflow_fingerprint = canonical_digest(
+                qualified_workflow
             )
         self._sync_node_compute_control()
         self._sync_compute_toolbar_summary()
@@ -5477,10 +5500,7 @@ class VippWidget(QWidget):
         ):
             self._clear_exact_workload_qualifications()
             return frozenset(), ""
-        if (
-            source_signature
-            != self._exact_workload_qualification_source_signature
-        ):
+        if source_signature != self._exact_workload_qualification_source_signature:
             self._clear_exact_workload_qualifications()
             return frozenset(), ""
         return qualifications, scope_digest
@@ -5703,9 +5723,7 @@ class VippWidget(QWidget):
             self._compute_decision_environments[decision.node_id] = report.environment
             self._stale_compute_badge_node_ids.discard(decision.node_id)
         if report.plan is not None:
-            planned_node_ids = {
-                decision.node_id for decision in report.plan.decisions
-            }
+            planned_node_ids = {decision.node_id for decision in report.plan.decisions}
             for node_id in planned_node_ids:
                 self._compute_repair_suggestions.pop(node_id, None)
             for suggestion in report.plan.repair_suggestions:
@@ -6066,9 +6084,7 @@ class VippWidget(QWidget):
             self._on_live_source_invalidated(layer)
             return
         try:
-            session = self._workflow_tabs[
-                self._workflow_tabs.index_of(session_id)
-            ]
+            session = self._workflow_tabs[self._workflow_tabs.index_of(session_id)]
         except (IndexError, KeyError):
             return
         bindings = session.runtime_cache.get("_live_source_node_layers", {})
@@ -6093,12 +6109,8 @@ class VippWidget(QWidget):
         session.runtime_cache["_last_pipeline_source_signature"] = None
         session.runtime_cache["_exact_workload_qualifications"] = frozenset()
         session.runtime_cache["_exact_workload_qualification_scope_digest"] = ""
-        session.runtime_cache["_exact_workload_qualification_source_signature"] = (
-            None
-        )
-        session.runtime_cache[
-            "_exact_workload_qualification_workflow_fingerprint"
-        ] = ""
+        session.runtime_cache["_exact_workload_qualification_source_signature"] = None
+        session.runtime_cache["_exact_workload_qualification_workflow_fingerprint"] = ""
         for name in (
             "_thumbnail_contrast_limit_cache",
             "_thumbnail_contrast_statistics_cache",
@@ -6275,14 +6287,9 @@ class VippWidget(QWidget):
                 rollback_error = self._restore_workflow_tab_after_failed_activation(
                     source_session
                 )
-                message = (
-                    f"Could not switch to workflow '{session.title}': {exc}."
-                )
+                message = f"Could not switch to workflow '{session.title}': {exc}."
                 if rollback_error is not None:
-                    message += (
-                        " Could not restore the previous tab: "
-                        f"{rollback_error}"
-                    )
+                    message += f" Could not restore the previous tab: {rollback_error}"
                 self._set_status(
                     message,
                     severity=MessageSeverity.ERROR,
@@ -6383,9 +6390,7 @@ class VippWidget(QWidget):
             and not batch_still_owns_session
         ):
             self._collection_batch_graph_refresh_pending = False
-            session.runtime_cache[
-                "_collection_batch_graph_refresh_pending"
-            ] = False
+            session.runtime_cache["_collection_batch_graph_refresh_pending"] = False
             self._queue_workflow_tab_pipeline_refresh(session.session_id)
         if batch_still_owns_session:
             self.batch_navigator.set_navigation_enabled(False)
@@ -6422,8 +6427,8 @@ class VippWidget(QWidget):
     def _queue_workflow_tab_pipeline_refresh(self, session_id: str) -> None:
         QTimer.singleShot(
             0,
-            lambda origin_id=session_id: (
-                self._run_queued_workflow_tab_pipeline_refresh(origin_id)
+            lambda origin_id=session_id: self._run_queued_workflow_tab_pipeline_refresh(
+                origin_id
             ),
         )
 
@@ -6433,9 +6438,7 @@ class VippWidget(QWidget):
         if session is None:
             return
         if not self._workflow_tab_is_active(session_id):
-            session.runtime_cache[
-                "_collection_batch_graph_refresh_pending"
-            ] = True
+            session.runtime_cache["_collection_batch_graph_refresh_pending"] = True
             return
         self._collection_batch_graph_refresh_pending = False
         session.runtime_cache["_collection_batch_graph_refresh_pending"] = False
@@ -6462,12 +6465,8 @@ class VippWidget(QWidget):
             for node_id in snapshot.compute_optimizer_locked_node_ids
             if node_id in self._compute_node_preferences
         }
-        self._compute_precision_policy_id = (
-            workflow.compute_request.precision_policy_id
-        )
-        self._compute_workload_policy_id = (
-            workflow.compute_request.workload_policy_id
-        )
+        self._compute_precision_policy_id = workflow.compute_request.precision_policy_id
+        self._compute_workload_policy_id = workflow.compute_request.workload_policy_id
         with QSignalBlocker(self.compute_mode_combo):
             self.compute_mode_combo.setCurrentIndex(
                 self.compute_mode_combo.findData(self._compute_mode.value)
@@ -6694,10 +6693,7 @@ class VippWidget(QWidget):
         active isolated-tuning session first. This keeps Cancel from restoring
         execution dictionaries and history stacks captured for an older graph.
         """
-        if (
-            not preserve_isolated_tuning
-            and self._isolated_tuning_node_id is not None
-        ):
+        if not preserve_isolated_tuning and self._isolated_tuning_node_id is not None:
             had_changes = self._apply_isolated_tuning(
                 run=False,
                 announce=False,
@@ -6736,9 +6732,7 @@ class VippWidget(QWidget):
             if pinned_layer is not None:
                 self._remove_layer(pinned_layer)
             workflow.graph.restore_into(self.pipeline)
-            self._restore_graph_notes(
-                note.to_mapping() for note in workflow.notes
-            )
+            self._restore_graph_notes(note.to_mapping() for note in workflow.notes)
             valid_node_ids = set(self.pipeline.nodes)
             self._compute_mode = ComputeMode.parse(snapshot.compute_mode)
             self._compute_fallback_policy = FallbackPolicy.parse(
@@ -6827,9 +6821,7 @@ class VippWidget(QWidget):
         self.undo_action.setToolTip(
             blocked or f"Undo last workflow edit ({undo_shortcut})"
         )
-        self.redo_action.setToolTip(
-            blocked or f"Redo workflow edit ({redo_shortcut})"
-        )
+        self.redo_action.setToolTip(blocked or f"Redo workflow edit ({redo_shortcut})")
 
     def _restore_graph_view_center(self, center: QPointF) -> None:
         """Center the graph while compensating integer scrollbar rounding."""
@@ -7040,9 +7032,7 @@ class VippWidget(QWidget):
                     target_port=mapping.input_port if mapping is not None else 0,
                     source_port=source_port,
                     tunnel_name=(
-                        original_connection.tunnel_name
-                        if preserve_input_tunnel
-                        else ""
+                        original_connection.tunnel_name if preserve_input_tunnel else ""
                     ),
                 )
                 if not input_result.success:
@@ -7055,9 +7045,7 @@ class VippWidget(QWidget):
                         node.id,
                         target_id,
                         target_port=target_port,
-                        source_port=(
-                            mapping.output_port if mapping is not None else 0
-                        ),
+                        source_port=(mapping.output_port if mapping is not None else 0),
                     )
                     if not output_result.success:
                         raise RuntimeError(output_result.message)
@@ -7107,9 +7095,7 @@ class VippWidget(QWidget):
             )
         else:
             connection_note = (
-                " Connections were left unchanged."
-                if not changed_connections
-                else ""
+                " Connections were left unchanged." if not changed_connections else ""
             )
             self.status_label.setText(
                 f"Placed '{node.title}' in the opened gap. "
@@ -7206,9 +7192,7 @@ class VippWidget(QWidget):
                         node_id,
                         target_id,
                         target_port=target_port,
-                        source_port=(
-                            mapping.output_port if mapping is not None else 0
-                        ),
+                        source_port=(mapping.output_port if mapping is not None else 0),
                     )
                     if not output_result.success:
                         raise RuntimeError(output_result.message)
@@ -7695,9 +7679,7 @@ class VippWidget(QWidget):
         return reason
 
     def _apply_connection_result_to_graph(self, result) -> None:
-        affected_sources = {
-            connection.source_id for connection in result.removed
-        }
+        affected_sources = {connection.source_id for connection in result.removed}
         for connection in result.removed:
             self.graph_view.remove_connection(
                 connection.source_id,
@@ -8101,9 +8083,8 @@ class VippWidget(QWidget):
             params_override = {"axis": f"axis:{options[0].index}"}
         if inserted_node_id and inserted_node_id in self.pipeline.nodes:
             ports = self.pipeline.output_ports(inserted_node_id)
-            if (
-                spec.output_factory is not None
-                and not self.pipeline.node_outputs.get(inserted_node_id)
+            if spec.output_factory is not None and not self.pipeline.node_outputs.get(
+                inserted_node_id
             ):
                 count = self._inferred_insert_output_count(
                     spec,
@@ -8458,9 +8439,7 @@ class VippWidget(QWidget):
                 node_id_by_key[connection.target],
                 connection.target_port,
                 connection.source_port,
-                tunnel_name_map.get(connection.tunnel, "")
-                if connection.tunnel
-                else "",
+                tunnel_name_map.get(connection.tunnel, "") if connection.tunnel else "",
             )
             for connection in fragment.connections
         )
@@ -9311,9 +9290,7 @@ class VippWidget(QWidget):
         """
         reason = self._workflow_tab_switch_block_reason()
         if reason:
-            raise RuntimeError(
-                f"Wait until {reason} before loading another workflow."
-            )
+            raise RuntimeError(f"Wait until {reason} before loading another workflow.")
         if preserve_batch_workspace:
             loaded = self._load_workflow_file_into_active_tab(
                 path,
@@ -9344,23 +9321,15 @@ class VippWidget(QWidget):
             WorkflowHistorySnapshot(
                 workflow=source_snapshot.workflow,
                 selected_node_id=source_snapshot.selected_node_id,
-                preview_disabled_node_ids=(
-                    source_snapshot.preview_disabled_node_ids
-                ),
+                preview_disabled_node_ids=(source_snapshot.preview_disabled_node_ids),
                 active_pinned_node_id=source_snapshot.active_pinned_node_id,
                 compute_mode=source_snapshot.compute_mode,
-                compute_fallback_policy=(
-                    source_snapshot.compute_fallback_policy
-                ),
-                compute_node_preferences=(
-                    source_snapshot.compute_node_preferences
-                ),
+                compute_fallback_policy=(source_snapshot.compute_fallback_policy),
+                compute_node_preferences=(source_snapshot.compute_node_preferences),
                 compute_optimizer_locked_node_ids=(
                     source_snapshot.compute_optimizer_locked_node_ids
                 ),
-                inspect_display_profiles=(
-                    source_snapshot.inspect_display_profiles
-                ),
+                inspect_display_profiles=(source_snapshot.inspect_display_profiles),
             ),
             history=WorkflowHistory(limit=self.HISTORY_LIMIT),
             title=f"Untitled {len(self._workflow_tabs) + 1}",
@@ -9463,9 +9432,9 @@ class VippWidget(QWidget):
             self._compute_optimizer_locked_node_ids.clear()
         thumbnail_metadata = vipp_metadata.get("thumbnails")
         if isinstance(thumbnail_metadata, dict):
-            self._preview_disabled_node_ids = set(
-                thumbnail_metadata.get("disabled_node_ids", ())
-            ) & valid_node_ids
+            self._preview_disabled_node_ids = (
+                set(thumbnail_metadata.get("disabled_node_ids", ())) & valid_node_ids
+            )
         else:
             self._preview_disabled_node_ids.clear()
         inspector_metadata = vipp_metadata.get("inspector")
@@ -9528,8 +9497,7 @@ class VippWidget(QWidget):
                     raise RuntimeError("the Batch workspace could not be opened")
             except Exception as exc:
                 self._last_workflow_load_detail = (
-                    "The attached Batch workspace could not be restored: "
-                    f"{exc}"
+                    f"The attached Batch workspace could not be restored: {exc}"
                 )
                 self.status_label.setText(self._last_workflow_load_detail)
             else:
@@ -9635,11 +9603,8 @@ class VippWidget(QWidget):
                 "A collection batch is already running. Its progress remains "
                 "visible in the batch workspace."
             )
-            if (
-                batch_job is not None
-                and not self._workflow_tab_is_active(
-                    batch_job.origin_session_id
-                )
+            if batch_job is not None and not self._workflow_tab_is_active(
+                batch_job.origin_session_id
             ):
                 try:
                     origin_index = self._workflow_tabs.index_of(
@@ -9649,9 +9614,7 @@ class VippWidget(QWidget):
                     origin_index = -1
                 if origin_index >= 0:
                     self._activate_workflow_tab(origin_index)
-                if not self._workflow_tab_is_active(
-                    batch_job.origin_session_id
-                ):
+                if not self._workflow_tab_is_active(batch_job.origin_session_id):
                     return batch_job.dialog
             active_dialog = (
                 batch_job.dialog
@@ -9934,9 +9897,7 @@ class VippWidget(QWidget):
             )
             preview = fresh_preview
         else:
-            current_hash = scientific_workflow_hash(
-                self._batch_workflow_document()
-            )
+            current_hash = scientific_workflow_hash(self._batch_workflow_document())
             if current_hash != preview.config.workflow_sha256:
                 dialog.invalidate_for_workflow_change()
                 self._mark_collection_batch_workflow_stale_if_needed()
@@ -10008,8 +9969,7 @@ class VippWidget(QWidget):
         if self._interactive_collection_batch_requested_index >= 0:
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
-                "the representative calculation was superseded by the full "
-                "batch run",
+                "the representative calculation was superseded by the full batch run",
             )
         if self._active_source_load_id is not None:
             self._source_load_serial += 1
@@ -10211,8 +10171,7 @@ class VippWidget(QWidget):
                 "Stopping thumbnail statistics; cleaning up resources…"
             )
         elif (
-            self._active_pipeline_run_id is None
-            and self._active_source_load_id is None
+            self._active_pipeline_run_id is None and self._active_source_load_id is None
         ):
             self._set_pipeline_busy(False)
         if announce:
@@ -10343,8 +10302,7 @@ class VippWidget(QWidget):
                 )
             else:
                 self.status_label.setText(
-                    summary_text
-                    + (f" {validation_text}" if validation_text else "")
+                    summary_text + (f" {validation_text}" if validation_text else "")
                 )
             self.batch_navigator.finish_batch_progress(
                 f"{finished_prefix}: {summary['completed']} completed, "
@@ -10406,9 +10364,8 @@ class VippWidget(QWidget):
         batch_context = self._active_collection_batch_job
         if self._collection_batch_running and batch_context is not None:
             batch_worker = self._collection_batch_workers.get(batch_context.job_id)
-            if (
-                batch_worker is not None
-                and not bool(getattr(batch_worker, "cancellation_requested", False))
+            if batch_worker is not None and not bool(
+                getattr(batch_worker, "cancellation_requested", False)
             ):
                 batch_worker.cancel()
         if self._active_pipeline_run_id is not None:
@@ -10438,13 +10395,11 @@ class VippWidget(QWidget):
             return
         if self._workflow_tab_is_active(context.origin_session_id):
             self._collection_batch_graph_refresh_pending = False
-            self._queue_workflow_tab_pipeline_refresh(
-                context.origin_session_id
-            )
+            self._queue_workflow_tab_pipeline_refresh(context.origin_session_id)
         elif origin_session is not None:
-            origin_session.runtime_cache[
-                "_collection_batch_graph_refresh_pending"
-            ] = True
+            origin_session.runtime_cache["_collection_batch_graph_refresh_pending"] = (
+                True
+            )
 
     def _workflow_tab_is_active(self, session_id: str) -> bool:
         session = self._workflow_tabs.current
@@ -10455,9 +10410,7 @@ class VippWidget(QWidget):
         session_id: str,
     ) -> WorkflowTabSession | None:
         try:
-            return self._workflow_tabs[
-                self._workflow_tabs.index_of(session_id)
-            ]
+            return self._workflow_tabs[self._workflow_tabs.index_of(session_id)]
         except (IndexError, KeyError):
             return None
 
@@ -10580,9 +10533,7 @@ class VippWidget(QWidget):
             node_id: Path(path).expanduser().resolve()
             for node_id, path in planned_items[index].source_paths.items()
         }
-        representative_series_indices = dict(
-            planned_items[index].source_series_indices
-        )
+        representative_series_indices = dict(planned_items[index].source_series_indices)
         previous_declarations = tuple(
             sorted(
                 (source.node_id, source.axis_declaration)
@@ -10595,8 +10546,7 @@ class VippWidget(QWidget):
         )
         current_declarations = tuple(
             sorted(
-                (source.node_id, source.axis_declaration)
-                for source in config.sources
+                (source.node_id, source.axis_declaration) for source in config.sources
             )
         )
         reuse_representative = bool(
@@ -11065,11 +11015,7 @@ class VippWidget(QWidget):
                 )
                 details.extend(
                     f"  {output.tag}: {output.status.value} - {output.path}"
-                    + (
-                        f" - {output.error_message}"
-                        if output.error_message
-                        else ""
-                    )
+                    + (f" - {output.error_message}" if output.error_message else "")
                     for output in item.outputs
                     if output.status.value != "completed"
                 )
@@ -11253,8 +11199,7 @@ class VippWidget(QWidget):
         detail = str(progress.message).strip()
         suffix = f": {detail}" if detail else ""
         self.pipeline_busy_label.setText(
-            f"Batch {progress.item_index}/{progress.item_total}: "
-            f"{operation}{suffix}"
+            f"Batch {progress.item_index}/{progress.item_total}: {operation}{suffix}"
         )
         if dialog is None:
             dialog = self._active_collection_batch_dialog
@@ -11579,6 +11524,7 @@ class VippWidget(QWidget):
         }
         if not valid_node_ids:
             return False
+        self._preempt_thumbnail_statistics_for_scientific_edit()
         self._clear_exact_workload_qualifications()
         active_node_id = self._isolated_tuning_node_id
         if active_node_id is not None and valid_node_ids != {active_node_id}:
@@ -11609,6 +11555,7 @@ class VippWidget(QWidget):
     ) -> bool:
         if node_id not in self.pipeline.nodes:
             return False
+        self._preempt_thumbnail_statistics_for_scientific_edit()
         if not preserve_colocalization_scatter:
             self._clear_colocalization_scatter_cache()
         self._pending_dirty_node_ids.add(node_id)
@@ -11708,21 +11655,15 @@ class VippWidget(QWidget):
             output=self.pipeline.outputs.get(node_id),
             output_state=self.pipeline.output_states.get(node_id),
             node_outputs=tuple(self.pipeline.node_outputs.get(node_id, ())),
-            node_output_states=tuple(
-                self.pipeline.node_output_states.get(node_id, ())
-            ),
+            node_output_states=tuple(self.pipeline.node_output_states.get(node_id, ())),
             execution_states=dict(self.pipeline.node_execution_states),
             execution_messages=dict(self.pipeline.node_execution_messages),
             completed_node_ids=frozenset(self.pipeline.completed_node_ids),
             compute_provenance=dict(self.pipeline.node_compute_provenance),
             compute_decisions=dict(self._accepted_compute_decisions),
-            compute_decision_environments=dict(
-                self._compute_decision_environments
-            ),
+            compute_decision_environments=dict(self._compute_decision_environments),
             compute_repair_suggestions=dict(self._compute_repair_suggestions),
-            stale_compute_badge_node_ids=frozenset(
-                self._stale_compute_badge_node_ids
-            ),
+            stale_compute_badge_node_ids=frozenset(self._stale_compute_badge_node_ids),
             execution_report=self._last_execution_report,
             undo_stack=tuple(self._history.undo_stack),
             redo_stack=tuple(self._history.redo_stack),
@@ -11766,9 +11707,8 @@ class VippWidget(QWidget):
             latest_result_available = bool(
                 state == EXECUTION_READY or isolated_result_in_flight
             )
-            if (
-                not latest_result_available
-                or not self.pipeline._has_cached_output(node_id)
+            if not latest_result_available or not self.pipeline._has_cached_output(
+                node_id
             ):
                 dirty_targets.add(node_id)
             else:
@@ -11831,19 +11771,13 @@ class VippWidget(QWidget):
         self.pipeline.node_execution_states = dict(snapshot.execution_states)
         self.pipeline.node_execution_messages = dict(snapshot.execution_messages)
         self.pipeline.completed_node_ids = set(snapshot.completed_node_ids)
-        self.pipeline.node_compute_provenance = dict(
-            snapshot.compute_provenance
-        )
+        self.pipeline.node_compute_provenance = dict(snapshot.compute_provenance)
         self._accepted_compute_decisions = dict(snapshot.compute_decisions)
         self._compute_decision_environments = dict(
             snapshot.compute_decision_environments
         )
-        self._compute_repair_suggestions = dict(
-            snapshot.compute_repair_suggestions
-        )
-        self._stale_compute_badge_node_ids = set(
-            snapshot.stale_compute_badge_node_ids
-        )
+        self._compute_repair_suggestions = dict(snapshot.compute_repair_suggestions)
+        self._stale_compute_badge_node_ids = set(snapshot.stale_compute_badge_node_ids)
         self._last_execution_report = snapshot.execution_report
         self._history.undo_stack[:] = snapshot.undo_stack
         self._history.redo_stack[:] = snapshot.redo_stack
@@ -11932,8 +11866,7 @@ class VippWidget(QWidget):
             else:
                 suffix = " Local result is waiting to be recalculated."
             self.isolated_tuning_status.setText(
-                f"Downstream paused after '{self._node_title(active_node_id)}'."
-                f"{suffix}"
+                f"Downstream paused after '{self._node_title(active_node_id)}'.{suffix}"
             )
         self.graph_view.set_isolated_tuning_node(active_node_id)
 
@@ -12156,9 +12089,7 @@ class VippWidget(QWidget):
                 for node_id in self._recent_cache_node_ids
                 if node_id in self.pipeline.nodes
             }
-            retained.update(
-                recent_nodes | self._direct_input_cache_nodes(recent_nodes)
-            )
+            retained.update(recent_nodes | self._direct_input_cache_nodes(recent_nodes))
         return retained & valid
 
     def _current_working_cache_nodes(self) -> set[str]:
@@ -12682,10 +12613,7 @@ class VippWidget(QWidget):
         node,
     ) -> tuple[SourcePayload | None, object | None]:
         mode = str(node.params.get("source_mode", "napari layer"))
-        if (
-            mode == "file path"
-            or node.id in self._interactive_collection_source_paths
-        ):
+        if mode == "file path" or node.id in self._interactive_collection_source_paths:
             source_path = self._file_source_path_for_node(node)
             if source_path is None:
                 return SourcePayload(None, {}, ""), None
@@ -12701,9 +12629,7 @@ class VippWidget(QWidget):
             snapshot = load_frozen_file_source_snapshot(
                 source_path,
                 self._file_source_series_index_for_node(node),
-                expected_identity=self._file_source_path_identities.get(
-                    resolved_path
-                ),
+                expected_identity=self._file_source_path_identities.get(resolved_path),
                 reader=read_image,
             )
             self._cache_file_source_snapshot(key, snapshot)
@@ -12797,8 +12723,7 @@ class VippWidget(QWidget):
             yield
             return
         original_params = {
-            node_id: dict(node.params)
-            for node_id, node in self.pipeline.nodes.items()
+            node_id: dict(node.params) for node_id, node in self.pipeline.nodes.items()
         }
         original_rescale_auto_ranges = dict(self._rescale_auto_output_ranges)
         try:
@@ -13504,9 +13429,7 @@ class VippWidget(QWidget):
         """Delete a node selection as one model mutation and one undo step."""
         requested = {str(value) for value in (node_ids or ())}
         ordered_ids = tuple(
-            node_id
-            for node_id in self.pipeline.nodes
-            if node_id in requested
+            node_id for node_id in self.pipeline.nodes if node_id in requested
         )
         if not ordered_ids:
             return
@@ -13768,9 +13691,7 @@ class VippWidget(QWidget):
         if had_isolation:
             self._apply_isolated_tuning(run=False, announce=False)
         node_ids = self._manual_node_ids_needing_calculation()
-        has_dirty_work = bool(
-            self._pending_dirty_node_ids & set(self.pipeline.nodes)
-        )
+        has_dirty_work = bool(self._pending_dirty_node_ids & set(self.pipeline.nodes))
         if not node_ids and not has_dirty_work:
             self.status_label.setText(
                 "Isolated tuning disabled; no nodes need calculation."
@@ -13819,9 +13740,7 @@ class VippWidget(QWidget):
         }
 
     def _sync_calculate_all_attention(self) -> None:
-        attention_required = bool(
-            self._manual_node_ids_requiring_attention()
-        )
+        attention_required = bool(self._manual_node_ids_requiring_attention())
         current = self.calculate_all_button.property("attentionRequired")
         if current is not None and bool(current) == attention_required:
             return
@@ -13906,9 +13825,7 @@ class VippWidget(QWidget):
             self.calculate_button.setText("Waiting upstream")
         else:
             self.calculate_button.setText(
-                "Calculate"
-                if state == EXECUTION_NOT_CALCULATED
-                else "Recalculate",
+                "Calculate" if state == EXECUTION_NOT_CALCULATED else "Recalculate",
             )
 
     def _node_execution_ui_state(self, node_id: str) -> tuple[str, str]:
@@ -14079,8 +13996,7 @@ class VippWidget(QWidget):
             return message or "Cached result is stale. Recalculate to refresh it."
         if state == EXECUTION_BLOCKED:
             return message or (
-                "Downstream result is stale; waiting for an upstream manual "
-                "result."
+                "Downstream result is stale; waiting for an upstream manual result."
             )
         if state == EXECUTION_ERROR:
             return message or "Calculation failed."
@@ -14208,9 +14124,7 @@ class VippWidget(QWidget):
                 control_class = ParameterControl
             widget = control_class(spec, presented_value, bounds)
             if self._is_colocalization_threshold_value_spec(node_id, spec):
-                widget.setEnabled(
-                    self._colocalization_thresholds_are_editable(node_id)
-                )
+                widget.setEnabled(self._colocalization_thresholds_are_editable(node_id))
             if compact_deconvolution_form and isinstance(
                 widget,
                 (ChoiceControl, ParameterControl),
@@ -14682,9 +14596,7 @@ class VippWidget(QWidget):
                 refractive_index=float(values["refractive_index"]),
                 xy_step_um=float(values["pixel_size_xy_um"]),
                 z_step_um=(
-                    float(values["z_step_um"])
-                    if resolution.spatial_ndim == 3
-                    else None
+                    float(values["z_step_um"]) if resolution.spatial_ndim == 3 else None
                 ),
                 spatial_ndim=resolution.spatial_ndim,
             )
@@ -14752,13 +14664,9 @@ class VippWidget(QWidget):
         support_text = " x ".join(str(size) for size in psf_shape)
         physical_spans = []
         try:
-            xy_span_um = (xy_support - 1) * float(
-                resolution.values["pixel_size_xy_um"]
-            )
+            xy_span_um = (xy_support - 1) * float(resolution.values["pixel_size_xy_um"])
             if spatial_ndim == 3:
-                z_span_um = (z_support - 1) * float(
-                    resolution.values["z_step_um"]
-                )
+                z_span_um = (z_support - 1) * float(resolution.values["z_step_um"])
                 physical_spans.append(f"Z {z_span_um:.3g} um")
             physical_spans.append(f"YX {xy_span_um:.3g} um")
         except (KeyError, TypeError, ValueError):
@@ -14875,9 +14783,9 @@ class VippWidget(QWidget):
         sections.append(
             '<p><span style="color:#94a3b8"><b>MORE GUIDANCE</b></span><br>'
             "Confirm that the conventional-widefield model matches the "
-            "acquisition. See the <a href=\"https://rensutheart.github.io/"
+            'acquisition. See the <a href="https://rensutheart.github.io/'
             "vipp-mkdocs/workflows/psf-deconvolution/"
-            "#choose-born-wolf-support\">Born-Wolf support guide</a> for "
+            '#choose-born-wolf-support">Born-Wolf support guide</a> for '
             "support selection, boundary interpretation, and validation.</p>"
         )
         return "".join(sections), status
@@ -15064,8 +14972,7 @@ class VippWidget(QWidget):
                 "the acquisition."
             ),
             "Warning": (
-                "Calculation can run, but scientific reliability needs "
-                "attention."
+                "Calculation can run, but scientific reliability needs attention."
             ),
             "Invalid": "Fix the item(s) below before calculating.",
             "Unknown": "Some checks need resolved input data or metadata.",
@@ -15077,9 +14984,7 @@ class VippWidget(QWidget):
 
         passed = self._deconvolution_psf_passed_checks(report, nyquist)
         if passed:
-            items = "<br>".join(
-                f"&#10003; {html.escape(item)}" for item in passed
-            )
+            items = "<br>".join(f"&#10003; {html.escape(item)}" for item in passed)
             sections.append(
                 '<p><span style="color:#34d399"><b>CHECKS PASSED</b></span>'
                 f"<br>{items}</p>"
@@ -15108,9 +15013,7 @@ class VippWidget(QWidget):
                     "aliased during acquisition.",
                 )
             )
-        unknown = tuple(
-            issue for issue in report.issues if issue.severity == "unknown"
-        )
+        unknown = tuple(issue for issue in report.issues if issue.severity == "unknown")
         if attention:
             items = "<br><br>".join(
                 '<span style="color:'
@@ -15201,10 +15104,7 @@ class VippWidget(QWidget):
                 f"{report.peak_offset_voxels:.3g}; centroid offset "
                 f"{report.centroid_offset_voxels:.3g} voxel)"
             )
-        if (
-            report.support_fraction_of_image
-            and "support_vs_image" not in codes
-        ):
+        if report.support_fraction_of_image and "support_vs_image" not in codes:
             checks.append("support is smaller than the image on every axis")
         if report.edge_mass_fraction is not None and "edge_mass" not in codes:
             checks.append("PSF tail is contained within its support")
@@ -15361,8 +15261,7 @@ class VippWidget(QWidget):
                 (
                     item
                     for item in self.pipeline.connections
-                    if item.target_id == target_id
-                    and item.target_port == target_port
+                    if item.target_id == target_id and item.target_port == target_port
                 ),
                 None,
             )
@@ -15438,12 +15337,16 @@ class VippWidget(QWidget):
         image,
         image_state: ImageState | None,
     ) -> int | None:
-        mode = str(
-            self.pipeline.nodes[node_id].params.get(
-                "spatial_mode",
-                "Auto from axes",
+        mode = (
+            str(
+                self.pipeline.nodes[node_id].params.get(
+                    "spatial_mode",
+                    "Auto from axes",
+                )
             )
-        ).strip().lower()
+            .strip()
+            .lower()
+        )
         if mode.startswith("2d"):
             return 2
         if mode.startswith("3d"):
@@ -16289,9 +16192,7 @@ class VippWidget(QWidget):
                 spec,
             ):
                 widget.setEnabled(
-                    self._colocalization_thresholds_are_editable(
-                        self._selected_node_id
-                    )
+                    self._colocalization_thresholds_are_editable(self._selected_node_id)
                 )
             label = self.parameter_form.labelForField(widget)
             if isinstance(label, QLabel):
@@ -16341,13 +16242,9 @@ class VippWidget(QWidget):
         """Return whether input-aware controls need the form to be rebuilt."""
         node = self.pipeline.nodes.get(node_id)
         if node is not None and node.operation_id == "rescale_axes":
-            expected = {
-                spec.name for spec in self._rescale_axes_visible_specs(node_id)
-            }
+            expected = {spec.name for spec in self._rescale_axes_visible_specs(node_id)}
             actual = {
-                name
-                for name in self._parameter_widgets
-                if not name.endswith("_reset")
+                name for name in self._parameter_widgets if not name.endswith("_reset")
             }
             return actual != expected
         for spec in self.pipeline.node_parameter_specs(node_id):
@@ -16559,9 +16456,7 @@ class VippWidget(QWidget):
 
     def _resolved_auto_spatial_mode_label(self, node_id: str) -> str:
         state = self.pipeline.input_state_for_node(node_id)
-        if state is None or not bool(
-            getattr(state, "spatial_axes_explicit", False)
-        ):
+        if state is None or not bool(getattr(state, "spatial_axes_explicit", False)):
             return "unavailable (axes are inferred or missing)"
         spatial_count = sum(axis.type == "space" for axis in state.axes)
         if spatial_count >= 3:
@@ -16746,9 +16641,7 @@ class VippWidget(QWidget):
 
     def _input_spatial_count(self, node_id: str) -> int:
         state = self.pipeline.input_state_for_node(node_id)
-        if state is not None and bool(
-            getattr(state, "spatial_axes_explicit", False)
-        ):
+        if state is not None and bool(getattr(state, "spatial_axes_explicit", False)):
             spatial_count = sum(axis.type == "space" for axis in state.axes)
             if spatial_count:
                 return spatial_count
@@ -17949,34 +17842,6 @@ class VippWidget(QWidget):
         if self._active_pinned_node_id in affected:
             self._refresh_pinned_layer_if_active()
 
-    def _thumbnail_contrast_limits_for_node(
-        self,
-        node_id: str,
-        data,
-        state: ImageState | None,
-        contrast_mode: str,
-        contrast_scope: str,
-        data_kind: str,
-    ):
-        request = self._thumbnail_contrast_limit_request(
-            node_id,
-            data,
-            state,
-            contrast_mode,
-            contrast_scope,
-            data_kind,
-        )
-        if request is None:
-            return None
-        if request.key in self._thumbnail_contrast_limit_cache:
-            return self._thumbnail_contrast_limit_cache[request.key]
-        if request.key in self._thumbnail_contrast_failure_cache:
-            return None
-        if self._thumbnail_statistics_dispatch_blocked():
-            return None
-        self._queue_thumbnail_contrast_limit_request(request)
-        return None
-
     def _thumbnail_statistics_dispatch_blocked(self) -> bool:
         """Return whether a higher-priority owner forbids presentation work."""
 
@@ -17986,6 +17851,7 @@ class VippWidget(QWidget):
             self._closing
             or self._active_pipeline_run_id is not None
             or self._pipeline_run_pending
+            or self._debounce_timer.isActive()
             or self._active_source_load_id is not None
             or self._source_load_pending
             or self._collection_batch_running
@@ -18026,6 +17892,126 @@ class VippWidget(QWidget):
         except TypeError:
             return False
         return True
+
+    def _cache_resident_thumbnail_statistics(
+        self,
+        observation: ResidentThumbnailStatisticsObservation,
+        data,
+        state: ImageState | None,
+        output_port: int,
+    ) -> bool:
+        """Bind one host-only resident sidecar to its accepted ndarray identity."""
+
+        node_id = observation.node_id
+        if (
+            node_id not in self.pipeline.nodes
+            or int(observation.output_port) != int(output_port)
+            or self.preview_mode_combo.currentText().strip().casefold() == "off"
+            or node_id in self._preview_disabled_node_ids
+            or self.thumbnail_scope_combo.currentText()
+            .strip()
+            .casefold()
+            .startswith("slice")
+        ):
+            return False
+        contrast_mode = self.thumbnail_contrast_combo.currentText()
+        if contrast_mode.strip().casefold().replace(
+            "-", ""
+        ) != observation.contrast_mode.strip().casefold().replace("-", ""):
+            return False
+        try:
+            arr = np.asarray(data)
+        except Exception:
+            return False
+        result = observation.result
+        if (
+            arr.dtype != np.dtype(np.float32)
+            or int(getattr(result.decision, "scanned_values", -1)) != int(arr.size)
+            or int(getattr(result.decision, "scanned_bytes", -1)) != int(arr.nbytes)
+            or result.input_path != "resident_borrow"
+            or result.logical_input_host_to_device_bytes != 0
+        ):
+            return False
+        data_kind = self._node_output_type_for_payload(
+            node_id,
+            arr,
+            output_port,
+        )
+        if data_kind != "image":
+            return False
+        request = self._thumbnail_contrast_limit_request(
+            node_id,
+            arr,
+            state,
+            contrast_mode,
+            self.thumbnail_scope_combo.currentText(),
+            data_kind,
+        )
+        if request is None or not self._register_thumbnail_contrast_identity(request):
+            return False
+        try:
+            limits_shape = np.asarray(result.limits, dtype=np.float64).shape
+        except Exception:
+            return False
+        expected_limits_shape = (
+            (2,)
+            if request.channel_axis is None
+            else (int(arr.shape[request.channel_axis]), 2)
+        )
+        if limits_shape != expected_limits_shape:
+            return False
+        self._queued_thumbnail_contrast_limit_requests.pop(request.key, None)
+        self._pending_thumbnail_contrast_limit_keys.discard(request.key)
+        self._thumbnail_contrast_failure_cache.pop(request.key, None)
+        self._thumbnail_contrast_limit_cache[request.key] = result.limits
+        self._thumbnail_contrast_statistics_cache[request.key] = result
+        record_success = getattr(
+            self._thumbnail_statistics_engine,
+            "record_resident_gpu_success",
+            None,
+        )
+        if callable(record_success):
+            record_success(arr.dtype, contrast_mode)
+        self._trim_thumbnail_contrast_cache()
+        return True
+
+    def _cache_resident_thumbnail_statistics_from_node_result(
+        self,
+        result: PipelineNodeResult,
+    ) -> None:
+        if not result.resident_thumbnail_statistics:
+            return
+        preview_data, preview_state, output_port = (
+            self._node_display_payload_from_values(
+                result.node_id,
+                result.output,
+                result.output_state,
+                result.node_outputs,
+                result.node_output_states,
+            )
+        )
+        for observation in result.resident_thumbnail_statistics:
+            self._cache_resident_thumbnail_statistics(
+                observation,
+                preview_data,
+                preview_state,
+                output_port,
+            )
+
+    def _cache_resident_thumbnail_statistics_from_run_result(
+        self,
+        result: PipelineRunResult,
+    ) -> None:
+        for observation in result.resident_thumbnail_statistics:
+            preview_data, preview_state, output_port = self._node_display_payload(
+                observation.node_id
+            )
+            self._cache_resident_thumbnail_statistics(
+                observation,
+                preview_data,
+                preview_state,
+                output_port,
+            )
 
     def _thumbnail_contrast_identity_is_live(self, key: tuple) -> bool:
         identity_ref = self._thumbnail_contrast_identity_refs.get(key)
@@ -18148,6 +18134,29 @@ class VippWidget(QWidget):
         self._generated_layer_contrast_cache.clear()
         self._generated_layer_contrast_pending.clear()
         self._generated_layer_contrast_keys.clear()
+
+    def _preempt_thumbnail_statistics_for_scientific_edit(self) -> None:
+        """Stop presentation-only work as soon as scientific intent changes.
+
+        Parameter controls retain their normal debounce, so a drag still
+        coalesces into one scientific calculation.  Thumbnail statistics do
+        not need to consume that debounce window: their result belongs to the
+        previous scientific generation and cannot be published after the edit.
+        Do not mark a pipeline run pending here, because doing so would launch
+        before the debounce interval has finished.
+        """
+
+        run_id = self._active_thumbnail_contrast_run_id
+        active_is_current = (
+            run_id is not None
+            and run_id not in self._thumbnail_contrast_discarded_run_ids
+        )
+        if (
+            active_is_current
+            or self._queued_thumbnail_contrast_limit_requests
+            or (run_id is None and self._pending_thumbnail_contrast_limit_keys)
+        ):
+            self._discard_pending_thumbnail_contrast_limit_requests()
 
     def _discard_pending_thumbnail_contrast_limit_requests(self) -> None:
         unfinished_node_ids = {
@@ -18365,7 +18374,7 @@ class VippWidget(QWidget):
         self._set_pipeline_busy(True, None, cancelable=True)
         self.pipeline_cancel_button.setText("Cancel thumbnails")
         self.pipeline_cancel_button.setToolTip(
-            "Cancel presentation-only thumbnail statistics. Provisional "
+            "Cancel presentation-only thumbnail statistics. Previous complete "
             "thumbnails and scientific pipeline results will be retained."
         )
         self.pipeline_busy_label.setText(
@@ -18428,9 +18437,7 @@ class VippWidget(QWidget):
         if node_id in self.pipeline.nodes:
             title = self._node_title(node_id)
             backend_note = f" · {backend}" if backend else ""
-            node_note = (
-                f" ({node_index}/{node_total})" if node_total > 0 else ""
-            )
+            node_note = f" ({node_index}/{node_total})" if node_total > 0 else ""
             phase = f" · {message}" if message else ""
             self.pipeline_busy_label.setText(
                 f"Thumbnail stats: {title}{backend_note}{phase}{node_note}"
@@ -18510,21 +18517,34 @@ class VippWidget(QWidget):
                 actionable=True,
             )
         elif user_cancelled or (result.cancelled and not discarded):
+            for node_id in {
+                str(key[1])
+                for key in result.keys
+                if isinstance(key, tuple)
+                and len(key) > 1
+                and str(key[1]) in self.pipeline.nodes
+            }:
+                self.graph_view.set_thumbnail_pending(
+                    node_id,
+                    "Preview not updated",
+                    accessible_description=(
+                        "A complete thumbnail was not created because thumbnail "
+                        "contrast statistics were cancelled."
+                    ),
+                )
             self._set_status(
-                "Thumbnail statistics cancelled. Provisional thumbnails and "
-                "scientific pipeline results were retained.",
+                "Thumbnail statistics cancelled. Previous complete thumbnails "
+                "and scientific pipeline results were retained.",
                 severity=MessageSeverity.INFO,
             )
         elif discarded:
             pass
         elif result.errors or result.error:
             affected = self._thumbnail_statistics_node_summary(result.errors)
-            affected_note = (
-                f" Affected nodes: {affected}." if affected else ""
-            )
+            affected_note = f" Affected nodes: {affected}." if affected else ""
             self._set_status(
-                "Some thumbnail statistics could not be completed; provisional "
-                f"previews were retained.{affected_note} Select an affected "
+                "Some thumbnail statistics could not be completed; previous "
+                f"complete previews were retained.{affected_note} Select an affected "
                 "node and inspect Thumbnail contrast for details.",
                 severity=MessageSeverity.WARNING,
             )
@@ -18543,9 +18563,7 @@ class VippWidget(QWidget):
                         if isinstance(key, tuple) and len(key) > 1
                     }
                 ) or len(fallback_keys)
-                fallback_note = (
-                    f": {fallback_nodes}" if fallback_nodes else ""
-                )
+                fallback_note = f": {fallback_nodes}" if fallback_nodes else ""
                 self._set_status(
                     f"Thumbnail statistics used a visible CPU fallback for "
                     f"{fallback_count} node{'s' if fallback_count != 1 else ''}"
@@ -18555,17 +18573,7 @@ class VippWidget(QWidget):
                 )
         if not discarded and not result.cancelled and not self._closing:
             self._update_thumbnails()
-        if self._pipeline_run_pending and not self._closing:
-            pending = self._pending_collection_batch_start
-            if pending is not None:
-                dialog, _values = pending
-                self._cancel_pending_collection_batch_start(dialog, announce=False)
-                dialog.show_plan_refresh_required(
-                    "The queued full batch was cancelled because a newer "
-                    "scientific graph calculation is waiting to run."
-                )
-            QTimer.singleShot(0, self.run_pipeline)
-
+        if self._resume_pipeline_after_thumbnail_statistics_if_pending():
             return
         pending_batch = self._pending_collection_batch_start
         if pending_batch is not None:
@@ -18592,6 +18600,30 @@ class VippWidget(QWidget):
         if self._queued_thumbnail_contrast_limit_requests and not self._closing:
             QTimer.singleShot(0, self._start_thumbnail_contrast_limit_run)
 
+    def _resume_pipeline_after_thumbnail_statistics_if_pending(self) -> bool:
+        """Hand one cancelled presentation worker back to the newest edit."""
+
+        if not self._pipeline_run_pending or self._closing:
+            return False
+        pending = self._pending_collection_batch_start
+        if pending is not None:
+            dialog, _values = pending
+            self._cancel_pending_collection_batch_start(dialog, announce=False)
+            dialog.show_plan_refresh_required(
+                "The queued full batch was cancelled because a newer scientific "
+                "graph calculation is waiting to run."
+            )
+        # Consume the handoff before scheduling.  Leaving this flag set makes
+        # the resumed run look stale and can cause a redundant second run.
+        self._pipeline_run_pending = False
+        # A later slider/edit event may have restarted the debounce while the
+        # thumbnail worker was cleaning up.  Let that newest timer own dispatch
+        # rather than calculating an intermediate parameter value immediately.
+        if self._debounce_timer.isActive():
+            return True
+        QTimer.singleShot(0, self.run_pipeline)
+        return True
+
     def _thumbnail_statistics_node_summary(self, keys: Iterable[tuple]) -> str:
         """Return a compact, deterministic title list for result-key nodes."""
         node_ids = sorted(
@@ -18617,8 +18649,7 @@ class VippWidget(QWidget):
         if state is not None and len(state.axes) == arr.ndim:
             for index, axis in enumerate(state.axes):
                 if _axis_is_explicit(axis) and (
-                    axis.type == "channel"
-                    or axis.name.lower() in {"c", "rgb", "rgba"}
+                    axis.type == "channel" or axis.name.lower() in {"c", "rgb", "rgba"}
                 ):
                     return index
         return None
@@ -18667,24 +18698,6 @@ class VippWidget(QWidget):
         ):
             return False
         return True
-
-    def _provisional_thumbnail_contrast_limits(
-        self,
-        data,
-        state: ImageState | None,
-    ):
-        """Return scan-free limits while exact stack contrast is pending."""
-        if data is None:
-            return None
-        try:
-            arr = np.asarray(data)
-        except Exception:
-            return None
-        limits = _provisional_generated_layer_contrast_limits(arr)
-        channel_axis = self._thumbnail_channel_axis_for_contrast(arr, state)
-        if channel_axis is None:
-            return limits
-        return tuple(limits for _ in range(int(arr.shape[channel_axis])))
 
     def _contrast_parameter_bounds(self, node_id: str, spec) -> ParameterBounds:
         node = self.pipeline.nodes.get(node_id)
@@ -19748,7 +19761,7 @@ class VippWidget(QWidget):
             self._active_thumbnail_contrast_run_id is None
             and self._queued_thumbnail_contrast_limit_requests
         ):
-            self._discard_pending_thumbnail_contrast_limit_requests()
+            self._preempt_thumbnail_statistics_for_scientific_edit()
         optimizer_dialog = self._pipeline_optimizer_dialog
         if optimizer_dialog is not None and optimizer_dialog.running:
             self._pipeline_run_pending = True
@@ -19782,7 +19795,7 @@ class VippWidget(QWidget):
         if self._active_thumbnail_contrast_run_id is not None:
             self._pending_manual_node_ids.update(manual_node_ids)
             self._pipeline_run_pending = True
-            self._discard_pending_thumbnail_contrast_limit_requests()
+            self._preempt_thumbnail_statistics_for_scientific_edit()
             self.pipeline_busy_label.setText(
                 "Stopping thumbnail statistics before recalculating…"
             )
@@ -20482,12 +20495,8 @@ class VippWidget(QWidget):
             dirty_node_ids=(
                 frozenset(dirty_node_ids) if dirty_node_ids is not None else None
             ),
-            cached_outputs=(
-                dict(self.pipeline.outputs)
-            ),
-            cached_output_states=(
-                dict(self.pipeline.output_states)
-            ),
+            cached_outputs=(dict(self.pipeline.outputs)),
+            cached_output_states=(dict(self.pipeline.output_states)),
             cached_node_outputs=(
                 {
                     node_id: list(outputs)
@@ -20500,19 +20509,11 @@ class VippWidget(QWidget):
                     for node_id, states in self.pipeline.node_output_states.items()
                 }
             ),
-            cached_execution_states=(
-                dict(self.pipeline.node_execution_states)
-            ),
-            cached_execution_messages=(
-                dict(self.pipeline.node_execution_messages)
-            ),
-            cached_compute_provenance=(
-                dict(self.pipeline.node_compute_provenance)
-            ),
+            cached_execution_states=(dict(self.pipeline.node_execution_states)),
+            cached_execution_messages=(dict(self.pipeline.node_execution_messages)),
+            cached_compute_provenance=(dict(self.pipeline.node_compute_provenance)),
             completed_node_ids=frozenset(self.pipeline.completed_node_ids),
-            manual_node_ids=(
-                frozenset(manual_node_ids) if manual_node_ids else None
-            ),
+            manual_node_ids=(frozenset(manual_node_ids) if manual_node_ids else None),
             target_node_ids=(
                 frozenset(target_node_ids) if target_node_ids is not None else None
             ),
@@ -20536,6 +20537,12 @@ class VippWidget(QWidget):
                 exact_workload_qualification_scope_digest
             ),
             performance_history_path=default_pipeline_timing_history_path(),
+            resident_thumbnail_statistics_request=(
+                self._resident_thumbnail_statistics_request(
+                    runnable_node_ids,
+                    processing_node_id,
+                )
+            ),
         )
         self._active_pipeline_run_id = run_id
         if self._active_colocalization_scatter_run_id is not None:
@@ -20564,9 +20571,7 @@ class VippWidget(QWidget):
         self.status_label.setText(f"Processing '{title}' in background...")
         worker = PipelineRunWorker(request)
         worker.signals.node_started.connect(self._on_background_pipeline_node_started)
-        worker.signals.node_finished.connect(
-            self._on_background_pipeline_node_finished
-        )
+        worker.signals.node_finished.connect(self._on_background_pipeline_node_finished)
         worker.signals.progress.connect(self._on_background_pipeline_progress)
         worker.signals.finished.connect(self._on_background_pipeline_finished)
         completion_loop = None
@@ -20662,10 +20667,9 @@ class VippWidget(QWidget):
         if node is None or node.operation_id != result.operation_id:
             return
         pending_dirty = self._pending_dirty_node_ids & set(self.pipeline.nodes)
-        if (
-            self._pipeline_run_pending
-            and pending_dirty
-            and self._dirty_nodes_affect_node(pending_dirty, result.node_id)
+        if pending_dirty and self._dirty_nodes_affect_node(
+            pending_dirty,
+            result.node_id,
         ):
             return
 
@@ -20678,6 +20682,7 @@ class VippWidget(QWidget):
                 result.node_output_states,
             )
         )
+        self._cache_resident_thumbnail_statistics_from_node_result(result)
         self._update_node_thumbnail(
             result.node_id,
             preview_data,
@@ -20711,9 +20716,7 @@ class VippWidget(QWidget):
         """Resolve a detached run failure to the node that actually failed."""
 
         candidates = {
-            node_id
-            for node_id in runnable_node_ids
-            if node_id in self.pipeline.nodes
+            node_id for node_id in runnable_node_ids if node_id in self.pipeline.nodes
         }
         if result_pipeline is not None:
             if not candidates:
@@ -20732,8 +20735,7 @@ class VippWidget(QWidget):
                 ):
                     continue
                 failures[node_id] = (
-                    result_pipeline.node_execution_messages.get(node_id, "")
-                    or error
+                    result_pipeline.node_execution_messages.get(node_id, "") or error
                 )
             if failures:
                 return failures
@@ -20785,17 +20787,10 @@ class VippWidget(QWidget):
             source_signature,
             dirty_node_ids,
         ) = run_context[:5]
-        compute_request = (
-            run_context[5] if len(run_context) > 5 else ComputeRequest()
-        )
-        runnable_node_ids = (
-            run_context[6] if len(run_context) > 6 else frozenset()
-        )
+        compute_request = run_context[5] if len(run_context) > 5 else ComputeRequest()
+        runnable_node_ids = run_context[6] if len(run_context) > 6 else frozenset()
         cleanup_failed = bool(
-            (
-                result.failure is not None
-                and result.failure.cleanup_succeeded is False
-            )
+            (result.failure is not None and result.failure.cleanup_succeeded is False)
             or (
                 result.execution_report is not None
                 and not result.execution_report.cleanup_succeeded
@@ -20810,9 +20805,7 @@ class VippWidget(QWidget):
                 if self.pipeline.is_manual_node(node_id)
             )
             if inflight_manual_node_ids:
-                self.pipeline.mark_manual_descendants_stale(
-                    inflight_manual_node_ids
-                )
+                self.pipeline.mark_manual_descendants_stale(inflight_manual_node_ids)
             if cleanup_failed:
                 self._compute_runtime_quarantined_reason = (
                     "CPU/GPU cleanup failed after cancellation. Restart VIPP "
@@ -20865,18 +20858,14 @@ class VippWidget(QWidget):
                 if self.pipeline.is_manual_node(node_id)
             )
             if inflight_manual_node_ids:
-                self.pipeline.mark_manual_descendants_stale(
-                    inflight_manual_node_ids
-                )
+                self.pipeline.mark_manual_descendants_stale(inflight_manual_node_ids)
             if result.error:
-                for node_id, message in (
-                    self._background_pipeline_failure_messages(
-                        result.pipeline,
-                        runnable_node_ids,
-                        processing_node_id,
-                        result.error,
-                    ).items()
-                ):
+                for node_id, message in self._background_pipeline_failure_messages(
+                    result.pipeline,
+                    runnable_node_ids,
+                    processing_node_id,
+                    result.error,
+                ).items():
                     self.pipeline.set_node_execution_error(node_id, message)
             self._compute_runtime_quarantined_reason = (
                 "CPU/GPU cleanup failed. Restart VIPP before changing compute "
@@ -20964,9 +20953,7 @@ class VippWidget(QWidget):
                 if self.pipeline.is_manual_node(node_id)
             )
             if inflight_manual_node_ids:
-                self.pipeline.mark_manual_descendants_stale(
-                    inflight_manual_node_ids
-                )
+                self.pipeline.mark_manual_descendants_stale(inflight_manual_node_ids)
             self._set_pipeline_busy(False)
             self.status_label.setText("Background processing canceled.")
             self._show_interactive_collection_batch_preview_error(
@@ -21005,8 +20992,7 @@ class VippWidget(QWidget):
                         if (
                             live_node is not None
                             and result_node is not None
-                            and live_node.operation_id
-                            == result_node.operation_id
+                            and live_node.operation_id == result_node.operation_id
                         ):
                             # Preparation may resolve authoritative UI values
                             # (notably Costes thresholds) before the scientific
@@ -21018,18 +21004,14 @@ class VippWidget(QWidget):
                     unfinished_runnable & set(self.pipeline.nodes)
                 )
                 unfinished_manual = inflight_manual_node_ids - completed
-                failed_branches = self.pipeline.descendants_inclusive(
-                    failure_messages
-                )
+                failed_branches = self.pipeline.descendants_inclusive(failure_messages)
                 self._pending_manual_node_ids.update(
                     node_id
                     for node_id in unfinished_manual - failed_branches
                     if self.pipeline.is_manual_node(node_id)
                 )
                 if unfinished_manual:
-                    self.pipeline.mark_manual_descendants_stale(
-                        unfinished_manual
-                    )
+                    self.pipeline.mark_manual_descendants_stale(unfinished_manual)
                 partial_report = replace(
                     result.execution_report,
                     actual_decisions=tuple(
@@ -21122,6 +21104,7 @@ class VippWidget(QWidget):
                 and not self._interactive_collection_source_paths
             ),
         )
+        self._cache_resident_thumbnail_statistics_from_run_result(result)
         if result.execution_report is not None:
             self._accept_execution_report(result.execution_report)
         else:
@@ -21308,8 +21291,8 @@ class VippWidget(QWidget):
                     result_pipeline.nodes[node_id].params
                 )
             self.pipeline.outputs[node_id] = result_pipeline.outputs.get(node_id)
-            self.pipeline.output_states[node_id] = (
-                result_pipeline.output_states.get(node_id)
+            self.pipeline.output_states[node_id] = result_pipeline.output_states.get(
+                node_id
             )
             self.pipeline.node_outputs[node_id] = list(
                 result_pipeline.node_outputs.get(node_id, [])
@@ -21372,7 +21355,7 @@ class VippWidget(QWidget):
             "Stopping thumbnail statistics; cleaning up resources…"
         )
         self._set_status(
-            "Thumbnail cancellation requested. Provisional thumbnails and "
+            "Thumbnail cancellation requested. Previous complete thumbnails and "
             "scientific pipeline results are retained; controls remain locked "
             "until CPU/GPU resources are released.",
             severity=MessageSeverity.INFO,
@@ -21526,9 +21509,7 @@ class VippWidget(QWidget):
             )
             if state is not None and data is not None and not is_table_data(data):
                 return state
-        data, state, _output_port = self._node_display_payload(
-            self._selected_node_id
-        )
+        data, state, _output_port = self._node_display_payload(self._selected_node_id)
         if state is not None and data is not None and not is_table_data(data):
             return state
         data = self.pipeline.outputs.get("input")
@@ -21737,10 +21718,11 @@ class VippWidget(QWidget):
             return
         self._thumbnail_statistics_policy = save_thumbnail_statistics_policy(policy)
         self._thumbnail_statistics_engine.reset_accelerator_capability()
-        had_failures = bool(self._thumbnail_contrast_failure_cache)
         self._thumbnail_contrast_failure_cache.clear()
-        if had_failures:
-            self._update_thumbnails()
+        # Exact numeric limits remain reusable, but their producer policy must
+        # be presented as cached history rather than a fresh decision under the
+        # newly selected policy.
+        self._update_thumbnails()
         self._set_status(
             f"Thumbnail statistics set to {policy.label}. Existing exact limits "
             "remain cached, and the selected node's Thumbnail contrast inspector "
@@ -21752,14 +21734,12 @@ class VippWidget(QWidget):
     def _effective_thumbnail_statistics_compute_mode(self) -> ComputeMode:
         if (
             self._compute_runtime_quarantined_reason
-            or
-            self._compute_mode is ComputeMode.CPU
+            or self._compute_mode is ComputeMode.CPU
             or self._thumbnail_statistics_policy is ThumbnailStatisticsPolicy.CPU
         ):
             return ComputeMode.CPU
         if (
-            self._thumbnail_statistics_policy
-            is ThumbnailStatisticsPolicy.PREFER_GPU
+            self._thumbnail_statistics_policy is ThumbnailStatisticsPolicy.PREFER_GPU
             or (
                 self._thumbnail_statistics_policy is ThumbnailStatisticsPolicy.AUTO
                 and self._compute_mode is ComputeMode.PREFER_GPU
@@ -21767,6 +21747,88 @@ class VippWidget(QWidget):
         ):
             return ComputeMode.PREFER_GPU
         return ComputeMode.AUTO
+
+    def _resident_thumbnail_statistics_request(
+        self,
+        runnable_node_ids: Iterable[str],
+        processing_node_id: str | None,
+    ) -> ResidentThumbnailStatisticsRequest | None:
+        """Request one warm, large, currently useful resident preview scan.
+
+        The in-scope scan is deliberately singular.  It removes a material
+        full-image upload for the card the user is actively tuning without
+        delaying scientific publication to calculate every changed card.
+        Cold kernels, small outputs, CPU policy, and all other cards retain the
+        established asynchronous and pre-emptible worker path.
+        """
+
+        if (
+            self.preview_mode_combo.currentText().strip().casefold() == "off"
+            or self.thumbnail_scope_combo.currentText()
+            .strip()
+            .casefold()
+            .startswith("slice")
+            or self._effective_thumbnail_statistics_compute_mode()
+            is not ComputeMode.PREFER_GPU
+        ):
+            return None
+        contrast_mode = self.thumbnail_contrast_combo.currentText()
+        normalized_mode = contrast_mode.strip().casefold().replace("-", "")
+        if normalized_mode not in {"percentile", "minmax"}:
+            return None
+        warm_check = getattr(
+            self._thumbnail_statistics_engine,
+            "gpu_contract_is_warm",
+            None,
+        )
+        if not callable(warm_check) or not warm_check(
+            np.dtype(np.float32),
+            contrast_mode,
+        ):
+            return None
+
+        runnable = set(runnable_node_ids) & set(self.pipeline.nodes)
+        retained = set(self._cache_retention_node_ids())
+        candidates = tuple(
+            dict.fromkeys(
+                node_id
+                for node_id in (
+                    self._selected_node_id,
+                    processing_node_id,
+                )
+                if node_id
+            )
+        )
+        for node_id in candidates:
+            spec = self.pipeline.operation_spec(
+                self.pipeline.nodes[node_id].operation_id
+            )
+            if (
+                node_id not in runnable
+                or node_id not in retained
+                or node_id in self._preview_disabled_node_ids
+                or not spec.has_input
+            ):
+                continue
+            output_count = len(self.pipeline.output_ports(node_id))
+            if output_count < 1:
+                continue
+            output_port = self._split_channel_display_port(node_id, output_count)
+            ports = self.pipeline.output_ports(node_id)
+            if output_port >= len(ports) or ports[output_port].output_type not in {
+                "image",
+                "array",
+                "any",
+            }:
+                continue
+            return ResidentThumbnailStatisticsRequest(
+                node_id=node_id,
+                output_port=output_port,
+                contrast_mode=contrast_mode,
+                minimum_scanned_bytes=RESIDENT_THUMBNAIL_MIN_BYTES,
+                gpu_contract_warm=True,
+            )
+        return None
 
     def _update_thumbnails(self) -> None:
         for node_id, data in self.pipeline.outputs.items():
@@ -21788,6 +21850,32 @@ class VippWidget(QWidget):
             self._clear_active_pin(status=False)
         else:
             self._sync_pin_ui()
+
+    def _refresh_current_thumbnail_statistics_presentations(self) -> None:
+        """Relabel cached limits after policy changes without starting new work."""
+
+        contrast_mode = self.thumbnail_contrast_combo.currentText()
+        contrast_scope = self.thumbnail_scope_combo.currentText()
+        for node_id, data in self.pipeline.outputs.items():
+            if not self.graph_view.node_has_thumbnail(node_id):
+                continue
+            preview_data, preview_state, output_port = self._node_display_payload(
+                node_id,
+                data,
+            )
+            data_kind = self._node_output_type_for_payload(
+                node_id,
+                preview_data,
+                output_port,
+            )
+            self._sync_node_thumbnail_statistics_presentation(
+                node_id,
+                preview_data,
+                preview_state,
+                contrast_mode,
+                contrast_scope,
+                data_kind,
+            )
 
     def _update_node_thumbnail(
         self,
@@ -21828,9 +21916,11 @@ class VippWidget(QWidget):
             self._clear_node_thumbnail_statistics_presentation(node_id)
             return
 
+        stack_scope = not str(contrast_scope).strip().lower().startswith("slice")
         contrast_limits = None
-        if queue_stack_contrast:
-            contrast_limits = self._thumbnail_contrast_limits_for_node(
+        stack_request = None
+        if stack_scope:
+            stack_request = self._thumbnail_contrast_limit_request(
                 node_id,
                 preview_data,
                 preview_state,
@@ -21838,17 +21928,47 @@ class VippWidget(QWidget):
                 contrast_scope,
                 node_output_type,
             )
-        stack_scope = not str(contrast_scope).strip().lower().startswith("slice")
-        if stack_scope and contrast_limits is None:
-            # Incremental results deliberately skip an exact full-stack display
-            # scan. The final graph publication queues that presentation-only
-            # work; dtype limits keep this first thumbnail immediate.
-            contrast_limits = self._provisional_thumbnail_contrast_limits(
-                preview_data,
-                preview_state,
-            )
-        effective_scope_is_slice = str(contrast_scope).strip().lower().startswith(
-            "slice"
+        if stack_request is not None:
+            if stack_request.key in self._thumbnail_contrast_limit_cache:
+                contrast_limits = self._thumbnail_contrast_limit_cache[
+                    stack_request.key
+                ]
+            else:
+                failure = self._thumbnail_contrast_failure_cache.get(
+                    stack_request.key,
+                    "",
+                )
+                if (
+                    queue_stack_contrast
+                    and not failure
+                    and not self._thumbnail_statistics_dispatch_blocked()
+                ):
+                    self._queue_thumbnail_contrast_limit_request(stack_request)
+                self.graph_view.set_thumbnail_pending(
+                    node_id,
+                    "Preview unavailable" if failure else "Calculating preview…",
+                    accessible_description=(
+                        "A complete thumbnail is unavailable because exact "
+                        f"thumbnail contrast statistics failed. Reason: {failure}"
+                        if failure
+                        else ""
+                    ),
+                )
+                # Keep the previous complete pixmap byte-for-byte intact. The
+                # final statistics callback calls _update_thumbnails(), which
+                # renders off-screen and swaps the new pixmap only after exact
+                # limits for the current output identity are cached.
+                self._sync_node_thumbnail_statistics_presentation(
+                    node_id,
+                    preview_data,
+                    preview_state,
+                    contrast_mode,
+                    contrast_scope,
+                    node_output_type,
+                )
+                return
+        effective_scope_is_slice = (
+            str(contrast_scope).strip().lower().startswith("slice")
         )
         preview_consumes_contrast = self._thumbnail_preview_consumes_contrast(
             node_id,
@@ -21918,6 +22038,10 @@ class VippWidget(QWidget):
             self._set_node_thumbnail_statistics_presentation(
                 node_id,
                 ThumbnailStatsBadgeKind.CPU,
+                summary=(
+                    "Thumbnail contrast used CPU for this slice; scientific node "
+                    "processing is shown separately."
+                ),
                 detail=detail,
                 accessible_description=detail,
             )
@@ -21943,6 +22067,10 @@ class VippWidget(QWidget):
             self._set_node_thumbnail_statistics_presentation(
                 node_id,
                 ThumbnailStatsBadgeKind.CPU,
+                summary=(
+                    "Thumbnail contrast needs no full-stack statistics scan for "
+                    "this preview."
+                ),
                 detail=detail,
                 accessible_description=detail,
             )
@@ -21955,7 +22083,7 @@ class VippWidget(QWidget):
                 common
                 + [
                     "Exact full-stack statistics could not be completed; the "
-                    "scan-free provisional thumbnail was retained.",
+                    "previous complete thumbnail was retained.",
                     f"Reason: {failure}",
                     "Change the thumbnail statistics policy to retry, or use "
                     "Slice contrast to avoid a full-stack scan.",
@@ -21966,19 +22094,16 @@ class VippWidget(QWidget):
             self._set_node_thumbnail_statistics_presentation(
                 node_id,
                 ThumbnailStatsBadgeKind.ERROR,
+                summary=THUMBNAIL_STATS_DEFAULT_SUMMARIES[
+                    ThumbnailStatsBadgeKind.ERROR
+                ],
                 detail=detail,
                 accessible_description=detail,
             )
             return
         if result is None:
-            if self._thumbnail_statistics_dispatch_blocked():
-                self._clear_node_thumbnail_statistics_presentation(node_id)
-                return
             effective = self._effective_thumbnail_statistics_compute_mode()
-            policy_label = {
-                ComputeMode.CPU: "CPU",
-                ComputeMode.PREFER_GPU: "Prefer GPU",
-            }.get(effective, "Auto")
+            policy_label = _thumbnail_compute_mode_label(effective)
             percentile_note = ""
             if str(contrast_mode).strip().casefold() == "percentile":
                 low, high = THUMBNAIL_PERCENTILE_RANGE
@@ -21996,6 +22121,9 @@ class VippWidget(QWidget):
             self._set_node_thumbnail_statistics_presentation(
                 node_id,
                 ThumbnailStatsBadgeKind.PENDING,
+                summary=THUMBNAIL_STATS_DEFAULT_SUMMARIES[
+                    ThumbnailStatsBadgeKind.PENDING
+                ],
                 detail=detail,
                 accessible_description=detail,
             )
@@ -22009,14 +22137,24 @@ class VippWidget(QWidget):
         runtime_id = str(getattr(result, "runtime_id", "") or "")
         device_id = str(getattr(result, "device_id", "") or "")
         used_gpu = "gpu" in backend_value or "cupy" in backend_value
+        fallback_reason_code = str(getattr(result, "fallback_reason_code", "") or "")
         fallback_message = str(getattr(result, "fallback_message", "") or "")
+        effective_mode = self._effective_thumbnail_statistics_compute_mode()
+        producer_mode = ComputeMode.parse(
+            getattr(result, "requested_compute_mode", ComputeMode.AUTO)
+        )
+        cached_policy_mismatch = producer_mode is not effective_mode
         badge_kind = (
-            ThumbnailStatsBadgeKind.CPU_FALLBACK
-            if fallback_message
+            ThumbnailStatsBadgeKind.CPU
+            if cached_policy_mismatch and not used_gpu
             else (
-                ThumbnailStatsBadgeKind.GPU
-                if used_gpu
-                else ThumbnailStatsBadgeKind.CPU
+                ThumbnailStatsBadgeKind.CPU_FALLBACK
+                if fallback_message
+                else (
+                    ThumbnailStatsBadgeKind.GPU
+                    if used_gpu
+                    else ThumbnailStatsBadgeKind.CPU
+                )
             )
         )
         backend_label = "GPU · CuPy" if used_gpu else "CPU · NumPy"
@@ -22030,13 +22168,26 @@ class VippWidget(QWidget):
         )
         reason = str(getattr(decision, "reason", "") or "")
         reason_code = str(getattr(decision, "reason_code", "") or "")
+        normalized_reason = " ".join(reason.split()).rstrip(".").casefold()
+        normalized_fallback = " ".join(fallback_message.split()).rstrip(".").casefold()
+        duplicate_fallback_reason = bool(
+            fallback_message and normalized_fallback == normalized_reason
+        )
         details = common + [
             f"Statistics: {backend_label}; {algorithm_label}.",
             f"Processed {_format_byte_count(scanned_bytes)} in {elapsed:.3f} s; "
             "exact limits cached.",
         ]
-        if reason:
+        if reason and not duplicate_fallback_reason:
             details.append(f"Selection: {reason}")
+        if cached_policy_mismatch:
+            details.append(
+                "Cached producer policy: "
+                f"{_thumbnail_compute_mode_label(producer_mode)}; current policy: "
+                f"{_thumbnail_compute_mode_label(effective_mode)}. Exact numeric "
+                "limits were reused without presenting the old backend as a new "
+                "selection."
+            )
         if host_staging_bytes and (
             used_gpu
             or bool(fallback_message)
@@ -22055,11 +22206,54 @@ class VippWidget(QWidget):
                 details.append(f"Runtime: {runtime_id}.")
             if device_id:
                 details.append(f"Device: {device_id}.")
+            input_path = str(getattr(result, "input_path", "") or "")
+            logical_h2d_bytes = max(
+                int(
+                    getattr(
+                        result,
+                        "logical_input_host_to_device_bytes",
+                        0,
+                    )
+                    or 0
+                ),
+                0,
+            )
+            auxiliary_h2d_bytes = max(
+                int(getattr(result, "auxiliary_host_to_device_bytes", 0) or 0),
+                0,
+            )
+            d2h_bytes = max(
+                int(getattr(result, "device_to_host_bytes", 0) or 0),
+                0,
+            )
+            d2h_values = max(
+                int(getattr(result, "device_to_host_values", 0) or 0),
+                0,
+            )
+            if input_path == "host_upload":
+                details.append(
+                    "Input path: host upload; logical H2D "
+                    f"{_format_byte_count(logical_h2d_bytes)}."
+                )
+            elif input_path == "resident_borrow":
+                details.append(
+                    "Input path: borrowed resident GPU output; no logical input upload."
+                )
+            if auxiliary_h2d_bytes or d2h_bytes or d2h_values:
+                details.append(
+                    "Statistics metadata transfers: auxiliary H2D "
+                    f"{_format_byte_count(auxiliary_h2d_bytes)}; D2H "
+                    f"{_format_byte_count(d2h_bytes)} across {d2h_values} values."
+                )
         threshold_bytes = max(
             int(getattr(decision, "threshold_bytes", 0) or 0),
             0,
         )
-        if threshold_bytes:
+        if threshold_bytes and reason_code in {
+            "auto_below_cold_gpu_threshold",
+            "auto_below_warm_gpu_threshold",
+            "auto_gpu_threshold_met",
+        }:
             details.append(
                 "Auto GPU crossover for this session state: "
                 f"{_format_byte_count(threshold_bytes)}."
@@ -22074,9 +22268,33 @@ class VippWidget(QWidget):
             "This does not affect pipeline data or scientific compute provenance."
         )
         detail = "\n".join(details)
+        if cached_policy_mismatch:
+            summary = (
+                f"Cached thumbnail contrast used {('GPU' if used_gpu else 'CPU')} "
+                f"under {_thumbnail_compute_mode_label(producer_mode)}; new statistics "
+                f"use {_thumbnail_compute_mode_label(effective_mode)}."
+            )
+        elif fallback_message:
+            summary = _thumbnail_fallback_status_summary(fallback_reason_code)
+        elif used_gpu:
+            summary = THUMBNAIL_STATS_DEFAULT_SUMMARIES[ThumbnailStatsBadgeKind.GPU]
+        elif reason_code in {
+            "auto_below_cold_gpu_threshold",
+            "auto_below_warm_gpu_threshold",
+        }:
+            summary = (
+                "Thumbnail contrast used CPU because this preview is faster to "
+                "process there."
+            )
+        elif reason_code == "auto_noncontiguous_host_staging":
+            summary = "Thumbnail contrast used CPU to avoid an extra data copy."
+        else:
+            summary = THUMBNAIL_STATS_DEFAULT_SUMMARIES[ThumbnailStatsBadgeKind.CPU]
+        summary = _cached_thumbnail_status_summary(summary)
         self._set_node_thumbnail_statistics_presentation(
             node_id,
             badge_kind,
+            summary=summary,
             detail=detail,
             accessible_description=detail,
         )
@@ -22112,9 +22330,7 @@ class VippWidget(QWidget):
         if self._selected_node_id not in self.pipeline.nodes:
             self._clear_empty_inspector()
             return
-        _data, state, _output_port = self._node_display_payload(
-            self._selected_node_id
-        )
+        _data, state, _output_port = self._node_display_payload(self._selected_node_id)
         rows = metadata_table_rows(state)
         current_view = self._current_view_label(state)
         if current_view:
@@ -22184,9 +22400,7 @@ class VippWidget(QWidget):
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             self.histogram_plot.set_histogram(None, log_scale=False)
             return
-        data, state, output_port = self._node_display_payload(
-            self._selected_node_id
-        )
+        data, state, output_port = self._node_display_payload(self._selected_node_id)
         if is_table_data(data):
             self._current_output_histogram_key = None
             self._pending_output_histogram_request = None
@@ -22250,9 +22464,7 @@ class VippWidget(QWidget):
             total_values=(
                 int(histogram_source[0].size) if histogram_source is not None else 0
             ),
-            finite_values=(
-                int(np.asarray(counts).sum()) if counts is not None else 0
-            ),
+            finite_values=(int(np.asarray(counts).sum()) if counts is not None else 0),
             display_bins=(
                 int(np.asarray(counts).shape[-1]) if counts is not None else 0
             ),
@@ -22285,8 +22497,7 @@ class VippWidget(QWidget):
     def _update_colocalization_scatter(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
         visible = (
-            node is not None
-            and node.operation_id in COLOCALIZATION_SCATTER_OPERATIONS
+            node is not None and node.operation_id in COLOCALIZATION_SCATTER_OPERATIONS
         )
         self.colocalization_scatter_group.setHidden(not visible)
         if not visible or node is None:
@@ -22412,14 +22623,12 @@ class VippWidget(QWidget):
                     range_percentile=range_percentile,
                 )
             else:
-                roi_voxels, coloc_voxels = (
-                    _count_colocalization_scatter_thresholds(
-                        ch1,
-                        ch2,
-                        threshold_1=threshold_1,
-                        threshold_2=threshold_2,
-                        roi_mask=roi_mask,
-                    )
+                roi_voxels, coloc_voxels = _count_colocalization_scatter_thresholds(
+                    ch1,
+                    ch2,
+                    threshold_1=threshold_1,
+                    threshold_2=threshold_2,
+                    roi_mask=roi_mask,
                 )
                 density_counts = reusable.density_counts
                 channel_1_min = reusable.channel_1_min
@@ -22529,8 +22738,10 @@ class VippWidget(QWidget):
         intensity_max: float,
     ) -> tuple[float, float] | None:
         """Reuse persisted Costes cutoffs from a compatible READY sibling."""
-        if not str(node.params.get("threshold_mode", "Manual")).lower().startswith(
-            "costes"
+        if (
+            not str(node.params.get("threshold_mode", "Manual"))
+            .lower()
+            .startswith("costes")
         ):
             return None
         identities = self._colocalization_scatter_input_identities(inputs)
@@ -22580,9 +22791,7 @@ class VippWidget(QWidget):
             "masked_colocalization_scatter_plot",
         }:
             return COLOCALIZATION_SCATTER_BINS, 100.0
-        requested_bins = int(
-            np.clip(int(node.params.get("bins", 128)), 32, 4_096)
-        )
+        requested_bins = int(np.clip(int(node.params.get("bins", 128)), 32, 4_096))
         bins = colocalization_scatter_inspector_bins(requested_bins)
         percentile = float(
             np.clip(float(node.params.get("range_percentile", 100.0)), 50.0, 100.0)
@@ -22597,9 +22806,7 @@ class VippWidget(QWidget):
             "masked_colocalization_scatter_plot",
         }:
             return ""
-        requested_bins = int(
-            np.clip(int(node.params.get("bins", bins)), 32, 4_096)
-        )
+        requested_bins = int(np.clip(int(node.params.get("bins", bins)), 32, 4_096))
         if requested_bins <= int(bins):
             return ""
         return (
@@ -22801,9 +23008,7 @@ class VippWidget(QWidget):
             > COLOCALIZATION_SCATTER_CACHE_BUDGET_BYTES
             and self._colocalization_scatter_density_cache
         ):
-            oldest_density_key = next(
-                iter(self._colocalization_scatter_density_cache)
-            )
+            oldest_density_key = next(iter(self._colocalization_scatter_density_cache))
             self._colocalization_scatter_density_cache.pop(oldest_density_key)
             self._colocalization_scatter_cache = {
                 key: cached
@@ -22844,10 +23049,7 @@ class VippWidget(QWidget):
             self._selected_node_id,
         )
         node = self.pipeline.nodes.get(result.node_id)
-        if (
-            node is None
-            or node.operation_id not in COLOCALIZATION_SCATTER_OPERATIONS
-        ):
+        if node is None or node.operation_id not in COLOCALIZATION_SCATTER_OPERATIONS:
             return
         if result.error:
             message = f"Scatter unavailable: {result.error}"
@@ -22862,9 +23064,7 @@ class VippWidget(QWidget):
             return
         if (
             str(result.threshold_mode).lower().startswith("costes")
-            and str(node.params.get("threshold_mode", "")).lower().startswith(
-                "costes"
-            )
+            and str(node.params.get("threshold_mode", "")).lower().startswith("costes")
             and self._active_pipeline_run_id is None
         ):
             for name, value in (
@@ -22874,9 +23074,7 @@ class VippWidget(QWidget):
                 node.params[name] = float(value)
                 self._set_parameter_control_value(node.id, name, float(value))
 
-        visible_voxels = int(
-            np.rint(float(np.sum(np.asarray(result.density_counts))))
-        )
+        visible_voxels = int(np.rint(float(np.sum(np.asarray(result.density_counts)))))
         dropped_voxels = max(int(result.roi_voxels) - visible_voxels, 0)
         density_is_clipped = result.range_percentile < 100.0 or dropped_voxels > 0
         if density_is_clipped:
@@ -22934,9 +23132,7 @@ class VippWidget(QWidget):
             log_counts=self.colocalization_scatter_log_checkbox.isChecked(),
             summary=f"Exact: {count_detail}",
         )
-        self._displayed_colocalization_scatter_density_key = (
-            result.density_key or None
-        )
+        self._displayed_colocalization_scatter_density_key = result.density_key or None
         self.colocalization_scatter_popout_button.setEnabled(
             result.density_counts is not None
         )
@@ -23098,9 +23294,7 @@ class VippWidget(QWidget):
         if node is None or node.operation_id not in COLOCALIZATION_THRESHOLD_OPERATIONS:
             return
         name = (
-            "channel_1_threshold"
-            if int(channel_index) == 1
-            else "channel_2_threshold"
+            "channel_1_threshold" if int(channel_index) == 1 else "channel_2_threshold"
         )
         value = float(np.round(float(value), 2))
         changed = False
@@ -23134,28 +23328,20 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return
-        if (
-            node.operation_id == "clip_intensity"
-            and not str(node.params.get("cutoff_mode", "Data range"))
-            .lower()
-            .startswith("value")
-        ):
+        if node.operation_id == "clip_intensity" and not str(
+            node.params.get("cutoff_mode", "Data range")
+        ).lower().startswith("value"):
             return
         name = _input_histogram_marker_parameter(node.operation_id, label)
         if name is None:
             return
         switched_rescale_mode = False
-        if (
-            node.operation_id == "rescale_intensity"
-            and not str(
-                node.params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
-            ).lower().startswith("value")
-        ):
-            switched_rescale_mode = (
-                self._switch_rescale_histogram_to_value_cutoffs(
-                    node_id,
-                    history_name=name,
-                )
+        if node.operation_id == "rescale_intensity" and not str(
+            node.params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
+        ).lower().startswith("value"):
+            switched_rescale_mode = self._switch_rescale_histogram_to_value_cutoffs(
+                node_id,
+                history_name=name,
             )
             if not switched_rescale_mode:
                 return
@@ -23395,9 +23581,7 @@ class VippWidget(QWidget):
             x_range=x_range,
             colors=colors,
             total_values=int(source[0].size) if source is not None else 0,
-            finite_values=(
-                int(np.asarray(counts).sum()) if counts is not None else 0
-            ),
+            finite_values=(int(np.asarray(counts).sum()) if counts is not None else 0),
             display_bins=(
                 int(np.asarray(counts).shape[-1]) if counts is not None else 0
             ),
@@ -23466,14 +23650,14 @@ class VippWidget(QWidget):
         if operation_id == "minimum_threshold":
             return True
         if operation_id == "rescale_intensity":
-            percentile_mode = str(
-                params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
-            ).casefold() == "percentiles"
+            percentile_mode = (
+                str(params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")).casefold()
+                == "percentiles"
+            )
             return percentile_mode and _should_auto_background_data(data)
         if operation_id == "clip_intensity":
             data_range_mode = (
-                str(params.get("cutoff_mode", "Data range")).casefold()
-                == "data range"
+                str(params.get("cutoff_mode", "Data range")).casefold() == "data range"
             )
             return data_range_mode and _should_auto_background_data(data)
         return (
@@ -23667,11 +23851,7 @@ class VippWidget(QWidget):
             state,
             scope,
             tuple(current_step) if current_step is not None else None,
-            (
-                tuple(current_step_nsteps)
-                if current_step_nsteps is not None
-                else None
-            ),
+            (tuple(current_step_nsteps) if current_step_nsteps is not None else None),
             deepcopy(params),
             title,
             distribution_key=distribution_key,
@@ -23845,11 +24025,7 @@ class VippWidget(QWidget):
             state,
             scope,
             tuple(current_step) if current_step is not None else None,
-            (
-                tuple(current_step_nsteps)
-                if current_step_nsteps is not None
-                else None
-            ),
+            (tuple(current_step_nsteps) if current_step_nsteps is not None else None),
             {},
             title,
         )
@@ -23886,7 +24062,9 @@ class VippWidget(QWidget):
         if not result.error:
             self._output_histogram_cache[result.key] = result
             while len(self._output_histogram_cache) > 16:
-                self._output_histogram_cache.pop(next(iter(self._output_histogram_cache)))
+                self._output_histogram_cache.pop(
+                    next(iter(self._output_histogram_cache))
+                )
         if (
             result.key == self._current_output_histogram_key
             and result.node_id == self._selected_node_id
@@ -23922,9 +24100,7 @@ class VippWidget(QWidget):
         )
 
     def _update_table_preview(self) -> None:
-        data, _state, _output_port = self._node_display_payload(
-            self._selected_node_id
-        )
+        data, _state, _output_port = self._node_display_payload(self._selected_node_id)
         if not is_table_data(data):
             self.table_group.setHidden(True)
             self.table_preview.setRowCount(0)
@@ -24196,9 +24372,7 @@ class VippWidget(QWidget):
         self.status_label.setText(f"Inspecting '{title}' in napari.")
 
     def _inspect_selected_node(self) -> None:
-        data, _state, _output_port = self._node_display_payload(
-            self._selected_node_id
-        )
+        data, _state, _output_port = self._node_display_payload(self._selected_node_id)
         if data is not None and not is_table_data(data):
             self.inspect_node(self._selected_node_id)
             return
@@ -24576,9 +24750,10 @@ class VippWidget(QWidget):
             base_layer = None
             for candidate in list(self.viewer.layers):
                 try:
-                    if (
-                        candidate.metadata.get("napari_vipp_kind") == "inspect"
-                        and not candidate.metadata.get("display_rgb_as_channels")
+                    if candidate.metadata.get(
+                        "napari_vipp_kind"
+                    ) == "inspect" and not candidate.metadata.get(
+                        "display_rgb_as_channels"
                     ):
                         base_layer = candidate
                         base_is_owned_scalar = True
@@ -24609,9 +24784,7 @@ class VippWidget(QWidget):
                     if (
                         candidate_metadata.get("napari_vipp_kind")
                         == metadata.get("napari_vipp_kind")
-                        and int(
-                            candidate_metadata.get("display_rgb_channel_index", -1)
-                        )
+                        and int(candidate_metadata.get("display_rgb_channel_index", -1))
                         == index
                     ):
                         layer = candidate
@@ -24774,10 +24947,9 @@ class VippWidget(QWidget):
             for candidate in list(self.viewer.layers):
                 try:
                     metadata = candidate.metadata
-                    if (
-                        metadata.get("napari_vipp_kind") == "inspect"
-                        and not metadata.get("display_rgb_as_channels")
-                    ):
+                    if metadata.get(
+                        "napari_vipp_kind"
+                    ) == "inspect" and not metadata.get("display_rgb_as_channels"):
                         return [candidate]
                 except Exception:
                     continue
@@ -25560,21 +25732,16 @@ class VippWidget(QWidget):
         button = getattr(self, "reset_inspect_display_button", None)
         if button is None:
             return
-        data, _state, output_port = self._node_display_payload(
-            self._selected_node_id
-        )
+        data, _state, output_port = self._node_display_payload(self._selected_node_id)
         matching_layer = False
         if data is not None and not is_table_data(data):
-            for layer in self._generated_layers_for_name(
-                self._inspect_layer_name
-            ):
+            for layer in self._generated_layers_for_name(self._inspect_layer_name):
                 try:
                     metadata = layer.metadata
                     if (
                         metadata.get("napari_vipp_kind") == "inspect"
                         and metadata.get("node_id") == self._selected_node_id
-                        and int(metadata.get("output_port", 0) or 0)
-                        == int(output_port)
+                        and int(metadata.get("output_port", 0) or 0) == int(output_port)
                     ):
                         matching_layer = True
                         break
@@ -25588,6 +25755,7 @@ class VippWidget(QWidget):
         node_id: str,
         kind: ThumbnailStatsBadgeKind,
         *,
+        summary: str = "",
         detail: str = "",
         accessible_description: str = "",
     ) -> None:
@@ -25597,24 +25765,23 @@ class VippWidget(QWidget):
             return
         if not isinstance(kind, ThumbnailStatsBadgeKind):
             kind = ThumbnailStatsBadgeKind(str(kind).strip().casefold())
-        normalized_detail = str(detail or "").strip()
-        normalized_accessible = str(
-            accessible_description or normalized_detail
-        ).strip()
+        normalized_summary = _bounded_thumbnail_status_summary(
+            summary or THUMBNAIL_STATS_DEFAULT_SUMMARIES[kind]
+        )
+        plain_detail = str(detail or "").strip()
+        normalized_detail = _wrapped_thumbnail_detail(plain_detail)
+        normalized_accessible = str(accessible_description or plain_detail).strip()
         self._thumbnail_statistics_presentations[node_id] = (
             _ThumbnailStatisticsPresentation(
                 kind=kind,
+                summary=normalized_summary,
                 detail=normalized_detail,
                 accessible_description=normalized_accessible,
             )
         )
         self.graph_view.set_node_thumbnail_stats_tooltip(
             node_id,
-            (
-                normalized_detail
-                if self.graph_view.node_has_thumbnail(node_id)
-                else ""
-            ),
+            (normalized_detail if self.graph_view.node_has_thumbnail(node_id) else ""),
         )
         if node_id == self._selected_node_id:
             self._sync_thumbnail_statistics_inspector()
@@ -25676,17 +25843,20 @@ class VippWidget(QWidget):
         if not visible:
             panel.hide()
             panel.setToolTip("")
-            panel.setStatusTip("")
             panel.setWhatsThis("")
-            panel.setAccessibleName(
-                "Thumbnail contrast status for selected node"
-            )
+            panel.setAccessibleName("Thumbnail contrast status for selected node")
             panel.setAccessibleDescription("")
             self.thumbnail_contrast_status_title.setToolTip("")
             value_label.clear()
             value_label.setToolTip("")
             value_label.setAccessibleName("Thumbnail contrast backend")
             value_label.setAccessibleDescription("")
+            for widget in (
+                panel,
+                self.thumbnail_contrast_status_title,
+                value_label,
+            ):
+                widget.setStatusTip("")
             return
 
         assert presentation is not None
@@ -25699,6 +25869,12 @@ class VippWidget(QWidget):
             else 600
         )
         detail = presentation.detail
+        summary = presentation.summary
+        status_summary = panel.fontMetrics().elidedText(
+            summary,
+            Qt.ElideRight,
+            THUMBNAIL_STATUS_SUMMARY_MAX_PIXELS,
+        )
         accessible_detail = presentation.accessible_description
         value_label.setText(label)
         value_label.setStyleSheet(
@@ -25706,9 +25882,7 @@ class VippWidget(QWidget):
             "border: none;"
         )
         node_title = self._node_title(node_id)
-        panel.setAccessibleName(
-            f"Thumbnail contrast backend for {node_title}: {label}"
-        )
+        panel.setAccessibleName(f"Thumbnail contrast backend for {node_title}: {label}")
         value_label.setAccessibleName(
             f"Thumbnail contrast backend for {node_title}: {label}"
         )
@@ -25719,7 +25893,7 @@ class VippWidget(QWidget):
             value_label,
         ):
             widget.setToolTip(detail)
-        panel.setStatusTip(detail)
+            widget.setStatusTip(status_summary)
         panel.setWhatsThis(detail)
         panel.setAccessibleDescription(accessible_detail)
         panel.show()
@@ -25758,9 +25932,7 @@ class VippWidget(QWidget):
         self._apply_cache_retention()
         self._update_thumbnails()
         state = "kept" if checked else "not forced"
-        self.status_label.setText(
-            f"Cache retention for '{node.title}' is {state}."
-        )
+        self.status_label.setText(f"Cache retention for '{node.title}' is {state}.")
         self._sync_current_workflow_tab_state()
 
     def _sync_auto_contrast_ui(self) -> None:
@@ -25768,9 +25940,7 @@ class VippWidget(QWidget):
         self.auto_contrast_group.setVisible(
             node is not None and node.operation_id == "linear_scale_offset"
         )
-        self.auto_contrast_button.setEnabled(
-            self._active_auto_contrast_run_id is None
-        )
+        self.auto_contrast_button.setEnabled(self._active_auto_contrast_run_id is None)
 
     def _node_preview_enabled(self, node_id: str) -> bool:
         if self._node_output_type(node_id) == "table":
@@ -25783,11 +25953,15 @@ class VippWidget(QWidget):
             return False
         data, _state, output_port = self._node_display_payload(node_id)
         if data is not None:
-            return not is_table_data(data) and self._data_kind(
-                data,
-                node_id,
-                output_port,
-            ) != "table"
+            return (
+                not is_table_data(data)
+                and self._data_kind(
+                    data,
+                    node_id,
+                    output_port,
+                )
+                != "table"
+            )
         return node.output_type != "table"
 
     def _node_output_type(self, node_id: str) -> str:
@@ -26331,9 +26505,7 @@ def _input_histogram_marker_key(operation_id: str, params: dict | None) -> tuple
         return tuple((name, repr(values.get(name))) for name in names)
 
     if operation_id == "rescale_intensity":
-        mode = str(
-            values.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
-        ).casefold()
+        mode = str(values.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")).casefold()
         names = (
             ("in_low_value", "in_high_value")
             if mode == "values"
@@ -26498,9 +26670,7 @@ def _threshold_marker_source(
     if str(scope).strip().lower().startswith("stack"):
         return arr, channel_axis
 
-    scalar_axes = [
-        axis for axis in range(arr.ndim) if axis != channel_axis
-    ]
+    scalar_axes = [axis for axis in range(arr.ndim) if axis != channel_axis]
     if len(scalar_axes) <= 2:
         return arr, channel_axis
 
@@ -26539,8 +26709,10 @@ def _input_histogram_draggable_markers(
     if operation_id == "rescale_intensity":
         return {"low", "high"}
     if operation_id == "clip_intensity":
-        if str((params or {}).get("cutoff_mode", "Data range")).lower().startswith(
-            "value"
+        if (
+            str((params or {}).get("cutoff_mode", "Data range"))
+            .lower()
+            .startswith("value")
         ):
             return {"min", "max"}
         return set()
@@ -26904,8 +27076,6 @@ def _axis_index_view(arr: np.ndarray, axis: int, index: int) -> np.ndarray:
     return arr[tuple(selection)]
 
 
-
-
 def _should_auto_background_data(data) -> bool:
     """Return whether image-sized work should leave the GUI thread."""
     if data is None or is_table_data(data):
@@ -26937,8 +27107,6 @@ def _should_auto_background_data(data) -> bool:
         return False
 
 
-
-
 def _pipeline_cache_nbytes(pipeline: PrototypePipeline) -> int:
     seen: set[int] = set()
     total = 0
@@ -26968,9 +27136,7 @@ def _object_nbytes(value, seen: set[int]) -> int:
         return _table_nbytes(value)
     if isinstance(value, dict):
         return sum(
-            _object_nbytes(item, seen)
-            for pair in value.items()
-            for item in pair
+            _object_nbytes(item, seen) for pair in value.items() for item in pair
         )
     if isinstance(value, (list, tuple)):
         return sum(_object_nbytes(item, seen) for item in value)

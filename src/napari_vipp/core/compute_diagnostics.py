@@ -1210,11 +1210,11 @@ def _repair_guidance(
             ),
             (
                 "Standard CUDA is ready. Repair cuCIM only if you want its "
-                "reviewed GPU background and measurement regions."
+                "reviewed GPU measurement regions."
                 if installed
                 else (
                     "Standard CUDA is ready. Build cuCIM locally only if you "
-                    "want its reviewed GPU background and measurement regions."
+                    "want its reviewed GPU measurement regions."
                 )
             ),
             documentation_url=_CUCIM_GUIDE_URL,

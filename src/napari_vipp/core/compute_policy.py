@@ -825,9 +825,7 @@ def _evaluate_phase1_cuda_environment(
             "environment_track": "cuda13",
             "cupy_distribution": "cupy-cuda13x",
             "cucim_distribution": "cucim-cu13",
-            "cucim_wheel_payload_sha256": (
-                PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256
-            ),
+            "cucim_wheel_payload_sha256": (PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256),
             "cucim_source_tag": PHASE1_CUCIM_SOURCE_TAG,
             "cucim_source_commit": PHASE1_CUCIM_SOURCE_COMMIT,
             "cucim_build_recipe_id": PHASE1_CUCIM_BUILD_RECIPE_ID,
@@ -1023,6 +1021,15 @@ def estimate_candidate_memory(
         image_workspace = primary_elements * workspace_itemsize * 8
         footprint_workspace = footprint_elements * workspace_itemsize * 3
         workspace = image_workspace + footprint_workspace
+    elif spec.memory_model_id == "cupy-dynamic-background-memory-v1":
+        # The dynamic RawKernel scans the spherical neighbourhood directly;
+        # radius no longer creates a device footprint.  Retain a conservative
+        # eight image-sized work-buffer allowance for finite-value repair,
+        # optional separable smoothing, inversion, contiguous staging, and
+        # background/correction intermediates.  The generic input and output
+        # allocations are counted below.
+        workspace_itemsize = max(primary_itemsize, 4)
+        workspace = primary_elements * workspace_itemsize * 8
     elif spec.memory_model_id == "cupyx-median-memory-v1":
         # CuPyX median may allocate an output, rank-sized footprint metadata,
         # and an implementation workspace.  The 4x upper bound is calibrated
@@ -1033,6 +1040,14 @@ def estimate_candidate_memory(
             canonical_size += 1
         footprint_bytes = canonical_size**2 * max(primary_itemsize, 4) * 2
         workspace = max(input_bytes * 4, primary_elements * 4) + footprint_bytes
+    elif spec.memory_model_id == "cupy-radix-median-memory-v1":
+        # The radix-selection kernel stores its 16-bin histograms in bounded
+        # block-shared memory and never allocates a size-shaped footprint.
+        # Only two tiny int64 rank/stride arrays are device allocations beyond
+        # the generic input/output arrays.  Model their CuPy pool granularity
+        # conservatively; the standard uncertainty floor remains below.
+        rank_metadata_bytes = max(len(workload.input_shapes[0]) * 8, 512)
+        workspace = rank_metadata_bytes * 2
     elif spec.memory_model_id == "cupyx-gaussian-2d-memory-v1":
         sigma = _finite_number(dict(workload.parameters).get("sigma", 1.2)) or 0.0
         kernel_bytes = (2 * math.ceil(4 * sigma) + 1) * 8 * 2
@@ -1045,6 +1060,35 @@ def estimate_candidate_memory(
         )
         kernel_bytes = sum(2 * math.ceil(4 * sigma) + 1 for sigma in sigmas) * 8
         workspace = primary_elements * max(primary_itemsize, 4) * 5 + kernel_bytes
+    elif spec.memory_model_id == "cupy-dynamic-gaussian-memory-v1":
+        parameters = dict(workload.parameters)
+        if spec.operation_id == "gaussian_blur_3d":
+            sigmas = tuple(
+                max(_finite_number(parameters.get(name, 2.0)) or 0.0, 0.0)
+                for name in ("sigma_z", "sigma_y", "sigma_x")
+            )
+        else:
+            sigmas = (max(_finite_number(parameters.get("sigma", 1.2)) or 0.0, 0.0),)
+        maximum_radius = max(
+            (int(4.0 * sigma + 0.5) for sigma in sigmas),
+            default=0,
+        )
+        if maximum_radius <= 0:
+            workspace = 0
+        else:
+            # The public float32 path retains at most one separable image
+            # intermediate beyond the generic input/output allocations below.
+            # When the next axis starts, assignment semantics can briefly keep
+            # the previous and new radius-specific weight vectors live at once;
+            # model both at CuPy pool granularity.  Radius is a runtime kernel
+            # argument, so it never changes compiled-code storage.
+            image_intermediate = primary_elements * np.dtype(np.float32).itemsize
+            weight_elements = 2 * maximum_radius + 1
+            rounded_weight_bytes = max(
+                weight_elements * np.dtype(np.float32).itemsize,
+                512,
+            )
+            workspace = image_intermediate + 2 * rounded_weight_bytes
     elif spec.memory_model_id == "cupy-convert-dtype-memory-v1":
         # The admitted preserve conversion is one uint8/uint16-to-float32 cast.
         # Its only image-sized allocation is the already-counted output array.
@@ -1456,8 +1500,7 @@ def _binary_threshold_region_policy(
         # NumPy comparison defines NaN and infinite thresholds, while the
         # initial GPU contract deliberately admits only finite authored values.
         return _workload_rejection(
-            "Non-finite Binary Threshold values remain on the authoritative "
-            "CPU path."
+            "Non-finite Binary Threshold values remain on the authoritative CPU path."
         )
     try:
         input_dtype = np.dtype(workload.input_dtypes[0])
@@ -2022,9 +2065,7 @@ def _basic_measurements_region_policy(
         )
     spatial_elements = math.prod(layout.spatial_shape)
     if spatial_elements == 0:
-        return _workload_rejection(
-            "Empty spatial measurement blocks remain on CPU."
-        )
+        return _workload_rejection("Empty spatial measurement blocks remain on CPU.")
     if spatial_elements >= MEASUREMENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:
         return _workload_rejection(
             "Each GPU measurement spatial block must contain fewer than "
@@ -2106,12 +2147,8 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "gaussian-2d-parameters-v1": _gaussian_2d_region_policy,
         "gaussian-3d-parameters-v1": _gaussian_3d_region_policy,
         "convert-dtype-f32-preserve-parameters-v1": _convert_dtype_region_policy,
-        "binary-threshold-f32-scalar-parameters-v1": (
-            _binary_threshold_region_policy
-        ),
-        "extract-channel-semantic-axis-parameters-v1": (
-            _extract_channel_region_policy
-        ),
+        "binary-threshold-f32-scalar-parameters-v1": (_binary_threshold_region_policy),
+        "extract-channel-semantic-axis-parameters-v1": (_extract_channel_region_policy),
         "rl-parameters-v2": _richardson_lucy_region_policy,
         "rl-tv-parameters-v2": _richardson_lucy_tv_region_policy,
         "canny-parameters-v1": _canny_region_policy,
@@ -2129,7 +2166,19 @@ _OPERATION_REGION_EVALUATORS: Mapping[
 def _evaluate_background_region(
     workload: WorkloadDescriptor,
 ) -> SupportDecision | None:
-    dtype = _dtype_name(workload.input_dtypes[0])
+    try:
+        input_dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "Background GPU execution requires a valid numeric input dtype.",
+            fallback_allowed=False,
+        )
+    if not input_dtype.isnative:
+        return _workload_rejection(
+            "Background GPU execution requires native-endian input so CuPy "
+            "cannot silently change the public dtype byte order."
+        )
+    dtype = input_dtype.name
     if dtype not in {"uint8", "uint16", "float32"}:
         return _workload_rejection(
             f"Background GPU execution has no promoted {dtype!r} region; "
@@ -2771,10 +2820,13 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
         PolicyKind.MEMORY: {
             "host-reference-v1",
             "cucim-background-memory-v1",
+            "cupy-dynamic-background-memory-v1",
             "cupyx-median-memory-v1",
+            "cupy-radix-median-memory-v1",
             "cupy-sigma-filter-memory-v1",
             "cupyx-gaussian-2d-memory-v1",
             "cupyx-gaussian-3d-memory-v1",
+            "cupy-dynamic-gaussian-memory-v1",
             "cupy-convert-dtype-memory-v1",
             "cupy-binary-threshold-memory-v1",
             "cupy-allocation-sharing-view-v1",
@@ -2809,8 +2861,10 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "identity-v1",
             "background-float-workspace-restore-v1",
             "cupyx-median-identity-v1",
+            "cupy-median-identity-v1",
             "sigma-float32-workspace-restore-v1",
             "cupyx-gaussian-float32-v1",
+            "cupy-gaussian-float32-v1",
             "integer-to-float32-preserve-v1",
             *RICHARDSON_LUCY_POLICY_IDS["conversion"],
             "canny-plane-float32-or-luma-v1",

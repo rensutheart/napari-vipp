@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+- Graph thumbnails now keep the last complete preview visible while full-stack
+  contrast statistics are recalculated. A first preview shows an explicit
+  calculating state, and failed, cancelled, or superseded work cannot replace
+  a valid thumbnail with a provisional or white frame.
+- Thumbnail-contrast backend information now uses a concise
+  CPU/GPU/fallback/cached status-bar summary. Full selection, algorithm,
+  timing, byte-count, runtime/device, and fallback details remain available in
+  the wrapped inspector tooltip and to assistive technology; cached limits now
+  identify their producing policy instead of appearing to be a new decision
+  under the current policy.
+- Scientific parameter edits now stop queued or active thumbnail-only work
+  immediately while retaining the normal 150 ms edit debounce. Thumbnail
+  cleanup hands control back exactly once, a newer edit keeps ownership of its
+  debounce window, and progressive results from an older affected calculation
+  cannot briefly replace the current preview.
+- Reviewed float32 GPU Gaussian blur now uses one radius-independent CUDA
+  kernel. Tuning sigma to a previously unseen radius no longer triggers a new
+  multi-second CuPyX kernel compilation; the scientific reflect boundary,
+  output dtype, and CPU/GPU agreement contract are unchanged.
+- Rolling-Ball Background and Subtract Background now use a radius-independent
+  CuPy kernel. Changing to an unseen radius no longer compiles a new erosion
+  program; the reviewed boundary, dtype, smoothing, and CPU/GPU agreement
+  contracts are unchanged.
+- Median Filter now uses a size-independent CuPy radix-selection kernel.
+  Changing to an unseen supported odd size no longer compiles another filter
+  program, while the reviewed reflect boundary and bitwise agreement contract
+  remain unchanged.
+- Prefer GPU thumbnail contrast now supports exact `float32` Percentile and
+  Min-max statistics with bounded CuPy radix reductions. NaN, infinity,
+  clipping, channel-axis, signed-zero, subnormal, interpolation, and degenerate
+  cases match the CPU contract bit-for-bit; the inspector records the actual
+  host-upload and bounded metadata transfers without implying scientific GPU
+  residency.
+- Warm Prefer GPU stack previews can now reuse the selected retained
+  `float32` image output while it is still inside its scientific CUDA scope.
+  The measured shortcut is limited to outputs of at least 128 MiB, returns
+  only immutable host limits, records zero logical input upload, and leaves
+  small or cold previews on the existing pre-emptible worker. Recoverable
+  presentation failures cannot change the scientific result; GPU scratch
+  cleanup failure remains fatal and quarantines accelerator work.
+
+### Validation
+
+- Added a manifest-locked interactive GPU parameter sweep covering all 18
+  admitted implementations: 14 production-executed parameter or branch
+  profiles, two dedicated RL/RL-TV profiles, and two fixed-contract
+  measurement profiles. It records exact backend identity, fallback, cleanup,
+  and matched first-use/revisit timing without creating a portable performance
+  claim or a new per-release gate.
+- Added a production-path RL/RL-TV parameter sweep for changed and revisited
+  2D/3D PSF dimensions, iteration counts, and TV regularization, with an
+  authoritative CPU parity run for every GPU result. The initial RTX 5090
+  diagnostic found no avoidable PSF-shape stall, fallback, cleanup failure, or
+  parity failure; this result remains machine-local screening evidence.
+- Added float32 thumbnail-statistics calibration and transfer evidence. The
+  protected RTX matrix passed 26 cases with exact parity, cancellation, and
+  zero-residue cleanup; machine-local 2/32/128 MiB timing retained the existing
+  512 MiB cold and 32 MiB warm Auto thresholds. A separate resident comparison
+  at 2/32/128/512 MiB saved about 0.6/5.1/24.8/92.0 ms by avoiding the redundant
+  full-image upload, establishing a conservative 128 MiB hook threshold. The
+  protected resident matrix also passed exact parity, cancellation, alias
+  ownership, transfer-accounting, and cleanup/quarantine checks.
+
 ## 0.13.0a7 - 2026-08-14
 
 ### Release Overview

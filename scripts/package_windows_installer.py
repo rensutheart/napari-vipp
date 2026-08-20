@@ -963,7 +963,7 @@ def inspect_frozen_payload(path: Path) -> dict[str, object]:
     required = {
         "installer_branding/vipp-logo-dark.png",
         "installer_licenses/THIRD-PARTY-NOTICES.txt",
-        "napari_vipp/compute_policies/phase1-gpu-public-v8.json",
+        "napari_vipp/compute_policies/phase1-gpu-public-v9.json",
     }
     if (
         len(manifest_names) != 1

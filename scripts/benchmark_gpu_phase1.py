@@ -51,7 +51,7 @@ SOURCE_PROVENANCE_PATHS = (
     "src/napari_vipp/core/gpu/cupy_gaussian.py",
     "src/napari_vipp/core/gpu/cupy_median.py",
     "src/napari_vipp/core/gpu/cucim_background.py",
-    "src/napari_vipp/compute_policies/phase1-gpu-public-v8.json",
+    "src/napari_vipp/compute_policies/phase1-gpu-public-v9.json",
 )
 
 

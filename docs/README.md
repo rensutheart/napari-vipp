@@ -71,6 +71,11 @@ reviewing VIPP itself.
 
 - [Planning and roadmap](planning.md) is the source of truth for release order
   and active priorities.
+- [Product ideas](product-ideas.md) preserves promising concepts that are not
+  committed to a release, including conditional batch routing.
+- [Planning history through 0.13.0a7](planning-history-0.13.md) preserves the
+  delivered chronology and detailed qualification rationale removed from the
+  active roadmap.
 - [Desktop startup and installer plan](desktop-startup-and-installer-plan.md)
   defines the branded launch profiles, napari loading host, separate local-build
   cuCIM bundle, and staged Windows/Linux/macOS installer path.

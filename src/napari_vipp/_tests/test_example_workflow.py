@@ -8,6 +8,11 @@ from napari_vipp._sample_data import make_sample_data
 from napari_vipp.core import operations as operations_module
 from napari_vipp.core.compute import ComputeMode
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
+from napari_vipp.core.thumbnail_statistics import (
+    ThumbnailStatisticsBackend,
+    ThumbnailStatisticsEngine,
+    ThumbnailStatisticsRequest,
+)
 from napari_vipp.core.workflow import load_workflow
 
 EXAMPLE_WORKFLOW = (
@@ -226,6 +231,68 @@ def test_gpu_segmentation_bridge_is_portable_annotated_and_scientifically_stable
     assert "restores 31 enclosed 3D background voxels" in note_text
     assert "only the final label output retained" in note_text
     assert "explains the fallback" in note_text
+
+
+def test_float32_thumbnail_statistics_workflow_mode_matrix_is_explicit():
+    data, _layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic volume"
+    )
+    converted = data.astype(np.float32)
+    subtracted = operations_module.subtract_background(
+        converted,
+        radius=2.0,
+        channel_axis=None,
+    )
+    gaussian = operations_module.gaussian_blur(
+        subtracted,
+        sigma=1.2,
+        channel_axis=None,
+    )
+    mask = operations_module.otsu_threshold(gaussian, channel_axis=None)
+
+    assert data.dtype == np.uint8
+    assert converted.dtype == subtracted.dtype == gaussian.dtype == np.float32
+    assert mask.dtype == bool
+    engine = ThumbnailStatisticsEngine()
+
+    for values in (converted, subtracted, gaussian):
+        cpu = engine.select(
+            ThumbnailStatisticsRequest(
+                values,
+                compute_mode=ComputeMode.CPU,
+            )
+        )
+        automatic = engine.select(
+            ThumbnailStatisticsRequest(
+                values,
+                compute_mode=ComputeMode.AUTO,
+            )
+        )
+        preferred = engine.select(
+            ThumbnailStatisticsRequest(
+                values,
+                compute_mode=ComputeMode.PREFER_GPU,
+            )
+        )
+
+        assert cpu.backend is ThumbnailStatisticsBackend.CPU_NUMPY
+        assert cpu.reason_code == "cpu_requested"
+        assert automatic.backend is ThumbnailStatisticsBackend.CPU_NUMPY
+        assert automatic.reason_code == "auto_below_cold_gpu_threshold"
+        assert preferred.backend is ThumbnailStatisticsBackend.GPU_CUPY
+        assert preferred.reason_code == "prefer_gpu_eligible"
+
+    scan_free_mask = engine.select(
+        ThumbnailStatisticsRequest(
+            mask,
+            data_kind="mask",
+            compute_mode=ComputeMode.PREFER_GPU,
+        )
+    )
+    assert scan_free_mask.backend is ThumbnailStatisticsBackend.CPU_NUMPY
+    assert scan_free_mask.reason_code == "scan_free"
 
 
 def test_synthetic_batch_provenance_workflow_loads_and_runs_exactly():
