@@ -7,10 +7,11 @@ authored Gaussian sigma; later runs change only that sigma, reuse the previous
 host-side pipeline cache, and dirty the Gaussian node and its descendants.
 
 This is machine-local diagnostic evidence for issue #27.  It reports what
-backend and device actually ran, including visible CPU fallback.  It does not
-make a portable speed claim and does not include UI debounce, thumbnail work,
-rendering, or publication.  Importing this module or asking for ``--help`` does
-not import an optional GPU provider or initialize CUDA.
+backend and device actually ran, including visible CPU fallback.  Prefer GPU
+runs also request synchronized, provider-neutral device phase telemetry.  It
+does not make a portable speed claim and does not include UI debounce,
+thumbnail work, rendering, or publication.  Importing this module or asking
+for ``--help`` does not import an optional GPU provider or initialize CUDA.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ DEFAULT_WARM_SIGMAS = (1.4, 1.6, 1.8)
 SOURCE_PROVENANCE_PATHS = (
     "scripts/benchmark_interactive_tuning.py",
     "src/napari_vipp/core/execution.py",
+    "src/napari_vipp/core/execution_telemetry.py",
     "src/napari_vipp/core/device_execution.py",
     "src/napari_vipp/core/compute_planning.py",
     "src/napari_vipp/core/operations.py",
@@ -164,6 +166,7 @@ def collect_latency_evidence(
         PipelineRunRequest,
         execute_pipeline_request,
     )
+    from napari_vipp.core.execution_telemetry import DeviceExecutionTelemetryConfig
     from napari_vipp.core.pipeline import PrototypePipeline
     from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
@@ -204,6 +207,11 @@ def collect_latency_evidence(
     executor = execute or execute_pipeline_request
     if not callable(executor):
         raise TypeError("execute must be callable or None.")
+    device_execution_telemetry = (
+        DeviceExecutionTelemetryConfig(synchronize_device_phases=True)
+        if compute_request.mode is ComputeMode.PREFER_GPU
+        else None
+    )
 
     source_snapshot = _source_provenance(path, workflow_bytes)
     runs: list[dict[str, object]] = []
@@ -228,6 +236,7 @@ def collect_latency_evidence(
             manual_node_ids=manual_node_ids,
             prune_unretained=False,
             performance_history_path=None,
+            device_execution_telemetry=device_execution_telemetry,
             **_cached_request_fields(cached_pipeline),
         )
         result = executor(request)
@@ -290,6 +299,11 @@ def collect_latency_evidence(
             "registry_lifecycle": (
                 "Production-owned registry and runtime are constructed and closed "
                 "by each detached request."
+            ),
+            "device_phase_telemetry": (
+                "Prefer GPU requests insert synchronization barriers around "
+                "device transfers and operations and serialize the resulting "
+                "volatile observation; CPU requests do not enable it."
             ),
             "cache_contract": "keep-all-host-results; no cross-run device residency",
             "excluded": [
@@ -444,6 +458,14 @@ def _run_record(
         "cleanup_succeeded": bool(report.cleanup_succeeded),
     }
     timing = _optional_core_timing(result)
+    expected_device_telemetry = "pipeline_run_result.device_execution_telemetry"
+    if (
+        getattr(request, "device_execution_telemetry", None) is not None
+        and expected_device_telemetry not in timing
+    ):
+        raise EvidenceError(
+            "The detached Prefer GPU run returned no device execution telemetry."
+        )
     if timing:
         record["core_timing"] = timing
     return record

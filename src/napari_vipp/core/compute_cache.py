@@ -187,6 +187,7 @@ class CachedNodeComputeProvenance:
     scientific_context_fingerprint: str
     fallback_reason: FallbackReason | str = FallbackReason.NONE
     fallback_preference: NodeComputePreference | None = None
+    source_reuse_envelope_fingerprint: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(
@@ -227,6 +228,20 @@ class CachedNodeComputeProvenance:
             self,
             "scientific_context_fingerprint",
             scientific_context,
+        )
+        source_reuse_envelope = str(self.source_reuse_envelope_fingerprint).strip()
+        if (
+            source_reuse_envelope
+            and self.actual_implementation.runtime_id != "source-boundary"
+        ):
+            raise ValueError(
+                "source_reuse_envelope_fingerprint is valid only for source "
+                "boundary provenance."
+            )
+        object.__setattr__(
+            self,
+            "source_reuse_envelope_fingerprint",
+            source_reuse_envelope,
         )
         object.__setattr__(self, "fallback_reason", fallback)
         object.__setattr__(self, "fallback_preference", preference)
@@ -325,6 +340,7 @@ def build_cached_source_provenance(
     node_id: str,
     operation_id: str,
     scientific_context_fingerprint: str,
+    source_reuse_envelope_fingerprint: str = "",
 ) -> CachedNodeComputeProvenance:
     """Build provenance for one exact host source boundary snapshot."""
 
@@ -346,6 +362,7 @@ def build_cached_source_provenance(
             {"schema_id": "vipp-source-compute-context-v1"}
         ),
         scientific_context_fingerprint=scientific_context_fingerprint,
+        source_reuse_envelope_fingerprint=(source_reuse_envelope_fingerprint),
     )
 
 
@@ -355,6 +372,7 @@ def cached_source_provenance_matches(
     node_id: str,
     operation_id: str,
     scientific_context_fingerprint: str,
+    source_reuse_envelope_fingerprint: str = "",
 ) -> bool:
     """Whether a cached source is the exact current source snapshot."""
 
@@ -363,6 +381,7 @@ def cached_source_provenance_matches(
             node_id=node_id,
             operation_id=operation_id,
             scientific_context_fingerprint=scientific_context_fingerprint,
+            source_reuse_envelope_fingerprint=(source_reuse_envelope_fingerprint),
         )
     except (TypeError, ValueError):
         return False
@@ -398,8 +417,7 @@ def cached_node_provenance_matches(
         not normalized_node_id
         or not normalized_operation_id
         or provenance.node_id != normalized_node_id
-        or provenance.actual_implementation.operation_id
-        != normalized_operation_id
+        or provenance.actual_implementation.operation_id != normalized_operation_id
         or provenance.scientific_context_fingerprint
         != str(scientific_context_fingerprint).strip()
         or provenance.produced_by_fallback
@@ -430,8 +448,7 @@ def _compute_spec_for_decision(
             allow_experimental=True,
         )
         if spec.runtime_id == decision.runtime_id
-        and spec.implementation_library_id
-        == decision.implementation_library_id
+        and spec.implementation_library_id == decision.implementation_library_id
         and spec.implementation_id == decision.implementation_id
     )
     if len(matches) != 1:
@@ -451,8 +468,7 @@ def _validate_spec_matches_decision(
     if (
         spec.operation_id != decision.operation_id
         or spec.runtime_id != decision.runtime_id
-        or spec.implementation_library_id
-        != decision.implementation_library_id
+        or spec.implementation_library_id != decision.implementation_library_id
         or spec.implementation_id != decision.implementation_id
     ):
         raise ValueError(

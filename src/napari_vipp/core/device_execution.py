@@ -44,6 +44,7 @@ from napari_vipp.core.execution_telemetry import (
     DeviceExecutionPhase,
     DeviceExecutionTelemetryConfig,
     DeviceSynchronizationPoint,
+    DeviceTerminalMemorySnapshot,
     _begin_device_execution_telemetry,
     _DeviceExecutionTelemetryRecorder,
     _finish_device_execution_telemetry,
@@ -192,7 +193,14 @@ class DeviceGraphPlan:
     schedule: PipelineExecutionPlan
     units: tuple[ExecutionUnit, ...]
     decisions: tuple[NodeExecutionDecision, ...]
+    request_fingerprint: str
     retained_ports: tuple[OutputPortKey, ...] = ()
+
+    def __post_init__(self) -> None:
+        request_fingerprint = str(self.request_fingerprint).strip()
+        if not request_fingerprint:
+            raise ValueError("request_fingerprint must not be empty.")
+        object.__setattr__(self, "request_fingerprint", request_fingerprint)
 
     @property
     def segments(self) -> tuple[ExecutionSegment, ...]:
@@ -473,6 +481,11 @@ def plan_device_execution(
                 writer_boundary=writer_boundary,
             )
             continue
+        if request.runtime_id and decision.runtime_id != request.runtime_id:
+            raise DevicePlanningError(
+                f"Node {node_id!r} selected runtime {decision.runtime_id!r}, "
+                f"but the compute request requires {request.runtime_id!r}."
+            )
         try:
             implementation = registry.implementation_spec(
                 decision.implementation_id,
@@ -633,7 +646,13 @@ def plan_device_execution(
     selected_decisions = tuple(
         decisions[node_id] for node_id in order if node_id in decisions
     )
-    return DeviceGraphPlan(schedule, tuple(units), selected_decisions, retained)
+    return DeviceGraphPlan(
+        schedule=schedule,
+        units=tuple(units),
+        decisions=selected_decisions,
+        request_fingerprint=request.fingerprint,
+        retained_ports=retained,
+    )
 
 
 def preflight_device_execution(
@@ -645,6 +664,7 @@ def preflight_device_execution(
 ) -> None:
     """Reject impossible memory requests before any scientific node runs."""
 
+    _validate_device_plan_request(plan, request)
     for unit in plan.units:
         if not isinstance(unit, DeviceSegmentUnit):
             continue
@@ -653,8 +673,28 @@ def preflight_device_execution(
         snapshot = None
         succeeded = False
         try:
+            probe = registry.probe_runtime(segment.runtime_id)
+            if not probe.available:
+                raise DevicePlanningError(
+                    f"Runtime {segment.runtime_id!r} is unavailable: "
+                    f"{probe.reason_code}: {probe.message}"
+                )
+            if request.device_id and request.device_id not in {
+                device.device_id for device in probe.devices
+            }:
+                raise DevicePlanningError(
+                    f"Runtime {segment.runtime_id!r} did not report requested "
+                    f"device {request.device_id!r}."
+                )
             runtime = registry.runtime(segment.runtime_id)
             snapshot = runtime.memory_snapshot(device_id=request.device_id)
+            if snapshot.runtime_id != segment.runtime_id or (
+                request.device_id and snapshot.device_id != request.device_id
+            ):
+                raise DevicePlanningError(
+                    "Runtime memory snapshot did not match the requested "
+                    "runtime and device."
+                )
             required = (
                 segment.memory_estimate.total_device_peak_bytes
                 + segment.memory_estimate.uncertainty_bytes
@@ -677,7 +717,7 @@ def preflight_device_execution(
                         available,
                     )
             succeeded = True
-        except DeviceMemoryPreflightError:
+        except DevicePlanningError:
             raise
         except Exception as exc:
             raise DevicePlanningError(
@@ -720,6 +760,8 @@ def execute_device_plan(
     preserves the normal execution path and does not sample a clock.
     """
 
+    _validate_device_plan_request(plan, request)
+    _validate_requested_runtime_devices(plan, registry, request)
     telemetry_recorder = _begin_device_execution_telemetry(telemetry)
     runtime_ids = sorted(
         {
@@ -747,10 +789,12 @@ def execute_device_plan(
         )
     try:
         _check_cancelled(cancel_callback)
+        resolved_device_ids: dict[str, str] = {}
         with ExitStack() as leases:
             for runtime_id in runtime_ids:
                 runtime = registry.runtime(runtime_id)
                 device_id = _accelerator_lease_device_id(runtime, request.device_id)
+                resolved_device_ids[runtime_id] = device_id
                 started = (
                     None if telemetry_recorder is None else telemetry_recorder.start()
                 )
@@ -784,6 +828,11 @@ def execute_device_plan(
                 node_outputs_callback=node_outputs_callback,
                 resident_output_callback=resident_output_callback,
                 _telemetry=telemetry_recorder,
+            )
+            _record_terminal_memory_snapshots(
+                telemetry_recorder,
+                registry,
+                resolved_device_ids,
             )
         return replace(
             result,
@@ -1127,6 +1176,7 @@ def _execute_device_segment_under_lease(
     materialized: dict[OutputPortKey, object] = {}
     pending_finalizations: list[_PendingHostFinalization] = []
     detached_failure: RuntimeExceptionInfo | None = None
+    cancelled_message: str | None = None
     with runtime.execution_scope(
         device_id=request.device_id,
         memory_limit_bytes=request.accelerator_memory_cap_bytes,
@@ -1439,8 +1489,15 @@ def _execute_device_segment_under_lease(
                     segment_id=segment.segment_id,
                     point=DeviceSynchronizationPoint.SEGMENT_COMPLETE,
                 )
-            except OperationCancelled:
-                raise
+            except OperationCancelled as exc:
+                # Do not carry a cancellation traceback across private-scope
+                # cleanup.  A checkpoint may fire while provider-owned inputs
+                # are arguments in nested preparation/progress frames; retaining
+                # those frames until the caller catches the exception can make a
+                # correctly released CuPy allocation appear live when the scope
+                # validates its private pool.  Recreate the lightweight public
+                # cancellation after every scoped alias has been cleared.
+                cancelled_message = str(exc)
             except Exception as exc:
                 # Classify while provider types are available, then suppress
                 # the provider exception before leaving the private allocator
@@ -1466,6 +1523,8 @@ def _execute_device_segment_under_lease(
             invalid = ()
             value = None
 
+    if cancelled_message is not None:
+        raise OperationCancelled(cancelled_message) from None
     if detached_failure is not None:
         raise _DetachedRuntimeFailure(detached_failure) from None
     # Finalizers are deliberately outside the runtime scope: every payload has
@@ -1907,6 +1966,101 @@ def _best_effort_memory_snapshot(runtime: RuntimeProtocol, device_id: str):
         return runtime.memory_snapshot(device_id=device_id)
     except Exception:
         return None
+
+
+def _record_terminal_memory_snapshots(
+    telemetry: _DeviceExecutionTelemetryRecorder | None,
+    registry: ComputeRegistry,
+    resolved_device_ids: Mapping[str, str],
+) -> None:
+    """Observe cleaned private pools while each exact device lease remains held."""
+
+    if telemetry is None:
+        return
+    for runtime_id, device_id in sorted(resolved_device_ids.items()):
+        started = telemetry.start()
+        succeeded = False
+        try:
+            runtime = registry.runtime(runtime_id)
+            snapshot = runtime.memory_snapshot(device_id=device_id)
+            snapshot_runtime_id = str(snapshot.runtime_id).strip()
+            snapshot_device_id = str(snapshot.device_id).strip()
+            if snapshot_runtime_id != runtime_id or snapshot_device_id != device_id:
+                raise ValueError(
+                    "Terminal memory snapshot identity did not match the "
+                    "leased runtime and device."
+                )
+            topology = getattr(snapshot.topology, "value", snapshot.topology)
+            telemetry.record_terminal_memory_snapshot(
+                DeviceTerminalMemorySnapshot(
+                    runtime_id=snapshot_runtime_id,
+                    device_id=snapshot_device_id,
+                    topology=str(topology).strip(),
+                    device_total_bytes=snapshot.device_total_bytes,
+                    device_free_bytes=snapshot.device_free_bytes,
+                    runtime_live_bytes=snapshot.runtime_live_bytes,
+                    runtime_reserved_bytes=snapshot.runtime_reserved_bytes,
+                    out_of_pool_bytes=snapshot.out_of_pool_bytes,
+                )
+            )
+            succeeded = True
+        except Exception:
+            # Terminal memory evidence is diagnostic only. A provider snapshot
+            # failure must not replace a completed scientific result.
+            pass
+        finally:
+            telemetry.record(
+                started,
+                DeviceExecutionPhase.TERMINAL_MEMORY_SNAPSHOT,
+                runtime_id=runtime_id,
+                device_id=device_id,
+                succeeded=succeeded,
+            )
+
+
+def _validate_device_plan_request(
+    plan: DeviceGraphPlan,
+    request: ComputeRequest,
+) -> None:
+    if not isinstance(plan, DeviceGraphPlan):
+        raise TypeError("plan must be a DeviceGraphPlan.")
+    if not isinstance(request, ComputeRequest):
+        raise TypeError("request must be a ComputeRequest.")
+    if plan.request_fingerprint != request.fingerprint:
+        raise DevicePlanningError(
+            "Device execution request does not match the request used to build "
+            "this plan. Rebuild the plan for the current runtime, device, and "
+            "execution policy."
+        )
+
+
+def _validate_requested_runtime_devices(
+    plan: DeviceGraphPlan,
+    registry: ComputeRegistry,
+    request: ComputeRequest,
+) -> None:
+    """Reject stale or missing explicit affinity before acquiring any lease."""
+
+    runtime_ids = {segment.runtime_id for segment in plan.segments}
+    for runtime_id in sorted(runtime_ids):
+        if request.runtime_id and runtime_id != request.runtime_id:
+            raise DevicePlanningError(
+                f"Device plan uses runtime {runtime_id!r}, but the request "
+                f"requires {request.runtime_id!r}."
+            )
+        probe = registry.probe_runtime(runtime_id)
+        if not probe.available:
+            raise DevicePlanningError(
+                f"Runtime {runtime_id!r} is unavailable: "
+                f"{probe.reason_code}: {probe.message}"
+            )
+        if request.device_id and request.device_id not in {
+            device.device_id for device in probe.devices
+        }:
+            raise DevicePlanningError(
+                f"Runtime {runtime_id!r} did not report requested device "
+                f"{request.device_id!r}."
+            )
 
 
 def _attach_fallback_records(

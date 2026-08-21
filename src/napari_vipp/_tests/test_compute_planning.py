@@ -79,9 +79,7 @@ def _environment(*, runtime=True, libraries=("cpu", "cupy", "cupyx", "cucim")):
         ),
         driver_version="13030" if runtime else "",
         device_id="cuda:0" if runtime else "cpu:0",
-        device_name=(
-            "NVIDIA GeForce RTX 5090" if runtime else "Host CPU"
-        ),
+        device_name=("NVIDIA GeForce RTX 5090" if runtime else "Host CPU"),
         device_class="nvidia-cuda" if runtime else "host",
         device_metadata=((("compute_capability", "12.0"),) if runtime else ()),
         memory_topology="discrete" if runtime else "host",
@@ -143,6 +141,39 @@ def test_cpu_mode_returns_before_registry_construction_or_gpu_probe(monkeypatch)
     assert result.decisions[0].runtime_id == "cpu-numpy"
     assert result.decisions[0].reason is DecisionReason.EXPLICIT_CPU
     assert result.environment.runtime_ids == ("cpu-numpy",)
+
+
+def test_supplied_accelerator_environment_must_match_explicit_device():
+    request = ComputeRequest(
+        mode="prefer_gpu",
+        runtime_id="cuda-cupy",
+        device_id="cuda:1",
+    )
+
+    with pytest.raises(ValueError, match="environment describes device"):
+        plan_compute_decisions(
+            request,
+            (_workload(),),
+            environment=_environment(),
+        )
+
+
+def test_cpu_only_environment_remains_valid_for_missing_explicit_device():
+    request = ComputeRequest(
+        mode="prefer_gpu",
+        runtime_id="cuda-cupy",
+        device_id="cuda:1",
+    )
+    workload = _workload()
+
+    result = plan_compute_decisions(
+        request,
+        (workload,),
+        environment=_environment(runtime=False, libraries=("cpu",)),
+        array_facts={workload.node_id: _facts(workload)},
+    )
+
+    assert result.decisions[0].runtime_id == "cpu-numpy"
 
 
 def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(

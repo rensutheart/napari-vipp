@@ -9,7 +9,8 @@ observation on the corresponding result.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from time import perf_counter
@@ -20,7 +21,14 @@ type MonotonicClock = Callable[[], float]
 
 
 class DeviceExecutionPhase(StrEnum):
-    """One directly observed phase of a device execution."""
+    """One directly observed phase of a device execution.
+
+    ``IMPLEMENTATION_RESOLUTION`` covers the registry's lazy callable lookup
+    and import boundary.  Provider initialization, first-use work, or JIT
+    compilation performed inside that callable remains part of
+    ``DEVICE_OPERATION`` because the provider-neutral executor cannot isolate
+    it truthfully.
+    """
 
     ACCELERATOR_LEASE_WAIT = "accelerator_lease_wait"
     PREFLIGHT = "preflight"
@@ -30,6 +38,19 @@ class DeviceExecutionPhase(StrEnum):
     DEVICE_SYNCHRONIZE = "device_synchronize"
     DEVICE_TO_HOST = "device_to_host"
     HOST_FINALIZER = "host_finalizer"
+    TERMINAL_MEMORY_SNAPSHOT = "terminal_memory_snapshot"
+
+
+class PipelinePreparationPhase(StrEnum):
+    """One directly observed phase before detached scientific execution."""
+
+    GRAPH_RESTORATION = "graph_restoration"
+    CACHE_PREPARATION = "cache_preparation"
+    WORKLOAD_PREPARATION = "workload_preparation"
+    ACCELERATOR_SETUP = "accelerator_setup"
+    RUNTIME_LIBRARY_PROBE = "runtime_library_probe"
+    COMPUTE_PLANNING = "compute_planning"
+    DEVICE_PLAN_BUILD = "device_plan_build"
 
 
 class DeviceTransferDirection(StrEnum):
@@ -71,6 +92,103 @@ class DeviceExecutionTelemetryConfig:
             raise TypeError("clock must be callable.")
         if not isinstance(self.synchronize_device_phases, bool):
             raise TypeError("synchronize_device_phases must be a boolean.")
+
+
+@dataclass(frozen=True, slots=True)
+class PipelinePreparationSpan:
+    """One provider-neutral timing span before scientific execution starts."""
+
+    phase: PipelinePreparationPhase | str
+    start_offset_seconds: float
+    elapsed_seconds: float
+    succeeded: bool = True
+
+    def __post_init__(self) -> None:
+        phase = (
+            self.phase
+            if isinstance(self.phase, PipelinePreparationPhase)
+            else PipelinePreparationPhase(str(self.phase).strip())
+        )
+        object.__setattr__(self, "phase", phase)
+        for name in ("start_offset_seconds", "elapsed_seconds"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or value < 0
+            ):
+                raise ValueError(f"{name} must be finite and non-negative.")
+            object.__setattr__(self, name, float(value))
+        if not isinstance(self.succeeded, bool):
+            raise TypeError("succeeded must be a boolean.")
+
+
+@dataclass(frozen=True, slots=True)
+class PipelinePreparationObservation:
+    """Completed or partial volatile observation of detached preparation.
+
+    The observation ends immediately before scientific execution starts.
+    ``completed=False`` means cancellation or failure stopped preparation, so
+    the final span may be unsuccessful and later phases may be absent. A phase
+    may appear more than once when work in that category is separated by a
+    different phase; consumers can aggregate the spans returned by
+    :meth:`spans_for`.
+    """
+
+    started_monotonic_seconds: float
+    elapsed_seconds: float
+    spans: tuple[PipelinePreparationSpan, ...] = ()
+    completed: bool = True
+
+    def __post_init__(self) -> None:
+        started = self.started_monotonic_seconds
+        if (
+            isinstance(started, bool)
+            or not isinstance(started, (int, float))
+            or not math.isfinite(float(started))
+        ):
+            raise ValueError("started_monotonic_seconds must be finite.")
+        object.__setattr__(self, "started_monotonic_seconds", float(started))
+        elapsed = self.elapsed_seconds
+        if (
+            isinstance(elapsed, bool)
+            or not isinstance(elapsed, (int, float))
+            or not math.isfinite(float(elapsed))
+            or elapsed < 0
+        ):
+            raise ValueError("elapsed_seconds must be finite and non-negative.")
+        object.__setattr__(self, "elapsed_seconds", float(elapsed))
+        spans = tuple(self.spans)
+        if any(not isinstance(span, PipelinePreparationSpan) for span in spans):
+            raise TypeError("spans must contain PipelinePreparationSpan values.")
+        if any(
+            span.start_offset_seconds + span.elapsed_seconds
+            > self.elapsed_seconds + 1e-12
+            for span in spans
+        ):
+            raise ValueError("spans must fit inside the observation duration.")
+        previous_end = 0.0
+        for span in spans:
+            if span.start_offset_seconds + 1e-12 < previous_end:
+                raise ValueError("spans must be ordered and non-overlapping.")
+            previous_end = span.start_offset_seconds + span.elapsed_seconds
+        object.__setattr__(self, "spans", spans)
+        if not isinstance(self.completed, bool):
+            raise TypeError("completed must be a boolean.")
+
+    def spans_for(
+        self,
+        phase: PipelinePreparationPhase | str,
+    ) -> tuple[PipelinePreparationSpan, ...]:
+        """Return spans for one normalized phase in observation order."""
+
+        normalized = (
+            phase
+            if isinstance(phase, PipelinePreparationPhase)
+            else PipelinePreparationPhase(str(phase).strip())
+        )
+        return tuple(span for span in self.spans if span.phase is normalized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +354,61 @@ class DeviceTransferSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class DeviceTerminalMemorySnapshot:
+    """Provider-neutral private-memory state observed after device cleanup.
+
+    ``runtime_live_bytes`` and ``runtime_reserved_bytes`` describe the private
+    execution pool owned by VIPP. ``out_of_pool_bytes`` is retained only as a
+    device-wide diagnostic because provider/JIT caches may legitimately remain
+    outside that private pool after a clean run.
+    """
+
+    runtime_id: str
+    device_id: str
+    topology: str
+    device_total_bytes: int | None = None
+    device_free_bytes: int | None = None
+    runtime_live_bytes: int = 0
+    runtime_reserved_bytes: int = 0
+    out_of_pool_bytes: int = 0
+
+    def __post_init__(self) -> None:
+        for name in ("runtime_id", "device_id", "topology"):
+            normalized = str(getattr(self, name)).strip()
+            if not normalized:
+                raise ValueError(f"{name} must not be empty.")
+            object.__setattr__(self, name, normalized)
+        for name in (
+            "device_total_bytes",
+            "device_free_bytes",
+            "runtime_live_bytes",
+            "runtime_reserved_bytes",
+            "out_of_pool_bytes",
+        ):
+            value = getattr(self, name)
+            if value is None and name.startswith("device_"):
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer or None.")
+        if (
+            self.device_total_bytes is not None
+            and self.device_free_bytes is not None
+            and self.device_free_bytes > self.device_total_bytes
+        ):
+            raise ValueError("device_free_bytes must not exceed device_total_bytes.")
+        if self.runtime_live_bytes > self.runtime_reserved_bytes:
+            raise ValueError(
+                "runtime_live_bytes must not exceed runtime_reserved_bytes."
+            )
+
+    @property
+    def private_allocations_released(self) -> bool:
+        """Whether VIPP's private execution pool is empty at the checkpoint."""
+
+        return self.runtime_live_bytes == 0 and self.runtime_reserved_bytes == 0
+
+
+@dataclass(frozen=True, slots=True)
 class DeviceExecutionObservation:
     """Completed volatile observation attached to a device execution result."""
 
@@ -243,6 +416,7 @@ class DeviceExecutionObservation:
     elapsed_seconds: float
     spans: tuple[DeviceExecutionSpan, ...] = ()
     synchronized_device_phases: bool = False
+    terminal_memory_snapshots: tuple[DeviceTerminalMemorySnapshot, ...] = ()
 
     def __post_init__(self) -> None:
         started = self.started_monotonic_seconds
@@ -274,6 +448,24 @@ class DeviceExecutionObservation:
         object.__setattr__(self, "spans", spans)
         if not isinstance(self.synchronized_device_phases, bool):
             raise TypeError("synchronized_device_phases must be a boolean.")
+        snapshots = tuple(self.terminal_memory_snapshots)
+        if any(
+            not isinstance(snapshot, DeviceTerminalMemorySnapshot)
+            for snapshot in snapshots
+        ):
+            raise TypeError(
+                "terminal_memory_snapshots must contain "
+                "DeviceTerminalMemorySnapshot values."
+            )
+        identities = tuple(
+            (snapshot.runtime_id, snapshot.device_id) for snapshot in snapshots
+        )
+        if len(set(identities)) != len(identities):
+            raise ValueError(
+                "terminal_memory_snapshots must contain at most one snapshot "
+                "per runtime and device."
+            )
+        object.__setattr__(self, "terminal_memory_snapshots", snapshots)
 
     @property
     def host_to_device(self) -> DeviceTransferSummary:
@@ -321,6 +513,122 @@ class DeviceExecutionObservation:
         )
 
 
+class _PipelinePreparationTelemetryRecorder:
+    """Best-effort builder for one detached preparation observation."""
+
+    __slots__ = (
+        "_clock",
+        "_finished",
+        "_observation",
+        "_origin",
+        "_spans",
+    )
+
+    def __init__(self, config: DeviceExecutionTelemetryConfig) -> None:
+        self._clock = config.clock
+        self._spans: list[PipelinePreparationSpan] = []
+        self._finished = False
+        self._observation: PipelinePreparationObservation | None = None
+        self._origin = self._sample()
+
+    @property
+    def enabled(self) -> bool:
+        return self._origin is not None and not self._finished
+
+    def start(self) -> float | None:
+        """Sample the shared monotonic clock without affecting execution."""
+
+        if not self.enabled:
+            return None
+        return self._sample()
+
+    def record(
+        self,
+        started: float | None,
+        phase: PipelinePreparationPhase,
+        *,
+        succeeded: bool,
+    ) -> None:
+        """Close one span; invalid clocks or metadata silently disable it."""
+
+        try:
+            if started is None or self._origin is None or self._finished:
+                return
+            ended = self._sample()
+            if ended is None or ended < started or started < self._origin:
+                return
+            self._spans.append(
+                PipelinePreparationSpan(
+                    phase=phase,
+                    start_offset_seconds=started - self._origin,
+                    elapsed_seconds=ended - started,
+                    succeeded=succeeded,
+                )
+            )
+        except Exception:
+            # Preparation telemetry is diagnostic only.  A hostile clock or
+            # invalid timing value must never replace scientific behavior.
+            return
+
+    def finish(self, *, completed: bool) -> PipelinePreparationObservation | None:
+        """Freeze the preparation window and return it idempotently."""
+
+        if self._finished:
+            return self._observation
+        if self._origin is None:
+            self._finished = True
+            return None
+        self._finished = True
+        try:
+            ended = self._sample()
+            observed_end = self._origin + _preparation_spans_end(self._spans)
+            if ended is None:
+                ended = observed_end
+            else:
+                ended = max(ended, observed_end)
+            self._observation = PipelinePreparationObservation(
+                started_monotonic_seconds=self._origin,
+                elapsed_seconds=ended - self._origin,
+                spans=tuple(self._spans),
+                completed=completed,
+            )
+        except Exception:
+            self._observation = None
+        return self._observation
+
+    def _sample(self) -> float | None:
+        try:
+            value = self._clock()
+        except Exception:
+            return None
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            return None
+        return float(value)
+
+
+@contextmanager
+def _observed_pipeline_preparation_phase(
+    recorder: _PipelinePreparationTelemetryRecorder | None,
+    phase: PipelinePreparationPhase,
+) -> Iterator[None]:
+    """Record one non-overlapping preparation boundary when opted in."""
+
+    if recorder is None:
+        yield
+        return
+    started = recorder.start()
+    succeeded = False
+    try:
+        yield
+        succeeded = True
+    finally:
+        recorder.record(started, phase, succeeded=succeeded)
+
+
 class _DeviceExecutionTelemetryRecorder:
     """Best-effort mutable builder kept private to one execution call."""
 
@@ -329,6 +637,7 @@ class _DeviceExecutionTelemetryRecorder:
         "_finished",
         "_origin",
         "_spans",
+        "_terminal_memory_snapshots",
         "synchronize_device_phases",
     )
 
@@ -336,6 +645,7 @@ class _DeviceExecutionTelemetryRecorder:
         self._clock = config.clock
         self.synchronize_device_phases = config.synchronize_device_phases
         self._spans: list[DeviceExecutionSpan] = []
+        self._terminal_memory_snapshots: list[DeviceTerminalMemorySnapshot] = []
         self._finished = False
         self._origin = self._sample()
 
@@ -416,9 +726,32 @@ class _DeviceExecutionTelemetryRecorder:
                 elapsed_seconds=ended - self._origin,
                 spans=tuple(self._spans),
                 synchronized_device_phases=self.synchronize_device_phases,
+                terminal_memory_snapshots=tuple(self._terminal_memory_snapshots),
             )
         except Exception:
             return None
+
+    def record_terminal_memory_snapshot(
+        self,
+        snapshot: DeviceTerminalMemorySnapshot,
+    ) -> None:
+        """Retain one bounded terminal snapshot without affecting execution."""
+
+        try:
+            if self._finished or not isinstance(
+                snapshot,
+                DeviceTerminalMemorySnapshot,
+            ):
+                return
+            identity = (snapshot.runtime_id, snapshot.device_id)
+            self._terminal_memory_snapshots[:] = [
+                item
+                for item in self._terminal_memory_snapshots
+                if (item.runtime_id, item.device_id) != identity
+            ]
+            self._terminal_memory_snapshots.append(snapshot)
+        except Exception:
+            return
 
     def _sample(self) -> float | None:
         try:
@@ -445,6 +778,19 @@ def _begin_device_execution_telemetry(
     return recorder if recorder.enabled else None
 
 
+def _begin_pipeline_preparation_telemetry(
+    config: DeviceExecutionTelemetryConfig | None,
+) -> _PipelinePreparationTelemetryRecorder | None:
+    """Begin the provider-neutral sidecar using the device opt-in's clock."""
+
+    if config is None:
+        return None
+    if not isinstance(config, DeviceExecutionTelemetryConfig):
+        raise TypeError("telemetry must be a DeviceExecutionTelemetryConfig or None.")
+    recorder = _PipelinePreparationTelemetryRecorder(config)
+    return recorder if recorder.enabled else None
+
+
 def _finish_device_execution_telemetry(
     recorder: _DeviceExecutionTelemetryRecorder | None,
 ) -> DeviceExecutionObservation | None:
@@ -452,6 +798,19 @@ def _finish_device_execution_telemetry(
         return None
     try:
         return recorder.finish()
+    except Exception:
+        return None
+
+
+def _finish_pipeline_preparation_telemetry(
+    recorder: _PipelinePreparationTelemetryRecorder | None,
+    *,
+    completed: bool,
+) -> PipelinePreparationObservation | None:
+    if recorder is None:
+        return None
+    try:
+        return recorder.finish(completed=completed)
     except Exception:
         return None
 
@@ -485,13 +844,24 @@ def _spans_end(spans: Iterable[DeviceExecutionSpan]) -> float:
     )
 
 
+def _preparation_spans_end(spans: Iterable[PipelinePreparationSpan]) -> float:
+    return max(
+        (span.start_offset_seconds + span.elapsed_seconds for span in spans),
+        default=0.0,
+    )
+
+
 __all__ = [
     "DeviceExecutionObservation",
     "DeviceExecutionPhase",
     "DeviceExecutionSpan",
     "DeviceExecutionTelemetryConfig",
     "DeviceSynchronizationPoint",
+    "DeviceTerminalMemorySnapshot",
     "DeviceTransferDirection",
     "DeviceTransferSummary",
     "MonotonicClock",
+    "PipelinePreparationObservation",
+    "PipelinePreparationPhase",
+    "PipelinePreparationSpan",
 ]

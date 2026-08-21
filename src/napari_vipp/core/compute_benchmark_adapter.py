@@ -579,9 +579,7 @@ def _benchmark_scientific_contract_digest(
                     "implementation_version": spec.implementation_version,
                     "runtime_id": spec.runtime_id,
                     "array_domain": spec.array_domain,
-                    "implementation_library_id": (
-                        spec.implementation_library_id
-                    ),
+                    "implementation_library_id": (spec.implementation_library_id),
                     "validated_environment_policy_id": (
                         spec.validated_environment_policy_id
                     ),
@@ -979,9 +977,7 @@ class _RegisteredCandidateRunner:
                 raise BenchmarkCancelled(
                     "Benchmark cancelled before host output finalization."
                 )
-            finalizer_ref = str(
-                getattr(self.spec, "host_finalizer_ref", "")
-            ).strip()
+            finalizer_ref = str(getattr(self.spec, "host_finalizer_ref", "")).strip()
             boundary_started = _read_clock(self.clock)
             if finalizer_ref:
                 finalized = apply_host_finalizer(
@@ -993,9 +989,7 @@ class _RegisteredCandidateRunner:
                     ),
                 )
                 host_result = (
-                    finalized[0]
-                    if private_call.output_port_count == 1
-                    else finalized
+                    finalized[0] if private_call.output_port_count == 1 else finalized
                 )
             else:
                 host_result = (
@@ -1263,6 +1257,33 @@ def workload_from_prepared_node_call(
     :class:`~napari_vipp.core.compute_benchmark.NodeBenchmarkService`.
     """
 
+    contract = workload_contract_from_prepared_node_call(
+        call,
+        check_abort=check_abort,
+    )
+    return replace(
+        contract,
+        facts_fingerprint=_call_facts_fingerprint(
+            call,
+            check_abort=check_abort,
+        ),
+    )
+
+
+def workload_contract_from_prepared_node_call(
+    call: PreparedNodeCall,
+    *,
+    check_abort: Callable[[], None] | None = None,
+) -> WorkloadDescriptor:
+    """Return the support contract without hashing input contents.
+
+    This descriptor contains the operation, shapes, dtypes, and resolved public
+    parameters needed for provider-free support and repair evaluation. Its
+    ``facts_fingerprint`` is deliberately empty: callers that need benchmark,
+    cache, or scientific evidence identity must use
+    :func:`workload_from_prepared_node_call` instead.
+    """
+
     if not isinstance(call, PreparedNodeCall):
         raise TypeError("call must be a PreparedNodeCall.")
     if check_abort is not None and not callable(check_abort):
@@ -1289,10 +1310,7 @@ def workload_from_prepared_node_call(
         ),
         parameters=parameters,
         resolved_spatial_ndim=resolved,
-        facts_fingerprint=_call_facts_fingerprint(
-            call,
-            check_abort=check_abort,
-        ),
+        facts_fingerprint="",
     )
 
 
@@ -1751,5 +1769,6 @@ __all__ = [
     "build_registered_node_benchmark",
     "detach_prepared_node_call",
     "operation_parity",
+    "workload_contract_from_prepared_node_call",
     "workload_from_prepared_node_call",
 ]

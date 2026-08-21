@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Features
+
+- Compute Setup now lists qualified accelerators and lets each workflow tab
+  choose Automatic or one exact runtime/device for that machine. The choice is
+  carried through scientific execution and asynchronous thumbnail statistics,
+  remains independent between tabs, and is deliberately excluded from
+  workflow files and undo history.
+
 ### Bug Fixes
 
 - Graph thumbnails now keep the last complete preview visible while full-stack
@@ -44,9 +52,75 @@
   small or cold previews on the existing pre-emptible worker. Recoverable
   presentation failures cannot change the scientific result; GPU scratch
   cleanup failure remains fatal and quarantines accelerator work.
+- Proactive GPU repair hints now use a structural workload contract instead of
+  hashing every source byte on each parameter edit. Exact benchmark,
+  qualification, optimizer, cache, and provenance identities continue to use
+  the full byte/layout fingerprint.
+- Repeated runs of an unchanged, revision-stable source now reuse its accepted
+  exact display range and value-pattern metadata. Different file series,
+  revised live sources, arbitrary mutable revision tokens, and already-exact
+  current metadata cannot borrow the cached statistics.
+- Downstream-only edits can now reuse the accepted exact scientific source
+  context for the identical cached, read-only array under a VIPP-owned stable
+  revision. The bounded provenance sidecar avoids repeatedly hashing every
+  source byte while preserving the exact context fingerprint; any changed
+  revision, binding, metadata, state, object, mutability, or provenance falls
+  back to a fresh exact hash.
+- Device plans are now bound to the exact compute request used to build them.
+  A stale runtime/device request, an unreported explicit device, a mismatched
+  capability snapshot, or an injected planner returning another device is
+  rejected before scientific transfer or node execution.
 
 ### Validation
 
+- Added opt-in, bounded interaction-latency reports for standard scientific
+  parameter controls. Reports correlate parameter invalidation, the real
+  debounce window, worker queue and delivery delays, scientific execution,
+  thumbnail-statistics queue and execution, final rendering, publication, and
+  discarded generations. Provider-neutral device spans retain exact runtime,
+  device, transfer, synchronization, and implementation identity, while the
+  tracing-disabled path remains clock-free and the reports stay out of
+  workflows, scientific provenance, compute history, and policy decisions.
+- Detached execution telemetry now separates graph restoration, cache and
+  workload preparation, accelerator setup, runtime/library probing, planning,
+  and device-plan construction before the existing transfer/operation spans.
+  Partial preparation remains visible on failure or cancellation, uses the
+  same monotonic clock as the UI report, and never changes scientific identity.
+- Added a fresh-process UI interaction diagnostic that commits real parameter
+  controls and records debounce, worker scheduling, preparation, scientific
+  device work, thumbnail calculation, rendering, publication, supersession,
+  parity, fallback, and cleanup. Large profiles include a deterministic
+  target-node-start cancellation/reuse gate; synchronized phase timing is kept
+  in a separate diagnostic run.
+- Opt-in device observations now include a timed terminal memory checkpoint
+  for every used runtime/device after all private execution scopes have
+  cleaned up while the exact accelerator lease is still held. Evidence fails
+  closed on missing or nonzero private live/reserved memory; device-wide
+  provider/JIT cache bytes remain a diagnostic rather than a false cleanup
+  failure.
+- The final RTX 5090 interaction matrix passed the exact sample, a 108 MiB
+  representative stack, a 432 MiB resident-thumbnail stack, and a separately
+  synchronized diagnostic on explicit `cuda:0`. Every accepted GPU run kept
+  exact CPU output parity, used no fallback, published only the newest result,
+  reported zero terminal private memory, and remained reusable after the
+  deterministic started-work cancellation. The 432 MiB resident path retained
+  zero logical thumbnail upload. The final artifacts cover all 137 production
+  package Python files plus four exact harness/policy/workflow/project anchors
+  under one deterministic tree digest, distinguish explicit affinity from real
+  multi-device validation, and show later Prefer-GPU large-source preparation
+  falling to roughly 0.02-0.04 s from the second same-process warm edit onward
+  under the fail-closed exact source-context reuse contract.
+- A reconstructed pre-fix provider baseline used commit `91a05a9`, the same
+  bundled Subtract Background input, and isolated empty CuPy caches. Unseen
+  Ball radii took a 1.287 s median versus 0.0155 s for revisits; the current
+  radius-independent provider took 0.0133 s for both and retained identical
+  output hashes, directly demonstrating and removing the intermittent
+  parameter-specialized compilation cliff.
+- The interactive-tuning diagnostic now requests synchronized device-phase
+  observations under Prefer GPU and refuses to publish incomplete GPU evidence.
+  This machine-local sidecar reports transfer counts and bytes, operation and
+  synchronization spans, fallback, and cleanup without treating the
+  instrumented timings as portable performance or Auto-selection evidence.
 - Added a manifest-locked interactive GPU parameter sweep covering all 18
   admitted implementations: 14 production-executed parameter or branch
   profiles, two dedicated RL/RL-TV profiles, and two fixed-contract

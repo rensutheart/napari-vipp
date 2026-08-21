@@ -66,6 +66,22 @@ class ThumbnailContrastProgress:
     indeterminate: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ThumbnailContrastStarted:
+    """Worker-thread start time sampled only for opted-in diagnostics."""
+
+    run_id: int
+    started_monotonic_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class ThumbnailContrastTerminal:
+    """Worker-thread terminal time before queued UI result delivery."""
+
+    run_id: int
+    terminal_monotonic_seconds: float
+
+
 @dataclass(frozen=True)
 class InputHistogramDistribution:
     counts: object = None
@@ -219,6 +235,8 @@ class GeneratedLayerContrastPlan:
 
 
 class _ThumbnailContrastLimitSignals(QObject):
+    started = Signal(object)
+    terminal = Signal(object)
     progress = Signal(object)
     finished = Signal(object)
 
@@ -235,7 +253,9 @@ class ThumbnailContrastLimitWorker(QRunnable):
         calculate_channel: Callable[..., object] | None = None,
         statistics_engine: object | None = None,
         compute_mode: ComputeMode = ComputeMode.AUTO,
+        device_id: str = "",
         cancel_event: threading.Event | None = None,
+        started_clock: Callable[[], float] | None = None,
     ):
         super().__init__()
         self.run_id = int(run_id)
@@ -251,10 +271,25 @@ class ThumbnailContrastLimitWorker(QRunnable):
         self._calculate_channel = calculate_channel
         self._statistics_engine = statistics_engine
         self._compute_mode = ComputeMode.parse(compute_mode)
+        self._device_id = str(device_id).strip()
         self._cancel_event = cancel_event or threading.Event()
+        self._started_clock = started_clock
         self.signals = _ThumbnailContrastLimitSignals()
 
     def run(self) -> None:
+        if self._started_clock is not None:
+            try:
+                started = self._started_clock()
+                if (
+                    not isinstance(started, bool)
+                    and isinstance(started, (int, float))
+                    and np.isfinite(float(started))
+                ):
+                    self.signals.started.emit(
+                        ThumbnailContrastStarted(self.run_id, float(started))
+                    )
+            except Exception:
+                pass
         keys = frozenset(request.key for request in self.requests)
         limits: dict[tuple, object] = {}
         statistics: dict[tuple, object] = {}
@@ -271,6 +306,7 @@ class ThumbnailContrastLimitWorker(QRunnable):
                             data_kind=item.data_kind,
                             channel_axis=item.channel_axis,
                             compute_mode=self._compute_mode,
+                            device_id=self._device_id,
                         )
                     )
                 except Exception:
@@ -330,14 +366,13 @@ class ThumbnailContrastLimitWorker(QRunnable):
                         data_kind=request.data_kind,
                         channel_axis=request.channel_axis,
                         compute_mode=self._compute_mode,
+                        device_id=self._device_id,
                     )
                     decision = self._statistics_engine.select(statistics_request)
                     backend_value = str(
                         getattr(decision.backend, "value", decision.backend)
                     )
-                    selected_backend = (
-                        "GPU" if "gpu" in backend_value else "CPU"
-                    )
+                    selected_backend = "GPU" if "gpu" in backend_value else "CPU"
                     selection_message = (
                         f"{selected_backend} selected: {decision.reason}"
                     )
@@ -493,19 +528,35 @@ class ThumbnailContrastLimitWorker(QRunnable):
                 overall_completed += value_total
 
         error = "; ".join(errors.values())
+        result = ThumbnailContrastLimitResult(
+            self.run_id,
+            keys,
+            limits,
+            error=error,
+            statistics=statistics,
+            errors=errors,
+            cancelled=cancelled,
+            cleanup_failed=cleanup_failed,
+        )
+        if self._started_clock is not None:
+            try:
+                terminal = self._started_clock()
+                if (
+                    not isinstance(terminal, bool)
+                    and isinstance(terminal, (int, float))
+                    and np.isfinite(float(terminal))
+                ):
+                    _emit_if_alive(
+                        self.signals,
+                        "terminal",
+                        ThumbnailContrastTerminal(self.run_id, float(terminal)),
+                    )
+            except Exception:
+                pass
         _emit_if_alive(
             self.signals,
             "finished",
-            ThumbnailContrastLimitResult(
-                self.run_id,
-                keys,
-                limits,
-                error=error,
-                statistics=statistics,
-                errors=errors,
-                cancelled=cancelled,
-                cleanup_failed=cleanup_failed,
-            ),
+            result,
         )
 
     def _emit_progress(self, progress: ThumbnailContrastProgress) -> bool:
@@ -582,9 +633,7 @@ class InputHistogramWorker(QRunnable):
                         int(np.asarray(counts).sum()) if counts is not None else 0
                     ),
                     display_bins=(
-                        int(np.asarray(counts).shape[-1])
-                        if counts is not None
-                        else 0
+                        int(np.asarray(counts).shape[-1]) if counts is not None else 0
                     ),
                     identity_ref=identity_ref,
                 )
@@ -920,4 +969,6 @@ __all__ = [
     "ThumbnailContrastLimitRequest",
     "ThumbnailContrastLimitResult",
     "ThumbnailContrastLimitWorker",
+    "ThumbnailContrastStarted",
+    "ThumbnailContrastTerminal",
 ]

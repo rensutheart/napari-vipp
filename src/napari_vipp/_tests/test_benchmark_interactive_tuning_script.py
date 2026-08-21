@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from napari_vipp.core.compute import ComputeMode
+from napari_vipp.core.execution import PipelineRunResult
+from napari_vipp.core.execution_telemetry import DeviceExecutionObservation
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import deserialize_workflow
 
@@ -111,12 +113,22 @@ def _fake_executor(requests):
             warnings=(),
             cleanup_succeeded=True,
         )
-        return SimpleNamespace(
-            error="",
-            cancelled=False,
-            failure=None,
+        telemetry_config = request.device_execution_telemetry
+        telemetry = (
+            None
+            if telemetry_config is None
+            else DeviceExecutionObservation(
+                started_monotonic_seconds=float(len(requests)),
+                elapsed_seconds=0.5,
+                synchronized_device_phases=(telemetry_config.synchronize_device_phases),
+            )
+        )
+        return PipelineRunResult(
+            run_id=request.run_id,
+            workflow=request.workflow,
             pipeline=pipeline,
             execution_report=report,
+            device_execution_telemetry=telemetry,
         )
 
     return execute
@@ -155,6 +167,8 @@ def test_deterministic_harness_builds_one_cold_and_cached_warm_requests(
     assert all(
         request.compute_request.mode is ComputeMode.PREFER_GPU
         and request.compute_request.device_id == "cuda:7"
+        and request.device_execution_telemetry is not None
+        and request.device_execution_telemetry.synchronize_device_phases
         for request in requests
     )
     assert [
@@ -173,6 +187,13 @@ def test_deterministic_harness_builds_one_cold_and_cached_warm_requests(
     assert document["method"]["cache_contract"] == (
         "keep-all-host-results; no cross-run device residency"
     )
+    for run in document["runs"]:
+        assert run["core_timing"]["pipeline_run_result.device_execution_telemetry"] == {
+            "started_monotonic_seconds": float(run["run_index"] + 1),
+            "elapsed_seconds": 0.5,
+            "spans": [],
+            "synchronized_device_phases": True,
+        }
 
     output = latency_script._atomic_write_json(tmp_path / "latency.json", document)
     assert json.loads(output.read_text(encoding="utf-8")) == document

@@ -36,6 +36,47 @@ class LocalSourceIdentity:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SourceRevisionToken:
+    """Identity of one VIPP-owned snapshot of a live viewer layer."""
+
+    layer_id: int
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class BundledSampleRevisionToken:
+    """Stable identity for one immutable sample from VIPP's bundled catalog."""
+
+    name: str
+    catalog_schema: str = "vipp-synthetic-samples-v1"
+
+    def __post_init__(self) -> None:
+        name = str(self.name).strip()
+        catalog_schema = str(self.catalog_schema).strip()
+        if not name or not catalog_schema:
+            raise ValueError(
+                "Bundled sample name and catalog schema must not be empty."
+            )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "catalog_schema", catalog_schema)
+
+
+def is_vipp_owned_immutable_source_revision(value: object) -> bool:
+    """Return whether ``value`` is an exact, recognized VIPP revision type.
+
+    Exact type checks deliberately reject arbitrary user tokens and subclasses.
+    These three revisions are paired with arrays that VIPP owns and marks
+    read-only before detached execution begins.
+    """
+
+    return type(value) in {
+        SourceRevisionToken,
+        LocalSourceIdentity,
+        BundledSampleRevisionToken,
+    }
+
+
 def capture_local_source_identity(
     path: str | Path,
     *,
@@ -159,9 +200,7 @@ def _directory_file_records(
         try:
             candidate_stat = candidate.stat()
         except OSError as exc:
-            raise OSError(
-                f"Could not inspect local source entry: {candidate}"
-            ) from exc
+            raise OSError(f"Could not inspect local source entry: {candidate}") from exc
         inspected += 1
         _report_progress(
             progress_callback,
@@ -234,8 +273,11 @@ def _report_progress(
 
 
 __all__ = [
+    "BundledSampleRevisionToken",
     "LocalSourceIdentity",
     "SourceChangedError",
+    "SourceRevisionToken",
     "capture_local_source_identity",
+    "is_vipp_owned_immutable_source_revision",
     "verify_local_source_identity",
 ]

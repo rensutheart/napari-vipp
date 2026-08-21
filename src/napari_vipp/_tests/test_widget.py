@@ -173,6 +173,10 @@ from napari_vipp.core.pipeline import (
 )
 from napari_vipp.core.preview import make_preview
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.source_identity import (
+    BundledSampleRevisionToken,
+    LocalSourceIdentity,
+)
 from napari_vipp.core.tables import TableData, TableState
 from napari_vipp.core.thumbnail_statistics import (
     ThumbnailStatisticsBackend,
@@ -190,6 +194,7 @@ from napari_vipp.ui.compute_benchmark_dialog import NodeBenchmarkWorkerOutcome
 from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     PipelineOptimizerWorkerOutcome,
 )
+from napari_vipp.ui.compute_setup import ComputeDeviceOption
 from napari_vipp.ui.diagnostic_workers import ThumbnailContrastProgress
 from napari_vipp.ui.file_sources import SourceFileLoadSpec
 from napari_vipp.ui.presentation_settings import ThumbnailStatisticsPolicy
@@ -2820,6 +2825,229 @@ def test_loading_v4_workflow_restores_prefer_gpu_as_global_policy(
     assert widget.compute_status_label.text().startswith("Prefer GPU")
     assert widget.compute_group.isHidden()
     assert widget.optimize_pipeline_button.isHidden()
+
+
+def test_explicit_compute_device_is_session_only_and_dormant_under_cpu(qtbot):
+    widget = VippWidget(
+        _Viewer(),
+        defer_initial_run=True,
+        initial_compute_mode=ComputeMode.PREFER_GPU,
+        initial_compute_runtime_id="cuda-cupy",
+        initial_compute_device_id="cuda:1",
+        initial_compute_device_display_name="Second RTX",
+    )
+    qtbot.addWidget(widget)
+
+    request = widget._current_compute_request()
+    assert request.runtime_id == "cuda-cupy"
+    assert request.device_id == "cuda:1"
+    document = serialize_workflow(widget.pipeline, compute_request=request)
+    assert "runtime_id" not in document["execution"]["compute"]
+    assert "device_id" not in document["execution"]["compute"]
+
+    widget._compute_mode = ComputeMode.CPU
+    cpu_request = widget._current_compute_request()
+    assert cpu_request.runtime_id == ""
+    assert cpu_request.device_id == ""
+    assert widget._compute_runtime_id == "cuda-cupy"
+    assert widget._compute_device_id == "cuda:1"
+    assert widget._compute_device_display_name == "Second RTX"
+
+
+def test_compute_device_change_recalculates_without_dirtying_workflow(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(
+        _Viewer(),
+        defer_initial_run=True,
+        initial_compute_mode=ComputeMode.PREFER_GPU,
+    )
+    qtbot.addWidget(widget)
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    undo_before = widget._history.can_undo
+    calls: list[str] = []
+    monkeypatch.setattr(
+        widget._thumbnail_statistics_engine,
+        "reset_accelerator_capability",
+        lambda: calls.append("reset-thumbnail-provider"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_clear_thumbnail_contrast_limit_state",
+        lambda: calls.append("clear-thumbnail-state"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_invalidate_compute_policy_results",
+        lambda: calls.append("invalidate-compute"),
+    )
+    monkeypatch.setattr(widget, "run_pipeline", lambda: calls.append("run"))
+
+    widget._on_compute_device_changed(
+        ComputeDeviceOption("cuda-cupy", "cuda:1", "Second RTX")
+    )
+
+    assert widget._current_compute_request().device_id == "cuda:1"
+    assert calls == [
+        "reset-thumbnail-provider",
+        "clear-thumbnail-state",
+        "invalidate-compute",
+        "run",
+    ]
+    assert widget._history.can_undo is undo_before
+    assert not session.dirty
+
+
+def test_compute_device_setter_can_seed_only_an_uncalculated_session(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(
+        _Viewer(),
+        defer_initial_run=True,
+        initial_compute_mode=ComputeMode.PREFER_GPU,
+    )
+    qtbot.addWidget(widget)
+    runs = []
+    monkeypatch.setattr(widget, "run_pipeline", lambda: runs.append(True))
+
+    assert widget.set_compute_device_selection(
+        "cuda-cupy",
+        "cuda:1",
+        "Second RTX",
+        recalculate=False,
+    )
+    assert widget._current_compute_request().device_id == "cuda:1"
+    assert runs == []
+
+    widget.pipeline.completed_node_ids.add("input")
+    with pytest.raises(RuntimeError, match="cannot change GPU selection"):
+        widget.set_compute_device_selection(
+            "cuda-cupy",
+            "cuda:0",
+            "First RTX",
+            recalculate=False,
+        )
+    assert widget._current_compute_request().device_id == "cuda:1"
+
+
+def test_compute_device_choice_is_retained_without_recalculation_under_cpu(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(
+        _Viewer(),
+        defer_initial_run=True,
+        initial_compute_mode=ComputeMode.CPU,
+    )
+    qtbot.addWidget(widget)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        widget._thumbnail_statistics_engine,
+        "reset_accelerator_capability",
+        lambda: calls.append("reset-thumbnail-provider"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_clear_thumbnail_contrast_limit_state",
+        lambda: calls.append("clear-thumbnail-state"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_invalidate_compute_policy_results",
+        lambda: calls.append("invalidate-compute"),
+    )
+    monkeypatch.setattr(widget, "run_pipeline", lambda: calls.append("run"))
+
+    widget._on_compute_device_changed(
+        ComputeDeviceOption("cuda-cupy", "cuda:1", "Second RTX")
+    )
+
+    assert calls == ["reset-thumbnail-provider", "clear-thumbnail-state"]
+    assert widget._compute_device_id == "cuda:1"
+    assert widget._current_compute_request().device_id == ""
+    assert "CPU remains active" in widget.status_label.text()
+
+
+@pytest.mark.parametrize("blocked_kind", ("busy", "unavailable"))
+def test_compute_device_change_rejects_unusable_choice_and_restores_dialog(
+    qtbot,
+    blocked_kind,
+):
+    widget = VippWidget(
+        _Viewer(),
+        defer_initial_run=True,
+        initial_compute_mode=ComputeMode.PREFER_GPU,
+        initial_compute_runtime_id="cuda-cupy",
+        initial_compute_device_id="cuda:0",
+        initial_compute_device_display_name="First RTX",
+    )
+    qtbot.addWidget(widget)
+    restored = []
+    widget._compute_setup_dialog = SimpleNamespace(
+        set_device_selection=lambda *values: restored.append(values),
+        set_device_selection_editable=lambda _enabled: None,
+    )
+    if blocked_kind == "busy":
+        widget._active_pipeline_run_id = 71
+        option = ComputeDeviceOption("cuda-cupy", "cuda:1", "Second RTX")
+    else:
+        option = ComputeDeviceOption(
+            "cuda-cupy",
+            "cuda:1",
+            "Missing RTX",
+            available=False,
+        )
+
+    widget._on_compute_device_changed(option)
+
+    assert widget._compute_device_id == "cuda:0"
+    assert restored == [("cuda-cupy", "cuda:0", "First RTX")]
+    assert widget._current_compute_request().device_id == "cuda:0"
+    widget._active_pipeline_run_id = None
+    widget._compute_setup_dialog = None
+
+
+def test_compute_device_choice_is_independent_per_workflow_tab(qtbot):
+    widget = VippWidget(
+        _Viewer(),
+        defer_initial_run=True,
+        initial_compute_mode=ComputeMode.PREFER_GPU,
+        initial_compute_runtime_id="cuda-cupy",
+        initial_compute_device_id="cuda:0",
+        initial_compute_device_display_name="First RTX",
+    )
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    first = widget._workflow_tabs.current
+    assert first is not None
+
+    widget._new_workflow()
+    second = widget._workflow_tabs.current
+    assert second is not None and second is not first
+    assert widget._compute_device_id == ""
+    widget._on_compute_device_changed(
+        ComputeDeviceOption("cuda-cupy", "cuda:1", "Second RTX")
+    )
+    assert widget._compute_device_id == "cuda:1"
+
+    first_index = widget._workflow_tabs.index_of(first.session_id)
+    assert widget._activate_workflow_tab(first_index, check_safety=False)
+    assert widget._compute_runtime_id == "cuda-cupy"
+    assert widget._compute_device_id == "cuda:0"
+    assert widget._compute_device_display_name == "First RTX"
+
+    second_index = widget._workflow_tabs.index_of(second.session_id)
+    assert widget._activate_workflow_tab(second_index, check_safety=False)
+    assert widget._compute_runtime_id == "cuda-cupy"
+    assert widget._compute_device_id == "cuda:1"
+    assert widget._compute_device_display_name == "Second RTX"
 
 
 def test_compute_policy_edits_are_directly_undoable_and_redoable(qtbot):
@@ -10998,6 +11226,10 @@ def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
     assert gaussian_card.preview.isHidden()
     assert not threshold_card.preview.isHidden()
 
+    # Preview visibility is the behavior under test. Slice contrast renders
+    # immediately, while Stack contrast intentionally waits for exact
+    # statistics and retains the previous complete thumbnail (#28).
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
     calls = []
 
     def fake_make_preview(
@@ -11321,9 +11553,161 @@ def test_large_viewer_source_defers_exact_metadata_until_background(qtbot, monke
     data = np.arange(101, dtype=np.float32)
 
     state = widget._viewer_aligned_image_state(data, {}, "large")
+    payload = widget._viewer_aligned_source_payload(SourcePayload(data, {}, "large"))
 
     assert state.value_range == "pending exact background calculation"
     assert state.value_pattern == ""
+    assert payload.image_state is not None
+    assert payload.image_state.value_range == "pending exact background calculation"
+    assert payload.image_state.value_pattern == ""
+
+
+def test_unchanged_owned_sample_reuses_exact_source_statistics(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.zeros((4, 4), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 10**9)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    data = np.arange(101, dtype=np.float32)
+    data.setflags(write=False)
+    metadata: dict[str, object] = {}
+    widget._sample_payload_cache = {
+        "large": SourcePayload(
+            data,
+            metadata,
+            "large",
+            revision_token=BundledSampleRevisionToken("large"),
+        )
+    }
+    source = widget.pipeline.nodes["input"]
+    source.params["source_mode"] = "sample"
+    source.params["sample_name"] = "large"
+
+    initial_payloads, _layers = widget._source_payloads_for_pipeline()
+    initial = initial_payloads["input"]
+    assert initial.image_state is not None
+    assert initial.image_state.value_range == "pending exact background calculation"
+    exact = image_state_from_array(data, source_name="large")
+    widget.pipeline.outputs["input"] = data
+    widget.pipeline.output_states["input"] = exact
+    widget.pipeline.node_outputs["input"] = [data]
+    widget.pipeline.node_output_states["input"] = [exact]
+    widget.pipeline.completed_node_ids.add("input")
+    widget._last_pipeline_source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        initial_payloads,
+    )
+
+    reused_payloads, _layers = widget._source_payloads_for_pipeline()
+    reused = reused_payloads["input"]
+
+    assert reused.image_state is not None
+    assert reused.image_state.value_range == exact.value_range
+    assert reused.image_state.value_pattern == exact.value_pattern
+
+
+def test_bundled_samples_have_stable_revision_tokens_and_read_only_arrays(qtbot):
+    widget = VippWidget(_Viewer(np.zeros((4, 4), dtype=np.float32)))
+    qtbot.addWidget(widget)
+
+    payloads = widget._sample_payloads()
+
+    assert payloads
+    for name, payload in payloads.items():
+        assert payload.revision_token == BundledSampleRevisionToken(name)
+        assert isinstance(payload.data, np.ndarray)
+        assert not payload.data.flags.writeable
+
+
+def test_bundled_sample_signature_distinguishes_regenerated_array(qtbot):
+    widget = VippWidget(_Viewer(np.zeros((4, 4), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    first = np.zeros((8, 8), dtype=np.uint16)
+    second = np.zeros((8, 8), dtype=np.uint16)
+    first.setflags(write=False)
+    second.setflags(write=False)
+    token = BundledSampleRevisionToken("same sample")
+
+    first_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        {"input": SourcePayload(first, {}, "same sample", revision_token=token)},
+    )
+    second_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        {"input": SourcePayload(second, {}, "same sample", revision_token=token)},
+    )
+
+    assert first_signature != second_signature
+
+
+def test_source_statistics_reuse_rejects_unrecognized_revision_tokens(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.zeros((4, 4), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 10**9)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    data = np.arange(101, dtype=np.float32)
+    payload = widget._viewer_aligned_source_payload(
+        SourcePayload(data, {}, "mutable", revision_token=object())
+    )
+    exact = image_state_from_array(data, source_name="mutable")
+    widget.pipeline.output_states["input"] = exact
+    widget.pipeline.completed_node_ids.add("input")
+    payloads = {"input": payload}
+    widget._last_pipeline_source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        payloads,
+    )
+
+    widget._reuse_cached_source_statistics(payloads)
+
+    assert payloads["input"].image_state is not None
+    assert (
+        payloads["input"].image_state.value_range
+        == "pending exact background calculation"
+    )
+
+
+def test_file_source_signature_distinguishes_pinned_series_arrays(qtbot):
+    widget = VippWidget(_Viewer(np.zeros((4, 4), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    identity = LocalSourceIdentity("file", "a" * 64, 1, 4096)
+    first = SourcePayload(
+        np.zeros((8, 8), dtype=np.uint16),
+        {},
+        "Same series name",
+        revision_token=identity,
+    )
+    second = SourcePayload(
+        np.full((8, 8), 900, dtype=np.uint16),
+        {},
+        "Same series name",
+        revision_token=identity,
+    )
+
+    first_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        {"input": first},
+    )
+    second_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        {"input": second},
+    )
+
+    assert first_signature != second_signature
 
 
 def test_background_result_from_old_live_source_revision_is_rejected(
@@ -13029,6 +13413,10 @@ def test_thumbnail_statistics_effective_policy_honors_global_compute_intent(qtbo
     widget._compute_runtime_quarantined_reason = "cleanup failed"
     assert widget._effective_thumbnail_statistics_compute_mode() is ComputeMode.CPU
 
+    widget._compute_runtime_quarantined_reason = ""
+    widget._compute_runtime_id = "future-non-cuda-runtime"
+    assert widget._effective_thumbnail_statistics_compute_mode() is ComputeMode.CPU
+
 
 def test_tiny_cpu_thumbnail_statistics_finish_inline_without_busy_ownership(
     qtbot,
@@ -13137,6 +13525,10 @@ def test_nontrivial_thumbnail_statistics_keep_background_ownership(
         if boundary == "gpu"
         else ThumbnailStatisticsPolicy.CPU
     )
+    if boundary == "gpu":
+        widget._compute_runtime_id = "cuda-cupy"
+        widget._compute_device_id = "cuda:1"
+        widget._compute_device_display_name = "Second RTX"
     pool = _QueuedThreadPool()
     widget._pipeline_thread_pool = pool
     request = widget._thumbnail_contrast_limit_request(
@@ -13153,6 +13545,7 @@ def test_nontrivial_thumbnail_statistics_keep_background_ownership(
     widget._start_thumbnail_contrast_limit_run()
 
     assert len(pool.workers) == 1
+    assert pool.workers[0]._device_id == ("cuda:1" if boundary == "gpu" else "")
     run_id = widget._active_thumbnail_contrast_run_id
     assert run_id is not None
     assert widget._thumbnail_contrast_busy_visible

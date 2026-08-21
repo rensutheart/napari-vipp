@@ -329,16 +329,25 @@ def _cached_cpu_provenance(
             reason_text="Test fixture produced this cached result on CPU.",
         )
         decisions.append(decision)
-    source_contexts = execution_module._capture_source_scientific_contexts(
+    captured_source_contexts = execution_module._capture_source_scientific_contexts(
         pipeline,
         run_request,
         cancel_callback=None,
     )
+    source_contexts = {
+        node_id: captured.scientific_context_fingerprint
+        for node_id, captured in captured_source_contexts.items()
+    }
+    source_reuse_envelopes = {
+        node_id: captured.source_reuse_envelope_fingerprint
+        for node_id, captured in captured_source_contexts.items()
+    }
     execution_module._publish_actual_compute_provenance(
         pipeline,
         run_request.compute_request,
         decisions,
         source_scientific_contexts=source_contexts,
+        source_reuse_envelope_fingerprints=source_reuse_envelopes,
         cancel_callback=None,
     )
     return dict(pipeline.node_compute_provenance)
@@ -825,9 +834,7 @@ def test_integer_otsu_wide_stack_slice_scope_executes_visible_cpu_fallback():
             compute_request=ComputeRequest(
                 mode=ComputeMode.CUSTOM,
                 node_preferences={
-                    otsu.id: (
-                        "implementation:cupy-otsu-threshold-exact-v1"
-                    )
+                    otsu.id: ("implementation:cupy-otsu-threshold-exact-v1")
                 },
                 runtime_id="cuda-cupy",
             ),
@@ -988,7 +995,20 @@ def test_accelerated_workload_omits_runtime_costes_diagnostics(monkeypatch):
 def test_cancellation_interrupts_chunked_scan_without_cache_publication(
     monkeypatch,
 ):
-    calls = _scan_spy(monkeypatch)
+    calls = []
+    cancel_event = threading.Event()
+    original_scan = execution_module._complete_array_facts
+
+    def cancel_during_scan(value, **kwargs):
+        calls.append(np.asarray(value))
+        cancel_event.set()
+        return original_scan(value, **kwargs)
+
+    monkeypatch.setattr(
+        execution_module,
+        "_complete_array_facts",
+        cancel_during_scan,
+    )
     monkeypatch.setattr(execution_module, "_FACT_SCAN_CHUNK_VALUES", 4)
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
@@ -1003,9 +1023,9 @@ def test_cancellation_interrupts_chunked_scan_without_cache_publication(
             pipeline,
             data,
             cache=cache,
-            # Allow exact source-context hashing to finish, then cancel during
-            # the deliberately tiny fact-scan chunks below.
-            cancel_event=_CancelAfterChecks(90),
+            # The patched scan raises the event only after exact source-context
+            # hashing has finished and the fact scan has begun.
+            cancel_event=cancel_event,
         ),
         cancelled_planner,
     )
@@ -1224,13 +1244,13 @@ def test_untokened_cached_boundary_never_reuses_an_unrelated_revision(
                 for node_id, states in pipeline.node_output_states.items()
             },
             cached_execution_states=dict(pipeline.node_execution_states),
-                cached_execution_messages=dict(pipeline.node_execution_messages),
-                cached_compute_provenance=_cached_cpu_provenance(
-                    pipeline,
-                    base,
-                ),
-                completed_node_ids=frozenset(pipeline.completed_node_ids),
-            )
+            cached_execution_messages=dict(pipeline.node_execution_messages),
+            cached_compute_provenance=_cached_cpu_provenance(
+                pipeline,
+                base,
+            ),
+            completed_node_ids=frozenset(pipeline.completed_node_ids),
+        )
 
     first_payloads = payloads_for(first)
     pipeline.run(
@@ -1302,13 +1322,13 @@ def test_dirty_run_scans_cached_boundary_and_keys_it_by_scientific_graph(
                 for node_id, states in pipeline.node_output_states.items()
             },
             cached_execution_states=dict(pipeline.node_execution_states),
-                cached_execution_messages=dict(pipeline.node_execution_messages),
-                cached_compute_provenance=_cached_cpu_provenance(
-                    pipeline,
-                    request,
-                ),
-                completed_node_ids=frozenset(pipeline.completed_node_ids),
-            )
+            cached_execution_messages=dict(pipeline.node_execution_messages),
+            cached_compute_provenance=_cached_cpu_provenance(
+                pipeline,
+                request,
+            ),
+            completed_node_ids=frozenset(pipeline.completed_node_ids),
+        )
 
     first_planner = _CapturingPlanner()
     first = _execute_accelerated(dirty_request(1), first_planner)
@@ -1893,12 +1913,10 @@ def _fresh_example_workloads(
         manual_node_ids=request.manual_node_ids,
         target_node_ids=request.target_node_ids,
     ).runnable_node_ids
-    host_values, states, _source_results = (
-        execution_module._initial_transaction_values(
-            pipeline,
-            request,
-            runnable,
-        )
+    host_values, states, _source_results = execution_module._initial_transaction_values(
+        pipeline,
+        request,
+        runnable,
     )
     with ComputeRegistry() as registry:
         workloads, _facts, _lineage = execution_module._assemble_workloads(
@@ -1973,8 +1991,7 @@ def test_split_channels_planning_projects_every_exact_output_port(
     assert all(state.shape == (2, 4, 5) for state in states)
     assert all(state.dtype == "uint16" for state in states)
     assert all(
-        tuple(axis.name for axis in state.axes) == ("z", "y", "x")
-        for state in states
+        tuple(axis.name for axis in state.axes) == ("z", "y", "x") for state in states
     )
     assert [state.channels[0].name for state in states] == [
         channel.name for channel in source_state.channels

@@ -627,6 +627,58 @@ def test_unavailable_gpu_falls_back_with_typed_metadata_and_closes_registry():
     assert not engine.gpu_warm
 
 
+def test_explicit_thumbnail_device_reaches_runtime_scope_and_result_metadata():
+    registry = _SuccessfulRegistry(device_ids=("cuda:0", "cuda:1"))
+    observed_scopes = []
+
+    def execution_scope(**kwargs):
+        observed_scopes.append(dict(kwargs))
+        return _Scope(registry.runtime_instance)
+
+    registry.runtime_instance.execution_scope = execution_scope
+    engine = ThumbnailStatisticsEngine(registry_factory=lambda: registry)
+
+    result = engine.calculate(
+        ThumbnailStatisticsRequest(
+            np.arange(100, dtype=np.float32),
+            compute_mode=ComputeMode.PREFER_GPU,
+            device_id="cuda:1",
+        )
+    )
+
+    assert result.actual_backend is ThumbnailStatisticsBackend.GPU_CUPY
+    assert result.device_id == "cuda:1"
+    assert observed_scopes == [
+        {
+            "device_id": "cuda:1",
+            "memory_limit_bytes": None,
+            "safety_reserve_bytes": None,
+        }
+    ]
+    assert registry.closed
+
+
+def test_missing_explicit_thumbnail_device_never_retargets_to_probe_default():
+    registry = _SuccessfulRegistry(device_ids=("cuda:0",))
+    engine = ThumbnailStatisticsEngine(registry_factory=lambda: registry)
+
+    result = engine.calculate(
+        ThumbnailStatisticsRequest(
+            np.arange(100, dtype=np.float32),
+            compute_mode=ComputeMode.PREFER_GPU,
+            device_id="cuda:9",
+        )
+    )
+
+    assert result.actual_backend is ThumbnailStatisticsBackend.CPU_NUMPY
+    assert result.runtime_id == "cuda-cupy"
+    assert result.device_id == "cuda:9"
+    assert result.fallback_reason_code == "requested_device_unavailable"
+    assert "cuda:9" in result.fallback_message
+    assert not registry.runtime_instance.scope_entered
+    assert registry.closed
+
+
 @pytest.mark.parametrize("dtype", [np.uint16, np.float32])
 def test_gpu_failure_falls_back_only_after_successful_runtime_cleanup(dtype):
     registry = _ExecutionFailureRegistry(reason_code="cuda_out_of_memory")
@@ -1039,9 +1091,10 @@ class _SuccessfulRuntime:
 
 
 class _SuccessfulRegistry:
-    def __init__(self):
+    def __init__(self, *, device_ids=("cuda:0",)):
         self.runtime_instance = _SuccessfulRuntime()
         self.closed = False
+        self.device_ids = tuple(str(device_id) for device_id in device_ids)
 
     def probe_runtime(self, _runtime_id):
         return SimpleNamespace(
@@ -1049,6 +1102,10 @@ class _SuccessfulRegistry:
             selected_device_id="cuda:0",
             reason_code="",
             message="",
+            devices=tuple(
+                SimpleNamespace(device_id=device_id)
+                for device_id in getattr(self, "device_ids", ("cuda:0",))
+            ),
         )
 
     def runtime(self, _runtime_id):

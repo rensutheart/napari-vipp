@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import napari_vipp.core.compute_benchmark_adapter as adapter_module
 from napari_vipp.core.compute import (
     BenchmarkCandidateResult,
     BenchmarkRecord,
@@ -472,6 +473,43 @@ def test_manual_rl_branches_expose_one_shared_dtype_repair_without_running_them(
     assert "parameters will not be changed" in refusals[0].message
 
 
+def test_repair_discovery_does_not_hash_pipeline_input_bytes(monkeypatch) -> None:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    image_id = next(iter(pipeline.nodes))
+    rl = pipeline.add_node("richardson_lucy_deconvolution")
+    psf = pipeline.add_node("input")
+    assert pipeline.connect(image_id, rl.id, target_port=0).success
+    assert pipeline.connect(psf.id, rl.id, target_port=1).success
+    image = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    psf_data = np.ones((3, 3), dtype=np.float32)
+    psf_data /= psf_data.sum()
+    pipeline.run(
+        image,
+        source_payloads={
+            image_id: SourcePayload(image),
+            psf.id: SourcePayload(psf_data),
+        },
+        manual_mode=MANUAL_RUN_SKIP,
+    )
+
+    def reject_hash(*_args, **_kwargs):
+        raise AssertionError("repair discovery must not hash input bytes")
+
+    monkeypatch.setattr(adapter_module, "_call_facts_fingerprint", reject_hash)
+    repairs = discover_pipeline_compute_repairs(
+        ComputeRegistry(),
+        pipeline,
+        ComputeRequest("custom"),
+        (rl.id,),
+    )
+
+    assert len(repairs) == 1
+    assert repairs[0].node_id == rl.id
+    assert repairs[0].current_dtype == "uint16"
+    assert repairs[0].target_dtype == "float32"
+
+
 def test_optimizer_returns_actionable_dtype_repair_instead_of_generic_refusal(
     tmp_path,
     monkeypatch,
@@ -512,11 +550,7 @@ def test_optimizer_returns_actionable_dtype_repair_instead_of_generic_refusal(
     with pytest.raises(PipelineOptimizationEvidenceIncomplete) as caught:
         coordinator.optimize(
             document,
-            {
-                source_id: SourcePayload(
-                    np.arange(64, dtype=np.uint16).reshape(8, 8)
-                )
-            },
+            {source_id: SourcePayload(np.arange(64, dtype=np.uint16).reshape(8, 8))},
             ComputeRequest("custom"),
             time_budget_seconds=20.0,
         )
@@ -751,11 +785,7 @@ def test_close_pipeline_validation_uses_full_fifteen_rounds(
 
     result = coordinator.optimize(
         document,
-        {
-            source_id: SourcePayload(
-                np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
-            )
-        },
+        {source_id: SourcePayload(np.arange(64 * 64, dtype=np.uint16).reshape(64, 64))},
         ComputeRequest("custom", allow_experimental=True),
         time_budget_seconds=20.0,
     )

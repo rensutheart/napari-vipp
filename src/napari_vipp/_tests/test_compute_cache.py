@@ -107,6 +107,7 @@ def test_source_cache_provenance_requires_exact_scientific_context():
         node_id="input",
         operation_id="input",
         scientific_context_fingerprint="source-v1",
+        source_reuse_envelope_fingerprint="envelope-v1",
     )
 
     assert cached_source_provenance_matches(
@@ -114,12 +115,21 @@ def test_source_cache_provenance_requires_exact_scientific_context():
         node_id="input",
         operation_id="input",
         scientific_context_fingerprint="source-v1",
+        source_reuse_envelope_fingerprint="envelope-v1",
     )
     assert not cached_source_provenance_matches(
         provenance,
         node_id="input",
         operation_id="input",
         scientific_context_fingerprint="source-v2",
+        source_reuse_envelope_fingerprint="envelope-v1",
+    )
+    assert not cached_source_provenance_matches(
+        provenance,
+        node_id="input",
+        operation_id="input",
+        scientific_context_fingerprint="source-v1",
+        source_reuse_envelope_fingerprint="envelope-v2",
     )
 
 

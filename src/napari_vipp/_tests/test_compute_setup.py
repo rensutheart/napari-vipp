@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from napari_vipp.core.compute_registry import (
     RuntimeProbeResult,
 )
 from napari_vipp.ui.compute_setup import (
+    ComputeDeviceOption,
     ComputeSetupAction,
     ComputeSetupActionKind,
     ComputeSetupState,
@@ -90,6 +92,11 @@ def test_initial_and_checking_states_are_nonblocking_action_metadata():
         ),
     )
     assert not initial.actions[0].automatic
+    assert initial.device_options == (
+        ComputeDeviceOption("", "", "Automatic (runtime default)"),
+    )
+    assert initial.default_runtime_id == ""
+    assert initial.default_device_id == ""
     assert checking.state is ComputeSetupState.CHECKING
     assert checking.busy
     assert checking.reason_code == "diagnostic_running"
@@ -98,6 +105,55 @@ def test_initial_and_checking_states_are_nonblocking_action_metadata():
     assert not checking.actions[0].enabled
     assert checking.title == "NVIDIA GPU setup · WSL 2"
     assert "responsive" in checking.details[0]
+    assert checking.device_options == initial.device_options
+
+
+def test_device_options_are_report_ordered_with_an_automatic_first_choice():
+    report = replace(
+        _report(),
+        runtime_probe=RuntimeProbeResult(
+            runtime_id="future-runtime",
+            available=True,
+            devices=(
+                RuntimeDevice("accelerator:2", "Second device", 12 * GIB),
+                RuntimeDevice("accelerator:7", "Seventh device", 48 * GIB),
+            ),
+            selected_device_id="accelerator:7",
+            reason_code="runtime_available",
+            message="Two accelerator devices are available.",
+        ),
+    )
+
+    presentation = present_compute_setup(report)
+
+    assert presentation.device_options == (
+        ComputeDeviceOption("", "", "Automatic (runtime default)"),
+        ComputeDeviceOption(
+            "future-runtime",
+            "accelerator:2",
+            "Second device",
+            12 * GIB,
+        ),
+        ComputeDeviceOption(
+            "future-runtime",
+            "accelerator:7",
+            "Seventh device",
+            48 * GIB,
+        ),
+    )
+    assert presentation.default_runtime_id == "future-runtime"
+    assert presentation.default_device_id == "accelerator:7"
+
+
+def test_device_option_requires_exact_paired_ids_and_is_immutable():
+    option = ComputeDeviceOption("future-runtime", "accelerator:1", "Device 1")
+
+    with pytest.raises(FrozenInstanceError):
+        option.display_name = "Changed"
+    with pytest.raises(ValueError, match="both be set or both be blank"):
+        ComputeDeviceOption("future-runtime", "", "Device 1")
+    with pytest.raises(ValueError, match="total_memory_bytes"):
+        ComputeDeviceOption("", "", "Automatic", -1)
 
 
 def test_available_discrete_gpu_has_separate_ram_and_vram_rows():

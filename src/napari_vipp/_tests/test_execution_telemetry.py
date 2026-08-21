@@ -8,7 +8,11 @@ from napari_vipp.core.execution_telemetry import (
     DeviceExecutionPhase,
     DeviceExecutionSpan,
     DeviceExecutionTelemetryConfig,
+    DeviceTerminalMemorySnapshot,
     DeviceTransferDirection,
+    PipelinePreparationObservation,
+    PipelinePreparationPhase,
+    PipelinePreparationSpan,
 )
 
 
@@ -90,6 +94,43 @@ def test_device_execution_observation_summarizes_directional_transfers():
     assert observation.device_to_host.all_synchronized is True
 
 
+def test_terminal_memory_snapshot_reports_only_private_pool_cleanup():
+    snapshot = DeviceTerminalMemorySnapshot(
+        runtime_id="fake-device",
+        device_id="fake:0",
+        topology="discrete",
+        device_total_bytes=4096,
+        device_free_bytes=2048,
+        runtime_live_bytes=0,
+        runtime_reserved_bytes=0,
+        out_of_pool_bytes=512,
+    )
+    observation = DeviceExecutionObservation(
+        started_monotonic_seconds=1.0,
+        elapsed_seconds=0.5,
+        terminal_memory_snapshots=(snapshot,),
+    )
+
+    assert snapshot.private_allocations_released is True
+    assert snapshot.out_of_pool_bytes == 512
+    assert observation.terminal_memory_snapshots == (snapshot,)
+
+
+def test_observation_rejects_duplicate_terminal_memory_identity():
+    snapshot = DeviceTerminalMemorySnapshot(
+        runtime_id="fake-device",
+        device_id="fake:0",
+        topology="discrete",
+    )
+
+    with pytest.raises(ValueError, match="at most one snapshot"):
+        DeviceExecutionObservation(
+            started_monotonic_seconds=1.0,
+            elapsed_seconds=0.5,
+            terminal_memory_snapshots=(snapshot, snapshot),
+        )
+
+
 @pytest.mark.parametrize(
     ("changes", "match"),
     (
@@ -141,4 +182,51 @@ def test_telemetry_configuration_validates_clock_and_barrier_flag():
     with pytest.raises(TypeError, match="boolean"):
         DeviceExecutionTelemetryConfig(  # type: ignore[arg-type]
             synchronize_device_phases=1
+        )
+
+
+def test_pipeline_preparation_observation_allows_repeated_phase_categories():
+    observation = PipelinePreparationObservation(
+        started_monotonic_seconds=2.0,
+        elapsed_seconds=1.0,
+        spans=(
+            PipelinePreparationSpan(
+                PipelinePreparationPhase.CACHE_PREPARATION,
+                0.1,
+                0.2,
+            ),
+            PipelinePreparationSpan(
+                PipelinePreparationPhase.WORKLOAD_PREPARATION,
+                0.4,
+                0.1,
+            ),
+            PipelinePreparationSpan(
+                PipelinePreparationPhase.CACHE_PREPARATION,
+                0.7,
+                0.1,
+            ),
+        ),
+    )
+
+    assert observation.completed is True
+    assert len(observation.spans_for(PipelinePreparationPhase.CACHE_PREPARATION)) == 2
+
+
+def test_pipeline_preparation_observation_rejects_overlapping_spans():
+    with pytest.raises(ValueError, match="ordered and non-overlapping"):
+        PipelinePreparationObservation(
+            started_monotonic_seconds=2.0,
+            elapsed_seconds=1.0,
+            spans=(
+                PipelinePreparationSpan(
+                    PipelinePreparationPhase.GRAPH_RESTORATION,
+                    0.1,
+                    0.5,
+                ),
+                PipelinePreparationSpan(
+                    PipelinePreparationPhase.CACHE_PREPARATION,
+                    0.4,
+                    0.1,
+                ),
+            ),
         )

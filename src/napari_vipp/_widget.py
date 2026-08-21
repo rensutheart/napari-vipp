@@ -180,6 +180,7 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.execution import (
     ResidentThumbnailStatisticsRequest as ResidentThumbnailStatisticsRequest,
 )
+from napari_vipp.core.execution_telemetry import DeviceExecutionTelemetryConfig
 from napari_vipp.core.export import (
     export_batch_runner_to_python,
     export_pipeline_to_python,
@@ -211,6 +212,14 @@ from napari_vipp.core.graph_search import (
     find_graph_matches,
 )
 from napari_vipp.core.host_memory import capture_host_memory
+from napari_vipp.core.interaction_telemetry import (
+    InteractionLatencyOutcome,
+    InteractionLatencyPhase,
+    InteractionLatencyRecorder,
+    InteractionLatencyReport,
+    InteractionLatencyTelemetryConfig,
+    InteractionResidentThumbnailStatistics,
+)
 from napari_vipp.core.io import (
     MICROSCOPE_SUFFIXES,
     AnalysisLabel,
@@ -222,6 +231,7 @@ from napari_vipp.core.io import (
     write_ome_zarr_analysis_dataset,
 )
 from napari_vipp.core.metadata import (
+    DEFERRED_VALUE_RANGE,
     ImageState,
     MetadataRow,
     apply_axis_declaration,
@@ -271,6 +281,7 @@ from napari_vipp.core.preview import (
 )
 from napari_vipp.core.snapshots import GraphSnapshot
 from napari_vipp.core.source_identity import (
+    BundledSampleRevisionToken,
     LocalSourceIdentity,
     SourceChangedError,
     capture_local_source_identity,
@@ -390,6 +401,7 @@ from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     PipelineOptimizerWorkerOutcome,
 )
 from napari_vipp.ui.compute_setup import (
+    ComputeDeviceOption,
     ComputeSetupPresentation,
     ComputeSetupState,
     ComputeSetupTone,
@@ -1291,6 +1303,9 @@ class VippWidget(QWidget):
         "_exact_workload_qualification_workflow_fingerprint",
         "_stale_compute_badge_node_ids",
         "_last_execution_report",
+        "_compute_runtime_id",
+        "_compute_device_id",
+        "_compute_device_display_name",
         "_vipp_current_step",
         "_vipp_current_nsteps",
         "_node_benchmark_dialog",
@@ -1309,6 +1324,12 @@ class VippWidget(QWidget):
         *,
         defer_initial_run: bool = False,
         initial_compute_mode: ComputeMode | str | None = None,
+        initial_compute_runtime_id: str = "",
+        initial_compute_device_id: str = "",
+        initial_compute_device_display_name: str = "",
+        interaction_latency_telemetry: (
+            InteractionLatencyTelemetryConfig | None
+        ) = None,
     ):
         """Build the workflow editor.
 
@@ -1327,15 +1348,54 @@ class VippWidget(QWidget):
         initial_compute_mode:
             Optional session-scoped compute policy to select before any work is
             evaluated.  ``None`` retains the normal Automatic policy.
+        initial_compute_runtime_id, initial_compute_device_id:
+            Optional paired machine-local accelerator IDs for the first workflow
+            session. They are never written to workflow JSON.
+        initial_compute_device_display_name:
+            Optional human-readable label for the first session's explicit
+            device.
+        interaction_latency_telemetry:
+            Explicit diagnostic opt-in for bounded, session-local parameter-edit
+            latency reports. ``None`` keeps all tracing disabled. Reports never
+            enter workflow JSON, provenance, policy, or compute history. This
+            initial trace covers standard scientific parameter controls handled
+            by :meth:`_on_param_changed`; specialized source, composite, colour,
+            and axis handlers are intentionally excluded until each can capture
+            its true pre-mutation origin.
         """
         resolved_compute_mode = (
             ComputeMode.AUTO
             if initial_compute_mode is None
             else ComputeMode.parse(initial_compute_mode)
         )
+        initial_runtime_id = str(initial_compute_runtime_id).strip()
+        initial_device_id = str(initial_compute_device_id).strip()
+        if bool(initial_runtime_id) != bool(initial_device_id):
+            raise ValueError(
+                "initial_compute_runtime_id and initial_compute_device_id must "
+                "either both be set or both be blank."
+            )
+        initial_device_display_name = str(initial_compute_device_display_name).strip()
         super().__init__(parent)
         self.viewer = viewer
         self._closing = False
+        if interaction_latency_telemetry is not None and not isinstance(
+            interaction_latency_telemetry,
+            InteractionLatencyTelemetryConfig,
+        ):
+            raise TypeError(
+                "interaction_latency_telemetry must be an "
+                "InteractionLatencyTelemetryConfig or None."
+            )
+        self._interaction_latency_recorder = (
+            InteractionLatencyRecorder(interaction_latency_telemetry)
+            if interaction_latency_telemetry is not None
+            else None
+        )
+        self._interaction_thumbnail_generations: dict[
+            int,
+            tuple[int, frozenset[tuple]],
+        ] = {}
         self._was_ever_visible = False
         self._initial_pipeline_run_started = False
         self._initial_pipeline_run_completed = False
@@ -1502,6 +1562,11 @@ class VippWidget(QWidget):
         # tiers. Optional packages remain lazy and are imported only after an
         # admitted execution request selects them.
         self._compute_mode = resolved_compute_mode
+        self._compute_runtime_id = initial_runtime_id
+        self._compute_device_id = initial_device_id
+        self._compute_device_display_name = (
+            initial_device_display_name or initial_device_id
+        )
         self._compute_fallback_policy = FallbackPolicy.VISIBLE
         self._compute_node_preferences: dict[str, NodeComputePreference] = {}
         self._compute_optimizer_locked_node_ids: set[str] = set()
@@ -2174,6 +2239,237 @@ class VippWidget(QWidget):
             self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self._initial_pipeline_run_completed = True
         return True
+
+    def recent_interaction_latency_reports(
+        self,
+    ) -> tuple[InteractionLatencyReport, ...]:
+        """Return bounded, immutable parameter-edit latency reports.
+
+        Normal widgets have tracing disabled and therefore return an empty
+        tuple. These reports are session-local diagnostics and are never stored
+        in workflow tabs, workflow JSON, provenance, or compute history. Only
+        standard scientific controls routed through :meth:`_on_param_changed`
+        are currently traced; specialized source, composite, colour, and axis
+        handlers are excluded until their mutation origins are instrumented.
+        """
+
+        recorder = self._interaction_latency_recorder
+        return () if recorder is None else recorder.recent_reports()
+
+    def _interaction_current_generation(self) -> int | None:
+        recorder = self._interaction_latency_recorder
+        return None if recorder is None else recorder.active_generation_id
+
+    def _interaction_node_has_current_result(
+        self,
+        generation_id: int | None,
+        node_id: str,
+    ) -> bool:
+        """Return whether this generation can claim the node's current output."""
+
+        recorder = self._interaction_latency_recorder
+        return bool(
+            recorder is not None
+            and generation_id is not None
+            and recorder.node_id_for_generation(generation_id) == node_id
+            and self.pipeline.node_execution_states.get(node_id) == EXECUTION_READY
+            and node_id in self.pipeline.completed_node_ids
+        )
+
+    def _supersede_interaction_for_untraced_edit(
+        self,
+        node_id: str,
+        parameter_name: str,
+    ) -> None:
+        """Detach an older trace before an excluded UI mutation can reuse it."""
+
+        recorder = self._interaction_latency_recorder
+        if recorder is None:
+            return
+        recorder.supersede_current(
+            detail=(
+                f"Excluded UI edit '{node_id}.{parameter_name}' replaced this "
+                "parameter interaction before final publication."
+            )
+        )
+
+    def _record_interaction_phase(
+        self,
+        generation_id: int | None,
+        phase: InteractionLatencyPhase,
+        *,
+        detail: str = "",
+        once: bool = False,
+    ) -> bool:
+        recorder = self._interaction_latency_recorder
+        if recorder is None:
+            return False
+        return recorder.record_phase(
+            generation_id,
+            phase,
+            detail=detail,
+            once=once,
+        )
+
+    def _finish_interaction_generation(
+        self,
+        generation_id: int | None,
+        outcome: InteractionLatencyOutcome,
+        *,
+        terminal_phase: InteractionLatencyPhase | None = None,
+        detail: str = "",
+    ) -> InteractionLatencyReport | None:
+        recorder = self._interaction_latency_recorder
+        if recorder is None:
+            return None
+        return recorder.finish_generation(
+            generation_id,
+            outcome,
+            terminal_phase=terminal_phase,
+            detail=detail,
+        )
+
+    def _interaction_device_execution_config(
+        self,
+        generation_id: int | None,
+    ) -> DeviceExecutionTelemetryConfig | None:
+        recorder = self._interaction_latency_recorder
+        if recorder is None or generation_id is None:
+            return None
+        return DeviceExecutionTelemetryConfig(
+            clock=recorder.clock,
+            synchronize_device_phases=recorder.synchronize_device_phases,
+        )
+
+    def _interaction_pipeline_terminal(
+        self,
+        result: PipelineRunResult,
+    ) -> int | None:
+        recorder = self._interaction_latency_recorder
+        if recorder is None:
+            return None
+        generation_id = recorder.generation_for_pipeline_run(result.run_id)
+        if generation_id is None:
+            return None
+        if not recorder.pipeline_run_is_terminal(generation_id, result.run_id):
+            recorder.mark_pipeline_terminal(
+                generation_id,
+                result.run_id,
+                detail=(
+                    f"pipeline run {result.run_id}; worker terminal clock unavailable"
+                ),
+            )
+        recorder.mark_pipeline_result_delivered(
+            generation_id,
+            result.run_id,
+            detail=f"pipeline run {result.run_id}",
+        )
+        recorder.attach_pre_device_execution_telemetry(
+            generation_id,
+            result.run_id,
+            getattr(result, "pre_device_execution_telemetry", None),
+        )
+        recorder.attach_device_execution_telemetry(
+            generation_id,
+            result.run_id,
+            result.device_execution_telemetry,
+        )
+        generation_node_id = recorder.node_id_for_generation(generation_id)
+        for observation in result.resident_thumbnail_statistics:
+            if observation.node_id != generation_node_id:
+                continue
+            try:
+                statistics = observation.result
+                decision_backend = getattr(
+                    statistics.decision.backend,
+                    "value",
+                    statistics.decision.backend,
+                )
+                actual_backend = getattr(
+                    statistics.actual_backend,
+                    "value",
+                    statistics.actual_backend,
+                )
+                recorder.attach_resident_thumbnail_statistics(
+                    generation_id,
+                    InteractionResidentThumbnailStatistics(
+                        pipeline_run_id=result.run_id,
+                        node_id=observation.node_id,
+                        output_port=observation.output_port,
+                        contrast_mode=observation.contrast_mode,
+                        elapsed_seconds=statistics.elapsed_seconds,
+                        intended_backend=str(decision_backend),
+                        actual_backend=str(actual_backend),
+                        algorithm_id=statistics.algorithm_id,
+                        runtime_id=statistics.runtime_id,
+                        device_id=statistics.device_id,
+                        input_path=statistics.input_path,
+                        logical_input_host_to_device_bytes=(
+                            statistics.logical_input_host_to_device_bytes
+                        ),
+                        auxiliary_host_to_device_bytes=(
+                            statistics.auxiliary_host_to_device_bytes
+                        ),
+                        device_to_host_bytes=statistics.device_to_host_bytes,
+                    ),
+                )
+            except Exception:
+                # Telemetry is best effort and can never reject a real result.
+                continue
+        if recorder.is_superseded_in_flight(generation_id):
+            self._finish_interaction_generation(
+                generation_id,
+                InteractionLatencyOutcome.SUPERSEDED_IN_FLIGHT,
+                detail=(
+                    f"Pipeline run {result.run_id} reached terminal cleanup after "
+                    "a newer parameter edit was committed."
+                ),
+            )
+        return generation_id
+
+    def _finish_interaction_without_preview_if_needed(self) -> None:
+        recorder = self._interaction_latency_recorder
+        if recorder is None:
+            return
+        generation_id = recorder.active_generation_id
+        node_id = recorder.active_node_id
+        if not recorder.has_phase(
+            generation_id,
+            InteractionLatencyPhase.PIPELINE_ACCEPTED,
+        ):
+            return
+        if not self._interaction_node_has_current_result(generation_id, node_id):
+            self._finish_interaction_generation(
+                generation_id,
+                InteractionLatencyOutcome.COMPLETED_WITHOUT_PREVIEW,
+                detail=(
+                    "The pipeline completed without producing a fresh current "
+                    f"result for edited node '{node_id}'."
+                ),
+            )
+            return
+        waiting_for_statistics = any(
+            request.node_id == node_id
+            for request in self._queued_thumbnail_contrast_limit_requests.values()
+        ) or any(
+            isinstance(key, tuple) and len(key) > 1 and str(key[1]) == node_id
+            for key in self._pending_thumbnail_contrast_limit_keys
+        )
+        if waiting_for_statistics or any(
+            mapped_generation == generation_id
+            for mapped_generation, _keys in (
+                self._interaction_thumbnail_generations.values()
+            )
+        ):
+            return
+        self._finish_interaction_generation(
+            generation_id,
+            InteractionLatencyOutcome.COMPLETED_WITHOUT_PREVIEW,
+            detail=(
+                "The accepted pipeline result had no renderable final thumbnail "
+                f"for node '{node_id}'."
+            ),
+        )
 
     def _permit_incomplete_startup_discard(self) -> None:
         """Let the staged host dispose an editor that startup never exposed.
@@ -3425,7 +3721,16 @@ class VippWidget(QWidget):
             dialog.presentation_changed.connect(
                 self._on_compute_setup_presentation_changed
             )
+            dialog.device_selection_changed.connect(self._on_compute_device_changed)
             self._compute_setup_dialog = dialog
+        dialog.set_device_selection(
+            self._compute_runtime_id,
+            self._compute_device_id,
+            self._compute_device_display_name,
+        )
+        dialog.set_device_selection_editable(
+            not bool(self._compute_policy_edit_block_reason())
+        )
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -3457,6 +3762,132 @@ class VippWidget(QWidget):
             actionable=presentation.actionable,
         )
 
+    def set_compute_device_selection(
+        self,
+        runtime_id: str = "",
+        device_id: str = "",
+        display_name: str = "",
+        *,
+        recalculate: bool = True,
+    ) -> bool:
+        """Select one machine-local device for the active workflow session.
+
+        ``recalculate=False`` is reserved for controlled construction before a
+        non-CPU session has produced any result. It lets diagnostics seed an
+        exact device after loading a workflow without publishing work under the
+        runtime default first.
+        """
+        if not isinstance(recalculate, bool):
+            raise TypeError("recalculate must be a boolean.")
+        if (
+            not recalculate
+            and self._compute_mode is not ComputeMode.CPU
+            and self.pipeline.completed_node_ids
+        ):
+            raise RuntimeError(
+                "A calculated workflow cannot change GPU selection without "
+                "recalculation."
+            )
+        runtime_id = str(runtime_id).strip()
+        device_id = str(device_id).strip()
+        display_name = str(display_name).strip()
+        option = ComputeDeviceOption(
+            runtime_id,
+            device_id,
+            display_name or (device_id if device_id else "Automatic (runtime default)"),
+        )
+        return self._apply_compute_device_selection(
+            option,
+            recalculate=recalculate,
+        )
+
+    def _on_compute_device_changed(self, option: object) -> None:
+        """Apply one machine-local device choice from the setup dialog."""
+        if isinstance(option, ComputeDeviceOption):
+            self._apply_compute_device_selection(option, recalculate=True)
+
+    def _apply_compute_device_selection(
+        self,
+        option: ComputeDeviceOption,
+        *,
+        recalculate: bool,
+    ) -> bool:
+        """Apply one validated device choice without entering undo history."""
+        if option.runtime_id and not option.available:
+            dialog = self._compute_setup_dialog
+            if dialog is not None:
+                dialog.set_device_selection(
+                    self._compute_runtime_id,
+                    self._compute_device_id,
+                    self._compute_device_display_name,
+                )
+            self._set_status(
+                "That GPU is no longer available. Choose Automatic or a device "
+                "reported by the latest verification.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return False
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            dialog = self._compute_setup_dialog
+            if dialog is not None:
+                dialog.set_device_selection(
+                    self._compute_runtime_id,
+                    self._compute_device_id,
+                    self._compute_device_display_name,
+                )
+            self._set_status(
+                blocked,
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            self._sync_compute_policy_editability()
+            return False
+        ids_changed = (
+            option.runtime_id,
+            option.device_id,
+        ) != (
+            self._compute_runtime_id,
+            self._compute_device_id,
+        )
+        self._compute_runtime_id = option.runtime_id
+        self._compute_device_id = option.device_id
+        self._compute_device_display_name = (
+            option.display_name if option.device_id else ""
+        )
+        if not ids_changed:
+            self._sync_compute_toolbar_summary()
+            return False
+        self._finish_parameter_history_group()
+        self._thumbnail_statistics_engine.reset_accelerator_capability()
+        self._clear_thumbnail_contrast_limit_state()
+        self._sync_current_workflow_tab_state()
+        if self._compute_mode is ComputeMode.CPU:
+            self._sync_compute_toolbar_summary()
+            self._set_status(
+                "Saved this GPU for the current workflow session. CPU remains "
+                "active until the compute policy changes.",
+                severity=MessageSeverity.INFO,
+            )
+            return True
+        self._invalidate_compute_policy_results()
+        self._sync_node_compute_control()
+        self._sync_compute_toolbar_summary()
+        selected = option.display_name if option.device_id else "Automatic"
+        if recalculate:
+            self._set_status(
+                f"GPU selection changed to {selected}; recalculating this workflow.",
+                severity=MessageSeverity.INFO,
+            )
+            self.run_pipeline()
+        else:
+            self._set_status(
+                f"GPU selection set to {selected} for the next calculation.",
+                severity=MessageSeverity.INFO,
+            )
+        return True
+
     def _current_compute_request(self) -> ComputeRequest:
         """Return the immutable compute intent captured by the next run."""
         valid_node_ids = set(self.pipeline.nodes)
@@ -3479,6 +3910,16 @@ class VippWidget(QWidget):
             ),
             precision_policy_id=self._compute_precision_policy_id,
             workload_policy_id=self._compute_workload_policy_id,
+            runtime_id=(
+                self._compute_runtime_id
+                if self._compute_mode is not ComputeMode.CPU
+                else ""
+            ),
+            device_id=(
+                self._compute_device_id
+                if self._compute_mode is not ComputeMode.CPU
+                else ""
+            ),
         )
 
     def _active_compute_edit_block_reason(self) -> str:
@@ -3608,6 +4049,8 @@ class VippWidget(QWidget):
             self.node_benchmark_button.setToolTip(benchmark_reason)
         if hasattr(self, "undo_action"):
             self._sync_history_actions()
+        if self._compute_setup_dialog is not None:
+            self._compute_setup_dialog.set_device_selection_editable(editable)
 
     def _on_compute_mode_changed(self, index: int) -> None:
         value = self.compute_mode_combo.itemData(int(index))
@@ -5663,23 +6106,30 @@ class VippWidget(QWidget):
         summary = compute_toolbar_summary(
             request, self._compute_status_snapshot(request)
         )
+        requested_device = ""
+        if self._compute_device_id and self._compute_mode is not ComputeMode.CPU:
+            label = self._compute_device_display_name or self._compute_device_id
+            requested_device = (
+                " Requested GPU for this workflow session: "
+                f"{label} ({self._compute_runtime_id}/{self._compute_device_id})."
+            )
         if self._stale_compute_badge_node_ids and self._compute_update_in_progress():
             status_text = f"{self.compute_mode_combo.currentText()} · updating"
             tooltip = (
                 "Previous backend badges are muted until recalculation finishes. "
-                f"{summary.tooltip}"
+                f"{summary.tooltip}{requested_device}"
             )
             tone = ComputePresentationTone.NEUTRAL
         elif self._stale_compute_badge_node_ids:
             status_text = f"{summary.text} · previous"
             tooltip = (
                 "Muted backend badges describe previous outputs; no replacement "
-                f"calculation is active. {summary.tooltip}"
+                f"calculation is active. {summary.tooltip}{requested_device}"
             )
             tone = ComputePresentationTone.NEUTRAL
         else:
             status_text = summary.text
-            tooltip = summary.tooltip
+            tooltip = summary.tooltip + requested_device
             tone = summary.tone
         self.compute_status_label.setText(status_text)
         self.compute_status_label.setToolTip(tooltip)
@@ -6038,6 +6488,9 @@ class VippWidget(QWidget):
             "_exact_workload_qualification_workflow_fingerprint": "",
             "_stale_compute_badge_node_ids": set(),
             "_last_execution_report": None,
+            "_compute_runtime_id": "",
+            "_compute_device_id": "",
+            "_compute_device_display_name": "",
             "_vipp_current_step": None,
             "_vipp_current_nsteps": None,
             "_node_benchmark_dialog": None,
@@ -6063,6 +6516,12 @@ class VippWidget(QWidget):
         self._live_source_adapter = runtime["_live_source_adapter"]
         self._live_source_node_layers = runtime["_live_source_node_layers"]
         self._set_right_panel_visible(bool(runtime["_right_panel_visible"]))
+        if self._compute_setup_dialog is not None:
+            self._compute_setup_dialog.set_device_selection(
+                self._compute_runtime_id,
+                self._compute_device_id,
+                self._compute_device_display_name,
+            )
 
     def _new_tab_live_source_adapter(
         self,
@@ -6373,6 +6832,11 @@ class VippWidget(QWidget):
         session: WorkflowTabSession,
     ) -> bool:
         """Atomically bind widget aliases and presentation to ``session``."""
+        self._supersede_interaction_for_untraced_edit(
+            "workflow_session",
+            "active_tab",
+        )
+        self._interaction_thumbnail_generations.clear()
         self.pipeline = session.pipeline
         self._history = session.history
         self._undo_stack = self._history.undo_stack
@@ -6668,7 +7132,15 @@ class VippWidget(QWidget):
             self._push_undo_snapshot(before)
             self._mark_collection_batch_workflow_stale_if_needed()
 
-    def _record_parameter_undo(self, node_id: str, name: str) -> None:
+    def _record_parameter_undo(
+        self,
+        node_id: str,
+        name: str,
+        *,
+        interaction_traced: bool = False,
+    ) -> None:
+        if not interaction_traced:
+            self._supersede_interaction_for_untraced_edit(node_id, name)
         if (
             self._isolated_tuning_node_id is not None
             and node_id != self._isolated_tuning_node_id
@@ -6716,6 +7188,11 @@ class VippWidget(QWidget):
             self.run_pipeline()
 
     def _restore_history_snapshot(self, snapshot: WorkflowHistorySnapshot) -> None:
+        self._supersede_interaction_for_untraced_edit(
+            "workflow_history",
+            "restore",
+        )
+        self._interaction_thumbnail_generations.clear()
         preserved_graph_center = self.graph_view.mapToScene(
             self.graph_view.viewport().rect().center()
         )
@@ -11502,28 +11979,43 @@ class VippWidget(QWidget):
         node_id: str,
         *,
         preserve_colocalization_scatter: bool = False,
+        interaction_traced: bool = False,
     ) -> bool:
         if node_id == self._isolated_tuning_node_id:
-            return self._mark_isolated_tuning_dirty(
+            if not interaction_traced:
+                self._supersede_interaction_for_untraced_edit(
+                    node_id,
+                    "scientific_or_topology_change",
+                )
+            marked = self._mark_isolated_tuning_dirty(
                 node_id,
                 preserve_colocalization_scatter=preserve_colocalization_scatter,
             )
-        return self._mark_pipeline_branches_dirty(
-            {node_id},
-            preserve_colocalization_scatter=preserve_colocalization_scatter,
-        )
+        else:
+            marked = self._mark_pipeline_branches_dirty(
+                {node_id},
+                preserve_colocalization_scatter=preserve_colocalization_scatter,
+                interaction_traced=interaction_traced,
+            )
+        return marked
 
     def _mark_pipeline_branches_dirty(
         self,
         node_ids,
         *,
         preserve_colocalization_scatter: bool = False,
+        interaction_traced: bool = False,
     ) -> bool:
         valid_node_ids = {
             str(node_id) for node_id in node_ids if str(node_id) in self.pipeline.nodes
         }
         if not valid_node_ids:
             return False
+        if not interaction_traced:
+            self._supersede_interaction_for_untraced_edit(
+                ",".join(sorted(valid_node_ids)),
+                "scientific_or_topology_change",
+            )
         self._preempt_thumbnail_statistics_for_scientific_edit()
         self._clear_exact_workload_qualifications()
         active_node_id = self._isolated_tuning_node_id
@@ -11951,11 +12443,22 @@ class VippWidget(QWidget):
                                 SourceRevisionToken,
                             )
                             else (
+                                "bundled-sample",
+                                payload.revision_token.catalog_schema,
+                                payload.revision_token.name,
+                                id(payload.data),
+                            )
+                            if isinstance(
+                                payload.revision_token,
+                                BundledSampleRevisionToken,
+                            )
+                            else (
                                 "file-snapshot",
                                 payload.revision_token.kind,
                                 payload.revision_token.sha256,
                                 payload.revision_token.regular_file_count,
                                 payload.revision_token.size_bytes,
+                                id(payload.data),
                             )
                             if isinstance(
                                 payload.revision_token,
@@ -12444,10 +12947,17 @@ class VippWidget(QWidget):
             payloads: dict[str, SourcePayload] = {}
             for data, metadata, _layer_type in make_sample_data():
                 name = str(metadata.get("name", "VIPP sample"))
+                if not isinstance(data, np.ndarray):
+                    raise TypeError(
+                        "Bundled VIPP samples must be NumPy arrays before "
+                        "they enter the immutable source cache."
+                    )
+                data.setflags(write=False)
                 payloads[name] = SourcePayload(
                     data,
                     metadata.get("metadata", {}),
                     name,
+                    revision_token=BundledSampleRevisionToken(name),
                 )
             self._sample_payload_cache = payloads
         return self._sample_payload_cache
@@ -12606,7 +13116,57 @@ class VippWidget(QWidget):
                 live_bindings[node_id] = layer
         self._live_source_adapter.sync_layers(layers)
         self._live_source_node_layers = live_bindings
+        self._reuse_cached_source_statistics(payloads)
         return payloads, layers
+
+    def _reuse_cached_source_statistics(
+        self,
+        payloads: dict[str, SourcePayload],
+    ) -> None:
+        """Reuse exact display statistics for one unchanged owned revision."""
+        if not payloads or self._last_pipeline_source_signature is None:
+            return
+        signature = self._pipeline_source_signature(None, None, "", payloads)
+        if signature != self._last_pipeline_source_signature:
+            return
+        for node_id, payload in tuple(payloads.items()):
+            stable_revision = isinstance(
+                payload.revision_token,
+                (
+                    SourceRevisionToken,
+                    LocalSourceIdentity,
+                    BundledSampleRevisionToken,
+                ),
+            ) and (
+                isinstance(payload.data, np.ndarray)
+                and not payload.data.flags.writeable
+            )
+            if not stable_revision or node_id not in self.pipeline.completed_node_ids:
+                continue
+            current = payload.image_state
+            cached = self.pipeline.output_states.get(node_id)
+            if not isinstance(current, ImageState) or not isinstance(
+                cached, ImageState
+            ):
+                continue
+            if (
+                current.value_range != DEFERRED_VALUE_RANGE
+                or current.shape != cached.shape
+                or current.dtype != cached.dtype
+                or cached.value_range == DEFERRED_VALUE_RANGE
+            ):
+                continue
+            payloads[node_id] = SourcePayload(
+                payload.data,
+                payload.metadata,
+                payload.name,
+                replace(
+                    current,
+                    value_range=cached.value_range,
+                    value_pattern=cached.value_pattern,
+                ),
+                payload.revision_token,
+            )
 
     def _resolve_source_payload(
         self,
@@ -12743,6 +13303,7 @@ class VippWidget(QWidget):
             payload.data,
             layer_metadata=payload.metadata,
             source_name=payload.name,
+            defer_statistics=_should_auto_background_data(payload.data),
         )
         return SourcePayload(
             payload.data,
@@ -13433,6 +13994,10 @@ class VippWidget(QWidget):
         )
         if not ordered_ids:
             return
+        self._supersede_interaction_for_untraced_edit(
+            ",".join(ordered_ids),
+            "delete_nodes",
+        )
         deleted = set(ordered_ids)
         selected_was_deleted = self._selected_node_id in deleted
         if self._isolated_tuning_node_id in deleted:
@@ -18275,6 +18840,8 @@ class VippWidget(QWidget):
         self,
         requests: tuple[ThumbnailContrastLimitRequest, ...],
         compute_mode: ComputeMode,
+        *,
+        device_id: str = "",
     ) -> bool:
         """Return whether a tiny request batch is guaranteed to stay on CPU."""
 
@@ -18294,6 +18861,7 @@ class VippWidget(QWidget):
                         data_kind=request.data_kind,
                         channel_axis=request.channel_axis,
                         compute_mode=compute_mode,
+                        device_id=device_id,
                     )
                 )
             except Exception:
@@ -18342,25 +18910,101 @@ class VippWidget(QWidget):
             max(int(np.asarray(request.data).size), 0) for request in requests
         )
         compute_mode = self._effective_thumbnail_statistics_compute_mode()
+        device_id = (
+            self._compute_device_id if compute_mode is not ComputeMode.CPU else ""
+        )
         run_inline = self._thumbnail_requests_can_run_inline_on_cpu(
             requests,
             compute_mode,
+            device_id=device_id,
         )
         if not run_inline:
             self._show_thumbnail_contrast_busy(len(requests), total_values)
+        recorder = self._interaction_latency_recorder
+        interaction_generation = (
+            None if recorder is None else recorder.active_generation_id
+        )
+        target_node_id = "" if recorder is None else recorder.active_node_id
+        target_keys = frozenset(
+            request.key for request in requests if request.node_id == target_node_id
+        )
+        trace_statistics = bool(
+            recorder is not None
+            and target_keys
+            and self._interaction_node_has_current_result(
+                interaction_generation,
+                target_node_id,
+            )
+            and recorder.has_phase(
+                interaction_generation,
+                InteractionLatencyPhase.PIPELINE_ACCEPTED,
+            )
+        )
         worker = ThumbnailContrastLimitWorker(
             run_id,
             requests,
             statistics_engine=self._thumbnail_statistics_engine,
             compute_mode=compute_mode,
+            device_id=device_id,
             cancel_event=cancel_event,
+            started_clock=(recorder.clock if trace_statistics else None),
         )
+        worker.signals.started.connect(self._on_thumbnail_contrast_limit_started)
+        worker.signals.terminal.connect(self._on_thumbnail_contrast_limit_terminal)
         worker.signals.progress.connect(self._on_thumbnail_contrast_limit_progress)
         worker.signals.finished.connect(self._on_thumbnail_contrast_limit_finished)
+        if trace_statistics:
+            self._interaction_thumbnail_generations[run_id] = (
+                int(interaction_generation),
+                target_keys,
+            )
+            self._record_interaction_phase(
+                interaction_generation,
+                InteractionLatencyPhase.THUMBNAIL_STATISTICS_QUEUED,
+                detail=f"thumbnail statistics run {run_id}",
+            )
         if run_inline:
             worker.run()
             return
         self._pipeline_thread_pool.start(worker)
+
+    def _on_thumbnail_contrast_limit_started(self, payload: object) -> None:
+        recorder = self._interaction_latency_recorder
+        if recorder is None:
+            return
+        try:
+            run_id = int(payload.run_id)
+            started = float(payload.started_monotonic_seconds)
+        except (AttributeError, TypeError, ValueError):
+            return
+        interaction = self._interaction_thumbnail_generations.get(run_id)
+        if interaction is None:
+            return
+        recorder.record_phase_at(
+            interaction[0],
+            InteractionLatencyPhase.THUMBNAIL_STATISTICS_STARTED,
+            started,
+            detail=f"thumbnail statistics run {run_id}",
+        )
+
+    def _on_thumbnail_contrast_limit_terminal(self, payload: object) -> None:
+        recorder = self._interaction_latency_recorder
+        if recorder is None:
+            return
+        try:
+            run_id = int(payload.run_id)
+            terminal = float(payload.terminal_monotonic_seconds)
+        except (AttributeError, TypeError, ValueError):
+            return
+        interaction = self._interaction_thumbnail_generations.get(run_id)
+        if interaction is None:
+            return
+        recorder.record_phase_at(
+            interaction[0],
+            InteractionLatencyPhase.THUMBNAIL_STATISTICS_FINISHED,
+            terminal,
+            detail=f"thumbnail statistics run {run_id}",
+        )
 
     def _show_thumbnail_contrast_busy(
         self,
@@ -18463,6 +19107,28 @@ class VippWidget(QWidget):
         if result.run_id != self._active_thumbnail_contrast_run_id:
             return
         run_id = result.run_id
+        interaction = self._interaction_thumbnail_generations.pop(run_id, None)
+        interaction_generation = None if interaction is None else interaction[0]
+        interaction_keys = frozenset() if interaction is None else interaction[1]
+        recorder = self._interaction_latency_recorder
+        if recorder is not None and interaction is not None:
+            if not recorder.has_phase(
+                interaction_generation,
+                InteractionLatencyPhase.THUMBNAIL_STATISTICS_FINISHED,
+            ):
+                self._record_interaction_phase(
+                    interaction_generation,
+                    InteractionLatencyPhase.THUMBNAIL_STATISTICS_FINISHED,
+                    detail=(
+                        f"thumbnail statistics run {run_id}; worker terminal "
+                        "clock unavailable"
+                    ),
+                )
+            self._record_interaction_phase(
+                interaction_generation,
+                InteractionLatencyPhase.THUMBNAIL_STATISTICS_RESULT_DELIVERED,
+                detail=f"thumbnail statistics run {run_id}",
+            )
         discarded = run_id in self._thumbnail_contrast_discarded_run_ids
         user_cancelled = self._thumbnail_user_cancel_requested_run_id == run_id
         self._thumbnail_contrast_discarded_run_ids.discard(run_id)
@@ -18504,6 +19170,48 @@ class VippWidget(QWidget):
             ):
                 self._set_pipeline_busy(False)
         self._sync_compute_policy_editability()
+
+        interaction_superseded = bool(
+            recorder is not None
+            and recorder.is_superseded_in_flight(interaction_generation)
+        )
+        interaction_failed = bool(
+            result.cleanup_failed
+            or any(key in result.errors for key in interaction_keys)
+        )
+        if result.cleanup_failed:
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.FAILED,
+                detail=(
+                    result.error
+                    or "Final thumbnail statistics failed during runtime cleanup."
+                ),
+            )
+        elif interaction_superseded:
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.SUPERSEDED_IN_FLIGHT,
+                detail=(
+                    "Thumbnail statistics reached terminal cleanup after a newer "
+                    "parameter edit was committed."
+                ),
+            )
+        elif user_cancelled or result.cancelled or discarded:
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.CANCELLED,
+                detail="Final thumbnail statistics were cancelled or discarded.",
+            )
+        elif interaction_failed:
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.FAILED,
+                detail=(
+                    result.error
+                    or "Final thumbnail statistics failed for the edited node."
+                ),
+            )
 
         if result.cleanup_failed:
             self._compute_runtime_quarantined_reason = (
@@ -18573,6 +19281,7 @@ class VippWidget(QWidget):
                 )
         if not discarded and not result.cancelled and not self._closing:
             self._update_thumbnails()
+            self._finish_interaction_without_preview_if_needed()
         if self._resume_pipeline_after_thumbnail_statistics_if_pending():
             return
         pending_batch = self._pending_collection_batch_start
@@ -19343,8 +20052,30 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(self._selected_node_id)
         if node is None or node.params.get(name) == value:
             return
-        self._record_parameter_undo(self._selected_node_id, name)
-        self.pipeline.set_param(self._selected_node_id, name, value)
+        presentation_only = (
+            node.operation_id == "split_channels" and name == "preview_channel"
+        )
+        interaction_generation = None
+        recorder = self._interaction_latency_recorder
+        if recorder is not None and not presentation_only:
+            interaction_generation = recorder.begin_generation(
+                self._selected_node_id,
+                name,
+            )
+        try:
+            self._record_parameter_undo(
+                self._selected_node_id,
+                name,
+                interaction_traced=not presentation_only,
+            )
+            self.pipeline.set_param(self._selected_node_id, name, value)
+        except Exception as exc:
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.FAILED,
+                detail=f"Parameter commit failed: {exc}",
+            )
+            raise
         if self._parameter_visibility_controls_changed(self._selected_node_id):
             self._render_parameters(self._selected_node_id)
         if (
@@ -19352,7 +20083,7 @@ class VippWidget(QWidget):
             and name == "threshold_mode"
         ):
             self._refresh_colocalization_threshold_control_states(node.id)
-        if node.operation_id == "split_channels" and name == "preview_channel":
+        if presentation_only:
             self._refresh_split_channel_display_surfaces({node.id})
             self.status_label.setText(
                 f"Showing channel {int(value) + 1} for '{node.title}'."
@@ -19370,10 +20101,26 @@ class VippWidget(QWidget):
                 "channel_2_threshold",
             }
         )
-        self._mark_pipeline_dirty(
-            self._selected_node_id,
-            preserve_colocalization_scatter=preserve_colocalization_scatter,
-        )
+        try:
+            marked_dirty = self._mark_pipeline_dirty(
+                self._selected_node_id,
+                preserve_colocalization_scatter=preserve_colocalization_scatter,
+                interaction_traced=True,
+            )
+        except Exception as exc:
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.FAILED,
+                detail=f"Parameter invalidation failed: {exc}",
+            )
+            raise
+        if not marked_dirty:
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.FAILED,
+                detail="Parameter invalidation did not find its graph node.",
+            )
+            return
         if node.operation_id == "gaussian_blur_3d":
             if name == "lock_xy" and bool(value):
                 self._sync_gaussian_blur_3d_xy_lock(
@@ -19510,6 +20257,14 @@ class VippWidget(QWidget):
                 self._selected_node_id,
                 self._current_step(),
             )
+        self._record_interaction_phase(
+            interaction_generation,
+            InteractionLatencyPhase.PARAMETER_INVALIDATION_FINISHED,
+        )
+        self._record_interaction_phase(
+            interaction_generation,
+            InteractionLatencyPhase.DEBOUNCE_STARTED,
+        )
         self._debounce_timer.start()
         self._sync_current_workflow_tab_state()
 
@@ -19722,6 +20477,11 @@ class VippWidget(QWidget):
     ) -> None:
         if self._closing:
             return
+        self._record_interaction_phase(
+            self._interaction_current_generation(),
+            InteractionLatencyPhase.DEBOUNCE_FINISHED,
+            once=True,
+        )
         if self._debounce_timer.isActive():
             # An explicit calculation consumes the pending parameter-edit run.
             # Otherwise the timer can fire while the synchronous worker's Qt
@@ -19730,6 +20490,11 @@ class VippWidget(QWidget):
             self._debounce_timer.stop()
             self._finish_debounced_parameter_history_group()
         if self._compute_runtime_quarantined_reason:
+            self._finish_interaction_generation(
+                self._interaction_current_generation(),
+                InteractionLatencyOutcome.FAILED,
+                detail=self._compute_runtime_quarantined_reason,
+            )
             self._set_status(
                 self._compute_runtime_quarantined_reason,
                 severity=MessageSeverity.ERROR,
@@ -19832,6 +20597,11 @@ class VippWidget(QWidget):
         try:
             source_payloads, source_layers = self._source_payloads_for_pipeline()
         except OptionalMicroscopeReaderError as exc:
+            self._finish_interaction_generation(
+                self._interaction_current_generation(),
+                InteractionLatencyOutcome.FAILED,
+                detail=str(exc),
+            )
             self._abandon_background_pipeline_run()
             if self._active_pipeline_run_id is None:
                 self._set_pipeline_busy(False)
@@ -19842,6 +20612,11 @@ class VippWidget(QWidget):
             )
             return
         except Exception as exc:
+            self._finish_interaction_generation(
+                self._interaction_current_generation(),
+                InteractionLatencyOutcome.FAILED,
+                detail=f"Image source error: {exc}",
+            )
             self._abandon_background_pipeline_run()
             if self._active_pipeline_run_id is None:
                 self._set_pipeline_busy(False)
@@ -19885,6 +20660,11 @@ class VippWidget(QWidget):
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
                 "no Image Source payload could be loaded",
+            )
+            self._finish_interaction_generation(
+                self._interaction_current_generation(),
+                InteractionLatencyOutcome.COMPLETED_WITHOUT_PREVIEW,
+                detail="No Image Source payload was available for publication.",
             )
             return
 
@@ -20039,6 +20819,12 @@ class VippWidget(QWidget):
         manual_node_ids: set[str] | None = None,
         target_node_ids: set[str] | None = None,
     ) -> None:
+        interaction_generation = self._interaction_current_generation()
+        self._record_interaction_phase(
+            interaction_generation,
+            InteractionLatencyPhase.PIPELINE_STARTED,
+            once=True,
+        )
         self._set_pipeline_busy(False)
         compute_request = self._current_compute_request()
         execution_plan = self.pipeline.plan_execution(
@@ -20066,6 +20852,16 @@ class VippWidget(QWidget):
                     ),
                 )
         except Exception as exc:
+            self._record_interaction_phase(
+                interaction_generation,
+                InteractionLatencyPhase.PIPELINE_TERMINAL,
+                detail=str(exc),
+            )
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.FAILED,
+                detail=str(exc),
+            )
             for node_id in manual_node_ids or ():
                 self.pipeline.set_node_execution_error(node_id, str(exc))
             self._sync_execution_ui()
@@ -20123,7 +20919,18 @@ class VippWidget(QWidget):
             compute_request,
         )
         self._complete_pipeline_run(source_signature, dirty_node_ids)
+        self._record_interaction_phase(
+            interaction_generation,
+            InteractionLatencyPhase.PIPELINE_TERMINAL,
+            once=True,
+        )
+        self._record_interaction_phase(
+            interaction_generation,
+            InteractionLatencyPhase.PIPELINE_ACCEPTED,
+            once=True,
+        )
         self._finish_pipeline_update(primary_layer, source_label)
+        self._finish_interaction_without_preview_if_needed()
 
     def _finish_pipeline_update(self, primary_layer, source_label: str) -> None:
         self._set_pipeline_busy(True, None, cancelable=False)
@@ -20273,6 +21080,11 @@ class VippWidget(QWidget):
             if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
             else:
+                self._finish_interaction_generation(
+                    self._interaction_current_generation(),
+                    InteractionLatencyOutcome.FAILED,
+                    detail=f"Image source load failed: {result.error}",
+                )
                 self._show_interactive_collection_batch_preview_error(
                     self._interactive_collection_batch_requested_index,
                     result.error,
@@ -20295,6 +21107,11 @@ class VippWidget(QWidget):
             if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
             else:
+                self._finish_interaction_generation(
+                    self._interaction_current_generation(),
+                    InteractionLatencyOutcome.FAILED,
+                    detail=f"Image source snapshot failed: {exc}",
+                )
                 self._show_interactive_collection_batch_preview_error(
                     self._interactive_collection_batch_requested_index,
                     str(exc),
@@ -20414,6 +21231,11 @@ class VippWidget(QWidget):
             target_node_ids,
         )
         if self._active_pipeline_run_id is not None:
+            self._record_interaction_phase(
+                self._interaction_current_generation(),
+                InteractionLatencyPhase.WAITING_FOR_PREVIOUS_RUN,
+                once=True,
+            )
             self._pipeline_run_pending = True
             if dirty_node_ids is None:
                 self._pending_dirty_node_ids.update(self.pipeline.nodes)
@@ -20462,6 +21284,7 @@ class VippWidget(QWidget):
 
         self._pipeline_run_serial += 1
         run_id = self._pipeline_run_serial
+        interaction_generation = self._interaction_current_generation()
         compute_request = self._current_compute_request()
         workflow = deepcopy(
             serialize_workflow(
@@ -20543,6 +21366,9 @@ class VippWidget(QWidget):
                     processing_node_id,
                 )
             ),
+            device_execution_telemetry=self._interaction_device_execution_config(
+                interaction_generation
+            ),
         )
         self._active_pipeline_run_id = run_id
         if self._active_colocalization_scatter_run_id is not None:
@@ -20570,6 +21396,8 @@ class VippWidget(QWidget):
         )
         self.status_label.setText(f"Processing '{title}' in background...")
         worker = PipelineRunWorker(request)
+        worker.signals.started.connect(self._on_background_pipeline_worker_started)
+        worker.signals.terminal.connect(self._on_background_pipeline_worker_terminal)
         worker.signals.node_started.connect(self._on_background_pipeline_node_started)
         worker.signals.node_finished.connect(self._on_background_pipeline_node_finished)
         worker.signals.progress.connect(self._on_background_pipeline_progress)
@@ -20598,6 +21426,16 @@ class VippWidget(QWidget):
                 completion_loop.quit()
 
             worker.signals.finished.connect(finish_wait)
+        recorder = self._interaction_latency_recorder
+        if recorder is not None and recorder.bind_pipeline_run(
+            interaction_generation,
+            run_id,
+        ):
+            self._record_interaction_phase(
+                interaction_generation,
+                InteractionLatencyPhase.WORKER_QUEUED,
+                detail=f"pipeline run {run_id}",
+            )
         self._pipeline_thread_pool.start(worker)
         if completion_loop is not None and not completion_observed:
             completion_loop.exec()
@@ -20606,6 +21444,58 @@ class VippWidget(QWidget):
             # Preserve the scene location the user was inspecting across this
             # responsive synchronous handoff.
             self._restore_graph_view_center(completion_graph_center)
+
+    def _on_background_pipeline_worker_started(self, payload: object) -> None:
+        recorder = self._interaction_latency_recorder
+        if recorder is None:
+            return
+        try:
+            normalized_run_id = int(getattr(payload, "run_id", payload))
+        except (TypeError, ValueError):
+            return
+        generation_id = recorder.generation_for_pipeline_run(normalized_run_id)
+        started = getattr(payload, "started_monotonic_seconds", None)
+        if started is not None:
+            recorder.record_phase_at(
+                generation_id,
+                InteractionLatencyPhase.WORKER_STARTED,
+                started,
+                detail=f"pipeline run {normalized_run_id}",
+            )
+            recorder.record_phase_at(
+                generation_id,
+                InteractionLatencyPhase.PIPELINE_STARTED,
+                started,
+                detail=f"pipeline run {normalized_run_id}",
+            )
+        else:
+            self._record_interaction_phase(
+                generation_id,
+                InteractionLatencyPhase.WORKER_STARTED,
+                detail=f"pipeline run {normalized_run_id}; worker clock unavailable",
+            )
+            self._record_interaction_phase(
+                generation_id,
+                InteractionLatencyPhase.PIPELINE_STARTED,
+                detail=f"pipeline run {normalized_run_id}; worker clock unavailable",
+            )
+
+    def _on_background_pipeline_worker_terminal(self, payload: object) -> None:
+        recorder = self._interaction_latency_recorder
+        if recorder is None:
+            return
+        try:
+            run_id = int(payload.run_id)
+            terminal = float(payload.terminal_monotonic_seconds)
+        except (AttributeError, TypeError, ValueError):
+            return
+        generation_id = recorder.generation_for_pipeline_run(run_id)
+        recorder.mark_pipeline_terminal_at(
+            generation_id,
+            run_id,
+            terminal,
+            detail=f"pipeline run {run_id}",
+        )
 
     def _on_background_pipeline_node_started(self, payload: object) -> None:
         try:
@@ -20759,6 +21649,7 @@ class VippWidget(QWidget):
         return {}
 
     def _on_background_pipeline_finished(self, result: PipelineRunResult) -> None:
+        interaction_generation = self._interaction_pipeline_terminal(result)
         if result.run_id != self._active_pipeline_run_id:
             return
         user_cancel_requested = (
@@ -20797,6 +21688,7 @@ class VippWidget(QWidget):
             )
         )
         if user_cancel_requested:
+            queued_interaction_generation = self._interaction_current_generation()
             self._pipeline_run_pending = False
             self._requeue_inflight_dirty_nodes()
             self._pending_manual_node_ids.update(
@@ -20840,12 +21732,40 @@ class VippWidget(QWidget):
                 self._interactive_collection_batch_requested_index,
                 "background processing was canceled",
             )
+            terminal_outcome = (
+                InteractionLatencyOutcome.FAILED
+                if cleanup_failed
+                else InteractionLatencyOutcome.CANCELLED
+            )
+            run_detail = (
+                "CPU/GPU cleanup failed after the user cancelled the pipeline run."
+                if cleanup_failed
+                else "The user cancelled the pipeline run."
+            )
+            self._finish_interaction_generation(
+                interaction_generation,
+                terminal_outcome,
+                detail=run_detail,
+            )
+            if queued_interaction_generation != interaction_generation:
+                self._finish_interaction_generation(
+                    queued_interaction_generation,
+                    terminal_outcome,
+                    detail=(
+                        "CPU/GPU cleanup failed and quarantined the runtime before "
+                        "the queued parameter generation could be dispatched."
+                        if cleanup_failed
+                        else "The user cancelled the queued parameter generation "
+                        "before it could be dispatched."
+                    ),
+                )
             return
         if cleanup_failed:
             # A provider that could not release its runtime is unsafe to reuse,
             # even when a CPU fallback or some upstream nodes produced valid
             # outputs.  Keep those completed results available for inspection,
             # but quarantine all further compute until the process is restarted.
+            queued_interaction_generation = self._interaction_current_generation()
             completed = self._merge_completed_pipeline_run_result(
                 result.pipeline,
                 include_processing=result.execution_report is not None,
@@ -20890,6 +21810,20 @@ class VippWidget(QWidget):
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.FAILED,
+                detail="CPU/GPU cleanup failed at pipeline terminal.",
+            )
+            if queued_interaction_generation != interaction_generation:
+                self._finish_interaction_generation(
+                    queued_interaction_generation,
+                    InteractionLatencyOutcome.FAILED,
+                    detail=(
+                        "A CPU/GPU cleanup failure quarantined the runtime before "
+                        "the queued parameter generation could be dispatched."
+                    ),
+                )
             return
         if result.source_revisions and not self._live_source_adapter.tokens_are_current(
             result.source_revisions
@@ -20959,6 +21893,11 @@ class VippWidget(QWidget):
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
                 "background processing was canceled",
+            )
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.CANCELLED,
+                detail="The pipeline run was cancelled before publication.",
             )
             return
         if result.error:
@@ -21050,6 +21989,11 @@ class VippWidget(QWidget):
             if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
             else:
+                self._finish_interaction_generation(
+                    interaction_generation,
+                    InteractionLatencyOutcome.FAILED,
+                    detail=result.error,
+                )
                 self._show_interactive_collection_batch_preview_error(
                     self._interactive_collection_batch_requested_index,
                     result.error,
@@ -21078,6 +22022,11 @@ class VippWidget(QWidget):
             if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
             else:
+                self._finish_interaction_generation(
+                    interaction_generation,
+                    InteractionLatencyOutcome.FAILED,
+                    detail="No pipeline result was returned.",
+                )
                 self._show_interactive_collection_batch_preview_error(
                     self._interactive_collection_batch_requested_index,
                     "no pipeline result was returned",
@@ -21147,7 +22096,13 @@ class VippWidget(QWidget):
             )
             QTimer.singleShot(0, self.run_pipeline)
             return
+        self._record_interaction_phase(
+            interaction_generation,
+            InteractionLatencyPhase.PIPELINE_ACCEPTED,
+            detail=f"pipeline run {result.run_id}",
+        )
         self._finish_pipeline_update(primary_layer, source_label)
+        self._finish_interaction_without_preview_if_needed()
         self._announce_compute_fallbacks()
 
     def _workflow_matches_current_pipeline(self, workflow: dict) -> bool:
@@ -21736,6 +22691,10 @@ class VippWidget(QWidget):
             self._compute_runtime_quarantined_reason
             or self._compute_mode is ComputeMode.CPU
             or self._thumbnail_statistics_policy is ThumbnailStatisticsPolicy.CPU
+            # The qualified thumbnail provider is currently CuPy-only. A
+            # future scientific runtime must not have its device ID silently
+            # interpreted as a CUDA device by this separate presentation path.
+            or self._compute_runtime_id not in {"", "cuda-cupy"}
         ):
             return ComputeMode.CPU
         if (
@@ -21976,31 +22935,68 @@ class VippWidget(QWidget):
             preview_state,
         )
         thumbnail_size = self._thumbnail_render_size()
-        preview = make_preview(
-            preview_data,
-            mode=mode,
-            current_step=self._current_step(),
-            current_step_nsteps=self._current_step_nsteps(),
-            state=preview_state,
-            channel_colors=self._node_preview_channel_colors(node_id),
-            contrast_mode=contrast_mode,
-            contrast_scope=contrast_scope,
-            contrast_limits=contrast_limits,
-            preview_size=thumbnail_size,
+        recorder = self._interaction_latency_recorder
+        interaction_generation = (
+            None if recorder is None else recorder.active_generation_id
         )
-        thumbnail = normalize_thumbnail_with_colormap(
-            preview,
-            size=thumbnail_size,
-            colormap=self.thumbnail_colormap_combo.currentText(),
-            contrast_mode=contrast_mode,
-            contrast_reference=(preview if effective_scope_is_slice else None),
-            contrast_limits=(None if preview_consumes_contrast else contrast_limits),
-            data_kind=node_output_type,
+        trace_render = bool(
+            recorder is not None
+            and recorder.active_node_id == node_id
+            and self._interaction_node_has_current_result(
+                interaction_generation,
+                node_id,
+            )
+            and recorder.has_phase(
+                interaction_generation,
+                InteractionLatencyPhase.PIPELINE_ACCEPTED,
+            )
         )
-        self.graph_view.set_thumbnail(node_id, thumbnail)
+        if trace_render:
+            self._record_interaction_phase(
+                interaction_generation,
+                InteractionLatencyPhase.THUMBNAIL_RENDER_STARTED,
+            )
+        try:
+            preview = make_preview(
+                preview_data,
+                mode=mode,
+                current_step=self._current_step(),
+                current_step_nsteps=self._current_step_nsteps(),
+                state=preview_state,
+                channel_colors=self._node_preview_channel_colors(node_id),
+                contrast_mode=contrast_mode,
+                contrast_scope=contrast_scope,
+                contrast_limits=contrast_limits,
+                preview_size=thumbnail_size,
+            )
+            thumbnail = normalize_thumbnail_with_colormap(
+                preview,
+                size=thumbnail_size,
+                colormap=self.thumbnail_colormap_combo.currentText(),
+                contrast_mode=contrast_mode,
+                contrast_reference=(preview if effective_scope_is_slice else None),
+                contrast_limits=(
+                    None if preview_consumes_contrast else contrast_limits
+                ),
+                data_kind=node_output_type,
+            )
+            self.graph_view.set_thumbnail(node_id, thumbnail)
+        except Exception as exc:
+            if trace_render:
+                self._finish_interaction_generation(
+                    interaction_generation,
+                    InteractionLatencyOutcome.FAILED,
+                    detail=f"Final thumbnail render failed: {exc}",
+                )
+            raise
         if not self.graph_view.node_has_thumbnail(node_id):
             self._clear_node_thumbnail_statistics_presentation(node_id)
             return
+        if trace_render:
+            self._record_interaction_phase(
+                interaction_generation,
+                InteractionLatencyPhase.THUMBNAIL_RENDER_FINISHED,
+            )
         self._sync_node_thumbnail_statistics_presentation(
             node_id,
             preview_data,
@@ -22009,6 +23005,13 @@ class VippWidget(QWidget):
             contrast_scope,
             node_output_type,
         )
+        if trace_render:
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.PUBLISHED,
+                terminal_phase=InteractionLatencyPhase.PUBLICATION_ACCEPTED,
+                detail=f"Accepted the final thumbnail for node '{node_id}'.",
+            )
 
     def _sync_node_thumbnail_statistics_presentation(
         self,

@@ -34,6 +34,7 @@ from napari_vipp.core.compute_benchmark_adapter import (
     build_registered_node_benchmark,
     detach_prepared_node_call,
     operation_parity,
+    workload_contract_from_prepared_node_call,
     workload_from_prepared_node_call,
 )
 from napari_vipp.core.compute_registry import (
@@ -273,9 +274,7 @@ def _fake_multi_input_registered_benchmark(
         image, psf = inputs
         calls.append(("gpu", (image.array.shape, psf.array.shape)))
         clock.advance(0.040)
-        return runtime.allocate(
-            image.array * psf.array.sum(dtype=np.float32)
-        )
+        return runtime.allocate(image.array * psf.array.sum(dtype=np.float32))
 
     monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
     monkeypatch.setattr(
@@ -415,6 +414,39 @@ def test_workload_identity_omits_runtime_private_parameters() -> None:
     }
     adapter_module._execute_cpu_reference(call)
     assert "_vipp_resolved_costes" in cpu_kwargs
+
+
+def test_workload_contract_matches_support_fields_without_hashing_bytes(
+    monkeypatch,
+) -> None:
+    values = np.arange(35, dtype=">u2").reshape(5, 7)
+    call = PreparedNodeCall(
+        "sigma-node",
+        "sigma_filter",
+        _identity_cpu,
+        (values,),
+        kwargs={
+            "radius": 2.0,
+            "channel_axis": None,
+            "resolved_spatial_ndim": 2,
+            "_vipp_private": {"ignored": True},
+        },
+    )
+    exact = workload_from_prepared_node_call(call)
+
+    def reject_hash(*_args, **_kwargs):
+        raise AssertionError("support-only workload must not hash input bytes")
+
+    monkeypatch.setattr(adapter_module, "_call_facts_fingerprint", reject_hash)
+    contract = workload_contract_from_prepared_node_call(call)
+
+    assert contract.facts_fingerprint == ""
+    assert contract.node_id == exact.node_id
+    assert contract.operation_id == exact.operation_id
+    assert contract.input_shapes == exact.input_shapes
+    assert contract.input_dtypes == exact.input_dtypes
+    assert contract.parameters == exact.parameters
+    assert contract.resolved_spatial_ndim == exact.resolved_spatial_ndim
 
 
 def test_detached_capture_and_hash_are_read_only_and_promptly_abortable():
@@ -798,9 +830,7 @@ def test_multi_input_second_transfer_failure_releases_first_input(monkeypatch):
     monkeypatch.setattr(runtime, "to_device", fail_second_transfer)
 
     with pytest.raises(RuntimeError, match="second input transfer failed"):
-        built.request.candidates[0].execute(
-            built.request.private_input_factory()
-        )
+        built.request.candidates[0].execute(built.request.private_input_factory())
 
     assert transfer_count == 2
     assert runtime.live == {}
@@ -831,9 +861,9 @@ def test_gpu_benchmark_invocations_hold_a_cancellable_device_lease(monkeypatch):
 
     NodeBenchmarkService(clock=clock).benchmark(built.request)
 
-    assert acquired == [
-        (specification.runtime_id, "cuda:0")
-    ] * len(built.observations.runs(specification.implementation_id))
+    assert acquired == [(specification.runtime_id, "cuda:0")] * len(
+        built.observations.runs(specification.implementation_id)
+    )
 
     def abort_wait() -> bool:
         raise BenchmarkCancelled("cancelled while waiting for the GPU lease")
@@ -1023,8 +1053,7 @@ def test_registered_background_benchmark_reports_each_completed_yx_plane(
     last_gpu_update = next(
         update
         for update in reversed(aborted_updates)
-        if update.implementation_id == spec.implementation_id
-        and update.operation_total
+        if update.implementation_id == spec.implementation_id and update.operation_total
     )
     assert (last_gpu_update.operation_completed, last_gpu_update.operation_total) == (
         1,

@@ -69,6 +69,16 @@ from napari_vipp.core.compute_policy import (
     evaluate_candidate_workload_support,
     propagate_output_descriptors,
 )
+from napari_vipp.core.execution_telemetry import (
+    DeviceExecutionObservation,
+    DeviceExecutionTelemetryConfig,
+    PipelinePreparationObservation,
+    PipelinePreparationPhase,
+    _begin_pipeline_preparation_telemetry,
+    _finish_pipeline_preparation_telemetry,
+    _observed_pipeline_preparation_phase,
+    _PipelinePreparationTelemetryRecorder,
+)
 from napari_vipp.core.host_memory import (
     capture_host_memory,
     preflight_host_allocation,
@@ -81,6 +91,9 @@ from napari_vipp.core.pipeline import (
     SourcePayload,
 )
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.source_identity import (
+    is_vipp_owned_immutable_source_revision,
+)
 from napari_vipp.core.thumbnail_statistics import (
     EXACT_FLOAT32_MINMAX_GPU_ALGORITHM_ID,
     EXACT_FLOAT32_PERCENTILE_GPU_ALGORITHM_ID,
@@ -128,6 +141,14 @@ _EXACT_HOST_AXIS_CONTRACT_OPERATIONS = frozenset(
         "split_channels",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _CapturedSourceScientificContext:
+    """Exact source identity plus its cheap, byte-excluding reuse proof."""
+
+    scientific_context_fingerprint: str
+    source_reuse_envelope_fingerprint: str
 
 
 @dataclass(slots=True)
@@ -354,7 +375,12 @@ def _normalized_resident_thumbnail_observations(
 
 @dataclass(frozen=True, slots=True)
 class PipelineRunRequest:
-    """Graph document, stable inputs, caches, and one execution policy."""
+    """Graph document, stable inputs, caches, and one execution policy.
+
+    ``device_execution_telemetry`` is a volatile diagnostic opt-in for both
+    detached preparation and device execution. It is not part of workflow
+    serialization, scientific policy, or cache identity.
+    """
 
     run_id: int
     workflow: dict
@@ -407,6 +433,11 @@ class PipelineRunRequest:
     )
     resident_thumbnail_statistics_request: ResidentThumbnailStatisticsRequest | None = (
         field(default=None, repr=False, compare=False)
+    )
+    device_execution_telemetry: DeviceExecutionTelemetryConfig | None = field(
+        default=None,
+        repr=False,
+        compare=False,
     )
 
     def __post_init__(self) -> None:
@@ -528,6 +559,15 @@ class PipelineRunRequest:
                 "resident_thumbnail_statistics_request must be a "
                 "ResidentThumbnailStatisticsRequest or None."
             )
+        device_telemetry = self.device_execution_telemetry
+        if device_telemetry is not None and not isinstance(
+            device_telemetry,
+            DeviceExecutionTelemetryConfig,
+        ):
+            raise TypeError(
+                "device_execution_telemetry must be a "
+                "DeviceExecutionTelemetryConfig or None."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,7 +673,14 @@ class ResidentThumbnailStatisticsCleanupError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class PipelineRunResult:
-    """Success, cancellation, or explicit error from one execution attempt."""
+    """Success, cancellation, or explicit error from one execution attempt.
+
+    Preparation telemetry is completed immediately before scientific execution
+    starts, or returned as a partial observation when preparation fails.
+    Device telemetry is present only when an opted-in accelerated executor
+    returns a completed result, including a visible CPU fallback. Exceptional
+    aborts do not expose the lower-level device recorder's partial observation.
+    """
 
     run_id: int
     workflow: dict
@@ -647,6 +694,16 @@ class PipelineRunResult:
         ResidentThumbnailStatisticsObservation,
         ...,
     ] = ()
+    device_execution_telemetry: DeviceExecutionObservation | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    pre_device_execution_telemetry: PipelinePreparationObservation | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -656,6 +713,24 @@ class PipelineRunResult:
                 self.resident_thumbnail_statistics
             ),
         )
+        device_telemetry = self.device_execution_telemetry
+        if device_telemetry is not None and not isinstance(
+            device_telemetry,
+            DeviceExecutionObservation,
+        ):
+            raise TypeError(
+                "device_execution_telemetry must be a "
+                "DeviceExecutionObservation or None."
+            )
+        preparation_telemetry = self.pre_device_execution_telemetry
+        if preparation_telemetry is not None and not isinstance(
+            preparation_telemetry,
+            PipelinePreparationObservation,
+        ):
+            raise TypeError(
+                "pre_device_execution_telemetry must be a "
+                "PipelinePreparationObservation or None."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -723,6 +798,14 @@ def execute_pipeline_request(
     timing_warnings: list[str] = []
     resident_thumbnail_statistics: list[ResidentThumbnailStatisticsObservation] = []
     resident_thumbnail_observer_seconds = [0.0]
+    device_execution_telemetry: DeviceExecutionObservation | None = None
+    preparation_recorder = _begin_pipeline_preparation_telemetry(
+        request.device_execution_telemetry
+    )
+    pre_device_execution_telemetry: PipelinePreparationObservation | None = None
+    cancel_callback = (
+        request.cancel_event.is_set if request.cancel_event is not None else None
+    )
 
     def call_observer(callback, *args) -> None:
         nonlocal observer_seconds
@@ -756,78 +839,110 @@ def execute_pipeline_request(
         )
     )
     try:
-        workflow = deserialize_workflow(deepcopy(request.workflow))
-        pipeline = PrototypePipeline()
-        pipeline.restore_graph(
-            workflow["nodes"],
-            workflow["connections"],
-            workflow.get("output_tunnels", ()),
-        )
-        cancel_callback = (
-            request.cancel_event.is_set if request.cancel_event is not None else None
-        )
-        source_scientific_contexts = _capture_source_scientific_contexts(
-            pipeline,
-            request,
-            cancel_callback=cancel_callback,
-        )
-        registered_specs = tuple(getattr(compute_registry, "implementation_specs", ()))
-        _hydrate_cached_pipeline_outputs(
-            pipeline,
-            request,
-            implementation_specs=registered_specs,
-            source_scientific_contexts=source_scientific_contexts,
-            cancel_callback=cancel_callback,
-        )
-        timing_schedule = pipeline.plan_execution(
-            request.dirty_node_ids,
-            manual_mode=MANUAL_RUN_SKIP,
-            manual_node_ids=request.manual_node_ids,
-            target_node_ids=request.target_node_ids,
-        )
-        timing_runnable_node_ids = frozenset(
-            node_id
-            for node_id in timing_schedule.runnable_node_ids
-            if pipeline.operation_spec(pipeline.nodes[node_id].operation_id).has_input
-        )
-        if request.performance_history_path is not None:
-            try:
-                timing_workload_fingerprint = _pipeline_timing_workload_fingerprint(
-                    pipeline,
-                    timing_runnable_node_ids,
-                    retain_node_ids=request.retain_node_ids,
-                    prune_unretained=request.prune_unretained,
-                    manual_node_ids=request.manual_node_ids,
-                    target_node_ids=request.target_node_ids,
-                    compute_request=request.compute_request,
-                    source_scientific_contexts=source_scientific_contexts,
-                    cancel_callback=cancel_callback,
-                )
-                if timing_workload_fingerprint:
-                    timing_store = JsonPipelineTimingStore(
-                        request.performance_history_path
+        with _observed_pipeline_preparation_phase(
+            preparation_recorder,
+            PipelinePreparationPhase.GRAPH_RESTORATION,
+        ):
+            _check_fact_scan_cancelled(cancel_callback)
+            workflow = deserialize_workflow(deepcopy(request.workflow))
+            pipeline = PrototypePipeline()
+            pipeline.restore_graph(
+                workflow["nodes"],
+                workflow["connections"],
+                workflow.get("output_tunnels", ()),
+            )
+        with _observed_pipeline_preparation_phase(
+            preparation_recorder,
+            PipelinePreparationPhase.CACHE_PREPARATION,
+        ):
+            _check_fact_scan_cancelled(cancel_callback)
+            captured_source_scientific_contexts = _capture_source_scientific_contexts(
+                pipeline,
+                request,
+                cancel_callback=cancel_callback,
+            )
+            source_scientific_contexts = {
+                node_id: captured.scientific_context_fingerprint
+                for node_id, captured in captured_source_scientific_contexts.items()
+            }
+            source_reuse_envelope_fingerprints = {
+                node_id: captured.source_reuse_envelope_fingerprint
+                for node_id, captured in captured_source_scientific_contexts.items()
+            }
+            registered_specs = tuple(
+                getattr(compute_registry, "implementation_specs", ())
+            )
+            _hydrate_cached_pipeline_outputs(
+                pipeline,
+                request,
+                implementation_specs=registered_specs,
+                source_scientific_contexts=source_scientific_contexts,
+                source_reuse_envelope_fingerprints=(source_reuse_envelope_fingerprints),
+                cancel_callback=cancel_callback,
+            )
+        with _observed_pipeline_preparation_phase(
+            preparation_recorder,
+            PipelinePreparationPhase.WORKLOAD_PREPARATION,
+        ):
+            _check_fact_scan_cancelled(cancel_callback)
+            timing_schedule = pipeline.plan_execution(
+                request.dirty_node_ids,
+                manual_mode=MANUAL_RUN_SKIP,
+                manual_node_ids=request.manual_node_ids,
+                target_node_ids=request.target_node_ids,
+            )
+            timing_runnable_node_ids = frozenset(
+                node_id
+                for node_id in timing_schedule.runnable_node_ids
+                if pipeline.operation_spec(
+                    pipeline.nodes[node_id].operation_id
+                ).has_input
+            )
+        with _observed_pipeline_preparation_phase(
+            preparation_recorder,
+            PipelinePreparationPhase.CACHE_PREPARATION,
+        ):
+            _check_fact_scan_cancelled(cancel_callback)
+            if request.performance_history_path is not None:
+                try:
+                    timing_workload_fingerprint = _pipeline_timing_workload_fingerprint(
+                        pipeline,
+                        timing_runnable_node_ids,
+                        retain_node_ids=request.retain_node_ids,
+                        prune_unretained=request.prune_unretained,
+                        manual_node_ids=request.manual_node_ids,
+                        target_node_ids=request.target_node_ids,
+                        compute_request=request.compute_request,
+                        source_scientific_contexts=source_scientific_contexts,
+                        cancel_callback=cancel_callback,
                     )
-                    timing_host_environment_fingerprint = host_performance_fingerprint()
-                    timing_execution_surface = (
-                        "direct-cpu-v1"
-                        if request.compute_request.mode is ComputeMode.CPU
-                        else (
-                            "planned-borrowed-registry-v1"
-                            if compute_registry is not None
-                            else "planned-owned-registry-v1"
+                    if timing_workload_fingerprint:
+                        timing_store = JsonPipelineTimingStore(
+                            request.performance_history_path
                         )
+                        timing_host_environment_fingerprint = (
+                            host_performance_fingerprint()
+                        )
+                        timing_execution_surface = (
+                            "direct-cpu-v1"
+                            if request.compute_request.mode is ComputeMode.CPU
+                            else (
+                                "planned-borrowed-registry-v1"
+                                if compute_registry is not None
+                                else "planned-owned-registry-v1"
+                            )
+                        )
+                except OperationCancelled:
+                    raise
+                except Exception as exc:
+                    timing_store = None
+                    timing_workload_fingerprint = ""
+                    timing_host_environment_fingerprint = ""
+                    timing_execution_surface = ""
+                    timing_warnings.append(
+                        "VIPP could not prepare local completed-run timing history; "
+                        f"this run will continue without it ({exc})."
                     )
-            except OperationCancelled:
-                raise
-            except Exception as exc:
-                timing_store = None
-                timing_workload_fingerprint = ""
-                timing_host_environment_fingerprint = ""
-                timing_execution_surface = ""
-                timing_warnings.append(
-                    "VIPP could not prepare local completed-run timing history; "
-                    f"this run will continue without it ({exc})."
-                )
 
         def publish_node_result(node_id: str) -> None:
             if observed_node_finished_callback is None:
@@ -860,6 +975,16 @@ def execute_pipeline_request(
 
         run_started = perf_counter() if timing_store is not None else None
         if request.compute_request.mode is ComputeMode.CPU:
+            if cancel_callback is not None and cancel_callback():
+                with _observed_pipeline_preparation_phase(
+                    preparation_recorder,
+                    PipelinePreparationPhase.WORKLOAD_PREPARATION,
+                ):
+                    _check_fact_scan_cancelled(cancel_callback)
+            pre_device_execution_telemetry = _finish_pipeline_preparation_telemetry(
+                preparation_recorder,
+                completed=True,
+            )
             try:
                 pipeline.run(
                     request.input_data,
@@ -893,6 +1018,9 @@ def execute_pipeline_request(
                         request,
                         completed_cpu_node_ids,
                         source_scientific_contexts=source_scientific_contexts,
+                        source_reuse_envelope_fingerprints=(
+                            source_reuse_envelope_fingerprints
+                        ),
                     )
                 except Exception:
                     # Provenance publication is presentation/cache metadata and
@@ -910,6 +1038,7 @@ def execute_pipeline_request(
                 request,
                 timing_schedule.runnable_node_ids,
                 source_scientific_contexts=source_scientific_contexts,
+                source_reuse_envelope_fingerprints=(source_reuse_envelope_fingerprints),
             )
             execution_report = ExecutionReport(
                 request=request.compute_request,
@@ -917,7 +1046,10 @@ def execute_pipeline_request(
                 actual_decisions=actual_decisions,
             )
         else:
-            execution_report = _execute_accelerated_pipeline(
+            (
+                execution_report,
+                device_execution_telemetry,
+            ) = _execute_accelerated_pipeline(
                 pipeline,
                 request,
                 node_started_callback=observed_node_started_callback,
@@ -927,12 +1059,14 @@ def execute_pipeline_request(
                 cancel_callback=cancel_callback,
                 compute_registry=compute_registry,
                 compute_planner=compute_planner,
+                preparation_telemetry=preparation_recorder,
                 array_facts_cache=(
                     request.array_facts_cache
                     if array_facts_cache is None
                     else array_facts_cache
                 ),
                 source_scientific_contexts=source_scientific_contexts,
+                source_reuse_envelope_fingerprints=(source_reuse_envelope_fingerprints),
                 timing_store=timing_store,
                 timing_workload_fingerprint=timing_workload_fingerprint,
                 timing_host_environment_fingerprint=(
@@ -959,6 +1093,12 @@ def execute_pipeline_request(
             cancelled=True,
             source_revisions=request.source_revisions,
             failure=failure,
+            pre_device_execution_telemetry=(
+                _finish_pipeline_preparation_telemetry(
+                    preparation_recorder,
+                    completed=False,
+                )
+            ),
         )
     except Exception as exc:
         failure = _pipeline_execution_failure(exc)
@@ -974,6 +1114,12 @@ def execute_pipeline_request(
             source_revisions=request.source_revisions,
             execution_report=execution_report,
             failure=failure,
+            pre_device_execution_telemetry=(
+                _finish_pipeline_preparation_telemetry(
+                    preparation_recorder,
+                    completed=False,
+                )
+            ),
         )
     assert execution_report is not None
     if timing_warnings:
@@ -1059,6 +1205,14 @@ def execute_pipeline_request(
         source_revisions=request.source_revisions,
         execution_report=execution_report,
         resident_thumbnail_statistics=tuple(resident_thumbnail_statistics),
+        device_execution_telemetry=device_execution_telemetry,
+        pre_device_execution_telemetry=(
+            pre_device_execution_telemetry
+            or _finish_pipeline_preparation_telemetry(
+                preparation_recorder,
+                completed=True,
+            )
+        ),
     )
 
 
@@ -1200,75 +1354,90 @@ def _execute_accelerated_pipeline(
     cancel_callback: Callable[[], bool] | None,
     compute_registry: ComputeRegistry | None,
     compute_planner: ComputePlanner | None,
+    preparation_telemetry: _PipelinePreparationTelemetryRecorder | None,
     array_facts_cache: ArrayFactsCache | None,
     source_scientific_contexts: Mapping[str, str],
+    source_reuse_envelope_fingerprints: Mapping[str, str],
     timing_store: JsonPipelineTimingStore | None,
     timing_workload_fingerprint: str,
     timing_host_environment_fingerprint: str,
     timing_execution_surface: str,
     resident_thumbnail_statistics: list[ResidentThumbnailStatisticsObservation],
     resident_observer_seconds: list[float],
-) -> ExecutionReport:
+) -> tuple[ExecutionReport, DeviceExecutionObservation | None]:
     """Plan and atomically commit one non-CPU headless execution."""
-    # Accelerator modules remain behind this branch so the default CPU path
-    # neither constructs a registry nor imports any provider-facing executor.
-    from napari_vipp.core.compute_registry import ComputeRegistry
-    from napari_vipp.core.device_execution import (
-        CPU_RUNTIME_ID,
-        execute_device_plan,
-        plan_device_execution,
-    )
-
     owned_registry = compute_registry is None
-    registry = ComputeRegistry() if owned_registry else compute_registry
-    assert registry is not None
-    planner = compute_planner or _default_compute_planner()
+    registry = compute_registry
     closed_cleanly = True
     active_error: BaseException | None = None
     history_warnings: list[str] = []
     try:
+        with _observed_pipeline_preparation_phase(
+            preparation_telemetry,
+            PipelinePreparationPhase.ACCELERATOR_SETUP,
+        ):
+            # Coalesced/queued work must not pay cold accelerator imports or
+            # registry construction after it is already obsolete.
+            _check_fact_scan_cancelled(cancel_callback)
+            # Accelerator modules remain behind this branch so the default CPU
+            # path neither constructs a registry nor imports a provider-facing
+            # executor. Their first-use import cost is nevertheless attributed.
+            from napari_vipp.core.compute_registry import ComputeRegistry
+            from napari_vipp.core.device_execution import (
+                CPU_RUNTIME_ID,
+                execute_device_plan,
+                plan_device_execution,
+            )
+
+            registry = ComputeRegistry() if owned_registry else registry
+            assert registry is not None
+            planner = compute_planner or _default_compute_planner()
         # A request cancelled before execution starts must not publish even its
         # source boundary through the incremental-result callback.  Source
         # publication remains intentionally early for real planning failures.
-        _check_fact_scan_cancelled(cancel_callback)
-        schedule = pipeline.plan_execution(
-            request.dirty_node_ids,
-            manual_mode=MANUAL_RUN_SKIP,
-            manual_node_ids=request.manual_node_ids,
-            target_node_ids=request.target_node_ids,
-        )
-        execution = pipeline.prepare_execution(
-            request.dirty_node_ids,
-            manual_mode=MANUAL_RUN_SKIP,
-            manual_node_ids=request.manual_node_ids,
-            target_node_ids=request.target_node_ids,
-            retain_node_ids=request.retain_node_ids,
-            prune_unretained=request.prune_unretained,
-        )
-        if execution.execution_plan.runnable_node_ids != schedule.runnable_node_ids:
-            raise RuntimeError(
-                "Pipeline execution changed between compute planning and commit."
+        with _observed_pipeline_preparation_phase(
+            preparation_telemetry,
+            PipelinePreparationPhase.WORKLOAD_PREPARATION,
+        ):
+            _check_fact_scan_cancelled(cancel_callback)
+            schedule = pipeline.plan_execution(
+                request.dirty_node_ids,
+                manual_mode=MANUAL_RUN_SKIP,
+                manual_node_ids=request.manual_node_ids,
+                target_node_ids=request.target_node_ids,
             )
-        host_values, state_by_port, source_results = _initial_transaction_values(
-            pipeline,
-            request,
-            schedule.runnable_node_ids,
-        )
-        # Source boundaries are authoritative inputs rather than transformed
-        # scientific results. Commit them before accelerator planning so a
-        # downstream eligibility/axis error can still present the exact source
-        # and let the user repair the graph. All operation nodes remain inside
-        # the atomic device transaction below.
-        for node_id, results in source_results.items():
-            if node_id not in execution.remaining_node_ids:
-                continue
-            pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
-            pipeline.node_execution_messages[node_id] = ""
-            if node_started_callback is not None:
-                node_started_callback(node_id)
-            pipeline.commit_node_results(execution, node_id, results)
-            if node_finished_callback is not None:
-                node_finished_callback(node_id)
+            execution = pipeline.prepare_execution(
+                request.dirty_node_ids,
+                manual_mode=MANUAL_RUN_SKIP,
+                manual_node_ids=request.manual_node_ids,
+                target_node_ids=request.target_node_ids,
+                retain_node_ids=request.retain_node_ids,
+                prune_unretained=request.prune_unretained,
+            )
+            if execution.execution_plan.runnable_node_ids != schedule.runnable_node_ids:
+                raise RuntimeError(
+                    "Pipeline execution changed between compute planning and commit."
+                )
+            host_values, state_by_port, source_results = _initial_transaction_values(
+                pipeline,
+                request,
+                schedule.runnable_node_ids,
+            )
+            # Source boundaries are authoritative inputs rather than transformed
+            # scientific results. Commit them before accelerator planning so a
+            # downstream eligibility/axis error can still present the exact source
+            # and let the user repair the graph. All operation nodes remain inside
+            # the atomic device transaction below.
+            for node_id, results in source_results.items():
+                if node_id not in execution.remaining_node_ids:
+                    continue
+                pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
+                pipeline.node_execution_messages[node_id] = ""
+                if node_started_callback is not None:
+                    node_started_callback(node_id)
+                pipeline.commit_node_results(execution, node_id, results)
+                if node_finished_callback is not None:
+                    node_finished_callback(node_id)
         workloads, array_facts, preflight_environment = _build_workloads(
             pipeline,
             schedule.runnable_node_ids,
@@ -1278,6 +1447,7 @@ def _execute_accelerated_pipeline(
             request,
             cancel_callback=cancel_callback,
             array_facts_cache=array_facts_cache,
+            preparation_telemetry=preparation_telemetry,
         )
         effective_compute_request = request.compute_request
         timing_choice: PipelineTimingChoice | None = None
@@ -1290,126 +1460,178 @@ def _execute_accelerated_pipeline(
             and timing_execution_surface
         ):
             try:
-                candidate_choice = timing_store.choose(
-                    workload_fingerprint=timing_workload_fingerprint,
-                    host_environment_fingerprint=(timing_host_environment_fingerprint),
-                    accelerator_environment_fingerprint=(
-                        preflight_environment.fingerprint
-                    ),
-                    execution_surface=timing_execution_surface,
-                )
-                coverage = timing_store.coverage(
-                    workload_fingerprint=timing_workload_fingerprint,
-                    host_environment_fingerprint=(timing_host_environment_fingerprint),
-                    accelerator_environment_fingerprint=(
-                        preflight_environment.fingerprint
-                    ),
-                    execution_surface=timing_execution_surface,
-                )
+                with _observed_pipeline_preparation_phase(
+                    preparation_telemetry,
+                    PipelinePreparationPhase.COMPUTE_PLANNING,
+                ):
+                    _check_fact_scan_cancelled(cancel_callback)
+                    candidate_choice = timing_store.choose(
+                        workload_fingerprint=timing_workload_fingerprint,
+                        host_environment_fingerprint=(
+                            timing_host_environment_fingerprint
+                        ),
+                        accelerator_environment_fingerprint=(
+                            preflight_environment.fingerprint
+                        ),
+                        execution_surface=timing_execution_surface,
+                    )
+                    coverage = timing_store.coverage(
+                        workload_fingerprint=timing_workload_fingerprint,
+                        host_environment_fingerprint=(
+                            timing_host_environment_fingerprint
+                        ),
+                        accelerator_environment_fingerprint=(
+                            preflight_environment.fingerprint
+                        ),
+                        execution_surface=timing_execution_surface,
+                    )
             except Exception as exc:
                 history_warnings.append(
                     "VIPP could not reuse local completed-run timing history; "
                     f"reviewed Auto defaults remain active ({exc})."
                 )
             else:
-                historical_request = _historical_auto_compute_request(
-                    request.compute_request,
-                    candidate_choice,
-                    workloads,
-                    registry,
-                )
-                if candidate_choice is not None:
-                    timing_choice = candidate_choice
-                    effective_compute_request = historical_request
-                elif coverage.needs_cpu_exploration:
-                    required_host_bytes = _estimate_auto_cpu_exploration_peak_bytes(
-                        workloads
+                with _observed_pipeline_preparation_phase(
+                    preparation_telemetry,
+                    PipelinePreparationPhase.COMPUTE_PLANNING,
+                ):
+                    _check_fact_scan_cancelled(cancel_callback)
+                    historical_request = _historical_auto_compute_request(
+                        request.compute_request,
+                        candidate_choice,
+                        workloads,
+                        registry,
                     )
-                    memory_preflight = preflight_host_allocation(
-                        capture_host_memory(),
-                        required_bytes=required_host_bytes,
-                        purpose="Auto CPU timing comparison",
-                    )
-                    if memory_preflight.allowed:
-                        effective_compute_request = (
-                            _auto_cpu_exploration_compute_request(
-                                request.compute_request,
-                                workloads,
+                    if candidate_choice is not None:
+                        timing_choice = candidate_choice
+                        effective_compute_request = historical_request
+                    elif coverage.needs_cpu_exploration:
+                        required_host_bytes = _estimate_auto_cpu_exploration_peak_bytes(
+                            workloads
+                        )
+                        memory_preflight = preflight_host_allocation(
+                            capture_host_memory(),
+                            required_bytes=required_host_bytes,
+                            purpose="Auto CPU timing comparison",
+                        )
+                        if memory_preflight.allowed:
+                            effective_compute_request = (
+                                _auto_cpu_exploration_compute_request(
+                                    request.compute_request,
+                                    workloads,
+                                )
                             )
-                        )
-                        timing_cpu_exploration = True
-                    else:
-                        history_warnings.append(
-                            f"{memory_preflight.reason} Auto kept its reviewed "
-                            "safe assignment; the missing CPU timing can be "
-                            "collected later when memory headroom is sufficient."
-                        )
-        planning = planner(
-            effective_compute_request,
-            workloads,
-            registry=registry,
-            environment=preflight_environment,
-            array_facts=array_facts,
-            performance_evidence=request.performance_evidence,
-            exact_workload_qualifications=request.exact_workload_qualifications,
-            exact_workload_qualification_scope_digest=(
-                request.exact_workload_qualification_scope_digest
-            ),
-        )
-        if timing_choice is not None:
-            historical_planning = _mark_historical_auto_planning(
-                planning,
-                original_request=request.compute_request,
-                choice=timing_choice,
+                            timing_cpu_exploration = True
+                        else:
+                            history_warnings.append(
+                                f"{memory_preflight.reason} Auto kept its reviewed "
+                                "safe assignment; the missing CPU timing can be "
+                                "collected later when memory headroom is sufficient."
+                            )
+        with _observed_pipeline_preparation_phase(
+            preparation_telemetry,
+            PipelinePreparationPhase.COMPUTE_PLANNING,
+        ):
+            _check_fact_scan_cancelled(cancel_callback)
+            planning = planner(
+                effective_compute_request,
+                workloads,
+                registry=registry,
+                environment=preflight_environment,
+                array_facts=array_facts,
+                performance_evidence=request.performance_evidence,
+                exact_workload_qualifications=request.exact_workload_qualifications,
+                exact_workload_qualification_scope_digest=(
+                    request.exact_workload_qualification_scope_digest
+                ),
             )
+            _validate_planning_request(planning, effective_compute_request)
+        if timing_choice is not None:
+            with _observed_pipeline_preparation_phase(
+                preparation_telemetry,
+                PipelinePreparationPhase.COMPUTE_PLANNING,
+            ):
+                _check_fact_scan_cancelled(cancel_callback)
+                historical_planning = _mark_historical_auto_planning(
+                    planning,
+                    original_request=request.compute_request,
+                    choice=timing_choice,
+                )
             if historical_planning is None:
                 timing_choice = None
                 effective_compute_request = request.compute_request
-                planning = planner(
-                    effective_compute_request,
-                    workloads,
-                    registry=registry,
-                    environment=preflight_environment,
-                    array_facts=array_facts,
-                    performance_evidence=request.performance_evidence,
-                    exact_workload_qualifications=(
-                        request.exact_workload_qualifications
-                    ),
-                    exact_workload_qualification_scope_digest=(
-                        request.exact_workload_qualification_scope_digest
-                    ),
-                )
+                with _observed_pipeline_preparation_phase(
+                    preparation_telemetry,
+                    PipelinePreparationPhase.COMPUTE_PLANNING,
+                ):
+                    _check_fact_scan_cancelled(cancel_callback)
+                    planning = planner(
+                        effective_compute_request,
+                        workloads,
+                        registry=registry,
+                        environment=preflight_environment,
+                        array_facts=array_facts,
+                        performance_evidence=request.performance_evidence,
+                        exact_workload_qualifications=(
+                            request.exact_workload_qualifications
+                        ),
+                        exact_workload_qualification_scope_digest=(
+                            request.exact_workload_qualification_scope_digest
+                        ),
+                    )
+                    _validate_planning_request(
+                        planning,
+                        effective_compute_request,
+                    )
             else:
                 planning = historical_planning
         elif timing_cpu_exploration:
-            planning = _mark_auto_cpu_exploration_planning(
-                planning,
-                original_request=request.compute_request,
-            )
-        decisions_by_node = _planning_decisions_by_node(planning)
+            with _observed_pipeline_preparation_phase(
+                preparation_telemetry,
+                PipelinePreparationPhase.COMPUTE_PLANNING,
+            ):
+                _check_fact_scan_cancelled(cancel_callback)
+                planning = _mark_auto_cpu_exploration_planning(
+                    planning,
+                    original_request=request.compute_request,
+                )
+        with _observed_pipeline_preparation_phase(
+            preparation_telemetry,
+            PipelinePreparationPhase.COMPUTE_PLANNING,
+        ):
+            _check_fact_scan_cancelled(cancel_callback)
+            decisions_by_node = _planning_decisions_by_node(planning)
 
-        retained_node_ids = set(request.retain_node_ids)
-        if not request.prune_unretained:
-            # Preserve the established Keep-all CPU cache contract.  A low-
-            # memory/pruned request can retain only exits and selected nodes,
-            # allowing a connected device chain to use one H2D and one D2H.
-            retained_node_ids.update(schedule.runnable_node_ids)
-        retained_ports = tuple(
-            OutputPortKey(node_id, port_index)
-            for node_id in sorted(retained_node_ids)
-            if node_id in pipeline.nodes
-            for port_index in range(len(pipeline.output_ports(node_id)))
-        )
-        device_plan = plan_device_execution(
-            pipeline,
-            decisions_by_node,
-            registry,
-            effective_compute_request,
-            dirty_node_ids=request.dirty_node_ids,
-            manual_mode=MANUAL_RUN_SKIP,
-            manual_node_ids=request.manual_node_ids,
-            target_node_ids=request.target_node_ids,
-            retained_ports=retained_ports,
+        with _observed_pipeline_preparation_phase(
+            preparation_telemetry,
+            PipelinePreparationPhase.DEVICE_PLAN_BUILD,
+        ):
+            _check_fact_scan_cancelled(cancel_callback)
+            retained_node_ids = set(request.retain_node_ids)
+            if not request.prune_unretained:
+                # Preserve the established Keep-all CPU cache contract.  A low-
+                # memory/pruned request can retain only exits and selected nodes,
+                # allowing a connected device chain to use one H2D and one D2H.
+                retained_node_ids.update(schedule.runnable_node_ids)
+            retained_ports = tuple(
+                OutputPortKey(node_id, port_index)
+                for node_id in sorted(retained_node_ids)
+                if node_id in pipeline.nodes
+                for port_index in range(len(pipeline.output_ports(node_id)))
+            )
+            device_plan = plan_device_execution(
+                pipeline,
+                decisions_by_node,
+                registry,
+                effective_compute_request,
+                dirty_node_ids=request.dirty_node_ids,
+                manual_mode=MANUAL_RUN_SKIP,
+                manual_node_ids=request.manual_node_ids,
+                target_node_ids=request.target_node_ids,
+                retained_ports=retained_ports,
+            )
+        execution_binding_started = (
+            None if preparation_telemetry is None else preparation_telemetry.start()
         )
         resident_request = request.resident_thumbnail_statistics_request
         if (
@@ -1557,6 +1779,21 @@ def _execute_accelerated_pipeline(
                     perf_counter() - resident_started,
                 )
 
+        execution_binding_succeeded = False
+        try:
+            _check_fact_scan_cancelled(cancel_callback)
+            execution_binding_succeeded = True
+        finally:
+            if preparation_telemetry is not None:
+                preparation_telemetry.record(
+                    execution_binding_started,
+                    PipelinePreparationPhase.WORKLOAD_PREPARATION,
+                    succeeded=execution_binding_succeeded,
+                )
+        _finish_pipeline_preparation_telemetry(
+            preparation_telemetry,
+            completed=True,
+        )
         try:
             device_result = execute_device_plan(
                 device_plan,
@@ -1570,6 +1807,7 @@ def _execute_accelerated_pipeline(
                 resident_output_callback=(
                     observe_resident_output if resident_request is not None else None
                 ),
+                telemetry=request.device_execution_telemetry,
             )
         except BaseException:
             if resident_cleanup_failure_message is not None:
@@ -1650,13 +1888,18 @@ def _execute_accelerated_pipeline(
             actual_decisions,
             implementation_specs=registry.implementation_specs,
             source_scientific_contexts=source_scientific_contexts,
+            source_reuse_envelope_fingerprints=(source_reuse_envelope_fingerprints),
             cancel_callback=cancel_callback,
         )
     except BaseException as exc:
         active_error = exc
+        _finish_pipeline_preparation_telemetry(
+            preparation_telemetry,
+            completed=False,
+        )
         raise
     finally:
-        if owned_registry:
+        if owned_registry and registry is not None:
             try:
                 registry.close()
             except Exception as cleanup_error:
@@ -1673,7 +1916,7 @@ def _execute_accelerated_pipeline(
             + ("The accelerator registry did not close cleanly.",),
             cleanup_succeeded=False,
         )
-    return report
+    return report, device_result.telemetry
 
 
 def _resident_thumbnail_statistics_observation(
@@ -2259,6 +2502,7 @@ def _build_workloads(
     *,
     cancel_callback: Callable[[], bool] | None,
     array_facts_cache: ArrayFactsCache | None,
+    preparation_telemetry: _PipelinePreparationTelemetryRecorder | None = None,
 ) -> tuple[
     tuple[WorkloadDescriptor, ...],
     Mapping[str, tuple[ArrayFacts, ...]],
@@ -2266,92 +2510,107 @@ def _build_workloads(
 ]:
     """Build workloads after lazily scanning only required concrete inputs."""
 
-    if array_facts_cache is not None and not isinstance(
-        array_facts_cache,
-        ArrayFactsCache,
+    with _observed_pipeline_preparation_phase(
+        preparation_telemetry,
+        PipelinePreparationPhase.WORKLOAD_PREPARATION,
     ):
-        raise TypeError("array_facts_cache must be an ArrayFactsCache or None.")
-    initial_workloads, _initial_facts, fact_lineage = _assemble_workloads(
-        pipeline,
-        runnable_node_ids,
-        host_values,
-        initial_states,
-        registry,
-        request.compute_request.allow_experimental,
-        seed_facts_by_port={},
-        cancel_callback=cancel_callback,
-    )
-    potential_specs = _potential_accelerator_specs(
-        registry,
-        request.compute_request,
-        initial_workloads,
-    )
-    _check_fact_scan_cancelled(cancel_callback)
-    from napari_vipp.core.compute_planning import probe_compute_environment
-
-    preflight_environment, _probe_warnings = probe_compute_environment(
-        registry,
-        request.compute_request,
-        potential_specs,
-    )
-    _check_fact_scan_cancelled(cancel_callback)
-    required_ports = _required_concrete_fact_ports(
-        pipeline,
-        runnable_node_ids,
-        host_values,
-        registry,
-        request.compute_request,
-        preflight_environment,
-        initial_workloads,
-        fact_lineage,
-        request.performance_evidence,
-    )
-    if not required_ports:
-        return (
-            initial_workloads,
-            MappingProxyType({}),
-            preflight_environment,
-        )
-
-    cache = array_facts_cache or ArrayFactsCache()
-    transaction_id = next(_FACT_TRANSACTION_IDS)
-    scientific_digests: dict[OutputPortKey, str | None] = {}
-    facts_by_port: dict[OutputPortKey, ArrayFacts] = {}
-    for port in sorted(
-        required_ports,
-        key=lambda item: (item.node_id, item.port_index),
-    ):
-        value = host_values.get(port)
-        if not isinstance(value, np.ndarray):
-            continue
-        revision_fingerprint = _array_revision_fingerprint(
+        _check_fact_scan_cancelled(cancel_callback)
+        if array_facts_cache is not None and not isinstance(
+            array_facts_cache,
+            ArrayFactsCache,
+        ):
+            raise TypeError("array_facts_cache must be an ArrayFactsCache or None.")
+        initial_workloads, _initial_facts, fact_lineage = _assemble_workloads(
             pipeline,
-            request,
-            port,
-            value,
-            transaction_id=transaction_id,
-            scientific_digests=scientific_digests,
-        )
-        cache_key = ArrayFactsKey(port, revision_fingerprint)
-        facts = _cached_complete_array_facts(
-            cache,
-            cache_key,
-            value,
+            runnable_node_ids,
+            host_values,
+            initial_states,
+            registry,
+            request.compute_request.allow_experimental,
+            seed_facts_by_port={},
             cancel_callback=cancel_callback,
         )
-        facts_by_port[port] = facts
+        potential_specs = _potential_accelerator_specs(
+            registry,
+            request.compute_request,
+            initial_workloads,
+        )
+        _check_fact_scan_cancelled(cancel_callback)
+        from napari_vipp.core.compute_planning import probe_compute_environment
 
-    workloads, facts_by_node, _lineage = _assemble_workloads(
-        pipeline,
-        runnable_node_ids,
-        host_values,
-        initial_states,
-        registry,
-        request.compute_request.allow_experimental,
-        seed_facts_by_port=facts_by_port,
-        cancel_callback=cancel_callback,
-    )
-    return workloads, facts_by_node, preflight_environment
+    with _observed_pipeline_preparation_phase(
+        preparation_telemetry,
+        PipelinePreparationPhase.RUNTIME_LIBRARY_PROBE,
+    ):
+        _check_fact_scan_cancelled(cancel_callback)
+        preflight_environment, _probe_warnings = probe_compute_environment(
+            registry,
+            request.compute_request,
+            potential_specs,
+        )
+
+    with _observed_pipeline_preparation_phase(
+        preparation_telemetry,
+        PipelinePreparationPhase.WORKLOAD_PREPARATION,
+    ):
+        _check_fact_scan_cancelled(cancel_callback)
+        required_ports = _required_concrete_fact_ports(
+            pipeline,
+            runnable_node_ids,
+            host_values,
+            registry,
+            request.compute_request,
+            preflight_environment,
+            initial_workloads,
+            fact_lineage,
+            request.performance_evidence,
+        )
+        if not required_ports:
+            return (
+                initial_workloads,
+                MappingProxyType({}),
+                preflight_environment,
+            )
+
+        cache = array_facts_cache or ArrayFactsCache()
+        transaction_id = next(_FACT_TRANSACTION_IDS)
+        scientific_digests: dict[OutputPortKey, str | None] = {}
+        facts_by_port: dict[OutputPortKey, ArrayFacts] = {}
+        for port in sorted(
+            required_ports,
+            key=lambda item: (item.node_id, item.port_index),
+        ):
+            value = host_values.get(port)
+            if not isinstance(value, np.ndarray):
+                continue
+            revision_fingerprint = _array_revision_fingerprint(
+                pipeline,
+                request,
+                port,
+                value,
+                transaction_id=transaction_id,
+                scientific_digests=scientific_digests,
+            )
+            cache_key = ArrayFactsKey(port, revision_fingerprint)
+            facts = _cached_complete_array_facts(
+                cache,
+                cache_key,
+                value,
+                cancel_callback=cancel_callback,
+            )
+            facts_by_port[port] = facts
+
+        workloads, facts_by_node, _lineage = _assemble_workloads(
+            pipeline,
+            runnable_node_ids,
+            host_values,
+            initial_states,
+            registry,
+            request.compute_request.allow_experimental,
+            seed_facts_by_port=facts_by_port,
+            cancel_callback=cancel_callback,
+        )
+        return workloads, facts_by_node, preflight_environment
 
 
 def _assemble_workloads(
@@ -4000,6 +4259,20 @@ def _planning_decisions_by_node(
     return decisions
 
 
+def _validate_planning_request(
+    planning: object,
+    request: ComputeRequest,
+) -> None:
+    planned_request = getattr(planning, "request", None)
+    if not isinstance(planned_request, ComputeRequest):
+        raise TypeError("Compute planning must retain its ComputeRequest.")
+    if planned_request.fingerprint != request.fingerprint:
+        raise RuntimeError(
+            "Compute planning returned decisions for a different runtime, device, "
+            "or execution policy."
+        )
+
+
 def _planning_execution_plan(
     planning: object,
     segments: tuple[object, ...],
@@ -4093,10 +4366,10 @@ def _capture_source_scientific_contexts(
     request: PipelineRunRequest,
     *,
     cancel_callback: Callable[[], bool] | None,
-) -> dict[str, str]:
-    """Fingerprint the exact source snapshots used by this request."""
+) -> dict[str, _CapturedSourceScientificContext]:
+    """Fingerprint exact sources, reusing only a proven immutable snapshot."""
 
-    contexts: dict[str, str] = {}
+    contexts: dict[str, _CapturedSourceScientificContext] = {}
     for node_id in pipeline.topological_order():
         node = pipeline.nodes[node_id]
         if pipeline.operation_spec(node.operation_id).has_input:
@@ -4117,18 +4390,99 @@ def _capture_source_scientific_contexts(
                 request.input_name,
             )
         try:
-            contexts[node_id] = _source_scientific_context_fingerprint(
+            source_reuse_envelope = (
+                _source_scientific_context_reuse_envelope_fingerprint(
+                    pipeline,
+                    node_id,
+                    payload,
+                    results,
+                    cancel_callback=cancel_callback,
+                )
+            )
+            scientific_context = _reusable_source_scientific_context_fingerprint(
                 pipeline,
                 node_id,
                 payload,
                 results,
+                request=request,
+                source_reuse_envelope_fingerprint=source_reuse_envelope,
                 cancel_callback=cancel_callback,
+            )
+            if scientific_context is None:
+                scientific_context = _source_scientific_context_fingerprint(
+                    pipeline,
+                    node_id,
+                    payload,
+                    results,
+                    cancel_callback=cancel_callback,
+                )
+            contexts[node_id] = _CapturedSourceScientificContext(
+                scientific_context,
+                source_reuse_envelope,
             )
         except (OverflowError, TypeError, ValueError):
             # Unsupported or opaque source metadata must disable reuse without
             # preventing the authoritative operation path from running.
             continue
     return contexts
+
+
+def _reusable_source_scientific_context_fingerprint(
+    pipeline: PrototypePipeline,
+    node_id: str,
+    payload: SourcePayload,
+    results: Sequence[tuple[object, object]],
+    *,
+    request: PipelineRunRequest,
+    source_reuse_envelope_fingerprint: str,
+    cancel_callback: Callable[[], bool] | None,
+) -> str | None:
+    """Return a prior exact byte identity only under a fail-closed proof."""
+
+    _check_scientific_context_cancelled(cancel_callback)
+    dirty_node_ids = request.dirty_node_ids
+    if (
+        dirty_node_ids is None
+        or node_id in dirty_node_ids
+        or node_id not in request.completed_node_ids
+        or not is_vipp_owned_immutable_source_revision(payload.revision_token)
+        or not source_reuse_envelope_fingerprint
+    ):
+        return None
+
+    cached_node_outputs = request.cached_node_outputs
+    if cached_node_outputs is None or node_id not in cached_node_outputs:
+        return None
+    cached_outputs = tuple(cached_node_outputs[node_id])
+    current_outputs = tuple(value for value, _state in results)
+    if len(current_outputs) != len(cached_outputs) or any(
+        current is not cached
+        for current, cached in zip(current_outputs, cached_outputs, strict=True)
+    ):
+        return None
+    if any(
+        not isinstance(value, np.ndarray)
+        or value.flags.writeable
+        or getattr(type(value), "__cuda_array_interface__", None) is not None
+        for value in current_outputs
+    ):
+        return None
+
+    provenance = request.cached_compute_provenance.get(node_id)
+    if not isinstance(provenance, CachedNodeComputeProvenance):
+        return None
+    scientific_context = provenance.scientific_context_fingerprint
+    node = pipeline.nodes[node_id]
+    if not cached_source_provenance_matches(
+        provenance,
+        node_id=node_id,
+        operation_id=node.operation_id,
+        scientific_context_fingerprint=scientific_context,
+        source_reuse_envelope_fingerprint=(source_reuse_envelope_fingerprint),
+    ):
+        return None
+    _check_scientific_context_cancelled(cancel_callback)
+    return scientific_context
 
 
 def _source_scientific_context_fingerprint(
@@ -4139,22 +4493,70 @@ def _source_scientific_context_fingerprint(
     *,
     cancel_callback: Callable[[], bool] | None,
 ) -> str:
+    document = _source_scientific_context_document(
+        pipeline,
+        node_id,
+        payload,
+        results,
+        schema_id="vipp-source-scientific-context-v1",
+        array_identity=lambda value: _scientific_array_identity(
+            value,
+            cancel_callback=cancel_callback,
+        ),
+        cancel_callback=cancel_callback,
+    )
+    _check_scientific_context_cancelled(cancel_callback)
+    return canonical_digest(document)
+
+
+def _source_scientific_context_reuse_envelope_fingerprint(
+    pipeline: PrototypePipeline,
+    node_id: str,
+    payload: SourcePayload,
+    results: Sequence[tuple[object, object]],
+    *,
+    cancel_callback: Callable[[], bool] | None,
+) -> str:
+    """Fingerprint every source-context field except primary array bytes."""
+
+    _check_scientific_context_cancelled(cancel_callback)
+    document = _source_scientific_context_document(
+        pipeline,
+        node_id,
+        payload,
+        results,
+        schema_id="vipp-source-context-reuse-envelope-v1",
+        array_identity=_scientific_array_reuse_envelope,
+        cancel_callback=cancel_callback,
+    )
+    _check_scientific_context_cancelled(cancel_callback)
+    return canonical_digest(document)
+
+
+def _source_scientific_context_document(
+    pipeline: PrototypePipeline,
+    node_id: str,
+    payload: SourcePayload,
+    results: Sequence[tuple[object, object]],
+    *,
+    schema_id: str,
+    array_identity: Callable[[object], object],
+    cancel_callback: Callable[[], bool] | None,
+) -> dict[str, object]:
     normalized_results = []
     for value, state in results:
+        _check_scientific_context_cancelled(cancel_callback)
         normalized_results.append(
             {
-                "array": _scientific_array_identity(
-                    value,
-                    cancel_callback=cancel_callback,
-                ),
+                "array": array_identity(value),
                 "state": _scientific_identity_value(
                     state,
                     cancel_callback=cancel_callback,
                 ),
             }
         )
-    document = {
-        "schema_id": "vipp-source-scientific-context-v1",
+    return {
+        "schema_id": schema_id,
         "node": _node_structural_identity(
             pipeline,
             node_id,
@@ -4175,8 +4577,6 @@ def _source_scientific_context_fingerprint(
             cancel_callback=cancel_callback,
         ),
     }
-    _check_scientific_context_cancelled(cancel_callback)
-    return canonical_digest(document)
 
 
 def _processing_scientific_context_fingerprint(
@@ -4255,20 +4655,7 @@ def _scientific_array_identity(
     *,
     cancel_callback: Callable[[], bool] | None,
 ) -> object:
-    if getattr(type(value), "__cuda_array_interface__", None) is not None:
-        raise TypeError("Scientific source contexts accept host arrays only.")
-    try:
-        shape = tuple(int(size) for size in value.shape)
-        dtype = np.dtype(value.dtype)
-    except (AttributeError, TypeError, ValueError):
-        array = np.asarray(value)
-        shape = tuple(int(size) for size in array.shape)
-        dtype = array.dtype
-        value = array
-    if any(size < 0 for size in shape):
-        raise ValueError("Scientific source array shapes must be non-negative.")
-    if dtype.hasobject:
-        raise TypeError("Scientific source contexts reject object arrays.")
+    shape, dtype, value = _scientific_array_header(value)
     digest = sha256()
     values_per_chunk = max(
         1,
@@ -4290,6 +4677,36 @@ def _scientific_array_identity(
         "dtype_descriptor": str(dtype.descr),
         "bytes_sha256": digest.hexdigest(),
     }
+
+
+def _scientific_array_reuse_envelope(value: object) -> object:
+    shape, dtype, _value = _scientific_array_header(value)
+    return {
+        "schema_id": "vipp-exact-host-array-header-v1",
+        "shape": list(shape),
+        "dtype": dtype.str,
+        "dtype_descriptor": str(dtype.descr),
+    }
+
+
+def _scientific_array_header(
+    value: object,
+) -> tuple[tuple[int, ...], np.dtype, object]:
+    if getattr(type(value), "__cuda_array_interface__", None) is not None:
+        raise TypeError("Scientific source contexts accept host arrays only.")
+    try:
+        shape = tuple(int(size) for size in value.shape)
+        dtype = np.dtype(value.dtype)
+    except (AttributeError, TypeError, ValueError):
+        array = np.asarray(value)
+        shape = tuple(int(size) for size in array.shape)
+        dtype = array.dtype
+        value = array
+    if any(size < 0 for size in shape):
+        raise ValueError("Scientific source array shapes must be non-negative.")
+    if dtype.hasobject:
+        raise TypeError("Scientific source contexts reject object arrays.")
+    return shape, dtype, value
 
 
 def _iter_exact_array_chunks(
@@ -4527,6 +4944,7 @@ def _hydrate_cached_pipeline_outputs(
     *,
     implementation_specs: Sequence[OperationComputeSpec] = (),
     source_scientific_contexts: Mapping[str, str],
+    source_reuse_envelope_fingerprints: Mapping[str, str],
     cancel_callback: Callable[[], bool] | None,
 ) -> None:
     """Restore reusable output state before a dirty-subgraph execution."""
@@ -4563,12 +4981,17 @@ def _hydrate_cached_pipeline_outputs(
         operation = pipeline.operation_spec(node.operation_id)
         if not operation.has_input:
             source_context = source_scientific_contexts.get(node_id)
+            source_reuse_envelope = source_reuse_envelope_fingerprints.get(
+                node_id,
+                "",
+            )
             provenance = cached_provenance.get(node_id)
             if source_context is None or not cached_source_provenance_matches(
                 provenance,
                 node_id=node_id,
                 operation_id=node.operation_id,
                 scientific_context_fingerprint=source_context,
+                source_reuse_envelope_fingerprint=source_reuse_envelope,
             ):
                 continue
             accepted_completed.add(node_id)
@@ -4610,6 +5033,7 @@ def _publish_cpu_compute_provenance(
     node_ids: Sequence[str] | frozenset[str],
     *,
     source_scientific_contexts: Mapping[str, str],
+    source_reuse_envelope_fingerprints: Mapping[str, str],
 ) -> tuple[NodeExecutionDecision, ...]:
     decisions: list[NodeExecutionDecision] = []
     scheduled_node_ids = frozenset(node_ids)
@@ -4641,6 +5065,7 @@ def _publish_cpu_compute_provenance(
         request.compute_request,
         decisions,
         source_scientific_contexts=source_scientific_contexts,
+        source_reuse_envelope_fingerprints=(source_reuse_envelope_fingerprints),
         cancel_callback=(
             request.cancel_event.is_set if request.cancel_event is not None else None
         ),
@@ -4655,6 +5080,7 @@ def _publish_actual_compute_provenance(
     *,
     implementation_specs: Sequence[OperationComputeSpec] = (),
     source_scientific_contexts: Mapping[str, str],
+    source_reuse_envelope_fingerprints: Mapping[str, str],
     cancel_callback: Callable[[], bool] | None,
 ) -> None:
     """Attach exact chained provenance to materialized host node caches."""
@@ -4675,6 +5101,9 @@ def _publish_actual_compute_provenance(
                     node_id=node_id,
                     operation_id=node.operation_id,
                     scientific_context_fingerprint=scientific_context,
+                    source_reuse_envelope_fingerprint=(
+                        source_reuse_envelope_fingerprints.get(node_id, "")
+                    ),
                 )
             except (TypeError, ValueError):
                 continue

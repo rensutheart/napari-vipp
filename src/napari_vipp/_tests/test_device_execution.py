@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import threading
+import weakref
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
@@ -40,10 +42,12 @@ from napari_vipp.core.device_execution import (
     DeviceExecutionCancelled,
     DeviceExecutionError,
     DeviceMemoryPreflightError,
+    DevicePlanningError,
     DeviceSegmentUnit,
     HostExecutionUnit,
     execute_device_plan,
     plan_device_execution,
+    preflight_device_execution,
 )
 from napari_vipp.core.execution_telemetry import (
     DeviceExecutionPhase,
@@ -150,6 +154,7 @@ class _FakeRuntime:
         self.oom_was_classified = False
         self.classified_inside_scope: list[bool] = []
         self.traceback_scratch_live = 0
+        self.memory_snapshot_states: list[tuple[str, int, bool]] = []
 
     def allocate(self, payload: object) -> _FakeDeviceArray:
         value = _FakeDeviceArray(self, payload)
@@ -235,12 +240,18 @@ class _FakeRuntime:
         self.events.append(("synchronize", device_id))
 
     def memory_snapshot(self, *, device_id: str = "") -> RuntimeMemorySnapshot:
+        self.memory_snapshot_states.append(
+            (device_id or "fake:0", len(self.live), self.scope_active)
+        )
+        private_bytes = len(self.live) * 64
         return RuntimeMemorySnapshot(
             self.runtime_id,
             device_id or "fake:0",
             "discrete",
             device_total_bytes=self.free_bytes,
             device_free_bytes=self.free_bytes,
+            runtime_live_bytes=private_bytes,
+            runtime_reserved_bytes=private_bytes,
         )
 
     def classify_exception(self, exc: BaseException) -> RuntimeExceptionInfo:
@@ -280,6 +291,43 @@ class _FakeRuntime:
         self.closed = True
 
 
+class _AliasCheckingRuntime(_FakeRuntime):
+    """Model a private allocator that rejects released-but-reachable arrays."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.released_references: list[weakref.ReferenceType[_FakeDeviceArray]] = []
+
+    @contextmanager
+    def execution_scope(
+        self,
+        *,
+        device_id: str = "",
+        memory_limit_bytes: int | None = None,
+        safety_reserve_bytes: int | None = None,
+    ):
+        with super().execution_scope(
+            device_id=device_id,
+            memory_limit_bytes=memory_limit_bytes,
+            safety_reserve_bytes=safety_reserve_bytes,
+        ):
+            try:
+                yield
+            finally:
+                gc.collect()
+                if any(
+                    reference() is not None for reference in self.released_references
+                ):
+                    raise _FakeCleanupFailure(
+                        "released device input remains reachable during cleanup"
+                    )
+
+    def release(self, value: object) -> None:
+        assert isinstance(value, _FakeDeviceArray)
+        self.released_references.append(weakref.ref(value))
+        super().release(value)
+
+
 class _SynchronizeOOMOnceRuntime(_FakeRuntime):
     def __init__(self) -> None:
         super().__init__()
@@ -290,6 +338,29 @@ class _SynchronizeOOMOnceRuntime(_FakeRuntime):
         if self.synchronize_failures_remaining:
             self.synchronize_failures_remaining -= 1
             raise _FakeOOM("synthetic synchronization OOM")
+
+
+class _TerminalSnapshotFailureRuntime(_FakeRuntime):
+    def memory_snapshot(self, *, device_id: str = "") -> RuntimeMemorySnapshot:
+        if self.memory_snapshot_states:
+            raise RuntimeError("synthetic terminal snapshot failure")
+        return super().memory_snapshot(device_id=device_id)
+
+
+class _TerminalSnapshotIdentityRuntime(_FakeRuntime):
+    def memory_snapshot(self, *, device_id: str = "") -> RuntimeMemorySnapshot:
+        if not self.memory_snapshot_states:
+            return super().memory_snapshot(device_id=device_id)
+        self.memory_snapshot_states.append(
+            ("fake:1", len(self.live), self.scope_active)
+        )
+        return RuntimeMemorySnapshot(
+            self.runtime_id,
+            "fake:1",
+            "discrete",
+            device_total_bytes=self.free_bytes,
+            device_free_bytes=self.free_bytes,
+        )
 
 
 def _device_copy(value: _FakeDeviceArray, **_kwargs) -> _FakeDeviceArray:
@@ -644,10 +715,13 @@ def test_linear_segment_keeps_intermediate_on_device_and_returns_host_only():
         not runtime.is_device_value(value) for value in result.host_values.values()
     )
     assert result.telemetry is None
+    assert runtime.memory_snapshot_states == [("fake:0", 0, False)]
     registry.close()
 
 
-def test_device_telemetry_observes_directional_transfers_and_device_phases():
+def test_device_telemetry_observes_directional_transfers_and_device_phases(
+    monkeypatch,
+):
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     gaussian = pipeline.add_node("gaussian_blur")
@@ -668,6 +742,26 @@ def test_device_telemetry_observes_directional_transfers_and_device_phases():
         request,
     )
     data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    lease_depth = 0
+
+    @contextmanager
+    def observed_lease(_runtime_id, _device_id, **_kwargs):
+        nonlocal lease_depth
+        lease_depth += 1
+        try:
+            yield
+        finally:
+            lease_depth -= 1
+
+    original_memory_snapshot = runtime.memory_snapshot
+
+    def observed_memory_snapshot(*, device_id=""):
+        if runtime.memory_snapshot_states:
+            assert lease_depth == 1
+        return original_memory_snapshot(device_id=device_id)
+
+    monkeypatch.setattr(device_execution_module, "accelerator_lease", observed_lease)
+    monkeypatch.setattr(runtime, "memory_snapshot", observed_memory_snapshot)
 
     result = execute_device_plan(
         plan,
@@ -761,6 +855,185 @@ def test_device_telemetry_observes_directional_transfers_and_device_phases():
     assert runtime.device_to_host_count == 1
     assert runtime.operation_count == 2
     assert runtime.live == {}
+    assert observation.terminal_memory_snapshots
+    terminal = observation.terminal_memory_snapshots[0]
+    assert terminal.runtime_id == "fake-device"
+    assert terminal.device_id == "fake:0"
+    assert terminal.private_allocations_released is True
+    assert terminal.runtime_live_bytes == 0
+    assert terminal.runtime_reserved_bytes == 0
+    terminal_spans = observation.spans_for(
+        DeviceExecutionPhase.TERMINAL_MEMORY_SNAPSHOT
+    )
+    assert len(terminal_spans) == 1
+    assert terminal_spans[0].succeeded is True
+    assert runtime.memory_snapshot_states[-1] == ("fake:0", 0, False)
+    assert lease_depth == 0
+    registry.close()
+
+
+def test_terminal_memory_snapshot_failure_cannot_change_scientific_result():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _TerminalSnapshotFailureRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+        telemetry=DeviceExecutionTelemetryConfig(clock=_SteppingClock()),
+    )
+
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(gaussian.id, 0)],
+        data,
+    )
+    assert result.telemetry is not None
+    assert result.telemetry.terminal_memory_snapshots == ()
+    terminal_spans = result.telemetry.spans_for(
+        DeviceExecutionPhase.TERMINAL_MEMORY_SNAPSHOT
+    )
+    assert len(terminal_spans) == 1
+    assert terminal_spans[0].succeeded is False
+    assert runtime.live == {}
+    registry.close()
+
+
+def test_terminal_memory_snapshot_rejects_mismatched_provider_identity():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _TerminalSnapshotIdentityRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+        telemetry=DeviceExecutionTelemetryConfig(clock=_SteppingClock()),
+    )
+
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(gaussian.id, 0)],
+        data,
+    )
+    assert result.telemetry is not None
+    assert result.telemetry.terminal_memory_snapshots == ()
+    terminal_spans = result.telemetry.spans_for(
+        DeviceExecutionPhase.TERMINAL_MEMORY_SNAPSHOT
+    )
+    assert len(terminal_spans) == 1
+    assert terminal_spans[0].succeeded is False
+    registry.close()
+
+
+def test_device_plan_rejects_a_different_execution_request_before_runtime_work():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    different_request = replace(request, device_id="fake:1")
+
+    with pytest.raises(DevicePlanningError, match="does not match"):
+        preflight_device_execution(plan, registry, different_request)
+    with pytest.raises(DevicePlanningError, match="does not match"):
+        execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            different_request,
+            host_values={OutputPortKey("input", 0): np.ones((4, 4))},
+            prepare_call=_prepare_call(pipeline),
+        )
+
+    assert runtime.events == []
+    assert runtime.memory_snapshot_states == []
+    registry.close()
+
+
+def test_device_plan_rejects_a_decision_outside_explicit_runtime_affinity():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = replace(_request(), runtime_id="different-runtime")
+
+    with pytest.raises(DevicePlanningError, match="compute request requires"):
+        plan_device_execution(
+            pipeline,
+            _decisions(pipeline, specs),
+            registry,
+            request,
+        )
+
+    assert runtime.events == []
+    registry.close()
+
+
+def test_explicit_missing_device_is_rejected_before_memory_or_scope_work():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = replace(_request(), device_id="fake:1")
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    with pytest.raises(DevicePlanningError, match="did not report requested device"):
+        execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={OutputPortKey("input", 0): np.ones((4, 4))},
+            prepare_call=_prepare_call(pipeline),
+        )
+
+    assert runtime.memory_snapshot_states == []
+    assert runtime.events == []
     registry.close()
 
 
@@ -872,6 +1145,8 @@ def test_failed_diagnostic_barrier_is_not_reported_as_synchronized():
         result.host_values[OutputPortKey(gaussian.id, 0)],
         data,
     )
+    assert len(result.telemetry.terminal_memory_snapshots) == 1
+    assert result.telemetry.terminal_memory_snapshots[0].private_allocations_released
     assert runtime.live == {}
     registry.close()
 
@@ -1251,6 +1526,64 @@ def test_cancellation_after_payload_transfer_skips_finalizer_and_cleans_up():
     assert runtime.live == {}
     assert _HOST_FINALIZER_CALLS == []
     assert callbacks == []
+    registry.close()
+
+
+def test_cancellation_during_call_preparation_detaches_private_input_traceback():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    gaussian.params["sigma"] = 0.0
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _AliasCheckingRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    def cancel_prepare(_node_id: str, inputs: tuple[object, ...]):
+        device_input_alias = inputs[0]
+        assert runtime.is_device_value(device_input_alias)
+        raise OperationCancelled("cancelled after the target node started")
+
+    with pytest.raises(DeviceExecutionCancelled) as caught:
+        execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={OutputPortKey("input", 0): np.ones((8, 8), dtype=np.float32)},
+            prepare_call=cancel_prepare,
+        )
+
+    assert caught.value.cleanup_succeeded is True
+    assert str(caught.value) == "cancelled after the target node started"
+    assert runtime.live == {}
+    gc.collect()
+    assert all(reference() is None for reference in runtime.released_references)
+
+    reused = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={
+            OutputPortKey("input", 0): np.arange(64, dtype=np.float32).reshape(8, 8)
+        },
+        prepare_call=_prepare_call(pipeline),
+    )
+
+    np.testing.assert_array_equal(
+        reused.host_values[OutputPortKey(gaussian.id, 0)],
+        np.arange(64, dtype=np.float32).reshape(8, 8),
+    )
+    assert runtime.live == {}
+    gc.collect()
+    assert all(reference() is None for reference in runtime.released_references)
     registry.close()
 
 

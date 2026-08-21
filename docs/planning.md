@@ -135,12 +135,40 @@ unless accelerator behavior itself changes.
 Goal: repeated parameter edits should have explainable latency and use the
 selected qualifying GPU consistently when that is beneficial.
 
-Current evidence: the reported intermittent roughly three-second Gaussian
-pause was a new-radius CuPyX kernel compilation, not image transfer. The
-radius-independent float32 GPU kernel and tuning harness remove that repeated
-compile cliff while preserving the reviewed result contract. The remaining
-device-selection, broader phase reporting, and evidence-led residency work
-below stays independently deliverable.
+Current evidence found the same underlying parameter-specialization pattern in
+the originally reported Subtract Background Ball-size path and in Gaussian and
+Median tuning. The historical Subtract Background provider compiled a new
+CuPyX erosion specialization for each unseen footprint radius; Gaussian and
+Median likewise specialized on radius or footprint size. The promoted
+radius/size-independent kernels remove those repeated compile cliffs while
+preserving their reviewed result contracts. The remaining evidence-led
+residency decision is complete below; measured transfer time did not justify
+cross-run scientific GPU residency.
+The current development slice carries provider-neutral device observations
+through detached pipeline results and adds explicit, bounded interaction
+reports for standard scientific parameter controls. Those reports distinguish
+invalidation, the actual debounce, worker queue and result-delivery delay,
+scientific execution, thumbnail-statistics queue and execution, rendering,
+final publication, and superseded generations. Pre-device observations now
+separate graph restoration, cache preparation, workload preparation,
+accelerator setup, runtime/library probing, compute planning, and device-plan
+construction. They retain run-correlated runtime, device, implementation,
+transfer, and synchronization spans without entering workflow or scientific
+identity.
+
+The final single-device RTX 5090 evidence matrix is now complete for the
+standard scientific-control path. A per-workflow-session selector carries one
+explicit qualified runtime/device through scientific and thumbnail requests
+without entering workflow JSON. Device plans are fingerprint-bound to that
+request, explicit devices must be reported by the provider, supplied
+capability snapshots must describe the same device, and every completed GPU
+observation now records terminal private-pool memory while the exact device
+lease is still held. Specialized composite/source/presentation controls remain
+outside the interaction reporter until their commit boundaries can be timed
+exactly. Provider-internal compilation remains honestly included in operation
+time when the provider exposes no separate boundary. A protected non-default
+multi-GPU run remains conditional on access to a host with two qualified CUDA
+devices; the single-GPU path fails closed rather than silently retargeting.
 
 Ordered parameter-specialization follow-up:
 
@@ -171,27 +199,79 @@ new per-release performance gate.
 
 Implementation proceeds in measured phases:
 
-1. record debounce, queueing, planning/probe, first-run compilation, host-to-
-   device transfer, compute, synchronization, device-to-host transfer,
-   thumbnail work, rendering, publication, and discarded-generation time;
-2. let a new scientific edit pre-empt queued presentation work, cancel obsolete
-   work once, and publish only the newest generation;
-3. enumerate qualifying devices, allow explicit selection through the existing
-   `device_id` contract, and display provider, active device, actual per-node
-   backend, and host/device boundaries; and
-4. only when evidence identifies setup or transfers as dominant, add a bounded
-   cross-run resident cache keyed by source revision, parameters,
-   implementation, runtime, device, and precision, with LRU limits and strict
-   invalidation on policy, source, graph, device, tab, or runtime change.
+1. **Implemented for standard scientific controls:** record invalidation,
+   debounce, graph/cache/workload preparation, accelerator setup,
+   runtime/library probing, compute planning, device-plan construction,
+   scientific and presentation queueing, host-to-device transfer, compute,
+   synchronization, device-to-host transfer, thumbnail work, rendering,
+   publication, and discarded-generation time;
+2. **Implemented:** a new scientific edit pre-empts queued presentation work,
+   cancels obsolete work once, and publishes only the newest generation;
+3. **Implemented, non-default multi-GPU hardware validation conditional:** enumerate
+   qualifying devices, allow explicit per-workflow-session selection through
+   the existing `device_id` contract, and display requested provider/device,
+   actual per-node backend/device, and host/device boundaries; and
+4. **Completed evidence decision:** do not add cross-run scientific residency;
+   synchronized revisits measured only about 0.015-0.016 s of combined
+   scientific transfer, while exact owned-revision source-context reuse removes
+   the repeated preparation hash safely.
 
-Fake clocks, devices, adapters, and transfer counters cover ordinary CI. A
-protected real-GPU workflow records cold/warm edit latency, transfer counts,
-parity, cancellation, and terminal allocation cleanup. Closure requires the
-harness to identify the dominant intermittent delay and show that supported warm
-repeated edits no longer pay the demonstrated avoidable initialization,
-transfer, synchronization, or presentation-queue cost. Record the improvement
-against the pre-change harness baseline. External Task Manager or integrated-
-GPU activity is useful diagnostic evidence, not a CI assertion.
+Fake clocks, two-device adapters, request fingerprints, and transfer counters
+cover ordinary CI. The 2026-08-21 protected RTX 5090 matrix used an explicit
+`cuda:0` selection and retained these machine-local artifacts:
+
+- historical provider comparison:
+  `D:\Temp\vipp-issue27-historical-radius-compile-baseline-20260821.json`
+  (`SHA-256 49542130A12DC1C1567E6843A482BBC1AD404B6C6ED4332E23F30A9F1EEA9ED8`);
+- exact bundled sample:
+  `D:\Temp\vipp-issue27-ui-exact-owned-revision-final-20260821.json`
+  (`SHA-256 6B5C3C3293CB4D592AA2386C9749A6C3284EFC8CD875C5DFC916184A43B5B21D`);
+- 108 MiB bounded stack:
+  `D:\Temp\vipp-issue27-ui-bounded-owned-revision-final-20260821.json`
+  (`SHA-256 F20D81E824A08AD2C6FB45474C5AA2AEA8AA69B6C16CC0B23D877D2BDAAA1BE3`);
+- 432 MiB resident-thumbnail stack:
+  `D:\Temp\vipp-issue27-ui-resident-owned-revision-final-20260821.json`
+  (`SHA-256 575C3E68433F5DFB8DC3BD35D53553965EC56A31A45E70EBAB13DA03E40BA206`);
+  and
+- separately synchronized 108 MiB diagnostic:
+  `D:\Temp\vipp-issue27-ui-bounded-synchronized-owned-revision-final-20260821.json`
+  (`SHA-256 F908BC86AE46B8CE7EAE8DB318601EB8DECB08EF39AC3C9F79ECD0DA58739B09`).
+
+Every accepted GPU run selected `cuda-cupy/cuda:0`, retained exact CPU
+dtype/shape/byte parity, used known-byte H2D and D2H with no fallback, and
+reported zero terminal live/reserved private-pool bytes. Each fresh artifact
+records all 137 production package Python files plus the harness, policy,
+workflow, and project anchors (141 files total) under source-tree digest
+`5cb9a53ffee8efa15f502d39df0e2fbbebf4eb3a3ccc2855b19d9fdd53cf6b9f`.
+The evidence distinguishes explicit `cuda:0` affinity from real multi-device
+validation, which was not performed on this one-GPU host. The large profiles
+also superseded a signalled target-node execution, observed typed clean
+cancellation, and immediately published a successful reuse run. Warm medians
+were about 0.491 s for the small sample (CPU 0.387 s), 0.927 s for the 108 MiB
+stack (CPU 5.773 s), and 1.728 s for the 432 MiB resident stack (CPU 11.390 s).
+The resident path returned six exact thumbnail-statistics observations with
+zero logical input upload. Synchronized 108 MiB evidence measured about
+0.117-0.134 s of target device operation and 0.0151-0.0157 s of combined
+scientific H2D and D2H on representative revisits, so cross-run scientific
+residency is not justified by the measured transfer saving. Exact source
+scientific-context reuse removes the repeated source-byte hash only for the
+same accepted, read-only, VIPP-owned revision and cached output object. From
+the second same-process warm edit onward, after the reusable source output was
+accepted, later Prefer-GPU preparation measured roughly 0.02-0.04 s.
+Any revision, source binding, metadata, state, mutability, or provenance
+mismatch fails closed to a fresh exact hash. External Task Manager or
+integrated-GPU activity remains compositor evidence, not a VIPP execution
+claim.
+
+The historical comparison uses the genuine pre-fix provider source from
+commit `91a05a9`, the same bundled Subtract Background input, and separate
+empty CuPy disk caches. Previously unseen Ball radii took a median 1.287 s in
+the provider while revisits took 0.0155 s, reproducing an 83x intermittent
+specialization cliff before any UI overhead. The current radius-independent
+provider took 0.0133 s for both unseen values and revisits (96.8x faster for
+unseen radii), with identical output hashes at every compared radius. This
+provider-only baseline is paired with the complete current edit-to-publication
+matrix above; it is not mislabeled as a historical UI trace that did not exist.
 
 #### 0.13-C. Policy-Accurate Float32 Thumbnail Statistics ([#29](https://github.com/rensutheart/napari-vipp/issues/29))
 

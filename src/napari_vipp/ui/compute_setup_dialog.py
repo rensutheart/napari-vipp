@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from qtpy.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from qtpy.QtCore import QObject, QRunnable, QSignalBlocker, Qt, QThreadPool, Signal
 from qtpy.QtWidgets import (
     QApplication,
     QComboBox,
@@ -33,6 +33,7 @@ from napari_vipp.core.compute_diagnostics import (
     write_compute_support_bundle,
 )
 from napari_vipp.ui.compute_setup import (
+    ComputeDeviceOption,
     ComputeSetupActionKind,
     ComputeSetupPresentation,
     ComputeSetupTone,
@@ -87,6 +88,7 @@ class ComputeSetupDialog(QDialog):
     """Inspect optional acceleration and copy safe setup guidance."""
 
     presentation_changed = Signal(object)
+    device_selection_changed = Signal(object)
 
     def __init__(
         self,
@@ -95,8 +97,7 @@ class ComputeSetupDialog(QDialog):
         thread_pool: QThreadPool | None = None,
         doctor: Callable[..., ComputeDoctorReport] = collect_compute_diagnostics,
         host_memory_provider: Callable[[], HostMemorySnapshot] | None = None,
-        recent_execution_provider: Callable[[], ExecutionReport | None]
-        | None = None,
+        recent_execution_provider: Callable[[], ExecutionReport | None] | None = None,
         support_writer: Callable[..., Path] = write_compute_support_bundle,
     ) -> None:
         super().__init__(parent)
@@ -111,8 +112,14 @@ class ComputeSetupDialog(QDialog):
         self._serial = 0
         self._active_serial: int | None = None
         self._last_report: ComputeDoctorReport | None = None
+        self._device_selection_editable = True
         self._presentation = compute_setup_not_checked(host_memory=self._host_memory())
 
+        self.device_combo = QComboBox()
+        self.device_combo.setAccessibleName("Compute device")
+        self.device_combo.setToolTip(
+            "Choose Automatic or one exact accelerator for this workflow session."
+        )
         self.track_combo = QComboBox()
         self.track_combo.addItem("Automatic", "auto")
         self.track_combo.addItem("CUDA 13", "cuda13")
@@ -164,6 +171,8 @@ class ComputeSetupDialog(QDialog):
         self.close_buttons = QDialogButtonBox(QDialogButtonBox.Close)
 
         controls = QHBoxLayout()
+        controls.addWidget(QLabel("GPU for this workflow session"))
+        controls.addWidget(self.device_combo)
         controls.addWidget(QLabel("Package track"))
         controls.addWidget(self.track_combo)
         controls.addWidget(self.verify_button)
@@ -190,6 +199,7 @@ class ComputeSetupDialog(QDialog):
         layout.addWidget(self.close_buttons)
 
         self.verify_button.clicked.connect(self.verify)
+        self.device_combo.currentIndexChanged.connect(self._on_device_selection_changed)
         self.copy_button.clicked.connect(self.copy_setup_command)
         self.export_button.clicked.connect(self.save_support_report)
         self.advanced_button.toggled.connect(self._set_advanced_visible)
@@ -204,6 +214,67 @@ class ComputeSetupDialog(QDialog):
     @property
     def checking(self) -> bool:
         return self._active_serial is not None
+
+    @property
+    def device_selection(self) -> ComputeDeviceOption:
+        """Return the exact Automatic or explicit device selection."""
+
+        option = self.device_combo.currentData()
+        if isinstance(option, ComputeDeviceOption):
+            return option
+        return ComputeDeviceOption("", "", "Automatic (runtime default)")
+
+    def set_device_selection(
+        self,
+        runtime_id: str = "",
+        device_id: str = "",
+        display_name: str = "",
+    ) -> None:
+        """Select exact IDs without emitting a user-selection signal.
+
+        An explicit device that is absent from the latest verification result is
+        retained as an unavailable choice instead of being silently retargeted.
+        """
+
+        runtime_id = str(runtime_id).strip()
+        device_id = str(device_id).strip()
+        display_name = str(display_name).strip()
+        if bool(runtime_id) != bool(device_id):
+            raise ValueError(
+                "runtime_id and device_id must either both be set or both be blank."
+            )
+        target_index = _find_device_option_index(
+            self.device_combo,
+            runtime_id=runtime_id,
+            device_id=device_id,
+        )
+        blocker = QSignalBlocker(self.device_combo)
+        try:
+            if target_index < 0:
+                option = ComputeDeviceOption(
+                    runtime_id=runtime_id,
+                    device_id=device_id,
+                    display_name=display_name or device_id,
+                    available=False,
+                )
+                self.device_combo.addItem(_device_option_label(option), option)
+                target_index = self.device_combo.count() - 1
+                _set_device_option_tooltip(
+                    self.device_combo,
+                    target_index,
+                    option,
+                )
+            self.device_combo.setCurrentIndex(target_index)
+        finally:
+            del blocker
+
+    def set_device_selection_editable(self, enabled: bool) -> None:
+        """Enable or disable user device changes outside verification."""
+
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled must be a boolean.")
+        self._device_selection_editable = enabled
+        self.device_combo.setEnabled(enabled and not self._presentation.busy)
 
     def verify(self) -> None:
         """Queue one refreshed diagnostic run; repeated clicks never overlap."""
@@ -257,8 +328,7 @@ class ComputeSetupDialog(QDialog):
             )
         except Exception as exc:
             self.save_status_label.setText(
-                "The support report could not be saved: "
-                f"{type(exc).__name__}: {exc}"
+                f"The support report could not be saved: {type(exc).__name__}: {exc}"
             )
             self.save_status_label.setStyleSheet(
                 _summary_style(ComputeSetupTone.WARNING)
@@ -267,9 +337,7 @@ class ComputeSetupDialog(QDialog):
         self.save_status_label.setText(
             f"Saved privacy-redacted support report: {target.name}"
         )
-        self.save_status_label.setStyleSheet(
-            _summary_style(ComputeSetupTone.SUCCESS)
-        )
+        self.save_status_label.setStyleSheet(_summary_style(ComputeSetupTone.SUCCESS))
 
     def _on_check_finished(self, result: ComputeSetupCheckResult) -> None:
         if result.serial != self._active_serial:
@@ -279,6 +347,13 @@ class ComputeSetupDialog(QDialog):
         self._apply_presentation(
             present_compute_setup(result.report, host_memory=self._host_memory())
         )
+
+    def _on_device_selection_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        option = self.device_combo.itemData(index)
+        if isinstance(option, ComputeDeviceOption):
+            self.device_selection_changed.emit(option)
 
     def _apply_presentation(self, presentation: ComputeSetupPresentation) -> None:
         self._presentation = presentation
@@ -291,6 +366,10 @@ class ComputeSetupDialog(QDialog):
         self.details_label.setVisible(bool(presentation.details))
         self.progress.setVisible(presentation.busy)
         self.track_combo.setEnabled(not presentation.busy)
+        self._replace_device_options(presentation.device_options)
+        self.device_combo.setEnabled(
+            self._device_selection_editable and not presentation.busy
+        )
 
         verify_action = next(
             (
@@ -335,6 +414,52 @@ class ComputeSetupDialog(QDialog):
         _replace_memory_rows(self.memory_form, presentation)
         self.presentation_changed.emit(presentation)
 
+    def _replace_device_options(
+        self,
+        reported_options: tuple[ComputeDeviceOption, ...],
+    ) -> None:
+        current = self.device_selection
+        automatic = ComputeDeviceOption("", "", "Automatic (runtime default)")
+        options = list(reported_options)
+        automatic_index = next(
+            (
+                index
+                for index, option in enumerate(options)
+                if not option.runtime_id and not option.device_id
+            ),
+            -1,
+        )
+        if automatic_index < 0:
+            options.insert(0, automatic)
+        elif automatic_index:
+            options.insert(0, options.pop(automatic_index))
+
+        current_key = (current.runtime_id, current.device_id)
+        option_keys = {(option.runtime_id, option.device_id) for option in options}
+        if current.runtime_id and current_key not in option_keys:
+            options.append(
+                ComputeDeviceOption(
+                    runtime_id=current.runtime_id,
+                    device_id=current.device_id,
+                    display_name=current.display_name,
+                    total_memory_bytes=current.total_memory_bytes,
+                    available=False,
+                )
+            )
+
+        blocker = QSignalBlocker(self.device_combo)
+        try:
+            self.device_combo.clear()
+            selected_index = 0
+            for index, option in enumerate(options):
+                self.device_combo.addItem(_device_option_label(option), option)
+                _set_device_option_tooltip(self.device_combo, index, option)
+                if (option.runtime_id, option.device_id) == current_key:
+                    selected_index = index
+            self.device_combo.setCurrentIndex(selected_index)
+        finally:
+            del blocker
+
     def _set_advanced_visible(self, visible: bool) -> None:
         self.advanced_widget.setVisible(bool(visible))
         self.advanced_button.setText(
@@ -372,6 +497,46 @@ def _replace_check_rows(
         value.setToolTip(row.detail)
         value.setStyleSheet(_summary_style(row.tone))
         form.addRow(row.label, value)
+
+
+def _find_device_option_index(
+    combo: QComboBox,
+    *,
+    runtime_id: str,
+    device_id: str,
+) -> int:
+    for index in range(combo.count()):
+        option = combo.itemData(index)
+        if isinstance(option, ComputeDeviceOption) and (
+            option.runtime_id,
+            option.device_id,
+        ) == (runtime_id, device_id):
+            return index
+    return -1
+
+
+def _device_option_label(option: ComputeDeviceOption) -> str:
+    if not option.runtime_id:
+        return option.display_name
+    label = f"{option.display_name} ({option.device_id})"
+    return label if option.available else f"{label} — Unavailable"
+
+
+def _set_device_option_tooltip(
+    combo: QComboBox,
+    index: int,
+    option: ComputeDeviceOption,
+) -> None:
+    if not option.runtime_id:
+        tooltip = "Let the runtime choose its default device."
+    elif option.available:
+        tooltip = f"{option.runtime_id} · {option.device_id}"
+    else:
+        tooltip = (
+            f"{option.runtime_id} · {option.device_id} is not available in the "
+            "latest verification result."
+        )
+    combo.setItemData(index, tooltip, Qt.ToolTipRole)
 
 
 def _replace_memory_rows(

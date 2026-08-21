@@ -706,6 +706,20 @@ class ThumbnailStatisticsEngine:
                     reason_code,
                     message,
                 )
+            if device_id:
+                reported_device_ids = {
+                    str(getattr(device, "device_id", "")).strip()
+                    for device in tuple(getattr(probe, "devices", ()))
+                }
+                if device_id not in reported_device_ids:
+                    return _GPUAttempt(
+                        None,
+                        runtime_id,
+                        device_id,
+                        "requested_device_unavailable",
+                        "The requested thumbnail GPU is not present in the "
+                        f"latest {runtime_id} runtime probe: {device_id}.",
+                    )
             device_id = device_id or probe.selected_device_id
             runtime = registry.runtime(runtime_id)
             _check_cancelled(progress)

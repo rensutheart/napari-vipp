@@ -24,6 +24,7 @@ from napari_vipp.core.metadata import (
     AXIS_CONFIDENCE_EXPLICIT,
     ImageState,
 )
+from napari_vipp.core.source_identity import SourceRevisionToken
 
 SOURCE_REVISION_EVENTS = (
     "data",
@@ -40,14 +41,6 @@ SOURCE_REVISION_EVENTS = (
     "axis_labels",
     "labels_update",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class SourceRevisionToken:
-    """Identity of one observed revision of a live viewer layer."""
-
-    layer_id: int
-    revision: int
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -286,16 +279,12 @@ def apply_live_layer_axis_transform(
             ),
             translation=(
                 float(translate[index])
-                if index < transform_ndim
-                and use_translate
-                and translate is not None
+                if index < transform_ndim and use_translate and translate is not None
                 else axis.translation
             ),
             unit=(
                 physical_units[index]
-                if index < transform_ndim
-                and use_units
-                and physical_units[index]
+                if index < transform_ndim and use_units and physical_units[index]
                 else axis.unit
             ),
         )
@@ -368,9 +357,7 @@ def _axes_with_live_declarations(
                 name=name,
                 type=axis_type if semantic else updated[index].type,
                 confidence=(
-                    AXIS_CONFIDENCE_EXPLICIT
-                    if semantic
-                    else updated[index].confidence
+                    AXIS_CONFIDENCE_EXPLICIT if semantic else updated[index].confidence
                 ),
             )
     if rgb_axis is not None and not updated[rgb_axis].is_explicit:
@@ -478,8 +465,7 @@ def _matrix_is_identity(
     if allow_zero_scalar and arr.size == 1:
         return bool(np.isclose(float(arr.reshape(-1)[0]), 0.0))
     return bool(
-        arr.shape == (dimension, dimension)
-        and np.allclose(arr, np.eye(dimension))
+        arr.shape == (dimension, dimension) and np.allclose(arr, np.eye(dimension))
     )
 
 
