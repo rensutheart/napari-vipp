@@ -25,6 +25,10 @@
   assignment failure. Shape, dtype, non-finite classification, and larger
   differences still fail closed; reviewed differences never change provider
   parity policy or authorize cache sharing.
+- Applying a clean **Find fastest pipeline** result no longer treats the fixed
+  CPU Image Source row as a changed runtime assignment. Source identity is
+  reconstructed independently from its authoritative declaration, while every
+  executable node still requires its accepted measured backend to match.
 - Graph thumbnails now keep the last complete preview visible while full-stack
   contrast statistics are recalculated. A first preview shows an explicit
   calculating state, and failed, cancelled, or superseded work cannot replace
