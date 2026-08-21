@@ -4,6 +4,15 @@
 
 ### Features
 
+- Added **Remove Outliers (Binary)**, a source-aligned ImageJ/Fiji mask-cleanup
+  node for removing foreground specks or filling background notches. It uses
+  ImageJ's exact circular-footprint construction and nearest-edge behavior,
+  processes each trailing YX plane independently with progress/cancellation,
+  and accepts only boolean or canonical uint8 0/1 or 0/255 masks. The
+  authoritative CPU implementation is paired with an exact, resident CuPy
+  candidate whose fixed kernel takes radius and polarity at runtime, so
+  parameter sweeps do not create radius-specific compilation pauses and Find
+  Fastest can measure CPU against GPU for the active mask.
 - Compute Setup now lists qualified accelerators and lets each workflow tab
   choose Automatic or one exact runtime/device for that machine. The choice is
   carried through scientific execution and asynchronous thumbnail statistics,
@@ -12,6 +21,28 @@
 
 ### Bug Fixes
 
+- Dropping a completely disconnected node onto a compatible green-highlighted
+  wire now inserts it between the wire's source and target. The splice keeps
+  exact source/target ports, rolls back atomically on failure, and is restored
+  as one undo/redo action; dropping in open space remains a layout-only move.
+- Every numeric **Intensity & Contrast** node now shows the shared exact input
+  histogram as well as its output histogram. Linear Scale + Offset, Gamma
+  Correction, and Normalize gain the same slice/stack, cache, cancellation,
+  and stale-result behavior already used by Rescale Intensity and Clip, while
+  only cutoff-bearing nodes expose draggable guides.
+- Clip bounds, Rescale Intensity output bounds, and Mask Image's outside value
+  now use whole-number controls when their connected image has a non-boolean
+  integer dtype, while floating-point and boolean images retain their
+  scientifically valid fractional controls. The inspector rebuilds safely when
+  the upstream dtype changes, preserves invalid legacy values for explicit
+  correction, and avoids overflowing Qt controls for wide integer dtypes.
+- Parameter specifications can now declare a practical slider window separately
+  from their wider numeric-entry range. Sigma Filter uses this for a useful
+  `0..10` Sigma-width slider while retaining direct entry through `1,000,000`.
+  The same separation now keeps other extreme-range controls—such as histogram
+  bins, numerical epsilons, label distances, mesh size, skeleton length, and
+  calculator offsets—comfortable to drag without reducing their valid entry
+  ranges.
 - **Find fastest pipeline** now accepts cache-retention scopes containing
   connected or disconnected **Batch Output** and **Save Image** nodes. The
   complete requested retention set still identifies and stales proposals, but

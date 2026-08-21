@@ -130,6 +130,7 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "canny_edges",
         "otsu_threshold",
         "fill_holes",
+        "remove_binary_outliers",
         "remove_small_objects",
         "label_connected_components",
         "prepare_validate_psf",
@@ -146,6 +147,11 @@ _EXACT_HOST_SHAPE_DTYPE_OPERATIONS = frozenset(
     {
         "rescale_intensity",
         "unsharp_mask",
+    }
+)
+_EXACT_HOST_BOOL_SHAPE_OPERATIONS = frozenset(
+    {
+        "remove_binary_outliers",
     }
 )
 
@@ -2941,6 +2947,15 @@ def _project_host_planning_outputs(
                 output_dtype_policy_ids=("dtype-same-v1",),
             )
         return ((description, projected_state),)
+    if operation_id in _EXACT_HOST_BOOL_SHAPE_OPERATIONS:
+        description = _ArrayDescription(input_shape, np.dtype(bool))
+        projected_state = None
+        if planning_call.input_states and planning_call.input_states[0] is not None:
+            (projected_state,) = pipeline.predict_shape_preserving_node_states(
+                planning_call,
+                output_dtype_policy_ids=("fixed:bool",),
+            )
+        return ((description, projected_state),)
     if operation_id == "prepare_validate_psf":
         if bool(planning_call.kwargs.get("crop_empty_border", False)):
             # Cropping depends on exact pixel support and has no static shape
@@ -4123,6 +4138,7 @@ def _propagate_shape_preserving_facts(
         "canny_edges",
         "otsu_threshold",
         "fill_holes",
+        "remove_binary_outliers",
     }:
         # These reviewed segmentation providers return an exact boolean mask.
         # Boolean output is finite by construction and cannot contain negative

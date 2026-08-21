@@ -643,6 +643,83 @@ def _sigma_filter_spec() -> OperationComputeSpec:
     )
 
 
+def _remove_binary_outliers_spec() -> OperationComputeSpec:
+    """Return the exact fixed-RawKernel binary outlier cleanup contract."""
+
+    boundary_policy_id = "imagej-rankfilters-nearest-yx-v1"
+    precision_policy_id = "mask-bitwise-v1"
+    input_port = ComputePortContract(
+        0,
+        ValueKind.MASK,
+        port_name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        accumulation_dtype="uint32",
+        value_domain="binary-mask-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="finite-only-v1",
+        rounding_policy_id=precision_policy_id,
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    output_port = ComputePortContract(
+        0,
+        ValueKind.MASK,
+        port_name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        accumulation_dtype="bool",
+        value_domain="binary-mask-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="fixed:bool",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="finite-output-v1",
+        rounding_policy_id=precision_policy_id,
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    return OperationComputeSpec(
+        operation_id="remove_binary_outliers",
+        implementation_id="cupy-remove-binary-outliers-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupy",
+        callable_ref="napari_vipp.core.gpu.cupy_remove_binary_outliers:remove_binary_outliers",
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_CUSTOM,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id="remove-binary-outliers-parameters-v1",
+        workload_policy_id="remove-binary-outliers-bool-yx-v1",
+        parity_policy_id="mask-bitwise-v1",
+        memory_model_id="cupy-remove-binary-outliers-memory-v1",
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        progress_policy_id="remove-binary-outliers-pixel-tile-sync-progress-v1",
+        cancellation_policy_id=("remove-binary-outliers-pixel-tile-boundary-cancel-v1"),
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2,),
+        supports_device_residency=True,
+        limitations=(
+            "bool-mask-public-v1",
+            "independent-trailing-yx-planes-v1",
+            "imagej-rankfilters-historical-footprint-v1",
+            "radius-half-through-one-hundred-direct-v1",
+            "radius-half-through-twenty-five-public-policy-v1",
+            "fixed-source-runtime-parameter-kernel-v1",
+        ),
+    )
+
+
 def _connected_components_spec() -> OperationComputeSpec:
     """Return the exact CuPyX connected-components contract."""
 
@@ -975,6 +1052,7 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _canny_spec(),
     _otsu_spec(),
     _sigma_filter_spec(),
+    _remove_binary_outliers_spec(),
     _mask_cleanup_spec("fill_holes"),
     _mask_cleanup_spec("remove_small_objects"),
     _connected_components_spec(),

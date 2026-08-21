@@ -49,6 +49,7 @@ from napari_vipp._widget import (
     CACHE_MODE_LOW_MEMORY,
     CACHE_MODE_SMART,
     EXAMPLE_WORKFLOWS,
+    INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS,
     AutoContrastResult,
     CollectionBatchDialog,
     ColocalizationScatterRequest,
@@ -9664,6 +9665,112 @@ def test_rescale_intensity_shows_input_and_output_histograms(qtbot):
     assert widget.histogram_group.title() == "Output Histogram"
 
 
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "linear_scale_offset",
+        "gamma_correction",
+        "normalize_image",
+    ],
+)
+def test_intensity_contrast_nodes_show_input_and_output_histograms(
+    qtbot,
+    operation_id,
+):
+    data = np.arange(2 * 10 * 10, dtype=np.uint8).reshape(2, 10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette(operation_id)
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert not widget.rescale_input_histogram_group.isHidden()
+    assert not widget.histogram_group.isHidden()
+    assert not widget.rescale_input_histogram_scope_row.isHidden()
+    assert widget.rescale_input_histogram_plot._counts.sum() == 100.0
+    assert widget.histogram_plot._counts.sum() == 100.0
+    assert widget.rescale_input_histogram_plot._markers == []
+    assert widget.rescale_input_histogram_plot._draggable_markers == set()
+
+    widget.rescale_input_histogram_scope_combo.setCurrentText("Stack histogram")
+
+    assert widget.rescale_input_histogram_plot._counts.sum() == 200.0
+    assert widget.histogram_plot._counts.sum() == 100.0
+
+
+def test_intensity_contrast_histogram_membership_follows_palette_category():
+    expected = {
+        spec.id
+        for spec in PALETTE_NODE_LIBRARY
+        if spec.category == "Intensity & Contrast"
+        and spec.input_type == "array"
+        and spec.output_type == "image"
+    }
+
+    assert INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS == expected
+    assert expected == {
+        "clip_intensity",
+        "gamma_correction",
+        "linear_scale_offset",
+        "normalize_image",
+        "rescale_intensity",
+    }
+
+
+def test_intensity_contrast_input_histogram_reuses_cached_distribution(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(100, dtype=np.uint16).reshape(10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert widget._input_histogram_distribution_cache
+
+    def unexpected_rescan(*_args, **_kwargs):
+        raise AssertionError("the unchanged input distribution was rescanned")
+
+    monkeypatch.setattr(
+        widget,
+        "_calculate_input_histogram_distribution",
+        unexpected_rescan,
+    )
+    widget._update_rescale_input_histogram(node.id, widget._current_step())
+
+    assert widget.rescale_input_histogram_plot._counts.sum() == data.size
+
+
+def test_generic_intensity_histogram_background_request_is_cancellable(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(200, dtype=np.float32).reshape(2, 10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("normalize_image")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 1)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 1)
+    widget._clear_input_histogram_cache()
+    widget._update_rescale_input_histogram(node.id, widget._current_step())
+
+    assert widget._active_input_histogram_run_id is not None
+    cancel_event = widget._active_input_histogram_cancel_event
+    assert cancel_event is not None
+
+    widget._clear_input_histogram_cache()
+
+    assert cancel_event.is_set()
+    assert widget._active_input_histogram_run_id is None
+    assert widget._current_input_histogram_key is None
+
+
 def test_rescale_percentile_histogram_drag_switches_to_persisted_values(qtbot):
     data = np.arange(256, dtype=np.uint8).reshape(1, 16, 16)
     widget = VippWidget(_Viewer(data))
@@ -9860,7 +9967,7 @@ def test_clip_intensity_shows_input_and_output_histograms_with_live_markers(qtbo
     assert np.isclose(widget._parameter_widgets["minimum"]._bounds.minimum, 0.0)
     assert widget._parameter_widgets["maximum"]._bounds.maximum >= 255.0
 
-    widget._parameter_widgets["minimum"].value_box.setValue(25.0)
+    widget._parameter_widgets["minimum"].value_box.setValue(25)
 
     assert widget.pipeline.nodes[node.id].params["minimum"] == 25.0
     assert [
@@ -16602,14 +16709,27 @@ def test_insert_existing_loose_node_on_connection_full_splice_is_undoable(qtbot)
         (connection.source_id, connection.target_id)
         for connection in widget.pipeline.connections
     }
+    assert len(widget.pipeline.connections) == len(set(widget.pipeline.connections))
+    assert widget.graph_view.selected_node_ids() == (node.id,)
     assert widget.graph_view.node_position("gaussian").x() > target_before.x()
     assert "Inserted existing" in widget.status_label.text()
+
+    inserted_position = QPointF(widget.graph_view.node_position(node.id))
+    target_after = QPointF(widget.graph_view.node_position("gaussian"))
+
+    def assert_position_restored(node_id: str, expected: QPointF) -> None:
+        actual = widget.graph_view.node_position(node_id)
+        assert actual is not None
+        # QGraphicsProxyWidget can settle onto a neighboring quarter-pixel on
+        # macOS while preserving the same visible scene position.
+        assert actual.x() == pytest.approx(expected.x(), abs=0.5)
+        assert actual.y() == pytest.approx(expected.y(), abs=0.5)
 
     widget.undo()
 
     assert node.id in widget.pipeline.nodes
-    assert widget.graph_view.node_position(node.id) == old_pos
-    assert widget.graph_view.node_position("gaussian") == target_before
+    assert_position_restored(node.id, old_pos)
+    assert_position_restored("gaussian", target_before)
     assert ("input", "gaussian") in {
         (connection.source_id, connection.target_id)
         for connection in widget.pipeline.connections
@@ -16618,6 +16738,117 @@ def test_insert_existing_loose_node_on_connection_full_splice_is_undoable(qtbot)
         connection.source_id == node.id or connection.target_id == node.id
         for connection in widget.pipeline.connections
     )
+
+    widget.redo()
+
+    assert_position_restored(node.id, inserted_position)
+    assert_position_restored("gaussian", target_after)
+    assert GraphConnection("input", node.id) in widget.pipeline.connections
+    assert GraphConnection(node.id, "gaussian") in widget.pipeline.connections
+    assert GraphConnection("input", "gaussian") not in widget.pipeline.connections
+    assert len(widget.pipeline.connections) == len(set(widget.pipeline.connections))
+
+
+def test_pasted_loose_node_can_be_spliced_without_duplicate_connections(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    QApplication.clipboard().clear()
+    widget._copy_graph_nodes(("gaussian",))
+    (node_id,) = widget._paste_graph_fragment(QPointF(900.0, 500.0))
+    assert not widget._node_has_connections(node_id)
+    old_pos = QPointF(widget.graph_view.node_position(node_id))
+    widget.graph_view.center_node_on(node_id, QPointF(180.0, 100.0))
+    widget._history.clear()
+
+    result = widget._insert_existing_node_on_connection(
+        node_id,
+        ("input", "gaussian", 0, 0),
+        old_pos,
+        widget.graph_view.node_position(node_id),
+    )
+
+    assert result is widget.pipeline.nodes[node_id]
+    expected_splice = {
+        GraphConnection("input", node_id),
+        GraphConnection(node_id, "gaussian"),
+    }
+    assert expected_splice <= set(widget.pipeline.connections)
+    assert GraphConnection("input", "gaussian") not in widget.pipeline.connections
+    assert len(widget.pipeline.connections) == len(set(widget.pipeline.connections))
+    assert widget.graph_view.selected_node_ids() == (node_id,)
+
+
+@pytest.mark.parametrize("failed_connect_call", [1, 2])
+def test_existing_node_splice_failure_restores_wire_and_layout(
+    qtbot,
+    monkeypatch,
+    failed_connect_call,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    node = widget.add_node_from_palette("median_filter")
+    old_pos = QPointF(widget.graph_view.node_position(node.id))
+    original_positions = widget.graph_view.node_positions()
+    original_connections = tuple(widget.pipeline.connections)
+    widget.graph_view.center_node_on(node.id, old_pos + QPointF(160.0, 90.0))
+    widget._history.clear()
+    original_connect = widget.pipeline.connect
+    connect_calls = 0
+
+    def fail_selected_connect(*args, **kwargs):
+        nonlocal connect_calls
+        connect_calls += 1
+        if connect_calls == failed_connect_call:
+            return SimpleNamespace(
+                success=False,
+                message="injected splice connection failure",
+                removed=(),
+                connection=None,
+            )
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "connect", fail_selected_connect)
+
+    result = widget._insert_existing_node_on_connection(
+        node.id,
+        ("input", "gaussian", 0, 0),
+        old_pos,
+        widget.graph_view.node_position(node.id),
+    )
+
+    assert result is None
+    assert tuple(widget.pipeline.connections) == original_connections
+    assert widget.graph_view.node_positions() == original_positions
+    assert len(widget.graph_view._connections) == len(original_connections)
+    assert len(widget._undo_stack) == 0
+    assert "injected splice connection failure" in widget.status_label.text()
+
+
+def test_incompatible_existing_node_drop_keeps_original_wire(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    node = widget.add_node_from_palette("fill_holes")
+    old_pos = QPointF(widget.graph_view.node_position(node.id))
+    original_connections = tuple(widget.pipeline.connections)
+    widget.graph_view.center_node_on(node.id, old_pos + QPointF(80.0, 40.0))
+
+    result = widget._insert_existing_node_on_connection(
+        node.id,
+        ("input", "gaussian", 0, 0),
+        old_pos,
+        widget.graph_view.node_position(node.id),
+    )
+
+    assert result is None
+    assert tuple(widget.pipeline.connections) == original_connections
+    assert not widget._node_has_connections(node.id)
+    assert "Cannot feed image output" in widget.status_label.text()
 
 
 def test_insert_existing_split_axis_on_connection_applies_selected_mapping(
@@ -23250,6 +23481,427 @@ def test_binary_threshold_uses_unit_float_slider_range(qtbot):
     assert control.value_box.minimum() == 0.0
     assert control.value_box.maximum() == 1.0
     assert control.slider.maximum() == 1000
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.int16])
+def test_clip_integer_input_uses_whole_number_controls(qtbot, dtype):
+    base = 100 if dtype is np.uint8 else 1_000
+    data = np.arange(base, base + 16).reshape(4, 4).astype(dtype)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("clip_intensity")
+    widget.pipeline.set_param(node.id, "cutoff_mode", "Values")
+    widget._connect_nodes("input", node.id)
+
+    for name in ("minimum", "maximum"):
+        control = widget._parameter_widgets[name]
+        assert isinstance(control.value_box, QSpinBox)
+        assert control.value_box.singleStep() == 1
+        assert control.slider.singleStep() >= 1
+        assert control.value() == node.params[name]
+        control.value_box.setValue(1)
+        control.value_box.resetToDefault()
+        assert control.value() == int(control.spec.default)
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "parameter"),
+    [("clip_intensity", "minimum"), ("rescale_intensity", "out_min")],
+)
+def test_bool_intensity_bounds_retain_fractional_controls(
+    qtbot,
+    operation_id,
+    parameter,
+):
+    data = (np.arange(16).reshape(4, 4) % 2).astype(bool)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette(operation_id)
+    if operation_id == "clip_intensity":
+        widget.pipeline.set_param(node.id, "cutoff_mode", "Values")
+    widget._connect_nodes("input", node.id)
+
+    control = widget._parameter_widgets[parameter]
+    assert isinstance(control.value_box, FlexibleDoubleSpinBox)
+    assert control.value_box.decimals() > 0
+
+    control.value_box.setValue(0.5)
+
+    assert node.params[parameter] == pytest.approx(0.5)
+
+
+def test_clip_float_input_retains_fractional_authoring(qtbot):
+    data = np.linspace(0.0, 1.0, 16, dtype=np.float32).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("clip_intensity")
+    widget.pipeline.set_param(node.id, "cutoff_mode", "Values")
+    widget._connect_nodes("input", node.id)
+
+    control = widget._parameter_widgets["minimum"]
+    assert isinstance(control.value_box, FlexibleDoubleSpinBox)
+    assert control.value_box.decimals() > 0
+
+    control.value_box.setValue(0.125)
+
+    assert widget.pipeline.nodes[node.id].params["minimum"] == pytest.approx(0.125)
+
+
+def test_rescale_integer_output_is_whole_but_explicit_input_cutoffs_are_float(qtbot):
+    data = np.arange(16, dtype=np.uint16).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("rescale_intensity")
+    widget.pipeline.set_param(node.id, "cutoff_mode", "Values")
+    widget._connect_nodes("input", node.id)
+
+    for name in ("out_min", "out_max"):
+        control = widget._parameter_widgets[name]
+        assert isinstance(control.value_box, QSpinBox)
+        assert control.value_box.singleStep() == 1
+        control.value_box.resetToDefault()
+    for name in ("in_low_value", "in_high_value"):
+        control = widget._parameter_widgets[name]
+        assert isinstance(control.value_box, FlexibleDoubleSpinBox)
+        assert control.value_box.decimals() > 0
+
+    widget._parameter_widgets["in_low_value"].value_box.setValue(0.5)
+
+    assert widget.pipeline.nodes[node.id].params["in_low_value"] == pytest.approx(0.5)
+
+
+def _replace_cached_input_array(widget, data) -> None:
+    widget.pipeline.outputs["input"] = data
+    widget.pipeline.node_outputs["input"] = [data]
+    state = image_state_from_array(data)
+    widget.pipeline.output_states["input"] = state
+    widget.pipeline.node_output_states["input"] = [state]
+
+
+class _DtypeOnlyLazyCarrier:
+    def __init__(self, dtype):
+        self.dtype = np.dtype(dtype)
+        self.shape = (2_000, 2_000)
+        self.size = 4_000_000
+        self.nbytes = self.size * self.dtype.itemsize
+
+    def __array__(self, *args, **kwargs):
+        raise AssertionError("numeric control rendering materialized lazy data")
+
+
+class _NoDtypeLazyCarrier:
+    shape = (2_000, 2_000)
+    size = 4_000_000
+    nbytes = 8_000_000
+
+    def __array__(self, *args, **kwargs):
+        raise AssertionError("numeric control rendering materialized lazy data")
+
+
+def test_clip_editor_rebuilds_across_dtype_changes_without_rewriting_values(qtbot):
+    integer = np.arange(16, dtype=np.uint16).reshape(4, 4)
+    widget = VippWidget(_Viewer(integer))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("clip_intensity")
+    widget.pipeline.set_param(node.id, "cutoff_mode", "Values")
+    widget.pipeline.set_param(node.id, "minimum", 1.0)
+    widget.pipeline.set_param(node.id, "maximum", 12.0)
+    widget._connect_nodes("input", node.id)
+
+    integer_control = widget._parameter_widgets["minimum"]
+    assert isinstance(integer_control.value_box, QSpinBox)
+
+    floating = integer.astype(np.float32)
+    _replace_cached_input_array(widget, floating)
+    assert widget._refresh_selected_parameter_controls() is False
+    float_control = widget._parameter_widgets["minimum"]
+    assert float_control is not integer_control
+    assert isinstance(float_control.value_box, FlexibleDoubleSpinBox)
+
+    widget.pipeline.set_param(node.id, "minimum", 1.25)
+    authored = dict(node.params)
+    undo_count = len(widget._undo_stack)
+    _replace_cached_input_array(widget, integer)
+    assert widget._refresh_selected_parameter_controls() is False
+
+    invalid_integer_control = widget._parameter_widgets["minimum"]
+    assert invalid_integer_control is not float_control
+    assert isinstance(invalid_integer_control.value_box, FlexibleDoubleSpinBox)
+    assert invalid_integer_control.value_box.decimals() == 0
+    label = widget.parameter_form.labelForField(invalid_integer_control)
+    assert "whole number required" in label.text()
+    assert "1.25" in label.text()
+    assert node.params == authored
+    assert len(widget._undo_stack) == undo_count
+
+    _replace_cached_input_array(widget, floating)
+    widget._refresh_selected_parameter_controls()
+    restored_float_control = widget._parameter_widgets["minimum"]
+    assert isinstance(restored_float_control.value_box, FlexibleDoubleSpinBox)
+    assert restored_float_control.value() == pytest.approx(1.25)
+
+    _replace_cached_input_array(widget, integer)
+    widget._refresh_selected_parameter_controls()
+    correction_control = widget._parameter_widgets["minimum"]
+    assert isinstance(correction_control.value_box, FlexibleDoubleSpinBox)
+    assert correction_control.value_box.decimals() == 0
+    correction_control.value_box.setValue(1.75)
+
+    assert isinstance(widget._parameter_widgets["minimum"].value_box, QSpinBox)
+    assert node.params["minimum"] == 2
+    authored["minimum"] = 2
+    assert node.params == authored
+
+
+@pytest.mark.parametrize(
+    ("dtype", "base"),
+    [
+        (np.uint32, 3_000_000_000),
+        (np.int64, 2**60),
+        (np.uint64, int(np.iinfo(np.uint64).max) - 15),
+    ],
+)
+def test_wide_integer_clip_uses_zero_decimal_fallback_without_qt_overflow(
+    qtbot,
+    dtype,
+    base,
+):
+    data = np.asarray(
+        [base + offset for offset in range(16)],
+        dtype=dtype,
+    ).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("clip_intensity")
+    widget.pipeline.set_param(node.id, "cutoff_mode", "Values")
+    widget._connect_nodes("input", node.id)
+
+    for name in ("minimum", "maximum"):
+        control = widget._parameter_widgets[name]
+        assert isinstance(control.value_box, FlexibleDoubleSpinBox)
+        assert control.value_box.decimals() == 0
+        assert control.value_box.singleStep() >= 1.0
+        assert -(2**31) <= control.slider.minimum() <= control.slider.maximum()
+        assert control.slider.maximum() <= 2**31 - 1
+        assert control.value() == node.params[name]
+
+
+def test_high_uint32_rescale_output_uses_safe_slider_and_full_entry_range(qtbot):
+    data = np.arange(3_000_000_000, 3_000_000_016, dtype=np.uint32).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("rescale_intensity")
+    widget._connect_nodes("input", node.id)
+
+    for name in ("out_min", "out_max"):
+        control = widget._parameter_widgets[name]
+        assert isinstance(control.value_box, FlexibleDoubleSpinBox)
+        assert control.value_box.decimals() == 0
+        assert 0 <= control.slider.minimum() <= control.slider.maximum()
+        assert control.slider.maximum() <= 1_000_000_000
+        assert control.value_box.maximum() == float(np.iinfo(np.uint32).max)
+        assert control.value() == node.params[name]
+
+
+@pytest.mark.parametrize(
+    ("name", "invalid_value", "replacement"),
+    [("out_min", -1.0, 0.0), ("out_max", 100_000.0, 65_535.0)],
+)
+def test_rescale_out_of_dtype_saved_value_stays_visible_until_corrected(
+    qtbot,
+    name,
+    invalid_value,
+    replacement,
+):
+    data = np.arange(16, dtype=np.uint16).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("rescale_intensity")
+    widget.pipeline.set_param(node.id, name, invalid_value)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._connect_nodes("input", node.id)
+
+    correction = widget._parameter_widgets[name]
+    assert isinstance(correction.value_box, FlexibleDoubleSpinBox)
+    assert correction.value_box.decimals() == 0
+    assert correction.value() == invalid_value
+    label = widget.parameter_form.labelForField(correction)
+    assert repr(invalid_value) in label.text()
+    assert "outside" in label.text()
+    assert node.params[name] == invalid_value
+
+    correction.value_box.setValue(replacement)
+
+    assert node.params[name] == int(replacement)
+    assert isinstance(widget._parameter_widgets[name].value_box, QSpinBox)
+
+
+def test_state_only_uint16_input_still_uses_integer_clip_controls(qtbot):
+    data = np.arange(16, dtype=np.uint16).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("clip_intensity")
+    widget.pipeline.set_param(node.id, "cutoff_mode", "Values")
+    widget._connect_nodes("input", node.id)
+    state = widget.pipeline.node_output_states["input"][0]
+    widget.pipeline.node_outputs["input"] = [None]
+    widget.pipeline.outputs["input"] = None
+    widget.pipeline.node_output_states["input"] = [state]
+    widget.pipeline.output_states["input"] = state
+
+    widget._render_parameters(node.id, preserve_authored_values=True)
+
+    assert widget.pipeline.input_data_for_node(node.id) is None
+    assert widget.pipeline.input_state_for_node(node.id).dtype == "uint16"
+    assert isinstance(widget._parameter_widgets["minimum"].value_box, QSpinBox)
+    assert isinstance(widget._parameter_widgets["maximum"].value_box, QSpinBox)
+
+
+@pytest.mark.parametrize(
+    "carrier",
+    [_DtypeOnlyLazyCarrier(np.uint16), _NoDtypeLazyCarrier()],
+    ids=["carrier-dtype", "state-dtype"],
+)
+def test_lazy_dtype_carrier_is_not_materialized_for_integer_controls(
+    qtbot,
+    carrier,
+):
+    data = np.arange(16, dtype=np.uint16).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("clip_intensity")
+    widget.pipeline.set_param(node.id, "cutoff_mode", "Values")
+    widget._connect_nodes("input", node.id)
+    # This test substitutes a dtype-only stand-in for parameter presentation,
+    # not for the independent asynchronous thumbnail renderer.
+    widget._update_thumbnails = lambda: None
+    widget.pipeline.node_outputs["input"] = [carrier]
+    widget.pipeline.outputs["input"] = carrier
+
+    widget._render_parameters(node.id, preserve_authored_values=True)
+
+    assert isinstance(widget._parameter_widgets["minimum"].value_box, QSpinBox)
+    assert isinstance(widget._parameter_widgets["maximum"].value_box, QSpinBox)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.int16])
+def test_mask_image_integer_input_uses_native_whole_number_control(qtbot, dtype):
+    data = np.arange(16).reshape(4, 4).astype(dtype)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("mask_image")
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._connect_nodes("input", node.id, target_port=0)
+    widget._connect_nodes("threshold", node.id, target_port=1)
+
+    control = widget._parameter_widgets["outside_value"]
+    info = np.iinfo(dtype)
+    assert isinstance(control.value_box, QSpinBox)
+    assert control.value_box.minimum() == int(info.min)
+    assert control.value_box.maximum() == int(info.max)
+    assert control.value_box.singleStep() == 1
+    assert control.value() == node.params["outside_value"]
+
+    control.value_box.setValue(7)
+
+    assert node.params["outside_value"] == 7
+
+
+@pytest.mark.parametrize("dtype", [np.float32, bool])
+def test_mask_image_float_and_bool_inputs_retain_fractional_control(qtbot, dtype):
+    data = np.arange(16).reshape(4, 4).astype(dtype)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("mask_image")
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._connect_nodes("input", node.id, target_port=0)
+    widget._connect_nodes("threshold", node.id, target_port=1)
+
+    control = widget._parameter_widgets["outside_value"]
+    assert isinstance(control.value_box, FlexibleDoubleSpinBox)
+    assert control.value_box.decimals() > 0
+
+    control.value_box.setValue(0.5)
+
+    assert node.params["outside_value"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    ("invalid_value", "reason", "replacement"),
+    [(0.5, "fractional", 2), (256.0, "outside", 255)],
+)
+def test_mask_image_invalid_saved_integer_fill_stays_visible_until_corrected(
+    qtbot,
+    invalid_value,
+    reason,
+    replacement,
+):
+    data = np.arange(16, dtype=np.uint8).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("mask_image")
+    widget.pipeline.set_param(node.id, "outside_value", invalid_value)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._connect_nodes("input", node.id, target_port=0)
+    widget._connect_nodes("threshold", node.id, target_port=1)
+
+    correction = widget._parameter_widgets["outside_value"]
+    assert isinstance(correction.value_box, FlexibleDoubleSpinBox)
+    assert correction.value_box.decimals() == 0
+    label = widget.parameter_form.labelForField(correction)
+    assert repr(invalid_value) in label.text()
+    assert reason in label.text()
+    assert node.params["outside_value"] == invalid_value
+    if reason == "outside":
+        assert correction.value() == invalid_value
+
+    correction.value_box.setValue(replacement)
+
+    assert node.params["outside_value"] == replacement
+    assert isinstance(widget._parameter_widgets["outside_value"].value_box, QSpinBox)
+
+
+def test_state_only_uint16_input_uses_integer_mask_fill_control(qtbot):
+    data = np.arange(16, dtype=np.uint16).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("mask_image")
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._connect_nodes("input", node.id, target_port=0)
+    state = widget.pipeline.node_output_states["input"][0]
+    widget.pipeline.node_outputs["input"] = [None]
+    widget.pipeline.outputs["input"] = None
+    widget.pipeline.node_output_states["input"] = [state]
+    widget.pipeline.output_states["input"] = state
+
+    widget._render_parameters(node.id, preserve_authored_values=True)
+
+    control = widget._parameter_widgets["outside_value"]
+    assert widget.pipeline.input_data_for_node(node.id) is None
+    assert widget.pipeline.input_state_for_node(node.id).dtype == "uint16"
+    assert isinstance(control.value_box, QSpinBox)
+    assert control.value_box.minimum() == 0
+    assert control.value_box.maximum() == int(np.iinfo(np.uint16).max)
+
+
+def test_sigma_filter_has_practical_slider_and_wide_numeric_entry(qtbot):
+    widget = VippWidget(_Viewer(np.zeros((8, 8), dtype=np.uint8)))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("sigma_filter")
+    widget._connect_nodes("input", node.id)
+
+    control = widget._parameter_widgets["sigma_width"]
+    assert control.slider.minimum() == 0
+    assert control.slider.maximum() == 10_000
+    assert control.value_box.minimum() == 0.0
+    assert control.value_box.maximum() == 1_000_000.0
+
+    control.value_box.setValue(250.0)
+
+    assert control.slider.maximum() == 10_000
+    assert control.slider.value() == 10_000
+    assert control.value() == 250.0
+    assert widget.pipeline.nodes[node.id].params["sigma_width"] == 250.0
 
 
 def test_projection_axis_slider_uses_input_dimensionality(qtbot):

@@ -268,6 +268,42 @@ Typed ports prevent many accidental connections. For example, a label
 measurement node expects labels, while a filtering node usually expects an
 image or array.
 
+### Remove Outliers (Binary)
+
+Use `Remove Outliers (Binary)` after segmentation to suppress local foreground
+specks or fill local background notches. `Foreground (remove)` turns off
+foreground pixels when background is the local majority; `Background (fill)`
+turns on background pixels when foreground is the local majority. These are
+the logical-mask equivalents of Fiji's Bright and Dark choices. Fiji's
+grayscale threshold is omitted because any setting below the full binary
+contrast produces the same binary decision; there is no graded threshold
+effect to tune.
+`Neighborhood radius` controls ImageJ's circular pixel neighbourhood. It is
+not an object-area cutoff: use `Remove Small Objects` when cleanup should
+depend on connected-component size, or `Fill Holes` for fully enclosed holes.
+Large radii take longer and can erase thin or biologically real structures
+when they are the local minority, so compare the cleaned edge with the input.
+
+The node follows ImageJ/Fiji's Remove Outliers neighbourhood and nearest-edge
+rules, specialized for binary data. It processes every trailing YX plane
+independently, so a Z stack is cleaned slice by slice rather than with a 3D
+sphere. Reorder axes first if the intended image plane is not YX. The input
+must be a boolean mask or an unambiguous uint8 mask encoded as 0/1 or 0/255;
+grayscale images, empty masks, and non-uint8 integer label arrays are rejected.
+Typed Labels outputs cannot connect to this mask input. A direct uint8 0/1
+array is numerically indistinguishable from a binary mask and is treated as
+one. The output is a boolean mask. The inspector follows Fiji's radius range of
+0.5–25 pixels; the direct Python API accepts up to 100 for scripted use.
+
+The CPU implementation is always available as the scientific reference. A
+bitwise-exact CuPy implementation is also available for boolean masks over the
+inspector's 0.5–25 radius range. Its kernel receives radius and foreground or
+background choice as runtime values, so trying a new setting does not compile a
+new radius-specific kernel. **Find Fastest** can compare the two implementations
+for the current workflow and data. GPU is not presumed faster at every radius:
+the optimized CPU row-span method can remain the better assignment for some
+large neighborhoods, while resident or large-mask workflows may favor GPU.
+
 ### Metadata Matters
 
 VIPP tracks semantic axes, physical scale, units, channel names/colours,
@@ -343,6 +379,13 @@ counts. A replacement connected input array, a different slice, or a different
 histogram scope still calculates a new distribution because the inspected
 population has genuinely changed.
 
+All numeric nodes in **Intensity & Contrast** show both the connected input
+histogram and the selected output histogram. The input view has the same exact
+slice/stack and log-display controls for Linear Scale + Offset, Gamma
+Correction, Rescale Intensity, Normalize, and Clip. Rescale and Clip additionally
+show their cutoff guides; the other three input histograms are read-only
+context for judging the transformation.
+
 ### Rescale Intensity Cutoffs
 
 `Rescale Intensity` makes the cutoff source explicit:
@@ -373,6 +416,17 @@ arithmetic after subtracting a native integer origin. This preserves adjacent
 int64/uint64 values even near their dtype limits. Integer Clip uses whole-number
 bounds and clamps without a float conversion; use `Convert Dtype` first when a
 fractional clipping bound is scientifically intended.
+
+When the connected image has a non-boolean integer dtype, the Clip
+minimum/maximum, Rescale output minimum/maximum, and Mask Image outside-value
+controls switch to whole-number steps and integer entry. Floating-point and
+boolean inputs retain fractional entry because those operation contracts permit
+it. If an older workflow already contains a fractional or out-of-range value
+that is invalid for its current integer input, VIPP preserves and labels that
+saved value instead of silently changing the workflow; its correction control
+accepts only valid whole numbers and becomes the normal integer control after
+the value is corrected. Exceptionally wide integer dtypes use a zero-decimal
+wide-range entry so Qt's 32-bit spinner cannot overflow.
 
 Rescaling still needs floating-point ratio arithmetic. An active integer input
 or output interval wider than 2^53 levels is therefore rejected because
@@ -666,6 +720,12 @@ should survive Smart or Low-memory pruning. See
 VIPP rejects incompatible port types and cycles. When a node can be inserted on
 an existing wire in more than one way, VIPP asks which input/output mapping to
 use.
+
+A completely disconnected node can also be inserted by dragging it over a
+compatible wire and releasing while the wire glows green. VIPP replaces that
+one wire with source-to-node and node-to-target connections as a single
+undoable edit. A drop in open space only changes layout, and a node that already
+has a connection must be disconnected before it can be inserted this way.
 
 Image Source cards show their current layer, file stem, sample, or collection
 binding below the node title. Long bindings are elided on the card; hover it to

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import html
 import inspect as py_inspect
+import math
 import os
 import re
 import sys
@@ -258,6 +259,7 @@ from napari_vipp.core.pipeline import (
     EXECUTION_RUNNING,
     EXECUTION_STALE,
     GLOBAL_THRESHOLD_OPERATIONS,
+    INTENSITY_CONTRAST_CATEGORY,
     MANUAL_RUN_SKIP,
     GraphConnection,
     GraphNode,
@@ -687,11 +689,19 @@ RESCALE_PERCENTILE_PARAMETERS = {"in_low_percentile", "in_high_percentile"}
 RESCALE_CUTOFF_PARAMETERS = RESCALE_VALUE_PARAMETERS | RESCALE_PERCENTILE_PARAMETERS
 RESCALE_CUTOFF_MODE_PARAMETER = "cutoff_mode"
 CLIP_CUTOFF_PARAMETERS = {"minimum", "maximum"}
-INPUT_HISTOGRAM_OPERATIONS = {
+QT_SIGNED_INT_MINIMUM = -(2**31)
+QT_SIGNED_INT_MAXIMUM = 2**31 - 1
+INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS = frozenset(
+    spec.id
+    for specs in grouped_palette_specs()
+    .get(INTENSITY_CONTRAST_CATEGORY, {})
+    .values()
+    for spec in specs
+    if spec.input_type == "array" and spec.output_type == "image"
+)
+INPUT_HISTOGRAM_OPERATIONS = INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS | {
     "binary_threshold",
-    "clip_intensity",
     "hysteresis_threshold",
-    "rescale_intensity",
 } | (GLOBAL_THRESHOLD_OPERATIONS - {"imagej_auto_threshold"})
 COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "colocalization_metrics",
@@ -7674,6 +7684,20 @@ class VippWidget(QWidget):
             source_id, target_id, target_port, source_port = (
                 self._normalize_connection_key(connection_key)
             )
+            original_connection = next(
+                (
+                    connection
+                    for connection in self.pipeline.connections
+                    if connection.source_id == source_id
+                    and connection.target_id == target_id
+                    and connection.target_port == target_port
+                    and connection.source_port == source_port
+                    and not connection.tunnel_name
+                ),
+                None,
+            )
+            if original_connection is None:
+                raise RuntimeError("Original connection was no longer available.")
             downstream = self.pipeline.descendants_inclusive([target_id])
             downstream.discard(node_id)
             self._apply_insert_mapping_params(node_id, mapping)
@@ -16763,6 +16787,16 @@ class VippWidget(QWidget):
             return False
         if self._sync_rescale_output_range_defaults(self._selected_node_id):
             changed = True
+        if self._parameter_numeric_control_kind_changed(self._selected_node_id):
+            # Bounds can be refreshed in place, but Qt cannot turn an existing
+            # QDoubleSpinBox into a QSpinBox (or vice versa). Rebuild only when
+            # the resolved input dtype changes the authored numeric kind, and
+            # preserve the serialized values exactly while doing so.
+            self._render_parameters(
+                self._selected_node_id,
+                preserve_authored_values=True,
+            )
+            return changed
         for spec in self.pipeline.node_parameter_specs(self._selected_node_id):
             widget = self._parameter_widgets.get(spec.name)
             if widget is None:
@@ -16826,6 +16860,17 @@ class VippWidget(QWidget):
         if node.operation_id in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS:
             self._update_deconvolution_help_note()
         return changed
+
+    def _parameter_numeric_control_kind_changed(self, node_id: str) -> bool:
+        """Return whether an input-aware numeric editor needs replacement."""
+        for base_spec in self.pipeline.node_parameter_specs(node_id):
+            widget = self._parameter_widgets.get(base_spec.name)
+            if not isinstance(widget, (ParameterControl, NumericEntryControl)):
+                continue
+            spec = self._effective_parameter_spec(node_id, base_spec)
+            if widget._is_integer != (spec.kind == "int"):
+                return True
+        return False
 
     def _refresh_selected_parameter_visibility(self) -> bool:
         """Rebuild contextual rows without changing any serialized state."""
@@ -16933,6 +16978,81 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if (
             node is not None
+            and (
+                (
+                    node.operation_id == "clip_intensity"
+                    and spec.name in CLIP_CUTOFF_PARAMETERS
+                )
+                or (
+                    node.operation_id == "rescale_intensity"
+                    and spec.name in {"out_min", "out_max"}
+                )
+                or (
+                    node.operation_id == "mask_image"
+                    and spec.name == "outside_value"
+                )
+            )
+        ):
+            dtype = self._numeric_control_input_dtype(node_id)
+            if dtype is not None and np.issubdtype(dtype, np.integer):
+                current = node.params.get(spec.name, spec.default)
+                invalid_reason = ""
+                if not _numeric_value_is_whole(current):
+                    invalid_reason = "is fractional"
+                elif node.operation_id in {"rescale_intensity", "mask_image"}:
+                    info = np.iinfo(dtype)
+                    current_integer = int(current)
+                    if not int(info.min) <= current_integer <= int(info.max):
+                        invalid_reason = (
+                            f"is outside the {dtype} range "
+                            f"{int(info.min)}..{int(info.max)}"
+                        )
+                if invalid_reason:
+                    warning = (
+                        f"The saved value {current!r} {invalid_reason} and is "
+                        "invalid for the connected integer image. Enter a "
+                        "valid whole number to use this workflow."
+                    )
+                    tooltip = " ".join(
+                        part
+                        for part in (str(spec.tooltip).strip(), warning)
+                        if part
+                    )
+                    return replace(
+                        spec,
+                        label=(
+                            f"{spec.label} (saved {current!r} {invalid_reason}; "
+                            "whole number required)"
+                        ),
+                        tooltip=tooltip,
+                        step=1,
+                        decimals=0,
+                    )
+                # QSpinBox stores a signed C++ int. Ordinary microscopy
+                # integer dtypes use the native whole-number editor; wider
+                # dtypes retain a zero-decimal QDoubleSpinBox so neither Qt
+                # range setup nor refresh can overflow.
+                kind = "int" if _dtype_fits_qt_spinbox(dtype) else "float"
+                tooltip = str(spec.tooltip).strip()
+                if kind == "float":
+                    precision_note = (
+                        "Wide-integer entry is whole-number-only. Values beyond "
+                        "2^53 that cannot be represented exactly are rejected "
+                        "during calculation."
+                    )
+                    tooltip = " ".join(
+                        part for part in (tooltip, precision_note) if part
+                    )
+                return replace(
+                    spec,
+                    kind=kind,
+                    default=(int(spec.default) if kind == "int" else spec.default),
+                    step=1,
+                    decimals=0,
+                    tooltip=tooltip,
+                )
+        if (
+            node is not None
             and node.operation_id == "split_channels"
             and spec.name == "preview_channel"
             and self._single_used_split_channel_port(node_id) is not None
@@ -17029,6 +17149,31 @@ class VippWidget(QWidget):
                 choice_labels=choice_labels,
             )
         return spec
+
+    def _numeric_control_input_dtype(self, node_id: str) -> np.dtype | None:
+        """Resolve input dtype from data first, then carried metadata state."""
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is not None:
+            try:
+                data_dtype = getattr(data, "dtype", None)
+            except (TypeError, ValueError, RuntimeError):
+                data_dtype = ""
+            if data_dtype is not None:
+                try:
+                    return np.dtype(data_dtype)
+                except (TypeError, ValueError):
+                    # A malformed carrier hint is not permission to materialize
+                    # a lazy/device array on the GUI thread. Metadata may still
+                    # provide the authoritative dtype below.
+                    pass
+        state = self.pipeline.input_state_for_node(node_id)
+        state_dtype = getattr(state, "dtype", None)
+        if state_dtype in {None, ""}:
+            return None
+        try:
+            return np.dtype(state_dtype)
+        except (TypeError, ValueError):
+            return None
 
     def _spatial_mode_choice_labels(
         self,
@@ -17304,7 +17449,7 @@ class VippWidget(QWidget):
             and node.operation_id == "clip_intensity"
             and spec.name in CLIP_CUTOFF_PARAMETERS
         ):
-            return self._intensity_input_value_bounds(node_id, spec)
+            return self._clip_input_value_bounds(node_id, spec)
         if (
             node is not None
             and node.operation_id in {"rolling_ball_background", "subtract_background"}
@@ -17317,6 +17462,12 @@ class VippWidget(QWidget):
             and spec.name in {"out_min", "out_max"}
         ):
             return self._rescale_output_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "mask_image"
+            and spec.name == "outside_value"
+        ):
+            return self._mask_outside_value_bounds(node_id, spec)
         if (
             node is not None
             and node.operation_id == "rescale_axes"
@@ -17382,12 +17533,33 @@ class VippWidget(QWidget):
             and spec.name == "min_size"
         ):
             return self._remove_small_object_bounds(node_id, spec)
+        return self._declared_parameter_bounds(spec)
+
+    @staticmethod
+    def _declared_parameter_bounds(spec) -> ParameterBounds:
+        """Resolve a declarative slider window and wider entry validation range."""
+        slider_minimum = (
+            spec.minimum
+            if getattr(spec, "slider_minimum", None) is None
+            else spec.slider_minimum
+        )
+        slider_maximum = (
+            spec.maximum
+            if getattr(spec, "slider_maximum", None) is None
+            else spec.slider_maximum
+        )
+        has_slider_window = (
+            getattr(spec, "slider_minimum", None) is not None
+            or getattr(spec, "slider_maximum", None) is not None
+        )
         return ParameterBounds(
-            spec.minimum,
-            spec.maximum,
+            slider_minimum,
+            slider_maximum,
             spec.step,
             spec.decimals,
-            expandable=True,
+            expandable=not has_slider_window,
+            entry_minimum=spec.minimum if has_slider_window else None,
+            entry_maximum=spec.maximum if has_slider_window else None,
         )
 
     @staticmethod
@@ -19670,9 +19842,23 @@ class VippWidget(QWidget):
     def _rescale_input_value_bounds(self, node_id: str, spec) -> ParameterBounds:
         return self._intensity_input_value_bounds(node_id, spec)
 
-    def _intensity_input_value_bounds(self, node_id: str, spec) -> ParameterBounds:
+    def _clip_input_value_bounds(self, node_id: str, spec) -> ParameterBounds:
+        return self._intensity_input_value_bounds(
+            node_id,
+            spec,
+            whole_numbers_for_integer_input=True,
+        )
+
+    def _intensity_input_value_bounds(
+        self,
+        node_id: str,
+        spec,
+        *,
+        whole_numbers_for_integer_input: bool = False,
+    ) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
-        if data is None:
+        dtype = self._numeric_control_input_dtype(node_id)
+        if dtype is None:
             return ParameterBounds(
                 spec.minimum,
                 spec.maximum,
@@ -19681,20 +19867,77 @@ class VippWidget(QWidget):
                 expandable=True,
             )
 
-        dtype = np.asarray(data).dtype
+        whole_number_controls = (
+            whole_numbers_for_integer_input and int(spec.decimals) == 0
+        )
         if dtype == np.dtype(bool):
-            return ParameterBounds(0, 1, 1, 0)
+            if not whole_number_controls:
+                return ParameterBounds(
+                    0.0,
+                    1.0,
+                    spec.step,
+                    spec.decimals,
+                    expandable=False,
+                    entry_minimum=spec.minimum,
+                    entry_maximum=spec.maximum,
+                )
+            return ParameterBounds(
+                0,
+                1,
+                1,
+                0,
+                entry_minimum=min(int(spec.minimum), 0),
+                entry_maximum=max(int(spec.maximum), 1),
+            )
         if dtype == np.dtype(np.uint8):
-            return ParameterBounds(0.0, 255.0, 0.1, 2, expandable=True)
-        if _should_auto_background_data(data):
+            if whole_number_controls:
+                return ParameterBounds(
+                    0,
+                    255,
+                    1,
+                    0,
+                    entry_minimum=min(int(spec.minimum), 0),
+                    entry_maximum=max(int(spec.maximum), 255),
+                )
+            return ParameterBounds(
+                0.0,
+                255.0,
+                min(float(spec.step), 0.1),
+                max(int(spec.decimals), 2),
+                expandable=False,
+                entry_minimum=spec.minimum,
+                entry_maximum=spec.maximum,
+            )
+        if data is None or _should_auto_background_data(data):
             if np.issubdtype(dtype, np.integer):
                 info = np.iinfo(dtype)
+                span = int(info.max) - int(info.min)
+                if whole_number_controls:
+                    step = max(int(math.ceil(span / 500)), 1)
+                    decimals = 0
+                else:
+                    step = max(float(span) / 500.0, 1.0)
+                    decimals = 2
                 return _slider_safe_bounds(
                     float(info.min),
                     float(info.max),
-                    max((float(info.max) - float(info.min)) / 500.0, 1.0),
-                    2,
+                    min(step, 1_000_000_000),
+                    decimals,
                     expandable=True,
+                    entry_minimum=(
+                        min(int(spec.minimum), int(info.min))
+                        if whole_number_controls
+                        else spec.minimum
+                        if whole_numbers_for_integer_input
+                        else None
+                    ),
+                    entry_maximum=(
+                        max(int(spec.maximum), int(info.max))
+                        if whole_number_controls
+                        else spec.maximum
+                        if whole_numbers_for_integer_input
+                        else None
+                    ),
                 )
             current = _safe_float(
                 self.pipeline.nodes[node_id].params.get(spec.name),
@@ -19721,15 +19964,39 @@ class VippWidget(QWidget):
         minimum = stats.minimum
         maximum = stats.maximum
         if minimum == maximum:
-            minimum, maximum = _expanded_bounds(minimum)
+            if whole_number_controls and np.issubdtype(dtype, np.integer):
+                info = np.iinfo(dtype)
+                minimum = max(int(info.min), int(minimum) - 1)
+                maximum = min(int(info.max), int(maximum) + 1)
+            else:
+                minimum, maximum = _expanded_bounds(minimum)
         if np.issubdtype(dtype, np.integer):
-            step = max((maximum - minimum) / 500.0, 1.0)
+            if whole_number_controls:
+                step = max(int(math.ceil((maximum - minimum) / 500)), 1)
+                decimals = 0
+            else:
+                step = max((maximum - minimum) / 500.0, 1.0)
+                decimals = 2
             return _slider_safe_bounds(
                 minimum,
                 maximum,
-                step,
-                2,
+                min(step, 1_000_000_000),
+                decimals,
                 expandable=True,
+                entry_minimum=(
+                    min(int(spec.minimum), int(np.iinfo(dtype).min))
+                    if whole_number_controls
+                    else spec.minimum
+                    if whole_numbers_for_integer_input
+                    else None
+                ),
+                entry_maximum=(
+                    max(int(spec.maximum), int(np.iinfo(dtype).max))
+                    if whole_number_controls
+                    else spec.maximum
+                    if whole_numbers_for_integer_input
+                    else None
+                ),
             )
 
         span = maximum - minimum
@@ -19747,12 +20014,12 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None or node.operation_id != "rescale_intensity":
             return False
-        data = self.pipeline.input_data_for_node(node_id)
-        if data is None:
+        dtype = self._numeric_control_input_dtype(node_id)
+        if dtype is None:
             return False
 
         default_min, default_max, _step, _decimals = _rescale_dtype_output_range(
-            np.asarray(data).dtype
+            dtype
         )
         current = (
             _safe_float(node.params.get("out_min"), 0.0),
@@ -19769,8 +20036,8 @@ class VippWidget(QWidget):
         return True
 
     def _rescale_output_bounds(self, node_id: str, spec) -> ParameterBounds:
-        data = self.pipeline.input_data_for_node(node_id)
-        if data is None:
+        dtype = self._numeric_control_input_dtype(node_id)
+        if dtype is None:
             return ParameterBounds(
                 spec.minimum,
                 spec.maximum,
@@ -19778,15 +20045,82 @@ class VippWidget(QWidget):
                 spec.decimals,
                 expandable=True,
             )
-        minimum, maximum, step, decimals = _rescale_dtype_output_range(
-            np.asarray(data).dtype
-        )
+        minimum, maximum, step, decimals = _rescale_dtype_output_range(dtype)
+        if int(spec.decimals) > 0:
+            step = spec.step
+            decimals = spec.decimals
+            entry_minimum = spec.minimum
+            entry_maximum = spec.maximum
+        elif spec.kind == "float" and _dtype_fits_qt_spinbox(dtype):
+            # A saved invalid whole value uses the warned, whole-only
+            # correction editor. Keep that exact authored value visible until
+            # the user chooses an in-range replacement.
+            entry_minimum = spec.minimum
+            entry_maximum = spec.maximum
+        elif dtype == np.dtype(bool):
+            entry_minimum, entry_maximum = 0, 1
+        elif np.issubdtype(dtype, np.integer):
+            info = np.iinfo(dtype)
+            entry_minimum, entry_maximum = int(info.min), int(info.max)
+        else:
+            entry_minimum, entry_maximum = spec.minimum, spec.maximum
         return ParameterBounds(
             minimum,
             maximum,
             step,
             decimals,
             expandable=True,
+            entry_minimum=entry_minimum,
+            entry_maximum=entry_maximum,
+        )
+
+    def _mask_outside_value_bounds(self, node_id: str, spec) -> ParameterBounds:
+        """Present mask fill values in the connected image's numeric domain."""
+        dtype = self._numeric_control_input_dtype(node_id)
+        if dtype is None or not np.issubdtype(dtype, np.integer):
+            # Boolean images intentionally follow NumPy's Boolean assignment
+            # semantics; the core operation does not require whole numbers.
+            return self._declared_parameter_bounds(spec)
+
+        info = np.iinfo(dtype)
+        native_minimum = int(info.min)
+        native_maximum = int(info.max)
+        node = self.pipeline.nodes[node_id]
+        current = node.params.get(spec.name, spec.default)
+        current_is_valid = _numeric_value_is_whole(current)
+        if current_is_valid:
+            current_integer = int(current)
+            current_is_valid = (
+                native_minimum <= current_integer <= native_maximum
+            )
+
+        if current_is_valid:
+            entry_minimum = native_minimum
+            entry_maximum = native_maximum
+        else:
+            # A loaded legacy value must remain visible while the warning asks
+            # for correction.  Do not let the spin box silently display a
+            # dtype-clamped value while the serialized model retains another.
+            current_number = _safe_float(current, float(spec.default))
+            entry_minimum = min(
+                float(spec.minimum),
+                float(native_minimum),
+                current_number,
+            )
+            entry_maximum = max(
+                float(spec.maximum),
+                float(native_maximum),
+                current_number,
+            )
+
+        return _slider_safe_bounds(
+            float(native_minimum),
+            float(native_maximum),
+            1,
+            0,
+            expandable=False,
+            entry_minimum=entry_minimum,
+            entry_maximum=entry_maximum,
         )
 
     def _threshold_bounds(self, node_id: str, spec) -> ParameterBounds:
@@ -20088,7 +20422,31 @@ class VippWidget(QWidget):
 
     def _on_param_changed(self, name: str, value) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
-        if node is None or node.params.get(name) == value:
+        if node is None:
+            return
+        if (
+            (
+                node.operation_id == "clip_intensity"
+                and name in CLIP_CUTOFF_PARAMETERS
+            )
+            or (
+                node.operation_id == "rescale_intensity"
+                and name in {"out_min", "out_max"}
+            )
+            or (
+                node.operation_id == "mask_image"
+                and name == "outside_value"
+            )
+        ):
+            dtype = self._numeric_control_input_dtype(node.id)
+            if (
+                dtype is not None
+                and np.issubdtype(dtype, np.integer)
+                and _dtype_fits_qt_spinbox(dtype)
+                and _numeric_value_is_whole(value)
+            ):
+                value = int(round(float(value)))
+        if node.params.get(name) == value:
             return
         presentation_only = (
             node.operation_id == "split_channels" and name == "preview_channel"
@@ -20116,6 +20474,21 @@ class VippWidget(QWidget):
             raise
         if self._parameter_visibility_controls_changed(self._selected_node_id):
             self._render_parameters(self._selected_node_id)
+        if (
+            (
+                node.operation_id == "clip_intensity"
+                and name in CLIP_CUTOFF_PARAMETERS
+            )
+            or (
+                node.operation_id == "rescale_intensity"
+                and name in {"out_min", "out_max"}
+            )
+            or (
+                node.operation_id == "mask_image"
+                and name == "outside_value"
+            )
+        ):
+            self._refresh_selected_parameter_controls()
         if (
             node.operation_id in COLOCALIZATION_COSTES_OPERATIONS
             and name == "threshold_mode"
@@ -27369,6 +27742,29 @@ def _rescale_dtype_output_range(
     if np.issubdtype(dtype, np.floating):
         return 0.0, 1.0, 0.01, 3
     return 0.0, 1.0, 0.01, 3
+
+
+def _dtype_fits_qt_spinbox(dtype: np.dtype) -> bool:
+    """Return whether every native level fits QSpinBox's signed-int storage."""
+    dtype = np.dtype(dtype)
+    if dtype == np.dtype(bool):
+        return True
+    if not np.issubdtype(dtype, np.integer):
+        return False
+    info = np.iinfo(dtype)
+    return bool(
+        int(info.min) >= QT_SIGNED_INT_MINIMUM
+        and int(info.max) <= QT_SIGNED_INT_MAXIMUM
+    )
+
+
+def _numeric_value_is_whole(value) -> bool:
+    """Return whether a persisted numeric value is finite and integral."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return bool(np.isfinite(numeric) and numeric.is_integer())
 
 
 def _ranges_close(

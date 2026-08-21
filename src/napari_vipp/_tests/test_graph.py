@@ -238,6 +238,90 @@ def test_dragging_loose_node_does_not_reroute_wires_until_release(qtbot):
     )
 
 
+def test_releasing_dragged_loose_node_commits_green_wire_target_before_reroute(
+    qtbot,
+):
+    pipeline = PrototypePipeline()
+    view = PipelineGraphView()
+    view.resize(980, 620)
+    view.build_graph(
+        pipeline.nodes.values(),
+        pipeline.connections,
+        positions={
+            "input": QPointF(0, 20),
+            "gaussian": QPointF(660, 20),
+            "threshold": QPointF(1000, 20),
+        },
+    )
+    node = pipeline.add_node("median_filter")
+    view.add_node(node, QPointF(330, -250))
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+
+    connection = next(
+        item
+        for item in view._connections
+        if item.source_id == "input" and item.target_id == "gaussian"
+    )
+    path_before = QPainterPath(connection.path())
+    scene_target = connection.path().pointAtPercent(0.5)
+    proxy = view._proxies[node.id]
+    start = view.mapFromScene(proxy.sceneBoundingRect().center())
+    end = view.mapFromScene(scene_target)
+    requests = []
+    moves = []
+    view.set_connection_insert_validator(
+        lambda _operation_id, _key: ("full", "Drop to splice.")
+    )
+    view.node_splice_requested.connect(
+        lambda node_id, key, old, new: requests.append(
+            (node_id, tuple(key), QPointF(old), QPointF(new))
+        )
+    )
+    view.node_moved.connect(
+        lambda node_id, old, new: moves.append((node_id, QPointF(old), QPointF(new)))
+    )
+
+    qtbot.mousePress(view.viewport(), Qt.LeftButton, pos=start)
+    qtbot.mouseMove(view.viewport(), pos=end)
+
+    assert connection._insert_preview_state == "full"
+    assert _paths_equal(connection.path(), path_before)
+
+    qtbot.mouseRelease(view.viewport(), Qt.LeftButton, pos=end)
+
+    assert len(requests) == 1
+    assert requests[0][:2] == (node.id, ("input", "gaussian", 0, 0))
+    assert moves == []
+    assert view._highlighted_connection is None
+
+
+def test_releasing_dragged_loose_node_in_free_space_is_only_a_layout_move(qtbot):
+    view, pipeline = _build_view()
+    node = pipeline.add_node("median_filter")
+    view.add_node(node, QPointF(260, -180))
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    proxy = view._proxies[node.id]
+    start = view.mapFromScene(proxy.sceneBoundingRect().center())
+    end = start + QPoint(70, -45)
+    requests = []
+    moves = []
+    view.node_splice_requested.connect(lambda *args: requests.append(args))
+    view.node_moved.connect(lambda *args: moves.append(args))
+
+    qtbot.mousePress(view.viewport(), Qt.LeftButton, pos=start)
+    qtbot.mouseMove(view.viewport(), pos=end)
+    qtbot.mouseRelease(view.viewport(), Qt.LeftButton, pos=end)
+
+    assert requests == []
+    assert len(moves) == 1
+    assert moves[0][0] == node.id
+    assert view._highlighted_connection is None
+
+
 def test_clicking_node_selects_it_without_inspect_button(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)

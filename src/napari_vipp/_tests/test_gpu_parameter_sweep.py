@@ -44,20 +44,20 @@ def test_catalog_accounts_for_every_release_admission_identity(sweep_module):
         for declaration in declarations
     }
     assert actual == expected
-    assert len(actual) == 18
+    assert len(actual) == 19
     assert {case.operation_id for case in cases} == {
         declaration.operation_id for declaration in declarations
     }
 
 
-def test_catalog_has_bounded_explicit_treatment_for_all_18(sweep_module):
+def test_catalog_has_bounded_explicit_treatment_for_all_19(sweep_module):
     cases = sweep_module.sweep_catalog()
     declarations = sweep_module.load_admission_manifest(MANIFEST_PATH)
 
     coverage = sweep_module.describe_coverage(cases, declarations)
 
-    assert coverage["admitted_implementation_count"] == 18
-    assert coverage["executed_sweep_count"] == 14
+    assert coverage["admitted_implementation_count"] == 19
+    assert coverage["executed_sweep_count"] == 15
     assert coverage["fixed_contract_count"] == 2
     assert coverage["delegated_psf_sweep_count"] == 2
     rows = {row["operation_id"]: row for row in coverage["rows"]}
@@ -115,10 +115,31 @@ def test_catalog_exercises_expected_numeric_and_branch_controls(sweep_module):
     assert lane_names["fill_holes"] == {"connectivity"}
     assert dict(cases["fill_holes"].fixed_authored_parameters) == {"max_hole_size": 0}
     assert lane_names["remove_small_objects"] == {"min_size", "connectivity"}
+    assert lane_names["remove_binary_outliers"] == {"radius", "which_outliers"}
+    outlier_lanes = {
+        lane.parameter_name: lane for lane in cases["remove_binary_outliers"].lanes
+    }
+    assert outlier_lanes["radius"].values == (
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        3.0,
+        8.0,
+        25.0,
+        1.5,
+        8.0,
+    )
+    assert outlier_lanes["which_outliers"].values == (
+        "Foreground (remove)",
+        "Background (fill)",
+        "Foreground (remove)",
+        "Background (fill)",
+    )
     assert cases["canny_edges"].fixture_id == "uint16-yx-canny-v1"
     assert cases["canny_edges"].dtype == "uint16"
     assert (
-        sum(len(lane.values) for case in cases.values() for lane in case.lanes) == 122
+        sum(len(lane.values) for case in cases.values() for lane in case.lanes) == 135
     )
 
 
@@ -142,6 +163,16 @@ def test_canny_fixture_dtype_is_in_live_public_gpu_contract(sweep_module):
     assert spec.workload_policy_id == "canny-exact-bool-u8-u16-v2"
 
 
+def test_remove_binary_outliers_uses_exact_mask_benchmark_parity():
+    from napari_vipp.core.compute_benchmark_adapter import (
+        EXACT_MASK_PARITY_OPERATION_IDS,
+        EXACT_PARITY_OPERATION_IDS,
+    )
+
+    assert "remove_binary_outliers" in EXACT_PARITY_OPERATION_IDS
+    assert "remove_binary_outliers" in EXACT_MASK_PARITY_OPERATION_IDS
+
+
 def test_mask_targets_receive_recorded_cpu_type_bridge(sweep_module):
     cases = {case.operation_id: case for case in sweep_module.sweep_catalog()}
     declarations = {
@@ -152,6 +183,7 @@ def test_mask_targets_receive_recorded_cpu_type_bridge(sweep_module):
         "label_connected_components",
         "fill_holes",
         "remove_small_objects",
+        "remove_binary_outliers",
     }
 
     for operation_id in mask_targets:
@@ -403,10 +435,10 @@ def test_provider_free_orchestrator_emits_json_safe_complete_evidence(sweep_modu
     assert document["summary"] == {
         "hard_issue_count": 0,
         "relative_cliff_signal_count": 0,
-        "executed_step_count": 122,
+        "executed_step_count": 135,
         "complete_coverage": True,
     }
-    assert len(document["cases"]) == 18
+    assert len(document["cases"]) == 19
     by_operation = {case["operation_id"]: case for case in document["cases"]}
     assert by_operation["fill_holes"]["production_scaffold"] == {
         "operation_id": "binary_threshold",

@@ -369,6 +369,7 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",
         "sigma_filter",
+        "remove_binary_outliers",
         "fill_holes",
         "remove_small_objects",
         "label_connected_components",
@@ -383,6 +384,7 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
     assert custom_ids == {
         "cupy-binary-threshold-f32-exact-v1",
         "cupy-extract-channel-view-v1",
+        "cupy-remove-binary-outliers-v1",
         "cupyx-fill-holes-all-v1",
         "cupyx-remove-small-objects-bool-v1",
     }

@@ -403,6 +403,7 @@ def test_live_catalog_reports_three_distinct_layers_and_every_public_region():
         "rl-tv-cupy-f32-v1",
         "cupyx-canny-edges-exact-v1",
         "cupy-otsu-threshold-exact-v1",
+        "cupy-remove-binary-outliers-v1",
         "cupy-sigma-filter-v1",
         "cupyx-connected-components-v1",
         "cupyx-remove-small-objects-bool-v1",

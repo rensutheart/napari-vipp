@@ -127,6 +127,13 @@
       "library_id": "cupyx"
     },
     {
+      "operation_id": "remove_binary_outliers",
+      "implementation_id": "cupy-remove-binary-outliers-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupy"
+    },
+    {
       "operation_id": "measure_objects",
       "implementation_id": "cucim-measure-objects-basic-v1",
       "implementation_version": "1",
@@ -533,6 +540,26 @@
       "artifact": null,
       "artifact_schema": null,
       "artifact_schema_version": null
+    },
+    {
+      "id": "remove-binary-outliers-evidence",
+      "kind": "evidence",
+      "implementations": [
+        "remove_binary_outliers::cupy-remove-binary-outliers-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata",
+        "input_integrity", "memory", "cancellation", "cleanup", "fallback",
+        "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": ["scripts/benchmark_gpu_remove_binary_outliers.py"],
+      "profile_commands": {
+        "quick": ["{python}", "scripts/benchmark_gpu_remove_binary_outliers.py", "--profile", "quick", "--output", "{artifact}", "--device-index", "{device_index}"],
+        "full": ["{python}", "scripts/benchmark_gpu_remove_binary_outliers.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
+      },
+      "artifact": "remove-binary-outliers.json",
+      "artifact_schema": "napari-vipp-cupy-remove-binary-outliers-evidence",
+      "artifact_schema_version": 1
     },
     {
       "id": "measurements-evidence",
