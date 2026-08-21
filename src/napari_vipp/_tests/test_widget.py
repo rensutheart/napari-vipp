@@ -125,6 +125,14 @@ from napari_vipp.core.compute import (
     NodePreferenceKind,
     canonical_digest,
 )
+from napari_vipp.core.compute_pipeline_optimizer import (
+    PipelineOptimizationProposal,
+    PipelineOptimizationRow,
+    PipelineOptimizationSelectionBasis,
+    PipelineParityDeviation,
+    PipelineParityReviewMetric,
+    PipelineValidationWinner,
+)
 from napari_vipp.core.execution import (
     PipelineExecutionFailure,
     ResidentThumbnailStatisticsObservation,
@@ -192,6 +200,7 @@ from napari_vipp.ui import recent_paths
 from napari_vipp.ui.batch_workers import CollectionBatchOperationProgress
 from napari_vipp.ui.compute_benchmark_dialog import NodeBenchmarkWorkerOutcome
 from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
+    PipelineOptimizerApplyRequest,
     PipelineOptimizerWorkerOutcome,
 )
 from napari_vipp.ui.compute_setup import ComputeDeviceOption
@@ -1389,6 +1398,75 @@ def test_pipeline_optimizer_rejects_stale_review_result(qtbot):
 
     assert widget._compute_node_preferences == {}
     assert "Analyze the pipeline again" in widget.status_label.text()
+
+
+def test_pipeline_optimizer_requires_digest_bound_near_parity_acceptance(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._compute_mode = ComputeMode.CUSTOM
+    current_preference = NodeComputePreference()
+    proposed_preference = NodeComputePreference("library", "cupy")
+    deviation = PipelineParityDeviation(
+        "gaussian",
+        "gaussian_blur",
+        0,
+        PipelineParityReviewMetric.NORMALIZED_RMSE,
+        0.0001,
+        0.001,
+        64,
+        64,
+        1.0,
+        0.0002,
+        0.0002,
+        0.0001,
+        0.0001,
+        "Small measured floating-point difference.",
+    )
+    proposal = PipelineOptimizationProposal(
+        "identity",
+        "request",
+        (("gaussian", "cpu-gaussian"),),
+        (
+            PipelineOptimizationRow(
+                "gaussian",
+                "cpu-gaussian",
+                "cupy-gaussian",
+                current_preference,
+                proposed_preference,
+                True,
+                True,
+            ),
+        ),
+        {"gaussian": proposed_preference},
+        1.0,
+        0.5,
+        1.0,
+        0.5,
+        1.5,
+        True,
+        5,
+        0.5,
+        PipelineValidationWinner.PROPOSED,
+        (("gaussian", "cupy-gaussian"),),
+        PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE,
+        (deviation,),
+    )
+    result = SimpleNamespace(proposal=proposal, identity=object())
+
+    widget._apply_pipeline_optimizer_result(result)
+
+    assert "not been explicitly accepted" in widget.status_label.text()
+    assert widget._compute_node_preferences == {}
+
+    widget._apply_pipeline_optimizer_result(
+        PipelineOptimizerApplyRequest(result, proposal.parity_review_digest)
+    )
+
+    assert "not been explicitly accepted" not in widget.status_label.text()
+    assert "Analyze the pipeline again" in widget.status_label.text()
+    assert widget._compute_node_preferences == {}
 
 
 def test_background_run_forwards_only_source_current_exact_qualification(qtbot):

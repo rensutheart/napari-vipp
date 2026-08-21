@@ -19,11 +19,13 @@ from napari_vipp.core.compute import (
     DecisionReason,
     ExecutionPlan,
     ExecutionReport,
+    ExecutionSegment,
     MemoryEstimate,
     MemoryTopology,
     NodeComputePreference,
     NodeExecutionDecision,
     NodePreferenceKind,
+    canonical_digest,
 )
 from napari_vipp.core.compute_benchmark import BenchmarkBudgetExceeded
 from napari_vipp.core.compute_benchmark_adapter import (
@@ -35,6 +37,7 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     NodeBenchmarkUnavailable,
 )
 from napari_vipp.core.compute_pipeline_optimizer import (
+    PipelineOptimizationCancelled,
     PipelineOptimizationDeadlineExceeded,
     PipelineOptimizationEvidenceIncomplete,
     PipelineOptimizationSelectionBasis,
@@ -48,7 +51,9 @@ from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
     _adaptive_cpu_stop_is_safe_for_current_assignment,
     _build_optimizer_graph,
     _optimizer_validation_node_ids,
+    _pipeline_input_peak,
     _pipeline_output_parity,
+    _reviewable_pipeline_deviation,
     discover_pipeline_compute_repairs,
     fingerprint_pipeline_optimizer_sources,
     probe_pipeline_optimizer_environment,
@@ -134,6 +139,26 @@ def _environment() -> ComputeEnvironment:
         device_class="nvidia-cuda",
         memory_topology=MemoryTopology.DISCRETE,
         total_accelerator_memory_bytes=16 * 1024**3,
+    )
+
+
+def _execution_plan(request, decisions, *, repair_suggestions=()):
+    decisions = tuple(decisions)
+    segments = tuple(
+        ExecutionSegment(
+            f"test-segment-{index}",
+            decision.runtime_id,
+            (decision.node_id,),
+        )
+        for index, decision in enumerate(decisions)
+        if decision.runtime_id != "cpu-numpy"
+    )
+    return ExecutionPlan(
+        request.compute_request.fingerprint,
+        _environment().fingerprint,
+        segments,
+        decisions,
+        repair_suggestions=tuple(repair_suggestions),
     )
 
 
@@ -303,8 +328,10 @@ class _PrivateExecutor:
         self.cpu_seconds = cpu_seconds
         self.gpu_seconds = gpu_seconds
         self.target_sets: list[frozenset[str]] = []
+        self.retained_sets: list[frozenset[str]] = []
         self.detached_source_arrays: list[np.ndarray] = []
         self.compute_requests: list[ComputeRequest] = []
+        self.writer_execution_count = 0
 
     def __call__(self, request, **_kwargs):
         self.compute_requests.append(request.compute_request)
@@ -316,8 +343,12 @@ class _PrivateExecutor:
             restored.get("output_tunnels", ()),
         )
         targets = frozenset(request.target_node_ids or ())
+        retained = frozenset(request.retain_node_ids or ())
         self.target_sets.append(targets)
-        assert self.writer_node_id not in targets
+        self.retained_sets.append(retained)
+        if self.writer_node_id:
+            assert self.writer_node_id not in targets
+            assert self.writer_node_id not in retained
         payload = next(iter(request.source_payloads.values()))
         self.detached_source_arrays.append(payload.data)
         assert isinstance(payload.data, np.ndarray)
@@ -332,6 +363,8 @@ class _PrivateExecutor:
             retain_node_ids=request.retain_node_ids,
             prune_unretained=request.prune_unretained,
         )
+        if self.writer_node_id and self.writer_node_id in pipeline.completed_node_ids:
+            self.writer_execution_count += 1
         preference = request.compute_request.preference_for(self.operation_node_id)
         gpu = preference.kind is NodePreferenceKind.IMPLEMENTATION
         operation_id = pipeline.nodes[self.operation_node_id].operation_id
@@ -364,6 +397,7 @@ class _PrivateExecutor:
         report = ExecutionReport(
             request.compute_request,
             self.environment,
+            plan=_execution_plan(request, (decision,)),
             actual_decisions=(decision,),
         )
         return PipelineRunResult(
@@ -387,10 +421,8 @@ class _RepairBaselineExecutor(_PrivateExecutor):
         report = ExecutionReport(
             request.compute_request,
             self.environment,
-            plan=ExecutionPlan(
-                request.compute_request.fingerprint,
-                self.environment.fingerprint,
-                (),
+            plan=_execution_plan(
+                request,
                 result.execution_report.actual_decisions,
                 repair_suggestions=repairs,
             ),
@@ -404,16 +436,54 @@ class _RepairBaselineExecutor(_PrivateExecutor):
         )
 
 
-def _writer_workflow():
+def _writer_workflow(
+    *,
+    writer_operation_id: str = "save_output",
+    connected: bool = True,
+    output_path: str = "",
+):
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     source_id = next(iter(pipeline.nodes))
     median = pipeline.add_node("median_filter")
     median.params["size"] = 3
-    writer = pipeline.add_node("save_output")
+    writer = pipeline.add_node(writer_operation_id)
+    if writer_operation_id == "save_output" and output_path:
+        writer.params.update(
+            enabled="on",
+            path=output_path,
+            format="npy",
+            overwrite="yes",
+        )
+    elif writer_operation_id == "batch_output":
+        writer.params.update(
+            tag="segmented cells",
+            format="npy",
+            subfolder="images/masks",
+            filename_template="{source_stem}__{tag}",
+            overwrite="yes",
+        )
     assert pipeline.connect(source_id, median.id).success
-    assert pipeline.connect(median.id, writer.id).success
+    if connected:
+        assert pipeline.connect(median.id, writer.id).success
     return pipeline, source_id, median.id, writer.id
+
+
+def _pipeline_array_cache_snapshot(pipeline: PrototypePipeline):
+    def value_snapshot(value):
+        if value is None:
+            return None
+        array = np.asarray(value)
+        return array.dtype.str, tuple(array.shape), array.tobytes()
+
+    return (
+        {node_id: value_snapshot(value) for node_id, value in pipeline.outputs.items()},
+        {
+            node_id: tuple(value_snapshot(value) for value in values)
+            for node_id, values in pipeline.node_outputs.items()
+        },
+        frozenset(pipeline.completed_node_ids),
+    )
 
 
 def test_manual_rl_branches_expose_one_shared_dtype_repair_without_running_them():
@@ -508,6 +578,25 @@ def test_repair_discovery_does_not_hash_pipeline_input_bytes(monkeypatch) -> Non
     assert repairs[0].node_id == rl.id
     assert repairs[0].current_dtype == "uint16"
     assert repairs[0].target_dtype == "float32"
+
+
+def test_native_uint16_otsu_does_not_offer_an_unnecessary_conversion():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    source_id = next(iter(pipeline.nodes))
+    otsu = pipeline.add_node("otsu_threshold")
+    assert pipeline.connect(source_id, otsu.id).success
+    data = np.arange(256, dtype=np.uint16).reshape(16, 16)
+    pipeline.run(data)
+
+    repairs = discover_pipeline_compute_repairs(
+        ComputeRegistry(),
+        pipeline,
+        ComputeRequest("custom"),
+        (otsu.id,),
+    )
+
+    assert repairs == ()
 
 
 def test_optimizer_returns_actionable_dtype_repair_instead_of_generic_refusal(
@@ -664,11 +753,385 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     )
 
 
-def test_node_benchmark_timeout_reports_stage_progress_and_no_optimality(
+def test_unavailable_proposed_backend_is_rejected_and_optimizer_continues(
     tmp_path,
     monkeypatch,
 ):
     pipeline, source_id, median_id, writer_id = _writer_workflow()
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("custom"))
+    values = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+    environment = _environment()
+    clock = _ManualClock()
+    registry = ComputeRegistry()
+    runtime = _TransferRuntime(clock)
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_compute_environment",
+        lambda *_args, **_kwargs: (environment, ()),
+    )
+    gpu_spec = registry.implementations_for_operation(
+        "median_filter",
+        allow_experimental=True,
+    )[0]
+    cpu_spec = compute_specs_for("median_filter")[0]
+
+    class PlanningMismatchExecutor(_PrivateExecutor):
+        def __call__(self, request, **kwargs):
+            result = super().__call__(request, **kwargs)
+            if (
+                request.compute_request.preference_for(median_id).kind
+                is not NodePreferenceKind.IMPLEMENTATION
+            ):
+                return result
+            assert result.pipeline is not None
+            decision = NodeExecutionDecision(
+                median_id,
+                "median_filter",
+                request.compute_request.preference_for(median_id),
+                cpu_spec.runtime_id,
+                cpu_spec.implementation_library_id,
+                cpu_spec.implementation_id,
+                DecisionKind.POLICY_CPU,
+                DecisionReason.WORKLOAD_UNSUPPORTED,
+                "An upstream output descriptor was unresolved.",
+            )
+            return PipelineRunResult(
+                result.run_id,
+                result.workflow,
+                pipeline=result.pipeline,
+                execution_report=ExecutionReport(
+                    request.compute_request,
+                    environment,
+                    plan=_execution_plan(request, (decision,)),
+                    actual_decisions=(decision,),
+                ),
+            )
+
+    executor = PlanningMismatchExecutor(
+        clock,
+        environment,
+        median_id,
+        writer_id,
+        gpu_spec.implementation_id,
+    )
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+        node_benchmarker=_NodeBenchmarker(environment, registry),
+    )
+
+    result = coordinator.optimize(
+        document,
+        {source_id: SourcePayload(values)},
+        ComputeRequest("custom", allow_experimental=True),
+        time_budget_seconds=20.0,
+    )
+
+    median_row = next(row for row in result.proposal.rows if row.node_id == median_id)
+    assert not median_row.changed
+    assert median_row.proposed_implementation_id == cpu_spec.implementation_id
+    assert len(result.candidate_refusals) == 1
+    refusal = result.candidate_refusals[0]
+    assert refusal.node_id == median_id
+    assert refusal.code == "proposed_parity_planning_assignment_mismatch"
+    assert "unresolved" in refusal.message
+    assert all(
+        (item.node_id, item.implementation_id)
+        != (median_id, gpu_spec.implementation_id)
+        for item in result.exact_workload_qualifications
+    )
+    assert executor.writer_execution_count == 0
+
+
+def test_rejected_candidate_does_not_block_unrelated_gpu_improvement(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    source_id = next(iter(pipeline.nodes))
+    unavailable = pipeline.add_node("median_filter")
+    surviving = pipeline.add_node("median_filter")
+    unavailable.title = "Unavailable Median"
+    surviving.title = "Surviving Median"
+    unavailable.params["size"] = 3
+    surviving.params["size"] = 5
+    assert pipeline.connect(source_id, unavailable.id).success
+    assert pipeline.connect(source_id, surviving.id).success
+    request = ComputeRequest("custom", allow_experimental=True)
+    document = serialize_workflow(pipeline, compute_request=request)
+    values = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+    environment = _environment()
+    clock = _ManualClock()
+    registry = ComputeRegistry()
+    runtime = _TransferRuntime(clock)
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_compute_environment",
+        lambda *_args, **_kwargs: (environment, ()),
+    )
+    cpu_spec = compute_specs_for("median_filter")[0]
+    gpu_spec = registry.implementations_for_operation(
+        "median_filter",
+        allow_experimental=True,
+    )[0]
+
+    def executor(run_request, **_kwargs):
+        restored = deserialize_workflow(run_request.workflow)
+        result_pipeline = PrototypePipeline()
+        result_pipeline.restore_graph(
+            restored["nodes"],
+            restored["connections"],
+            restored.get("output_tunnels", ()),
+        )
+        payload = run_request.source_payloads[source_id]
+        result_pipeline.run(
+            payload.data,
+            input_metadata=payload.metadata,
+            input_name=payload.name,
+            source_payloads=run_request.source_payloads,
+            dirty_node_ids=run_request.dirty_node_ids,
+            target_node_ids=run_request.target_node_ids,
+            retain_node_ids=run_request.retain_node_ids,
+            prune_unretained=run_request.prune_unretained,
+        )
+        decisions = []
+        gpu_count = 0
+        for node in (unavailable, surviving):
+            preference = run_request.compute_request.preference_for(node.id)
+            requested_gpu = (
+                preference.kind is NodePreferenceKind.IMPLEMENTATION
+                and preference.value == gpu_spec.implementation_id
+            )
+            selected = (
+                cpu_spec
+                if node.id == unavailable.id and requested_gpu
+                else gpu_spec
+                if requested_gpu
+                else cpu_spec
+            )
+            selected_gpu = selected.runtime_id != "cpu-numpy"
+            gpu_count += int(selected_gpu)
+            decisions.append(
+                NodeExecutionDecision(
+                    node.id,
+                    node.operation_id,
+                    preference,
+                    selected.runtime_id,
+                    selected.implementation_library_id,
+                    selected.implementation_id,
+                    (
+                        DecisionKind.SELECTED
+                        if selected_gpu
+                        else DecisionKind.POLICY_CPU
+                    ),
+                    (
+                        DecisionReason.SELECTED_IMPLEMENTATION
+                        if selected_gpu
+                        else DecisionReason.WORKLOAD_UNSUPPORTED
+                        if requested_gpu
+                        else DecisionReason.EXPLICIT_CPU
+                    ),
+                    (
+                        "An upstream output descriptor was unresolved."
+                        if requested_gpu and not selected_gpu
+                        else "Exact parallel test assignment."
+                    ),
+                )
+            )
+        clock.advance(0.02 if gpu_count else 0.1)
+        return PipelineRunResult(
+            run_request.run_id,
+            run_request.workflow,
+            pipeline=result_pipeline,
+            execution_report=ExecutionReport(
+                run_request.compute_request,
+                environment,
+                plan=_execution_plan(run_request, decisions),
+                actual_decisions=tuple(decisions),
+            ),
+        )
+
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+        node_benchmarker=_NodeBenchmarker(environment, registry),
+    )
+
+    result = coordinator.optimize(
+        document,
+        {source_id: SourcePayload(values)},
+        request,
+        time_budget_seconds=30.0,
+    )
+
+    rows = {row.node_id: row for row in result.proposal.rows}
+    assert not rows[unavailable.id].changed
+    assert rows[unavailable.id].proposed_implementation_id == cpu_spec.implementation_id
+    assert rows[surviving.id].changed
+    assert rows[surviving.id].proposed_implementation_id == gpu_spec.implementation_id
+    assert [(item.node_id, item.code) for item in result.candidate_refusals] == [
+        (unavailable.id, "proposed_parity_planning_assignment_mismatch")
+    ]
+
+
+@pytest.mark.parametrize("writer_operation_id", ["batch_output", "save_output"])
+@pytest.mark.parametrize("connected", [True, False], ids=["connected", "disconnected"])
+@pytest.mark.parametrize("retention_mode", ["keep-all", "smart", "low"])
+def test_retained_writers_are_identity_only_and_never_run(
+    tmp_path,
+    monkeypatch,
+    writer_operation_id,
+    connected,
+    retention_mode,
+):
+    artifact = tmp_path / "writer-must-not-run.npy"
+    pipeline, source_id, median_id, writer_id = _writer_workflow(
+        writer_operation_id=writer_operation_id,
+        connected=connected,
+        output_path=str(artifact),
+    )
+    values = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+    if writer_operation_id == "save_output":
+        pipeline.nodes[writer_id].params["enabled"] = "off"
+    pipeline.run(values)
+    if writer_operation_id == "save_output":
+        pipeline.nodes[writer_id].params["enabled"] = "on"
+    assert not artifact.exists()
+
+    request = ComputeRequest("custom", allow_experimental=True)
+    document = serialize_workflow(pipeline, compute_request=request)
+    live_cache_before = _pipeline_array_cache_snapshot(pipeline)
+    requested_retained = (
+        frozenset(pipeline.nodes)
+        if retention_mode == "keep-all"
+        else frozenset({writer_id})
+    )
+
+    environment = _environment()
+    clock = _ManualClock()
+    registry = ComputeRegistry()
+    runtime = _TransferRuntime(clock)
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_compute_environment",
+        lambda *_args, **_kwargs: (environment, ()),
+    )
+    gpu_spec = registry.implementations_for_operation(
+        "median_filter",
+        allow_experimental=True,
+    )[0]
+    executor = _PrivateExecutor(
+        clock,
+        environment,
+        median_id,
+        writer_id,
+        gpu_spec.implementation_id,
+    )
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+        node_benchmarker=_NodeBenchmarker(environment, registry),
+    )
+
+    result = coordinator.optimize(
+        document,
+        {source_id: SourcePayload(values)},
+        request,
+        retain_node_ids=requested_retained,
+        time_budget_seconds=20.0,
+    )
+
+    assert result.identity.cache_retention_fingerprint == canonical_digest(
+        sorted(requested_retained)
+    )
+    assert median_id in result.evidence
+    assert median_id in result.benchmarked_node_ids
+    assert writer_id not in {row.node_id for row in result.proposal.rows}
+    assert executor.writer_execution_count == 0
+    assert executor.target_sets
+    assert executor.retained_sets
+    assert all(median_id in targets for targets in executor.target_sets)
+    assert all(writer_id not in targets for targets in executor.target_sets)
+    assert all(writer_id not in retained for retained in executor.retained_sets)
+    assert not artifact.exists()
+    assert serialize_workflow(pipeline, compute_request=request) == document
+    assert _pipeline_array_cache_snapshot(pipeline) == live_cache_before
+
+
+def test_retained_writer_cancellation_keeps_writer_and_live_state_untouched(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "cancelled-writer-must-not-run.npy"
+    pipeline, source_id, median_id, writer_id = _writer_workflow(
+        output_path=str(artifact)
+    )
+    request = ComputeRequest("custom", allow_experimental=True)
+    document = serialize_workflow(pipeline, compute_request=request)
+    values = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    environment = _environment()
+    clock = _ManualClock()
+    registry = ComputeRegistry()
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_compute_environment",
+        lambda *_args, **_kwargs: (environment, ()),
+    )
+    gpu_spec = registry.implementations_for_operation(
+        "median_filter",
+        allow_experimental=True,
+    )[0]
+    executor = _PrivateExecutor(
+        clock,
+        environment,
+        median_id,
+        writer_id,
+        gpu_spec.implementation_id,
+    )
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+        node_benchmarker=_NodeBenchmarker(environment, registry),
+    )
+
+    with pytest.raises(PipelineOptimizationCancelled):
+        coordinator.optimize(
+            document,
+            {source_id: SourcePayload(values)},
+            request,
+            retain_node_ids=frozenset(pipeline.nodes),
+            time_budget_seconds=20.0,
+            cancelled=lambda: bool(executor.target_sets),
+        )
+
+    assert len(executor.target_sets) == 1
+    assert executor.writer_execution_count == 0
+    assert writer_id not in executor.target_sets[0]
+    assert writer_id not in executor.retained_sets[0]
+    assert not artifact.exists()
+    assert serialize_workflow(pipeline, compute_request=request) == document
+
+
+def test_node_benchmark_timeout_reports_stage_progress_and_no_optimality(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "timeout-writer-must-not-run.npy"
+    pipeline, source_id, median_id, writer_id = _writer_workflow(
+        output_path=str(artifact)
+    )
     document = serialize_workflow(pipeline, compute_request=ComputeRequest("custom"))
     environment = _environment()
     clock = _ManualClock()
@@ -711,6 +1174,7 @@ def test_node_benchmark_timeout_reports_stage_progress_and_no_optimality(
                 )
             },
             request,
+            retain_node_ids=frozenset(pipeline.nodes),
             time_budget_seconds=20.0,
             progress=progress.append,
         )
@@ -744,6 +1208,10 @@ def test_node_benchmark_timeout_reports_stage_progress_and_no_optimality(
     nested = next(item for item in progress if item.measurement_phase == "paired_warm")
     assert (nested.operation_completed, nested.operation_total) == (1, 3)
     assert nested.node_id == median_id
+    assert executor.writer_execution_count == 0
+    assert all(writer_id not in targets for targets in executor.target_sets)
+    assert all(writer_id not in retained for retained in executor.retained_sets)
+    assert not artifact.exists()
 
 
 def test_close_pipeline_validation_uses_full_fifteen_rounds(
@@ -847,6 +1315,7 @@ def test_decisive_current_pipeline_win_stops_after_five_rounds(
         document,
         {source_id: SourcePayload(np.arange(64 * 64, dtype=np.uint16).reshape(64, 64))},
         ComputeRequest("custom", allow_experimental=True),
+        retain_node_ids=frozenset(pipeline.nodes),
         time_budget_seconds=20.0,
     )
 
@@ -858,6 +1327,8 @@ def test_decisive_current_pipeline_win_stops_after_five_rounds(
     assert dict(proposal.tested_assignment)[median_id] == gpu_spec.implementation_id
     assert median_row.current_implementation_id == median_row.proposed_implementation_id
     assert len(executor.target_sets) == 13
+    assert executor.writer_execution_count == 0
+    assert all(writer_id not in retained for retained in executor.retained_sets)
 
 
 def test_locked_gpu_graph_node_needs_no_comparative_benchmark_record():
@@ -946,6 +1417,31 @@ def test_application_optimizer_refuses_non_custom_and_missing_sources(tmp_path):
     with pytest.raises(PipelineOptimizationEvidenceIncomplete) as missing:
         coordinator.optimize(document, {}, ComputeRequest("custom"))
     assert missing.value.reasons[0].code == "source_identity_incomplete"
+
+
+def test_writer_filtering_does_not_hide_unknown_retention_ids(tmp_path):
+    pipeline, _source_id, _median_id, writer_id = _writer_workflow(
+        writer_operation_id="batch_output",
+        connected=False,
+    )
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("custom"))
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        ComputeRegistry(),
+        tmp_path / "benchmarks.json",
+    )
+
+    with pytest.raises(PipelineOptimizationEvidenceIncomplete) as caught:
+        coordinator.optimize(
+            document,
+            {},
+            ComputeRequest("custom"),
+            retain_node_ids=(writer_id, "missing_output"),
+        )
+
+    assert len(caught.value.reasons) == 1
+    reason = caught.value.reasons[0]
+    assert reason.code == "retain_identity_invalid"
+    assert "missing_output" in reason.message
 
 
 def test_adaptive_cpu_stop_requires_a_retained_gpu_current_assignment():
@@ -1075,6 +1571,7 @@ def test_pipeline_validation_checks_unchanged_observable_downstream_output(
             execution_report=ExecutionReport(
                 request.compute_request,
                 _environment(),
+                plan=_execution_plan(request, decisions),
                 actual_decisions=decisions,
             ),
         )
@@ -1114,6 +1611,114 @@ def test_pipeline_validation_checks_unchanged_observable_downstream_output(
     assert "Threshold" in validation.detail
     assert len(retained_sets) == 2
     assert all(threshold.id in node_ids for node_ids in retained_sets)
+
+
+def test_pipeline_validation_quantifies_small_mask_difference_then_times(tmp_path):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    source_id = next(iter(pipeline.nodes))
+    otsu = pipeline.add_node("otsu_threshold")
+    assert pipeline.connect(source_id, otsu.id).success
+    document = serialize_workflow(pipeline)
+    registry = ComputeRegistry()
+    gpu_spec = registry.implementations_for_operation(
+        "otsu_threshold",
+        allow_experimental=True,
+    )[0]
+    cpu_spec = compute_specs_for("otsu_threshold")[0]
+    clock = _ManualClock()
+    execution_count = 0
+
+    def executor(request, **_kwargs):
+        nonlocal execution_count
+        execution_count += 1
+        restored = deserialize_workflow(request.workflow)
+        result_pipeline = PrototypePipeline()
+        result_pipeline.restore_graph(
+            restored["nodes"],
+            restored["connections"],
+            restored.get("output_tunnels", ()),
+        )
+        gpu = (
+            request.compute_request.preference_for(otsu.id).value
+            == gpu_spec.implementation_id
+        )
+        source = np.zeros((1000,), dtype=np.float32)
+        output = np.zeros((1000,), dtype=bool)
+        if gpu:
+            output[17] = True
+        for node_id, value in ((source_id, source), (otsu.id, output)):
+            result_pipeline.outputs[node_id] = value
+            result_pipeline.node_outputs[node_id] = [value]
+            result_pipeline.completed_node_ids.add(node_id)
+        selected = gpu_spec if gpu else cpu_spec
+        decision = NodeExecutionDecision(
+            otsu.id,
+            "otsu_threshold",
+            request.compute_request.preference_for(otsu.id),
+            selected.runtime_id,
+            selected.implementation_library_id,
+            selected.implementation_id,
+            DecisionKind.SELECTED if gpu else DecisionKind.POLICY_CPU,
+            (
+                DecisionReason.SELECTED_IMPLEMENTATION
+                if gpu
+                else DecisionReason.EXPLICIT_CPU
+            ),
+            "Exact private validation decision.",
+        )
+        clock.advance(0.01 if gpu else 0.1)
+        return PipelineRunResult(
+            request.run_id,
+            request.workflow,
+            pipeline=result_pipeline,
+            execution_report=ExecutionReport(
+                request.compute_request,
+                _environment(),
+                plan=_execution_plan(request, (decision,)),
+                actual_decisions=(decision,),
+            ),
+        )
+
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+    )
+    current = (
+        (source_id, compute_specs_for("input")[0].implementation_id),
+        (otsu.id, cpu_spec.implementation_id),
+    )
+    proposed = (
+        current[0],
+        (otsu.id, gpu_spec.implementation_id),
+    )
+
+    validation = coordinator._validate_assignments(
+        document,
+        {source_id: SourcePayload(np.zeros((1000,), dtype=np.float32))},
+        ComputeRequest("custom", allow_experimental=True),
+        _environment(),
+        pipeline,
+        frozenset(pipeline.nodes),
+        frozenset(),
+        PipelineValidationRequest("identity", current, proposed),
+        deadline=clock() + 30.0,
+        cancelled=None,
+    )
+
+    assert not validation.parity_passed
+    assert validation.synchronized
+    assert validation.current_seconds == pytest.approx(0.1)
+    assert validation.proposed_seconds == pytest.approx(0.01)
+    assert execution_count >= 12
+    assert len(validation.reviewable_deviations) == 1
+    deviation = validation.reviewable_deviations[0]
+    assert deviation.node_id == otsu.id
+    assert deviation.differing_values == 1
+    assert deviation.total_values == 1000
+    assert deviation.differing_fraction == pytest.approx(0.001)
 
 
 def test_pipeline_validation_stops_at_skipped_manual_barrier(tmp_path):
@@ -1205,6 +1810,7 @@ def test_pipeline_validation_stops_at_skipped_manual_barrier(tmp_path):
             execution_report=ExecutionReport(
                 request.compute_request,
                 _environment(),
+                plan=_execution_plan(request, decisions),
                 actual_decisions=tuple(decisions),
             ),
         )
@@ -1276,7 +1882,9 @@ def test_optimizer_private_runs_can_explicitly_include_manual_measurements():
 @pytest.mark.parametrize(
     ("failure_mode", "expected_code"),
     [
-        ("assignment", "proposed_parity_assignment_mismatch"),
+        ("planning", "proposed_parity_planning_assignment_mismatch"),
+        ("device-plan", "proposed_parity_device_segment_mismatch"),
+        ("actual", "proposed_parity_actual_assignment_mismatch"),
         ("cleanup", "current_parity_cleanup_failed"),
     ],
 )
@@ -1315,24 +1923,42 @@ def test_pipeline_validation_rejects_untrustworthy_execution_report(
             request.compute_request.preference_for(median.id).value
             == gpu_spec.implementation_id
         )
+        requested_spec = gpu_spec if requested_gpu else cpu_spec
+        planned_spec = (
+            cpu_spec if failure_mode == "planning" and requested_gpu else requested_spec
+        )
         actual_spec = (
-            cpu_spec if failure_mode == "assignment" or not requested_gpu else gpu_spec
+            cpu_spec if failure_mode == "actual" and requested_gpu else planned_spec
         )
-        ignored = NodeExecutionDecision(
-            median.id,
-            "median_filter",
-            request.compute_request.preference_for(median.id),
-            actual_spec.runtime_id,
-            actual_spec.implementation_library_id,
-            actual_spec.implementation_id,
-            DecisionKind.SELECTED if requested_gpu else DecisionKind.POLICY_CPU,
-            (
-                DecisionReason.SELECTED_IMPLEMENTATION
-                if requested_gpu
-                else DecisionReason.EXPLICIT_CPU
-            ),
-            "Test executor returned untrustworthy validation provenance.",
-        )
+
+        def make_decision(spec):
+            selected_gpu = spec.runtime_id != "cpu-numpy"
+            return NodeExecutionDecision(
+                median.id,
+                "median_filter",
+                request.compute_request.preference_for(median.id),
+                spec.runtime_id,
+                spec.implementation_library_id,
+                spec.implementation_id,
+                DecisionKind.SELECTED if selected_gpu else DecisionKind.POLICY_CPU,
+                (
+                    DecisionReason.SELECTED_IMPLEMENTATION
+                    if selected_gpu
+                    else DecisionReason.EXPLICIT_CPU
+                ),
+                "Test executor returned staged validation provenance.",
+            )
+
+        planned = make_decision(planned_spec)
+        actual = make_decision(actual_spec)
+        plan = _execution_plan(request, (planned,))
+        if failure_mode == "device-plan" and requested_gpu:
+            plan = ExecutionPlan(
+                request.compute_request.fingerprint,
+                _environment().fingerprint,
+                (),
+                (planned,),
+            )
         return PipelineRunResult(
             request.run_id,
             request.workflow,
@@ -1340,7 +1966,8 @@ def test_pipeline_validation_rejects_untrustworthy_execution_report(
             execution_report=ExecutionReport(
                 request.compute_request,
                 _environment(),
-                actual_decisions=(ignored,),
+                plan=plan,
+                actual_decisions=(actual,),
                 cleanup_succeeded=failure_mode != "cleanup",
             ),
         )
@@ -1388,6 +2015,177 @@ def test_pipeline_exact_shortcut_preserves_signed_zero_parity_policy():
 
     assert not passed
     assert "signed_zero_mismatches=1" in detail
+    assert (
+        _reviewable_pipeline_deviation(
+            "median_1",
+            "median_filter",
+            0,
+            reference,
+            candidate,
+            input_peak=None,
+            parity_detail=detail,
+        )
+        is None
+    )
+
+
+def test_small_discrete_difference_is_quantified_for_explicit_review():
+    reference = np.zeros((1000,), dtype=bool)
+    candidate = reference.copy()
+    candidate[17] = True
+
+    deviation = _reviewable_pipeline_deviation(
+        "otsu_1",
+        "otsu_threshold",
+        0,
+        reference,
+        candidate,
+        input_peak=None,
+        parity_detail="bitwise mask mismatch",
+    )
+
+    assert deviation is not None
+    assert deviation.metric.value == "differing-value-fraction"
+    assert deviation.differing_values == 1
+    assert deviation.total_values == 1000
+    assert deviation.differing_fraction == pytest.approx(0.001)
+    assert deviation.measured_difference == pytest.approx(0.001)
+
+
+def test_small_float_difference_is_symmetric_and_bounded_for_review():
+    reference = np.linspace(0.0, 1.0, 1000, dtype=np.float32)
+    candidate = np.nextafter(reference, np.float32(np.inf))
+
+    deviation = _reviewable_pipeline_deviation(
+        "gaussian_1",
+        "gaussian_blur",
+        0,
+        reference,
+        candidate,
+        input_peak=1.0,
+        parity_detail="registered Gaussian tolerance did not pass",
+    )
+
+    assert deviation is not None
+    assert deviation.metric.value == "normalized-rmse"
+    assert deviation.differing_values > 900
+    assert deviation.normalized_root_mean_square_error < 1e-6
+    assert deviation.normalized_maximum_absolute_error < 1e-6
+
+
+def test_reviewable_difference_uses_bounded_chunks_for_strided_outputs(
+    monkeypatch,
+):
+    reference_storage = np.zeros((1024, 1024), dtype=bool)
+    candidate_storage = reference_storage.copy()
+    candidate_storage[17, 34] = True
+    reference = reference_storage[:, ::2]
+    candidate = candidate_storage[:, ::2]
+    observed_staging_sizes: list[int] = []
+    original_ascontiguousarray = np.ascontiguousarray
+
+    def observed_ascontiguousarray(values, *args, **kwargs):
+        observed_staging_sizes.append(int(np.asarray(values).size))
+        return original_ascontiguousarray(values, *args, **kwargs)
+
+    monkeypatch.setattr(np, "ascontiguousarray", observed_ascontiguousarray)
+
+    deviation = _reviewable_pipeline_deviation(
+        "otsu_1",
+        "otsu_threshold",
+        0,
+        reference,
+        candidate,
+        input_peak=None,
+        parity_detail="bitwise mask mismatch",
+    )
+
+    assert deviation is not None
+    assert deviation.differing_values == 1
+    assert observed_staging_sizes
+    assert max(observed_staging_sizes) < reference.size
+
+
+def test_exact_parity_shortcut_uses_bounded_chunks_for_strided_outputs(
+    monkeypatch,
+):
+    storage = np.arange(1024 * 1024, dtype=np.float32).reshape(1024, 1024)
+    reference = storage[:, ::2]
+    candidate = storage.copy()[:, ::2]
+    observed_staging_sizes: list[int] = []
+    original_ascontiguousarray = np.ascontiguousarray
+
+    def observed_ascontiguousarray(values, *args, **kwargs):
+        observed_staging_sizes.append(int(np.asarray(values).size))
+        return original_ascontiguousarray(values, *args, **kwargs)
+
+    monkeypatch.setattr(np, "ascontiguousarray", observed_ascontiguousarray)
+
+    passed, detail = _pipeline_output_parity(
+        "gaussian_blur",
+        reference,
+        candidate,
+    )
+
+    assert passed, detail
+    assert observed_staging_sizes
+    assert max(observed_staging_sizes) < reference.size
+
+
+def test_pipeline_input_peak_uses_bounded_chunks(monkeypatch):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    storage = np.linspace(-3.0, 5.0, 1024 * 1024, dtype=np.float32).reshape(1024, 1024)
+    values = storage[:, ::2]
+    expected_peak = float(np.max(np.abs(values.astype(np.float64))))
+    pipeline.outputs["input"] = values
+    observed_staging_sizes: list[int] = []
+    original_asarray = np.asarray
+
+    def observed_asarray(value, *args, **kwargs):
+        converted = original_asarray(value, *args, **kwargs)
+        if converted is not values:
+            observed_staging_sizes.append(int(converted.size))
+        return converted
+
+    monkeypatch.setattr(np, "asarray", observed_asarray)
+
+    peak = _pipeline_input_peak(pipeline, gaussian.id)
+
+    assert peak == expected_peak
+    assert not observed_staging_sizes or max(observed_staging_sizes) < values.size
+
+
+def test_large_or_structural_difference_is_not_reviewable():
+    reference = np.zeros((1000,), dtype=bool)
+    candidate = reference.copy()
+    candidate[:2] = True
+    assert (
+        _reviewable_pipeline_deviation(
+            "remove_1",
+            "remove_small_objects",
+            0,
+            reference,
+            candidate,
+            input_peak=None,
+            parity_detail="mask mismatch",
+        )
+        is None
+    )
+    assert (
+        _reviewable_pipeline_deviation(
+            "remove_1",
+            "remove_small_objects",
+            0,
+            reference.reshape(10, 100),
+            candidate,
+            input_peak=None,
+            parity_detail="shape mismatch",
+        )
+        is None
+    )
 
 
 def test_pipeline_background_parity_uses_benchmark_input_scale():

@@ -2621,6 +2621,167 @@ def test_real_segmentation_cleanup_corridor_is_one_cuda_segment(
         registry.close()
 
 
+def test_real_student_gaussian_otsu_remove_corridor_attests_exact_assignments():
+    """Reproduce the #32 host/GPU/host/GPU planning corridor without writers."""
+
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+    registry = ComputeRegistry()
+    try:
+        runtime_probe = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not runtime_probe.available or not runtime_probe.selected_device_id:
+            pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
+        for library_id in ("cupy", "cupyx"):
+            library_probe = registry.probe_library(library_id, refresh=True)
+            if not library_probe.available:
+                pytest.skip(library_probe.message or f"{library_id} is unavailable.")
+
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        subtract = pipeline.add_node("subtract_background")
+        rescale = pipeline.add_node("rescale_intensity")
+        conversion = pipeline.add_node("convert_dtype")
+        gaussian = pipeline.add_node("gaussian_blur")
+        unsharp = pipeline.add_node("unsharp_mask")
+        otsu = pipeline.add_node("otsu_threshold")
+        remove_small = pipeline.add_node("remove_small_objects")
+        pipeline.set_param(subtract.id, "radius", 11.0)
+        pipeline.set_param(subtract.id, "light_background", False)
+        pipeline.set_param(subtract.id, "disable_smoothing", False)
+        pipeline.set_param(subtract.id, "clip_negative", True)
+        pipeline.set_param(subtract.id, "spatial_mode", "2D YX")
+        pipeline.set_param(rescale.id, "cutoff_mode", "Values")
+        pipeline.set_param(rescale.id, "in_low_value", 0.0)
+        pipeline.set_param(rescale.id, "in_high_value", 135.689)
+        pipeline.set_param(rescale.id, "out_min", 0.0)
+        pipeline.set_param(rescale.id, "out_max", 65535.0)
+        pipeline.set_param(conversion.id, "output_dtype", "float32")
+        pipeline.set_param(conversion.id, "scaling", "preserve")
+        pipeline.set_param(gaussian.id, "sigma", 0.8)
+        pipeline.set_param(unsharp.id, "radius", 2.0)
+        pipeline.set_param(unsharp.id, "amount", 1.5)
+        pipeline.set_param(otsu.id, "threshold_scope", "Stack histogram")
+        pipeline.set_param(otsu.id, "histogram_bins", 256)
+        pipeline.set_param(remove_small.id, "min_size", 27)
+        pipeline.set_param(remove_small.id, "spatial_mode", "Auto from axes")
+        pipeline.set_param(remove_small.id, "connectivity", "Face connected")
+        previous = "input"
+        for node in (
+            subtract,
+            rescale,
+            conversion,
+            gaussian,
+            unsharp,
+            otsu,
+            remove_small,
+        ):
+            assert pipeline.connect(previous, node.id).success
+            previous = node.id
+
+        data = np.zeros((4, 48, 64), dtype=np.uint16)
+        data[:, 8:30, 10:32] = 90
+        data[1:4, 27:44, 39:58] = 125
+        data[0, 3, 3] = 135
+        data[2, 42:45, 5:8] = 75
+        before = data.copy()
+        pipeline.run(data, input_metadata={"axes": "ZYX"})
+        expected = {
+            node.id: np.asarray(pipeline.outputs[node.id]).copy()
+            for node in (gaussian, otsu, remove_small)
+        }
+
+        implementation_ids = {
+            gaussian.id: "cupy-gaussian-blur-v1",
+            otsu.id: "cupy-otsu-threshold-exact-v1",
+            remove_small.id: "cupyx-remove-small-objects-bool-v1",
+        }
+        preferences = {
+            node_id: f"implementation:{implementation_id}"
+            for node_id, implementation_id in implementation_ids.items()
+        }
+        compute_request = ComputeRequest(
+            mode=ComputeMode.CUSTOM,
+            node_preferences=preferences,
+            runtime_id="cuda-cupy",
+            device_id=runtime_probe.selected_device_id,
+            fallback_policy=FallbackPolicy.STRICT,
+        )
+        request = replace(
+            _accelerated_request(
+                pipeline,
+                data,
+                compute_request,
+                retain_node_ids=frozenset(implementation_ids),
+                prune_unretained=True,
+            ),
+            input_metadata={"axes": "ZYX"},
+        )
+
+        result = execute_pipeline_request(request, compute_registry=registry)
+
+        assert result.error == ""
+        assert result.pipeline is not None
+        assert result.execution_report is not None
+        assert result.execution_report.cleanup_succeeded
+        assert result.execution_report.plan is not None
+        assert [
+            (
+                segment.runtime_id,
+                tuple(
+                    node_id
+                    for node_id in segment.node_ids
+                    if node_id in implementation_ids
+                ),
+            )
+            for segment in result.execution_report.plan.segments
+            if set(segment.node_ids) & set(implementation_ids)
+        ] == [
+            ("cuda-cupy", (gaussian.id,)),
+            ("cuda-cupy", (otsu.id, remove_small.id)),
+        ]
+        planned = {
+            decision.node_id: decision
+            for decision in result.execution_report.plan.decisions
+            if decision.node_id in implementation_ids
+        }
+        actual = {
+            decision.node_id: decision
+            for decision in result.execution_report.actual_decisions
+            if decision.node_id in implementation_ids
+        }
+        assert set(planned) == set(actual) == set(implementation_ids)
+        for node_id, implementation_id in implementation_ids.items():
+            expected_library = "cupy" if node_id == gaussian.id else "cupyx"
+            for decision in (planned[node_id], actual[node_id]):
+                assert decision.implementation_id == implementation_id
+                assert decision.runtime_id == "cuda-cupy"
+                assert decision.implementation_library_id == expected_library
+                assert not decision.fallback_used
+            assert actual[node_id].decision_kind is DecisionKind.SELECTED
+
+        gaussian_parity = operation_parity(
+            "gaussian_blur",
+            expected[gaussian.id],
+            result.pipeline.outputs[gaussian.id],
+            input_dtypes=(np.dtype(np.float32),),
+        )
+        assert gaussian_parity.passed, gaussian_parity.detail
+        for node in (otsu, remove_small):
+            parity = operation_parity(
+                node.operation_id,
+                expected[node.id],
+                result.pipeline.outputs[node.id],
+            )
+            assert parity.passed, parity.detail
+        np.testing.assert_array_equal(data, before, strict=True)
+        _assert_private_cuda_scope_clean(
+            registry.runtime("cuda-cupy"),
+            runtime_probe.selected_device_id,
+        )
+    finally:
+        registry.close()
+
+
 def test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance(
     tmp_path,
 ):

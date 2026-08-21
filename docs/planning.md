@@ -341,30 +341,46 @@ VIPP keeps scientific arrays resident between separate calculations.
 Goal: Find fastest can optimize the scientific graph without executing output
 writers and never treats CPU execution as proof for a requested GPU assignment.
 
-First fix retained writer handling:
+Retained writer handling is complete for #31:
 
-- keep requested retained IDs in optimizer identity and staleness checks;
-- derive an effective scientific retention set containing only safe nodes;
-- identity-bypass connected Batch Output or Save Image nodes and ignore
-  disconnected writers in the detached benchmark graph;
-- during benchmark, cancellation, failure, or a no-change result, never execute
-  writers, create artifacts, or mutate the live graph, cached outputs,
-  parameters, compute preferences, or provenance;
-- an explicit accepted **Apply** action changes only the intended compute
-  preferences and leaves scientific parameters and topology unchanged; and
-- preserve unknown-node validation rather than silently filtering malformed
-  requests.
+- requested retained IDs remain in optimizer identity and staleness checks;
+- private execution and validation derive an effective scientific retention
+  set containing only safe nodes;
+- connected and disconnected Batch Output or Save Image nodes remain in the
+  live workflow but stay outside the detached benchmark graph;
+- during benchmark, cancellation, failure, or a no-change result, writers never
+  execute or create artifacts, and the optimizer does not mutate the live
+  graph, cached outputs, parameters, compute preferences, or provenance;
+- an explicit accepted **Apply** action continues to change only the intended
+  compute preferences and leaves scientific parameters and topology unchanged;
+  and
+- unknown-node validation occurs before writer filtering rather than silently
+  filtering malformed requests.
 
-Then unify candidate construction and final validation:
+Assignment integrity and review handling are implemented for #32:
 
-- capture requested, planned, device-segment, and actual implementation for
-  every proposed node;
-- use one authoritative workload and exact-assignment contract in proposal and
-  detached final validation;
-- reject or boundedly re-solve a proposal that cannot execute its requested
-  implementation, while allowing unrelated nodes to continue; and
-- keep strict provenance: a CPU result cannot validate a requested GPU
-  implementation.
+- exact same-shape/same-dtype planning projections for Rescale Intensity and
+  Unsharp Mask close the two host-operation gaps in the reported
+  Gaussian/Otsu/Remove Small Objects workflow without executing either CPU
+  kernel during planning;
+- every private validation run attests requested, planned, device-segment, and
+  actual implementation identity before any numerical comparison;
+- a non-current, unlocked implementation that cannot execute as requested is
+  excluded once and the remaining graph is solved again under the original
+  deadline, allowing unrelated improvements to continue;
+- current or locked assignment mismatches remain fatal, and strict provenance
+  means a CPU result can never validate a requested GPU implementation;
+- after exact backend attestation, a genuine small numerical difference can be
+  offered for expert review: discrete outputs require at most 0.1% differing
+  values, while floating outputs require both normalized RMSE and normalized
+  maximum error at or below 0.1%; comparison metrics use bounded chunks for
+  large or strided outputs; and
+- review is never automatic. The dialog reports per-output counts and errors,
+  requires an explicit acceptance checkbox, binds that acceptance to the exact
+  proposal digest, and rechecks the normal workflow/input identity before
+  Apply. Structural, dtype, shape, non-finite-class, and larger differences
+  remain hard failures. Review does not promote a provider, relax its declared
+  parity policy, or authorize CPU/GPU cache sharing.
 
 User-facing failure text distinguishes assignment/planning disagreement from a
 numerical parity failure and identifies the stage that diverged. Native
@@ -372,8 +388,14 @@ numerical parity failure and identifies the stage that diverged. Native
 
 Tests cover connected and disconnected writers, every cache-retention mode,
 absence of output files, cancellation/failure atomicity, fresh/cached/opaque
-upstream states, and a multi-node Gaussian/Otsu/morphology lock matrix. `#32`
-also requires qualified real-GPU acceptance.
+upstream states, staged assignment divergence, bounded re-solving, conservative
+near-parity review, and the multi-node Gaussian/Otsu/morphology chain. Native
+`uint16` Otsu receives no unnecessary dtype-conversion suggestion. `#32` also
+has qualified real-GPU coverage for the reported Subtract Background → Rescale
+Intensity → Convert float32 → Gaussian → Unsharp → Otsu → Remove Small Objects
+corridor: the exact Gaussian/Otsu/Remove GPU identities were planned and
+executed without fallback, Gaussian passed its production tolerance, both masks
+were bitwise exact, and private GPU memory cleaned successfully.
 
 #### 0.13-E. Named-Axis Correction ([#33](https://github.com/rensutheart/napari-vipp/issues/33))
 

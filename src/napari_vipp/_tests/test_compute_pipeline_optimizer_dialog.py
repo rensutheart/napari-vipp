@@ -10,14 +10,18 @@ from napari_vipp.core.compute import (
     NodeComputePreference,
 )
 from napari_vipp.core.compute_pipeline_optimizer import (
+    EvidenceRefusal,
     PipelineOptimizationDeadlineExceeded,
     PipelineOptimizationProposal,
     PipelineOptimizationRow,
     PipelineOptimizationSelectionBasis,
     PipelineOptimizationTimeoutReport,
+    PipelineParityDeviation,
+    PipelineParityReviewMetric,
     PipelineValidationWinner,
 )
 from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
+    PipelineOptimizerApplyRequest,
     PipelineOptimizerDialog,
     PipelineOptimizerProgress,
     PipelineOptimizerWorker,
@@ -27,6 +31,130 @@ from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     _scientific_check,
     _subtle_group_brush,
 )
+
+
+def _reviewable_result():
+    current = NodeComputePreference("cpu")
+    gaussian_proposed = NodeComputePreference("implementation", "cupy-gaussian-blur-v1")
+    remove_proposed = NodeComputePreference(
+        "implementation", "cupyx-remove-small-objects-bool-v1"
+    )
+    rows = (
+        PipelineOptimizationRow(
+            "gaussian",
+            "cpu-gaussian-blur-v1",
+            "cupy-gaussian-blur-v1",
+            current,
+            gaussian_proposed,
+            True,
+            True,
+        ),
+        PipelineOptimizationRow(
+            "remove-small",
+            "cpu-remove_small_objects-v1",
+            "cupyx-remove-small-objects-bool-v1",
+            current,
+            remove_proposed,
+            True,
+            True,
+        ),
+    )
+    deviations = (
+        PipelineParityDeviation(
+            node_id="remove-small",
+            operation_id="remove_small_objects",
+            output_port_index=0,
+            metric=PipelineParityReviewMetric.DIFFERING_VALUE_FRACTION,
+            measured_difference=0.001,
+            acceptance_threshold=0.001,
+            differing_values=100,
+            total_values=100_000,
+            differing_fraction=0.001,
+            maximum_absolute_error=1.0,
+            normalized_maximum_absolute_error=1.0,
+            root_mean_square_error=0.03162277660168379,
+            normalized_root_mean_square_error=0.03162277660168379,
+            detail="100 output mask values differed.",
+        ),
+        PipelineParityDeviation(
+            node_id="gaussian",
+            operation_id="gaussian_blur",
+            output_port_index=1,
+            metric=PipelineParityReviewMetric.NORMALIZED_RMSE,
+            measured_difference=0.0002,
+            acceptance_threshold=0.001,
+            differing_values=90_000,
+            total_values=100_000,
+            differing_fraction=0.9,
+            maximum_absolute_error=0.25,
+            normalized_maximum_absolute_error=0.0008,
+            root_mean_square_error=0.05,
+            normalized_root_mean_square_error=0.0002,
+            detail="Small floating-point rounding difference.",
+        ),
+    )
+    proposal = PipelineOptimizationProposal(
+        "identity",
+        "request",
+        (
+            ("gaussian", "cpu-gaussian-blur-v1"),
+            ("remove-small", "cpu-remove_small_objects-v1"),
+        ),
+        rows,
+        {
+            "gaussian": gaussian_proposed,
+            "remove-small": remove_proposed,
+        },
+        2.0,
+        1.0,
+        2.0,
+        1.0,
+        1.5,
+        True,
+        5,
+        0.5,
+        PipelineValidationWinner.PROPOSED,
+        (
+            ("gaussian", "cupy-gaussian-blur-v1"),
+            ("remove-small", "cupyx-remove-small-objects-bool-v1"),
+        ),
+        PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE,
+        deviations,
+    )
+    return SimpleNamespace(
+        proposal=proposal,
+        evidence={},
+        measured_node_ids=("gaussian", "remove-small"),
+        reused_node_ids=(),
+    )
+
+
+def _exact_result_from(reviewable_result):
+    proposal = reviewable_result.proposal
+    exact = PipelineOptimizationProposal(
+        proposal.identity_digest,
+        proposal.request_fingerprint,
+        proposal.baseline_assignment,
+        proposal.rows,
+        proposal.preference_mapping,
+        proposal.estimated_current_seconds,
+        proposal.estimated_proposed_seconds,
+        proposal.validated_current_seconds,
+        proposal.validated_proposed_seconds,
+        proposal.validated_speedup_lower_confidence_bound,
+        proposal.pipeline_validation_performed,
+        proposal.validation_measurement_rounds,
+        proposal.validated_current_speedup_lower_confidence_bound,
+        proposal.validation_winner,
+        proposal.tested_assignment,
+        proposal.selection_basis,
+    )
+    return SimpleNamespace(
+        proposal=exact,
+        evidence=reviewable_result.evidence,
+        measured_node_ids=reviewable_result.measured_node_ids,
+        reused_node_ids=reviewable_result.reused_node_ids,
+    )
 
 
 def test_find_fastest_dialog_has_one_unambiguous_search_scope(qtbot):
@@ -48,6 +176,174 @@ def test_find_fastest_dialog_has_one_unambiguous_search_scope(qtbot):
     singular_dialog = PipelineOptimizerDialog(locked_node_count=1)
     qtbot.addWidget(singular_dialog)
     assert "1 explicitly locked node will" in singular_dialog.progress_label.text()
+
+
+def test_reviewable_difference_requires_explicit_acceptance_before_apply(qtbot):
+    result = _reviewable_result()
+    dialog = PipelineOptimizerDialog(
+        node_titles={
+            "gaussian": "Gaussian Blur",
+            "remove-small": "Remove Small Structures",
+        }
+    )
+    qtbot.addWidget(dialog)
+    emitted = []
+    dialog.apply_requested.connect(emitted.append)
+
+    dialog._on_finished(PipelineOptimizerWorkerOutcome(result=result))
+
+    rendered = dialog.result_label.text()
+    assert not dialog.parity_review_checkbox.isHidden()
+    assert not dialog.parity_review_checkbox.isChecked()
+    assert dialog.parity_review_checkbox.accessibleName() == (
+        "Accept the measured CPU and GPU output difference"
+    )
+    assert dialog.parity_review_checkbox.text() == (
+        "I reviewed and accept this measured CPU/GPU difference for this exact "
+        "workflow and input."
+    )
+    assert "exact requested CPU and GPU backends ran" in rendered
+    assert "Remove Small Structures — output 1" in rendered
+    assert "0.1% of values differed (100 of 100,000)" in rendered
+    assert "Gaussian Blur — output 2" in rendered
+    assert "normalized RMSE 0.02%" in rendered
+    assert "normalized maximum error 0.08%" in rendered
+    assert "review limit 0.1%" in rendered
+    assert "Nothing changes until" in rendered
+    assert "#fcd34d" in dialog.result_label.styleSheet()
+    assert not dialog.apply_button.isEnabled()
+
+    dialog._apply_result()
+    assert emitted == []
+
+    dialog.parity_review_checkbox.click()
+    assert dialog.apply_button.isEnabled()
+    dialog.apply_button.click()
+
+    assert len(emitted) == 1
+    request = emitted[0]
+    assert isinstance(request, PipelineOptimizerApplyRequest)
+    assert request.result is result
+    assert request.parity_review_digest == result.proposal.parity_review_digest
+
+    dialog.parity_review_checkbox.click()
+    assert not dialog.apply_button.isEnabled()
+
+
+def test_exact_result_keeps_existing_apply_signal_and_hides_review(qtbot):
+    exact_result = _exact_result_from(_reviewable_result())
+    dialog = PipelineOptimizerDialog()
+    qtbot.addWidget(dialog)
+    emitted = []
+    dialog.apply_requested.connect(emitted.append)
+
+    dialog._on_finished(PipelineOptimizerWorkerOutcome(result=exact_result))
+
+    assert dialog.parity_review_checkbox.isHidden()
+    assert not dialog.parity_review_checkbox.isChecked()
+    assert dialog.apply_button.isEnabled()
+    dialog.apply_button.click()
+    assert emitted == [exact_result]
+
+
+def test_successful_resolve_explains_skipped_backend_without_blocking_apply(qtbot):
+    exact_result = _exact_result_from(_reviewable_result())
+    exact_result.candidate_refusals = (
+        EvidenceRefusal(
+            code="proposed_parity_planning_assignment_mismatch",
+            node_id="remove-small",
+            message=(
+                "Requested cupyx-remove-small-objects-bool-v1, but the planner "
+                "selected cpu-remove_small_objects-v1."
+            ),
+        ),
+        EvidenceRefusal(
+            code="proposed_parity_device_segment_mismatch",
+            node_id="gaussian",
+            message="The requested GPU backend was absent from the device plan.",
+        ),
+        EvidenceRefusal(
+            code="proposed_parity_actual_assignment_mismatch",
+            node_id="gaussian",
+            message="Execution reported a different backend identity.",
+        ),
+    )
+    dialog = PipelineOptimizerDialog(
+        node_titles={
+            "gaussian": "Gaussian Blur",
+            "remove-small": "Remove Small Structures",
+        }
+    )
+    qtbot.addWidget(dialog)
+    emitted = []
+    dialog.apply_requested.connect(emitted.append)
+
+    dialog._on_finished(PipelineOptimizerWorkerOutcome(result=exact_result))
+
+    rendered = dialog.result_label.text()
+    assert dialog.apply_button.isEnabled()
+    assert (
+        "VIPP skipped an unavailable backend and continued with the remaining "
+        "safe choices."
+    ) in rendered
+    assert "Remove Small Structures — planning identity problem" in rendered
+    assert "Requested cupyx-remove-small-objects-bool-v1" in rendered
+    assert "Gaussian Blur — device-plan identity problem" in rendered
+    assert "Gaussian Blur — execution identity problem" in rendered
+    assert "numerical parity failure" not in rendered.lower()
+    dialog.apply_button.click()
+    assert emitted == [exact_result]
+
+
+def test_review_acceptance_resets_for_retry_and_failed_result(qtbot):
+    dialog = PipelineOptimizerDialog()
+    qtbot.addWidget(dialog)
+    dialog._on_finished(PipelineOptimizerWorkerOutcome(result=_reviewable_result()))
+    dialog.parity_review_checkbox.click()
+    assert dialog.apply_button.isEnabled()
+
+    worker = PipelineOptimizerWorker(lambda _cancelled, _progress: object())
+
+    class CapturingPool:
+        workers = []
+
+        @classmethod
+        def start(cls, queued_worker):
+            cls.workers.append(queued_worker)
+
+    dialog.start(worker, CapturingPool())
+
+    assert dialog.parity_review_checkbox.isHidden()
+    assert not dialog.parity_review_checkbox.isChecked()
+    assert not dialog.apply_button.isEnabled()
+
+    dialog._on_finished(
+        PipelineOptimizerWorkerOutcome(
+            error="Analysis could not be completed.",
+            reason_code="optimizer_failed",
+        )
+    )
+    assert dialog.parity_review_checkbox.isHidden()
+    assert not dialog.parity_review_checkbox.isChecked()
+    assert not dialog.apply_button.isEnabled()
+
+
+def test_apply_request_rejects_blank_wrong_or_unneeded_review_digest():
+    reviewable_result = _reviewable_result()
+    exact_result = _exact_result_from(reviewable_result)
+
+    with pytest.raises(ValueError, match="must not be blank"):
+        PipelineOptimizerApplyRequest(reviewable_result)
+    with pytest.raises(ValueError, match="does not match"):
+        PipelineOptimizerApplyRequest(reviewable_result, "wrong-digest")
+    with pytest.raises(ValueError, match="does not require"):
+        PipelineOptimizerApplyRequest(exact_result, "unneeded-digest")
+
+    request = PipelineOptimizerApplyRequest(
+        reviewable_result,
+        reviewable_result.proposal.parity_review_digest,
+    )
+    assert request.result is reviewable_result
 
 
 def test_dialog_exposes_two_progress_channels_and_selectable_time_limit(qtbot):

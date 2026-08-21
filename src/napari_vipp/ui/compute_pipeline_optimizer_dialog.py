@@ -13,6 +13,7 @@ from qtpy.QtGui import QBrush, QColor, QKeySequence
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QHBoxLayout,
@@ -94,6 +95,24 @@ class PipelineOptimizerWorkerOutcome:
     reason_code: str = ""
     cancelled: bool = False
     timeout_report: PipelineOptimizationTimeoutReport | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineOptimizerApplyRequest:
+    """Explicit acceptance of one measured near-parity optimizer result."""
+
+    result: object
+    parity_review_digest: str = ""
+
+    def __post_init__(self) -> None:
+        digest = self.parity_review_digest
+        if not isinstance(digest, str) or not digest.strip():
+            raise ValueError("parity review digest must not be blank")
+        proposal = _proposal_from_result(self.result)
+        if not proposal.requires_parity_review:
+            raise ValueError("optimizer result does not require parity review")
+        if digest != proposal.parity_review_digest:
+            raise ValueError("parity review digest does not match the proposal")
 
 
 class PipelineOptimizerCleanupError(RuntimeError):
@@ -393,6 +412,19 @@ class PipelineOptimizerDialog(QDialog):
         self.details_button.setVisible(False)
         self.details_button.toggled.connect(self._set_timing_details_visible)
 
+        self.parity_review_checkbox = QCheckBox(
+            "I reviewed and accept this measured CPU/GPU difference for this "
+            "exact workflow and input."
+        )
+        self.parity_review_checkbox.setAccessibleName(
+            "Accept the measured CPU and GPU output difference"
+        )
+        self.parity_review_checkbox.setToolTip(
+            "This acceptance applies only to the workflow, input, and exact "
+            "CPU/GPU backends measured in this result."
+        )
+        self.parity_review_checkbox.setVisible(False)
+
         self.analyze_button = QPushButton("Find fastest")
         self.apply_button = QPushButton("Apply measured assignment")
         self.apply_button.setEnabled(False)
@@ -416,10 +448,12 @@ class PipelineOptimizerDialog(QDialog):
         layout.addWidget(self.result_label)
         layout.addWidget(self.details_button, 0, Qt.AlignLeft)
         layout.addWidget(self.result_table, 1)
+        layout.addWidget(self.parity_review_checkbox)
         layout.addLayout(buttons)
 
         self.analyze_button.clicked.connect(self._request_analysis)
         self.apply_button.clicked.connect(self._apply_result)
+        self.parity_review_checkbox.toggled.connect(self._sync_apply_enabled)
         self.cancel_button.clicked.connect(self.cancel)
         self.close_button.clicked.connect(self.accept)
 
@@ -460,6 +494,7 @@ class PipelineOptimizerDialog(QDialog):
         self.time_limit_combo.setEnabled(False)
         self.cancel_button.setVisible(True)
         self.cancel_button.setEnabled(True)
+        self._reset_parity_review()
         self._set_review_mode(False)
         self.details_button.setChecked(False)
         self.details_button.setVisible(False)
@@ -541,6 +576,7 @@ class PipelineOptimizerDialog(QDialog):
         self._running = False
         self.analyze_button.setEnabled(False)
         self.apply_button.setEnabled(False)
+        self._reset_parity_review()
         self.cancel_button.setEnabled(False)
         self.close_button.setEnabled(False)
         self.time_limit_combo.setEnabled(False)
@@ -576,6 +612,29 @@ class PipelineOptimizerDialog(QDialog):
             self.operation_progress_bar,
         ):
             widget.setVisible(not reviewing)
+
+    def _reset_parity_review(self) -> None:
+        """Clear acceptance so it can never carry across optimizer results."""
+
+        self.parity_review_checkbox.setChecked(False)
+        self.parity_review_checkbox.setVisible(False)
+
+    def _sync_apply_enabled(self, _checked: bool | None = None) -> None:
+        if self._shutdown or self._running:
+            self.apply_button.setEnabled(False)
+            return
+        outcome = self._outcome
+        if outcome is None or outcome.result is None:
+            self.apply_button.setEnabled(False)
+            return
+        proposal = _proposal_from_result(outcome.result)
+        changed = any(
+            row.current_preference != row.proposed_preference for row in proposal.rows
+        )
+        enabled = _enum_value(proposal.validation_winner) != "inconclusive" and changed
+        if proposal.requires_parity_review:
+            enabled = enabled and self.parity_review_checkbox.isChecked()
+        self.apply_button.setEnabled(enabled)
 
     def _set_timing_details_visible(self, visible: bool) -> None:
         for column in range(_DETAIL_COLUMN_START, _RESULT_COLUMN_COUNT):
@@ -619,6 +678,7 @@ class PipelineOptimizerDialog(QDialog):
         self.time_limit_combo.setEnabled(True)
         self.cancel_button.setVisible(False)
         if outcome.result is None:
+            self._reset_parity_review()
             self.result_label.setToolTip("")
         if outcome.result is not None:
             self.overall_progress_bar.setValue(self.overall_progress_bar.maximum())
@@ -631,14 +691,7 @@ class PipelineOptimizerDialog(QDialog):
                 "Current operation: final validation complete."
             )
             self._render_result(outcome.result)
-            proposal = _proposal_from_result(outcome.result)
-            self.apply_button.setEnabled(
-                _enum_value(proposal.validation_winner) != "inconclusive"
-                and any(
-                    row.current_preference != row.proposed_preference
-                    for row in proposal.rows
-                )
-            )
+            self._sync_apply_enabled()
         else:
             self.apply_button.setEnabled(False)
             if outcome.cancelled:
@@ -688,6 +741,7 @@ class PipelineOptimizerDialog(QDialog):
 
     def _render_result(self, result: object) -> None:
         proposal = _proposal_from_result(result)
+        self._reset_parity_review()
         evidence = getattr(result, "evidence", {})
         reused = set(getattr(result, "reused_node_ids", ()))
         measured = set(getattr(result, "measured_node_ids", ()))
@@ -873,10 +927,50 @@ class PipelineOptimizerDialog(QDialog):
                 "can be saved."
             )
 
+        if proposal.requires_parity_review:
+            optimization_summary = self.result_label.text()
+            review_text = _parity_review_text(proposal, self._node_titles)
+            self.result_label.setToolTip(
+                "The measured difference is within VIPP's review limit, but "
+                "only you can decide whether it is acceptable for this analysis."
+            )
+            self.result_label.setStyleSheet("color: #fcd34d; font-weight: 650;")
+            self.result_label.setText(
+                f"{review_text}\n\n{optimization_summary}"
+                if optimization_summary
+                else review_text
+            )
+            self.parity_review_checkbox.setVisible(True)
+
+        candidate_refusals = tuple(getattr(result, "candidate_refusals", ()))
+        if candidate_refusals:
+            existing_summary = self.result_label.text()
+            refusal_text = _candidate_refusal_text(
+                candidate_refusals,
+                self._node_titles,
+            )
+            self.result_label.setStyleSheet("color: #fcd34d; font-weight: 650;")
+            self.result_label.setText(
+                f"{existing_summary}\n\n{refusal_text}"
+                if existing_summary
+                else refusal_text
+            )
+
     def _apply_result(self) -> None:
         if self._shutdown or self._outcome is None or self._outcome.result is None:
             return
-        self.apply_requested.emit(self._outcome.result)
+        result = self._outcome.result
+        proposal = _proposal_from_result(result)
+        if proposal.requires_parity_review:
+            if not self.parity_review_checkbox.isChecked():
+                return
+            request = PipelineOptimizerApplyRequest(
+                result,
+                proposal.parity_review_digest,
+            )
+            self.apply_requested.emit(request)
+            return
+        self.apply_requested.emit(result)
 
 
 def _format_seconds(value: float) -> str:
@@ -1009,6 +1103,85 @@ class _CandidateTimingDisplay:
 
 def _enum_value(value: object) -> str:
     return str(getattr(value, "value", value)).strip().lower()
+
+
+def _format_fraction_percent(value: object) -> str:
+    percent = float(value) * 100.0
+    rendered = f"{percent:.6f}".rstrip("0").rstrip(".")
+    return f"{rendered or '0'}%"
+
+
+def _parity_review_text(
+    proposal: PipelineOptimizationProposal,
+    node_titles: Mapping[str, str],
+) -> str:
+    deviations = proposal.reviewable_deviations
+    lines = [
+        "Measured CPU/GPU output difference needs your review. VIPP verified "
+        "that the exact requested CPU and GPU backends ran before comparing "
+        "their outputs."
+    ]
+    for deviation in deviations:
+        node_id = deviation.node_id
+        node_title = node_titles.get(node_id, node_id or "Workflow node")
+        output_number = deviation.output_port_index + 1
+        metric = _enum_value(deviation.metric)
+        threshold = _format_fraction_percent(deviation.acceptance_threshold)
+        if metric == "differing-value-fraction":
+            differing = deviation.differing_values
+            total = deviation.total_values
+            differing_percent = _format_fraction_percent(deviation.differing_fraction)
+            summary = (
+                f"{differing_percent} "
+                f"of values differed ({differing:,} of {total:,}); review limit "
+                f"{threshold}; largest absolute change "
+                f"{deviation.maximum_absolute_error:.6g}."
+            )
+        elif metric == "normalized-rmse":
+            normalized_rmse = _format_fraction_percent(
+                deviation.normalized_root_mean_square_error
+            )
+            normalized_maximum = _format_fraction_percent(
+                deviation.normalized_maximum_absolute_error
+            )
+            summary = (
+                f"normalized RMSE {normalized_rmse} (RMSE review limit "
+                f"{threshold}); normalized maximum error {normalized_maximum}."
+            )
+        else:
+            detail = deviation.detail
+            summary = detail or "a bounded output difference was measured."
+        lines.append(f"• {node_title} — output {output_number}: {summary}")
+    lines.append(
+        "Nothing changes until you select the acceptance box below and apply "
+        "this result."
+    )
+    return "\n".join(lines)
+
+
+def _candidate_refusal_text(
+    refusals: tuple[object, ...],
+    node_titles: Mapping[str, str],
+) -> str:
+    lines = [
+        "VIPP skipped an unavailable backend and continued with the remaining "
+        "safe choices."
+    ]
+    for refusal in refusals:
+        node_id = str(getattr(refusal, "node_id", "")).strip()
+        node_title = node_titles.get(node_id, node_id or "Pipeline")
+        code = str(getattr(refusal, "code", "")).strip().lower()
+        if "_planning_assignment_mismatch" in code:
+            category = "planning identity problem"
+        elif "_device_segment_mismatch" in code:
+            category = "device-plan identity problem"
+        elif "_actual_assignment_mismatch" in code:
+            category = "execution identity problem"
+        else:
+            category = "backend unavailable"
+        message = str(getattr(refusal, "message", "")).strip()
+        lines.append(f"• {node_title} — {category}: {message}")
+    return "\n".join(lines)
 
 
 def _ordered_implementation_ids(
@@ -1312,6 +1485,7 @@ def _candidate_timing_text(evidence: object) -> str:
 
 
 __all__ = [
+    "PipelineOptimizerApplyRequest",
     "PipelineOptimizerDialog",
     "PipelineOptimizerCleanupError",
     "PipelineOptimizerProgress",

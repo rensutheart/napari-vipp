@@ -19,8 +19,11 @@ from napari_vipp.core.compute import (
     DecisionKind,
     DecisionReason,
     ExecutionPlan,
+    FallbackPolicy,
     FallbackReason,
+    NodeComputePreference,
     NodeExecutionDecision,
+    NodePreferenceKind,
     OutputPortKey,
     WorkloadDescriptor,
 )
@@ -1576,6 +1579,39 @@ def test_prepare_psf_projects_finite_float32_facts_across_odd_padding():
     assert unsafe_cancellation is None
 
 
+def test_integer_rescale_projects_only_its_dtype_proven_facts():
+    integer_source = execution_module._complete_array_facts(
+        np.arange(12, dtype=np.uint16).reshape(3, 4),
+        revision_fingerprint="integer-rescale-source",
+    )
+    float_source = execution_module._complete_array_facts(
+        np.arange(12, dtype=np.float32).reshape(3, 4),
+        revision_fingerprint="float-rescale-source",
+    )
+
+    integer_output = execution_module._propagate_shape_preserving_facts(
+        "rescale_intensity",
+        integer_source,
+        {"out_min": 0.0, "out_max": 65535.0},
+        output_port=OutputPortKey("rescale", 0),
+        output_dtype="uint16",
+    )
+    float_output = execution_module._propagate_shape_preserving_facts(
+        "rescale_intensity",
+        float_source,
+        {"out_min": 0.0, "out_max": 1.0},
+        output_port=OutputPortKey("rescale", 0),
+        output_dtype="float32",
+    )
+
+    assert integer_output is not None
+    assert integer_output.all_finite is True
+    assert {"nonnegative", "no-negative-zero"} <= set(integer_output.guarantees)
+    assert integer_output.minimum is None
+    assert integer_output.maximum is None
+    assert float_output is None
+
+
 @pytest.mark.parametrize(
     "operation_id",
     (
@@ -2107,6 +2143,181 @@ def test_fresh_intensity_example_builds_exact_numeric_downstream_workloads(
     assert otsu.input_shapes == ((12, 96, 128),)
     assert otsu.input_dtypes == ("uint16",)
     assert "object" not in gaussian.input_dtypes + otsu.input_dtypes
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "dtype"),
+    (
+        ("rescale_intensity", np.dtype(np.uint16)),
+        ("unsharp_mask", np.dtype(np.float32)),
+    ),
+)
+def test_exact_host_shape_dtype_operations_project_without_running_kernel(
+    operation_id,
+    dtype,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node(operation_id)
+    assert pipeline.connect("input", node.id).success
+    data = np.arange(5 * 7, dtype=dtype).reshape(5, 7)
+    state = image_state_from_array(data)
+    assert state is not None
+    call = pipeline.prepare_node_call(node.id, (data,), (state,))
+    assert call is not None
+
+    def forbidden_kernel(*_args, **_kwargs):
+        raise AssertionError("Planning must not run the authoritative CPU kernel.")
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        operation_id,
+        replace(call, cpu_function=forbidden_kernel),
+        (data.shape,),
+        (data.dtype.name,),
+    )
+
+    assert projected is not None
+    ((description, output_state),) = projected
+    assert description.shape == data.shape
+    assert description.dtype == dtype
+    assert output_state is not None
+    assert output_state.shape == data.shape
+    assert output_state.dtype == dtype.name
+
+
+def test_student_filter_chain_has_exact_fresh_planning_descriptors():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    rescale = pipeline.add_node("rescale_intensity")
+    convert = pipeline.add_node("convert_dtype")
+    gaussian = pipeline.add_node("gaussian_blur")
+    unsharp = pipeline.add_node("unsharp_mask")
+    otsu = pipeline.add_node("otsu_threshold")
+    remove = pipeline.add_node("remove_small_objects")
+    pipeline.set_param(rescale.id, "cutoff_mode", "Values")
+    pipeline.set_param(rescale.id, "in_low_value", 0.0)
+    pipeline.set_param(rescale.id, "in_high_value", 100.0)
+    pipeline.set_param(rescale.id, "out_min", 0.0)
+    pipeline.set_param(rescale.id, "out_max", 65535.0)
+    pipeline.set_param(convert.id, "output_dtype", "float32")
+    pipeline.set_param(convert.id, "scaling", "preserve")
+    for source_id, target_id in (
+        ("input", rescale.id),
+        (rescale.id, convert.id),
+        (convert.id, gaussian.id),
+        (gaussian.id, unsharp.id),
+        (unsharp.id, otsu.id),
+        (otsu.id, remove.id),
+    ):
+        assert pipeline.connect(source_id, target_id).success
+
+    data = np.arange(2 * 7 * 9, dtype=np.uint16).reshape(2, 7, 9)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    assert state is not None
+    source_port = OutputPortKey("input", 0)
+    source_facts = execution_module._complete_array_facts(
+        data,
+        revision_fingerprint="student-chain-source",
+    )
+    with ComputeRegistry() as registry:
+        workloads, facts_by_node, _lineage = execution_module._assemble_workloads(
+            pipeline,
+            frozenset(pipeline.nodes),
+            {source_port: data},
+            {source_port: state},
+            registry,
+            False,
+            seed_facts_by_port={source_port: source_facts},
+        )
+
+    by_node = {workload.node_id: workload for workload in workloads}
+    assert all(
+        by_node[node_id].inputs_resolved
+        for node_id in (
+            rescale.id,
+            convert.id,
+            gaussian.id,
+            unsharp.id,
+            otsu.id,
+            remove.id,
+        )
+    )
+    assert by_node[gaussian.id].input_shapes == (data.shape,)
+    assert by_node[gaussian.id].input_dtypes == ("float32",)
+    assert by_node[otsu.id].input_shapes == (data.shape,)
+    assert by_node[otsu.id].input_dtypes == ("float32",)
+    assert by_node[remove.id].input_shapes == (data.shape,)
+    assert by_node[remove.id].input_dtypes == ("bool",)
+    assert facts_by_node[gaussian.id][0].all_finite is True
+    assert {"nonnegative", "no-negative-zero"} <= set(
+        facts_by_node[gaussian.id][0].guarantees
+    )
+
+    exact_specs = {}
+    with ComputeRegistry() as registry:
+        for node in (gaussian, otsu, remove):
+            exact_specs[node.id] = registry.implementations_for_operation(
+                node.operation_id,
+                allow_experimental=True,
+            )[0]
+    request = ComputeRequest(
+        mode=ComputeMode.CUSTOM,
+        node_preferences={
+            node_id: NodeComputePreference(
+                NodePreferenceKind.IMPLEMENTATION,
+                spec.implementation_id,
+            )
+            for node_id, spec in exact_specs.items()
+        },
+        fallback_policy=FallbackPolicy.STRICT,
+        allow_experimental=True,
+    )
+    validated_host = ComputeEnvironment(
+        os_name="Windows",
+        os_release="test",
+        execution_mode="native",
+        python_implementation="CPython",
+        python_version="3.12",
+        python_abi="cpython-312",
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
+    )
+    with (
+        _ProbeRegistry() as registry,
+        patch(
+            "napari_vipp.core.compute_planning.ComputeEnvironment",
+            return_value=validated_host,
+        ),
+    ):
+        environment, _warnings = probe_compute_environment(
+            registry,
+            request,
+            tuple(exact_specs.values()),
+        )
+        planning = plan_compute_decisions(
+            request,
+            workloads,
+            registry=registry,
+            environment=environment,
+            array_facts=facts_by_node,
+        )
+
+    for node_id, expected in exact_specs.items():
+        decision = planning.decisions_by_node[node_id]
+        assert decision.implementation_id == expected.implementation_id
+        assert decision.runtime_id == expected.runtime_id
+        assert not decision.fallback_used
 
 
 def test_unresolved_host_shape_keeps_all_transitive_workloads_unresolved():

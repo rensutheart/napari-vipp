@@ -527,8 +527,8 @@
         "src/napari_vipp/_tests/test_gpu_execution_integration.py"
       ],
       "profile_commands": {
-        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"],
-        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"]
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_student_gaussian_otsu_remove_corridor_attests_exact_assignments", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_student_gaussian_otsu_remove_corridor_attests_exact_assignments", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"]
       },
       "artifact": null,
       "artifact_schema": null,

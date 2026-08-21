@@ -184,14 +184,23 @@ workflow state, excludes writers/side effects from private execution, reuses or
 measures each eligible unlocked exact workload, measures directional transfers
 against a current free/total VRAM snapshot and active cap/reserve, and solves a
 bounded graph-global assignment including transfer and liveness memory costs.
-The proposed and current
-assignments are then run privately for operation-specific parity and paired
-end-to-end timing. Validation covers each changed node and every affected
-retained/terminal/tunnel boundary, and every run must prove the exact requested
+The proposed and current assignments are then run privately for
+operation-specific parity and paired end-to-end timing. Validation covers each
+changed node and every affected retained/terminal/tunnel boundary, and every run
+must prove the exact requested, planned, device-segment, and actually executed
 decision map and environment, no fallback, and successful accelerator cleanup.
-No changed assignment is offered unless parity and synchronization pass,
-the measured saving exceeds the greater of 5% or 10 ms, and the paired lower
-confidence speedup bound is above 1.0. A current or authored CPU/Best
+An unavailable non-current candidate is excluded and the remaining choices are
+boundedly re-solved; a current or locked mismatch remains fatal. A changed
+assignment is offered only when synchronization passes, the measured saving
+exceeds the greater of 5% or 10 ms, and the paired lower confidence speedup
+bound is above 1.0. Strict output parity remains the default. After exact
+backend attestation only, a genuine bounded numerical difference may instead be
+shown for explicit expert acceptance: at most 0.1% different discrete values,
+or float normalized RMSE and normalized maximum error both at or below 0.1%.
+This review is proposal-specific, is never automatic, does not change the
+provider's declared parity policy, and cannot authorize cache sharing. Shape,
+dtype, non-finite-class, structural, and larger differences still fail closed.
+A current or authored CPU/Best
 GPU/library/exact selection is not implicitly a lock. Analysis does not mutate
 preferences, locks, or live caches.
 The analysis identity binds graph, exact source content/state, retention,
@@ -202,9 +211,15 @@ and a fresh probe of the exact candidate environment, then writes one undoable
 authored-intent edit and invalidates only branches downstream of changed
 choices.
 
+Retention identity and private execution now have deliberately separate
+scopes. Connected or disconnected Batch Output and Save Image nodes remain in
+the exact requested retention fingerprint, but only safe scientific retained
+IDs enter the detached optimizer graph and final validation. Unknown IDs are
+rejected before this filtering, and no private run targets or retains a writer.
+
 The optimizer fails closed for missing or stale benchmark identity, incomplete
 candidate/resident timing, unavailable or unknown VRAM, unsupported transfer
-runtimes, unsafe retained writer paths, no feasible assignment, no material
+runtimes, malformed retention identity, no feasible assignment, no material
 benefit, cancellation, or deadline expiry. This first application version covers
 one shared accelerator runtime and single-output operations supported by exact
 node benchmarking, including nodes with multiple ordered inputs; it does not

@@ -121,6 +121,7 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "subtract_background",
         "gaussian_blur",
         "gaussian_blur_3d",
+        "rescale_intensity",
         "convert_dtype",
         "binary_threshold",
         "extract_channel",
@@ -139,6 +140,12 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
 _EXACT_HOST_AXIS_CONTRACT_OPERATIONS = frozenset(
     {
         "split_channels",
+    }
+)
+_EXACT_HOST_SHAPE_DTYPE_OPERATIONS = frozenset(
+    {
+        "rescale_intensity",
+        "unsharp_mask",
     }
 )
 
@@ -2924,6 +2931,16 @@ def _project_host_planning_outputs(
     input_shape = tuple(input_shapes[0])
     if not input_shape:
         return None
+    if operation_id in _EXACT_HOST_SHAPE_DTYPE_OPERATIONS:
+        output_dtype = np.dtype(input_dtypes[0])
+        description = _ArrayDescription(input_shape, output_dtype)
+        projected_state = None
+        if planning_call.input_states and planning_call.input_states[0] is not None:
+            (projected_state,) = pipeline.predict_shape_preserving_node_states(
+                planning_call,
+                output_dtype_policy_ids=("dtype-same-v1",),
+            )
+        return ((description, projected_state),)
     if operation_id == "prepare_validate_psf":
         if bool(planning_call.kwargs.get("crop_empty_border", False)):
             # Cropping depends on exact pixel support and has no static shape
@@ -3997,6 +4014,25 @@ def _propagate_shape_preserving_facts(
             guarantees.add("no-negative-zero")
         else:
             guarantees.discard("no-negative-zero")
+    elif operation_id == "rescale_intensity":
+        # Integer and boolean rescaling restores the exact authored dtype, so
+        # its output cannot encode NaN, infinity, or signed zero. Float output
+        # remains conservative: finite controls alone do not prove that every
+        # input element or intermediate is finite.
+        guarantees.discard("extrema-conservative-enclosure")
+        guarantees.discard("integer-labels")
+        if not dtype_proves_finite:
+            return None
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.add("no-negative-zero")
+        if resolved_dtype == np.dtype(bool) or (
+            resolved_dtype is not None
+            and np.issubdtype(resolved_dtype, np.unsignedinteger)
+        ):
+            guarantees.add("nonnegative")
+        else:
+            guarantees.discard("nonnegative")
     elif operation_id == "convert_dtype":
         source_dtype = np.dtype(facts.dtype)
         output_dtype_parameter = (
