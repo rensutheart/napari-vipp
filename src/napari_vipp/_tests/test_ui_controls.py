@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
 from qtpy.QtWidgets import QLabel
 
+from napari_vipp.core.pipeline import ParameterSpec
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_controls import AxisSliceOption, ReorderAxesControl
 from napari_vipp.ui.controls import ImageSourceControl
@@ -71,3 +73,63 @@ def test_image_source_choosers_share_recent_input_directory(
     assert recent_paths.recent_directory(recent_paths.INPUT_DIRECTORY) == str(
         selected_dir.resolve()
     )
+
+
+def test_parameter_spec_accepts_narrower_declarative_slider_window():
+    spec = ParameterSpec(
+        "value",
+        "Value",
+        "float",
+        2.0,
+        0.0,
+        1_000_000.0,
+        0.1,
+        3,
+        slider_minimum=0.0,
+        slider_maximum=10.0,
+    )
+
+    assert spec.minimum == 0.0
+    assert spec.maximum == 1_000_000.0
+    assert spec.slider_minimum == 0.0
+    assert spec.slider_maximum == 10.0
+
+
+@pytest.mark.parametrize(
+    "slider_bounds",
+    [
+        (11.0, 10.0),
+        (-1.0, 10.0),
+        (0.0, 1_000_001.0),
+        (0.0, float("inf")),
+    ],
+)
+def test_parameter_spec_rejects_invalid_slider_window(slider_bounds):
+    with pytest.raises(ValueError, match="slider"):
+        ParameterSpec(
+            "value",
+            "Value",
+            "float",
+            2.0,
+            0.0,
+            1_000_000.0,
+            0.1,
+            3,
+            slider_minimum=slider_bounds[0],
+            slider_maximum=slider_bounds[1],
+        )
+
+
+def test_parameter_spec_rejects_fractional_integer_slider_window():
+    with pytest.raises(ValueError, match="whole numbers"):
+        ParameterSpec(
+            "value",
+            "Value",
+            "int",
+            2,
+            0,
+            100,
+            1,
+            slider_minimum=0.5,
+            slider_maximum=10,
+        )

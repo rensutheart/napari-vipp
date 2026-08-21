@@ -52,19 +52,32 @@ def _slider_safe_bounds(
 ) -> ParameterBounds:
     maximum_slider_units = 1_000_000_000
     decimals = int(decimals)
-    extent = max(abs(float(minimum)), abs(float(maximum)), 1.0)
+    numeric_minimum = float(minimum)
+    numeric_maximum = float(maximum)
+    extent = max(
+        abs(numeric_minimum),
+        abs(numeric_maximum),
+        abs(numeric_maximum - numeric_minimum),
+        np.finfo(float).tiny,
+    )
     if not logarithmic:
         while decimals > 0 and extent * (10**decimals) > maximum_slider_units:
             decimals -= 1
         if extent > maximum_slider_units:
-            minimum = max(float(minimum), -maximum_slider_units)
-            maximum = min(float(maximum), maximum_slider_units)
+            # Absolute numeric levels outside QSlider's signed-int storage
+            # cannot use the ordinary scaled mapping. The existing logarithmic
+            # mapping uses a fixed 0..1000 slider while the spin box retains the
+            # exact wider entry range supplied by the caller.
+            logarithmic = True
 
     smallest_step = 1.0 if decimals == 0 else 10 ** (-decimals)
+    safe_step = max(float(step), smallest_step)
+    if not logarithmic:
+        safe_step = min(safe_step, float(maximum_slider_units))
     return ParameterBounds(
         float(minimum),
         float(maximum),
-        max(float(step), smallest_step),
+        safe_step,
         decimals,
         expandable,
         logarithmic,
@@ -229,7 +242,7 @@ class ParameterControl(QWidget):
                 else:
                     self.slider.setRange(int(bounds.minimum), int(bounds.maximum))
                     self.slider.setSingleStep(max(int(bounds.step), 1))
-                self.slider.setValue(self._to_slider(current))
+                self.slider.setValue(self._bounded_slider_value(current))
                 self.value_box.setValue(int(current))
             else:
                 self.value_box.setDecimals(bounds.decimals)
@@ -244,7 +257,7 @@ class ParameterControl(QWidget):
                         self._to_slider(bounds.maximum),
                     )
                     self.slider.setSingleStep(max(self._to_slider(bounds.step), 1))
-                self.slider.setValue(self._to_slider(current))
+                self.slider.setValue(self._bounded_slider_value(current))
                 self.value_box.setValue(float(current))
 
         if emit:
@@ -262,8 +275,12 @@ class ParameterControl(QWidget):
             self.valueChanged.emit(self.value())
             return
         with QSignalBlocker(self.slider):
-            self.slider.setValue(self._to_slider(value))
+            self.slider.setValue(self._bounded_slider_value(value))
         self.valueChanged.emit(self.value())
+
+    def _bounded_slider_value(self, value) -> int:
+        slider_value = self._to_slider(value)
+        return min(max(slider_value, self.slider.minimum()), self.slider.maximum())
 
     def _scale_for(self, bounds: ParameterBounds) -> int:
         if self._is_integer:

@@ -51,6 +51,8 @@ CONNECTED_COMPONENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
 MASK_CLEANUP_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
 FILL_HOLES_WORKSPACE_BYTES_PER_PADDED_SPATIAL_ELEMENT = 13
 REMOVE_SMALL_OBJECTS_WORKSPACE_BYTES_PER_SPATIAL_ELEMENT = 32
+REMOVE_BINARY_OUTLIERS_MAXIMUM_PUBLIC_RADIUS = 25.0
+REMOVE_BINARY_OUTLIERS_MAXIMUM_DIRECT_RADIUS = 100.0
 MEASUREMENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
 SIGMA_FILTER_FLOAT32_SQUARE_LIMIT = float(
     np.float32(math.sqrt(float(np.finfo(np.float32).max)))
@@ -1114,6 +1116,30 @@ def estimate_candidate_memory(
         typed_axis_staging = primary_elements * primary_itemsize
         offset_and_status_bytes = (325 * 2 * np.dtype(np.int32).itemsize) + 4
         workspace = full_contiguous_copy + typed_axis_staging + offset_and_status_bytes
+    elif spec.memory_model_id == "cupy-remove-binary-outliers-memory-v1":
+        parameters = dict(workload.parameters)
+        radius = _finite_number(parameters.get("radius", 2.0))
+        if (
+            radius is None
+            or radius < 0.5
+            or radius > REMOVE_BINARY_OUTLIERS_MAXIMUM_DIRECT_RADIUS
+        ):
+            # Invalid authoring is rejected before execution. Keep standalone
+            # memory inspection conservative rather than underestimating it.
+            radius = REMOVE_BINARY_OUTLIERS_MAXIMUM_DIRECT_RADIUS
+        footprint_rows = _imagej_rankfilters_footprint_rows(radius)
+        raw_row_table_bytes = footprint_rows * np.dtype(np.int32).itemsize
+        allocation_granularity_bytes = 512
+        row_table_bytes = (
+            (raw_row_table_bytes + allocation_granularity_bytes - 1)
+            // allocation_granularity_bytes
+            * allocation_granularity_bytes
+        )
+        # Generic accounting below already retains the complete authored bool
+        # source and the new bool output. A resident strided source can require
+        # one complete contiguous input staging allocation; the fixed kernel's
+        # only other device allocation is the bounded int32 row-radius table.
+        workspace = input_bytes + row_table_bytes
     elif spec.memory_model_id == "cupyx-canny-exact-memory-v1":
         parameters = dict(workload.parameters)
         scalar_shape, luma_itemsize = _scalar_luma_shape_and_itemsize(
@@ -1399,6 +1425,80 @@ def _sigma_filter_region_policy(
     array_facts: tuple[ArrayFacts, ...],
 ) -> SupportDecision | None:
     return _evaluate_sigma_filter_region(workload, array_facts=array_facts)
+
+
+def _remove_binary_outliers_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    """Validate the exact bool-only, positional trailing-YX GPU region."""
+
+    if len(workload.input_shapes) != 1 or len(workload.input_dtypes) != 1:
+        return _workload_rejection(
+            "Remove Outliers (Binary) requires exactly one mask input.",
+            fallback_allowed=False,
+        )
+    try:
+        dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "Remove Outliers (Binary) requires a concrete NumPy-compatible dtype.",
+            fallback_allowed=False,
+        )
+    if dtype != np.dtype(bool):
+        if dtype == np.dtype(np.uint8):
+            return _workload_rejection(
+                "The public Remove Outliers (Binary) GPU region requires a bool "
+                "mask; canonical uint8 validation remains on the authoritative "
+                "CPU path."
+            )
+        return _workload_rejection(
+            "Remove Outliers (Binary) requires bool or canonical uint8 mask data.",
+            fallback_allowed=False,
+        )
+
+    shape = workload.input_shapes[0]
+    if len(shape) < 2:
+        return _workload_rejection(
+            "Remove Outliers (Binary) requires at least two trailing YX axes.",
+            fallback_allowed=False,
+        )
+    if any(size <= 0 for size in shape):
+        return _workload_rejection(
+            "Remove Outliers (Binary) does not accept empty masks.",
+            fallback_allowed=False,
+        )
+    if workload.resolved_spatial_ndim not in {None, 2}:
+        return _workload_rejection(
+            "Remove Outliers (Binary) is a positional trailing-YX operation; "
+            "each leading index is an independent plane.",
+            fallback_allowed=False,
+        )
+
+    parameters = dict(workload.parameters)
+    radius = _finite_number(parameters.get("radius", 2.0))
+    if (
+        radius is None
+        or not 0.5 <= radius <= REMOVE_BINARY_OUTLIERS_MAXIMUM_DIRECT_RADIUS
+    ):
+        return _workload_rejection(
+            "Remove Outliers (Binary) radius must be finite and between 0.5 "
+            "and 100 pixels.",
+            fallback_allowed=False,
+        )
+    if radius > REMOVE_BINARY_OUTLIERS_MAXIMUM_PUBLIC_RADIUS:
+        return _workload_rejection(
+            "The public Remove Outliers (Binary) GPU region is qualified through "
+            "radius 25; larger valid radii remain on the authoritative CPU path."
+        )
+    choice = str(parameters.get("which_outliers", "Foreground (remove)")).strip()
+    if choice not in {"Foreground (remove)", "Background (fill)"}:
+        return _workload_rejection(
+            "Remove Outliers (Binary) outlier type must be 'Foreground (remove)' "
+            "or 'Background (fill)'.",
+            fallback_allowed=False,
+        )
+    return None
 
 
 def _gaussian_2d_region_policy(
@@ -2157,6 +2257,7 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "remove-small-objects-bool-parameters-v1": (
             _remove_small_objects_region_policy
         ),
+        "remove-binary-outliers-parameters-v1": (_remove_binary_outliers_region_policy),
         "connected-components-parameters-v1": (_connected_components_region_policy),
         "basic-measurements-parameters-v1": _basic_measurements_region_policy,
     }
@@ -2540,6 +2641,19 @@ def _finite_number(value: object) -> float | None:
     return converted if math.isfinite(converted) else None
 
 
+def _imagej_rankfilters_footprint_rows(radius: float) -> int:
+    """Return the exact ImageJ RankFilters footprint height for memory policy."""
+
+    resolved = float(radius)
+    if 1.5 <= resolved < 1.75:
+        resolved = 1.75
+    elif 2.5 <= resolved < 2.85:
+        resolved = 2.85
+    radius_squared = int(resolved * resolved) + 1
+    kernel_radius = int(math.sqrt(radius_squared + 1e-10))
+    return 2 * kernel_radius + 1
+
+
 def _canonical_nonnegative_integer(value: object) -> int | None:
     """Return the operation's typed nonnegative integer or reject bad authoring."""
 
@@ -2773,6 +2887,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "background-parameters-v1",
             "median-parameters-v1",
             "sigma-filter-parameters-v1",
+            "remove-binary-outliers-parameters-v1",
             "gaussian-2d-parameters-v1",
             "gaussian-3d-parameters-v1",
             "convert-dtype-f32-preserve-parameters-v1",
@@ -2792,6 +2907,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "background-u8-u16-f32-v2",
             "median-exact-u8-u16-f32-v1",
             "sigma-u8-u16-finite-f32-v1",
+            "remove-binary-outliers-bool-yx-v1",
             "gaussian-finite-f32-v1",
             "convert-dtype-u8-u16-to-f32-preserve-v1",
             "binary-threshold-f32-scalar-exact-v1",
@@ -2824,6 +2940,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-median-memory-v1",
             "cupy-radix-median-memory-v1",
             "cupy-sigma-filter-memory-v1",
+            "cupy-remove-binary-outliers-memory-v1",
             "cupyx-gaussian-2d-memory-v1",
             "cupyx-gaussian-3d-memory-v1",
             "cupy-dynamic-gaussian-memory-v1",
@@ -2922,6 +3039,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "background-nearest-rolling-ball-v1",
             "scipy-reflect-v1",
             "sigma-nearest-circular-footprint-v1",
+            "imagej-rankfilters-nearest-yx-v1",
             "elementwise-no-boundary-v1",
             "strict-greater-elementwise-v1",
             "semantic-channel-view-v1",
@@ -2955,6 +3073,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "monolithic-sync-progress-v1",
             "constant-time-view-progress-v1",
             "sigma-row-tile-sync-progress-v1",
+            "remove-binary-outliers-pixel-tile-sync-progress-v1",
             *RICHARDSON_LUCY_POLICY_IDS["progress"],
             "scalar-plane-sync-progress-v1",
             "histogram-scope-sync-progress-v1",
@@ -2967,6 +3086,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "monolithic-boundary-cancel-v1",
             "constant-time-view-boundary-cancel-v1",
             "sigma-row-tile-boundary-cancel-v1",
+            "remove-binary-outliers-pixel-tile-boundary-cancel-v1",
             *RICHARDSON_LUCY_POLICY_IDS["cancellation"],
             "scalar-plane-boundary-cancel-v1",
             "spatial-block-boundary-cancel-v1",

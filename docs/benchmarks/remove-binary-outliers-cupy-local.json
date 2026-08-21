@@ -1,0 +1,1005 @@
+{
+  "admission": {
+    "case_count": 9,
+    "cases": [
+      {
+        "case_id": "foreground-radius-half",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "dtype:bool",
+          "rank:2",
+          "layout:contiguous",
+          "shape:odd",
+          "radius:0.5",
+          "polarity:foreground-remove"
+        ],
+        "cpu_gpu_bitwise_equal": true,
+        "cpu_output_sha256": "11c6fe9e2eee6b01c59613d4cd019f4efe7a5fee28f21dbeeef99d6dd2b4706e",
+        "device_input_layout": "contiguous",
+        "gpu_output_contiguous": true,
+        "gpu_output_independent": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "11c6fe9e2eee6b01c59613d4cd019f4efe7a5fee28f21dbeeef99d6dd2b4706e",
+        "input_immutable": true,
+        "mismatch_count": 0,
+        "radius": 0.5,
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "shape": [
+          9,
+          11
+        ],
+        "which_outliers": "Foreground (remove)"
+      },
+      {
+        "case_id": "background-imagej-radius-one-half",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "dtype:bool",
+          "rank:2",
+          "layout:contiguous",
+          "boundary:nearest",
+          "shape:odd",
+          "radius:1.5-imagej-adjustment",
+          "polarity:background-fill"
+        ],
+        "cpu_gpu_bitwise_equal": true,
+        "cpu_output_sha256": "88322b2a392383c3e17a020f3d8e6bc74063d06b42e6b2d6f5a08fb2c1d46354",
+        "device_input_layout": "contiguous",
+        "gpu_output_contiguous": true,
+        "gpu_output_independent": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "88322b2a392383c3e17a020f3d8e6bc74063d06b42e6b2d6f5a08fb2c1d46354",
+        "input_immutable": true,
+        "mismatch_count": 0,
+        "radius": 1.5,
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "shape": [
+          9,
+          13
+        ],
+        "which_outliers": "Background (fill)"
+      },
+      {
+        "case_id": "foreground-imagej-radius-two-half",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "dtype:bool",
+          "rank:2",
+          "layout:contiguous",
+          "boundary:nearest",
+          "radius:2.5-imagej-adjustment",
+          "polarity:foreground-remove"
+        ],
+        "cpu_gpu_bitwise_equal": true,
+        "cpu_output_sha256": "3e14fde639df93e41e27abe58939b62f68aff59883ceac8cdf254eaf20e99345",
+        "device_input_layout": "contiguous",
+        "gpu_output_contiguous": true,
+        "gpu_output_independent": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "3e14fde639df93e41e27abe58939b62f68aff59883ceac8cdf254eaf20e99345",
+        "input_immutable": true,
+        "mismatch_count": 0,
+        "radius": 2.5,
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "shape": [
+          9,
+          13
+        ],
+        "which_outliers": "Foreground (remove)"
+      },
+      {
+        "case_id": "tiny-background-radius-eight",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "dtype:bool",
+          "rank:2",
+          "layout:contiguous",
+          "boundary:nearest",
+          "shape:tiny-smaller-than-radius",
+          "polarity:background-fill"
+        ],
+        "cpu_gpu_bitwise_equal": true,
+        "cpu_output_sha256": "58d86846184a8ce6abfd3e079bd394b8dc85480cf4d062154837fd1dc53f94f5",
+        "device_input_layout": "contiguous",
+        "gpu_output_contiguous": true,
+        "gpu_output_independent": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "58d86846184a8ce6abfd3e079bd394b8dc85480cf4d062154837fd1dc53f94f5",
+        "input_immutable": true,
+        "mismatch_count": 0,
+        "radius": 8.0,
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "shape": [
+          2,
+          3
+        ],
+        "which_outliers": "Background (fill)"
+      },
+      {
+        "case_id": "strided-three-dimensional-leading-planes",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "dtype:bool",
+          "rank:3",
+          "leading-planes:independent",
+          "layout:noncontiguous",
+          "polarity:foreground-remove"
+        ],
+        "cpu_gpu_bitwise_equal": true,
+        "cpu_output_sha256": "bc735f995110f8f2759aed46ad338e1553d0fc47c1872faf39e875d2d9f31025",
+        "device_input_layout": "noncontiguous",
+        "gpu_output_contiguous": true,
+        "gpu_output_independent": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "bc735f995110f8f2759aed46ad338e1553d0fc47c1872faf39e875d2d9f31025",
+        "input_immutable": true,
+        "mismatch_count": 0,
+        "radius": 3.0,
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "shape": [
+          3,
+          15,
+          19
+        ],
+        "which_outliers": "Foreground (remove)"
+      },
+      {
+        "case_id": "four-dimensional-leading-planes",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "dtype:bool",
+          "rank:4",
+          "leading-planes:independent",
+          "layout:contiguous",
+          "polarity:background-fill"
+        ],
+        "cpu_gpu_bitwise_equal": true,
+        "cpu_output_sha256": "1560cc91cc02486a3428a819064c835e29f0d3f725c798af6cba0ee4d9469d2c",
+        "device_input_layout": "contiguous",
+        "gpu_output_contiguous": true,
+        "gpu_output_independent": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "1560cc91cc02486a3428a819064c835e29f0d3f725c798af6cba0ee4d9469d2c",
+        "input_immutable": true,
+        "mismatch_count": 0,
+        "radius": 2.0,
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "shape": [
+          2,
+          3,
+          11,
+          13
+        ],
+        "which_outliers": "Background (fill)"
+      },
+      {
+        "case_id": "public-maximum-radius",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "dtype:bool",
+          "rank:2",
+          "layout:contiguous",
+          "radius:25-public-maximum",
+          "polarity:foreground-remove"
+        ],
+        "cpu_gpu_bitwise_equal": true,
+        "cpu_output_sha256": "7a8e5ffbddfef62d7fa0c8214e6f5c3fa6abd99eeb221bb66566cbe5c50fd4ae",
+        "device_input_layout": "contiguous",
+        "gpu_output_contiguous": true,
+        "gpu_output_independent": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "7a8e5ffbddfef62d7fa0c8214e6f5c3fa6abd99eeb221bb66566cbe5c50fd4ae",
+        "input_immutable": true,
+        "mismatch_count": 0,
+        "radius": 25.0,
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "shape": [
+          31,
+          33
+        ],
+        "which_outliers": "Foreground (remove)"
+      },
+      {
+        "case_id": "constant-foreground",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "dtype:bool",
+          "rank:2",
+          "layout:contiguous",
+          "constant:foreground",
+          "polarity:foreground-remove"
+        ],
+        "cpu_gpu_bitwise_equal": true,
+        "cpu_output_sha256": "b034386fb7f4827b2860b0c291c27b7a687cdcea883bfcf93392c94bbf8cc246",
+        "device_input_layout": "contiguous",
+        "gpu_output_contiguous": true,
+        "gpu_output_independent": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "b034386fb7f4827b2860b0c291c27b7a687cdcea883bfcf93392c94bbf8cc246",
+        "input_immutable": true,
+        "mismatch_count": 0,
+        "radius": 3.0,
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "shape": [
+          7,
+          9
+        ],
+        "which_outliers": "Foreground (remove)"
+      },
+      {
+        "case_id": "constant-background",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "coverage": [
+          "dtype:bool",
+          "rank:2",
+          "layout:contiguous",
+          "constant:background",
+          "polarity:background-fill"
+        ],
+        "cpu_gpu_bitwise_equal": true,
+        "cpu_output_sha256": "9226878eb77f5cf2b402058e51c27676d29ceed119c8a75771c7160c9db5cb21",
+        "device_input_layout": "contiguous",
+        "gpu_output_contiguous": true,
+        "gpu_output_independent": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "9226878eb77f5cf2b402058e51c27676d29ceed119c8a75771c7160c9db5cb21",
+        "input_immutable": true,
+        "mismatch_count": 0,
+        "radius": 3.0,
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "shape": [
+          7,
+          9
+        ],
+        "which_outliers": "Background (fill)"
+      }
+    ],
+    "coverage": [
+      "boundary:nearest",
+      "constant:background",
+      "constant:foreground",
+      "dtype:bool",
+      "layout:contiguous",
+      "layout:noncontiguous",
+      "leading-planes:independent",
+      "polarity:background-fill",
+      "polarity:foreground-remove",
+      "radius:0.5",
+      "radius:1.5-imagej-adjustment",
+      "radius:2.5-imagej-adjustment",
+      "radius:25-public-maximum",
+      "rank:2",
+      "rank:3",
+      "rank:4",
+      "repeat:deterministic",
+      "shape:odd",
+      "shape:tiny-smaller-than-radius"
+    ],
+    "parity_profile": "bitwise-identical-bool-shape-v1",
+    "repeat_count": 3,
+    "status": "pass"
+  },
+  "created_utc": "2026-08-21T21:34:38.819934+00:00",
+  "durable_optimizer_record": false,
+  "environment": {
+    "compute_capability": "12.0",
+    "cuda_driver_version": "13030",
+    "cuda_runtime_version": "13020",
+    "device_index": 0,
+    "device_name": "NVIDIA GeForce RTX 5090",
+    "device_total_memory_bytes": 34190458880,
+    "machine": "AMD64",
+    "python": "3.12.9",
+    "python_abi": "cpython-312",
+    "python_executable": "python.exe",
+    "python_implementation": "CPython",
+    "release": "10",
+    "system": "Windows"
+  },
+  "facets": {
+    "adversarial_workloads": "pass",
+    "cancellation": "pass",
+    "cleanup": "pass",
+    "cpu_oracle_parity": "pass",
+    "fallback": "pass",
+    "input_integrity": "pass",
+    "memory": "pass",
+    "metadata": "pass",
+    "provenance": "pass",
+    "transfer_inclusive_timing": "pass"
+  },
+  "fallback": {
+    "invalid_authored_case_count": 3,
+    "invalid_authored_cases": [
+      {
+        "case_id": "radius-below-minimum",
+        "cpu_authority_executed": false,
+        "dtype": "bool",
+        "fallback_allowed": false,
+        "parameters": {
+          "radius": 0.49,
+          "which_outliers": "Foreground (remove)"
+        },
+        "reason_text": "Remove Outliers (Binary) radius must be finite and between 0.5 and 100 pixels.",
+        "shape": [
+          9,
+          11
+        ],
+        "supported": false
+      },
+      {
+        "case_id": "invalid-polarity",
+        "cpu_authority_executed": false,
+        "dtype": "bool",
+        "fallback_allowed": false,
+        "parameters": {
+          "radius": 2.0,
+          "which_outliers": "Both"
+        },
+        "reason_text": "Remove Outliers (Binary) outlier type must be 'Foreground (remove)' or 'Background (fill)'.",
+        "shape": [
+          9,
+          11
+        ],
+        "supported": false
+      },
+      {
+        "case_id": "rank-one-mask",
+        "cpu_authority_executed": false,
+        "dtype": "bool",
+        "fallback_allowed": false,
+        "parameters": {
+          "radius": 2.0,
+          "which_outliers": "Foreground (remove)"
+        },
+        "reason_text": "Remove Outliers (Binary) requires at least two trailing YX axes.",
+        "shape": [
+          11
+        ],
+        "supported": false
+      }
+    ],
+    "safe_cpu_fallback_case_count": 2,
+    "safe_cpu_fallback_cases": [
+      {
+        "case_id": "radius-above-public-through-direct-limit",
+        "cpu_authority_executed": true,
+        "cpu_output_dtype": "bool",
+        "cpu_output_sha256": "3f427ad2075730c9fb7748521b85dd075f7eec17258ba14c7f9b958bab37b961",
+        "dtype": "bool",
+        "fallback_allowed": true,
+        "input_immutable": true,
+        "parameters": {
+          "radius": 26.0,
+          "which_outliers": "Foreground (remove)"
+        },
+        "reason_text": "The public Remove Outliers (Binary) GPU region is qualified through radius 25; larger valid radii remain on the authoritative CPU path.",
+        "shape": [
+          9,
+          11
+        ],
+        "supported": false
+      },
+      {
+        "case_id": "canonical-uint8-mask",
+        "cpu_authority_executed": true,
+        "cpu_output_dtype": "bool",
+        "cpu_output_sha256": "88cfca96fff67d52086333102d0e69b8ecbcbb73c6b91368a03c706c8c14cbb3",
+        "dtype": "uint8",
+        "fallback_allowed": true,
+        "input_immutable": true,
+        "parameters": {
+          "radius": 2.0,
+          "which_outliers": "Background (fill)"
+        },
+        "reason_text": "The public Remove Outliers (Binary) GPU region requires a bool mask; canonical uint8 validation remains on the authoritative CPU path.",
+        "shape": [
+          9,
+          11
+        ],
+        "supported": false
+      }
+    ],
+    "status": "pass"
+  },
+  "implementation": {
+    "implementation_id": "cupy-remove-binary-outliers-v1",
+    "implementation_version": "1",
+    "library_id": "cupy",
+    "operation_id": "remove_binary_outliers",
+    "runtime_id": "cuda-cupy"
+  },
+  "kind": "scientific-admission-and-machine-local-performance-evidence",
+  "lifecycle": {
+    "boundary": "synchronized-pixel-tile-boundary-v1",
+    "cancellation_observed": true,
+    "cancellation_requested": true,
+    "default_pool_cleanup_after_reuse": {
+      "device_pool_reserved_bytes_after_cleanup": 0,
+      "device_pool_used_bytes_after_cleanup": 0,
+      "pinned_pool_free_blocks_after_cleanup": 0
+    },
+    "input_immutable": true,
+    "isolated_pool_cleanup": {
+      "device_pool_reserved_bytes_after_cleanup": 0,
+      "device_pool_used_bytes_after_cleanup": 0
+    },
+    "post_cancellation_reuse_exact": true,
+    "reported_progress": [
+      {
+        "current": 0,
+        "message": "Remove Outliers (Binary) pixels",
+        "total": 6
+      },
+      {
+        "current": 1,
+        "message": "Remove Outliers (Binary) pixels",
+        "total": 6
+      }
+    ],
+    "status": "pass"
+  },
+  "metadata": {
+    "axes_preserved": true,
+    "bool_mask_kind_preserved": true,
+    "cpu_gpu_structural_metadata_equal": true,
+    "cpu_structure": {
+      "axes": [
+        {
+          "name": "t",
+          "scale": 2.0,
+          "translation": 0.0,
+          "type": "time",
+          "unit": "s"
+        },
+        {
+          "name": "z",
+          "scale": 1.5,
+          "translation": 0.0,
+          "type": "space",
+          "unit": "micrometer"
+        },
+        {
+          "name": "y",
+          "scale": 0.4,
+          "translation": 0.0,
+          "type": "space",
+          "unit": "micrometer"
+        },
+        {
+          "name": "x",
+          "scale": 0.6,
+          "translation": 0.0,
+          "type": "space",
+          "unit": "micrometer"
+        }
+      ],
+      "bit_depth": "1-bit logical",
+      "dtype": "bool",
+      "history": [
+        "Imported calibrated segmentation",
+        "Remove Outliers (Binary): radius 2.5 px, Background (fill), ImageJ-compatible independent YX planes"
+      ],
+      "kind": "binary mask",
+      "shape": [
+        2,
+        3,
+        11,
+        13
+      ],
+      "source_name": "Remove Outliers admission fixture"
+    },
+    "gpu_structure": {
+      "axes": [
+        {
+          "name": "t",
+          "scale": 2.0,
+          "translation": 0.0,
+          "type": "time",
+          "unit": "s"
+        },
+        {
+          "name": "z",
+          "scale": 1.5,
+          "translation": 0.0,
+          "type": "space",
+          "unit": "micrometer"
+        },
+        {
+          "name": "y",
+          "scale": 0.4,
+          "translation": 0.0,
+          "type": "space",
+          "unit": "micrometer"
+        },
+        {
+          "name": "x",
+          "scale": 0.6,
+          "translation": 0.0,
+          "type": "space",
+          "unit": "micrometer"
+        }
+      ],
+      "bit_depth": "1-bit logical",
+      "dtype": "bool",
+      "history": [
+        "Imported calibrated segmentation",
+        "Remove Outliers (Binary): radius 2.5 px, Background (fill), ImageJ-compatible independent YX planes"
+      ],
+      "kind": "binary mask",
+      "shape": [
+        2,
+        3,
+        11,
+        13
+      ],
+      "source_name": "Remove Outliers admission fixture"
+    },
+    "history_appended": true,
+    "shape_preserved": true,
+    "status": "pass"
+  },
+  "method": {
+    "cpu_oracle": "napari_vipp.core.remove_outliers:remove_binary_outliers",
+    "gpu_provider": "napari_vipp.core.gpu.cupy_remove_binary_outliers:remove_binary_outliers",
+    "parameter_compilation": "one warmed fixed-source RawKernel receives radius-derived row spans and polarity as runtime arguments",
+    "parity": "bitwise-identical-bool-shape-v1",
+    "timing": "synchronized wall clock; transfer-inclusive samples include host-to-device input and device-to-host output"
+  },
+  "operation_contract": {
+    "admission_tier": "public_custom",
+    "boundary_policy_id": "imagej-rankfilters-nearest-yx-v1",
+    "callable_ref": "napari_vipp.core.gpu.cupy_remove_binary_outliers:remove_binary_outliers",
+    "cancellation_policy_id": "remove-binary-outliers-pixel-tile-boundary-cancel-v1",
+    "implementation_id": "cupy-remove-binary-outliers-v1",
+    "implementation_version": "1",
+    "library_id": "cupy",
+    "limitations": [
+      "bool-mask-public-v1",
+      "independent-trailing-yx-planes-v1",
+      "imagej-rankfilters-historical-footprint-v1",
+      "radius-half-through-one-hundred-direct-v1",
+      "radius-half-through-twenty-five-public-policy-v1",
+      "fixed-source-runtime-parameter-kernel-v1"
+    ],
+    "memory_model_id": "cupy-remove-binary-outliers-memory-v1",
+    "operation_id": "remove_binary_outliers",
+    "parameter_policy_id": "remove-binary-outliers-parameters-v1",
+    "parity_policy_id": "mask-bitwise-v1",
+    "progress_policy_id": "remove-binary-outliers-pixel-tile-sync-progress-v1",
+    "public_input_dtypes": [
+      "bool"
+    ],
+    "public_output_dtypes": [
+      "bool"
+    ],
+    "runtime_id": "cuda-cupy",
+    "supports_device_residency": true,
+    "validated_environment_policy_id": "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1",
+    "workload_policy_id": "remove-binary-outliers-bool-yx-v1"
+  },
+  "packages": {
+    "cupy-cuda13x": "14.1.1",
+    "napari-vipp": "0.13.0a7",
+    "numpy": "2.5.1",
+    "scikit-image": "0.26.0",
+    "scipy": "1.18.0"
+  },
+  "parameter_sweep": {
+    "cleanup": {
+      "device_pool_reserved_bytes_after_cleanup": 0,
+      "device_pool_used_bytes_after_cleanup": 0,
+      "pinned_pool_free_blocks_after_cleanup": 0
+    },
+    "fixed_source_kernel": true,
+    "kernel_cache_misses_after": 1,
+    "kernel_cache_misses_before": 1,
+    "kernel_object_reused": true,
+    "lanes": [
+      {
+        "all_exact": true,
+        "lane_id": "radius",
+        "parameter_name": "radius",
+        "steps": [
+          {
+            "authored_value": 0.5,
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "d8045e6e6a8f5657628bfa094a9936d830d458721c4274af4f801bde347c44c7",
+            "index": 0,
+            "occurrence": "startup",
+            "transfer_inclusive_seconds": 0.0005560999270528555
+          },
+          {
+            "authored_value": 1.0,
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "bb2b9a851155dc1b98ad4c4ec11f70c5007f5e0bc346131394ec9160ecc9ae66",
+            "index": 1,
+            "occurrence": "unseen",
+            "transfer_inclusive_seconds": 0.0003179000923410058
+          },
+          {
+            "authored_value": 1.5,
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "bb2b9a851155dc1b98ad4c4ec11f70c5007f5e0bc346131394ec9160ecc9ae66",
+            "index": 2,
+            "occurrence": "unseen",
+            "transfer_inclusive_seconds": 0.00030479999259114265
+          },
+          {
+            "authored_value": 2.0,
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "38ae93e25e371cc0297da064d9240586b1820a4254910af4a1eef5ba03529987",
+            "index": 3,
+            "occurrence": "unseen",
+            "transfer_inclusive_seconds": 0.00029580004047602415
+          },
+          {
+            "authored_value": 3.0,
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "dc3862d1785f812375ae9b18ff6c65a0cdab8caad62c0effdc0e4f9fca689a35",
+            "index": 4,
+            "occurrence": "unseen",
+            "transfer_inclusive_seconds": 0.0003029000945389271
+          },
+          {
+            "authored_value": 8.0,
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "d8045e6e6a8f5657628bfa094a9936d830d458721c4274af4f801bde347c44c7",
+            "index": 5,
+            "occurrence": "unseen",
+            "transfer_inclusive_seconds": 0.0007792999967932701
+          },
+          {
+            "authored_value": 25.0,
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "d8045e6e6a8f5657628bfa094a9936d830d458721c4274af4f801bde347c44c7",
+            "index": 6,
+            "occurrence": "unseen",
+            "transfer_inclusive_seconds": 0.0005769000854343176
+          },
+          {
+            "authored_value": 1.5,
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "bb2b9a851155dc1b98ad4c4ec11f70c5007f5e0bc346131394ec9160ecc9ae66",
+            "index": 7,
+            "occurrence": "revisit",
+            "transfer_inclusive_seconds": 0.00029939995147287846
+          },
+          {
+            "authored_value": 8.0,
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "d8045e6e6a8f5657628bfa094a9936d830d458721c4274af4f801bde347c44c7",
+            "index": 8,
+            "occurrence": "revisit",
+            "transfer_inclusive_seconds": 0.0003329000901430845
+          }
+        ],
+        "values": [
+          0.5,
+          1.0,
+          1.5,
+          2.0,
+          3.0,
+          8.0,
+          25.0,
+          1.5,
+          8.0
+        ]
+      },
+      {
+        "all_exact": true,
+        "lane_id": "outlier-polarity",
+        "parameter_name": "which_outliers",
+        "steps": [
+          {
+            "authored_value": "Foreground (remove)",
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "38ae93e25e371cc0297da064d9240586b1820a4254910af4a1eef5ba03529987",
+            "index": 0,
+            "occurrence": "startup",
+            "transfer_inclusive_seconds": 0.00030670000705868006
+          },
+          {
+            "authored_value": "Background (fill)",
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "cfe7765c265c584134a5855c1c4e3e0122198357e224e36b28c50bacfa08843e",
+            "index": 1,
+            "occurrence": "unseen",
+            "transfer_inclusive_seconds": 0.0002951000351458788
+          },
+          {
+            "authored_value": "Foreground (remove)",
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "38ae93e25e371cc0297da064d9240586b1820a4254910af4a1eef5ba03529987",
+            "index": 2,
+            "occurrence": "revisit",
+            "transfer_inclusive_seconds": 0.00030060007702559233
+          },
+          {
+            "authored_value": "Background (fill)",
+            "cpu_gpu_bitwise_equal": true,
+            "gpu_output_sha256": "cfe7765c265c584134a5855c1c4e3e0122198357e224e36b28c50bacfa08843e",
+            "index": 3,
+            "occurrence": "revisit",
+            "transfer_inclusive_seconds": 0.000292200013063848
+          }
+        ],
+        "values": [
+          "Foreground (remove)",
+          "Background (fill)",
+          "Foreground (remove)",
+          "Background (fill)"
+        ]
+      }
+    ],
+    "new_kernel_objects_during_sweep": 0,
+    "runtime_parameterized_polarity": true,
+    "runtime_parameterized_radius": true,
+    "status": "pass",
+    "timing_interpretation": "machine-local synchronized transfer-inclusive observations; no portable absolute cliff threshold"
+  },
+  "performance": {
+    "all_memory_estimates_cover_observed": true,
+    "case_count": 3,
+    "results": [
+      {
+        "case_id": "plane-256-r2-foreground",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "pinned_pool_free_blocks_after_cleanup": 0
+        },
+        "cpu_gpu_bitwise_equal": true,
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_with_uncertainty_bytes": 8585728,
+          "model_id": "cupy-remove-binary-outliers-memory-v1",
+          "observed_reserved_bytes": 131584,
+          "observed_used_bytes_with_input": 65536,
+          "observed_used_bytes_with_output": 131072,
+          "output_shares_input_allocation": false,
+          "runtime_managed_peak_bytes": 197120,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1",
+          "total_device_peak_bytes": 197120,
+          "uncertainty_bytes": 8388608
+        },
+        "radius": 2.0,
+        "rounds": 3,
+        "samples": {
+          "cpu_seconds": [
+            0.0013188000302761793,
+            0.0013009000103920698,
+            0.0012904000468552113
+          ],
+          "gpu_resident_seconds": [
+            0.00042729999404400587,
+            0.0002736999886110425,
+            0.00028979999478906393
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.00042509997729212046,
+            0.0004160000244155526,
+            0.00042349996510893106
+          ]
+        },
+        "shape": [
+          256,
+          256
+        ],
+        "summary": {
+          "cpu_median_seconds": 0.0013009000103920698,
+          "gpu_resident_median_seconds": 0.00028979999478906393,
+          "gpu_transfer_inclusive_median_seconds": 0.00042349996510893106
+        },
+        "which_outliers": "Foreground (remove)"
+      },
+      {
+        "case_id": "plane-384-r8-background",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "pinned_pool_free_blocks_after_cleanup": 0
+        },
+        "cpu_gpu_bitwise_equal": true,
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_with_uncertainty_bytes": 8831488,
+          "model_id": "cupy-remove-binary-outliers-memory-v1",
+          "observed_reserved_bytes": 295424,
+          "observed_used_bytes_with_input": 147456,
+          "observed_used_bytes_with_output": 294912,
+          "output_shares_input_allocation": false,
+          "runtime_managed_peak_bytes": 442880,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1",
+          "total_device_peak_bytes": 442880,
+          "uncertainty_bytes": 8388608
+        },
+        "radius": 8.0,
+        "rounds": 3,
+        "samples": {
+          "cpu_seconds": [
+            0.030298300087451935,
+            0.030496099963784218,
+            0.03005569998640567
+          ],
+          "gpu_resident_seconds": [
+            0.0006259001092985272,
+            0.0006168000400066376,
+            0.0006485999329015613
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.0006596000166609883,
+            0.0005985000170767307,
+            0.0006458000279963017
+          ]
+        },
+        "shape": [
+          384,
+          384
+        ],
+        "summary": {
+          "cpu_median_seconds": 0.030298300087451935,
+          "gpu_resident_median_seconds": 0.0006259001092985272,
+          "gpu_transfer_inclusive_median_seconds": 0.0006458000279963017
+        },
+        "which_outliers": "Background (fill)"
+      },
+      {
+        "case_id": "plane-256-r25-foreground",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "pinned_pool_free_blocks_after_cleanup": 0
+        },
+        "cpu_gpu_bitwise_equal": true,
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_with_uncertainty_bytes": 8585728,
+          "model_id": "cupy-remove-binary-outliers-memory-v1",
+          "observed_reserved_bytes": 131584,
+          "observed_used_bytes_with_input": 65536,
+          "observed_used_bytes_with_output": 131072,
+          "output_shares_input_allocation": false,
+          "runtime_managed_peak_bytes": 197120,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1",
+          "total_device_peak_bytes": 197120,
+          "uncertainty_bytes": 8388608
+        },
+        "radius": 25.0,
+        "rounds": 3,
+        "samples": {
+          "cpu_seconds": [
+            0.010674700024537742,
+            0.01080679998267442,
+            0.012691799900494516
+          ],
+          "gpu_resident_seconds": [
+            0.0007179999956861138,
+            0.0007295000832527876,
+            0.0007660000119358301
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.0007705999305471778,
+            0.0008286999072879553,
+            0.0007390000391751528
+          ]
+        },
+        "shape": [
+          256,
+          256
+        ],
+        "summary": {
+          "cpu_median_seconds": 0.01080679998267442,
+          "gpu_resident_median_seconds": 0.0007295000832527876,
+          "gpu_transfer_inclusive_median_seconds": 0.0007705999305471778
+        },
+        "which_outliers": "Foreground (remove)"
+      }
+    ],
+    "rounds": 3,
+    "status": "pass"
+  },
+  "portable_performance_claim": false,
+  "profile": "quick",
+  "provenance": {
+    "actual_implementation_id": "cupy-remove-binary-outliers-v1",
+    "actual_implementation_version": "1",
+    "actual_library_id": "cupy",
+    "actual_runtime_id": "cuda-cupy",
+    "cleanup_succeeded": true,
+    "cpu_gpu_bitwise_equal": true,
+    "decision_kind": "selected",
+    "environment": {
+      "device_id": "cuda:0",
+      "device_name": "NVIDIA GeForce RTX 5090",
+      "environment_fingerprint": "7845644b62dd12fa7ef33ba98cb1ce94b646f0075d05c29b9115523576f803c7"
+    },
+    "fallback_used": false,
+    "output_sha256": "d9e9b5b69f6069d2044eca3fac80a1bd8471a521c60896274b4e4fece0c2ce51",
+    "status": "pass"
+  },
+  "schema": "napari-vipp-cupy-remove-binary-outliers-evidence",
+  "schema_version": 1,
+  "source_provenance": [
+    {
+      "path": "src/napari_vipp/core/remove_outliers.py",
+      "sha256": "3904586e047ee9ade6853895c2c803a44f28ab1efa4350283c7ee355efbd946c"
+    },
+    {
+      "path": "src/napari_vipp/core/gpu/cupy_remove_binary_outliers.py",
+      "sha256": "6f30684adc85017725868e8d7c490d4999b8108833368a563ce9f99387934e8c"
+    },
+    {
+      "path": "src/napari_vipp/core/compute_specs.py",
+      "sha256": "7eb8a1831dacbe1c3e71069e62ae735569a564e330608468e2fe7a3c256e9ee6"
+    },
+    {
+      "path": "src/napari_vipp/core/compute_policy.py",
+      "sha256": "67fc265924660351edc7eab3a14da1a6f4cee3474b2a685e3980cc260fb1a63d"
+    },
+    {
+      "path": "src/napari_vipp/core/execution.py",
+      "sha256": "be22130334309a805f6ed6eba182b5de1dbe4f4b5a38e23bfd6775351c223bfd"
+    },
+    {
+      "path": "src/napari_vipp/core/metadata.py",
+      "sha256": "35962eb38b2b02483319401d84277c119e7b3b96923e9370901305676e70c549"
+    },
+    {
+      "path": "src/napari_vipp/core/pipeline.py",
+      "sha256": "18d167e2a55b5cf8bad2070c21c87e7a13c3deb0ed7d6f5cf6d04532bd6453e1"
+    },
+    {
+      "path": "scripts/benchmark_gpu_remove_binary_outliers.py",
+      "sha256": "6d4d959bf7281469e5d92f933406036dea4918bf4017a99b1900ffb1c8fe3da7"
+    }
+  ],
+  "status": "pass",
+  "terminal_cleanup": {
+    "device_pool_reserved_bytes_after_cleanup": 0,
+    "device_pool_used_bytes_after_cleanup": 0,
+    "pinned_pool_free_blocks_after_cleanup": 0
+  }
+}

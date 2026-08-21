@@ -31,6 +31,12 @@ from napari_vipp.core.connected_components import (
     label_connected_components as label_connected_components,
 )
 from napari_vipp.core.io import write_image
+from napari_vipp.core.remove_outliers import (
+    imagej_remove_outliers_footprint as imagej_remove_outliers_footprint,
+)
+from napari_vipp.core.remove_outliers import (
+    remove_binary_outliers as remove_binary_outliers,
+)
 from napari_vipp.core.richardson_lucy import (
     richardson_lucy_deconvolution as richardson_lucy_deconvolution,
 )
@@ -5360,7 +5366,28 @@ def mask_image(
         mask_axis_mapping=mask_axis_mapping,
     )
     output = np.asarray(image).copy()
-    output[~mask] = np.asarray(outside_value, dtype=output.dtype)
+    resolved_outside_value = outside_value
+    if np.issubdtype(output.dtype, np.integer):
+        exact_value = _required_finite_fraction(outside_value, "Outside value")
+        if exact_value.denominator != 1:
+            raise ValueError(
+                "Integer Mask Image outside value must be a whole number; "
+                "convert the image to floating point to use a fractional value."
+            )
+        integer_value = int(exact_value)
+        info = np.iinfo(output.dtype)
+        if not int(info.min) <= integer_value <= int(info.max):
+            raise ValueError(
+                f"Mask Image outside value must fit the {output.dtype} range "
+                f"{int(info.min)}..{int(info.max)}."
+            )
+        _reject_rounded_wide_integer_control(
+            output,
+            outside_value,
+            "Outside value",
+        )
+        resolved_outside_value = integer_value
+    output[~mask] = np.asarray(resolved_outside_value, dtype=output.dtype)
     return output
 
 

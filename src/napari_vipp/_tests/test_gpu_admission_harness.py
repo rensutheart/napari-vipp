@@ -11,6 +11,9 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run_gpu_admission.py"
 MANIFEST_PATH = PROJECT_ROOT / "scripts" / "gpu_admission_suites.json"
+REMOVE_OUTLIERS_EVIDENCE_PATH = (
+    PROJECT_ROOT / "scripts" / "benchmark_gpu_remove_binary_outliers.py"
+)
 
 
 @pytest.fixture(scope="module")
@@ -67,7 +70,7 @@ def test_checked_in_manifest_maps_every_public_declaration_and_facet(harness):
     )
     owners = harness._facet_owner_map(manifest.runners)
 
-    assert len(declarations) == 18
+    assert len(declarations) == 19
     assert {item.key for item in manifest.implementations} == {
         item.key for item in declarations
     }
@@ -207,6 +210,104 @@ def test_mask_cleanup_runs_strict_evidence_and_both_provider_owners(
             "test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"
             in execution.profile_commands[profile]
         )
+
+
+def test_remove_binary_outliers_has_one_focused_strict_evidence_owner(harness):
+    manifest = harness.load_suite_manifest(
+        MANIFEST_PATH,
+        declarations=harness.public_accelerator_declarations(),
+        project_root=PROJECT_ROOT,
+    )
+    implementation = "remove_binary_outliers::cupy-remove-binary-outliers-v1"
+    runners = {
+        runner.runner_id: runner
+        for runner in manifest.runners
+        if implementation in runner.implementations
+    }
+
+    assert "remove-binary-outliers-evidence" in runners
+    evidence = runners["remove-binary-outliers-evidence"]
+    assert set(evidence.facets) == set(harness.REQUIRED_FACETS)
+    assert evidence.owner_paths == ("scripts/benchmark_gpu_remove_binary_outliers.py",)
+    for profile in harness.PROFILES:
+        command = evidence.profile_commands[profile]
+        assert "scripts/benchmark_gpu_remove_binary_outliers.py" in command
+        assert "--profile" in command
+        assert profile in command
+
+
+def test_remove_binary_outliers_evidence_catalog_is_cpu_safe_and_complete():
+    gpu_modules_before = {
+        name
+        for name in sys.modules
+        if name == "cupy" or name.startswith(("cupy.", "cupyx"))
+    }
+    module_name = "_vipp_test_remove_binary_outliers_evidence"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        REMOVE_OUTLIERS_EVIDENCE_PATH,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        coverage = {"repeat:deterministic"}
+        for case in module._admission_cases():
+            coverage.update(case.coverage)
+        assert module.REQUIRED_ADMISSION_COVERAGE <= coverage
+        assert module.RADIUS_SEQUENCE == (
+            0.5,
+            1.0,
+            1.5,
+            2.0,
+            3.0,
+            8.0,
+            25.0,
+            1.5,
+            8.0,
+        )
+        assert module.POLARITY_SEQUENCE == (
+            "Foreground (remove)",
+            "Background (fill)",
+            "Foreground (remove)",
+            "Background (fill)",
+        )
+        assert len(module._performance_cases("quick")) == 3
+        assert len(module._performance_cases("full")) == 7
+    finally:
+        sys.modules.pop(module_name, None)
+    gpu_modules_after = {
+        name
+        for name in sys.modules
+        if name == "cupy" or name.startswith(("cupy.", "cupyx"))
+    }
+    assert gpu_modules_after == gpu_modules_before
+
+
+def test_remove_binary_outliers_evidence_help_does_not_import_cupy():
+    guarded = f"""
+import builtins, runpy, sys
+real_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == 'cupy' or name.startswith(('cupy.', 'cupyx')):
+        raise RuntimeError('CPU-safe evidence surface imported CuPy')
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+sys.argv = [{str(REMOVE_OUTLIERS_EVIDENCE_PATH)!r}, '--help']
+runpy.run_path({str(REMOVE_OUTLIERS_EVIDENCE_PATH)!r}, run_name='__main__')
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", guarded],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "imported CuPy" not in completed.stderr
 
 
 def test_manifest_rejects_an_unmapped_public_declaration(harness, tmp_path):

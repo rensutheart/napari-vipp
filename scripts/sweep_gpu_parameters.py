@@ -212,6 +212,7 @@ EXPECTED_IMPLEMENTATIONS = {
     "label_connected_components": "cupyx-connected-components-v1",
     "fill_holes": "cupyx-fill-holes-all-v1",
     "remove_small_objects": "cupyx-remove-small-objects-bool-v1",
+    "remove_binary_outliers": "cupy-remove-binary-outliers-v1",
     "measure_objects": "cucim-measure-objects-basic-v1",
     "measure_objects_intensity": "cucim-measure-objects-intensity-basic-v1",
 }
@@ -221,6 +222,7 @@ _MASK_INPUT_TARGETS = frozenset(
         "label_connected_components",
         "fill_holes",
         "remove_small_objects",
+        "remove_binary_outliers",
     }
 )
 
@@ -287,7 +289,7 @@ def _choice_lane(lane_id: str, parameter: str, values: Sequence[object]) -> Swee
 
 
 def sweep_catalog() -> tuple[SweepCase, ...]:
-    """Return the bounded, deterministic coverage plan for all 18 declarations."""
+    """Return the bounded, deterministic coverage plan for all 19 declarations."""
 
     background_base = (
         ("radius", 2.0),
@@ -581,6 +583,35 @@ def sweep_catalog() -> tuple[SweepCase, ...]:
                         "Full connectivity",
                         "Face connected",
                         "Full connectivity",
+                    ),
+                ),
+            ),
+        ),
+        SweepCase(
+            "remove_binary_outliers",
+            "bool-yx-imagej-outliers-v1",
+            (47, 53),
+            "bool",
+            "YX",
+            20_260_819,
+            (
+                ("radius", 2.0),
+                ("which_outliers", "Foreground (remove)"),
+            ),
+            (
+                _numeric_lane(
+                    "radius",
+                    "radius",
+                    (0.5, 1.0, 1.5, 2.0, 3.0, 8.0, 25.0, 1.5, 8.0),
+                ),
+                _choice_lane(
+                    "outlier-polarity",
+                    "which_outliers",
+                    (
+                        "Foreground (remove)",
+                        "Background (fill)",
+                        "Foreground (remove)",
+                        "Background (fill)",
                     ),
                 ),
             ),

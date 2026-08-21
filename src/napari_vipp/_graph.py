@@ -1719,8 +1719,8 @@ class NodeProxy(QGraphicsProxyWidget):
             if moved:
                 view = _view_for_scene(self.scene())
                 if view is not None:
-                    view._finish_selected_node_drag(group_start_positions)
                     if len(group_start_positions) > 1:
+                        view._finish_selected_node_drag(group_start_positions)
                         end_positions = {
                             node_id: QPointF(view._proxies[node_id].pos())
                             for node_id in group_start_positions
@@ -1734,12 +1734,18 @@ class NodeProxy(QGraphicsProxyWidget):
                         event.accept()
                         return
                     was_loose = not self.connections
+                    # Resolve a highlighted insertion before finishing the drag.
+                    # Finishing reroutes ordinary wires around the newly placed
+                    # node; doing that first moves the green drop target away
+                    # from the release point and turns a valid splice into a
+                    # plain layout move.
                     inserted = view.release_existing_node_insert(
                         self.node_id,
                         start_pos,
                         end_pos,
                         event.scenePos(),
                     )
+                    view._finish_selected_node_drag(group_start_positions)
                     if not inserted:
                         if was_loose:
                             view.finish_loose_node_drag(

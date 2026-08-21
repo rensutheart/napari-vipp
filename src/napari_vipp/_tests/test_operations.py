@@ -5232,6 +5232,42 @@ def test_image_math_nodes_add_subtract_ratio_and_mask():
     )
 
 
+@pytest.mark.parametrize("outside_value", [0.5, "1.5"])
+def test_mask_image_rejects_fractional_fill_for_integer_image(outside_value):
+    image = np.arange(4, dtype=np.uint8).reshape(2, 2)
+    mask = np.array([[True, False], [False, True]])
+
+    with pytest.raises(ValueError, match="whole number"):
+        mask_image([image, mask], outside_value=outside_value)
+
+
+@pytest.mark.parametrize("outside_value", [-1, 256])
+def test_mask_image_rejects_fill_outside_integer_dtype(outside_value):
+    image = np.arange(4, dtype=np.uint8).reshape(2, 2)
+    mask = np.array([[True, False], [False, True]])
+
+    with pytest.raises(ValueError, match=r"uint8 range 0\.\.255"):
+        mask_image([image, mask], outside_value=outside_value)
+
+
+def test_mask_image_retains_fractional_fill_for_float_and_bool_images():
+    mask = np.array([[True, False], [False, True]])
+    floating = np.ones((2, 2), dtype=np.float32)
+    boolean = np.array([[True, False], [False, False]])
+
+    floating_result = mask_image([floating, mask], outside_value=0.5)
+    boolean_result = mask_image([boolean, mask], outside_value=0.5)
+
+    np.testing.assert_array_equal(
+        floating_result,
+        np.array([[1.0, 0.5], [0.5, 1.0]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        boolean_result,
+        np.array([[True, True], [True, False]]),
+    )
+
+
 def test_mask_image_broadcasts_spatial_mask_over_rgb_channels():
     image = np.zeros((2, 3, 3), dtype=np.uint8)
     image[:] = np.array([10, 20, 30], dtype=np.uint8)

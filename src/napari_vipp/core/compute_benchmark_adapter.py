@@ -84,6 +84,7 @@ EXACT_PARITY_OPERATION_IDS = frozenset(
         "otsu_threshold",
         "fill_holes",
         "remove_small_objects",
+        "remove_binary_outliers",
         "label_connected_components",
     }
 )
@@ -94,6 +95,7 @@ EXACT_MASK_PARITY_OPERATION_IDS = frozenset(
         "otsu_threshold",
         "fill_holes",
         "remove_small_objects",
+        "remove_binary_outliers",
     }
 )
 EXACT_LABEL_PARITY_OPERATION_IDS = frozenset({"label_connected_components"})

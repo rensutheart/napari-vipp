@@ -124,6 +124,7 @@ from napari_vipp.core.operations import (
     racc_index,
     ratio_image,
     relabel_sequential,
+    remove_binary_outliers,
     remove_small_objects,
     reorder_axes,
     rescale_axes,
@@ -178,6 +179,71 @@ class ParameterSpec:
     visibility_parameter: str = ""
     visibility_values: tuple[Any, ...] = ()
     visibility_ports: tuple[str, ...] = ()
+    slider_minimum: float | int | None = None
+    slider_maximum: float | int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate an optional ergonomic slider window.
+
+        ``minimum`` and ``maximum`` remain the accepted numeric-entry range.
+        A narrower slider window is presentation-only and must stay inside it.
+        """
+        if self.slider_minimum is None and self.slider_maximum is None:
+            return
+        if self.kind not in {"int", "float"}:
+            raise ValueError(
+                f"Parameter {self.name!r} can declare slider bounds only for "
+                "numeric controls."
+            )
+        slider_minimum = (
+            self.minimum if self.slider_minimum is None else self.slider_minimum
+        )
+        slider_maximum = (
+            self.maximum if self.slider_maximum is None else self.slider_maximum
+        )
+        try:
+            slider_minimum_number = float(slider_minimum)
+            slider_maximum_number = float(slider_maximum)
+            entry_minimum_number = float(self.minimum)
+            entry_maximum_number = float(self.maximum)
+            finite = all(
+                math.isfinite(value)
+                for value in (
+                    slider_minimum_number,
+                    slider_maximum_number,
+                    entry_minimum_number,
+                    entry_maximum_number,
+                )
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"Parameter {self.name!r} slider bounds must be finite numbers."
+            ) from exc
+        if not finite:
+            raise ValueError(
+                f"Parameter {self.name!r} slider bounds must be finite numbers."
+            )
+        if self.kind == "int" and (
+            not slider_minimum_number.is_integer()
+            or not slider_maximum_number.is_integer()
+        ):
+            raise ValueError(
+                f"Parameter {self.name!r} integer slider bounds must be whole "
+                "numbers."
+            )
+        if slider_minimum_number > slider_maximum_number:
+            raise ValueError(
+                f"Parameter {self.name!r} slider minimum must not exceed its "
+                "slider maximum."
+            )
+        if (
+            slider_minimum_number < entry_minimum_number
+            or slider_maximum_number > entry_maximum_number
+        ):
+            raise ValueError(
+                f"Parameter {self.name!r} slider bounds must stay within its "
+                "numeric-entry range."
+            )
 
 
 PARAMETER_VISIBILITY_ALWAYS = "always"
@@ -1151,6 +1217,8 @@ HISTOGRAM_BINS_PARAMETER = ParameterSpec(
     65_536,
     1,
     visibility=PARAMETER_VISIBILITY_FLOATING_INPUT,
+    slider_minimum=2,
+    slider_maximum=4_096,
 )
 
 SCALAR_LUMA_CHANNEL_AXIS_PARAMETER = ParameterSpec(
@@ -1264,6 +1332,7 @@ _POSITIONAL_YX_OPERATIONS = frozenset(
         "top_hat",
         "black_hat",
         "morphological_gradient",
+        "remove_binary_outliers",
     }
 )
 _SLICE_HISTOGRAM_POSITIONAL_OPERATIONS = frozenset(
@@ -1778,6 +1847,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1.0,
                 1e-12,
                 12,
+                slider_minimum=0.0,
+                slider_maximum=1e-9,
             ),
             ParameterSpec("force_odd_shape", "Force odd shape", "bool", True, 0, 1, 1),
             ParameterSpec(
@@ -1893,6 +1964,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "blur is extremely small. Normally leave it at 1e-12; changing "
                     "guards should not be the first response to structure loss."
                 ),
+                slider_minimum=0.0,
+                slider_maximum=1e-9,
             ),
         ),
         richardson_lucy_deconvolution,
@@ -2121,6 +2194,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "Keep neighborhood samples inside center ± this many "
                     "population standard deviations. The interval is inclusive."
                 ),
+                slider_minimum=0.0,
+                slider_maximum=10.0,
             ),
             ParameterSpec(
                 "minimum_pixel_fraction",
@@ -2949,6 +3024,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1_000_000.0,
                 0.1,
                 3,
+                slider_minimum=0.0,
+                slider_maximum=255.0,
             ),
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
@@ -3137,6 +3214,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 10_000.0,
                 0.1,
                 2,
+                slider_minimum=0.0,
+                slider_maximum=100.0,
             ),
             SPATIAL_MODE_PARAMETER,
         ),
@@ -3217,6 +3296,48 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mask",
         (ParameterSpec("size", "Kernel size", "int", 2, 1, 101, 1),),
         morphological_gradient,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "remove_binary_outliers",
+        "Remove Outliers (Binary)",
+        "Morphology",
+        "mask",
+        "mask",
+        (
+            ParameterSpec(
+                "radius",
+                "Neighborhood radius (pixels)",
+                "float",
+                2.0,
+                0.5,
+                25.0,
+                0.1,
+                1,
+                tooltip=(
+                    "ImageJ-compatible circular YX neighbourhood radius. "
+                    "Large radii take longer and can remove thin or real "
+                    "structures, so review the result against the input."
+                ),
+            ),
+            ParameterSpec(
+                "which_outliers",
+                "Which outliers",
+                "choice",
+                "Foreground (remove)",
+                0,
+                0,
+                1,
+                choices=("Foreground (remove)", "Background (fill)"),
+                tooltip=(
+                    "Foreground applies Fiji's Bright-outlier direction to "
+                    "logical foreground; Background applies Dark to logical "
+                    "background. Fiji's threshold is omitted because below "
+                    "full binary contrast it has no graded effect."
+                ),
+            ),
+        ),
+        remove_binary_outliers,
         stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
@@ -3416,6 +3537,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1_000_000_000.0,
                 1.0,
                 3,
+                slider_minimum=-1_000.0,
+                slider_maximum=1_000.0,
             ),
             ParameterSpec(
                 "max_value",
@@ -3426,6 +3549,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1_000_000_000.0,
                 1.0,
                 3,
+                slider_minimum=-1_000.0,
+                slider_maximum=1_000.0,
             ),
             ParameterSpec(
                 "keep_mode",
@@ -3608,6 +3733,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 100000,
                 1,
+                slider_minimum=1,
+                slider_maximum=1_000,
             ),
             ParameterSpec(
                 "include_convex_hull_metrics",
@@ -3836,6 +3963,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100_000.0,
                 1.0,
                 decimals=1,
+                slider_minimum=0.0,
+                slider_maximum=100.0,
             ),
             ParameterSpec(
                 "length_units",
@@ -4612,6 +4741,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100000.0,
                 1.0,
                 3,
+                slider_minimum=-1_000.0,
+                slider_maximum=1_000.0,
             ),
         ),
         calculate_weighted_image,
@@ -4648,7 +4779,18 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         (
             ParameterSpec("input_count", "Inputs", "int", 2, 2, 2, 1),
-            ParameterSpec("epsilon", "Epsilon", "float", 1e-6, 0.0, 1.0, 1e-6, 6),
+            ParameterSpec(
+                "epsilon",
+                "Epsilon",
+                "float",
+                1e-6,
+                0.0,
+                1.0,
+                1e-6,
+                6,
+                slider_minimum=0.0,
+                slider_maximum=1e-4,
+            ),
         ),
         ratio_image,
         max_inputs=2,

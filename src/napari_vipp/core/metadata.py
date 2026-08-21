@@ -2582,6 +2582,13 @@ def _operation_history(
             f"{operation_title}: radius {radius} px, sigma width {sigma_width}, "
             f"minimum {minimum_fraction}%, {fallback}, {channel_semantics}"
         )
+    if operation_id == "remove_binary_outliers":
+        radius = _format_number(params.get("radius", 2.0))
+        polarity = str(params.get("which_outliers", "Foreground (remove)"))
+        return (
+            f"{operation_title}: radius {radius} px, {polarity}, "
+            "ImageJ-compatible independent YX planes"
+        )
     if operation_id == "euclidean_distance_transform":
         return f"{operation_title}: {params.get('spatial_mode', 'Auto from axes')}"
     if operation_id == "h_maxima_markers":

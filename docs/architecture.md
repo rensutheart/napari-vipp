@@ -295,6 +295,16 @@ Special execution cases:
   use geometric interpolation; zero/off values remain spinner-only and do not
   expand the slider. Tooltips from its `ParameterSpec` values are applied to the
   form label and every interactive child of the parameter control.
+- Any numeric `ParameterSpec` can declare a presentation-only
+  `slider_minimum`/`slider_maximum` inside its wider accepted entry range.
+  Sigma Filter uses a practical `0..10` slider for Sigma width while its entry
+  retains the full `0..1,000,000` contract.
+- Clip bounds, Rescale Intensity output bounds, and Mask Image's outside value
+  derive their editor kind from the connected array or authoritative input
+  state. Non-boolean integer inputs use whole-number controls; floating-point
+  and boolean inputs retain fractional entry. Persisted invalid values are shown
+  in an explicit correction state and are never hidden by a clamped editor or
+  silently rewritten during refresh.
 - `filter_labels_by_volume` parameter controls derive their slider extent from
   the largest incoming object under the resolved 2D/3D spatial mode. The
   logarithmic slider remains practical for wide volume ranges while the spin
@@ -554,8 +564,9 @@ machine-local rather than portable guarantees. The full matrix is retained in
 the [canonical Sigma Filter evidence](benchmarks/sigma-filter-cupy-windows-rtx5090.md).
 
 - `Morphology`: Dilation, Erosion, Opening, Closing, Top Hat, Black Hat,
-  Morphological Gradient, Fill Holes, Remove Small Objects, Skeletonize,
-  Skeleton Keypoints, Skeleton Graph Overlay, Prune Skeleton Branches
+  Morphological Gradient, Remove Outliers (Binary), Fill Holes, Remove Small
+  Objects, Skeletonize, Skeleton Keypoints, Skeleton Graph Overlay, Prune
+  Skeleton Branches
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
   Filter Labels By Property, Clear Border Objects, Relabel Sequential, Label
   Skeleton Components, Label Skeleton Branches
@@ -578,6 +589,55 @@ from carried axis metadata and stores the resolved spatial dimensionality for
 Python export. Leading non-spatial axes are processed independently, so `TCZYX`
 data is processed per timepoint and channel while each `ZYX` block is treated
 as one volume.
+
+`Remove Outliers (Binary)` is the binary specialization of ImageJ 1.x
+[`RankFilters.OUTLIERS`](https://github.com/imagej/ImageJ/blob/4c4975d6df7cf89334e7bc7bb56c48f7b204f244/ij/plugin/filter/RankFilters.java).
+It reproduces `makeLineRadii`, including the historical 1.5–1.75 and 2.5–2.85
+radius adjustments, and duplicates the nearest edge outside the image. In a
+canonical binary mask, median replacement with a threshold below the full
+binary contrast becomes a targeted majority decision, so the grayscale
+threshold has no graded binary effect and is not exposed. Foreground cleanup
+implements Fiji's Bright direction on logical foreground and can only turn
+foreground off; background cleanup implements Dark on logical background and
+can only turn background on.
+Decisions are simultaneous within each trailing YX plane; leading dimensions
+are independent and there is deliberately no 3D neighbourhood. Direct inputs
+are limited to `bool` and unambiguous uint8 0/1 or 0/255 masks, and output is
+always `bool`. Grayscale, floating-point, mixed-encoding, empty, and non-uint8
+label data fail closed; typed Labels ports cannot connect to the node. A uint8
+0/1 array is numerically indistinguishable from a binary mask and is therefore
+treated as one by the direct API.
+
+Small footprints use one dense exact `int32` SciPy correlation. Large
+footprints group ImageJ's contiguous row spans by horizontal half-width, count
+each span with an `int32` horizontal prefix sum, and add nearest-edge Y shifts.
+This avoids dense-kernel work proportional to image area times footprint area,
+uses bounded one-plane arrays rather than a sliding-window tensor, and remains
+bitwise identical to the dense count. Progress is reported per YX plane;
+cancellation is additionally checked between large-footprint span groups and
+row shifts.
+
+`cupy-remove-binary-outliers-v1` is the exact resident boolean-mask candidate
+for the same contract. One fixed-source RawKernel receives the ImageJ row
+half-widths, strict-majority threshold, polarity, shape, and pixel-tile bounds
+as runtime data; neither a new radius nor a new shape changes compiled source.
+It retains trailing-YX plane isolation and nearest-edge duplicate sampling,
+returns a new contiguous boolean allocation, and synchronizes at bounded
+sample-work pixel tiles for truthful cancellation. The initial public region is
+boolean masks with authored radii 0.5–25. Canonical uint8 validation and larger
+direct-API radii remain on CPU. The accelerator stays a measured custom
+candidate rather than an unconditional preference because the GPU's direct
+neighborhood scan and CPU's row-span algorithm have different radius-dependent
+cost curves.
+
+The source-current native-Windows RTX 5090 qualification is retained in
+[`remove-binary-outliers-cupy-local.json`](benchmarks/remove-binary-outliers-cupy-local.json).
+It passed exact parity, fixed-kernel unseen/revisited radius and polarity
+sweeps, production provenance, synchronized cancellation and reuse, conservative
+memory admission, and zero terminal CuPy-pool residue. In that machine-local
+full profile, transfer-inclusive GPU medians were 0.38–1.58 ms versus
+1.26–120.84 ms on CPU (3.3×–124.6×); these values justify exposing the GPU
+candidate but are not portable performance promises.
 
 `Label Connected Components` now has one exact public GPU region. The CPU path
 remains authoritative: nonzero is foreground, face/full choices use SciPy's
@@ -1090,10 +1150,13 @@ wide integer offsets to float and collapsing distinct values. Display bins are
 separate from the dtype-aware operational bins used to calculate automatic
 thresholds.
 
-Cutoff-style nodes listed in `INPUT_HISTOGRAM_OPERATIONS` also show an
+Every numeric operation in the **Intensity & Contrast** palette category, plus
+the threshold/cutoff operations listed in `INPUT_HISTOGRAM_OPERATIONS`, shows an
 `Input Histogram` above the general output histogram. It has its own
 `Histogram uses` slice/stack selector, hidden when the connected input has no
-meaningful stack axis, and its markers are driven by the node parameters.
+meaningful stack axis. Rescale, Clip, and threshold nodes add parameter-driven
+guides; Linear Scale + Offset, Gamma Correction, and Normalize use the same
+exact distribution as read-only context.
 
 Input histogram caching separates two dependency domains. The bounded display
 distribution is keyed only by array identity, shape/dtype, semantic axis
@@ -1220,6 +1283,13 @@ adds a node. The most recently added node remains the inspector's primary node.
 A selected group moves together and emits one history request. Right-clicking a
 selected member preserves the group, while right-clicking an unselected node
 makes it the sole selection.
+
+A genuinely disconnected node can be dropped on a compatible visible wire.
+The wire highlights green during the drag, and release atomically replaces it
+with the exact source-to-node and node-to-target port connections as one history
+entry. The release target is captured before ordinary layout rerouting, so the
+wire cannot move away and invalidate its own drop. Failure restores both the
+original wire and positions; releasing in open space remains layout-only.
 
 Right-clicking a node opens a context menu with Copy, exact-operation Paste
 values, Delete, Inspect Code, Duplicate Node, Add note, and Tune node in
