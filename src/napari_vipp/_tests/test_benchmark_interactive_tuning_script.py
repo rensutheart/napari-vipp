@@ -193,6 +193,7 @@ def test_deterministic_harness_builds_one_cold_and_cached_warm_requests(
             "elapsed_seconds": 0.5,
             "spans": [],
             "synchronized_device_phases": True,
+            "terminal_memory_snapshots": [],
         }
 
     output = latency_script._atomic_write_json(tmp_path / "latency.json", document)

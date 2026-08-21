@@ -394,9 +394,12 @@ def test_execute_pipeline_attaches_observation_to_incremental_and_final_results(
             progress_callback=kwargs["progress_callback"],
             cancel_callback=kwargs["cancel_callback"],
         )
-        return ExecutionReport(
-            request=request.compute_request,
-            environment=ComputeEnvironment(),
+        return (
+            ExecutionReport(
+                request=request.compute_request,
+                environment=ComputeEnvironment(),
+            ),
+            None,
         )
 
     monkeypatch.setattr(
@@ -486,16 +489,19 @@ def test_resident_callback_time_is_excluded_from_scientific_history(monkeypatch)
             reason_text="test",
             implementation_version="1",
         )
-        return ExecutionReport(
-            request=request.compute_request,
-            environment=ComputeEnvironment(
-                runtime_ids=("cpu-numpy", "cuda-cupy"),
-                implementation_libraries=("cpu", "cupyx"),
-                device_id="cuda:0",
-                device_name="Test GPU",
-                device_class="gpu",
+        return (
+            ExecutionReport(
+                request=request.compute_request,
+                environment=ComputeEnvironment(
+                    runtime_ids=("cpu-numpy", "cuda-cupy"),
+                    implementation_libraries=("cpu", "cupyx"),
+                    device_id="cuda:0",
+                    device_name="Test GPU",
+                    device_class="gpu",
+                ),
+                actual_decisions=(decision,),
             ),
-            actual_decisions=(decision,),
+            None,
         )
 
     monkeypatch.setattr(execution_module, "JsonPipelineTimingStore", TimingStore)
