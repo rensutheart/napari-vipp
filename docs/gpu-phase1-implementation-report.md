@@ -294,14 +294,31 @@ current-versus-identical pipeline validation.
 - The optimizer currently requires a calculated coherent graph, one shared
   accelerator runtime, exact evidence for every variable candidate, known usable
   VRAM, and node shapes supported by one-input/one-output node benchmarking. It
-  refuses unsafe retained writer paths, incomplete/stale identity or timings,
-  parity/synchronization failures, infeasible memory, and proposals that do not
+  preserves retained writer IDs in proposal identity while filtering them from
+  private execution, and refuses incomplete/stale identity or timings,
+  unreviewable parity or synchronization failures, infeasible memory, and
+  proposals that do not
   clear the greater of 5% or 10 ms with a lower confidence bound above 1.0.
   `Find fastest` compares every scientifically eligible implementation for each
   unlocked node, regardless of which backend that node currently uses. Only an
   explicit node lock constrains the search; applying the result does not create
   locks. Private parity/timing runs must echo the exact request, environment,
-  implementation map, safe decision scope, no fallback, and successful cleanup.
+  implementation map, planned decision, device-segment placement, actual
+  execution, safe decision scope, no fallback, and successful cleanup. An
+  unavailable non-current backend is excluded once and the remaining choices
+  are boundedly re-solved; a current or locked mismatch remains fatal. Only
+  after exact backend attestation may a genuine bounded numerical difference be
+  shown for explicit expert review. Metrics stream bounded chunks rather than
+  allocating full-size float64 comparison images. Discrete differences are
+  limited to 0.1%
+  of values; float review requires both normalized RMSE and normalized maximum
+  error at or below 0.1%. Review remains distinct from strict parity, does not
+  promote a provider or authorize cache sharing, and never accepts structural,
+  dtype, shape, or non-finite-class changes.
+  Qualified RTX coverage reproduces the reported host/GPU/host/GPU student
+  corridor and attests the exact Gaussian, Otsu, and Remove Small Objects GPU
+  implementations with no fallback, Gaussian production-tolerance agreement,
+  bitwise-exact masks, and successful private-memory cleanup.
   Apply refuses a changed graph, exact source bytes/metadata/image state,
   compute request or lock state, cache-retention scope, current actual assignment,
   candidate environment, or VIPP/NumPy/SciPy/scikit-image benchmark stack.

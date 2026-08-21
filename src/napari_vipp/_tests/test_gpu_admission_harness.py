@@ -199,6 +199,11 @@ def test_mask_cleanup_runs_strict_evidence_and_both_provider_owners(
         )
         assert (
             "src/napari_vipp/_tests/test_gpu_execution_integration.py::"
+            "test_real_student_gaussian_otsu_remove_corridor_attests_exact_assignments"
+            in execution.profile_commands[profile]
+        )
+        assert (
+            "src/napari_vipp/_tests/test_gpu_execution_integration.py::"
             "test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"
             in execution.profile_commands[profile]
         )

@@ -13,6 +13,7 @@ from napari_vipp.core.compute import (
     ComputeRequest,
     NodeComputePreference,
     NodePreferenceKind,
+    canonical_digest,
 )
 from napari_vipp.core.compute_benchmark import HOST_RUNTIME_ID
 from napari_vipp.core.compute_pipeline_optimizer import (
@@ -29,6 +30,9 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationNode,
     PipelineOptimizationSelectionBasis,
     PipelineOptimizationStale,
+    PipelineParityDeviation,
+    PipelineParityReviewMetric,
+    PipelineValidationRequest,
     PipelineValidationWinner,
 )
 
@@ -117,9 +121,7 @@ def _result(
     parity_passed: bool = True,
     peak_memory_bytes: int = 0,
     error: str = "",
-    failure_kind: BenchmarkCandidateFailureKind = (
-        BenchmarkCandidateFailureKind.NONE
-    ),
+    failure_kind: BenchmarkCandidateFailureKind = (BenchmarkCandidateFailureKind.NONE),
     timing_censored: bool = False,
     timing_lower_bound_seconds: float | None = None,
     timing_censor_reason: str = "",
@@ -232,6 +234,7 @@ def _validator(
     parity_passed: bool = True,
     synchronized: bool = True,
     measurement_rounds: int = 0,
+    reviewable_deviations: tuple[PipelineParityDeviation, ...] = (),
 ):
     def validate(request):
         return PipelineAssignmentValidation(
@@ -245,9 +248,36 @@ def _validator(
             lower_bound,
             measurement_rounds=measurement_rounds,
             current_speedup_lower_confidence_bound=current_lower_bound,
+            reviewable_deviations=reviewable_deviations,
         )
 
     return validate
+
+
+def _deviation(
+    *,
+    metric: PipelineParityReviewMetric = (
+        PipelineParityReviewMetric.DIFFERING_VALUE_FRACTION
+    ),
+) -> PipelineParityDeviation:
+    return PipelineParityDeviation(
+        "a",
+        "operation-a",
+        0,
+        metric,
+        0.001
+        if metric is PipelineParityReviewMetric.DIFFERING_VALUE_FRACTION
+        else 0.0002,
+        0.001,
+        1,
+        1_000,
+        0.001,
+        2.0,
+        0.0004,
+        1.0,
+        0.0002,
+        "bounded CPU/GPU difference",
+    )
 
 
 def _optimize(
@@ -433,12 +463,8 @@ def test_authored_cpu_choice_is_a_starting_assignment_not_a_lock():
 
 
 def test_best_gpu_choice_does_not_hide_a_faster_cpu_when_unlocked():
-    gpu_slow = _candidate(
-        "gpu-slow", library_id="cupy", runtime_id=GPU_RUNTIME_ID
-    )
-    gpu_fast = _candidate(
-        "gpu-fast", library_id="cucim", runtime_id=GPU_RUNTIME_ID
-    )
+    gpu_slow = _candidate("gpu-slow", library_id="cupy", runtime_id=GPU_RUNTIME_ID)
+    gpu_fast = _candidate("gpu-fast", library_id="cucim", runtime_id=GPU_RUNTIME_ID)
     preference = NodeComputePreference(NodePreferenceKind.BEST_GPU)
     nodes = (
         _node(
@@ -541,9 +567,7 @@ def test_one_parity_failed_candidate_is_excluded_without_aborting_search():
                 "gpu-bad": {
                     "parity_passed": False,
                     "error": "scientific mismatch",
-                    "failure_kind": (
-                        BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
-                    ),
+                    "failure_kind": (BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY),
                 }
             }
         },
@@ -576,9 +600,7 @@ def test_transient_candidate_failure_refuses_exhaustive_optimum_claim():
             },
         )
 
-    assert "candidate_runtime_failed" in {
-        reason.code for reason in error.value.reasons
-    }
+    assert "candidate_runtime_failed" in {reason.code for reason in error.value.reasons}
 
 
 @pytest.mark.parametrize(
@@ -643,8 +665,7 @@ def test_duplicate_candidate_results_are_rejected_as_ambiguous_evidence():
         original,
         record=replace(
             original.record,
-            candidates=original.record.candidates
-            + (original.record.candidates[0],),
+            candidates=original.record.candidates + (original.record.candidates[0],),
         ),
     )
 
@@ -694,9 +715,7 @@ def test_vram_limit_rejects_faster_but_infeasible_candidate():
     gpu_too_large = _candidate(
         "gpu-large", library_id="cupy", runtime_id=GPU_RUNTIME_ID
     )
-    gpu_fits = _candidate(
-        "gpu-fit", library_id="cucim", runtime_id=GPU_RUNTIME_ID
-    )
+    gpu_fits = _candidate("gpu-fit", library_id="cucim", runtime_id=GPU_RUNTIME_ID)
     nodes = (
         _node(
             "a",
@@ -779,6 +798,213 @@ def test_whole_pipeline_validation_requires_parity_and_synchronization(
         )
 
     assert error.value.reasons[0].code == "pipeline_validation_failed"
+
+
+def test_reviewable_deviation_normalizes_complete_metric_evidence():
+    deviation = PipelineParityDeviation(
+        " a ",
+        " operation-a ",
+        0,
+        "differing-value-fraction",
+        0.001,
+        0.002,
+        1,
+        1_000,
+        0.001,
+        2,
+        0.0004,
+        1,
+        0.0002,
+        " bounded difference ",
+    )
+
+    assert deviation.node_id == "a"
+    assert deviation.operation_id == "operation-a"
+    assert deviation.metric is PipelineParityReviewMetric.DIFFERING_VALUE_FRACTION
+    assert deviation.maximum_absolute_error == 2.0
+    assert deviation.detail == "bounded difference"
+
+
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    [
+        ({"node_id": ""}, "node_id"),
+        ({"output_port_index": -1}, "output_port_index"),
+        ({"measured_difference": float("nan")}, "measured_difference"),
+        ({"acceptance_threshold": -1.0}, "acceptance_threshold"),
+        ({"differing_values": 1_001}, "differing_values"),
+        ({"total_values": 0}, "total_values"),
+        ({"differing_fraction": 1.1}, "differing_fraction"),
+        ({"differing_fraction": 0.0005}, "differing_fraction"),
+        ({"measured_difference": 0.002}, "selected review metric"),
+        ({"acceptance_threshold": 0.0005}, "acceptance_threshold"),
+    ],
+)
+def test_reviewable_deviation_rejects_invalid_evidence(changes, match):
+    with pytest.raises(ValueError, match=match):
+        replace(_deviation(), **changes)
+
+
+def test_reviewable_deviation_uses_normalized_rmse_metric():
+    deviation = _deviation(metric=PipelineParityReviewMetric.NORMALIZED_RMSE)
+
+    assert deviation.measured_difference == pytest.approx(
+        deviation.normalized_root_mean_square_error
+    )
+
+    with pytest.raises(ValueError, match="selected review metric"):
+        replace(deviation, measured_difference=0.0003)
+
+    with pytest.raises(ValueError, match="normalized maximum error"):
+        replace(deviation, normalized_maximum_absolute_error=0.002)
+
+
+def test_optimizer_carries_reviewable_failed_parity_for_proposed_winner():
+    nodes = (_node("a"),)
+    deviation = _deviation()
+
+    proposal = _optimize(
+        nodes,
+        timings={"a": {"cpu": 10.0, "gpu": 1.0}},
+        validate=_validator(
+            parity_passed=False,
+            synchronized=True,
+            reviewable_deviations=(deviation,),
+        ),
+    )
+
+    assert proposal.validation_winner is PipelineValidationWinner.PROPOSED
+    assert proposal.reviewable_deviations == (deviation,)
+    assert proposal.requires_parity_review
+    assert proposal.parity_review_digest == canonical_digest(
+        {
+            "identity_digest": proposal.identity_digest,
+            "request_fingerprint": proposal.request_fingerprint,
+            "tested_assignment": proposal.tested_assignment,
+            "reviewable_deviations": (deviation,),
+        }
+    )
+    assert replace(proposal).parity_review_digest == proposal.parity_review_digest
+    assert (
+        replace(proposal, identity_digest="different").parity_review_digest
+        != proposal.parity_review_digest
+    )
+    assert (
+        replace(proposal, request_fingerprint="different").parity_review_digest
+        != proposal.parity_review_digest
+    )
+    changed_detail = replace(deviation, detail="different complete evidence")
+    assert (
+        replace(proposal, reviewable_deviations=(changed_detail,)).parity_review_digest
+        != proposal.parity_review_digest
+    )
+
+
+def test_reviewable_failed_parity_still_requires_synchronized_validation():
+    nodes = (_node("a"),)
+
+    with pytest.raises(PipelineOptimizationEvidenceIncomplete) as error:
+        _optimize(
+            nodes,
+            timings={"a": {"cpu": 10.0, "gpu": 1.0}},
+            validate=_validator(
+                parity_passed=False,
+                synchronized=False,
+                reviewable_deviations=(_deviation(),),
+            ),
+        )
+
+    assert error.value.reasons[0].code == "pipeline_validation_failed"
+
+
+@pytest.mark.parametrize(
+    (
+        "current_seconds",
+        "proposed_seconds",
+        "lower_bound",
+        "current_lower_bound",
+        "winner",
+    ),
+    [
+        (1.0, 1.2, 0.8, 1.1, PipelineValidationWinner.CURRENT),
+        (1.0, 0.98, 1.0, 1.0, PipelineValidationWinner.INCONCLUSIVE),
+    ],
+)
+def test_reviewable_deviations_are_discarded_when_proposed_assignment_loses(
+    current_seconds,
+    proposed_seconds,
+    lower_bound,
+    current_lower_bound,
+    winner,
+):
+    nodes = (_node("a"),)
+
+    proposal = _optimize(
+        nodes,
+        timings={"a": {"cpu": 10.0, "gpu": 1.0}},
+        validate=_validator(
+            current_seconds=current_seconds,
+            proposed_seconds=proposed_seconds,
+            lower_bound=lower_bound,
+            current_lower_bound=current_lower_bound,
+            parity_passed=False,
+            reviewable_deviations=(_deviation(),),
+        ),
+    )
+
+    assert proposal.validation_winner is winner
+    assert proposal.reviewable_deviations == ()
+    assert not proposal.requires_parity_review
+    assert proposal.parity_review_digest == ""
+
+
+def test_reviewable_deviation_contract_rejects_inconsistent_ownership():
+    nodes = (_node("a"),)
+    deviation = _deviation()
+    proposal = _optimize(
+        nodes,
+        timings={"a": {"cpu": 10.0, "gpu": 1.0}},
+        validate=_validator(
+            parity_passed=False,
+            reviewable_deviations=(deviation,),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="strict parity"):
+        replace(
+            _validator()(  # Build the exact validation echo required by the helper.
+                PipelineValidationRequest(
+                    proposal.identity_digest,
+                    proposal.baseline_assignment,
+                    proposal.tested_assignment,
+                )
+            ),
+            reviewable_deviations=(deviation,),
+        )
+
+    with pytest.raises(ValueError, match="selecting changed proposed rows"):
+        replace(proposal, validation_winner=PipelineValidationWinner.CURRENT)
+
+    unchanged_rows = tuple(
+        replace(
+            row,
+            proposed_implementation_id=row.current_implementation_id,
+            proposed_preference=row.current_preference,
+            changed=False,
+        )
+        for row in proposal.rows
+    )
+    with pytest.raises(ValueError, match="selecting changed proposed rows"):
+        replace(
+            proposal,
+            rows=unchanged_rows,
+            preference_mapping={
+                row.node_id: row.current_preference for row in unchanged_rows
+            },
+        )
+
+    with pytest.raises(TypeError, match="PipelineParityDeviation"):
+        replace(proposal, reviewable_deviations=(object(),))
 
 
 @pytest.mark.parametrize(

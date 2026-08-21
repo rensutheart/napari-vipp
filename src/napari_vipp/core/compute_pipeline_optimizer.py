@@ -126,9 +126,7 @@ class PipelineOptimizationTimeoutReport:
             self,
             "reused_node_ids",
             tuple(
-                str(item).strip()
-                for item in self.reused_node_ids
-                if str(item).strip()
+                str(item).strip() for item in self.reused_node_ids if str(item).strip()
             ),
         )
 
@@ -168,17 +166,20 @@ class PipelineValidationWinner(StrEnum):
     INCONCLUSIVE = "inconclusive"
 
 
+class PipelineParityReviewMetric(StrEnum):
+    """Normalized measure used to bound a reviewable parity deviation."""
+
+    DIFFERING_VALUE_FRACTION = "differing-value-fraction"
+    NORMALIZED_RMSE = "normalized-rmse"
+
+
 class PipelineOptimizationSelectionBasis(StrEnum):
     """Stable provenance for why the optimizer selected its final assignment."""
 
     PAIRED_VALIDATED_ALTERNATIVE = "paired-validated-alternative"
-    PAIRED_INCONCLUSIVE_RETAINED_CURRENT = (
-        "paired-inconclusive-retained-current"
-    )
+    PAIRED_INCONCLUSIVE_RETAINED_CURRENT = "paired-inconclusive-retained-current"
     EXACT_MODEL_RETAINED_CURRENT = "exact-model-retained-current"
-    CONSERVATIVE_BOUND_RETAINED_CURRENT = (
-        "conservative-bound-retained-current"
-    )
+    CONSERVATIVE_BOUND_RETAINED_CURRENT = "conservative-bound-retained-current"
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,9 +239,7 @@ class PipelineOptimizationIdentity:
             if not value:
                 raise ValueError(f"{name} must not be empty")
             object.__setattr__(self, name, value)
-        benchmark_environment = str(
-            self.benchmark_environment_fingerprint
-        ).strip()
+        benchmark_environment = str(self.benchmark_environment_fingerprint).strip()
         if not benchmark_environment:
             benchmark_environment = self.environment_fingerprint
         locked = tuple(
@@ -469,6 +468,112 @@ class PipelineValidationRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class PipelineParityDeviation:
+    """A measured CPU/GPU difference that is small enough for user review."""
+
+    node_id: str
+    operation_id: str
+    output_port_index: int
+    metric: PipelineParityReviewMetric | str
+    measured_difference: float
+    acceptance_threshold: float
+    differing_values: int
+    total_values: int
+    differing_fraction: float
+    maximum_absolute_error: float
+    normalized_maximum_absolute_error: float
+    root_mean_square_error: float
+    normalized_root_mean_square_error: float
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        for name in ("node_id", "operation_id"):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must not be empty")
+            object.__setattr__(self, name, value)
+        if (
+            isinstance(self.output_port_index, bool)
+            or not isinstance(self.output_port_index, int)
+            or self.output_port_index < 0
+        ):
+            raise ValueError("output_port_index must be a non-negative integer")
+        metric = (
+            self.metric
+            if isinstance(self.metric, PipelineParityReviewMetric)
+            else PipelineParityReviewMetric(str(self.metric).strip().lower())
+        )
+        object.__setattr__(self, "metric", metric)
+        for name in ("differing_values", "total_values"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.total_values <= 0:
+            raise ValueError("total_values must be a positive integer")
+        if self.differing_values > self.total_values:
+            raise ValueError("differing_values must not exceed total_values")
+        for name in (
+            "measured_difference",
+            "acceptance_threshold",
+            "differing_fraction",
+            "maximum_absolute_error",
+            "normalized_maximum_absolute_error",
+            "root_mean_square_error",
+            "normalized_root_mean_square_error",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or value < 0
+            ):
+                raise ValueError(f"{name} must be finite and non-negative")
+            object.__setattr__(self, name, float(value))
+        if self.differing_fraction > 1.0:
+            raise ValueError("differing_fraction must not exceed 1")
+        expected_fraction = self.differing_values / self.total_values
+        if not math.isclose(
+            self.differing_fraction,
+            expected_fraction,
+            rel_tol=1e-12,
+            abs_tol=1e-15,
+        ):
+            raise ValueError(
+                "differing_fraction must equal differing_values / total_values"
+            )
+        metric_value = (
+            self.differing_fraction
+            if metric is PipelineParityReviewMetric.DIFFERING_VALUE_FRACTION
+            else self.normalized_root_mean_square_error
+        )
+        if not math.isclose(
+            self.measured_difference,
+            metric_value,
+            rel_tol=1e-12,
+            abs_tol=1e-15,
+        ):
+            raise ValueError(
+                "measured_difference must match the selected review metric"
+            )
+        if (
+            metric is PipelineParityReviewMetric.DIFFERING_VALUE_FRACTION
+            and self.acceptance_threshold > 1.0
+        ):
+            raise ValueError("a differing-value-fraction threshold must not exceed 1")
+        if self.measured_difference > self.acceptance_threshold:
+            raise ValueError("measured_difference must not exceed acceptance_threshold")
+        if (
+            metric is PipelineParityReviewMetric.NORMALIZED_RMSE
+            and self.normalized_maximum_absolute_error > self.acceptance_threshold
+        ):
+            raise ValueError(
+                "normalized maximum error must not exceed acceptance_threshold"
+            )
+        object.__setattr__(self, "detail", str(self.detail).strip())
+
+
+@dataclass(frozen=True, slots=True)
 class PipelineAssignmentValidation:
     identity_digest: str
     current_assignment: tuple[tuple[str, str], ...]
@@ -481,6 +586,7 @@ class PipelineAssignmentValidation:
     detail: str = ""
     measurement_rounds: int = 0
     current_speedup_lower_confidence_bound: float = 0.0
+    reviewable_deviations: tuple[PipelineParityDeviation, ...] = ()
 
     def __post_init__(self) -> None:
         identity = str(self.identity_digest).strip()
@@ -523,6 +629,16 @@ class PipelineAssignmentValidation:
             or self.measurement_rounds < 0
         ):
             raise ValueError("measurement_rounds must be a non-negative integer")
+        deviations = tuple(self.reviewable_deviations)
+        if any(not isinstance(item, PipelineParityDeviation) for item in deviations):
+            raise TypeError(
+                "reviewable_deviations must contain PipelineParityDeviation values"
+            )
+        if self.parity_passed and deviations:
+            raise ValueError(
+                "reviewable deviations require strict parity to remain failed"
+            )
+        object.__setattr__(self, "reviewable_deviations", deviations)
 
 
 @dataclass(frozen=True, slots=True)
@@ -552,11 +668,10 @@ class PipelineOptimizationProposal:
     pipeline_validation_performed: bool = True
     validation_measurement_rounds: int = 0
     validated_current_speedup_lower_confidence_bound: float = 0.0
-    validation_winner: PipelineValidationWinner | str = (
-        PipelineValidationWinner.NOT_RUN
-    )
+    validation_winner: PipelineValidationWinner | str = PipelineValidationWinner.NOT_RUN
     tested_assignment: tuple[tuple[str, str], ...] = ()
     selection_basis: PipelineOptimizationSelectionBasis | str = ""
+    reviewable_deviations: tuple[PipelineParityDeviation, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.pipeline_validation_performed, bool):
@@ -612,8 +727,7 @@ class PipelineOptimizationProposal:
             )
         )
         paired_alternative_basis = (
-            basis
-            is PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE
+            basis is PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE
         )
         paired_inconclusive_basis = (
             basis
@@ -650,6 +764,22 @@ class PipelineOptimizationProposal:
             raise ValueError(
                 "a changed assignment requires paired whole-pipeline validation"
             )
+        deviations = tuple(self.reviewable_deviations)
+        if any(not isinstance(item, PipelineParityDeviation) for item in deviations):
+            raise TypeError(
+                "reviewable_deviations must contain PipelineParityDeviation values"
+            )
+        if deviations and (
+            not self.pipeline_validation_performed
+            or winner is not PipelineValidationWinner.PROPOSED
+            or not paired_alternative_basis
+            or not any(row.changed for row in self.rows)
+        ):
+            raise ValueError(
+                "reviewable deviations require performed paired validation "
+                "selecting changed proposed rows"
+            )
+        object.__setattr__(self, "reviewable_deviations", deviations)
         object.__setattr__(self, "selection_basis", basis)
         tested_assignment = self.tested_assignment or tuple(
             (row.node_id, row.proposed_implementation_id) for row in self.rows
@@ -673,6 +803,23 @@ class PipelineOptimizationProposal:
             self,
             "preference_mapping",
             MappingProxyType(dict(sorted(preference_mapping.items()))),
+        )
+
+    @property
+    def requires_parity_review(self) -> bool:
+        return bool(self.reviewable_deviations)
+
+    @property
+    def parity_review_digest(self) -> str:
+        if not self.reviewable_deviations:
+            return ""
+        return canonical_digest(
+            {
+                "identity_digest": self.identity_digest,
+                "request_fingerprint": self.request_fingerprint,
+                "tested_assignment": self.tested_assignment,
+                "reviewable_deviations": self.reviewable_deviations,
+            }
         )
 
     def is_current(
@@ -1025,7 +1172,10 @@ class PipelineOptimizationCoordinator:
                     "Whole-pipeline validation did not echo the exact proposal "
                     "identity."
                 )
-            if not validation.parity_passed or not validation.synchronized:
+            parity_accepted = validation.parity_passed or bool(
+                validation.reviewable_deviations
+            )
+            if not parity_accepted or not validation.synchronized:
                 raise PipelineOptimizationEvidenceIncomplete(
                     (
                         EvidenceRefusal(
@@ -1061,9 +1211,7 @@ class PipelineOptimizationCoordinator:
             else:
                 proposed_assignment = current_assignment
                 validation_winner = PipelineValidationWinner.INCONCLUSIVE
-                selection_basis = (
-                    PipelineOptimizationSelectionBasis.PAIRED_INCONCLUSIVE_RETAINED_CURRENT
-                )
+                selection_basis = PipelineOptimizationSelectionBasis.PAIRED_INCONCLUSIVE_RETAINED_CURRENT  # noqa: E501
         else:
             selection_basis = (
                 PipelineOptimizationSelectionBasis.CONSERVATIVE_BOUND_RETAINED_CURRENT
@@ -1113,6 +1261,11 @@ class PipelineOptimizationCoordinator:
             )
             rows.append(row)
             preferences[node.node_id] = proposed_preference
+        reviewable_deviations = (
+            validation.reviewable_deviations
+            if validation_winner is PipelineValidationWinner.PROPOSED
+            else ()
+        )
         return PipelineOptimizationProposal(
             identity.digest,
             request.fingerprint,
@@ -1130,6 +1283,7 @@ class PipelineOptimizationCoordinator:
             validation_winner,
             tested_assignment,
             selection_basis,
+            reviewable_deviations,
         )
 
     def _cancelled_or_expired(
@@ -1189,8 +1343,7 @@ def _evidence_refusal(
         )
     record = evidence.record
     if (
-        record.key.workload_fingerprint
-        != identity.workload_fingerprints[node.node_id]
+        record.key.workload_fingerprint != identity.workload_fingerprints[node.node_id]
         or record.key.environment_fingerprint
         != identity.benchmark_environment_fingerprint
     ):
@@ -1224,10 +1377,7 @@ def _candidate_cost(
             f"Timing for {candidate.implementation_id!r} is missing.",
             node.node_id,
         )
-    if (
-        result.failure_kind
-        is BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
-    ):
+    if result.failure_kind is BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY:
         return 0.0, EvidenceRefusal(
             "candidate_parity_failed",
             f"{candidate.implementation_id!r} did not pass scientific parity.",
@@ -1280,13 +1430,11 @@ def _candidate_cost(
         )
     if candidate.host_output_only and (
         not result.warm_host_materialization_seconds
-        or len(result.warm_host_materialization_seconds)
-        != len(result.warm_seconds)
+        or len(result.warm_host_materialization_seconds) != len(result.warm_seconds)
     ):
         return 0.0, EvidenceRefusal(
             "gpu_host_finalization_timing_incomplete",
-            f"{candidate.implementation_id!r} lacks typed host-finalization "
-            "timings.",
+            f"{candidate.implementation_id!r} lacks typed host-finalization timings.",
             node.node_id,
         )
     return float(statistics.median(result.warm_resident_seconds)), None
@@ -1315,16 +1463,12 @@ def _proposed_preference(
     *,
     host_runtime_id: str,
 ) -> NodeComputePreference:
-    if (
-        implementation_id == node.current_implementation_id
-        and (
-            len(allowed) <= 1
-            or node.is_writer
-            or node.has_side_effects
-            or node.optimizer_locked
-            or node.authored_preference.kind
-            is NodePreferenceKind.IMPLEMENTATION
-        )
+    if implementation_id == node.current_implementation_id and (
+        len(allowed) <= 1
+        or node.is_writer
+        or node.has_side_effects
+        or node.optimizer_locked
+        or node.authored_preference.kind is NodePreferenceKind.IMPLEMENTATION
     ):
         # Fixed/excluded rows had no measured alternative and must not acquire a
         # new CPU pin.  An exact authored pin already preserves the assignment.
@@ -1389,6 +1533,8 @@ __all__ = [
     "PipelineOptimizationIdentity",
     "PipelineOptimizationNode",
     "PipelineOptimizationNotBeneficial",
+    "PipelineParityDeviation",
+    "PipelineParityReviewMetric",
     "PipelineOptimizationProposal",
     "PipelineOptimizationRow",
     "PipelineOptimizationSelectionBasis",

@@ -112,6 +112,7 @@ SIGMA_FILTER_FLOAT32_NRMSE_LIMIT = 2e-6
 SIGMA_FILTER_FLOAT32_MAX_ABS_BASE = 1e-6
 SIGMA_FILTER_FLOAT32_SCALE_ULPS = 4.0
 _BENCHMARK_ABORT_CALLBACK_KWARG = "__vipp_benchmark_abort_callback"
+_PARITY_CHUNK_VALUES = 262_144
 
 
 @dataclass(frozen=True, slots=True)
@@ -1434,18 +1435,33 @@ def _exact_array_parity(reference: object, candidate: object) -> ParityResult:
     mismatch = _array_contract_mismatch(expected, actual)
     if mismatch:
         return ParityResult(False, mismatch)
-    expected_bytes = np.ascontiguousarray(expected).view(np.uint8).reshape(-1)
-    actual_bytes = np.ascontiguousarray(actual).view(np.uint8).reshape(-1)
-    byte_mismatches = int(np.count_nonzero(expected_bytes != actual_bytes))
-    if byte_mismatches:
-        signed_zero_mismatches = 0
-        if np.issubdtype(expected.dtype, np.floating):
-            both_zero = (expected == 0) & (actual == 0)
-            signed_zero_mismatches = int(
-                np.count_nonzero(
-                    both_zero & (np.signbit(expected) != np.signbit(actual))
+    byte_mismatches = 0
+    signed_zero_mismatches = 0
+    try:
+        chunks = np.nditer(
+            (expected, actual),
+            flags=("buffered", "external_loop", "refs_ok", "zerosize_ok"),
+            op_flags=(("readonly",), ("readonly",)),
+            order="C",
+            buffersize=_PARITY_CHUNK_VALUES,
+        )
+        for expected_chunk, actual_chunk in chunks:
+            expected_chunk = np.ascontiguousarray(expected_chunk)
+            actual_chunk = np.ascontiguousarray(actual_chunk)
+            expected_bytes = expected_chunk.view(np.uint8).reshape(-1)
+            actual_bytes = actual_chunk.view(np.uint8).reshape(-1)
+            byte_mismatches += int(np.count_nonzero(expected_bytes != actual_bytes))
+            if np.issubdtype(expected.dtype, np.floating):
+                both_zero = (expected_chunk == 0) & (actual_chunk == 0)
+                signed_zero_mismatches += int(
+                    np.count_nonzero(
+                        both_zero
+                        & (np.signbit(expected_chunk) != np.signbit(actual_chunk))
+                    )
                 )
-            )
+    except (MemoryError, TypeError, ValueError) as exc:
+        return ParityResult(False, f"exact comparison failed safely: {exc}")
+    if byte_mismatches:
         return ParityResult(
             False,
             f"bitwise mismatch: {byte_mismatches} bytes differ; "
@@ -1635,23 +1651,67 @@ def _gaussian_float32_parity(
             False,
             f"Gaussian production benchmark requires float32, got {expected.dtype}",
         )
-    expected_finite = np.isfinite(expected)
-    actual_finite = np.isfinite(actual)
-    if not np.array_equal(expected_finite, actual_finite):
-        return ParityResult(False, "finite/non-finite masks differ")
-    if not bool(np.all(expected_finite)):
-        return ParityResult(False, "Gaussian admitted region must be completely finite")
-    expected64 = expected.astype(np.float64)
-    actual64 = actual.astype(np.float64)
-    difference = actual64 - expected64
-    max_abs = float(np.max(np.abs(difference))) if difference.size else 0.0
-    peak = float(np.max(np.abs(expected64))) if expected64.size else 0.0
+    expected_squared_norm = 0.0
+    difference_squared_norm = 0.0
+    max_abs = 0.0
+    peak = 0.0
+    try:
+        chunks = np.nditer(
+            (expected, actual),
+            flags=("buffered", "external_loop", "zerosize_ok"),
+            op_flags=(("readonly",), ("readonly",)),
+            order="C",
+            buffersize=_PARITY_CHUNK_VALUES,
+        )
+        for expected_chunk, actual_chunk in chunks:
+            expected_finite = np.isfinite(expected_chunk)
+            actual_finite = np.isfinite(actual_chunk)
+            if not np.array_equal(expected_finite, actual_finite):
+                return ParityResult(False, "finite/non-finite masks differ")
+            if not bool(np.all(expected_finite)):
+                return ParityResult(
+                    False,
+                    "Gaussian admitted region must be completely finite",
+                )
+            expected64 = expected_chunk.astype(np.float64, copy=False)
+            actual64 = actual_chunk.astype(np.float64, copy=False)
+            difference = actual64 - expected64
+            absolute_difference = np.abs(difference)
+            if absolute_difference.size:
+                max_abs = max(max_abs, float(np.max(absolute_difference)))
+                peak = max(peak, float(np.max(np.abs(expected64))))
+            with np.errstate(over="ignore", invalid="ignore"):
+                expected_chunk_squared = float(
+                    np.sum(
+                        np.square(expected64, dtype=np.float64),
+                        dtype=np.float64,
+                    )
+                )
+                difference_chunk_squared = float(
+                    np.sum(
+                        np.square(difference, dtype=np.float64),
+                        dtype=np.float64,
+                    )
+                )
+            if not all(
+                math.isfinite(value)
+                for value in (expected_chunk_squared, difference_chunk_squared)
+            ):
+                return ParityResult(False, "Gaussian parity metrics overflowed")
+            expected_squared_norm = math.fsum(
+                (expected_squared_norm, expected_chunk_squared)
+            )
+            difference_squared_norm = math.fsum(
+                (difference_squared_norm, difference_chunk_squared)
+            )
+    except (MemoryError, OverflowError, TypeError, ValueError) as exc:
+        return ParityResult(False, f"Gaussian comparison failed safely: {exc}")
     max_abs_limit = 1e-6 + 5e-6 * peak
     denominator = max(
-        float(np.linalg.norm(expected64.ravel())),
-        float(math.sqrt(expected64.size) * GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR),
+        math.sqrt(expected_squared_norm),
+        float(math.sqrt(expected.size) * GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR),
     )
-    numerator = float(np.linalg.norm(difference.ravel()))
+    numerator = math.sqrt(difference_squared_norm)
     nrmse = numerator / denominator if denominator else 0.0
     passed = bool(nrmse <= GAUSSIAN_FLOAT32_NRMSE_LIMIT and max_abs <= max_abs_limit)
     return ParityResult(
@@ -1673,10 +1733,23 @@ def _finite_input_peak(value: object) -> float:
     array = np.asarray(value)
     if not np.issubdtype(array.dtype, np.number) or not array.size:
         return 0.0
-    finite = np.isfinite(array)
-    if not bool(np.any(finite)):
-        return 0.0
-    return float(np.max(np.abs(array[finite].astype(np.float64))))
+    peak = 0.0
+    chunks = np.nditer(
+        array,
+        flags=("buffered", "external_loop", "zerosize_ok"),
+        op_flags=(("readonly",),),
+        order="C",
+        buffersize=_PARITY_CHUNK_VALUES,
+    )
+    for raw_chunk in chunks:
+        chunk = np.asarray(raw_chunk)
+        finite = np.isfinite(chunk)
+        if not bool(np.any(finite)):
+            continue
+        dtype = np.complex128 if np.iscomplexobj(chunk) else np.float64
+        finite_values = chunk[finite].astype(dtype, copy=False)
+        peak = max(peak, float(np.max(np.abs(finite_values))))
+    return peak
 
 
 def _validated_optional_peak(value: float | None) -> float:

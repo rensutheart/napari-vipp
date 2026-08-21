@@ -394,6 +394,7 @@ from napari_vipp.ui.compute_benchmark_dialog import (
     NodeBenchmarkWorkerOutcome,
 )
 from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
+    PipelineOptimizerApplyRequest,
     PipelineOptimizerCleanupError,
     PipelineOptimizerDialog,
     PipelineOptimizerProgress,
@@ -5586,6 +5587,10 @@ class VippWidget(QWidget):
         QTimer.singleShot(0, self.run_pipeline)
 
     def _apply_pipeline_optimizer_result(self, result: object) -> None:
+        accepted_parity_review_digest = ""
+        if isinstance(result, PipelineOptimizerApplyRequest):
+            accepted_parity_review_digest = result.parity_review_digest
+            result = result.result
         if result is None:
             self._set_status(
                 "There is no completed Find fastest result to apply. Resolve any "
@@ -5602,6 +5607,24 @@ class VippWidget(QWidget):
             )
             return
         proposal = getattr(result, "proposal", result)
+        requires_parity_review = bool(
+            getattr(proposal, "requires_parity_review", False)
+        )
+        expected_parity_review_digest = str(
+            getattr(proposal, "parity_review_digest", "")
+        )
+        if requires_parity_review and (
+            not accepted_parity_review_digest
+            or accepted_parity_review_digest != expected_parity_review_digest
+        ):
+            self._set_status(
+                "This measured CPU/GPU difference has not been explicitly "
+                "accepted. Review the difference in Find fastest and tick the "
+                "acceptance box before applying it.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
         validation_winner = str(
             getattr(
                 getattr(proposal, "validation_winner", ""),
@@ -5858,9 +5881,14 @@ class VippWidget(QWidget):
         dialog = self._pipeline_optimizer_dialog
         if dialog is not None:
             dialog.accept()
+        reviewed_prefix = (
+            "Accepted the reviewed numerical difference and applied "
+            if requires_parity_review
+            else "Applied "
+        )
         self._set_status(
-            f"Applied {len(changed_node_ids)} measured pipeline compute choice(s) "
-            "as one undoable edit. Recalculating…",
+            f"{reviewed_prefix}{len(changed_node_ids)} measured pipeline compute "
+            "choice(s) as one undoable edit. Recalculating…",
             severity=MessageSeverity.SUCCESS,
         )
         self.run_pipeline()

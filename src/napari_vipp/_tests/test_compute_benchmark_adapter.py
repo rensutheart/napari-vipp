@@ -1489,6 +1489,57 @@ def test_exact_parity_checks_signed_zero_bits_and_gaussian_uses_both_gates():
     ).passed
 
 
+def test_exact_and_gaussian_parity_use_bounded_chunks_for_strided_arrays(
+    monkeypatch,
+):
+    float_storage = np.linspace(
+        -1.0,
+        1.0,
+        1024 * 1024,
+        dtype=np.float32,
+    ).reshape(1024, 1024)
+    gaussian_reference = float_storage[:, ::2]
+    gaussian_candidate = float_storage.copy()[:, ::2]
+    observed_finite_sizes: list[int] = []
+    original_isfinite = np.isfinite
+
+    def observed_isfinite(values, *args, **kwargs):
+        observed_finite_sizes.append(int(np.asarray(values).size))
+        return original_isfinite(values, *args, **kwargs)
+
+    monkeypatch.setattr(np, "isfinite", observed_isfinite)
+    gaussian_result = operation_parity(
+        "gaussian_blur",
+        gaussian_reference,
+        gaussian_candidate,
+    )
+
+    assert gaussian_result.passed, gaussian_result.detail
+    assert observed_finite_sizes
+    assert max(observed_finite_sizes) < gaussian_reference.size
+
+    mask_storage = np.zeros((1024, 1024), dtype=bool)
+    mask_reference = mask_storage[:, ::2]
+    mask_candidate = mask_storage.copy()[:, ::2]
+    observed_staging_sizes: list[int] = []
+    original_ascontiguousarray = np.ascontiguousarray
+
+    def observed_ascontiguousarray(values, *args, **kwargs):
+        observed_staging_sizes.append(int(np.asarray(values).size))
+        return original_ascontiguousarray(values, *args, **kwargs)
+
+    monkeypatch.setattr(np, "ascontiguousarray", observed_ascontiguousarray)
+    exact_result = operation_parity(
+        "remove_small_objects",
+        mask_reference,
+        mask_candidate,
+    )
+
+    assert exact_result.passed, exact_result.detail
+    assert observed_staging_sizes
+    assert max(observed_staging_sizes) < mask_reference.size
+
+
 def test_rl_parity_floor_is_independent_of_gaussian_policy(monkeypatch):
     monkeypatch.setattr(adapter_module, "GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR", 1.0)
     reference = np.zeros((4, 4), dtype=np.float32)

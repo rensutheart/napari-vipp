@@ -12,6 +12,19 @@
 
 ### Bug Fixes
 
+- **Find fastest pipeline** now accepts cache-retention scopes containing
+  connected or disconnected **Batch Output** and **Save Image** nodes. The
+  complete requested retention set still identifies and stales proposals, but
+  detached optimization and validation retain only the writer-free scientific
+  subgraph, so writers cannot run or create files during analysis.
+- **Find fastest pipeline** now attests the requested, planned, device-segment,
+  and actually executed implementation before comparing outputs. An unavailable
+  proposed backend is excluded and the remaining graph choices are solved
+  again, while a genuine small numerical CPU/GPU difference is measured and
+  shown for explicit user acceptance instead of being mislabeled as an
+  assignment failure. Shape, dtype, non-finite classification, and larger
+  differences still fail closed; reviewed differences never change provider
+  parity policy or authorize cache sharing.
 - Graph thumbnails now keep the last complete preview visible while full-stack
   contrast statistics are recalculated. A first preview shows an explicit
   calculating state, and failed, cancelled, or superseded work cannot replace

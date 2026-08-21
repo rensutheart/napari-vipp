@@ -70,6 +70,8 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationNode,
     PipelineOptimizationProposal,
     PipelineOptimizationTimeoutReport,
+    PipelineParityDeviation,
+    PipelineParityReviewMetric,
     PipelineValidationRequest,
 )
 from napari_vipp.core.compute_planning import (
@@ -104,6 +106,27 @@ _TRANSFER_SMALL_BYTES = 256 * 1024
 _TRANSFER_LARGE_BYTES = 16 * 1024**2
 _SOURCE_HASH_CHUNK_BYTES = 8 * 1024**2
 _DEFAULT_ACCELERATOR_RESERVE_BYTES = 512 * 1024**2
+_REVIEWABLE_NUMERICAL_DIFFERENCE_LIMIT = 0.001
+_REVIEWABLE_COMPARISON_CHUNK_VALUES = 256 * 1024
+
+
+class _PipelineOptimizationCandidateUnavailable(PipelineOptimizationEvidenceIncomplete):
+    """One proposed non-current implementation could not execute as requested."""
+
+    def __init__(
+        self,
+        *,
+        node_id: str,
+        implementation_id: str,
+        stage: str,
+        refusal: EvidenceRefusal,
+    ) -> None:
+        self.node_id = str(node_id).strip()
+        self.implementation_id = str(implementation_id).strip()
+        self.stage = str(stage).strip()
+        if not self.node_id or not self.implementation_id or not self.stage:
+            raise ValueError("candidate-unavailable evidence requires exact IDs")
+        super().__init__((refusal,))
 
 
 class PipelineOptimizerPhase(StrEnum):
@@ -499,7 +522,7 @@ class ApplicationPipelineOptimizerCoordinator:
             restored["connections"],
             restored.get("output_tunnels", ()),
         )
-        safe_ids, unsafe_ids = _writer_free_node_ids(pipeline)
+        safe_ids, _unsafe_ids = _writer_free_node_ids(pipeline)
         # "Find fastest pipeline" is an explicit request to execute the
         # complete writer-free scientific graph.  Manual/cached operations are
         # therefore selected for these private runs instead of becoming silent
@@ -527,21 +550,22 @@ class ApplicationPipelineOptimizerCoordinator:
             raise ValueError(
                 f"optimizer locks require an explicit per-node compute choice: {names}"
             )
-        retained = _normalized_node_ids(retain_node_ids)
-        unknown_retained = retained - set(pipeline.nodes)
+        requested_retained = _normalized_node_ids(retain_node_ids)
+        unknown_retained = requested_retained - set(pipeline.nodes)
         if unknown_retained:
             _refuse(
                 "retain_identity_invalid",
                 "Retained outputs reference unknown nodes: "
                 + ", ".join(sorted(unknown_retained)),
             )
-        blocked_retained = retained & unsafe_ids
-        if blocked_retained:
-            _refuse(
-                "writer_retention_unsafe",
-                "Private optimization cannot execute or retain writer/side-effect "
-                "nodes: " + ", ".join(sorted(blocked_retained)),
-            )
+        # The application retention request is part of proposal staleness
+        # identity, including explicit Batch Output and Save Image nodes.  The
+        # detached optimizer must nevertheless execute and retain only the
+        # writer-free scientific subgraph.  Keep these two meanings separate:
+        # filtering the private retention set must never let a malformed ID
+        # bypass identity validation, and filtering identity itself would let
+        # output-retention changes reuse a stale proposal.
+        scientific_retained = frozenset(requested_retained & safe_ids)
         sources = _detach_source_payloads(
             pipeline,
             source_payloads,
@@ -865,7 +889,7 @@ class ApplicationPipelineOptimizerCoordinator:
             self.registry,
             baseline_pipeline,
             safe_ids,
-            retained,
+            scientific_retained,
             compute_request,
             decisions,
             evidence_records,
@@ -900,7 +924,7 @@ class ApplicationPipelineOptimizerCoordinator:
             pipeline_fingerprint=canonical_digest(document),
             source_fingerprint=canonical_digest(dict(sources.fingerprints)),
             topology_fingerprint=_topology_fingerprint(pipeline),
-            cache_retention_fingerprint=canonical_digest(sorted(retained)),
+            cache_retention_fingerprint=canonical_digest(sorted(requested_retained)),
             environment_fingerprint=environment.fingerprint,
             benchmark_environment_fingerprint=next(
                 iter(benchmark_environment_fingerprints)
@@ -1027,7 +1051,7 @@ class ApplicationPipelineOptimizerCoordinator:
                 environment,
                 baseline_pipeline,
                 safe_ids,
-                retained,
+                scientific_retained,
                 validation_request,
                 exact_workload_qualifications=exact_workload_qualifications,
                 manual_node_ids=private_manual_node_ids,
@@ -1036,19 +1060,103 @@ class ApplicationPipelineOptimizerCoordinator:
                 progress=forward_validation,
             )
 
+        working_graph_nodes = tuple(graph_nodes)
+        rejected_candidate_pairs: set[tuple[str, str]] = set()
+        rejection_limit = sum(
+            1
+            for graph_node in working_graph_nodes
+            if not graph_node.optimizer_locked
+            and not graph_node.is_writer
+            and not graph_node.has_side_effects
+            for candidate in graph_node.candidates
+            if candidate.available
+            and candidate.implementation_id != graph_node.current_implementation_id
+        )
         try:
-            proposal = self.optimizer.optimize(
-                compute_request,
-                identity,
-                graph_nodes,
-                graph_edges,
-                evidence,
-                transfer_profile,
-                validate,
-                deadline=deadline,
-                max_assignments=max_assignments,
-                cancelled=cancelled,
-            )
+            while True:
+                try:
+                    proposal = self.optimizer.optimize(
+                        compute_request,
+                        identity,
+                        working_graph_nodes,
+                        graph_edges,
+                        evidence,
+                        transfer_profile,
+                        validate,
+                        deadline=deadline,
+                        max_assignments=max_assignments,
+                        cancelled=cancelled,
+                    )
+                    break
+                except _PipelineOptimizationCandidateUnavailable as exc:
+                    check_abort()
+                    pair = (exc.node_id, exc.implementation_id)
+                    graph_node = next(
+                        (
+                            item
+                            for item in working_graph_nodes
+                            if item.node_id == exc.node_id
+                        ),
+                        None,
+                    )
+                    candidate = (
+                        next(
+                            (
+                                item
+                                for item in graph_node.candidates
+                                if item.implementation_id == exc.implementation_id
+                            ),
+                            None,
+                        )
+                        if graph_node is not None
+                        else None
+                    )
+                    can_reject = bool(
+                        graph_node is not None
+                        and candidate is not None
+                        and candidate.available
+                        and candidate.implementation_id
+                        != graph_node.current_implementation_id
+                        and not graph_node.optimizer_locked
+                        and not graph_node.is_writer
+                        and not graph_node.has_side_effects
+                        and pair not in rejected_candidate_pairs
+                        and len(rejected_candidate_pairs) < rejection_limit
+                    )
+                    if not can_reject:
+                        raise PipelineOptimizationEvidenceIncomplete(
+                            (*candidate_refusals, *exc.reasons)
+                        ) from exc
+                    rejected_candidate_pairs.add(pair)
+                    candidate_refusals.extend(exc.reasons)
+                    working_graph_nodes = tuple(
+                        replace(
+                            item,
+                            candidates=tuple(
+                                replace(value, available=False)
+                                if item.node_id == exc.node_id
+                                and value.implementation_id == exc.implementation_id
+                                else value
+                                for value in item.candidates
+                            ),
+                        )
+                        if item.node_id == exc.node_id
+                        else item
+                        for item in working_graph_nodes
+                    )
+                    node_title = baseline_pipeline.nodes[exc.node_id].title
+                    _emit(
+                        progress,
+                        PipelineOptimizerPhase.SOLVING,
+                        total_steps - 2,
+                        total_steps,
+                        f"Excluded an unavailable backend for {node_title} and "
+                        "continued with the remaining safe choices.",
+                        node_id=exc.node_id,
+                        node_title=node_title,
+                        implementation_id=exc.implementation_id,
+                        measurement_phase=f"candidate-{exc.stage}-rejected",
+                    )
         except PipelineOptimizationDeadlineExceeded as exc:
             if exc.report is not None:
                 raise
@@ -1085,6 +1193,12 @@ class ApplicationPipelineOptimizerCoordinator:
                 ),
             ) from exc
         check_abort()
+        published_exact_workload_qualifications = frozenset(
+            qualification
+            for qualification in exact_workload_qualifications
+            if (qualification.node_id, qualification.implementation_id)
+            not in rejected_candidate_pairs
+        )
         _emit(
             progress,
             PipelineOptimizerPhase.COMPLETE,
@@ -1104,7 +1218,7 @@ class ApplicationPipelineOptimizerCoordinator:
             measured_node_ids=tuple(sorted(measured_node_ids)),
             repair_suggestions=baseline_repair_suggestions,
             candidate_refusals=tuple(candidate_refusals),
-            exact_workload_qualifications=exact_workload_qualifications,
+            exact_workload_qualifications=published_exact_workload_qualifications,
         )
 
     def _execute(
@@ -1275,6 +1389,7 @@ class ApplicationPipelineOptimizerCoordinator:
             reference_pipeline=baseline_pipeline,
             node_ids=validation_node_ids,
             environment=environment,
+            registry=self.registry,
         )
         proposed_pipeline = _successful_exact_pipeline(
             proposed_parity,
@@ -1284,7 +1399,9 @@ class ApplicationPipelineOptimizerCoordinator:
             reference_pipeline=baseline_pipeline,
             node_ids=validation_node_ids,
             environment=environment,
+            registry=self.registry,
         )
+        reviewable_deviations: list[PipelineParityDeviation] = []
         for node_id in baseline_pipeline.topological_order():
             if node_id not in parity_targets:
                 continue
@@ -1308,6 +1425,18 @@ class ApplicationPipelineOptimizerCoordinator:
                     input_peak=input_peak,
                 )
                 if not passed:
+                    deviation = _reviewable_pipeline_deviation(
+                        node_id,
+                        operation_id,
+                        port_index,
+                        current_output,
+                        proposed_output,
+                        input_peak=input_peak,
+                        parity_detail=detail,
+                    )
+                    if deviation is not None:
+                        reviewable_deviations.append(deviation)
+                        continue
                     return PipelineAssignmentValidation(
                         validation.identity_digest,
                         validation.current_assignment,
@@ -1372,6 +1501,7 @@ class ApplicationPipelineOptimizerCoordinator:
                     reference_pipeline=baseline_pipeline,
                     node_ids=validation_node_ids,
                     environment=environment,
+                    registry=self.registry,
                 )
                 ended = _read_clock(self.clock)
                 measured[label] = _nonnegative_elapsed(began, ended)
@@ -1429,15 +1559,23 @@ class ApplicationPipelineOptimizerCoordinator:
             validation.identity_digest,
             validation.current_assignment,
             validation.proposed_assignment,
-            True,
+            not reviewable_deviations,
             True,
             float(statistics.median(current_times)),
             float(statistics.median(proposed_times)),
             paired.lower_confidence_bound,
-            "Changed-node and observable-boundary parity passed before paired "
-            "synchronized timing.",
+            (
+                "Changed-node and observable-boundary parity passed before "
+                "paired synchronized timing."
+                if not reviewable_deviations
+                else "Exact parity did not pass, but every numerical difference "
+                "was below the conservative review threshold. The exact "
+                "backend assignment was attested before comparison; explicit "
+                "user acceptance is required."
+            ),
             len(current_times),
             reverse.lower_confidence_bound,
+            tuple(reviewable_deviations),
         )
 
 
@@ -1514,6 +1652,224 @@ def _pipeline_output_parity(
     return bool(parity.passed), parity.detail
 
 
+def _reviewable_pipeline_deviation(
+    node_id: str,
+    operation_id: str,
+    output_port_index: int,
+    reference: object,
+    candidate: object,
+    *,
+    input_peak: float | None,
+    parity_detail: str,
+) -> PipelineParityDeviation | None:
+    """Quantify only small, structurally identical numerical differences.
+
+    This is deliberately symmetric: CPU supplies the comparison baseline, but
+    neither backend is declared scientifically superior.  Structural changes,
+    non-numerical outputs, and non-finite class changes remain hard failures.
+    """
+
+    try:
+        left = np.asarray(reference)
+        right = np.asarray(candidate)
+    except Exception:
+        return None
+    if (
+        left.shape != right.shape
+        or left.dtype != right.dtype
+        or not left.size
+        or left.dtype.hasobject
+        or np.iscomplexobj(left)
+        or not (
+            np.issubdtype(left.dtype, np.bool_)
+            or np.issubdtype(left.dtype, np.integer)
+            or np.issubdtype(left.dtype, np.floating)
+        )
+    ):
+        return None
+
+    floating = np.issubdtype(left.dtype, np.floating)
+    differing_values = 0
+    finite_value_count = 0
+    squared_error_sum = 0.0
+    maximum_absolute_error = 0.0
+    maximum_absolute_value = 0.0
+    combined_low = math.inf
+    combined_high = -math.inf
+    try:
+        chunks = np.nditer(
+            (left, right),
+            flags=("external_loop", "buffered", "zerosize_ok"),
+            op_flags=(("readonly",), ("readonly",)),
+            order="C",
+            buffersize=_REVIEWABLE_COMPARISON_CHUNK_VALUES,
+        )
+        for left_chunk, right_chunk in chunks:
+            # The iterator bounds both of these staging copies even for strided
+            # retained outputs.  Never materialize another image-sized array just
+            # to explain a rejected parity result.
+            left_chunk = np.ascontiguousarray(left_chunk)
+            right_chunk = np.ascontiguousarray(right_chunk)
+            left_bytes = left_chunk.view(np.uint8).reshape(
+                left_chunk.size, left.dtype.itemsize
+            )
+            right_bytes = right_chunk.view(np.uint8).reshape(
+                right_chunk.size, right.dtype.itemsize
+            )
+            differing_values += int(
+                np.count_nonzero(np.any(left_bytes != right_bytes, axis=1))
+            )
+
+            if floating:
+                for classifier in (np.isnan, np.isposinf, np.isneginf):
+                    if not np.array_equal(
+                        classifier(left_chunk), classifier(right_chunk)
+                    ):
+                        return None
+                both_zero = (left_chunk == 0) & (right_chunk == 0)
+                if bool(
+                    np.any(
+                        both_zero & (np.signbit(left_chunk) != np.signbit(right_chunk))
+                    )
+                ):
+                    return None
+                finite_mask = np.isfinite(left_chunk)
+                left_values = left_chunk[finite_mask].astype(np.float64, copy=False)
+                right_values = right_chunk[finite_mask].astype(np.float64, copy=False)
+                with np.errstate(over="ignore", invalid="ignore"):
+                    absolute_error = np.abs(right_values - left_values)
+            else:
+                left_values = left_chunk.astype(np.float64, copy=False)
+                right_values = right_chunk.astype(np.float64, copy=False)
+                if np.issubdtype(left.dtype, np.bool_):
+                    absolute_error = np.not_equal(left_chunk, right_chunk).astype(
+                        np.float64, copy=False
+                    )
+                elif left.dtype.itemsize == 8:
+                    left_keys = left_chunk.astype(np.uint64, copy=False)
+                    right_keys = right_chunk.astype(np.uint64, copy=False)
+                    if np.issubdtype(left.dtype, np.signedinteger):
+                        sign_bit = np.uint64(1 << 63)
+                        left_keys = left_keys ^ sign_bit
+                        right_keys = right_keys ^ sign_bit
+                    lower_keys = np.minimum(left_keys, right_keys)
+                    upper_keys = np.maximum(left_keys, right_keys)
+                    absolute_error = (upper_keys - lower_keys).astype(
+                        np.float64, copy=False
+                    )
+                else:
+                    absolute_error = np.abs(right_values - left_values)
+
+            if absolute_error.size and not bool(np.all(np.isfinite(absolute_error))):
+                return None
+            finite_value_count += int(absolute_error.size)
+            if absolute_error.size:
+                maximum_absolute_error = max(
+                    maximum_absolute_error,
+                    float(np.max(absolute_error)),
+                )
+                with np.errstate(over="ignore", invalid="ignore"):
+                    chunk_squared_error = float(
+                        np.sum(
+                            np.square(absolute_error, dtype=np.float64),
+                            dtype=np.float64,
+                        )
+                    )
+                if not math.isfinite(chunk_squared_error):
+                    return None
+                squared_error_sum = math.fsum((squared_error_sum, chunk_squared_error))
+
+            if left_values.size:
+                with np.errstate(over="ignore", invalid="ignore"):
+                    chunk_absolute_value = max(
+                        float(np.max(np.abs(left_values))),
+                        float(np.max(np.abs(right_values))),
+                    )
+                chunk_low = min(float(np.min(left_values)), float(np.min(right_values)))
+                chunk_high = max(
+                    float(np.max(left_values)), float(np.max(right_values))
+                )
+                if not all(
+                    math.isfinite(value)
+                    for value in (chunk_absolute_value, chunk_low, chunk_high)
+                ):
+                    return None
+                maximum_absolute_value = max(
+                    maximum_absolute_value, chunk_absolute_value
+                )
+                combined_low = min(combined_low, chunk_low)
+                combined_high = max(combined_high, chunk_high)
+    except (MemoryError, OverflowError, TypeError, ValueError):
+        return None
+
+    if differing_values == 0:
+        return None
+    total_values = int(left.size)
+    differing_fraction = differing_values / total_values
+    root_mean_square_error = (
+        math.sqrt(squared_error_sum / finite_value_count) if finite_value_count else 0.0
+    )
+    if not math.isfinite(root_mean_square_error):
+        return None
+    reference_scale = maximum_absolute_value
+    if finite_value_count:
+        with np.errstate(over="ignore", invalid="ignore"):
+            value_range = combined_high - combined_low
+        if not math.isfinite(value_range):
+            return None
+        reference_scale = max(reference_scale, value_range)
+    if input_peak is not None and math.isfinite(float(input_peak)):
+        reference_scale = max(reference_scale, abs(float(input_peak)))
+    if not math.isfinite(reference_scale):
+        return None
+    if reference_scale == 0.0:
+        if maximum_absolute_error != 0.0:
+            return None
+        normalized_maximum = 0.0
+        normalized_rmse = 0.0
+    else:
+        normalized_maximum = maximum_absolute_error / reference_scale
+        normalized_rmse = root_mean_square_error / reference_scale
+
+    limit = _REVIEWABLE_NUMERICAL_DIFFERENCE_LIMIT
+    if floating:
+        metric = PipelineParityReviewMetric.NORMALIZED_RMSE
+        measured = normalized_rmse
+        if measured > limit or normalized_maximum > limit:
+            return None
+        summary = (
+            f"normalized RMSE={normalized_rmse:.6g}; normalized maximum "
+            f"error={normalized_maximum:.6g}; exact-value differences="
+            f"{differing_values}/{total_values}"
+        )
+    else:
+        metric = PipelineParityReviewMetric.DIFFERING_VALUE_FRACTION
+        measured = differing_fraction
+        if measured > limit:
+            return None
+        summary = (
+            f"different values={differing_values}/{total_values} "
+            f"({differing_fraction:.6%})"
+        )
+
+    return PipelineParityDeviation(
+        node_id=node_id,
+        operation_id=operation_id,
+        output_port_index=output_port_index,
+        metric=metric,
+        measured_difference=measured,
+        acceptance_threshold=limit,
+        differing_values=differing_values,
+        total_values=total_values,
+        differing_fraction=differing_fraction,
+        maximum_absolute_error=maximum_absolute_error,
+        normalized_maximum_absolute_error=normalized_maximum,
+        root_mean_square_error=root_mean_square_error,
+        normalized_root_mean_square_error=normalized_rmse,
+        detail=f"{parity_detail}; {summary}",
+    )
+
+
 def _pipeline_input_peak(
     pipeline: PrototypePipeline,
     node_id: str,
@@ -1529,10 +1885,29 @@ def _pipeline_input_peak(
         return None
     if not np.issubdtype(array.dtype, np.number) or not array.size:
         return 0.0
-    finite = np.isfinite(array)
-    if not bool(np.any(finite)):
-        return 0.0
-    return float(np.max(np.abs(array[finite].astype(np.float64))))
+    peak = 0.0
+    try:
+        chunks = np.nditer(
+            array,
+            flags=("external_loop", "buffered", "zerosize_ok"),
+            op_flags=(("readonly",),),
+            order="C",
+            buffersize=_REVIEWABLE_COMPARISON_CHUNK_VALUES,
+        )
+        for raw_chunk in chunks:
+            chunk = np.asarray(raw_chunk)
+            finite = np.isfinite(chunk)
+            if not bool(np.any(finite)):
+                continue
+            dtype = np.complex128 if np.iscomplexobj(chunk) else np.float64
+            finite_values = chunk[finite].astype(dtype, copy=False)
+            chunk_peak = float(np.max(np.abs(finite_values)))
+            if not math.isfinite(chunk_peak):
+                return None
+            peak = max(peak, chunk_peak)
+    except (MemoryError, TypeError, ValueError):
+        return None
+    return peak
 
 
 def _scientific_values_equal(reference: object, candidate: object) -> bool:
@@ -1564,10 +1939,20 @@ def _scientific_values_equal(reference: object, candidate: object) -> bool:
         return False
     if not left.dtype.hasobject:
         try:
-            left_bytes = np.ascontiguousarray(left).view(np.uint8).reshape(-1)
-            right_bytes = np.ascontiguousarray(right).view(np.uint8).reshape(-1)
-            return bool(np.array_equal(left_bytes, right_bytes))
-        except (TypeError, ValueError):
+            chunks = np.nditer(
+                (left, right),
+                flags=("external_loop", "buffered", "refs_ok", "zerosize_ok"),
+                op_flags=(("readonly",), ("readonly",)),
+                order="C",
+                buffersize=_REVIEWABLE_COMPARISON_CHUNK_VALUES,
+            )
+            for left_chunk, right_chunk in chunks:
+                left_bytes = np.ascontiguousarray(left_chunk).view(np.uint8)
+                right_bytes = np.ascontiguousarray(right_chunk).view(np.uint8)
+                if not bool(np.array_equal(left_bytes, right_bytes)):
+                    return False
+            return True
+        except (MemoryError, TypeError, ValueError):
             return False
     try:
         return bool(np.array_equal(left, right, equal_nan=True))
@@ -2400,8 +2785,9 @@ def _successful_exact_pipeline(
     reference_pipeline: PrototypePipeline,
     node_ids: frozenset[str],
     environment: ComputeEnvironment,
+    registry: ComputeRegistry,
 ) -> PrototypePipeline:
-    """Require private validation to execute the assignment it claims to time."""
+    """Attest requested, planned, segmented, and actual assignment identity."""
 
     pipeline = _successful_pipeline(result, label)
     report = result.execution_report
@@ -2426,16 +2812,57 @@ def _successful_exact_pipeline(
             f"{code_label}_cleanup_failed",
             f"Private {label} execution did not release its accelerator resources.",
         )
-    decision_ids = tuple(item.node_id for item in report.actual_decisions)
-    if len(set(decision_ids)) != len(decision_ids):
+    plan = report.plan
+    if plan is None:
+        _refuse(
+            f"{code_label}_plan_missing",
+            f"Private {label} execution returned no exact compute plan.",
+        )
+    if plan.request_fingerprint != expected_request.fingerprint:
+        _refuse(
+            f"{code_label}_plan_request_mismatch",
+            f"Private {label} planning used a different compute request.",
+        )
+    if plan.environment_fingerprint != environment.fingerprint:
+        _refuse(
+            f"{code_label}_plan_environment_mismatch",
+            f"Private {label} planning used a different runtime environment.",
+        )
+
+    expected_processing_ids = {
+        node_id for node_id in node_ids if reference_pipeline.nodes[node_id].has_input
+    }
+
+    planned_ids = tuple(item.node_id for item in plan.decisions)
+    if len(set(planned_ids)) != len(planned_ids):
+        _refuse(
+            f"{code_label}_planning_decision_ambiguous",
+            f"Private {label} planning reported duplicate node decisions.",
+        )
+    planned_decisions = {item.node_id: item for item in plan.decisions}
+    unexpected_planned_ids = {
+        item.node_id
+        for item in plan.decisions
+        if item.node_id not in reference_pipeline.nodes
+        or (
+            reference_pipeline.nodes[item.node_id].has_input
+            and item.node_id not in expected_processing_ids
+        )
+    }
+    if unexpected_planned_ids:
+        _refuse(
+            f"{code_label}_planning_scope_mismatch",
+            f"Private {label} planned decisions outside the safe processing "
+            "subgraph: " + ", ".join(sorted(unexpected_planned_ids)),
+        )
+
+    actual_ids = tuple(item.node_id for item in report.actual_decisions)
+    if len(set(actual_ids)) != len(actual_ids):
         _refuse(
             f"{code_label}_decision_ambiguous",
             f"Private {label} execution reported duplicate node decisions.",
         )
-    decisions = {item.node_id: item for item in report.actual_decisions}
-    expected_processing_ids = {
-        node_id for node_id in node_ids if reference_pipeline.nodes[node_id].has_input
-    }
+    actual_decisions = {item.node_id: item for item in report.actual_decisions}
     unexpected_processing_ids = {
         item.node_id
         for item in report.actual_decisions
@@ -2458,20 +2885,113 @@ def _successful_exact_pipeline(
         if not node.has_input:
             continue
         expected_implementation = expected_assignment.get(node_id)
-        decision = decisions.get(node_id)
+        declared = {
+            item.implementation_id: item
+            for item in (
+                compute_specs_for(node.operation_id, include_cpu=True)[0],
+                *registry.implementations_for_operation(
+                    node.operation_id,
+                    allow_experimental=expected_request.allow_experimental,
+                ),
+            )
+        }
+        expected_spec = declared.get(expected_implementation or "")
+        if expected_spec is None:
+            _refuse(
+                f"{code_label}_expected_implementation_undeclared",
+                f"Private {label} expected an implementation that is not "
+                f"declared for {node.title}: {expected_implementation!r}.",
+                node_id,
+            )
+
+        planned = planned_decisions.get(node_id)
         if (
             not expected_implementation
-            or decision is None
-            or decision.operation_id != node.operation_id
-            or decision.implementation_id != expected_implementation
-            or decision.fallback_used
+            or planned is None
+            or planned.operation_id != node.operation_id
+            or planned.implementation_id != expected_implementation
+            or planned.runtime_id != expected_spec.runtime_id
+            or planned.implementation_library_id
+            != expected_spec.implementation_library_id
+            or planned.fallback_used
         ):
-            actual = "missing" if decision is None else decision.implementation_id
-            _refuse(
-                f"{code_label}_assignment_mismatch",
-                f"Private {label} requested {expected_implementation!r} but "
-                f"reported {actual!r}; exact validation cannot continue.",
+            actual = "missing" if planned is None else planned.implementation_id
+            reason = (
+                ""
+                if planned is None or not str(planned.reason_text).strip()
+                else f" Planner reason: {str(planned.reason_text).strip()}"
+            )
+            refusal = EvidenceRefusal(
+                f"{code_label}_planning_assignment_mismatch",
+                f"Private {label} requested {expected_implementation!r} for "
+                f"{node.title}, but planning selected {actual!r}.{reason} The "
+                "unavailable choice was not treated as numerical parity "
+                "evidence.",
                 node_id,
+            )
+            raise _PipelineOptimizationCandidateUnavailable(
+                node_id=node_id,
+                implementation_id=expected_implementation or "<missing>",
+                stage="planning",
+                refusal=refusal,
+            )
+
+        containing_segments = tuple(
+            segment for segment in plan.segments if node_id in segment.node_ids
+        )
+        segment_matches = (
+            not containing_segments
+            if expected_spec.runtime_id == _CPU_RUNTIME_ID
+            else len(containing_segments) == 1
+            and containing_segments[0].runtime_id == expected_spec.runtime_id
+        )
+        if not segment_matches:
+            actual_segments = (
+                "host-only"
+                if not containing_segments
+                else ", ".join(
+                    f"{segment.segment_id}/{segment.runtime_id}"
+                    for segment in containing_segments
+                )
+            )
+            refusal = EvidenceRefusal(
+                f"{code_label}_device_segment_mismatch",
+                f"Private {label} planned {expected_implementation!r} for "
+                f"{node.title}, but the device plan recorded {actual_segments}; "
+                "the unavailable choice was not timed or compared as GPU work.",
+                node_id,
+            )
+            raise _PipelineOptimizationCandidateUnavailable(
+                node_id=node_id,
+                implementation_id=expected_implementation,
+                stage="device-plan",
+                refusal=refusal,
+            )
+
+        actual = actual_decisions.get(node_id)
+        if (
+            actual is None
+            or actual.operation_id != node.operation_id
+            or actual.implementation_id != expected_implementation
+            or actual.runtime_id != expected_spec.runtime_id
+            or actual.implementation_library_id
+            != expected_spec.implementation_library_id
+            or actual.fallback_used
+        ):
+            actual_id = "missing" if actual is None else actual.implementation_id
+            refusal = EvidenceRefusal(
+                f"{code_label}_actual_assignment_mismatch",
+                f"Private {label} planned {expected_implementation!r} for "
+                f"{node.title}, but execution reported {actual_id!r}; the "
+                "unavailable choice was not treated as numerical parity "
+                "evidence.",
+                node_id,
+            )
+            raise _PipelineOptimizationCandidateUnavailable(
+                node_id=node_id,
+                implementation_id=expected_implementation,
+                stage="actual-execution",
+                refusal=refusal,
             )
     return pipeline
 
