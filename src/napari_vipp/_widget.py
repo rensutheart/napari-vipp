@@ -5906,6 +5906,16 @@ class VippWidget(QWidget):
             decision = self._accepted_compute_decisions.get(row.node_id)
             if (
                 node is not None
+                and not self.pipeline.operation_spec(node.operation_id).has_input
+            ):
+                # Source rows do not emit an execution decision. Reconstruct
+                # their fixed identity from the live authoritative declaration
+                # so a malformed proposal cannot validate by echoing itself.
+                assignments[row.node_id] = compute_specs_for(node.operation_id)[
+                    0
+                ].implementation_id
+            elif (
+                node is not None
                 and decision is not None
                 and decision.operation_id == node.operation_id
             ):

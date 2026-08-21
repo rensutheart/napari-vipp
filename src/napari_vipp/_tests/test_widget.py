@@ -126,6 +126,7 @@ from napari_vipp.core.compute import (
     canonical_digest,
 )
 from napari_vipp.core.compute_pipeline_optimizer import (
+    PipelineOptimizationIdentity,
     PipelineOptimizationProposal,
     PipelineOptimizationRow,
     PipelineOptimizationSelectionBasis,
@@ -1682,6 +1683,229 @@ def test_stale_retained_assignments_use_optimizer_private_baseline(qtbot):
     widget._stale_compute_badge_node_ids.update(widget._accepted_compute_decisions)
 
     assert widget._current_pipeline_optimizer_assignments(proposal) == dict(baseline)
+
+
+def test_clean_optimizer_assignments_reconstruct_source_from_authoritative_cpu_spec(
+    qtbot,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget._compute_mode = ComputeMode.CUSTOM
+    widget._pending_dirty_node_ids.clear()
+    widget._stale_compute_badge_node_ids.clear()
+    gaussian_decision = widget._accepted_compute_decisions["gaussian"]
+    request = widget._current_compute_request()
+    source_preference = request.preference_for("input")
+    gaussian_preference = request.preference_for("gaussian")
+    baseline = (
+        ("input", "cpu-input-v1"),
+        ("gaussian", gaussian_decision.implementation_id),
+    )
+    identity = PipelineOptimizationIdentity(
+        pipeline_fingerprint="pipeline-a",
+        source_fingerprint="source-a",
+        topology_fingerprint="topology-a",
+        cache_retention_fingerprint="retention-a",
+        environment_fingerprint="environment-a",
+        workload_fingerprints={
+            "input": "source-workload-a",
+            "gaussian": "gaussian-workload-a",
+        },
+    )
+    proposal = PipelineOptimizationProposal(
+        identity_digest=identity.digest,
+        request_fingerprint=request.fingerprint,
+        baseline_assignment=baseline,
+        rows=(
+            PipelineOptimizationRow(
+                "input",
+                "cpu-input-v1",
+                "cpu-input-v1",
+                source_preference,
+                source_preference,
+                False,
+                False,
+            ),
+            PipelineOptimizationRow(
+                "gaussian",
+                gaussian_decision.implementation_id,
+                gaussian_decision.implementation_id,
+                gaussian_preference,
+                gaussian_preference,
+                False,
+                True,
+            ),
+        ),
+        preference_mapping={
+            "input": source_preference,
+            "gaussian": gaussian_preference,
+        },
+        estimated_current_seconds=1.0,
+        estimated_proposed_seconds=1.0,
+        validated_current_seconds=0.0,
+        validated_proposed_seconds=0.0,
+        validated_speedup_lower_confidence_bound=0.0,
+        pipeline_validation_performed=False,
+        validation_winner=PipelineValidationWinner.CURRENT,
+        tested_assignment=baseline,
+        selection_basis=(
+            PipelineOptimizationSelectionBasis.EXACT_MODEL_RETAINED_CURRENT
+        ),
+    )
+
+    assert not widget.pipeline.operation_spec("input").has_input
+    assert widget.pipeline.operation_spec("gaussian_blur").has_input
+    assignments = widget._current_pipeline_optimizer_assignments(proposal)
+    assert assignments == dict(baseline)
+    assert proposal.is_current(identity, request, assignments)
+
+    mismatched_source = replace(
+        proposal,
+        baseline_assignment=(
+            ("input", "forged-source-implementation"),
+            ("gaussian", gaussian_decision.implementation_id),
+        ),
+    )
+    mismatched_assignments = widget._current_pipeline_optimizer_assignments(
+        mismatched_source
+    )
+    assert mismatched_assignments["input"] == "cpu-input-v1"
+    assert not mismatched_source.is_current(identity, request, mismatched_assignments)
+
+    widget._accepted_compute_decisions.pop("gaussian")
+
+    # Only a source row may use its authoritative declared identity. Missing
+    # provenance for an executable operation must continue to stale the result.
+    assert widget._current_pipeline_optimizer_assignments(proposal) == {
+        "input": "cpu-input-v1",
+        "gaussian": "<no-current-actual-assignment>",
+    }
+
+
+def test_pipeline_optimizer_clean_apply_accepts_real_source_row(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    with QSignalBlocker(widget.compute_mode_combo):
+        widget.compute_mode_combo.setCurrentIndex(
+            widget.compute_mode_combo.findData("custom")
+        )
+    widget._compute_mode = ComputeMode.CUSTOM
+    widget._pending_dirty_node_ids.clear()
+    widget._stale_compute_badge_node_ids.clear()
+    widget._pipeline_optimizer_baseline = widget._current_history_snapshot()
+    payloads, _layers = widget._source_payloads_for_pipeline()
+    widget._pipeline_optimizer_source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        payloads,
+    )
+    request = widget._current_compute_request()
+    gaussian_decision = widget._accepted_compute_decisions["gaussian"]
+    retention_fingerprint = canonical_digest(sorted(widget._cache_retention_node_ids()))
+    identity = PipelineOptimizationIdentity(
+        pipeline_fingerprint="pipeline-a",
+        source_fingerprint="source-a",
+        topology_fingerprint="topology-a",
+        cache_retention_fingerprint=retention_fingerprint,
+        environment_fingerprint="environment-a",
+        benchmark_environment_fingerprint="benchmark-a",
+        workload_fingerprints={
+            "input": "source-workload-a",
+            "gaussian": "gaussian-workload-a",
+        },
+    )
+    source_preference = request.preference_for("input")
+    gaussian_preference = request.preference_for("gaussian")
+    proposed_preference = NodeComputePreference("library", "cupy")
+    baseline = (
+        ("input", "cpu-input-v1"),
+        ("gaussian", gaussian_decision.implementation_id),
+    )
+    tested = (
+        ("input", "cpu-input-v1"),
+        ("gaussian", "cupy-gaussian-blur-v1"),
+    )
+    proposal = PipelineOptimizationProposal(
+        identity_digest=identity.digest,
+        request_fingerprint=request.fingerprint,
+        baseline_assignment=baseline,
+        rows=(
+            PipelineOptimizationRow(
+                "input",
+                "cpu-input-v1",
+                "cpu-input-v1",
+                source_preference,
+                source_preference,
+                False,
+                False,
+            ),
+            PipelineOptimizationRow(
+                "gaussian",
+                gaussian_decision.implementation_id,
+                "cupy-gaussian-blur-v1",
+                gaussian_preference,
+                proposed_preference,
+                True,
+                True,
+            ),
+        ),
+        preference_mapping={
+            "input": source_preference,
+            "gaussian": proposed_preference,
+        },
+        estimated_current_seconds=1.0,
+        estimated_proposed_seconds=0.5,
+        validated_current_seconds=1.0,
+        validated_proposed_seconds=0.5,
+        validated_speedup_lower_confidence_bound=1.5,
+        pipeline_validation_performed=True,
+        validation_measurement_rounds=5,
+        validated_current_speedup_lower_confidence_bound=0.5,
+        validation_winner=PipelineValidationWinner.PROPOSED,
+        tested_assignment=tested,
+        selection_basis=(
+            PipelineOptimizationSelectionBasis.PAIRED_VALIDATED_ALTERNATIVE
+        ),
+    )
+
+    class Registry:
+        @staticmethod
+        def close():
+            return None
+
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_registry.ComputeRegistry",
+        Registry,
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_pipeline_optimizer_environment",
+        lambda *_args: SimpleNamespace(fingerprint="environment-a"),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "fingerprint_pipeline_optimizer_sources",
+        lambda *_args: "source-a",
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_benchmark_coordinator."
+        "benchmark_environment_fingerprint",
+        lambda *_args: "benchmark-a",
+    )
+
+    widget._apply_pipeline_optimizer_result(
+        SimpleNamespace(proposal=proposal, identity=identity)
+    )
+
+    assert widget._compute_node_preferences["gaussian"] == proposed_preference
+    assert "Applied 1 measured pipeline compute choice" in widget.status_label.text()
 
 
 def test_pipeline_optimizer_cleanup_failure_cannot_publish_result(
