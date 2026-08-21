@@ -192,7 +192,7 @@ Use explicit overrides only when the run should differ from the saved config:
   --workflow .\results\vipp_batch_workflow.json `
   --compute-mode custom `
   --fallback-policy visible `
-  --node-preference gaussian_blur_1=library:cupyx `
+  --node-preference gaussian_blur_1=library:cupy `
   --node-preference otsu_threshold_1=cpu `
   --progress
 ```

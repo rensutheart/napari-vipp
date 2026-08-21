@@ -64,8 +64,12 @@ def _environment(**updates) -> ComputeEnvironment:
         "python_version": "3.12",
         "python_abi": "cpython-312",
         "runtime_ids": ("cpu-numpy", "cuda-cupy"),
-        "implementation_libraries": ("cpu", "cupyx"),
-        "runtime_versions": (("cuda-cupy", "14.1.1"), ("cupyx", "14.1.1")),
+        "implementation_libraries": ("cpu", "cupy", "cupyx"),
+        "runtime_versions": (
+            ("cuda-cupy", "14.1.1"),
+            ("cupy", "14.1.1"),
+            ("cupyx", "14.1.1"),
+        ),
         "runtime_probe_fingerprints": (("cuda-cupy", "fake-runtime-fingerprint"),),
         "runtime_metadata": (
             (
@@ -297,7 +301,7 @@ def test_selected_node_benchmark_is_detached_persisted_and_parity_gated(
     assert plan.operation_id == "median_filter"
     assert len(plan.workload_fingerprint) == 64
     assert [item.implementation_id for item in plan.eligibility] == [
-        "cupyx-median-filter-v1"
+        "cupy-median-filter-v1"
     ]
     assert all(item.supported for item in plan.eligibility)
     assert not np.shares_memory(
@@ -311,16 +315,16 @@ def test_selected_node_benchmark_is_detached_persisted_and_parity_gated(
 
     result = coordinator.run(plan, progress=progress.append)
 
-    assert result.record.accepted_implementation_id == "cupyx-median-filter-v1"
+    assert result.record.accepted_implementation_id == "cupy-median-filter-v1"
     gpu_result = next(
         item
         for item in result.record.candidates
-        if item.implementation_id == "cupyx-median-filter-v1"
+        if item.implementation_id == "cupy-median-filter-v1"
     )
     assert gpu_result.parity_passed
     assert not gpu_result.error
     assert result.winner_preference.kind is NodePreferenceKind.LIBRARY
-    assert result.winner_preference.value == "cupyx"
+    assert result.winner_preference.value == "cupy"
     assert JsonBenchmarkStore(plan.store_path).get(result.record.key) == result.record
     assert runtime.live == {}
     assert [item.phase for item in progress[:4]] == [
@@ -387,13 +391,13 @@ def test_selected_node_benchmark_qualifies_secondary_nvidia_hardware(
 
     assert plan.environment == environment
     assert [spec.implementation_id for spec in plan.admitted_specs] == [
-        "cupyx-median-filter-v1"
+        "cupy-median-filter-v1"
     ]
-    assert result.record.accepted_implementation_id == "cupyx-median-filter-v1"
+    assert result.record.accepted_implementation_id == "cupy-median-filter-v1"
     candidate = next(
         item
         for item in result.record.candidates
-        if item.implementation_id == "cupyx-median-filter-v1"
+        if item.implementation_id == "cupy-median-filter-v1"
     )
     assert candidate.parity_passed
     workload = workload_from_prepared_node_call(plan.registered.detached_call)
@@ -431,7 +435,7 @@ def test_real_node_benchmark_parity_on_current_compatible_cuda_device(tmp_path):
         )
         request = ComputeRequest(
             mode="custom",
-            node_preferences={node_id: "library:cupyx"},
+            node_preferences={node_id: "library:cupy"},
             allow_experimental=True,
         )
         environment, _warnings = probe_compute_environment(
@@ -441,8 +445,8 @@ def test_real_node_benchmark_parity_on_current_compatible_cuda_device(tmp_path):
         )
         if "cuda-cupy" not in environment.runtime_ids:
             pytest.skip(environment.probe_reason or "CUDA/CuPy is unavailable.")
-        if "cupyx" not in environment.implementation_libraries:
-            pytest.skip(environment.probe_reason or "CuPyX is unavailable.")
+        if "cupy" not in environment.implementation_libraries:
+            pytest.skip(environment.probe_reason or "CuPy is unavailable.")
 
         coordinator = ApplicationNodeBenchmarkCoordinator(
             registry,
@@ -458,12 +462,12 @@ def test_real_node_benchmark_parity_on_current_compatible_cuda_device(tmp_path):
         result = coordinator.run(plan)
 
         assert [spec.implementation_id for spec in plan.admitted_specs] == [
-            "cupyx-median-filter-v1"
+            "cupy-median-filter-v1"
         ]
         candidate = next(
             item
             for item in result.record.candidates
-            if item.implementation_id == "cupyx-median-filter-v1"
+            if item.implementation_id == "cupy-median-filter-v1"
         )
         assert candidate.parity_passed, candidate.error
         assert candidate.synchronized

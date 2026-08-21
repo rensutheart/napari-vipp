@@ -34,9 +34,10 @@ def _cuda_environment(**updates) -> ComputeEnvironment:
         "python_version": "3.12",
         "python_abi": "cpython-312",
         "runtime_ids": ("cpu-numpy", "cuda-cupy"),
-        "implementation_libraries": ("cpu", "cupyx"),
+        "implementation_libraries": ("cpu", "cupy", "cupyx"),
         "runtime_versions": (
             ("cuda-cupy", "14.1.1"),
+            ("cupy", "14.1.1"),
             ("cupyx", "14.1.1"),
         ),
         "scientific_stack_versions": (
@@ -111,7 +112,7 @@ def test_safe_integer_gaussian_returns_structured_exact_repair(dtype):
         "scaling": "preserve",
     }
     assert suggestion.candidate.runtime_id == "cuda-cupy"
-    assert suggestion.candidate.implementation_library_id == "cupyx"
+    assert suggestion.candidate.implementation_library_id == "cupy"
     assert "could become eligible for GPU use" in suggestion.message
     assert "preserve every pixel value exactly" in suggestion.message
     expected_factor = 4 if dtype == "uint8" else 2
@@ -120,10 +121,10 @@ def test_safe_integer_gaussian_returns_structured_exact_repair(dtype):
 
 def test_repair_contract_is_json_ready_and_validated():
     candidate = ComputeRepairCandidate(
-        "cupyx-gaussian-blur-v1",
+        "cupy-gaussian-blur-v1",
         "1",
         "cuda-cupy",
-        "cupyx",
+        "cupy",
     )
     suggestion = ComputeRepairSuggestion(
         "insert_convert_dtype",
@@ -170,10 +171,10 @@ def test_insert_conversion_contract_rejects_unreviewed_or_lossy_payloads(
     exact,
 ):
     candidate = ComputeRepairCandidate(
-        "cupyx-gaussian-blur-v1",
+        "cupy-gaussian-blur-v1",
         "1",
         "cuda-cupy",
-        "cupyx",
+        "cupy",
     )
 
     with pytest.raises(ValueError):
@@ -260,11 +261,9 @@ def test_preprobe_includes_only_a_valid_one_conversion_counterfactual():
             (valid,),
         )
 
-    assert [item.implementation_id for item in potential] == [
-        "cupyx-gaussian-blur-v1"
-    ]
+    assert [item.implementation_id for item in potential] == ["cupy-gaussian-blur-v1"]
     assert [item.implementation_id for item in execution_potential] == [
-        "cupyx-gaussian-blur-v1"
+        "cupy-gaussian-blur-v1"
     ]
     assert invalid == ()
 

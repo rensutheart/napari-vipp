@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from qtpy.QtWidgets import QApplication, QFormLayout
 
 from napari_vipp.core.compute import (
@@ -18,6 +19,7 @@ from napari_vipp.core.compute_registry import (
     RuntimeProbeResult,
 )
 from napari_vipp.ui.compute_setup import (
+    ComputeDeviceOption,
     ComputeSetupState,
     ComputeSetupTone,
     HostMemorySnapshot,
@@ -45,8 +47,15 @@ def _report(
     reason_code: str = "cuda_available",
     repair_command: str = "",
     memory_snapshot: RuntimeMemorySnapshot | None = None,
+    runtime_id: str = "cuda-cupy",
+    devices: tuple[RuntimeDevice, ...] | None = None,
+    selected_device_id: str | None = None,
 ) -> ComputeDoctorReport:
     available = status is DoctorStatus.AVAILABLE
+    if devices is None:
+        devices = (RuntimeDevice("cuda:0", "Test RTX", 24 * GIB),) if available else ()
+    if selected_device_id is None:
+        selected_device_id = devices[0].device_id if available and devices else ""
     return ComputeDoctorReport(
         status=status,
         reason_code=reason_code,
@@ -58,12 +67,10 @@ def _report(
         track="cuda13",
         repair_command=repair_command,
         runtime_probe=RuntimeProbeResult(
-            runtime_id="cuda-cupy",
+            runtime_id=runtime_id,
             available=available,
-            devices=(RuntimeDevice("cuda:0", "Test RTX", 24 * GIB),)
-            if available
-            else (),
-            selected_device_id="cuda:0" if available else "",
+            devices=devices,
+            selected_device_id=selected_device_id,
             reason_code=reason_code,
             message=summary,
         ),
@@ -109,6 +116,15 @@ def _form_rows(form: QFormLayout) -> list[tuple[str, str, str]]:
     return rows
 
 
+def _device_options(dialog: ComputeSetupDialog) -> list[ComputeDeviceOption]:
+    options = []
+    for index in range(dialog.device_combo.count()):
+        option = dialog.device_combo.itemData(index)
+        assert isinstance(option, ComputeDeviceOption)
+        options.append(option)
+    return options
+
+
 def test_dialog_initial_state_does_not_probe_or_offer_a_command(qtbot):
     calls = []
 
@@ -126,6 +142,11 @@ def test_dialog_initial_state_does_not_probe_or_offer_a_command(qtbot):
     assert not dialog.checking
     assert dialog.verify_button.isEnabled()
     assert dialog.verify_button.text() == "Verify GPU setup"
+    assert dialog.device_combo.count() == 1
+    assert dialog.device_combo.itemText(0) == "Automatic (runtime default)"
+    assert dialog.device_selection == ComputeDeviceOption(
+        "", "", "Automatic (runtime default)"
+    )
     assert dialog.progress.isHidden()
     assert dialog.command_edit.isHidden()
     assert dialog.copy_button.isHidden()
@@ -140,6 +161,119 @@ def test_dialog_initial_state_does_not_probe_or_offer_a_command(qtbot):
     ]
     assert calls == []
     assert pool.workers == []
+
+
+def test_verified_devices_follow_report_order_and_emit_exact_user_selection(qtbot):
+    devices = (
+        RuntimeDevice("accelerator:4", "First accelerator", 12 * GIB),
+        RuntimeDevice("accelerator:9", "Second accelerator", 48 * GIB),
+    )
+    report = _report(
+        runtime_id="future-runtime",
+        devices=devices,
+        selected_device_id="accelerator:9",
+    )
+    dialog, pool = _dialog(qtbot, doctor=lambda **_kwargs: report)
+    emitted = []
+    dialog.device_selection_changed.connect(emitted.append)
+
+    dialog.verify()
+    pool.workers[0].run()
+
+    expected = [
+        ComputeDeviceOption("", "", "Automatic (runtime default)"),
+        ComputeDeviceOption(
+            "future-runtime",
+            "accelerator:4",
+            "First accelerator",
+            12 * GIB,
+        ),
+        ComputeDeviceOption(
+            "future-runtime",
+            "accelerator:9",
+            "Second accelerator",
+            48 * GIB,
+        ),
+    ]
+    assert _device_options(dialog) == expected
+    assert dialog.presentation.default_runtime_id == "future-runtime"
+    assert dialog.presentation.default_device_id == "accelerator:9"
+    assert dialog.device_selection == expected[0]
+    assert emitted == []
+
+    dialog.device_combo.setCurrentIndex(2)
+
+    assert dialog.device_selection == expected[2]
+    assert emitted == [expected[2]]
+
+
+def test_explicit_stale_device_is_preserved_as_unavailable_until_it_returns(qtbot):
+    first = _report()
+    second = _report(
+        devices=(
+            RuntimeDevice("cuda:0", "Primary RTX", 24 * GIB),
+            RuntimeDevice("cuda:1", "Returned RTX", 16 * GIB),
+        ),
+        selected_device_id="cuda:0",
+    )
+    responses = iter((first, second))
+    dialog, pool = _dialog(qtbot, doctor=lambda **_kwargs: next(responses))
+    emitted = []
+    dialog.device_selection_changed.connect(emitted.append)
+
+    dialog.set_device_selection("cuda-cupy", "cuda:1", "Saved RTX")
+
+    assert dialog.device_selection == ComputeDeviceOption(
+        "cuda-cupy",
+        "cuda:1",
+        "Saved RTX",
+        available=False,
+    )
+    assert dialog.device_combo.currentText().endswith("— Unavailable")
+    assert emitted == []
+
+    dialog.verify()
+    assert not dialog.device_combo.isEnabled()
+    assert dialog.device_selection.device_id == "cuda:1"
+    pool.workers[0].run()
+
+    assert dialog.device_selection.device_id == "cuda:1"
+    assert not dialog.device_selection.available
+    assert dialog.device_combo.currentText().endswith("— Unavailable")
+
+    dialog.verify()
+    assert dialog.device_selection.device_id == "cuda:1"
+    pool.workers[1].run()
+
+    assert dialog.device_selection == ComputeDeviceOption(
+        "cuda-cupy",
+        "cuda:1",
+        "Returned RTX",
+        16 * GIB,
+    )
+    assert "Unavailable" not in dialog.device_combo.currentText()
+    assert emitted == []
+
+
+def test_device_selection_editability_is_stable_and_setter_requires_exact_ids(
+    qtbot,
+):
+    dialog, pool = _dialog(qtbot, doctor=lambda **_kwargs: _report())
+
+    dialog.set_device_selection_editable(False)
+    assert not dialog.device_combo.isEnabled()
+    dialog.set_device_selection()
+    assert not dialog.device_combo.isEnabled()
+    dialog.verify()
+    pool.workers[0].run()
+    assert not dialog.device_combo.isEnabled()
+
+    dialog.set_device_selection_editable(True)
+    assert dialog.device_combo.isEnabled()
+    with pytest.raises(ValueError, match="both be set or both be blank"):
+        dialog.set_device_selection("cuda-cupy", "")
+    with pytest.raises(TypeError, match="boolean"):
+        dialog.set_device_selection_editable(1)
 
 
 def test_verification_is_queued_once_and_repeated_calls_do_not_overlap(qtbot):
@@ -160,6 +294,7 @@ def test_verification_is_queued_once_and_repeated_calls_do_not_overlap(qtbot):
     assert dialog.progress.isVisibleTo(dialog)
     assert not dialog.verify_button.isEnabled()
     assert not dialog.track_combo.isEnabled()
+    assert not dialog.device_combo.isEnabled()
     assert len(pool.workers) == 1
     assert calls == []  # starting verification never runs the doctor inline
 
@@ -167,6 +302,7 @@ def test_verification_is_queued_once_and_repeated_calls_do_not_overlap(qtbot):
 
     assert not dialog.checking
     assert calls == [{"track": "cuda13", "refresh": True}]
+    assert dialog.device_combo.isEnabled()
 
 
 def test_success_renders_separate_ram_and_vram_rows(qtbot):
@@ -224,8 +360,7 @@ def test_success_renders_separate_ram_and_vram_rows(qtbot):
         (
             "VIPP GPU coverage",
             "No reviewed regions available",
-            "Only reviewed combinations are offered automatically; "
-            "CPU remains safe.",
+            "Only reviewed combinations are offered automatically; CPU remains safe.",
         ),
     ]
 

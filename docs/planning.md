@@ -1,997 +1,804 @@
-# napari-vipp Planning And Roadmap
+# napari-vipp Active Roadmap
 
-Last reviewed: 2026-08-14
+Last reviewed: 2026-08-20
 
-This is the concise source of truth for VIPP's product direction, active
-priorities, and intended release order. Detailed implementation contracts and
-completed engineering records belong in the specialist documents linked below;
-version-by-version delivered detail belongs in the [changelog](../CHANGELOG.md).
+This document is the concise source of truth for active product priorities and
+release order. Delivered chronology and old qualification detail are preserved
+in the [0.13 planning archive](planning-history-0.13.md) and
+[changelog](../CHANGELOG.md). Concepts that are worth retaining but are not
+committed to a release belong in [product ideas](product-ideas.md).
+
+The batch variability, volume-crop, and large-image work below incorporates
+early tester feedback from Tom Naber on
+[pull request 13](https://github.com/rensutheart/napari-vipp/pull/13).
 
 ## Product Direction
 
-VIPP is a napari-native visual workflow builder for bioimage analysis. The graph
-canvas is the primary work surface: users should be able to build, inspect,
-reuse, export, batch-run, and publish workflows without losing the connection
-between pixels, semantic axes, calibration, acquisition metadata, tables, and
-provenance.
-
-The product is organized around complete scientific workflows:
-
-- segmentation and label cleanup for 2D and true 3D data;
-- object, intensity, mesh, and skeleton measurements;
-- two-channel pixel and object colocalization;
-- multi-channel, z-stack, time-lapse, and multi-scene fluorescence data;
-- native PSF generation and PSF-aware restoration/deconvolution;
-- microscope acquisition import with normalized axes, channels, objective, and
-  scale metadata; and
-- reproducible interactive, batch, generated-Python, and command-line
-  execution with explicit outputs.
-
-PSF generation, deconvolution foundations, and optional microscope-reader
-routing are part of the 0.11 baseline; explicit batch configuration and
-provenance are part of 0.12. Version 0.13.0a1 brought the first usable,
-evidence-gated GPU regions into the ordinary product; a2 corrected fresh-graph
-GPU planning, a3 enabled local qualification on compatible secondary NVIDIA
-hardware, and a4 replaced the device-model allowlist with the current
-architecture and environment gates. Compute intent and exact implementation
-provenance now span interactive, batch, generated Python/CLI, and export
-execution. Version 0.13.0a5 added branded launch profiles, the non-mutating
-Windows installer planner, its transactional apply engine, and a per-user
-Windows bootstrapper. Version 0.13.0a6 adds atomic insertion before a named
-tunnel, multi-node selection and movement, validated graph-fragment copy/paste,
-exact-operation value transfer, clearer compute diagnosis and qualification,
-and the first shared multi-series source slice. Version 0.13.0a7 adds visible
-one-click dtype repairs for GPU-blocked nodes, readable optimizer evidence,
-a reviewed GPU segmentation corridor, and a broader documented
-Richardson-Lucy CPU/GPU agreement region without rewriting authored settings.
-
-The differentiator is not the number of nodes or GPU badges. VIPP should make a
-complete workflow portable across CPU and supported accelerators, preserve its
-scientific meaning, explain every automatic decision or fallback, and produce
-enough evidence for another person to review or reproduce the run.
-
-Near-term work therefore has six connected goals:
-
-1. complete and qualify the novice-first Windows installer distribution;
-2. harden the 0.13 field experience and broaden the validated compute matrix;
-3. complete coherent GPU-resident workflow regions rather than isolated nodes;
-4. establish one first-class model for files, series, scenes, groups, wells,
-   fields, and selected axis items;
-5. make large OME-Zarr data deliberate through pyramids, lazy/chunked
-   capabilities, and materialization safeguards; and
-6. turn validation, batch recovery, graph reuse, and reproducibility export
-   into ordinary product features.
-
-Registration, model-backed segmentation, stitching, specialist surface/mesh
-exchange, and AI-assisted graph authoring remain later milestones. They should
-not displace the source, scale, validation, and reproducibility foundations.
-
-## Reference Documents
-
-- [architecture.md](architecture.md): implementation architecture, data model,
-  persistence, and known seams.
-- [user-guide.md](user-guide.md): current end-user workflow behavior.
-- [node-roadmap.md](node-roadmap.md): implemented node families and candidate
-  scientific operations.
-- [io-user-guide.md](io-user-guide.md) and [ome-io-plan.md](ome-io-plan.md):
-  supported I/O, source inspection, `ImageDataset`, and OME architecture.
-- [cache-and-memory.md](cache-and-memory.md): cache modes, memory guard, and the
-  current eager-versus-lazy boundary.
-- [psf-and-deconvolution-plan.md](psf-and-deconvolution-plan.md): PSF,
-  deconvolution, microscope metadata, and validation requirements.
-- [gpu-production-implementation-plan.md](gpu-production-implementation-plan.md):
-  CPU/Auto/Prefer-GPU/Custom behavior, implementation admission, residency,
-  fallback, benchmarking, memory, packaging, and detailed GPU delivery records.
-- [durable-gpu-execution.md](durable-gpu-execution.md): shared interactive,
-  batch, generated-Python/CLI, and export execution semantics.
-- [cucim-windows-source-evaluation.md](cucim-windows-source-evaluation.md) and
-  [cucim-windows-port-plan.md](cucim-windows-port-plan.md): the pinned private
-  Windows build, measured promote/defer decisions, and possible upstream/full
-  Clara direction.
-- [measurement-workflows.md](measurement-workflows.md),
-  [skeleton-nodes.md](skeleton-nodes.md), and
-  [object-mesh-morphology-plan.md](object-mesh-morphology-plan.md): measurement
-  workflow guidance.
-- [analytical-phantom-validation.md](analytical-phantom-validation.md),
-  [colocalization-method-notes.md](colocalization-method-notes.md), and
-  [research-and-publication.md](research-and-publication.md): current validation
-  and publication-facing evidence.
-- [mitomorph-feature-parity.md](mitomorph-feature-parity.md): MitoMorph-inspired
-  feature parity tracking.
-- [desktop-startup-and-installer-plan.md](desktop-startup-and-installer-plan.md):
-  branded launch profiles, the in-napari loading host, the separate local-build
-  cuCIM bundle, and the staged Windows/Linux/macOS installer plan.
-
-## Current Public Baseline
-
-Current published alpha release: `0.13.0a7`.
-
-The `0.13.0a7` public baseline includes:
-
-- workflow schema 4 with portable CPU/Auto/Prefer-GPU/Custom intent and durable
-  per-node preferences;
-- collection batch schema 3 with source-axis declarations, explicit outputs,
-  deterministic planning, cancellation, checkpoints, manifests, and exact
-  implementation provenance;
-- one shared execution contract across interactive, batch, generated Python,
-  CLI, and exported outputs;
-- independent workflow tabs, searchable graph authoring, typed ports, tunnels,
-  notes, undo/redo, manual/cached nodes, isolated tuning, and memory controls;
-- OME-NGFF-inspired image/table metadata, OME-TIFF/ImageJ TIFF/common
-  raster/NumPy I/O, local OME-Zarr 0.4/0.5 I/O, and initial optional microscope
-  reader routing;
-- PSF generation and preparation, RL and RL-TV deconvolution, segmentation,
-  label cleanup, measurements, skeleton/network analysis, colocalization, and
-  spatial-association workflows; and
-- reviewed accelerator regions for background subtraction, median, Gaussian,
-  lossless dtype conversion, channel extraction, binary threshold, boolean
-  mask cleanup, RL/RL-TV, Canny, Otsu, Sigma Filter, connected components, and
-  basic object measurements in their exact admitted environments and
-  workloads.
-
-Important present limits:
-
-- CPU remains the portable scientific reference and fallback path;
-- normal public GPU admission is deliberately narrow and is currently backed by
-  exact native-Windows CUDA 13 / RTX 5090 evidence;
-- the standard CUDA extras do not distribute or require cuCIM; Windows users
-  build the pinned optional wheel locally for themselves;
-- interactive sources and most operations remain eager even where a reader can
-  expose lazy data;
-- one physical file may contain several scientifically distinct source items,
-  but that identity is not yet modeled consistently across every reader and
-  batch route; and
-- validation is strong for calibrated morphology but uneven across
-  colocalization, watershed, skeleton/network analysis, real PSFs,
-  microscope-metadata normalization, interrupted batch replay, and OME-Zarr
-  round-tripping.
-
-## Ordered Product Priorities After 0.13.0a7
-
-The order below reflects the post-0.13.0a7 perspective. Work with disjoint
-ownership may proceed in parallel, but a later feature does not bypass the
-scientific, compatibility, and operational gates of an earlier foundation.
-
-### Delivery Baseline: Desktop Startup And Installation
-
-The `0.13.0a5` launcher provides branded Automatic, CPU-only,
-and Prefer-GPU graphical entry points with real startup milestones, plus a
-lightweight loading host when the plugin is opened inside napari. A separate
-deterministic Windows cuCIM bundle performs the verified pinned build locally
-and contains no redistributable cuCIM wheel.
-
-The Windows planner inspects managed CPU/CUDA and
-explicitly selected existing-napari routes without changing packages, files,
-shortcuts, or the registry. It records the interpreter, target, conservative
-disk reserve, stable validation issues, top-level release requirement,
-acceptance commands, shortcuts, and rollback boundary in deterministic schema
-v1 JSON. Its transactional apply engine and per-user Windows bootstrapper are
-included in `0.13.0a5`. Linux and macOS installers should reuse the same
-headless environment-plan contract. The Windows `.exe`
-must become the first installation route in the README, quick start, release
-notes, and versioned manual; existing-napari, planner, and raw pip instructions
-remain advanced routes. The signed Windows filename remains reserved for a
-valid Authenticode artifact; an unsigned alpha must use `-UNSIGNED` and include
-checksum-first Windows-warning instructions.
-Linux GPU and Apple acceleration remain gated by their independent platform
-qualification. See the [quick start](quick-start.md) and
-[desktop startup and installer plan](desktop-startup-and-installer-plan.md).
-
-The primary installer persona is a physiologist with no assumed knowledge of
-Python, napari environments, CUDA packages, or dependency management. The
-managed path must automatically recommend the safe CPU or qualified GPU setup,
-describe only its practical effect, and use one **Install VIPP** confirmation.
-Interpreter paths, package-resolution details, rollback boundaries,
-existing-napari mutation, and manual compute selection belong under
-**Advanced details**. Internal safety checks remain strict, but they must not
-be presented as a chain of technical approvals the user has to understand.
-
-### Delivery Baseline: GPU Qualification
-
-Phase 1 is implemented headlessly and interactively:
-CPU/Auto/Prefer-GPU/Custom and per-node/benchmark contracts, unified
-execution, the dedicated CUDA development/doctor path, and production-parity
-Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian adapters. Phase 2B
-also has a public-candidate ordinary CuPy Richardson-Lucy backend, ordered
-multi-input exact benchmarking, and per-device accelerator coordination. Its
-checkpoint-backed finite-float32, odd-PSF, default-safe envelope now covers authored
-`filter_epsilon` values from `1e-12` through `1e-6` and 1 through 100
-iterations under `rl-scientific-equivalence-v2`; parameters are never rewritten
-to enter the region. Phase 2C adds a
-public-candidate CuPy RL-TV provider without changing the existing formula,
-sign, central-gradient stencil, initialization, padding, floor, or defaults.
-Its lambda-zero profile inherits ordinary RL's strict gate; its initial
-positive-TV profile covers only the exact shipped parameter tuple at the
-measured 10- and 25-iteration points under a separately versioned nonlinear
-parity study. Lambda-zero inherits ordinary RL's expanded region. Phase 3A adds
-implemented, exact-mask CuPy/CuPyX Canny and Otsu providers with explicit luma,
-stack/slice, progress, cancellation, memory, and CPU-fallback contracts. Their
-validated regions are normal public `Auto`/`Custom` candidates;
-`developer_hidden` is reserved for incomplete or unvalidated work.
-Phase 4 adds the public clean-room Sigma Filter and its fused CuPy provider.
-Phase 5 completes Connected Components with an exact CuPyX provider for boolean
-2D/3D masks. It preserves SciPy-identical native `int32` IDs for face and full
-connectivity, restarts IDs in every independent leading block, keeps compatible
-segments resident, and exposes truthful block-boundary progress/cancellation.
-Numeric nonzero-mask conversion, 1D labeling, oversized blocks, and unvalidated
-environments visibly remain on CPU. A single plane or volume is currently one
-atomic CuPyX call, so finer mid-volume progress/cancellation remains explicit
-future work. Both phases are normal public candidates only inside their pinned
-validated regions.
-Phase 6 adds cuCIM candidates for the exact basic schemas of `Measure Objects`
-and `Measure Objects + Intensity`, followed by an exact typed host-table
-finalizer that preserves schema, order, units, missing-value behavior, and
-deterministic provenance. Other measurement profiles remain visibly on CPU.
-Normal public admission fails closed to native Windows, CUDA runtime API 13.2
-(`13020`), a matching numeric driver API at least 13.3 (`13030`), an NVIDIA
-CUDA device with compute capability at least 7.5, and the exact pinned Python,
-scientific-stack, CuPy, provider, and cuCIM provenance gates. CUDA 12 remains
-qualification-only and outside public admission. Auto, Prefer GPU, and Custom
-use this same qualifying-device policy; the GPU model is recorded provenance,
-not an exact-model admission gate. `Find fastest pipeline…` additionally
-requires node parity and changed-boundary whole-pipeline parity before
-proposing a forced preference. The applied preference is machine-local intent,
-not reusable cross-device performance evidence, and a manually authored Custom
-preference has no attached parity proof. Users should rerun Find Fastest after
-any environment or workload change.
-
-Floating-point results can vary slightly across GPU models and driver/JIT
-combinations within an operation's declared tolerance; integer operations with
-a bitwise parity contract remain exact. Reproducible publications should report
-the VIPP version, GPU model, compute capability, driver API, CUDA runtime,
-CuPy/cuCIM versions, authoritative CPU scientific-stack versions, workflow,
-parameters, and actual per-node implementations recorded by execution
-provenance.
-
-RL-family v2 agreement uses NRMSE `<= 0.005` together with
-`max_abs <= 1e-6 + 0.005 * max(abs(CPU reference))`, plus equal shape and
-`float32` dtype, identical finite masks, completely finite results, and
-nonnegative output for the default clipped contract. The previous ordinary-RL
-NRMSE `2e-6` result and maximum ULP remain diagnostics, not admission gates.
-This 0.5% margin is an engineering comparison against VIPP's CPU backend. It is
-not a scientific-validity or image-quality threshold; PSF suitability,
-iteration stopping, artifacts, recovered resolution, intensity fidelity, and
-downstream measurements require separate validation.
-Machine-local large-stack timing now records 45.03x, 85.06x, and 94.58x paired
-median speedups on the RTX 5090 for one real 8.51-million-voxel ND2 volume and
-16.78/67.11-million-voxel 3D shape stresses, respectively. Those short
-descriptive results are not a reusable optimizer record or cross-platform claim;
-see the
-[raw and readable timing evidence](benchmarks/rl-cupy-performance-windows-rtx5090.md).
-The matching positive-TV screen records 78.61x and 83.02x paired median
-speedups for the private 8.51-million-voxel volume and a 16.78-million-voxel
-shape stress; see the
-[RL-TV timing evidence](benchmarks/rl-tv-cupy-performance-windows-rtx5090.md).
-The source-current schema-v3 Canny/Otsu screen passed all 28 exact-mask admission cases.
-On the 8x1024x1024 `uint16` stack, transfer-inclusive Canny and Otsu speedups
-were 19.51x and 5.92x; on the privacy-redacted 8.51-million-voxel ND2 volume
-they were 16.40x and 5.28x. Both providers passed bounded-memory,
-cancellation, zero-residue cleanup, source-integrity, and strict private-metadata
-checks. See the
-[Canny/Otsu evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md); these are
-single-host descriptive measurements, not portable Auto choices.
-The toolbar now has the CPU/Auto/Prefer-GPU/Custom policy slice. Prefer GPU
-considers every reviewed eligible accelerator region without applying Auto's
-CPU-versus-GPU timing gate, while retaining transfer-economics placement so a
-lightweight host view does not upload data that it will immediately discard.
-Custom retains node choices and benchmarking. Actual backend badges and
-the single message strip distinguish major and actionable paths by severity.
-Optimizer UI lifecycle/snapshot hardening continues alongside the maintained
-next order.
-Completed but speed-inconclusive optimizer comparisons remain reviewable: the
-current assignment is retained with no Apply action, while a node-grouped table
-shows every tested implementation and offers optional compute, transfer,
-first-run, memory, and evidence details. This prevents a whole-pipeline timing
-tie from being mistaken for GPU ineligibility.
-RL/RL-TV evidence ownership is isolated from broad shared-file hashes;
-Measurements and durable batch/generated/export execution are implemented.
-The maintained next order is native-Linux evidence, broader multi-device
-performance characterization, M1 Max CPU qualification followed by an
-Apple-provider study, general cuCIM/Clara packaging, explicit Convert
-Dtype/residency bridges, and additional reasonable GPU node regions. See the
-[GPU production plan](gpu-production-implementation-plan.md) and
-[Phase 5 record](gpu-phase5-connected-components-implementation-report.md).
-
-### Continuous Delivery Gates
-
-Two delivery lanes apply continuously across every numbered priority; they are
-not deferred until a later milestone:
-
-- **Scientific validation:** every new operation, provider, reader contract, or
-  execution mode ships with evidence proportionate to its claim. CPU-oracle GPU
-  parity, external/golden-method comparison, metadata round-trips, and
-  publication-grade biological validation are distinct claims and must not be
-  substituted for one another.
-- **Enabling architecture and quality:** split accelerator declarations into
-  family-owned modules before parallel GPU expansion; generate one current
-  capability manifest while retaining immutable promotion records; consolidate
-  parity, lifecycle, memory, and performance evidence in the shared admission
-  harness; retain schema/provenance compatibility goldens and CPU-only loading
-  tests; and track transfer, memory, and performance regressions on stable
-  hardware. Converge foreground and background calculation on one execution and
-  result service while preserving the low-latency interactive path. Extract
-  source-inspection, run-coordination, and generated-layer controllers only when
-  that work enables a roadmap outcome. Define first-class points, transforms,
-  and surfaces before adding dependent algorithm families.
-
-### 1. Coherent Toolbar And Settings Experience
-
-The next release must clean up the toolbar and Settings menu as one connected
-user experience. Their current controls feel disjointed and are not always
-intuitive to discover or interpret, particularly as controls move between the
-toolbar and Settings at narrower widths. Reorganize related actions and
-preferences into clear, predictable groups, use consistent labels and state
-presentation, and add familiar icons where they improve recognition without
-making the interface ambiguous or visually busy. Preserve keyboard access,
-tooltips, responsive behavior, and explicit compute-policy semantics while
-bringing the layout and terminology into a coherent whole. The detailed UI
-work packages are tracked in [app-improvements-plan.md](app-improvements-plan.md).
-
-Release acceptance should include a focused toolbar/Settings usability pass on
-the novice Windows path and a regression check that every existing action
-remains reachable, has an understandable label or tooltip, and retains its
-current behavior after reorganization.
-
-The next release must also make accelerator choice observable and controllable:
-users should be able to see which qualifying GPU VIPP is using, select among
-available supported devices where the environment permits it, and distinguish
-the compute device from the host display or integrated graphics device. The
-active device, provider, and actual per-node backend should be visible in the
-compute status and diagnostic surfaces, with clear explanations when a node
-stays on CPU or when data crosses host/device boundaries.
-
-The release should investigate and reduce avoidable transfer and synchronization
-overhead in GPU workflows, starting with cuCIM Subtract Background and
-interactive parameter updates. Instrument host-to-device/device-to-host copies,
-residency, synchronization, initialization, and queueing before optimizing;
-then retain compatible data on the selected device and avoid repeated staging
-where correctness, cancellation, memory limits, and cleanup remain intact. See
-the existing [Prefer GPU tuning issue](https://github.com/rensutheart/napari-vipp/issues/27).
-
-### 2. Field Hardening And Supported Compute Reach
-
-Priority 1 engineering is delivered in `0.13.0a6`:
-
-- the a5 published unsigned installer, release manifest, checksum sidecar, and
-  no-wheel cuCIM ZIP were independently rechecked; a6 carries the same
-  checksum-first contract and exposes the shortest official route in the
-  primary guides;
-- CI defines genuinely clean wheel and source-archive installations across
-  Windows, Linux, macOS, and both supported Python versions;
-- Compute Doctor separately reports CUDA runtime health, optional CuPyX/cuCIM
-  usability, and the current live VIPP admission catalogue. It gives one repair
-  action and exports an atomic, recursively privacy-redacted support bundle;
-- one strict real-GPU admission command accounts for all 13 public GPU
-  implementations and requires owned parity, adversarial, metadata,
-  input-integrity, memory, cancellation, cleanup, fallback, provenance, and
-  transfer-inclusive timing evidence;
-- the scheduled Windows cuCIM workflow reproducibly checks the public no-wheel
-  bundle on hosted CI and defines a protected, explicitly enabled real-CUDA
-  build/Doctor/admission route for a dedicated self-hosted runner;
-- the Imaris `.ims`, Set Microscope Metadata, and multi-series collection-batch
-  contributions from pull requests 8, 10, and 13 were absorbed through the
-  shared source, metadata, execution, naming, and provenance contracts; and
-- the optional-preview and cancellation reports in issues 11 and 14 pass the
-  current Windows regression suite. They remain open until their macOS
-  reporters or equivalent environments verify the released behavior.
-
-A strict `quick` integration run for the a6 catalogue on the local RTX 5090
-completed all 16 owners and all 130 implementation/facet mappings. Because it
-ran from a dirty feature worktree, its temporary artifacts are integration
-evidence only; they were not promoted into the canonical benchmark record or
-used to broaden public support.
-
-The integrated Convert Dtype Preserve region expanded the then-current
-catalogue to 14 public GPU implementations, 18 executable owners, and all 140
-required implementation/facet mappings. That strict RTX 5090 `quick` run
-passed on 2026-08-13 in 989.4 seconds (aggregate SHA-256
-`c31b230b1ccf67cfc2c5c65d66b55391bf6e421f0e5b71023b5d6463791cffe9`).
-It remains dirty-worktree integration evidence until repeated from an immutable
-candidate commit; it does not by itself broaden supported hardware or describe
-later additions to the live catalogue.
-
-The current mask-cleanup development slice expands the live strict catalogue
-to 18 public GPU implementations and 23 executable owners. Its RTX 5090 quick
-evidence passed exact parity, lifecycle, memory, provenance, and
-transfer-inclusive timing checks from the feature worktree. The resulting
-artifact remains temporary integration evidence until the suite is repeated
-from an immutable candidate commit; it does not promote these Custom regions
-to Auto or broaden the supported hardware matrix.
-
-The remaining Priority 1 items are deliberately field qualification, not
-unfinished implementation:
-
-- run the exact published executable on a fresh qualified-CUDA Windows account,
-  including a live path with spaces and the pre-download guidance from a
-  rejected non-ASCII canonical CUDA path in Automatic and explicit CUDA modes;
-  verify exact per-track Local-App-Data roots, rejection of every custom
-  managed root, the offered CPU route, a separate non-mutating
-  existing-environment review, plus separately recorded prior-transaction
-  recovery and the Installed-apps action for an older owned incompatible CUDA
-  copy, while retaining separate Unicode-path coverage on CPU;
-- exercise exact-artifact cancellation and terminal network-failure rollback
-  while proving that a previous working copy remains usable;
-- complete the timed novice path through installation, Compute Doctor, a first
-  example, owned data, save/reopen, visible fallback, and a small batch;
-- register and protect the dedicated Windows CUDA canary runner before calling
-  its scheduled real-GPU job operational; and
-- collect reviewed evidence on at least one Windows RTX 40-series machine and
-  one named native-Linux CUDA 12/13 environment. WSL2 remains separate evidence.
-
-The [field-acceptance form](windows-installer-field-acceptance.md) records those
-outcomes consistently and keeps every unrun check visibly pending. Earlier
-development-installer runs, unit tests, or a different artifact remain useful
-supporting evidence, never substitutes for the exact field check.
-
-Release acceptance is not merely a successful CUDA import. A supported machine
-must receive truthful admitted-node results, unsupported machines must receive a
-clear CPU decision or repair path, and the base package must stay healthy on
-Windows, macOS, and Linux without accelerator packages.
-
-### 2. Complete Coherent GPU-Resident Workflows
-
-GPU work should be chosen by end-to-end workflow value and transfer count, not
-by the number of accelerated nodes or isolated kernel speed. The first target is
-a standard-CUDA segmentation corridor that does not require cuCIM:
-
-```text
-Extract Channel
-  -> Gaussian or Sigma Filter
-  -> Binary Threshold
-  -> Remove Small Objects / Fill Holes
-  -> Connected Components
-  -> Label Output
-```
-
-When a verified private cuCIM build is present, the enhanced corridor may add
-device-resident Subtract Background before filtering and basic Measurements at
-the end. Without cuCIM, VIPP must retain the CPU reference/fallback and must not
-present the enhanced corridor as standard CUDA coverage.
-
-Feature Sequence A's first release-blocking implementation wave contains only
-what is needed to close and validate the standard corridor:
-
-1. explicit `Convert Dtype`: the exact `uint8`/`uint16` to `float32` Preserve
-   region and its visible one-click repair are integrated; bool, carefully
-   bounded clip semantics, and any later rescale promotion remain separate
-   evidence-gated regions;
-2. the initial exact Extract Channel allocation-sharing view and scalar
-   `float32` Binary Threshold regions enter as reviewed public Custom/Prefer-GPU
-   candidates; Auto promotion still requires multi-device, transfer-inclusive
-   evidence;
-3. boolean Remove Small Objects and the exact fill-all-holes region enter as
-   reviewed public Custom/Prefer-GPU candidates, while integer-label cleanup
-   and positive bounded-hole sizes remain visible CPU regions; and
-4. the existing exact int32 Connected Components output closes and verifies
-   the label-output bridge without inventing another node.
-
-Crop, Select Axis Slice, Reorder Axes, Clip, Mask Image, logical/arithmetic
-operations, projections, broader binary morphology, label cleanup, additional
-filters, and additional thresholds are ranked follow-ups. Promote them by
-measured transfer/fallback hotspots in real workflows, not as an undifferentiated
-first-wave catalogue.
-
-The second wave may add distance transform, H-Maxima, Expand Labels, extended
-measurements, and bounded colocalization regions after their exact scientific
-contracts are validated. Watershed, bilateral/non-local-means filtering,
-reduction-heavy Costes colocalization, skeleton/network algorithms, and mesh
-work remain later or higher-risk because ties, label identities, floating
-reductions, memory, and cancellation require stronger evidence.
-
-Provider direction:
-
-- CuPy/CuPyX is the ordinary implementation substrate for views, pointwise
-  operations, filtering, thresholding, morphology, and residency bridges;
-- cuCIM remains optional and operation-specific, preferred only where it offers
-  unique coverage or a measured complete-adapter advantage, currently most
-  notably rolling-ball background and basic measurement regions;
-- VIPP will not host or redistribute the private native-Windows cuCIM wheel;
-  each user builds the documented pinned source for their own environment. A
-  future Clara/upstream contribution is a separate, time-boxed investigation,
-  not a packaging promise;
-- investigate a CuPy/CuPyX basic-measurement fallback and time-box an exact
-  alternative rolling-ball study, but retain the CPU reference rather than
-  weakening semantics to avoid a local cuCIM build; and
-- never silently insert casts, reorder axes, alter parameters, or change
-  dimensional meaning merely to make a GPU implementation eligible.
-
-The first bounded one-click repair is **Add conversion** for exact
-`uint8`/`uint16` to `float32` conversion with `Scaling = Preserve`. VIPP offers
-it only when dtype is the sole blocker for an otherwise supported GPU path and
-the current environment has a qualifying provider. Accepting the action inserts
-a normal, visible **Convert Dtype** node on the affected input wire and records
-one undoable graph edit; it does not rewrite other branches behind the user's
-back. Before insertion it states that `float32` uses four times the input bytes
-of `uint8` or twice those of `uint16`. The refreshed message must say
-**GPU eligible**, not present eligibility
-as a guarantee of GPU use: compute mode, workload policy, memory, runtime
-health, and later graph changes may still select CPU or produce a visible
-fallback. Lossy, clipping, rescaling, or otherwise unproved conversions require
-review rather than this shortcut.
-
-New providers should normally enter as reviewed Custom/Prefer-GPU choices, then
-become Auto candidates only after multi-device, transfer-inclusive evidence.
-The principal success measures are whole-workflow wall time, host/device transfer
-count and bytes, observed peak VRAM, cancellation/cleanup behavior, visible
-fallback rate, and scientific parity. A canonical linear GPU workflow should
-aim for one host-to-device and one device-to-host boundary when only one terminal
-output is retained. Previewing, branching to, or retaining intermediate results
-creates additional legitimate boundaries. At a host entry, CPU Extract Channel
-can reduce a multichannel source before upload; a resident GPU Extract Channel
-instead keeps the full source allocation alive and exposes an allocation-sharing
-view. Transfer count and transferred bytes must therefore both be reported.
-
-### 3. First-Class Source Items And Acquisition Metadata
-
-The LIF collection problem is one symptom of a broader model gap: one path is
-not necessarily one scientific image. VIPP needs a durable `SourceItem` concept
-that can represent:
-
-- one standalone file;
-- one series, scene, position, or acquisition item inside a file;
-- one OME-Zarr image, label group, or selected multiscale level;
-- one plate/well/field item; and
-- one explicitly selected timepoint, channel, z-slice, or semantic-axis
-  combination when iteration is requested.
-
-The source-item identity must be stable enough to drive interactive selection,
-batch rows, naming tokens, metadata-key pairing, source hashes, replay, and
-provenance. It must retain container identity and item identity separately.
-
-Required product behavior:
-
-- a concise source inspector for series/scenes/positions, raw and effective
-  axes, shape, scale/units, channels, objective/acquisition metadata, and an
-  estimated materialization cost;
-- selection and slicing before materialization when ND2, OME-Zarr, or another
-  resource-backed reader can avoid decoding an entire acquisition;
-- normalized mappings for axes, channels, wavelengths, objective NA and
-  magnification, immersion/refractive index, detector/acquisition context,
-  series/scene identity, and plate/well/field where present;
-- explicit states such as supported, experimental, and metadata-incomplete;
-- semantic-axis batch iteration and HCS traversal only through a saved,
-  reviewable contract, never inferred silently from filenames or directory
-  layout; and
-- public/synthetic reader fixtures plus controlled private real-file evidence
-  where licensing or size prevents redistribution.
-
-The first compatible slice is now delivered: `.ims` uses the shared microscope
-reader path, Set Microscope Metadata updates carried channel/acquisition facts
-without changing pixels, and collection batch expands inspected multi-series
-containers into named items used by preview, output naming, manifests, and
-provenance. Those fields are not yet the complete durable `SourceItem` model;
-the remaining work is to unify their identity across interactive selection,
-OME-Zarr groups/levels, plate/well/field traversal, replay, and semantic-axis
-iteration. That foundation also supplies the metadata needed for PSF generation,
-deconvolution, calibrated measurement, output naming, and publication
-provenance.
-
-### 4. OME-Zarr Scale, Preview, And Lazy Execution
-
-VIPP already reads and writes local OME-Zarr 0.4/0.5 data and can retain lazy
-reader arrays internally, but ordinary interactive graph execution still
-materializes complete selected sources. The next scale work is:
-
-- generate useful multiscale pyramids and metadata for exported image datasets;
-- select suitable pyramid levels for thumbnails and inspector previews while
-  keeping analysis-resolution data explicit and unchanged;
-- declare each operation as appropriate combinations of view-only, lazy-safe,
-  chunkable, overlap/halo-dependent, global-reduction, eager-only,
-  memory-heavy, and scale-aware;
-- warn and request confirmation before an eager-only operation materializes an
-  enormous lazy source;
-- add chunked/tiled execution only where boundaries, overlap, global state, and
-  exactness are explicitly defined—never through hidden analysis sampling;
-- round-trip label colors and label-property tables where practical;
-- calibrate memory estimates against observed host/GPU high-water use and avoid
-  rejecting safe resident chains solely through accumulated conservative
-  overestimation; and
-- investigate anonymous HTTP access for public OME-Zarr datasets after local
-  identity, cache, and failure semantics are stable.
-
-Preview resolution, presentation statistics, and scientific analysis resolution
-must remain visibly distinct. A faster thumbnail must never change an
-operational result.
-
-### 5. Workflow Health And Guided Corrections
-
-The improved `QYX` batch experience establishes a general UI rule: present one
-primary problem, recommend one safe action, and explain what VIPP changed.
-
-The workflow-health direction is:
-
-- replace walls of technical diagnostics and repeated per-node errors with one
-  concise primary issue plus optional advanced details;
-- choose sane defaults where evidence is sufficient, while making every
-  persisted change visible and allowing an explicit opt-out;
-- show automatic corrections as readable proposed or completed actions rather
-  than requiring users to type internal grammar such as `QYX -> ZYX`;
-- summarize source axes, calibration, selected item, output intent, estimated
-  memory, and compute eligibility in plain language;
-- provide a local exportable compute report answering what used CPU/GPU, what
-  fell back, and why; and
-- use the same issue/action model in interactive calculation, Batch workspace,
-  Compute Doctor, generated runners, and saved provenance.
-
-Automatic help must remain conservative: VIPP may explain or apply a reviewed
-UI-level default, but it must not invent calibration, silently reorder pixels,
-change scientific parameters, or hide incompatible source items.
-
-### 6. Reproducibility Package And Resumable Batch
-
-VIPP already creates the individual ingredients of a reproducible run. Add one
-`Export reproducibility package` action that gathers a reviewed set containing:
-
-- workflow JSON and canonical scientific hash;
-- batch configuration and generated runner where applicable;
-- environment and package records;
-- manifests, item checkpoints, exact implementation provenance, fallbacks, and
-  output digest links;
-- stable source identities and metadata summaries;
-- validation notes; and
-- optional small reference outputs or previews explicitly labeled as such.
-
-The package need not and should not silently include restricted raw image data.
-Its inventory must say what is embedded, referenced, omitted, or privacy-
-redacted, and the related files should be staged and published atomically where
-practical.
-
-Turn batch checkpoints from a recovery trail into an explicit automatic-resume
-feature. Resume must:
-
-- verify workflow/config hashes, schemas, source identities, destinations, and
-  prior checkpoint integrity before work starts;
-- preserve completed items and resume only incomplete, cancelled, or selected
-  failed items;
-- respect current collision and publication policy without silently
-  overwriting completed outputs;
-- record the relationship between the original and resumed run; and
-- remain interruptible, checkpointed, and truthful when an operation itself is
-  only cooperatively cancellable.
-
-Maintain an immutable compatibility corpus for released workflow, batch-config,
-manifest, execution-provenance, generated-runner, and unknown-GPU-preference
-documents. Loading and migration must preserve the original, remain CPU-safe on
-machines without accelerators, and demonstrate scientific-hash stability where
-the semantics are unchanged.
-
-### 7. Publication-Grade Scientific Validation Packs
-
-GPU parity proves that an accelerator reproduces VIPP's CPU reference inside a
-declared tolerance; it does not by itself prove that the method is biologically
-or externally correct. Validation starts with every scientific delivery under
-the continuous gate above; this priority turns that evidence into maintained,
-publication-grade packs. Each pack should contain public or synthetic inputs,
-expected values and tolerances, exact parameter mappings, regenerating scripts,
-tables/figures, limitations, and publication-facing method text.
-
-For RL-family floating-point admission, the declared 0.5% NRMSE and
-peak-relative maximum-error bounds answer only whether two VIPP backends agree
-closely enough. NRMSE normalization, ROI, scaling, and preprocessing must be
-reported, and no single NRMSE cutoff should be reused as proof of restoration
-quality. Publication-grade deconvolution packs therefore combine pixel/error
-maps with forward-model residuals, frequency/resolution behavior, flux and
-feature measurements, representative PSF/SNR variation, and downstream task
-outcomes.
-
-The maintained validation queue is:
-
-- watershed and touching-object separation on geometric and microscopy-like
-  phantoms, including split/merge and marker-QC scenarios;
-- colocalization and ImageJ-threshold comparisons using deterministic overlap,
-  threshold, ROI, native-range, and independently sourced golden cases;
-- object association, nearest-distance, and event-localization assumptions;
-- skeleton/network topology with known endpoints, junctions, cycles, branch
-  lengths, and anisotropic spacing;
-- real bead PSFs and representative 2D/3D microscopy deconvolution, including
-  edge/crop guidance and measured-versus-generated PSF comparisons;
-- microscope-reader metadata round-trips for axes, scale, channels, wavelength,
-  objective, series/scene, and plate/well/field identity;
-- interrupted, resumed, and large-collection batch replay; and
-- OME-Zarr image/label/table/multiscale round-tripping.
-
-The RACC numerical-core decision also remains open: keep the VIPP-owned
-implementation, share a common core with the RACC plugin, or document the
-intentional separation.
-
-### 8. Graph Authoring Reuse And Insertion
-
-The first implementation was manually accepted on Windows on 12 August 2026
-and merged into the main development line. It treats graph reuse as a validated
-workflow edit rather than as a visual duplication shortcut:
-
-- Ctrl/Cmd toggle selection, Shift-additive selection, group movement, bulk
-  deletion, and keyboard and context-menu copy/paste create new node IDs and
-  preserve relative layout;
-- only connections whose endpoints are both selected are copied, so a pasted
-  fragment never gains a hidden dependency on the source workflow;
-- internal named tunnels and attached notes are remapped, while cached arrays,
-  accepted runtime decisions, benchmark evidence, pins, external connections,
-  and other transient state are excluded;
-- copied authored compute preferences and optimizer locks follow complete
-  nodes, but `Paste values` retains the target node's execution intent and is
-  available only for the exact same operation;
-- clipboard content uses a size-limited, versioned VIPP MIME payload, is
-  validated as a detached graph before mutation, pastes atomically as one undo
-  action, and moves visibly on repeated paste;
-- ordinary text copy/paste in editors is not intercepted by the graph; and
-- a node can be inserted immediately before the source of a named tunnel from
-  the tunnel menu, by dropping a palette operation on its source badge, or by
-  dropping a genuinely loose existing node there. VIPP connects the old source
-  to the inserted node and reroutes the same named tunnel and every subscriber
-  in one rollback-safe edit. Ordinary wires from the old source remain intact.
-
-The bundled `Graph Editing Acceptance Check` workflow records the intended
-manual checks directly on the canvas. The complete Windows recipe passed during
-the initial acceptance. Remaining cross-platform release evidence covers Linux
-Ctrl behavior, macOS Cmd behavior, dynamic ports, invalid and older payloads,
-external-dependency exclusion, and atomic failure paths; automated coverage
-continues to protect single- and multi-node fragments, exact parameter
-compatibility, tunnel subscriber preservation, repeated paste, and undo/redo.
-
-## Versioned Roadmap
-
-The next planned feature line is `0.14.0a1`, beginning with the durable
-`SourceItem` identity foundation described in Feature Sequence B. It is a plan,
-not a delivered release or a promise that every large-data feature lands in its
-first alpha. Versions after that planned foundation remain unassigned until
-field evidence establishes the appropriate scope. Every release must ship with
-tests, documentation, an example or validation artifact when appropriate, and
-human-readable release notes.
-
-Iterative alphas use the risk-based
-[release runbook](release-runbook.md): exact artifact facts are regenerated,
-while unchanged installer, GPU, schema, and UI evidence carries forward from
-the [qualification baseline](release-qualification-baseline.md). Release
-candidates and stable production milestones apply broader maturity gates.
-
-### Released Milestones
-
-| Version | Theme | Durable outcome |
-| --- | --- | --- |
-| `0.10.0a1` | Graph readability and interactive memory | Search, tunnels, notes, explicit axis/channel tools, branch-local reruns, cache modes, and memory controls. |
-| `0.11.0a1` | PSF, deconvolution, and microscope-import foundation | Born-Wolf PSFs, PSF preparation, RL/RL-TV, optional-reader routing, and normalized first-pass acquisition metadata. |
-| `0.11.0a2` | Workflow and release hardening | Atomic restore/export validation, complete example coverage, cross-platform CI, and reproducible release checks. |
-| `0.11.0a3` | Exact and responsive large-image analysis | Exact bounded-memory statistics, native-range scientific behavior, background reruns, and responsive inspection. |
-| `0.12.0a1` | Batch configuration, provenance, and explicit semantics | Saved configs, explicit outputs, deterministic planning, manifests, checkpoints, and failure isolation. |
-| `0.12.0a2` | Interactive tuning and execution feedback | Isolated node tuning, execution frontiers, progressive previews, display-safe layer reuse, and PSF guidance. |
-| `0.12.0a3` | Batch reliability and one-file setup | Direct plan-only batch launch, optional attached configs, safer cloud/Windows writes, and clearer Batch entry points. |
-| `0.13.0a1` | Evidence-gated GPU execution and durable compute intent | Shared CPU/GPU execution across every surface, exact implementation provenance, independent workflow tabs, new analysis/UI tools, and safe generic-TIFF page interpretation. |
-| `0.13.0a2` | Fresh-graph GPU planning correction | New and restored graphs receive truthful compute planning rather than retaining an incorrect initial CPU-only assumption. |
-| `0.13.0a3` | Secondary NVIDIA qualification | Compatible secondary NVIDIA hardware can collect and apply local qualification evidence without turning one machine's result into a portable support claim. |
-| `0.13.0a4` | Architecture-based GPU admission | The exact device-model allowlist was replaced by current compute-capability, runtime, driver, environment, provider, and scientific-region gates; the GPU model remains provenance. |
-| `0.13.0a5` | Desktop launch and installer foundation | Branded Automatic, CPU-only, and Prefer-GPU launch profiles, an in-napari loading host, deterministic non-mutating install plans, a transactional apply engine, and a per-user Windows bootstrapper. |
-| `0.13.0a6` | Graph reuse, clearer GPU diagnosis, and field hardening | Multi-node graph copy/paste and exact value transfer, insertion before tunnels, Compute Doctor 2.0, complete public-GPU admission orchestration, clean distribution checks, Imaris and multi-series source improvements, and microscope metadata editing. |
-| `0.13.0a7` | Guided GPU repairs and a connected segmentation corridor | One-click visible dtype repairs, persistent Prefer-GPU guidance, readable inconclusive optimizer evidence, versioned RL agreement, and reviewed threshold plus boolean mask-cleanup implementations in a portable example. |
-
-See the [changelog](../CHANGELOG.md) and versioned release notes for full
-delivered detail.
-
-### Planned Source-Identity Alpha: `0.14.0a1`
-
-The first `0.14` alpha is planned around a versioned, immutable `SourceItem`
-identity that distinguishes a source container from its selected
-series/scene/group/well/field or semantic-axis item. The first coherent slice
-must carry the same stable identity through interactive selection,
-`SourcePayload`, batch rows and output naming, manifests/checkpoints, generated
-runners, replay, and provenance.
-
-This milestone must read existing workflow and batch schemas safely and migrate
-without changing their scientific meaning. Two items in one container must
-remain distinct across save, reopen, batch execution, and export, while a source
-revision invalidates stale identity or cache proof. Public provenance must not
-leak private absolute paths.
-
-The `0.14.0a1` label does not imply that full OME-Zarr lazy execution,
-multiscale export, or plate/well/field traversal is complete. Those remain later
-Feature Sequence B slices built on the identity contract rather than being
-silently folded into it.
-
-### Installer Distribution Gate After `0.13.0a7`
-
-Goal: make the safe path for an ordinary Windows microscopy user one download
-and one double-click, without requiring napari, Python-environment, or terminal
-expertise.
-
-Release gate:
-
-- a tagged `VIPP-Setup-<version>-Windows-x86_64-UNSIGNED.exe` is attached to
-  the official GitHub release with a manifest, SHA-256, explicit `NotSigned`
-  status, and checksum-first **More info > Run anyway** guidance;
-- managed CPU is the default portable route, while eligible NVIDIA hardware
-  can choose managed CUDA 13 and receive Automatic, CPU, and Prefer-GPU
-  shortcuts;
-- existing napari installation is clearly Advanced and cannot proceed until
-  the selected environment and exact dependency changes pass review;
-- dependency resolution is non-mutating, the user reviews location and package
-  changes before Apply, and execution has progress, logs, cancellation,
-  ownership, acceptance, and bounded rollback;
-- the README, quick start, release notes, and versioned manual lead with the
-  exact installer asset; terminal and planner commands remain secondary;
-- clean CPU and real qualified-GPU installs pass from the tagged artifact on
-  fresh Windows accounts, including spaces on both routes, Unicode on CPU, and
-  the `0.13.0a7` ASCII-only CUDA preflight guidance; and
-- cuCIM remains a separately downloaded optional local-build add-on after the
-  standard CUDA environment passes acceptance.
-
-Linux and macOS installers should reuse the same headless environment-plan
-contract after their own platform qualification. A signed filename remains
-reserved for a valid Authenticode artifact; an unsigned alpha must remain
-explicitly labelled `-UNSIGNED`.
-
-### Delivered Maintenance Alpha: `0.13.0a6`
-
-Theme: field hardening and compute qualification.
-
-Engineering delivered in this release:
-
-- Compute Doctor distinguishes runtime health from actual VIPP admission and
-  exports a strictly redacted support bundle;
-- the `.ims`, microscope-metadata, and multi-series collection contributions
-  are integrated through shared contracts;
-- the base wheel and source archive have clean-install CI on every base OS,
-  while the optional GPU extras and private cuCIM recipe have explicit,
-  separately scoped checks;
-- the accepted tunnel-insertion and graph-fragment editing implementation
-  retains its atomicity, compatibility, and user-guide acceptance evidence; and
-- Prefer-GPU planning now safely excludes deliberately loose connected graph
-  fragments, matching ordinary CPU execution.
-
-Remaining field release gate:
-
-- exact-artifact Windows CPU and CUDA routes are independently reproduced on
-  fresh accounts, including spaces on both routes, Unicode on CPU, the fixed
-  canonical CUDA-root boundary, and bounded rollback;
-- the timed novice path and first small pilot are recorded;
-- addressed batch preview/cancellation reports are verified by their reporters
-  or equivalent macOS environments and then closed or retained with an exact
-  remaining reproduction; and
-- the protected real-CUDA canary is enabled only after its dedicated runner is
-  registered and reviewed.
-
-Qualification targets:
-
-- produce reviewed parity/lifecycle evidence on at least one RTX 40-series
-  Windows environment and one named native-Linux CUDA target; and
-- if either target is not complete, leave the public support matrix unchanged
-  and state the pending qualification precisely. Do not present an attempted
-  target as delivered supported-compute reach.
-
-### Delivered GPU Workflow Alpha: `0.13.0a7`
-
-Theme: make a coherent accelerated path visible, reviewable, and safe to test.
-
-Engineering delivered in this release:
-
-- a GPU-blocked node can explain a lossless dtype repair and insert the normal
-  visible conversion on the affected input with one-step Undo;
-- Prefer GPU retains that guidance after calculation, while Custom selections
-  continue to fail closed when a saved suggestion is stale or contradictory;
-- completed optimizer comparisons remain inspectable when timings are too
-  close to recommend a backend change, with grouped per-implementation rows;
-- the portable segmentation example connects channel selection, dtype
-  conversion, Gaussian filtering, binary threshold, boolean Remove Small
-  Objects, Fill Holes, and Connected Components with honest CPU fallback; and
-- ordinary Richardson-Lucy uses a documented backend-agreement policy across
-  its reviewed epsilon and iteration region without changing either authored
-  parameter.
-
-This is a progress alpha, not completion of the full acceleration sequence.
-The retained RTX 5090 evidence establishes the exact admitted corridor on that
-reference system. Transfer-inclusive benefit on another reviewed hardware
-class, downloaded-installer fresh-account acceptance, and the wider
-Windows/Linux qualification targets remain open; the public support matrix
-must not expand until those results exist.
-
-### Feature Sequence A: Coherent Workflow Acceleration
-
-Goal: keep a complete common segmentation/measurement corridor resident where
-scientifically and operationally valid.
-
-Version 0.13.0a7 delivers the explicit conversion/view bridges and the first
-reviewed threshold plus boolean mask-cleanup corridor. The multi-hardware
-performance and field-qualification bullets below remain release gates for
-claiming this feature sequence complete.
-
-Release gate:
-
-- explicit dtype conversion and selected view/pointwise bridges are available;
-- the chosen morphology/label-cleanup corridor has CPU-oracle parity, memory,
-  cancellation, cleanup, provenance, and cross-surface coverage;
-- one canonical workflow demonstrates transfer-inclusive end-to-end benefit on
-  more than one reviewed hardware class; and
-- cuCIM remains optional, with CPU and independently eligible CuPy/CuPyX paths
-  behaving honestly when it is absent.
-
-### Feature Sequence B: Source-Aware Large Data And Graph Reuse
-
-Goal: make multidimensional and multi-item acquisitions explicit while making
-proven graph fragments easy to reuse.
-
-The planned `0.14.0a1` milestone owns the first durable SourceItem identity
-slice. Later alphas extend that same contract into OME-Zarr scale selection,
-preview/materialization safeguards, and explicit HCS or semantic-axis
-iteration.
-
-Release gate:
-
-- a saved source-item identity can distinguish a container from its selected
-  series/scene/group/well/field or semantic-axis item;
-- large local OME-Zarr data can be previewed without surprising full reads;
-- exported OME-Zarr images contain useful multiscale metadata;
-- eager-only materialization risks are explained before allocation;
-- analysis-resolution and preview-resolution data remain clearly separate; and
-- the accepted graph-reuse implementation remains protected by cross-platform
-  checks for tunnel insertion, fragment paste, exact same-operation value paste,
-  atomic undo, exclusion of runtime/cache/external dependency state, Linux Ctrl
-  behavior, and macOS Cmd behavior.
-
-### Feature Sequence C: Reproducible And Validated Analysis
-
-Goal: turn implemented workflow families into defensible, shareable methods.
-
-Release gate:
-
-- automatic batch resume validates and extends prior checkpoints without
-  overwriting completed work;
-- one reproducibility package gathers the reviewed workflow/config/runner/
-  environment/provenance inventory without silently embedding restricted data;
-- an immutable compatibility corpus proves CPU-safe loading, non-destructive
-  migration, and stable scientific hashes for unchanged semantics across the
-  released workflow, batch, manifest, provenance, and generated-runner schemas;
-- validation reports state expected values, tolerances, and limitations; and
-- bundled examples can regenerate the reported tables and figures.
+VIPP is a napari-native visual workflow builder for reproducible bioimage
+analysis. The graph is the primary work surface: a user should be able to build,
+inspect, tune, batch-run, export, and publish a workflow without losing the
+relationship between pixels, source identity, semantic axes, calibration,
+acquisition metadata, tables, and provenance.
+
+The product is organized around complete scientific workflows rather than node
+count or accelerator badges. A workflow should:
+
+- retain the same scientific meaning across interactive, batch, generated
+  Python/CLI, and export execution;
+- run portably on CPU and use qualified accelerators only where their exact
+  scientific and operational contracts pass;
+- make source selection, analysis resolution, parameters, automatic decisions,
+  fallbacks, and outputs reviewable; and
+- produce enough structured evidence for another person to reproduce or audit
+  the run.
+
+Registration, model-backed segmentation, stitching, tracking, AI-assisted graph
+authoring, and custom code remain possible future directions. They are recorded
+in [product ideas](product-ideas.md) and do not displace the active source,
+scale, interactivity, and reproducibility foundations below.
+
+## Current Baseline
+
+The current published alpha is `0.13.0a7`. It provides:
+
+- workflow schema 4 and batch schema 3 with portable compute intent, explicit
+  outputs, checkpoints, manifests, and exact implementation provenance;
+- shared execution across interactive, batch, generated Python/CLI, and export;
+- graph editing, manual/cached nodes, isolated tuning, cancellation, and memory
+  controls;
+- common image formats, local OME-Zarr, optional microscope readers, and an
+  initial multi-series batch model;
+- PSF/restoration, segmentation and cleanup, measurement, skeleton,
+  colocalization, and spatial-association workflows; and
+- a deliberately bounded set of reviewed CUDA implementations, with CPU as the
+  portable scientific reference and fallback.
+
+Important remaining limits are:
+
+- interactive source execution still materializes complete selected images even
+  when a reader exposes lazy arrays or resolution pyramids;
+- one container can hold several scientific images, but selected-item identity
+  is not yet durable across every interactive, batch, naming, and provenance
+  surface;
+- thumbnail presentation can publish provisional images, misstate cached
+  backend provenance, and use an unreadably long status line;
+- repeated Prefer-GPU parameter edits can pay avoidable setup, transfer,
+  synchronization, and presentation costs; and
+- validation and platform qualification remain uneven outside the exact
+  published CPU and reviewed CUDA regions.
+
+## Active Release Order
+
+Small changes should land as independent, reviewable pull requests. A release
+does not wait for every item in a cycle when a coherent, useful subset is ready.
+Unchanged installer, GPU, schema, and UI evidence carries forward according to
+the [qualification baseline](release-qualification-baseline.md).
+
+### Remaining `0.13.0` Cycle: Interactive GPU And Correctness Stabilization
+
+The remaining 0.13 alphas focus on thumbnail integrity, responsive parameter
+tuning, truthful GPU/optimizer behavior, and contained correctness fixes. They
+do not introduce SourceItem or broad lazy execution. Installer feature work is
+deferred to `0.14.0a1`; a security or data-loss defect remains an exception.
+
+Recommended dependency order:
+
+1. concise thumbnail presentation and backend provenance;
+2. atomic final-thumbnail publication;
+3. interaction telemetry, device selection, and presentation scheduling;
+4. bounded host-input float32 GPU thumbnail statistics, followed by measured
+   resident-output reuse through a shared execution seam; and
+5. evidence-justified cross-run scientific residency.
+
+Optimizer fixes `#31` then `#32`, Rescale Axes `#33`, and the separate volume-
+crop feature are non-blocking 0.13 workstreams that may proceed in parallel.
+They do not gate the thumbnail/GPU sequence or every 0.13 alpha.
+
+Items with disjoint ownership may proceed in parallel, but later work must use
+the generation, provenance, and measurement contracts established earlier.
+
+#### 0.13-A. Thumbnail Presentation Integrity ([#28](https://github.com/rensutheart/napari-vipp/issues/28), [#30](https://github.com/rensutheart/napari-vipp/issues/30))
+
+Goal: a preview update must never show a provisional white/intermediate image or
+fill the application status bar with technical provenance.
+
+Implementation contract:
+
+- keep the last complete thumbnail until a replacement image and its final
+  contrast limits are both ready;
+- use a per-node generation keyed by output identity and render settings, and
+  publish exactly once only if that generation is still current;
+- show an intentional loading state only when a node has no prior thumbnail;
+- retain the old image on cancellation, failure, or stale completion;
+- separate a short badge, a bounded one-sentence status summary, structured full
+  details, and complete accessibility text;
+- put only the summary in the one-line status bar and keep wrapped technical
+  detail in an inspector/details surface; and
+- identify this as **thumbnail contrast** computation, not the scientific node
+  backend. Show Auto crossover information only when it actually selected the
+  backend.
+
+Acceptance:
+
+- delayed, failed, cancelled, and out-of-order statistics jobs never replace a
+  newer or previously valid thumbnail;
+- first-load and cached-result states are visually and accessibly distinct;
+- the longest ordinary summary remains readable in a narrow normal window; and
+- CPU, Prefer GPU, scan-free masks, cached-policy mismatch, and actual fallback
+  states have concise truthful labels.
+
+Ordinary cross-platform Qt tests are sufficient; no real-GPU gate is required
+unless accelerator behavior itself changes.
+
+#### 0.13-B. Predictable GPU Tuning And Device Control ([#27](https://github.com/rensutheart/napari-vipp/issues/27))
+
+Goal: repeated parameter edits should have explainable latency and use the
+selected qualifying GPU consistently when that is beneficial.
+
+Current evidence found the same underlying parameter-specialization pattern in
+the originally reported Subtract Background Ball-size path and in Gaussian and
+Median tuning. The historical Subtract Background provider compiled a new
+CuPyX erosion specialization for each unseen footprint radius; Gaussian and
+Median likewise specialized on radius or footprint size. The promoted
+radius/size-independent kernels remove those repeated compile cliffs while
+preserving their reviewed result contracts. The remaining evidence-led
+residency decision is complete below; measured transfer time did not justify
+cross-run scientific GPU residency.
+The current development slice carries provider-neutral device observations
+through detached pipeline results and adds explicit, bounded interaction
+reports for standard scientific parameter controls. Those reports distinguish
+invalidation, the actual debounce, worker queue and result-delivery delay,
+scientific execution, thumbnail-statistics queue and execution, rendering,
+final publication, and superseded generations. Pre-device observations now
+separate graph restoration, cache preparation, workload preparation,
+accelerator setup, runtime/library probing, compute planning, and device-plan
+construction. They retain run-correlated runtime, device, implementation,
+transfer, and synchronization spans without entering workflow or scientific
+identity.
+
+The final single-device RTX 5090 evidence matrix is now complete for the
+standard scientific-control path. A per-workflow-session selector carries one
+explicit qualified runtime/device through scientific and thumbnail requests
+without entering workflow JSON. Device plans are fingerprint-bound to that
+request, explicit devices must be reported by the provider, supplied
+capability snapshots must describe the same device, and every completed GPU
+observation now records terminal private-pool memory while the exact device
+lease is still held. Specialized composite/source/presentation controls remain
+outside the interaction reporter until their commit boundaries can be timed
+exactly. Provider-internal compilation remains honestly included in operation
+time when the provider exposes no separate boundary. A protected non-default
+multi-GPU run remains conditional on access to a host with two qualified CUDA
+devices; the single-GPU path fails closed rather than silently retargeting.
+
+Ordered parameter-specialization follow-up:
+
+1. **Completed:** Rolling-Ball Background and Subtract Background now share a
+   radius-independent CuPy kernel whose compiled program does not change for
+   each authored radius;
+2. **Completed:** Median Filter now uses a size-independent CuPy radix kernel
+   whose compiled program does not change for each supported odd kernel size;
+3. **Completed:** a manifest-locked production sweep now varies and revisits
+   every authored parameter or admitted branch across 14 directly executable
+   GPU implementations, delegates RL and RL-TV to their multi-input sweep, and
+   records the two fixed-profile measurement implementations explicitly. The
+   2026-08-20 RTX 5090 run completed 122 production steps with the exact
+   requested backends, full cleanup, no fallback, and no parameter-specific
+   cliff signal;
+4. **Completed:** the dedicated Richardson-Lucy and Richardson-Lucy TV sweep
+   now varies and revisits PSF dimensions in 2D and 3D, changes iteration and
+   TV-strength parameters, and pairs every GPU result with the authoritative
+   CPU parity gate. The 2026-08-20 RTX 5090 run passed all four groups with no
+   fallback, cleanup failure, parity failure, or avoidable PSF-shape stall; and
+5. **Completed bounded host-input slice:** float32 Percentile and Min-max
+   thumbnail statistics now use exact fixed-workspace CuPy radix reductions;
+   the resident-output reuse slice remains in 0.13-C.
+
+All five items have an implemented first slice in the current development tree.
+Parameter-sweep timing remains machine-local diagnostic evidence rather than a
+new per-release performance gate.
+
+Implementation proceeds in measured phases:
+
+1. **Implemented for standard scientific controls:** record invalidation,
+   debounce, graph/cache/workload preparation, accelerator setup,
+   runtime/library probing, compute planning, device-plan construction,
+   scientific and presentation queueing, host-to-device transfer, compute,
+   synchronization, device-to-host transfer, thumbnail work, rendering,
+   publication, and discarded-generation time;
+2. **Implemented:** a new scientific edit pre-empts queued presentation work,
+   cancels obsolete work once, and publishes only the newest generation;
+3. **Implemented, non-default multi-GPU hardware validation conditional:** enumerate
+   qualifying devices, allow explicit per-workflow-session selection through
+   the existing `device_id` contract, and display requested provider/device,
+   actual per-node backend/device, and host/device boundaries; and
+4. **Completed evidence decision:** do not add cross-run scientific residency;
+   synchronized revisits measured only about 0.015-0.016 s of combined
+   scientific transfer, while exact owned-revision source-context reuse removes
+   the repeated preparation hash safely.
+
+Fake clocks, two-device adapters, request fingerprints, and transfer counters
+cover ordinary CI. The 2026-08-21 protected RTX 5090 matrix used an explicit
+`cuda:0` selection and retained these machine-local artifacts:
+
+- historical provider comparison:
+  `D:\Temp\vipp-issue27-historical-radius-compile-baseline-20260821.json`
+  (`SHA-256 49542130A12DC1C1567E6843A482BBC1AD404B6C6ED4332E23F30A9F1EEA9ED8`);
+- exact bundled sample:
+  `D:\Temp\vipp-issue27-ui-exact-owned-revision-final-20260821.json`
+  (`SHA-256 6B5C3C3293CB4D592AA2386C9749A6C3284EFC8CD875C5DFC916184A43B5B21D`);
+- 108 MiB bounded stack:
+  `D:\Temp\vipp-issue27-ui-bounded-owned-revision-final-20260821.json`
+  (`SHA-256 F20D81E824A08AD2C6FB45474C5AA2AEA8AA69B6C16CC0B23D877D2BDAAA1BE3`);
+- 432 MiB resident-thumbnail stack:
+  `D:\Temp\vipp-issue27-ui-resident-owned-revision-final-20260821.json`
+  (`SHA-256 575C3E68433F5DFB8DC3BD35D53553965EC56A31A45E70EBAB13DA03E40BA206`);
+  and
+- separately synchronized 108 MiB diagnostic:
+  `D:\Temp\vipp-issue27-ui-bounded-synchronized-owned-revision-final-20260821.json`
+  (`SHA-256 F908BC86AE46B8CE7EAE8DB318601EB8DECB08EF39AC3C9F79ECD0DA58739B09`).
+
+Every accepted GPU run selected `cuda-cupy/cuda:0`, retained exact CPU
+dtype/shape/byte parity, used known-byte H2D and D2H with no fallback, and
+reported zero terminal live/reserved private-pool bytes. Each fresh artifact
+records all 137 production package Python files plus the harness, policy,
+workflow, and project anchors (141 files total) under source-tree digest
+`5cb9a53ffee8efa15f502d39df0e2fbbebf4eb3a3ccc2855b19d9fdd53cf6b9f`.
+The evidence distinguishes explicit `cuda:0` affinity from real multi-device
+validation, which was not performed on this one-GPU host. The large profiles
+also superseded a signalled target-node execution, observed typed clean
+cancellation, and immediately published a successful reuse run. Warm medians
+were about 0.491 s for the small sample (CPU 0.387 s), 0.927 s for the 108 MiB
+stack (CPU 5.773 s), and 1.728 s for the 432 MiB resident stack (CPU 11.390 s).
+The resident path returned six exact thumbnail-statistics observations with
+zero logical input upload. Synchronized 108 MiB evidence measured about
+0.117-0.134 s of target device operation and 0.0151-0.0157 s of combined
+scientific H2D and D2H on representative revisits, so cross-run scientific
+residency is not justified by the measured transfer saving. Exact source
+scientific-context reuse removes the repeated source-byte hash only for the
+same accepted, read-only, VIPP-owned revision and cached output object. From
+the second same-process warm edit onward, after the reusable source output was
+accepted, later Prefer-GPU preparation measured roughly 0.02-0.04 s.
+Any revision, source binding, metadata, state, mutability, or provenance
+mismatch fails closed to a fresh exact hash. External Task Manager or
+integrated-GPU activity remains compositor evidence, not a VIPP execution
+claim.
+
+The historical comparison uses the genuine pre-fix provider source from
+commit `91a05a9`, the same bundled Subtract Background input, and separate
+empty CuPy disk caches. Previously unseen Ball radii took a median 1.287 s in
+the provider while revisits took 0.0155 s, reproducing an 83x intermittent
+specialization cliff before any UI overhead. The current radius-independent
+provider took 0.0133 s for both unseen values and revisits (96.8x faster for
+unseen radii), with identical output hashes at every compared radius. This
+provider-only baseline is paired with the complete current edit-to-publication
+matrix above; it is not mislabeled as a historical UI trace that did not exist.
+
+#### 0.13-C. Policy-Accurate Float32 Thumbnail Statistics ([#29](https://github.com/rensutheart/napari-vipp/issues/29))
+
+Goal: common `float32` image outputs can use qualified GPU thumbnail statistics
+under Prefer GPU without stale CPU decisions being presented as current.
+
+Current status: the host-input and measured resident-output slices are
+implemented and qualified. The ordinary worker continues to record its one
+logical host-to-device upload. Under Prefer GPU, one warm, selected, retained
+`float32` image output of at least 128 MiB can instead be scanned through a
+synchronous non-retaining hook before its existing scientific device scope is
+released. Small, cold, CPU, fallback, unretained, and non-selected outputs stay
+on the established asynchronous and pre-emptible worker path.
+
+Implementation contract:
+
+- separate the current requested policy from the policy, runtime, provider,
+  device, and algorithm that produced reusable cached limits;
+- reuse exact numeric limits where safe, but label a policy-mismatched cached
+  result as cached rather than as a fresh fallback;
+- add bounded CuPy percentile and min/max paths for `float32`, matching the CPU
+  contract for finite/non-finite values, channel axes, interpolation, empty and
+  constant inputs, signed zero, and extreme values;
+- add a synchronous, non-retaining execution hook that can consume a compatible
+  resident GPU output without a device-to-host then host-to-device round trip;
+- measure the host-only path explicitly when no resident allocation is
+  available, rather than assuming a new upload is interactively beneficial;
+- define workspace estimates, memory caps, cancellation boundaries, fallback,
+  and zero-residue pool cleanup; and
+- benchmark cold and warm behavior before changing Auto crossover policy.
+
+Acceptance uses CPU golden cases and fake adapters in ordinary CI. Qualified
+hardware must record parity, cold/warm timing, transfer bytes, cancellation, and
+terminal cleanup for the startup workflow and a representative
+Convert Dtype -> Subtract Background -> Gaussian -> Otsu workflow. The mode
+matrix proves CPU labels fresh results as CPU rather than fallback, Prefer GPU
+uses the qualified GPU path for the three compatible float outputs, and Otsu is
+reported as scan-free. Thumbnail statistics must never change scientific arrays
+or results.
+
+The 2026-08-20 RTX 5090 host-input qualification passed all 26 protected
+provider cases after cancellation cleanup, with exact CPU parity and zero
+terminal private allocations. Fresh-process calibration at 2, 32, and 128 MiB
+kept exact parity; cold calls were about 1.0-1.1 seconds while warm calls were
+about 0.008, 0.024, and 0.079 seconds. The measured warm crossover was 32 MiB,
+so the existing 512 MiB cold and 32 MiB warm Auto thresholds remain unchanged.
+The exact 576 KiB Convert Dtype -> Subtract Background -> Gaussian -> Otsu
+workflow then reported GPU float32 statistics for all three image outputs with
+no fallback, while the boolean Otsu mask remained correctly scan-free.
+
+The resident comparison then measured the same exact Percentile contract at 2,
+32, 128, and 512 MiB. Avoiding the redundant upload saved about 0.6, 5.1, 24.8,
+and 92.0 ms respectively (roughly 18-27% of the host-input provider body).
+This supports a conservative 128 MiB resident threshold; it does not change
+the 32 MiB warm Auto-selection threshold. The hook runs after the required
+scientific device-to-host result transfer, returns only immutable host limits
+and bounded transfer facts, and is excluded from scientific timing history.
+Recoverable presentation failures remain soft misses, cancellation propagates,
+and any scratch-cleanup failure is fatal and quarantines accelerator work. The
+resident provider matrix proves zero logical input upload, bitwise CPU parity,
+no borrowed alias or release, and zero terminal residue on every healthy exit.
+These results complete the technical acceptance for #29 without claiming that
+VIPP keeps scientific arrays resident between separate calculations.
+
+#### 0.13-D. Optimizer Integrity ([#31](https://github.com/rensutheart/napari-vipp/issues/31), [#32](https://github.com/rensutheart/napari-vipp/issues/32))
+
+Goal: Find fastest can optimize the scientific graph without executing output
+writers and never treats CPU execution as proof for a requested GPU assignment.
+
+First fix retained writer handling:
+
+- keep requested retained IDs in optimizer identity and staleness checks;
+- derive an effective scientific retention set containing only safe nodes;
+- identity-bypass connected Batch Output or Save Image nodes and ignore
+  disconnected writers in the detached benchmark graph;
+- during benchmark, cancellation, failure, or a no-change result, never execute
+  writers, create artifacts, or mutate the live graph, cached outputs,
+  parameters, compute preferences, or provenance;
+- an explicit accepted **Apply** action changes only the intended compute
+  preferences and leaves scientific parameters and topology unchanged; and
+- preserve unknown-node validation rather than silently filtering malformed
+  requests.
+
+Then unify candidate construction and final validation:
+
+- capture requested, planned, device-segment, and actual implementation for
+  every proposed node;
+- use one authoritative workload and exact-assignment contract in proposal and
+  detached final validation;
+- reject or boundedly re-solve a proposal that cannot execute its requested
+  implementation, while allowing unrelated nodes to continue; and
+- keep strict provenance: a CPU result cannot validate a requested GPU
+  implementation.
+
+User-facing failure text distinguishes assignment/planning disagreement from a
+numerical parity failure and identifies the stage that diverged. Native
+`uint16` Otsu must not receive an unnecessary dtype-conversion suggestion.
+
+Tests cover connected and disconnected writers, every cache-retention mode,
+absence of output files, cancellation/failure atomicity, fresh/cached/opaque
+upstream states, and a multi-node Gaussian/Otsu/morphology lock matrix. `#32`
+also requires qualified real-GPU acceptance.
+
+#### 0.13-E. Named-Axis Correction ([#33](https://github.com/rensutheart/napari-vipp/issues/33))
+
+Goal: common named Y/X inputs work safely in Rescale Axes without weakening the
+axis contract for ambiguous data.
+
+- accept carried, unambiguous named Y/X axes with inferred confidence under one
+  visible warning;
+- leave an unknown leading axis such as Q untouched;
+- require an explicit mapping before nontrivial unresolved Z scaling;
+- allow a true identity/no-op without an axis error; and
+- do not promote unrelated inferred metadata merely because shape changed.
+
+Tests cover QYX, ZYX, TCZYX, reordered axes, images/masks/labels, metadata
+confidence/history, workflow restore, export, and batch. This contained bug fix
+may ship independently and does not wait for the crop feature below.
+
+#### 0.13-F. Responsive Volume Crop (new issue required)
+
+Goal: make Crop Stack a discoverable volume ROI tool without recalculating on
+every drag event. Track this as a separate feature issue before implementation;
+it is not part of `#33`.
+
+- preserve the existing operation and old workflows while adding persisted
+  nonnegative `z_start` and `z_end` crop margins, measured as samples removed
+  from the leading and trailing ends of an explicitly named Z axis;
+- default both new parameters to zero when loading an old workflow;
+- show the controls only when metadata contains explicit Z or the user has
+  authored an exact axis mapping; inferred QYX must never treat Q as Z;
+- preserve T/C axes, leave at least one sample on every cropped axis, and update
+  physical origins, history, and output-size summaries;
+- while dragging, draw an immediate translucent ROI outline/mask over the
+  cached display rather than constructing a full zero-filled image;
+- keep draft control values during interaction, then commit one undoable
+  scientific edit on release or after roughly 300-500 ms idle; and
+- flush a pending draft before Calculate, Calculate all, any Run or execution
+  snapshot, save, export, batch start, tab change, or close.
+
+Tests cover ZYX, TCZYX, noncanonical explicit layouts, rejection of inferred QYX,
+images/masks/labels, physical origins, save/reopen/export/batch, rapid drag
+events, one committed calculation, and stale/cancelled completion. This work can
+land in 0.13 if it remains contained; it is not a blocker for every 0.13 alpha.
+
+#### 0.13 Release Boundary
+
+- Run focused ordinary CI for presentation, optimizer-writer, and axis/crop
+  changes.
+- Run protected real-GPU evidence only when GPU selection, implementations,
+  transfers, residency, or strict assignment validation changes.
+- Do not repeat installer lifecycle qualification when installer code and its
+  dependencies are unchanged.
+- Run the complete cross-platform suite once on the integrated release
+  candidate rather than after every small documentation or UI pull request.
+- Describe measured performance as machine-local unless more than one reviewed
+  hardware class supports a broader claim.
+
+### `0.14.0a1`: Source-Aware Loading And Per-Sample Batch Alpha
+
+The first 0.14 alpha targets three connected source-aware outcomes and one
+parallel installer-usability outcome:
+
+1. durable SourceItem identity;
+2. pyramid-aware source loading and presentation preview;
+3. typed per-sample batch parameters; and
+4. clearer installer/cuCIM environment discovery.
+
+The source-aware outcomes form one coherent user story: select a scientific item
+once, see a useful preview before the exact full-resolution snapshot is ready,
+and apply reviewed item-specific batch parameters. The independent installer
+lane makes the managed environment discoverable when an optional component is
+installed. The a1 preview improves time to first display; exact background
+verification and level-0 materialization still complete before scientific
+execution.
+
+Implementation order and pull-request boundaries:
+
+1. define SourceItem v1, canonical identity, reader adapters, legacy migration,
+   and compatibility goldens;
+2. propagate the record through interactive persistence, batch planning/naming,
+   manifests, generated execution, replay, export, and provenance;
+3. add the OME-Zarr early presentation-preview worker on the stable identity and
+   generation contracts established by SourceItem and 0.13-A;
+4. add the typed batch-override schema, resolver, execution/provenance path, and
+   workspace table on the propagated identity;
+5. implement installer/cuCIM discovery independently in parallel; and
+6. finish with one integration example containing multiple source items, two
+   effective thresholds, and a pyramid preview whose level differs visibly from
+   the unchanged full-resolution analysis level.
+
+#### 0.14-A. Immutable SourceItem Identity
+
+Goal: distinguish the source container from the scientific item selected inside
+it, and carry that same identity through every execution surface.
+
+The first supported item kinds are ordinary images, series/scenes, NPZ members,
+and OME-Zarr image or label groups. Plate/well/field and semantic-axis iteration
+remain later extensions. Level 0 is the explicit scientific analysis selection
+for a1; a presentation pyramid level is recorded separately and never changes
+the SourceItem's scientific selection.
+
+Implementation contract:
+
+- define a frozen, serializable logical selector and resolved identity with
+  separate container URI/format, item key/index/name/kind, and observed content-
+  revision proof; changing bytes invalidates the proof without silently
+  retargeting the authored logical selector;
+- record deterministic reader key, shape, dtype, axes, scale, and available
+  level/capability metadata without materializing pixels during inspection;
+- resolve saved selection by stable key with a documented legacy-index fallback;
+  missing, duplicate, or mismatched items fail visibly rather than silently
+  selecting a replacement;
+- use the same canonical item document in interactive Image Source,
+  `SourcePayload`, batch rows, names, collision handling, manifests,
+  checkpoints, generated runners, replay, export, and provenance;
+- keep public identities privacy-safe and keep container revision separate from
+  item selection; and
+- migrate existing workflow and batch documents without inventing scene, group,
+  axis, or calibration meaning. Preserve compatibility properties during the
+  transition.
+
+SourceItem owns schema v1. The expected integration bumps are workflow schema 5,
+batch config 4, and manifest/item record 4. Continue reading immutable workflow
+v4, batch v1-v3, and manifest v3 fixtures; migrate legacy `series_index`
+deterministically, reject unknown future versions, and write only the new
+canonical representation.
+
+Acceptance:
+
+- two items in one container always receive different stable identities;
+- save/reopen selects the same item when inspection order changes;
+- source revision invalidates stale identity and cache proof;
+- old schemas remain CPU-safe, save/reopen/re-save deterministically, and retain
+  scientific hash behavior where meaning is unchanged;
+- TIFF/NPZ/OME-Zarr multi-item fixtures agree across inspector, interactive,
+  batch, generated execution, filenames, manifests, and provenance; and
+- inspection remains pixel-lazy, optional readers remain optional imports, and
+  public provenance contains no private absolute path.
+
+#### 0.14-B. Pyramid-Aware Loading And Preview
+
+Goal: show a useful large-image preview quickly while keeping scientific
+analysis resolution explicit and unchanged.
+
+Implementation contract:
+
+- attach reader capabilities to SourceItem inspection, including declared
+  levels, scale transforms, chunk shape, preview-level reads, exact region
+  reads, and lazy support;
+- model presentation preview separately from the canonical analysis payload;
+- start with local OME-Zarr and select the coarsest declared level that still
+  satisfies the requested display detail, slicing required T/Z/C and Y/X chunks
+  before compute;
+- label the result `Preview level N - analysis remains full resolution` and
+  never place a lossy preview into the graph, scientific cache, full-stack
+  statistics, or output provenance as analysis data;
+- generation-key and cancel preview/refinement work, retain the previous valid
+  preview until replacement, and close tasks/handles on source change, tab
+  close, or cancellation;
+- give exact verification and level-0 materialization the same generation and
+  cancellation ownership, so a superseded source stops I/O, releases handles
+  and buffers, and cannot continue consuming full-source RAM in the background;
+- permit a display-only provisional preview while exact container verification
+  completes, but publish the scientific source only after identity/revision
+  checks pass; and
+- add IMS pyramid support only after its adapter proves level enumeration,
+  transforms, and cheap reads on controlled real files.
+
+Acceptance measures time to first preview, bytes read, peak RAM, cancellation,
+stale-source rejection, cache bounds, and analysis-result parity. Preview level
+and analysis level must remain visibly and structurally distinct. Record initial
+preview I/O separately from the still-required complete verification and level-0
+load. Fixtures prove that a lower OME-Zarr level is read without computing level
+0 for the preview, its coordinate transform is applied correctly, a label-group
+preview keeps label semantics without intensity-statistics leakage, and a
+single-level or unsupported reader falls back without making a false pyramid or
+region-read claim.
+
+Direct full-resolution Crop ROI pushdown is the committed follow-up specified
+below, not hidden a1 scope.
+
+#### 0.14-C. Per-Sample Batch Parameters
+
+Goal: let a saved batch use reviewed parameter values for individual SourceItems
+without mutating the base workflow or encoding scientific decisions in filename
+expressions.
+
+First coherent slice:
+
+- rows use a stable composite batch-item key made from each varying source node
+  ID and its logical SourceItem selector, never the revision-bound proof,
+  ordinal batch ID, filename alone, or series display name; every observed
+  source revision is bound separately to the plan and item evidence;
+- columns are explicitly selected authored scientific scalar parameters and a
+  blank cell inherits the saved workflow value. Exclude Image Source paths and
+  item selectors, Save/Batch Output destinations, `_vipp_` or derived fields,
+  compute/manual/cache controls, and topology;
+- store exact typed values and validate them through the target node's normal
+  workflow/scientific parameter contract before any item runs; UI range hints
+  do not silently become a stricter second execution contract;
+- begin with numeric scalar parameters needed for cases such as per-sample
+  manual thresholds; exclude Python expressions, substring rules, topology
+  changes, and arbitrary code;
+- reject missing nodes/parameters, duplicate override rows, and an authored row
+  that resolves to zero or multiple planned items. A newly discovered item with
+  no override row visibly inherits workflow defaults; removed, renamed, or
+  re-paired items leave a stale authored row and stop preflight;
+- resolve each item against a detached effective workflow without mutating the
+  live or saved base workflow;
+- use the same resolver in representative preview, full batch, saved batch
+  runner, and its CLI execution; and
+- store the normalized authored override table and config hash in the batch
+  config. During planning derive each effective workflow digest and record it
+  with requested/effective overrides and observed source revisions in the plan,
+  manifest, checkpoint, and item provenance. Those facts become the refusal
+  boundary when verified automatic resume is implemented later.
+
+Acceptance covers standalone files, multiple series in one container, and rows
+with multiple varying source bindings; reorder, added-item default inheritance,
+removed/renamed stale rows, and changed multi-source pairing; distinct
+thresholds producing distinct expected outputs; preview/batch/saved-runner/CLI
+parity; config and effective hash changes; checkpoint evidence; and unchanged
+base-workflow state. CSV import/export may follow after the typed core and UI are
+stable.
+
+#### 0.14-D. Installer And Optional cuCIM Discovery ([#26](https://github.com/rensutheart/napari-vipp/issues/26))
+
+Goal: a user installing the optional cuCIM component should not have to discover
+where VIPP placed its managed CUDA Python.
+
+Implementation contract:
+
+- retain explicit target, environment override, and active-environment
+  precedence;
+- otherwise perform read-only standalone discovery from the canonical Windows
+  LocalAppData managed CUDA ownership record before Python is known;
+- before executing any discovered interpreter, resolve and re-check strict
+  containment and require every component from the canonical managed root
+  through the ownership record, active environment, `Scripts`, and
+  `python.exe` to be non-reparse/non-link, with the interpreter a regular file;
+- validate ownership schema/version, track exactly `cuda13`, canonical managed
+  root, and active environment as a strict managed-store descendant;
+- visibly show the discovered path with Continue/Cancel before invoking the
+  existing Python backend, which remains the authoritative environment and
+  package validation boundary;
+- on failure, explain the reason and open the picker at the best safe managed
+  location rather than the user profile; and
+- on CUDA13 success, show the active environment location on the main installer
+  success screen and state that the optional cuCIM add-on will find it
+  automatically. CPU success must not make that claim.
+
+Ordinary Windows CI covers valid current/repaired ownership, retired roots,
+CPU/foreign/malformed/oversized/outside-store/missing-Python records, junction or
+symlink redirection at the environment, `Scripts`, or interpreter boundary,
+override precedence, bundle contents, CUDA-versus-CPU success text, and zero
+backend invocation on discovery failure. This feature does not require real-GPU
+or full installer lifecycle qualification unless the authoritative installer
+transaction changes.
+
+#### 0.14.0a1 Release Boundary And Non-Goals
+
+The source-aware core of the alpha is complete when SourceItem identity,
+pyramid-aware presentation, and per-sample scalar parameters agree across their
+documented surfaces and compatibility gates. Installer and cuCIM discovery is a
+planned parallel `0.14.0a1` work package, but it does not gate that source-aware
+core. Every work package must pass its own acceptance before it ships; an
+unfinished independent package moves visibly to the next alpha rather than
+holding a coherent release. The milestone does not imply completion of:
+
+- arbitrary conditional branches or filename expressions;
+- full operation-level lazy/chunked execution;
+- remote stores, plate/well/field traversal, or semantic-axis batch iteration;
+- scientific progressive outputs;
+- arbitrary per-node or per-item topology changes; or
+- general branch-aware ROI-union planning.
+
+Those items require later evidence or remain in [product ideas](product-ideas.md).
+
+### Committed Follow-Ups After `0.14.0a1`
+
+#### Safe Node Bypass And Batch Execution Profiles
+
+Goal: compare workflows and omit preview-only preparation without deleting or
+rewiring nodes or hiding a scientific change.
+
+- Add authored **Run / Bypass** only to explicitly reviewed pure unary,
+  single-output, contract-preserving operations. Start with Crop Stack; review
+  Gaussian Blur separately with effective image-kind and downstream-port
+  compatibility. Do not infer safety from a generic type-preservation flag.
+- Exclude sources, Save/Batch Output, multi-input/output operations,
+  image-to-mask type changes, tables, conditionals, and side-effect boundaries
+  unless reviewed separately.
+- Persist and scientifically hash bypass state; make it undoable and invalidate
+  the node and descendants when changed.
+- Alias input data, metadata, and device residency to output without calling the
+  operation or forcing a host transfer. Record `bypassed` provenance and exclude
+  the node from optimizer timing.
+- Require identical interactive, batch, generated Python/CLI, export, CPU, and
+  supported-GPU behavior.
+
+After that contract is stable, add an explicit batch execution-profile override
+with **Use workflow / Run / Bypass**. A whole-batch override comes first;
+per-item bypass may later reuse the typed per-sample resolver. Batch-only behavior
+must never be an invisible intrinsic node setting.
+
+#### Exact Source-Window Pushdown
+
+Goal: avoid decoding pixels that a direct source Crop will discard while keeping
+the authored graph and result exactly equivalent to eager execution.
+
+- Replace `full read -> direct Crop Stack` with an exact full-resolution region
+  read only when the reader advertises the capability, Crop is the source's sole
+  direct consumer, semantic spatial axes and parameters are fixed, and no branch
+  or tunnel needs the complete source.
+- Preserve the Crop node, history, physical origin, cache identity, scientific
+  hash, and provenance. Verify eager-versus-region bytes and ImageState parity.
+- Include source revision, SourceItem, ROI, reader implementation/version, and
+  axis declaration in the read identity. Fall back to the complete read when any
+  proof is absent or stale.
+- Start with local OME-Zarr. Require real-file evidence before claiming exact
+  region reads for IMS, BioIO, TIFF, or another adapter.
+
+This depends on SourceItem, reader capability metadata, and the named-axis
+contract from 0.13-E. Branch-aware ROI unions remain an uncommitted idea.
+
+#### Selective Lazy And Chunked Scientific Execution
+
+- Declare each operation as combinations of view-only, lazy-safe, blockwise,
+  halo/boundary-dependent, global-reduction, eager-only, memory-heavy, and
+  scale-aware.
+- Start with exact slice/channel/crop/reorder views and simple pointwise
+  operations. Filters require halo parity; thresholds may require a global pass;
+  connected components, watershed, and similar operations remain global until
+  an exact chunk-boundary contract exists.
+- Explain estimated materialization before an eager-only node allocates a very
+  large source.
+- Reuse batch cancellation/checkpoint semantics for source and chunk workers,
+  and require deterministic fingerprints, bounded caches, atomic writes, and
+  truthful CPU/GPU transfer accounting.
+
+#### Reproducibility, Resume, And Validation Packs
+
+- Export a reviewed reproducibility package containing workflow, batch config,
+  generated runner, environment, source-item summaries, manifests, checkpoints,
+  implementation provenance, output digests, and explicit omissions without
+  silently embedding restricted raw data.
+- Turn checkpoints into verified automatic resume: validate schemas, workflow,
+  effective per-item intent, source identities, destinations, and prior
+  checkpoint integrity before preserving completed work.
+- Maintain compatibility goldens for released workflow, batch, manifest,
+  provenance, and generated-runner schemas.
+- Continue publication-grade validation packs for watershed, colocalization,
+  object association, skeleton/network topology, real PSFs/deconvolution,
+  microscope metadata, interrupted batch, and OME-Zarr round-tripping.
+
+## Continuous Product And Release Gates
+
+These gates apply proportionately to every change:
+
+- **Scientific meaning:** exact inputs, parameters, axes, calibration, output
+  type, metadata, and tolerances are declared. A convenience or performance
+  feature cannot silently change analysis resolution or population.
+- **Compatibility:** persisted behavior has migration and immutable old-schema
+  coverage. A migration must not invent source items, axes, calibration, or
+  parameters.
+- **Execution truth:** planned and actual CPU/GPU decisions, fallback, transfer,
+  cancellation, cleanup, and provenance agree across interactive, batch,
+  generated, and export routes.
+- **Responsive publication:** asynchronous work is generation-owned; stale,
+  cancelled, provisional, or failed work cannot replace a newer valid result.
+- **Privacy and recovery:** identities and support artifacts avoid private
+  absolute paths; writes are bounded, atomic where practical, and recoverable.
+- **Impact-based qualification:** focused tests run for every change; protected
+  GPU, installer lifecycle, schema migration, or extensive UI evidence reruns
+  only when that domain changes. A complete cross-platform suite runs once on a
+  release candidate.
+
+Accelerator convenience remains conservative. VIPP may offer **Add conversion**
+only for the reviewed `uint8`/`uint16` to `float32` conversion with
+`Scaling = Preserve`. The visible result says **GPU eligible**, not that GPU use
+is a guarantee. VIPP must never silently insert casts, reorder pixels, rewrite
+scientific parameters, or manufacture axis/calibration meaning to enter an
+accelerator region.
 
 ## Beta And 1.0 Readiness
 
-Moving beyond alpha should depend on product evidence, not elapsed time or node
-count. A beta candidate should have:
+A beta candidate should have:
 
-- stable documented schema migration with an immutable compatibility corpus;
+- stable SourceItem, workflow, batch, manifest, and provenance migration;
 - a named CPU/GPU/platform support matrix and clean installation evidence;
-- several canonical workflows with publication-facing validation packs;
+- canonical workflows with publication-facing validation packs;
 - predictable cancellation, checkpoint recovery, and automatic batch resume;
-- explicit large-data materialization and preview behavior;
-- a reproducibility-package export path; and
+- explicit large-data preview, analysis-resolution, and materialization
+  behavior;
+- reproducibility-package export; and
 - novice-facing workflow health that remains transparent about every scientific
-  assumption or automatic change.
+  assumption or persisted automatic change.
 
-## Later Milestones
+## Governing References
 
-These should wait until the source, scale, validation, and reproducibility base
-is stronger:
-
-- first-class points followed by puncta/spot detection and point measurements;
-- first-class transforms followed by translation, drift correction, affine,
-  and later non-rigid registration;
-- first-class surfaces followed by mesh preview/export and specialist surface
-  analysis;
-- full plate/well/field browsing and broader HCS execution after the first
-  source-item contract;
-- model-backed segmentation such as Cellpose, StarDist, or ilastik through
-  isolated optional dependencies and exact model provenance;
-- Apple Metal acceleration through an MPS/MLX or other provider only after a
-  time-boxed feasibility study; CPU remains the honest Apple fallback until a
-  provider passes the same scientific and operational gates;
-- stitching, mosaics, tracking, and specialist mitochondrial event metrics;
-- AI-assisted graph authoring only after validated graph fragments, structured
-  diffs, local approval, bounded context, and reproducibility provenance exist;
-  and
-- custom code nodes only with explicit trust, serialization, review, and
-  sandboxing rules.
+- [architecture.md](architecture.md): runtime, data model, persistence, and
+  known seams.
+- [user-guide.md](user-guide.md): current end-user behavior.
+- [io-user-guide.md](io-user-guide.md), [ome-io-plan.md](ome-io-plan.md), and
+  [cache-and-memory.md](cache-and-memory.md): current source, I/O, and
+  eager/lazy boundaries.
+- [gpu-production-implementation-plan.md](gpu-production-implementation-plan.md)
+  and [durable-gpu-execution.md](durable-gpu-execution.md): detailed accelerator
+  admission and cross-surface execution contracts.
+- [desktop-startup-and-installer-plan.md](desktop-startup-and-installer-plan.md):
+  installer and launcher architecture.
+- [node-roadmap.md](node-roadmap.md): implemented operations and candidate node
+  families.
+- [research-and-publication.md](research-and-publication.md) and validation
+  reports: evidence boundaries and publication-facing results.
 
 ## Planning Rules
 
 - Prefer a complete, documented, tested workflow over isolated nodes.
 - Measure GPU value by end-to-end behavior, not raw kernel speed or badge count.
-- Prefer metadata-preserving transformations over visually convenient
-  shortcuts.
-- Keep source identity, semantic axes, calibration, and acquisition metadata
-  explicit.
-- Prefer explicit output nodes and durable provenance for batch and publication
-  workflows.
-- Keep graph behavior serializable, migratable, and reproducible.
-- Present one actionable problem at a time, apply only reviewed sane defaults,
-  and explain every persisted automatic change.
-- Treat validation, documentation, installation, recovery, and support evidence
-  as part of a feature rather than cleanup after it.
+- Keep source identity, semantic axes, calibration, analysis resolution, and
+  acquisition metadata explicit.
+- Keep graph and batch behavior serializable, migratable, and reproducible.
+- Present one actionable problem at a time and explain every persisted automatic
+  change.
+- Put completed engineering detail in release notes or implementation records,
+  not back into this active roadmap.
+- Put uncommitted possibilities in [product ideas](product-ideas.md) until they
+  have a user outcome, owner, dependency boundary, and acceptance contract.

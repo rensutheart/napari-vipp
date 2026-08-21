@@ -18,10 +18,10 @@ from importlib import resources
 from typing import Any
 
 POLICY_SCHEMA_ID = "napari-vipp-compute-policy-artifact-v1"
-PHASE1_POLICY_ID = "phase1-gpu-public-v8"
-PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v8.json"
+PHASE1_POLICY_ID = "phase1-gpu-public-v9"
+PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v9.json"
 PHASE1_POLICY_SHA256 = (
-    "ad8c1e30373e85735b7e9e01b67e7961cd055c4e28d8d031f876eefb8f351021"
+    "b39d6205a09b1b1570a9e45501aac488c98952dc1e641e1a97d96160862e963f"
 )
 _POLICY_PACKAGE = "napari_vipp.compute_policies"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -239,7 +239,7 @@ def parse_compute_policy_artifact(
     if policy_id != PHASE1_POLICY_ID:
         raise ComputePolicyArtifactError(f"Unsupported Phase 1 policy {policy_id!r}.")
     policy_version = _integer(root["policy_version"], "$.policy_version", minimum=1)
-    if policy_version != 8:
+    if policy_version != 9:
         raise ComputePolicyArtifactError(
             f"Unsupported Phase 1 policy version {policy_version}."
         )

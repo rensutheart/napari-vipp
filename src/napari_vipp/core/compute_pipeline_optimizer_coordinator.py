@@ -47,6 +47,7 @@ from napari_vipp.core.compute_benchmark import (
 )
 from napari_vipp.core.compute_benchmark_adapter import (
     operation_parity,
+    workload_contract_from_prepared_node_call,
     workload_from_prepared_node_call,
 )
 from napari_vipp.core.compute_benchmark_coordinator import (
@@ -181,9 +182,9 @@ class ApplicationPipelineOptimizationResult:
     measured_node_ids: tuple[str, ...] = ()
     repair_suggestions: tuple[ComputeRepairSuggestion, ...] = ()
     candidate_refusals: tuple[EvidenceRefusal, ...] = ()
-    exact_workload_qualifications: frozenset[
-        ExactWorkloadCandidateQualification
-    ] = frozenset()
+    exact_workload_qualifications: frozenset[ExactWorkloadCandidateQualification] = (
+        frozenset()
+    )
 
     def __post_init__(self) -> None:
         if self.proposal.identity_digest != self.identity.digest:
@@ -212,9 +213,7 @@ class ApplicationPipelineOptimizationResult:
             not isinstance(item, ExactWorkloadCandidateQualification)
             for item in qualifications
         ):
-            raise TypeError(
-                "exact_workload_qualifications contains an invalid value"
-            )
+            raise TypeError("exact_workload_qualifications contains an invalid value")
         if any(
             item.qualification_scope_digest != self.identity.digest
             for item in qualifications
@@ -326,7 +325,7 @@ def discover_pipeline_compute_repairs(
             continue
         if call is None:
             continue
-        workload = workload_from_prepared_node_call(call)
+        workload = workload_contract_from_prepared_node_call(call)
         candidates = potential_compute_repair_specs(
             compute_request,
             workload,
@@ -389,9 +388,7 @@ def discover_pipeline_compute_repairs(
                         implementation_id=selected.implementation_id,
                         implementation_version=selected.implementation_version,
                         runtime_id=selected.runtime_id,
-                        implementation_library_id=(
-                            selected.implementation_library_id
-                        ),
+                        implementation_library_id=(selected.implementation_library_id),
                     ),
                 )
             )
@@ -509,9 +506,7 @@ class ApplicationPipelineOptimizerCoordinator:
         # barriers.  This is required for accelerator-capable terminal tables
         # (for example object measurements) to be benchmarked and included in
         # end-to-end parity/timing without changing the user's live cache.
-        private_manual_node_ids = frozenset(
-            pipeline.manual_node_ids() & set(safe_ids)
-        )
+        private_manual_node_ids = frozenset(pipeline.manual_node_ids() & set(safe_ids))
         raw_locks = tuple(str(node_id).strip() for node_id in optimizer_locked_node_ids)
         if any(not node_id for node_id in raw_locks) or len(set(raw_locks)) != len(
             raw_locks
@@ -1979,9 +1974,7 @@ def _build_optimizer_graph(
                     current_spec.runtime_id,
                     minimum_workspace_bytes=locked_workspace,
                     host_output_only=bool(
-                        str(
-                            getattr(current_spec, "host_finalizer_ref", "")
-                        ).strip()
+                        str(getattr(current_spec, "host_finalizer_ref", "")).strip()
                     ),
                 ),
             )
@@ -2109,9 +2102,7 @@ def _output_byte_count(pipeline: PrototypePipeline, node_id: str) -> int:
                         "spatial_mode",
                         "Auto from axes",
                     ),
-                    resolved_spatial_ndim=parameters.get(
-                        "resolved_spatial_ndim"
-                    ),
+                    resolved_spatial_ndim=parameters.get("resolved_spatial_ndim"),
                     axis_names=parameters.get("axis_names"),
                     axis_types=parameters.get("axis_types"),
                     axis_scales=parameters.get("axis_scales"),

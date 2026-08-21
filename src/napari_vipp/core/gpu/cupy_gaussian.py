@@ -1,4 +1,4 @@
-"""Lazy, device-resident CuPyX adapters for VIPP Gaussian operations.
+"""Lazy, device-resident CUDA adapters for VIPP Gaussian operations.
 
 The optional CUDA stack is imported only when an adapter is executed.  Inputs,
 outputs, and intermediate image buffers stay in the CuPy array domain.
@@ -12,14 +12,82 @@ from functools import cache
 from numbers import Integral
 from types import ModuleType
 
+import numpy as np
+
+_THREADS_PER_BLOCK = 256
+_MAXIMUM_BLOCKS = 65_535
+
 
 @cache
-def _cupy_modules() -> tuple[ModuleType, ModuleType]:
-    """Load optional CUDA modules only for an explicit device execution."""
+def _cupy_module() -> ModuleType:
+    """Load CuPy only for an explicit accelerator execution."""
 
-    cupy = importlib.import_module("cupy")
-    ndimage = importlib.import_module("cupyx.scipy.ndimage")
-    return cupy, ndimage
+    return importlib.import_module("cupy")
+
+
+@cache
+def _cupyx_ndimage_module() -> ModuleType:
+    """Load CuPyX only for a non-public or integral execution path."""
+
+    return importlib.import_module("cupyx.scipy.ndimage")
+
+
+@cache
+def _float32_gaussian_axis_kernel():
+    """Return one radius-independent float32 correlation kernel.
+
+    CuPyX specializes its generated correlation kernel on the Gaussian weight
+    shape.  Interactive sigma edits therefore compile a new CUDA kernel for
+    every previously unseen radius.  This kernel keeps the radius and weights
+    as runtime inputs, so one compilation serves every reviewed sigma value.
+    The flattened contiguous input also keeps the generated CUDA signature
+    independent of image rank.
+    """
+
+    cupy = _cupy_module()
+    kernel_name = "vipp_dynamic_float32_gaussian_axis_v2"
+    return cupy.RawKernel(
+        rf"""
+        extern "C" __global__
+        void {kernel_name}(
+            const float* input_values,
+            const float* weights,
+            float* output_values,
+            const unsigned long long value_count,
+            const long long axis_length,
+            const long long inner_stride,
+            const int radius)
+        {{
+            unsigned long long index =
+                (unsigned long long)blockDim.x * blockIdx.x + threadIdx.x;
+            const unsigned long long stride =
+                (unsigned long long)blockDim.x * gridDim.x;
+            for (; index < value_count; index += stride) {{
+                const long long coordinate =
+                    ((long long)index / inner_stride) % axis_length;
+                const long long period = 2 * axis_length;
+                float total = 0.0f;
+                for (int offset = -radius; offset <= radius; ++offset) {{
+                    long long reflected = coordinate + offset;
+                    reflected %= period;
+                    if (reflected < 0) {{
+                        reflected += period;
+                    }}
+                    if (reflected >= axis_length) {{
+                        reflected = period - 1 - reflected;
+                    }}
+                    const long long source_index =
+                        (long long)index
+                        + (reflected - coordinate) * inner_stride;
+                    total += input_values[source_index]
+                        * weights[offset + radius];
+                }}
+                output_values[index] = total;
+            }}
+        }}
+        """,
+        kernel_name,
+    )
 
 
 def gaussian_blur(
@@ -29,7 +97,7 @@ def gaussian_blur(
 ):
     """Apply VIPP's slice-wise Y/X Gaussian contract on a CuPy array."""
 
-    cupy, ndimage = _cupy_modules()
+    cupy = _cupy_module()
     array = cupy.asarray(data)
     if array.dtype == cupy.bool_:
         array = array.astype(cupy.float32)
@@ -49,7 +117,6 @@ def gaussian_blur(
         array,
         tuple(sigma_by_axis),
         cupy=cupy,
-        ndimage=ndimage,
     )
 
 
@@ -64,7 +131,7 @@ def gaussian_blur_3d(
     """Apply VIPP's resolved trailing Z/Y/X Gaussian contract on device."""
 
     del lock_xy  # UI convenience; the three sigma values are authoritative.
-    cupy, ndimage = _cupy_modules()
+    cupy = _cupy_module()
     array = cupy.asarray(data)
     if array.dtype == cupy.bool_:
         array = array.astype(cupy.float32)
@@ -93,11 +160,10 @@ def gaussian_blur_3d(
         array,
         tuple(sigma_by_axis),
         cupy=cupy,
-        ndimage=ndimage,
     )
 
 
-def _gaussian_filter(array, sigmas, *, cupy: ModuleType, ndimage: ModuleType):
+def _gaussian_filter(array, sigmas, *, cupy: ModuleType):
     """Use SciPy-compatible integer intermediates without leaving device.
 
     CuPyX may accumulate integral inputs at reduced precision, which produces
@@ -105,9 +171,16 @@ def _gaussian_filter(array, sigmas, *, cupy: ModuleType, ndimage: ModuleType):
     correlation followed by a cast back to the public integer dtype after each
     active axis.  Reproducing that separable sequence on device restores the
     authoritative integer behavior while retaining CuPy arrays throughout.
-    Floating inputs use CuPyX's normal multidimensional implementation.
+    Reviewed float32 inputs use VIPP's radius-independent separable kernel so
+    interactive parameter changes do not repeatedly compile radius-specialized
+    CuPyX kernels. Other floating inputs retain CuPyX's implementation and are
+    outside the public GPU contract.
     """
 
+    if array.dtype == cupy.float32:
+        return _dynamic_float32_gaussian_filter(array, sigmas, cupy=cupy)
+
+    ndimage = _cupyx_ndimage_module()
     if not cupy.issubdtype(array.dtype, cupy.integer):
         return ndimage.gaussian_filter(
             array,
@@ -134,6 +207,63 @@ def _gaussian_filter(array, sigmas, *, cupy: ModuleType, ndimage: ModuleType):
         )
         result = filtered.astype(public_dtype)
     return result if filtered_any_axis else array.copy()
+
+
+def _dynamic_float32_gaussian_filter(array, sigmas, *, cupy: ModuleType):
+    """Apply separable reflect-mode Gaussian correlation with dynamic radii."""
+
+    result = cupy.ascontiguousarray(array)
+    kernel = _float32_gaussian_axis_kernel()
+    filtered_any_axis = False
+    for axis, sigma in enumerate(sigmas):
+        if sigma <= 1e-15:
+            continue
+        radius = int(4.0 * float(sigma) + 0.5)
+        # CuPyX treats a rounded zero-radius axis as an exact copy.  Avoid
+        # arithmetic here so signed zeros and NaN payload bits are preserved.
+        if radius <= 0:
+            continue
+        filtered_any_axis = True
+        weights = cupy.asarray(
+            _gaussian_weights(float(sigma), radius),
+            dtype=cupy.float32,
+        )
+        shape = result.shape
+        inner_stride = int(np.prod(shape[axis + 1 :], dtype=np.int64))
+        flat = result.reshape(-1)
+        filtered = cupy.empty_like(flat)
+        if flat.size:
+            blocks = min(
+                max(
+                    (int(flat.size) + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK,
+                    1,
+                ),
+                _MAXIMUM_BLOCKS,
+            )
+            kernel(
+                (blocks,),
+                (_THREADS_PER_BLOCK,),
+                (
+                    flat,
+                    weights,
+                    filtered,
+                    np.uint64(flat.size),
+                    np.int64(shape[axis]),
+                    np.int64(inner_stride),
+                    np.int32(radius),
+                ),
+            )
+        result = filtered.reshape(shape)
+    return result if filtered_any_axis else array.copy()
+
+
+def _gaussian_weights(sigma: float, radius: int) -> np.ndarray:
+    """Return CuPyX-compatible normalized float32 Gaussian weights."""
+
+    positions = np.arange(-radius, radius + 1, dtype=np.float64)
+    weights = np.exp(-0.5 / (sigma * sigma) * positions * positions)
+    weights /= weights.sum()
+    return weights.astype(np.float32)
 
 
 def _finite_nonnegative_sigma(value, label: str) -> float:

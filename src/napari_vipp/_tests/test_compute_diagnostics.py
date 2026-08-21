@@ -391,11 +391,11 @@ def test_live_catalog_reports_three_distinct_layers_and_every_public_region():
         if spec.visible_for(allow_experimental=False)
     }
     assert live_ids == {
-        "cucim-rolling_ball_background-v2",
-        "cucim-subtract_background-v2",
-        "cupyx-median-filter-v1",
-        "cupyx-gaussian-blur-v1",
-        "cupyx-gaussian-blur-3d-v1",
+        "cupy-rolling-ball-background-v1",
+        "cupy-subtract-background-v1",
+        "cupy-median-filter-v1",
+        "cupy-gaussian-blur-v1",
+        "cupy-gaussian-blur-3d-v1",
         "cupyx-convert-dtype-preserve-f32-v1",
         "cupy-binary-threshold-f32-exact-v1",
         "cupy-extract-channel-view-v1",
@@ -457,7 +457,7 @@ def test_empty_standard_region_catalog_never_reports_available():
     )
 
     assert report.cuda_ready
-    assert len(report.admitted_regions) == 4
+    assert len(report.admitted_regions) == 2
     assert report.status is DoctorStatus.DEGRADED
 
 

@@ -61,6 +61,11 @@ from napari_vipp.core.compute_registry import (
 )
 from napari_vipp.core.compute_specs import OperationComputeSpec, compute_specs_for
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
+from napari_vipp.core.execution_telemetry import (
+    DeviceExecutionPhase,
+    DeviceExecutionTelemetryConfig,
+    PipelinePreparationPhase,
+)
 from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.host_memory import HostMemorySnapshot
 from napari_vipp.core.operations import canny_edges as cpu_canny_edges
@@ -222,7 +227,7 @@ class _StaticPlanner:
             request,
             ComputeEnvironment(
                 runtime_ids=("cpu-numpy", "cuda-cupy"),
-                implementation_libraries=("cpu", "cupyx", "cucim"),
+                implementation_libraries=("cpu", "cupy", "cupyx", "cucim"),
                 device_id="cuda:0",
                 device_name="NVIDIA GeForce RTX 5090",
                 device_class="nvidia-cuda",
@@ -366,6 +371,7 @@ def _accelerated_request(
     dirty_node_ids: frozenset[str] | None = None,
     cached_pipeline: PrototypePipeline | None = None,
     performance_history_path: Path | None = None,
+    device_execution_telemetry: DeviceExecutionTelemetryConfig | None = None,
 ) -> PipelineRunRequest:
     cached = cached_pipeline
     return PipelineRunRequest(
@@ -412,7 +418,52 @@ def _accelerated_request(
             frozenset() if cached is None else frozenset(cached.completed_node_ids)
         ),
         performance_history_path=performance_history_path,
+        device_execution_telemetry=device_execution_telemetry,
     )
+
+
+def test_injected_planner_cannot_return_a_different_device_request():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    compute_request = ComputeRequest(
+        mode=ComputeMode.PREFER_GPU,
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
+    )
+    runtime = _ShapeAwareRuntime()
+    registry, specs = _test_registry(runtime, (("gaussian_blur", _device_copy),))
+
+    def mismatched_planner(request, _workloads, **_kwargs):
+        return _PlanningResult(
+            replace(request, device_id="cuda:1"),
+            ComputeEnvironment(
+                runtime_ids=("cpu-numpy", "cuda-cupy"),
+                implementation_libraries=("cpu", "cupy"),
+                device_id="cuda:1",
+                device_name="Different GPU",
+                device_class="nvidia-cuda",
+                memory_topology="discrete",
+            ),
+            (_decision(gaussian.id, specs["gaussian_blur"]),),
+        )
+
+    result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            np.arange(25, dtype=np.float32).reshape(5, 5),
+            compute_request,
+        ),
+        compute_registry=registry,
+        compute_planner=mismatched_planner,
+    )
+
+    assert "different runtime, device" in result.error
+    assert runtime.operation_count == 0
+    assert runtime.live == {}
+    registry.close()
 
 
 def test_prefer_gpu_then_auto_cpu_comparison_teaches_next_auto_assignment(
@@ -471,9 +522,7 @@ def test_prefer_gpu_then_auto_cpu_comparison_teaches_next_auto_assignment(
     )
     samples = store.samples()
     assert len(samples) == 2
-    cpu_sample = next(
-        item for item in samples if not item.assignment.uses_accelerator
-    )
+    cpu_sample = next(item for item in samples if not item.assignment.uses_accelerator)
     store.clear()
     store.append(replace(cpu_sample, elapsed_seconds=2.0))
     store.append(replace(gpu_sample, elapsed_seconds=0.1))
@@ -561,8 +610,7 @@ def test_auto_skips_optional_cpu_comparison_when_host_headroom_is_unsafe(
     )
     assert decision.runtime_id == "cuda-cupy"
     assert any(
-        "Skipped Auto CPU timing comparison" in warning
-        and "memory headroom" in warning
+        "Skipped Auto CPU timing comparison" in warning and "memory headroom" in warning
         for warning in result.execution_report.warnings
     )
     assert len(store.samples()) == 2
@@ -598,8 +646,7 @@ def test_optional_history_fingerprint_failure_does_not_fail_scientific_run(
     assert not result.error
     assert result.execution_report is not None
     assert any(
-        "continue without it" in warning
-        for warning in result.execution_report.warnings
+        "continue without it" in warning for warning in result.execution_report.warnings
     )
     assert not (tmp_path / "timings.json").exists()
 
@@ -681,8 +728,7 @@ def test_run_batch_reuses_fake_cuda_after_visible_oom_fallback(tmp_path):
         assert document["compute"]["effective_request"] == request.as_dict()
         assert document["compute"]["runtime_cleanup_succeeded"] is True
         assert all(
-            item["execution"]["cleanup_succeeded"] is True
-            for item in document["items"]
+            item["execution"]["cleanup_succeeded"] is True for item in document["items"]
         )
 
         first, second = document["items"]
@@ -711,9 +757,10 @@ def test_run_batch_reuses_fake_cuda_after_visible_oom_fallback(tmp_path):
         )
         assert second_gaussian["decision_kind"] == "selected"
         assert second_gaussian["actual_implementation"]["runtime_id"] == "cuda-cupy"
-        assert second_gaussian["actual_implementation"][
-            "implementation_library_id"
-        ] == "cupyx"
+        assert (
+            second_gaussian["actual_implementation"]["implementation_library_id"]
+            == "cupyx"
+        )
         assert second_gaussian["actual_implementation"]["implementation_id"] == (
             "fake-gaussian_blur-v1"
         )
@@ -721,9 +768,10 @@ def test_run_batch_reuses_fake_cuda_after_visible_oom_fallback(tmp_path):
 
         for item, expected in zip(document["items"], arrays, strict=True):
             output_record = item["outputs"][0]
-            assert output_record["execution_provenance_sha256"] == item[
-                "execution_provenance_sha256"
-            ]
+            assert (
+                output_record["execution_provenance_sha256"]
+                == item["execution_provenance_sha256"]
+            )
             np.testing.assert_array_equal(np.load(output_record["path"]), expected)
 
         assert runtime.host_to_device_count == 2
@@ -731,14 +779,20 @@ def test_run_batch_reuses_fake_cuda_after_visible_oom_fallback(tmp_path):
         assert runtime.operation_count == 2
         assert runtime.release_count == 3
         assert runtime.live == {}
-        assert sum(
-            isinstance(event, tuple) and event[0] == "scope-enter"
-            for event in runtime.events
-        ) == 2
-        assert sum(
-            isinstance(event, tuple) and event[0] == "scope-exit"
-            for event in runtime.events
-        ) == 2
+        assert (
+            sum(
+                isinstance(event, tuple) and event[0] == "scope-enter"
+                for event in runtime.events
+            )
+            == 2
+        )
+        assert (
+            sum(
+                isinstance(event, tuple) and event[0] == "scope-exit"
+                for event in runtime.events
+            )
+            == 2
+        )
     finally:
         registry.close()
 
@@ -770,10 +824,10 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         if expected_device:
             assert selected is not None
             assert expected_device.casefold() in selected.display_name.casefold()
-        library = registry.probe_library("cupyx", refresh=True)
+        library = registry.probe_library("cupy", refresh=True)
         if not library.available:
             pytest.fail(
-                "Real CUDA batch smoke requested, but CuPyX is unavailable: "
+                "Real CUDA batch smoke requested, but CuPy is unavailable: "
                 + library.message
             )
 
@@ -802,8 +856,8 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         request = ComputeRequest(
             mode=ComputeMode.CUSTOM,
             node_preferences={
-                gaussian.id: "implementation:cupyx-gaussian-blur-v1",
-                median.id: "implementation:cupyx-median-filter-v1",
+                gaussian.id: "implementation:cupy-gaussian-blur-v1",
+                median.id: "implementation:cupy-median-filter-v1",
                 output.id: "cpu",
             },
             runtime_id="cuda-cupy",
@@ -852,18 +906,16 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
             if progress.message == "Node started."
         }.issuperset({gaussian.id, median.id})
         for item, source in zip(document["items"], arrays, strict=True):
-            by_node = {
-                node["node_id"]: node for node in item["execution"]["nodes"]
-            }
+            by_node = {node["node_id"]: node for node in item["execution"]["nodes"]}
             for node_id, implementation_id in (
-                (gaussian.id, "cupyx-gaussian-blur-v1"),
-                (median.id, "cupyx-median-filter-v1"),
+                (gaussian.id, "cupy-gaussian-blur-v1"),
+                (median.id, "cupy-median-filter-v1"),
             ):
                 node = by_node[node_id]
                 identity = node["actual_implementation"]
                 assert node["decision_kind"] == "selected"
                 assert identity["runtime_id"] == "cuda-cupy"
-                assert identity["implementation_library_id"] == "cupyx"
+                assert identity["implementation_library_id"] == "cupy"
                 assert identity["implementation_id"] == implementation_id
                 assert identity["implementation_version"]
             segments = item["execution"]["plan"]["segments"]
@@ -872,9 +924,10 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
             assert item["execution"]["fallback_records"] == []
             assert item["execution"]["cleanup_succeeded"] is True
             output_record = item["outputs"][0]
-            assert output_record["execution_provenance_sha256"] == item[
-                "execution_provenance_sha256"
-            ]
+            assert (
+                output_record["execution_provenance_sha256"]
+                == item["execution_provenance_sha256"]
+            )
             actual = np.load(output_record["path"])
             parity = operation_parity(
                 "gaussian_blur",
@@ -924,8 +977,7 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         assert cancelled_item["execution"]["failure"]["kind"] == "cancelled"
         assert not list(cancelled_config.output_dir.glob("*.npy"))
         assert any(
-            progress.node_id == gaussian.id
-            and progress.message == "Node started."
+            progress.node_id == gaussian.id and progress.message == "Node started."
             for progress in cancellation_progress
         )
 
@@ -967,11 +1019,10 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
         if expected_device:
             assert selected is not None
             assert expected_device.casefold() in selected.display_name.casefold()
-        library = registry.probe_library("cupyx", refresh=True)
+        library = registry.probe_library("cupy", refresh=True)
         if not library.available:
             pytest.fail(
-                "Real CUDA smoke requested, but CuPyX is unavailable: "
-                + library.message
+                "Real CUDA smoke requested, but CuPy is unavailable: " + library.message
             )
     finally:
         registry.close()
@@ -988,8 +1039,8 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
     gpu_request = ComputeRequest(
         mode=ComputeMode.CUSTOM,
         node_preferences={
-            median.id: "implementation:cupyx-median-filter-v1",
-            gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+            median.id: "implementation:cupy-median-filter-v1",
+            gaussian.id: "implementation:cupy-gaussian-blur-v1",
         },
         runtime_id="cuda-cupy",
         device_id=probe.selected_device_id,
@@ -1025,8 +1076,8 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
     assert embedded_request["mode"] == "custom"
     assert embedded_request["fallback_policy"] == "strict"
     assert embedded_request["node_preferences"] == {
-        median.id: "implementation:cupyx-median-filter-v1",
-        gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+        median.id: "implementation:cupy-median-filter-v1",
+        gaussian.id: "implementation:cupy-gaussian-blur-v1",
     }
 
     # Generated execution owns its registry, so observe the actual provider
@@ -1064,22 +1115,20 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
     assert len(report.plan.segments) == 1
     segment = report.plan.segments[0]
     assert segment.node_ids == (median.id, gaussian.id)
-    assert tuple(
-        (port.node_id, port.port_index) for port in segment.entry_ports
-    ) == (("input", 0),)
+    assert tuple((port.node_id, port.port_index) for port in segment.entry_ports) == (
+        ("input", 0),
+    )
     assert transfers == {"host_to_device": 1, "device_to_host": 2}
 
-    decisions = {
-        decision.node_id: decision for decision in report.actual_decisions
-    }
+    decisions = {decision.node_id: decision for decision in report.actual_decisions}
     for node_id, implementation_id in (
-        (median.id, "cupyx-median-filter-v1"),
-        (gaussian.id, "cupyx-gaussian-blur-v1"),
+        (median.id, "cupy-median-filter-v1"),
+        (gaussian.id, "cupy-gaussian-blur-v1"),
     ):
         decision = decisions[node_id]
         assert decision.decision_kind is DecisionKind.SELECTED
         assert decision.runtime_id == "cuda-cupy"
-        assert decision.implementation_library_id == "cupyx"
+        assert decision.implementation_library_id == "cupy"
         assert decision.implementation_id == implementation_id
         exact = next(
             item
@@ -1119,10 +1168,13 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
     assert sidecar["execution"]["cleanup_succeeded"] is True
     assert sidecar["execution"]["fallback_records"] == []
     assert sidecar["output"]["node_id"] == gaussian.id
-    assert sidecar["output"]["execution_provenance_sha256"] == (
-        gpu_results.output_provenance[gaussian.id]["output"][
-            "execution_provenance_sha256"
-        ]
+    assert (
+        sidecar["output"]["execution_provenance_sha256"]
+        == (
+            gpu_results.output_provenance[gaussian.id]["output"][
+                "execution_provenance_sha256"
+            ]
+        )
     )
 
     cancel_event = threading.Event()
@@ -1144,9 +1196,7 @@ def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
     cancelled_execution = caught.value.provenance["execution"]
     assert cancelled_execution["outcome"] == "cancelled"
     assert cancelled_execution["failure"]["kind"] == "cancelled"
-    assert cancelled_execution["failure"]["reason_code"] == (
-        "operation_cancelled"
-    )
+    assert cancelled_execution["failure"]["reason_code"] == ("operation_cancelled")
     assert cancelled_execution["cleanup_succeeded"] is True
     assert any(update[0] == gaussian.id for update in cancelled_updates)
 
@@ -1223,6 +1273,7 @@ def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
     assert result.error == ""
     assert result.pipeline is not None
     assert result.execution_report is not None
+    assert result.device_execution_telemetry is None
     assert runtime.host_to_device_count == 1
     assert runtime.device_to_host_count == 1
     assert runtime.operation_count == 3
@@ -1261,6 +1312,74 @@ def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
         "median_filter",
     ]
     assert planner.workloads[-1].input_shapes == (data.shape,)
+    registry.close()
+
+
+def test_headless_device_chain_propagates_opt_in_execution_telemetry():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+
+    runtime = _ShapeAwareRuntime()
+    registry, specs = _test_registry(
+        runtime,
+        (("gaussian_blur", _device_copy),),
+    )
+    compute_request = ComputeRequest(
+        mode=ComputeMode.PREFER_GPU,
+        device_id="cuda:0",
+    )
+    planner = _StaticPlanner(
+        compute_request,
+        (_decision(gaussian.id, specs[gaussian.operation_id]),),
+    )
+    data = np.arange(63, dtype=np.float32).reshape(7, 9)
+
+    result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            data,
+            compute_request,
+            device_execution_telemetry=DeviceExecutionTelemetryConfig(
+                synchronize_device_phases=True,
+            ),
+        ),
+        compute_registry=registry,
+        compute_planner=planner,
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    preparation = result.pre_device_execution_telemetry
+    assert preparation is not None
+    assert preparation.completed is True
+    assert {span.phase for span in preparation.spans} == set(PipelinePreparationPhase)
+    observation = result.device_execution_telemetry
+    assert observation is not None
+    assert (
+        preparation.started_monotonic_seconds + preparation.elapsed_seconds
+        <= observation.started_monotonic_seconds
+    )
+    assert observation.synchronized_device_phases is True
+    assert observation.host_to_device.count == 1
+    assert observation.host_to_device.byte_count == data.nbytes
+    assert observation.host_to_device.all_synchronized is True
+    assert observation.device_to_host.count == 1
+    assert observation.device_to_host.byte_count == data.nbytes
+    assert observation.device_to_host.all_synchronized is True
+    operation_spans = observation.spans_for(DeviceExecutionPhase.DEVICE_OPERATION)
+    assert [(span.node_id, span.operation_id) for span in operation_spans] == [
+        (gaussian.id, gaussian.operation_id)
+    ]
+    resolution_spans = observation.spans_for(
+        DeviceExecutionPhase.IMPLEMENTATION_RESOLUTION
+    )
+    assert [span.implementation_id for span in resolution_spans] == [
+        specs[gaussian.operation_id].implementation_id
+    ]
+    assert runtime.live == {}
     registry.close()
 
 
@@ -1496,8 +1615,10 @@ def test_prefer_gpu_non_native_extract_is_selected_for_cpu_before_execution(
     pipeline.set_param(extract.id, "channel", 1)
     assert pipeline.connect("input", extract.id).success
 
-    data = np.arange(3 * 5 * 7, dtype=np.uint16).reshape(3, 5, 7).astype(
-        np.dtype(np.uint16).newbyteorder("S")
+    data = (
+        np.arange(3 * 5 * 7, dtype=np.uint16)
+        .reshape(3, 5, 7)
+        .astype(np.dtype(np.uint16).newbyteorder("S"))
     )
     request = replace(
         _accelerated_request(
@@ -1673,7 +1794,14 @@ def test_device_oom_reports_actual_cpu_fallback_decision():
     data = np.arange(25, dtype=np.float32).reshape(5, 5)
 
     result = execute_pipeline_request(
-        _accelerated_request(pipeline, data, compute_request),
+        _accelerated_request(
+            pipeline,
+            data,
+            compute_request,
+            device_execution_telemetry=DeviceExecutionTelemetryConfig(
+                synchronize_device_phases=True,
+            ),
+        ),
         compute_registry=registry,
         compute_planner=planner,
     )
@@ -1705,6 +1833,14 @@ def test_device_oom_reports_actual_cpu_fallback_decision():
     assert serialized["reason_code"] == "fake_oom"
     assert serialized["memory_topology"] == "discrete"
     assert result.execution_report.warnings
+    observation = result.device_execution_telemetry
+    assert observation is not None
+    assert observation.host_to_device.count == 1
+    assert observation.device_to_host.count == 0
+    (failed_operation,) = observation.spans_for(DeviceExecutionPhase.DEVICE_OPERATION)
+    assert failed_operation.node_id == gaussian.id
+    assert failed_operation.succeeded is False
+    assert runtime.live == {}
     registry.close()
 
 
@@ -1742,16 +1878,25 @@ def test_dirty_device_run_reuses_clean_cached_upstream_output():
         data,
         compute_request,
     )
-    source_contexts = execution_module._capture_source_scientific_contexts(
+    captured_source_contexts = execution_module._capture_source_scientific_contexts(
         pipeline,
         provenance_request,
         cancel_callback=None,
     )
+    source_contexts = {
+        node_id: captured.scientific_context_fingerprint
+        for node_id, captured in captured_source_contexts.items()
+    }
+    source_reuse_envelopes = {
+        node_id: captured.source_reuse_envelope_fingerprint
+        for node_id, captured in captured_source_contexts.items()
+    }
     execution_module._publish_actual_compute_provenance(
         pipeline,
         compute_request,
         (_decision(gaussian.id, cpu_gaussian),),
         source_scientific_contexts=source_contexts,
+        source_reuse_envelope_fingerprints=source_reuse_envelopes,
         cancel_callback=None,
     )
 
@@ -2057,8 +2202,6 @@ def test_real_headless_measurements_pipeline_finalizes_public_table_and_cleans(
 def test_real_headless_background_gaussian_median_forms_one_device_segment():
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
-    if importlib.util.find_spec("cucim") is None:
-        pytest.skip("The optional cuCIM wheel is not installed.")
     try:
         import cupy
 
@@ -2069,7 +2212,7 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
         pytest.skip(f"A working CUDA device is unavailable: {exc}")
     registry = ComputeRegistry()
     try:
-        for library_id in ("cucim", "cupyx"):
+        for library_id in ("cupy", "cupyx"):
             library_probe = registry.probe_library(library_id)
             if not library_probe.available:
                 pytest.skip(
@@ -2097,9 +2240,9 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
     compute_request = ComputeRequest(
         mode=ComputeMode.CUSTOM,
         node_preferences={
-            background.id: ("implementation:cucim-subtract_background-v2"),
-            gaussian.id: "implementation:cupyx-gaussian-blur-v1",
-            median.id: "implementation:cupyx-median-filter-v1",
+            background.id: ("implementation:cupy-subtract-background-v1"),
+            gaussian.id: "implementation:cupy-gaussian-blur-v1",
+            median.id: "implementation:cupy-median-filter-v1",
         },
         runtime_id="cuda-cupy",
         device_id="cuda:0",
@@ -2191,10 +2334,8 @@ def test_real_convert_dtype_gaussian_corridor_uses_one_device_round_trip(
         compute_request = ComputeRequest(
             mode=ComputeMode.CUSTOM,
             node_preferences={
-                conversion.id: (
-                    "implementation:cupyx-convert-dtype-preserve-f32-v1"
-                ),
-                gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+                conversion.id: ("implementation:cupyx-convert-dtype-preserve-f32-v1"),
+                gaussian.id: "implementation:cupy-gaussian-blur-v1",
             },
             runtime_id="cuda-cupy",
             device_id=runtime_probe.selected_device_id,
@@ -2227,9 +2368,7 @@ def test_real_convert_dtype_gaussian_corridor_uses_one_device_round_trip(
         assert decisions[conversion.id].implementation_id == (
             "cupyx-convert-dtype-preserve-f32-v1"
         )
-        assert decisions[gaussian.id].implementation_id == (
-            "cupyx-gaussian-blur-v1"
-        )
+        assert decisions[gaussian.id].implementation_id == ("cupy-gaussian-blur-v1")
         assert all(
             decision.runtime_id == "cuda-cupy"
             and decision.decision_kind is DecisionKind.SELECTED
@@ -2272,9 +2411,7 @@ def test_real_segmentation_cleanup_corridor_is_one_cuda_segment(
         for library_id in ("cupy", "cupyx"):
             library_probe = registry.probe_library(library_id, refresh=True)
             if not library_probe.available:
-                pytest.skip(
-                    library_probe.message or f"{library_id} is unavailable."
-                )
+                pytest.skip(library_probe.message or f"{library_id} is unavailable.")
 
         pipeline = PrototypePipeline()
         pipeline.reset_empty_graph()
@@ -2353,18 +2490,14 @@ def test_real_segmentation_cleanup_corridor_is_one_cuda_segment(
         monkeypatch.setattr(runtime, "to_host", counted_to_host)
         preferences = {
             extract.id: "implementation:cupy-extract-channel-view-v1",
-            conversion.id: (
-                "implementation:cupyx-convert-dtype-preserve-f32-v1"
-            ),
+            conversion.id: ("implementation:cupyx-convert-dtype-preserve-f32-v1"),
             threshold.id: "implementation:cupy-binary-threshold-f32-exact-v1",
-            remove_small.id: (
-                "implementation:cupyx-remove-small-objects-bool-v1"
-            ),
+            remove_small.id: ("implementation:cupyx-remove-small-objects-bool-v1"),
             fill.id: "implementation:cupyx-fill-holes-all-v1",
             components.id: "implementation:cupyx-connected-components-v1",
         }
         if gaussian is not None:
-            preferences[gaussian.id] = "implementation:cupyx-gaussian-blur-v1"
+            preferences[gaussian.id] = "implementation:cupy-gaussian-blur-v1"
         compute_request = ComputeRequest(
             mode=ComputeMode.CUSTOM,
             node_preferences=preferences,
@@ -2402,9 +2535,7 @@ def test_real_segmentation_cleanup_corridor_is_one_cuda_segment(
             for segment in result.execution_report.plan.segments
         ] == [("cuda-cupy", tuple(expected_node_ids))]
         (segment,) = result.execution_report.plan.segments
-        assert {
-            (port.node_id, port.port_index) for port in segment.exit_ports
-        } == {
+        assert {(port.node_id, port.port_index) for port in segment.exit_ports} == {
             (components.id, 0),
             *({(fill.id, 0)} if retain_cleanup else set()),
         }
@@ -2419,11 +2550,7 @@ def test_real_segmentation_cleanup_corridor_is_one_cuda_segment(
         } == {
             extract.id: "cupy-extract-channel-view-v1",
             conversion.id: "cupyx-convert-dtype-preserve-f32-v1",
-            **(
-                {gaussian.id: "cupyx-gaussian-blur-v1"}
-                if gaussian is not None
-                else {}
-            ),
+            **({gaussian.id: "cupy-gaussian-blur-v1"} if gaussian is not None else {}),
             threshold.id: "cupy-binary-threshold-f32-exact-v1",
             remove_small.id: "cupyx-remove-small-objects-bool-v1",
             fill.id: "cupyx-fill-holes-all-v1",
@@ -2485,9 +2612,7 @@ def test_real_segmentation_cleanup_corridor_is_one_cuda_segment(
         if retain_cleanup:
             assert result.pipeline.node_compute_provenance[
                 fill.id
-            ].actual_implementation.implementation_id == (
-                "cupyx-fill-holes-all-v1"
-            )
+            ].actual_implementation.implementation_id == ("cupyx-fill-holes-all-v1")
         _assert_private_cuda_scope_clean(
             runtime,
             runtime_probe.selected_device_id,
@@ -2599,9 +2724,7 @@ def test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance(
     assert results.output_states[components.id].dtype == "int32"
     assert results.output_states[components.id].kind == "label image"
 
-    by_node = {
-        item["node_id"]: item for item in results.execution_provenance["nodes"]
-    }
+    by_node = {item["node_id"]: item for item in results.execution_provenance["nodes"]}
     for node_id, implementation_id in (
         (remove_small.id, "cupyx-remove-small-objects-bool-v1"),
         (fill.id, "cupyx-fill-holes-all-v1"),
@@ -2612,9 +2735,12 @@ def test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance(
         assert identity["implementation_library_id"] == "cupyx"
         assert identity["implementation_id"] == implementation_id
         assert identity["implementation_version"] == "1"
-        assert results.node_compute_provenance[
-            node_id
-        ].actual_implementation.implementation_id == implementation_id
+        assert (
+            results.node_compute_provenance[
+                node_id
+            ].actual_implementation.implementation_id
+            == implementation_id
+        )
     assert results.execution_provenance["fallback_records"] == []
     assert results.execution_provenance["cleanup_succeeded"] is True
 
@@ -2623,8 +2749,6 @@ def test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance(
 def test_real_gpu_modes_run_every_eligible_node_without_benchmark_evidence(mode):
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
-    if importlib.util.find_spec("cucim") is None:
-        pytest.skip("The optional cuCIM wheel is not installed.")
     try:
         import cupy
 
@@ -2635,11 +2759,18 @@ def test_real_gpu_modes_run_every_eligible_node_without_benchmark_evidence(mode)
         pytest.skip(f"A working CUDA device is unavailable: {exc}")
     registry = ComputeRegistry()
     try:
-        cucim_probe = registry.probe_library("cucim", refresh=True)
+        library_probes = tuple(
+            registry.probe_library(library_id, refresh=True)
+            for library_id in ("cupy", "cupyx")
+        )
     finally:
         registry.close()
-    if not cucim_probe.available:
-        pytest.skip(cucim_probe.message or "cuCIM is not policy-admitted.")
+    for library_probe in library_probes:
+        if not library_probe.available:
+            pytest.skip(
+                library_probe.message
+                or f"{library_probe.library_id} is not policy-admitted."
+            )
 
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
@@ -2683,11 +2814,9 @@ def test_real_gpu_modes_run_every_eligible_node_without_benchmark_evidence(mode)
         for decision in result.execution_report.actual_decisions
     }
     assert decisions[extract.id].implementation_id == "cpu-extract_channel-v1"
-    assert decisions[background.id].implementation_id == (
-        "cucim-subtract_background-v2"
-    )
+    assert decisions[background.id].implementation_id == ("cupy-subtract-background-v1")
     assert decisions[gaussian.id].implementation_id == "cpu-gaussian_blur-v1"
-    assert decisions[median.id].implementation_id == "cupyx-median-filter-v1"
+    assert decisions[median.id].implementation_id == "cupy-median-filter-v1"
     assert all(not decision.fallback_used for decision in decisions.values())
     assert not result.execution_report.fallback_records
     np.testing.assert_array_equal(result.pipeline.outputs[median.id], expected)
@@ -2824,12 +2953,8 @@ def test_real_headless_rgba_canny_otsu_stays_in_one_exact_device_segment(
             and decision.runtime_id == "cuda-cupy"
             for decision in decisions.values()
         )
-        assert decisions[canny.id].implementation_id == (
-            "cupyx-canny-edges-exact-v1"
-        )
-        assert decisions[otsu.id].implementation_id == (
-            "cupy-otsu-threshold-exact-v1"
-        )
+        assert decisions[canny.id].implementation_id == ("cupyx-canny-edges-exact-v1")
+        assert decisions[otsu.id].implementation_id == ("cupy-otsu-threshold-exact-v1")
 
         assert len(result.execution_report.plan.segments) == 1
         (segment,) = result.execution_report.plan.segments
@@ -3198,9 +3323,7 @@ def test_real_headless_rl_tv_pipeline_selects_provider_reports_and_cleans():
         image[24, 31] = np.float32(1.0)
         image[83, 97] = np.float32(0.6)
         y, x = np.mgrid[-6:7, -6:7].astype(np.float32)
-        psf = np.exp(-(x * x + y * y) / np.float32(2.0 * 1.7**2)).astype(
-            np.float32
-        )
+        psf = np.exp(-(x * x + y * y) / np.float32(2.0 * 1.7**2)).astype(np.float32)
         psf /= np.float32(psf.sum(dtype=np.float64))
         workflow = serialize_workflow(pipeline)
         source_payloads = {
@@ -3245,9 +3368,7 @@ def test_real_headless_rl_tv_pipeline_selects_provider_reports_and_cleans():
             452,
             ComputeRequest(
                 mode=ComputeMode.CUSTOM,
-                node_preferences={
-                    deconvolution.id: "implementation:rl-tv-cupy-f32-v1"
-                },
+                node_preferences={deconvolution.id: "implementation:rl-tv-cupy-f32-v1"},
                 runtime_id="cuda-cupy",
                 device_id=runtime_probe.selected_device_id,
                 allow_experimental=True,

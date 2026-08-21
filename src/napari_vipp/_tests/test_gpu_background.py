@@ -38,17 +38,124 @@ class _FakeCupy:
     def __init__(self) -> None:
         self.stream = _FakeStream()
         self.cuda = SimpleNamespace(get_current_stream=lambda: self.stream)
+        self.calls: list[dict[str, object]] = []
+        self.kernel_constructions: list[dict[str, object]] = []
+
+    def RawKernel(self, source, name, *, options=()):
+        self.kernel_constructions.append(
+            {
+                "source": source,
+                "name": name,
+                "options": options,
+            }
+        )
+        owner = self
+
+        class FakeBackgroundKernel:
+            def __call__(self, grid, block, arguments):
+                del grid, block
+                if name == "vipp_background_uniform_filter_axis_float32_v2":
+                    (
+                        values,
+                        output,
+                        line_count,
+                        axis_length,
+                        inner_stride,
+                    ) = arguments
+                    flat_values = np.asarray(values).reshape(-1)
+                    flat_output = np.asarray(output).reshape(-1)
+                    axis_length = int(axis_length)
+                    inner_stride = int(inner_stride)
+                    for line in range(int(line_count)):
+                        outer, inner = divmod(line, inner_stride)
+                        base = outer * axis_length * inner_stride + inner
+                        second = 1 if axis_length > 1 else 0
+                        total = 2.0 * float(flat_values[base]) + float(
+                            flat_values[base + second * inner_stride]
+                        )
+                        flat_output[base] = np.float32(total / 3.0)
+                        for coordinate in range(1, axis_length):
+                            entering = min(coordinate + 1, axis_length - 1)
+                            leaving = max(coordinate - 2, 0)
+                            total += float(flat_values[base + entering * inner_stride])
+                            total -= float(flat_values[base + leaving * inner_stride])
+                            flat_output[base + coordinate * inner_stride] = np.float32(
+                                total / 3.0
+                            )
+                    return
+                if name == "vipp_background_light_transform_float32_v1":
+                    values, output, _count, low, high = arguments
+                    offset = np.float32(float(low) + float(high))
+                    output[...] = (
+                        np.float64(offset) - np.asarray(values, dtype=np.float64)
+                    ).astype(np.float32)
+                    return
+                if name == "vipp_background_subtract_float32_v1":
+                    (
+                        values,
+                        background,
+                        output,
+                        _count,
+                        light_background,
+                        clip_negative,
+                    ) = arguments
+                    left, right = (
+                        (background, values)
+                        if bool(light_background)
+                        else (values, background)
+                    )
+                    result = np.asarray(left, dtype=np.float64) - np.asarray(
+                        right,
+                        dtype=np.float64,
+                    )
+                    if bool(clip_negative):
+                        result = np.maximum(result, 0.0)
+                    output[...] = result.astype(np.float32)
+                    return
+                if name == "vipp_background_float32_zero_bound_tie_v1":
+                    values, _count, low, high = arguments
+                    low_bits = int(np.asarray(low).view(np.uint32))
+                    high_bits = int(np.asarray(high).view(np.uint32))
+                    if not (low_bits & 0x7FFFFFFF) and not (high_bits & 0x7FFFFFFF):
+                        finite = np.asarray(values).reshape(-1)
+                        finite = finite[np.isfinite(finite)]
+                        if finite.size:
+                            last = finite[-1]
+                            if not (int(np.asarray(last).view(np.uint32)) & 0x7FFFFFFF):
+                                low[...] = last
+                                high[...] = last
+                    return
+                values, output, value_count, *parameters = arguments
+                del value_count
+                extents = tuple(int(value) for value in parameters[:-1])
+                radius = int(parameters[-1])
+                copied = np.array(values, copy=True).reshape(extents)
+                owner.calls.append(
+                    {
+                        "values": copied,
+                        "shape": copied.shape,
+                        "radius": radius,
+                    }
+                )
+                expected = skimage_restoration.rolling_ball(copied, radius=radius)
+                output[...] = expected
+
+        return FakeBackgroundKernel()
 
     asarray = staticmethod(np.asarray)
+    ascontiguousarray = staticmethod(np.ascontiguousarray)
     zeros_like = staticmethod(np.zeros_like)
     moveaxis = staticmethod(np.moveaxis)
     stack = staticmethod(np.stack)
     empty = staticmethod(np.empty)
+    empty_like = staticmethod(np.empty_like)
     isfinite = staticmethod(np.isfinite)
     isposinf = staticmethod(np.isposinf)
     any = staticmethod(np.any)
-    min = staticmethod(np.min)
-    max = staticmethod(np.max)
+    argmax = staticmethod(np.argmax)
+    min = staticmethod(lambda values: np.asarray(np.min(values)))
+    max = staticmethod(lambda values: np.asarray(np.max(values)))
+    take = staticmethod(np.take)
     where = staticmethod(np.where)
     maximum = staticmethod(np.maximum)
     nan_to_num = staticmethod(np.nan_to_num)
@@ -79,41 +186,33 @@ class _FakeNdimage:
         )
 
 
-class _FakeRestoration:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    def rolling_ball(self, values, *, radius):
-        copied = np.array(values, copy=True)
-        self.calls.append(
-            {
-                "values": copied,
-                "shape": copied.shape,
-                "radius": radius,
-            }
-        )
-        return skimage_restoration.rolling_ball(copied, radius=radius)
-
-
 @pytest.fixture
 def fake_stack(monkeypatch):
     cupy = _FakeCupy()
     ndimage = _FakeNdimage()
-    restoration = _FakeRestoration()
     real_import = importlib.import_module
     modules = {
         "cupy": cupy,
         "cupyx.scipy.ndimage": ndimage,
-        "cucim.skimage.restoration": restoration,
     }
 
     def load(name: str):
         return modules[name] if name in modules else real_import(name)
 
     gpu_background._gpu_modules.cache_clear()
+    gpu_background._float32_uniform_filter_axis_kernel.cache_clear()
+    gpu_background._float32_light_transform_kernel.cache_clear()
+    gpu_background._float32_subtract_kernel.cache_clear()
+    gpu_background._float32_zero_bound_tie_kernel.cache_clear()
+    gpu_background._dynamic_rolling_ball_kernel.cache_clear()
     monkeypatch.setattr(gpu_background.importlib, "import_module", load)
-    yield cupy, ndimage, restoration
+    yield cupy, ndimage, cupy
     gpu_background._gpu_modules.cache_clear()
+    gpu_background._float32_uniform_filter_axis_kernel.cache_clear()
+    gpu_background._float32_light_transform_kernel.cache_clear()
+    gpu_background._float32_subtract_kernel.cache_clear()
+    gpu_background._float32_zero_bound_tie_kernel.cache_clear()
+    gpu_background._dynamic_rolling_ball_kernel.cache_clear()
 
 
 def test_import_is_safe_without_cupy_cupyx_or_cucim():
@@ -152,29 +251,22 @@ assert not any(name.startswith("cucim") for name in sys.modules)
     assert completed.returncode == 0, completed.stderr
 
 
-def test_missing_cucim_is_raised_only_when_adapter_is_called(monkeypatch):
+def test_missing_cupyx_is_raised_only_when_adapter_is_called(monkeypatch):
     cupy = _FakeCupy()
-    ndimage = _FakeNdimage()
     imports = []
 
     def load(name: str):
         imports.append(name)
         if name == "cupy":
             return cupy
-        if name == "cupyx.scipy.ndimage":
-            return ndimage
         raise ModuleNotFoundError(name)
 
     gpu_background._gpu_modules.cache_clear()
     monkeypatch.setattr(gpu_background.importlib, "import_module", load)
 
-    with pytest.raises(ModuleNotFoundError, match="cucim.skimage.restoration"):
+    with pytest.raises(ModuleNotFoundError, match="cupyx.scipy.ndimage"):
         gpu_background.rolling_ball_background(np.ones((3, 3), dtype=np.uint8))
-    assert imports == [
-        "cupy",
-        "cupyx.scipy.ndimage",
-        "cucim.skimage.restoration",
-    ]
+    assert imports == ["cupy", "cupyx.scipy.ndimage"]
     gpu_background._gpu_modules.cache_clear()
 
 
@@ -290,6 +382,21 @@ def test_radius_uses_cpu_rounding_and_lower_bound(fake_stack, requested, canonic
     )
 
     assert [call["radius"] for call in restoration.calls] == [canonical]
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    (
+        (gpu_background.rolling_ball_background, ">u2"),
+        (gpu_background.subtract_background, ">f4"),
+    ),
+)
+def test_provider_rejects_non_native_endian_input(fake_stack, operation, dtype):
+    del fake_stack
+    host = np.arange(35, dtype=np.dtype(dtype)).reshape(5, 7)
+
+    with pytest.raises(ValueError, match="native-endian input data"):
+        operation(host, radius=2)
 
 
 def test_finite_replacement_and_float_nonfinite_output_match_cpu(fake_stack):
@@ -531,7 +638,7 @@ def test_parameter_validation_messages_match_cpu(fake_stack, shape, kwargs):
 
 
 def test_input_is_not_mutated_and_smoothing_is_size_three_nearest(fake_stack):
-    _cupy, ndimage, _restoration = fake_stack
+    cupy, ndimage, _restoration = fake_stack
     host = _fixture(np.float32, (2, 7, 9)).swapaxes(1, 2)
     original = host.copy()
     host.setflags(write=False)
@@ -540,9 +647,44 @@ def test_input_is_not_mutated_and_smoothing_is_size_three_nearest(fake_stack):
 
     np.testing.assert_array_equal(host, original)
     assert output.shape == host.shape
-    assert ndimage.calls
-    assert all(call["size"] == 3 for call in ndimage.calls)
-    assert all(call["mode"] == "nearest" for call in ndimage.calls)
+    assert not ndimage.calls
+    assert any(
+        item["name"] == "vipp_background_uniform_filter_axis_float32_v2"
+        for item in cupy.kernel_constructions
+    )
+
+
+def test_dynamic_kernel_is_constructed_once_across_interactive_radius_edits(
+    fake_stack,
+):
+    cupy, _ndimage, provider = fake_stack
+    host = _fixture(np.float32, (7, 9))
+
+    for radius in (2, 3, 4, 5, 3, 4):
+        expected = cpu_subtract_background(
+            host,
+            radius=radius,
+            disable_smoothing=True,
+        )
+        actual = gpu_background.subtract_background(
+            host,
+            radius=radius,
+            disable_smoothing=True,
+        )
+        _assert_exact(expected, actual)
+
+    assert [call["radius"] for call in provider.calls] == [2, 3, 4, 5, 3, 4]
+    constructions = {item["name"]: item for item in cupy.kernel_constructions}
+    assert set(constructions) == {
+        "vipp_background_float32_zero_bound_tie_v1",
+        "vipp_dynamic_rolling_ball_2d_float32_v1",
+        "vipp_background_subtract_float32_v1",
+    }
+    construction = constructions["vipp_dynamic_rolling_ball_2d_float32_v1"]
+    assert construction["name"] == "vipp_dynamic_rolling_ball_2d_float32_v1"
+    assert "const int radius" in construction["source"]
+    assert "for (int delta_0 = -radius" in construction["source"]
+    assert construction["options"] == gpu_background._KERNEL_OPTIONS
 
 
 @pytest.fixture(scope="module")
@@ -550,22 +692,16 @@ def real_gpu_stack():
     gpu_background._gpu_modules.cache_clear()
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
-    if importlib.util.find_spec("cucim") is None:
-        pytest.skip("The optional cuCIM wheel is not installed.")
     try:
         cupy = importlib.import_module("cupy")
-        cucim = importlib.import_module("cucim")
-        importlib.import_module("cucim.skimage.restoration")
     except Exception as exc:
-        pytest.fail(f"The installed CuPy/cuCIM stack could not import: {exc}")
+        pytest.fail(f"The installed CuPy stack could not import: {exc}")
     try:
         if int(cupy.cuda.runtime.getDeviceCount()) < 1:
             pytest.skip("No CUDA device is available.")
         cupy.zeros(1, dtype=cupy.float32).sum().item()
     except Exception as exc:
         pytest.skip(f"A working CUDA device is unavailable: {exc}")
-    if not bool(cucim.is_available("skimage")):
-        pytest.fail("The installed cuCIM wheel has no skimage provider.")
     return cupy
 
 
@@ -699,6 +835,118 @@ def test_real_rtx_cucim_exact_nonfinite_policy_parity(real_gpu_stack, operation)
         region=f"nonfinite_{operation}",
         dtype=np.float32,
     )
+
+
+@pytest.mark.parametrize("tiny_case", ("generated", "input"))
+@pytest.mark.parametrize("light_background", (False, True))
+@pytest.mark.parametrize("disable_smoothing", (False, True))
+def test_real_rtx_float32_tiny_and_signed_zero_exact_parity(
+    real_gpu_stack,
+    tiny_case,
+    light_background,
+    disable_smoothing,
+):
+    """Keep strict CPU bits where CUDA normally flushes float32 subnormals."""
+
+    cupy = real_gpu_stack
+    smallest = np.nextafter(np.float32(0), np.float32(1), dtype=np.float32)
+    if tiny_case == "generated":
+        host = np.array(
+            [[np.finfo(np.float32).tiny, 0.0], [0.0, 0.0]],
+            dtype=np.float32,
+        )
+    else:
+        host = np.array(
+            [
+                [np.finfo(np.float32).tiny, smallest],
+                [np.float32(-0.0), np.float32(0.0)],
+            ],
+            dtype=np.float32,
+        )
+    common = {
+        "radius": 2,
+        "light_background": light_background,
+        "disable_smoothing": disable_smoothing,
+    }
+
+    expected_background = cpu_rolling_ball_background(host, **common)
+    actual_background = cupy.asnumpy(
+        gpu_background.rolling_ball_background(cupy.asarray(host), **common)
+    )
+    _assert_exact_with_region(
+        expected_background,
+        actual_background,
+        region=f"tiny_{tiny_case}_background",
+        dtype=np.float32,
+    )
+
+    for clip_negative in (False, True):
+        expected_subtracted = cpu_subtract_background(
+            host,
+            clip_negative=clip_negative,
+            **common,
+        )
+        actual_subtracted = cupy.asnumpy(
+            gpu_background.subtract_background(
+                cupy.asarray(host),
+                clip_negative=clip_negative,
+                **common,
+            )
+        )
+        _assert_exact_with_region(
+            expected_subtracted,
+            actual_subtracted,
+            region=(f"tiny_{tiny_case}_subtract_clip_{int(clip_negative)}"),
+            dtype=np.float32,
+        )
+
+
+def test_real_rtx_light_background_signed_zero_permutations(real_gpu_stack):
+    """Match NumPy's last-equal-lane sign for all four-value zero layouts."""
+
+    cupy = real_gpu_stack
+    for sign_bits in range(16):
+        host = np.array(
+            [
+                np.float32(-0.0 if sign_bits & (1 << index) else 0.0)
+                for index in range(4)
+            ],
+            dtype=np.float32,
+        ).reshape(2, 2)
+        common = {
+            "radius": 2,
+            "light_background": True,
+            "disable_smoothing": True,
+        }
+        expected_background = cpu_rolling_ball_background(host, **common)
+        actual_background = cupy.asnumpy(
+            gpu_background.rolling_ball_background(cupy.asarray(host), **common)
+        )
+        _assert_exact_with_region(
+            expected_background,
+            actual_background,
+            region=f"signed_zero_background_{sign_bits:04b}",
+            dtype=np.float32,
+        )
+
+        expected_subtracted = cpu_subtract_background(
+            host,
+            clip_negative=False,
+            **common,
+        )
+        actual_subtracted = cupy.asnumpy(
+            gpu_background.subtract_background(
+                cupy.asarray(host),
+                clip_negative=False,
+                **common,
+            )
+        )
+        _assert_exact_with_region(
+            expected_subtracted,
+            actual_subtracted,
+            region=f"signed_zero_subtract_{sign_bits:04b}",
+            dtype=np.float32,
+        )
 
 
 _RANDOMIZED_FLOAT32_PARITY_CASES = (

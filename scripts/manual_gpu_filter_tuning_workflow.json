@@ -1,0 +1,138 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 4,
+  "execution": {
+    "compute": {
+      "mode": "prefer_gpu",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "subtract_background_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic GPU segmentation cleanup",
+        "series_index": 0,
+        "channel_colors": "Blue,Green,Red",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "extract_channel_1",
+      "operation_id": "extract_channel",
+      "params": {
+        "channel": 2
+      }
+    },
+    {
+      "id": "rolling_ball_background_1",
+      "operation_id": "rolling_ball_background",
+      "params": {
+        "radius": 2.0,
+        "light_background": false,
+        "disable_smoothing": false,
+        "spatial_mode": "2D YX",
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "subtract_background_1",
+      "operation_id": "subtract_background",
+      "params": {
+        "radius": 2.0,
+        "light_background": false,
+        "disable_smoothing": false,
+        "clip_negative": true,
+        "spatial_mode": "2D YX",
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "median_filter_1",
+      "operation_id": "median_filter",
+      "params": {
+        "size": 3,
+        "channel_axis": -1
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "extract_channel_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_1",
+      "target": "rolling_ball_background_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_1",
+      "target": "subtract_background_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_1",
+      "target": "median_filter_1",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 260.0],
+    "extract_channel_1": [360.0, 260.0],
+    "rolling_ball_background_1": [760.0, 20.0],
+    "subtract_background_1": [760.0, 430.0],
+    "median_filter_1": [760.0, 840.0]
+  },
+  "notes": [
+    {
+      "id": "note_start",
+      "text": "GPU INTERACTIVE TUNING AFTER THE FIX\nWait for the first Prefer GPU calculation to finish. The three branches are independent, so changing one control recalculates only that branch. Keep visible fallback enabled and confirm the edited node reports GPU · CuPy before judging its timing. One cold compile per data type is normal; new parameter values after that should not cause another compilation-length pause.",
+      "position": [-20.0, -100.0],
+      "width": 490.0,
+      "attached_node": "input"
+    },
+    {
+      "id": "note_rolling_background",
+      "text": "TEST 1 - ROLLING-BALL BACKGROUND\nSelect Rolling-Ball Background. Change Radius one step at a time: 2 -> 3 -> 4 -> 5, waiting for each final thumbnail, then revisit 3 and 4. After the initial calculation, unseen radii should remain interactive rather than entering a roughly three-second compilation state.",
+      "position": [700.0, -260.0],
+      "width": 510.0,
+      "attached_node": "rolling_ball_background_1"
+    },
+    {
+      "id": "note_subtract_background",
+      "text": "TEST 2 - SUBTRACT BACKGROUND\nSelect Subtract Background. Change Radius one step at a time: 2 -> 3 -> 4 -> 5, waiting for each final thumbnail, then revisit 3 and 4. Confirm every accepted result stays on GPU · CuPy and no new radius causes a compilation-length pause.",
+      "position": [700.0, 270.0],
+      "width": 510.0,
+      "attached_node": "subtract_background_1"
+    },
+    {
+      "id": "note_median",
+      "text": "TEST 3 - MEDIAN KERNEL SIZE\nSelect Median Filter. Change Kernel size one step at a time: 3 -> 5 -> 7 -> 9, waiting for each final thumbnail, then revisit 5 and 7. Unseen sizes should no longer cause a compilation-length loading state.",
+      "position": [700.0, 800.0],
+      "width": 510.0,
+      "attached_node": "median_filter_1"
+    }
+  ],
+  "tunnels": []
+}

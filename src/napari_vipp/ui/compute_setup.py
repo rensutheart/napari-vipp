@@ -48,6 +48,41 @@ class ComputeSetupActionKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ComputeDeviceOption:
+    """One provider-neutral device choice shown by a compute surface."""
+
+    runtime_id: str
+    device_id: str
+    display_name: str
+    total_memory_bytes: int | None = None
+    available: bool = True
+
+    def __post_init__(self) -> None:
+        runtime_id = str(self.runtime_id).strip()
+        device_id = str(self.device_id).strip()
+        display_name = str(self.display_name).strip()
+        if bool(runtime_id) != bool(device_id):
+            raise ValueError(
+                "runtime_id and device_id must either both be set or both be blank."
+            )
+        if not display_name:
+            raise ValueError("display_name must not be empty.")
+        if self.total_memory_bytes is not None and (
+            isinstance(self.total_memory_bytes, bool)
+            or not isinstance(self.total_memory_bytes, int)
+            or self.total_memory_bytes < 0
+        ):
+            raise ValueError(
+                "total_memory_bytes must be a non-negative integer or None."
+            )
+        if not isinstance(self.available, bool):
+            raise TypeError("available must be a boolean.")
+        object.__setattr__(self, "runtime_id", runtime_id)
+        object.__setattr__(self, "device_id", device_id)
+        object.__setattr__(self, "display_name", display_name)
+
+
+@dataclass(frozen=True, slots=True)
 class HostMemorySnapshot:
     """System-memory values collected by the application shell."""
 
@@ -175,6 +210,9 @@ class ComputeSetupPresentation:
     details: tuple[str, ...] = ()
     memory_rows: tuple[ComputeMemoryRow, ...] = ()
     actions: tuple[ComputeSetupAction, ...] = ()
+    device_options: tuple[ComputeDeviceOption, ...] = ()
+    default_runtime_id: str = ""
+    default_device_id: str = ""
     busy: bool = False
     actionable: bool = False
 
@@ -202,9 +240,7 @@ class ComputeSetupPresentation:
             raise TypeError("check_rows must contain ComputeSetupCheckRow values.")
         if len({row.key for row in check_rows}) != len(check_rows):
             raise ValueError("compute setup check row keys must be unique.")
-        details = tuple(
-            text for value in self.details if (text := str(value).strip())
-        )
+        details = tuple(text for value in self.details if (text := str(value).strip()))
         rows = tuple(self.memory_rows)
         actions = tuple(self.actions)
         if any(not isinstance(row, ComputeMemoryRow) for row in rows):
@@ -215,12 +251,41 @@ class ComputeSetupPresentation:
             raise TypeError("actions must contain ComputeSetupAction values.")
         if len({action.action_id for action in actions}) != len(actions):
             raise ValueError("compute setup action IDs must be unique.")
+        device_options = tuple(self.device_options)
+        if any(
+            not isinstance(option, ComputeDeviceOption) for option in device_options
+        ):
+            raise TypeError("device_options must contain ComputeDeviceOption values.")
+        device_keys = tuple(
+            (option.runtime_id, option.device_id) for option in device_options
+        )
+        if len(set(device_keys)) != len(device_keys):
+            raise ValueError("compute device option IDs must be unique.")
+        default_runtime_id = str(self.default_runtime_id).strip()
+        default_device_id = str(self.default_device_id).strip()
+        if bool(default_runtime_id) != bool(default_device_id):
+            raise ValueError(
+                "default_runtime_id and default_device_id must either both be set "
+                "or both be blank."
+            )
+        if (
+            default_runtime_id
+            and (
+                default_runtime_id,
+                default_device_id,
+            )
+            not in device_keys
+        ):
+            raise ValueError("The default compute device must be in device_options.")
         if not isinstance(self.busy, bool) or not isinstance(self.actionable, bool):
             raise TypeError("busy and actionable must be booleans.")
         object.__setattr__(self, "details", details)
         object.__setattr__(self, "check_rows", check_rows)
         object.__setattr__(self, "memory_rows", rows)
         object.__setattr__(self, "actions", actions)
+        object.__setattr__(self, "device_options", device_options)
+        object.__setattr__(self, "default_runtime_id", default_runtime_id)
+        object.__setattr__(self, "default_device_id", default_device_id)
 
 
 def compute_setup_not_checked(
@@ -242,6 +307,7 @@ def compute_setup_not_checked(
         check_rows=_pending_check_rows("Not checked", ComputeSetupTone.NEUTRAL),
         memory_rows=_memory_rows(host_memory, None, device_name=""),
         actions=(_verify_action(track, label="Verify GPU setup"),),
+        device_options=(_automatic_device_option(),),
     )
 
 
@@ -271,6 +337,7 @@ def compute_setup_checking(
                 enabled=False,
             ),
         ),
+        device_options=(_automatic_device_option(),),
         busy=True,
     )
 
@@ -336,6 +403,7 @@ def present_compute_setup(
     )
 
     device_name = _selected_device_name(report)
+    device_options, default_runtime_id, default_device_id = _device_options(report)
     return ComputeSetupPresentation(
         state=state,
         tone=tone,
@@ -356,9 +424,11 @@ def present_compute_setup(
             device_name=device_name,
         ),
         actions=tuple(actions),
+        device_options=device_options,
+        default_runtime_id=default_runtime_id,
+        default_device_id=default_device_id,
         actionable=(
-            report.status
-            in {DoctorStatus.DEGRADED, DoctorStatus.MISCONFIGURED}
+            report.status in {DoctorStatus.DEGRADED, DoctorStatus.MISCONFIGURED}
             or (
                 report.status is DoctorStatus.UNAVAILABLE
                 and any(
@@ -368,6 +438,32 @@ def present_compute_setup(
             )
         ),
     )
+
+
+def _automatic_device_option() -> ComputeDeviceOption:
+    return ComputeDeviceOption("", "", "Automatic (runtime default)")
+
+
+def _device_options(
+    report: ComputeDoctorReport,
+) -> tuple[tuple[ComputeDeviceOption, ...], str, str]:
+    options = [_automatic_device_option()]
+    probe = report.runtime_probe
+    if probe is None:
+        return tuple(options), "", ""
+    options.extend(
+        ComputeDeviceOption(
+            runtime_id=probe.runtime_id,
+            device_id=device.device_id,
+            display_name=device.display_name,
+            total_memory_bytes=device.total_memory_bytes,
+            available=probe.available,
+        )
+        for device in probe.devices
+    )
+    if not probe.selected_device_id:
+        return tuple(options), "", ""
+    return tuple(options), probe.runtime_id, probe.selected_device_id
 
 
 def _verify_action(
@@ -636,6 +732,7 @@ def _is_safe_single_line_command(command: str) -> bool:
 
 
 __all__ = [
+    "ComputeDeviceOption",
     "ComputeMemoryRow",
     "ComputeSetupAction",
     "ComputeSetupActionKind",

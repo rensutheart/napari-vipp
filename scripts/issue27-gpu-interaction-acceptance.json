@@ -1,0 +1,189 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 4,
+  "execution": {
+    "compute": {
+      "mode": "prefer_gpu",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "subtract_background_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic GPU segmentation cleanup",
+        "series_index": 0,
+        "channel_colors": "Blue,Green,Red",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "extract_channel_1",
+      "operation_id": "extract_channel",
+      "params": {
+        "channel": 2
+      }
+    },
+    {
+      "id": "rolling_ball_background_1",
+      "operation_id": "rolling_ball_background",
+      "params": {
+        "radius": 2.0,
+        "light_background": false,
+        "disable_smoothing": false,
+        "spatial_mode": "2D YX",
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "subtract_background_1",
+      "operation_id": "subtract_background",
+      "params": {
+        "radius": 2.0,
+        "light_background": false,
+        "disable_smoothing": false,
+        "clip_negative": true,
+        "spatial_mode": "2D YX",
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "median_filter_1",
+      "operation_id": "median_filter",
+      "params": {
+        "size": 3,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "convert_dtype_1",
+      "operation_id": "convert_dtype",
+      "params": {
+        "output_dtype": "float32",
+        "scaling": "preserve"
+      }
+    },
+    {
+      "id": "gaussian_blur_1",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 1.2,
+        "channel_axis": -1
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "extract_channel_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_1",
+      "target": "rolling_ball_background_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_1",
+      "target": "subtract_background_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_1",
+      "target": "median_filter_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_1",
+      "target": "convert_dtype_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "convert_dtype_1",
+      "target": "gaussian_blur_1",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 560.0],
+    "extract_channel_1": [370.0, 560.0],
+    "rolling_ball_background_1": [840.0, 20.0],
+    "subtract_background_1": [840.0, 450.0],
+    "median_filter_1": [840.0, 880.0],
+    "convert_dtype_1": [840.0, 1310.0],
+    "gaussian_blur_1": [1240.0, 1310.0]
+  },
+  "notes": [
+    {
+      "id": "note_start",
+      "text": "ISSUE #27 - MANUAL ACCEPTANCE CHECKLIST\n1. Open Compute Setup and keep Prefer GPU. If more than one qualified CUDA device is listed, choose the one you want for this workflow tab.\n2. Wait for the first calculation; one cold setup/compile per implementation is normal.\n3. For every test below, the edited card should finish as GPU - CuPy on the selected CUDA device, with no fallback.\n4. Judge the final accepted thumbnail, not the temporary calculating state. The last complete thumbnail should remain visible while a replacement is calculated.",
+      "position": [-50.0, -170.0],
+      "width": 620.0,
+      "attached_node": "input"
+    },
+    {
+      "id": "note_rolling_background",
+      "text": "TEST 1 - ROLLING-BALL BACKGROUND\nSelect this node. Change Radius one step at a time: 2 -> 3 -> 4 -> 5, waiting for the final thumbnail each time, then revisit 3 and 4. PASS: after the cold calculation, a previously unseen radius does not cause another roughly three-second compilation pause. The actual result remains GPU - CuPy and visually agrees with the preceding behavior.",
+      "position": [760.0, -250.0],
+      "width": 570.0,
+      "attached_node": "rolling_ball_background_1"
+    },
+    {
+      "id": "note_subtract_background",
+      "text": "TEST 2 - SUBTRACT BACKGROUND\nChange Radius: 2 -> 3 -> 4 -> 5, then revisit 3 and 4. PASS: unseen and revisited radii feel alike after warm-up; no new radius enters a compilation-length loading state. Check the node badge/tooltip for actual GPU - CuPy, the chosen cuda device, no fallback, and a complete final thumbnail.",
+      "position": [760.0, 260.0],
+      "width": 570.0,
+      "attached_node": "subtract_background_1"
+    },
+    {
+      "id": "note_rapid_edit",
+      "text": "TEST 3 - RAPID EDIT / NEWEST RESULT ONLY\nOn Subtract Background, enter 5, 7, and 9 rapidly without waiting between values. PASS: obsolete work is coalesced or cancelled, the previous complete thumbnail stays visible, and only the final Radius 9 result is accepted. Then enter 3 once more. It should complete normally, proving the GPU runtime remains reusable after supersession.",
+      "position": [1370.0, 390.0],
+      "width": 560.0,
+      "attached_node": "subtract_background_1"
+    },
+    {
+      "id": "note_median",
+      "text": "TEST 4 - MEDIAN KERNEL SIZE\nChange Kernel size: 3 -> 5 -> 7 -> 9, waiting for each final thumbnail, then revisit 5 and 7. PASS: unseen odd sizes no longer cause a compilation-length pause, all accepted results remain GPU - CuPy, and the image does not flash white or lose its last complete preview while calculating.",
+      "position": [760.0, 760.0],
+      "width": 570.0,
+      "attached_node": "median_filter_1"
+    },
+    {
+      "id": "note_gaussian",
+      "text": "TEST 5 - GAUSSIAN SIGMA\nThe visible float32 Preserve conversion makes this branch GPU eligible. Select Gaussian Blur and change Sigma: 1.2 -> 1.5 -> 2.0 -> 3.0 -> 1.5. PASS: each new sigma remains interactive after warm-up, the card reports GPU - CuPy on the chosen device, and revisiting 1.5 behaves like an unseen value rather than paying a new radius-specific compile.",
+      "position": [1120.0, 1110.0],
+      "width": 620.0,
+      "attached_node": "gaussian_blur_1"
+    },
+    {
+      "id": "note_optional_cpu",
+      "text": "OPTIONAL CROSS-CHECK\nAfter the GPU tests, switch this workflow tab to CPU and repeat one Subtract Background radius. PASS: the scientific appearance remains the same and the badge truthfully changes to CPU rather than calling it GPU or fallback. Switch back to Prefer GPU; your workflow-tab device choice should still be available.",
+      "position": [-20.0, 990.0],
+      "width": 600.0,
+      "attached_node": "extract_channel_1"
+    }
+  ],
+  "tunnels": []
+}

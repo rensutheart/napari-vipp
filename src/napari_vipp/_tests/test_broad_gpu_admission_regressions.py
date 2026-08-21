@@ -21,10 +21,10 @@ from napari_vipp.core.compute_specs import compute_specs_for
 
 def _rtx4050_environment(
     *,
-    implementation_libraries: tuple[str, ...] = ("cpu", "cupyx"),
+    implementation_libraries: tuple[str, ...] = ("cpu", "cupy"),
     runtime_versions: tuple[tuple[str, str], ...] = (
         ("cuda-cupy", "14.1.1"),
-        ("cupyx", "14.1.1"),
+        ("cupy", "14.1.1"),
     ),
     implementation_library_metadata: tuple[
         tuple[str, tuple[tuple[str, str], ...]], ...
@@ -80,10 +80,10 @@ def _gaussian_workload() -> WorkloadDescriptor:
 @pytest.mark.parametrize(
     "runtime_versions",
     (
-        (("cuda-cupy", "14.0.0"), ("cupyx", "14.1.1")),
-        (("cuda-cupy", "14.1.1"), ("cupyx", "14.0.0")),
+        (("cuda-cupy", "14.0.0"), ("cupy", "14.1.1")),
+        (("cuda-cupy", "14.1.1"), ("cupy", "14.0.0")),
     ),
-    ids=("cupy-runtime-version", "cupyx-library-version"),
+    ids=("cupy-runtime-version", "cupy-library-version"),
 )
 def test_rtx4050_admission_rejects_mismatched_cupy_provenance(runtime_versions):
     spec = compute_specs_for("gaussian_blur", include_cpu=False)[0]
@@ -102,9 +102,7 @@ def test_rtx4050_admission_rejects_mismatched_cupy_provenance(runtime_versions):
 
 def test_rtx4050_admission_rejects_bad_cucim_build_provenance():
     bad_payload_digest = (
-        "0" * 64
-        if PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256 != "0" * 64
-        else "1" * 64
+        "0" * 64 if PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256 != "0" * 64 else "1" * 64
     )
     metadata = (
         ("environment_record_schema", "napari-vipp-gpu-environment"),
@@ -125,16 +123,15 @@ def test_rtx4050_admission_rejects_bad_cucim_build_provenance():
         implementation_library_metadata=(("cucim", metadata),),
     )
     spec = compute_specs_for(
-        "rolling_ball_background",
+        "measure_objects",
         include_cpu=False,
         allow_experimental=True,
     )[0]
     workload = WorkloadDescriptor(
-        node_id="background",
-        operation_id="rolling_ball_background",
+        node_id="measurements",
+        operation_id="measure_objects",
         input_shapes=((31, 37),),
-        input_dtypes=("float32",),
-        parameters=(("radius", 5),),
+        input_dtypes=("int32",),
         resolved_spatial_ndim=2,
     )
 

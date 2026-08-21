@@ -158,8 +158,8 @@ def test_node_preference_value_round_trip_preserves_stable_identifiers():
         "auto",
         "cpu",
         "best_gpu",
-        "library:cupyx",
-        "implementation:cupyx-median-filter-v1",
+        "library:cupy",
+        "implementation:cupy-median-filter-v1",
     )
     assert (
         tuple(preference_to_value(preference_from_value(value)) for value in values)
@@ -183,7 +183,7 @@ def test_custom_public_options_are_declaration_only_and_not_experimental(
     assert values == [
         "auto",
         "cpu",
-        "library:cupyx",
+        "library:cupy",
     ]
     assert options[0].label == "Auto for this node"
     assert options[-1].label.startswith("GPU · CuPy")
@@ -212,7 +212,7 @@ def test_one_gpu_library_collapses_multiple_implementations_to_one_choice(
     )[0]
     second = replace(
         candidate,
-        implementation_id="cupyx-median-filter-v2",
+        implementation_id="cupy-median-filter-v2",
         implementation_version="2",
     )
 
@@ -227,7 +227,7 @@ def test_one_gpu_library_collapses_multiple_implementations_to_one_choice(
     assert [option.value for option in options] == [
         "auto",
         "cpu",
-        "library:cupyx",
+        "library:cupy",
     ]
 
 
@@ -235,13 +235,13 @@ def test_multiple_gpu_libraries_offer_best_gpu_and_one_choice_per_library(
     monkeypatch,
 ):
     original = compute_ui_module.compute_specs_for
-    cupyx = original(
+    cupy = original(
         "median_filter",
         include_cpu=False,
         allow_experimental=True,
     )[0]
     cucim = replace(
-        cupyx,
+        cupy,
         implementation_id="cucim-median-filter-v1",
         implementation_library_id="cucim",
     )
@@ -249,7 +249,7 @@ def test_multiple_gpu_libraries_offer_best_gpu_and_one_choice_per_library(
     monkeypatch.setattr(
         compute_ui_module,
         "compute_specs_for",
-        lambda *_args, **_kwargs: (cupyx, cucim),
+        lambda *_args, **_kwargs: (cupy, cucim),
     )
 
     options = node_preference_options("median_filter")
@@ -258,7 +258,7 @@ def test_multiple_gpu_libraries_offer_best_gpu_and_one_choice_per_library(
         "auto",
         "cpu",
         "best_gpu",
-        "library:cupyx",
+        "library:cupy",
         "library:cucim",
     ]
     assert not any(option.value.startswith("implementation:") for option in options)
@@ -272,14 +272,14 @@ def test_aggregate_gpu_choices_are_experimental_if_any_candidate_is_hidden(
         "median_filter",
         include_cpu=False,
     )[0]
-    hidden_cupyx = replace(
+    hidden_cupy = replace(
         public_base,
-        implementation_id="cupyx-median-filter-hidden-v1",
+        implementation_id="cupy-median-filter-hidden-v1",
         admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
     )
-    public_cupyx = replace(
+    public_cupy = replace(
         public_base,
-        implementation_id="cupyx-median-filter-public-v1",
+        implementation_id="cupy-median-filter-public-v1",
         admission_tier=AdmissionTier.PUBLIC_CUSTOM,
     )
     public_cucim = replace(
@@ -293,8 +293,8 @@ def test_aggregate_gpu_choices_are_experimental_if_any_candidate_is_hidden(
         compute_ui_module,
         "compute_specs_for",
         lambda *_args, **_kwargs: (
-            public_cupyx,
-            hidden_cupyx,
+            public_cupy,
+            hidden_cupy,
             public_cucim,
         ),
     )
@@ -305,8 +305,8 @@ def test_aggregate_gpu_choices_are_experimental_if_any_candidate_is_hidden(
 
     assert by_value["best_gpu"].label == "Best GPU (experimental)"
     assert by_value["best_gpu"].experimental is True
-    assert by_value["library:cupyx"].label == "GPU · CuPy (experimental)"
-    assert by_value["library:cupyx"].experimental is True
+    assert by_value["library:cupy"].label == "GPU · CuPy (experimental)"
+    assert by_value["library:cupy"].experimental is True
     assert by_value["library:cucim"].label == "GPU · cuCIM"
     assert by_value["library:cucim"].experimental is False
 
@@ -334,18 +334,18 @@ def test_saved_simplified_gpu_preferences_remain_visible_until_replaced():
 def test_current_exact_pin_is_the_only_exact_option_shown():
     options = node_preference_options(
         "median_filter",
-        current_preference="implementation:cupyx-median-filter-v1",
+        current_preference="implementation:cupy-median-filter-v1",
     )
 
     assert [option.value for option in options] == [
         "auto",
         "cpu",
-        "library:cupyx",
-        "implementation:cupyx-median-filter-v1",
+        "library:cupy",
+        "implementation:cupy-median-filter-v1",
     ]
     pinned = options[-1]
     assert pinned.label.startswith("Advanced pin · CuPy")
-    assert "cupyx-median-filter-v1" in pinned.description
+    assert "cupy-median-filter-v1" in pinned.description
 
 
 def test_hidden_current_exact_pin_is_visible_but_unavailable_when_disabled(
@@ -400,10 +400,10 @@ def test_current_exact_pin_presentation_does_not_import_optional_provider(
 
     options = node_preference_options(
         "median_filter",
-        current_preference="implementation:cupyx-median-filter-v1",
+        current_preference="implementation:cupy-median-filter-v1",
     )
 
-    assert options[-1].value == "implementation:cupyx-median-filter-v1"
+    assert options[-1].value == "implementation:cupy-median-filter-v1"
     assert options[-1].label.startswith("Advanced pin · CuPy")
 
 
@@ -433,8 +433,8 @@ def test_actual_public_gpu_decision_has_normal_provider_badge():
         node_id="median",
         operation_id="median_filter",
         runtime_id="cuda-cupy",
-        library_id="cupyx",
-        implementation_id="cupyx-median-filter-v1",
+        library_id="cupy",
+        implementation_id="cupy-median-filter-v1",
     )
 
     badge = actual_decision_badge(decision, environment=_gpu_environment())
@@ -465,7 +465,7 @@ def test_actual_hidden_gpu_decision_keeps_experimental_provider_badge(monkeypatc
         node_id="median",
         operation_id="median_filter",
         runtime_id="cuda-cupy",
-        library_id="cupyx",
+        library_id="cupy",
         implementation_id=hidden.implementation_id,
     )
 
@@ -481,8 +481,8 @@ def test_actual_gpu_decision_without_environment_never_claims_host_cpu_device():
         node_id="median",
         operation_id="median_filter",
         runtime_id="cuda-cupy",
-        library_id="cupyx",
-        implementation_id="cupyx-median-filter-v1",
+        library_id="cupy",
+        implementation_id="cupy-median-filter-v1",
     )
 
     badge = actual_decision_badge(decision)
@@ -571,8 +571,8 @@ def test_toolbar_summary_reports_mixed_actual_run_and_fallback():
         node_id="median",
         operation_id="median_filter",
         runtime_id="cuda-cupy",
-        library_id="cupyx",
-        implementation_id="cupyx-median-filter-v1",
+        library_id="cupy",
+        implementation_id="cupy-median-filter-v1",
     )
     cpu = _decision(
         node_id="gaussian",
@@ -663,8 +663,8 @@ def test_toolbar_summary_aggregates_per_node_environments_without_forging_report
         node_id="median",
         operation_id="median_filter",
         runtime_id="cuda-cupy",
-        library_id="cupyx",
-        implementation_id="cupyx-median-filter-v1",
+        library_id="cupy",
+        implementation_id="cupy-median-filter-v1",
     )
     cpu = _decision(
         node_id="gaussian",

@@ -57,6 +57,10 @@ def _gpu_image_port(
 
 
 def _background_spec(operation_id: str) -> OperationComputeSpec:
+    implementation_ids = {
+        "rolling_ball_background": "cupy-rolling-ball-background-v1",
+        "subtract_background": "cupy-subtract-background-v1",
+    }
     port_values = {
         "public_dtypes": _MICROSCOPY_DTYPES,
         "internal_dtypes": ("float32",),
@@ -69,23 +73,23 @@ def _background_spec(operation_id: str) -> OperationComputeSpec:
     }
     return OperationComputeSpec(
         operation_id=operation_id,
-        implementation_id=f"cucim-{operation_id}-v2",
-        implementation_version="2",
+        implementation_id=implementation_ids[operation_id],
+        implementation_version="1",
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
-        implementation_library_id="cucim",
+        implementation_library_id="cupy",
         callable_ref=(f"napari_vipp.core.gpu.cucim_background:{operation_id}"),
         host_boundary=False,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
+            "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
         ),
         input_ports=(_gpu_image_port(0, name="image", **port_values),),
         output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
         parameter_policy_id="background-parameters-v1",
         workload_policy_id="background-u8-u16-f32-v2",
         parity_policy_id="background-dtype-parity-v2",
-        memory_model_id="cucim-background-memory-v1",
+        memory_model_id="cupy-dynamic-background-memory-v1",
         shape_policy_id="shape-preserving-v1",
         boundary_policy_id="background-nearest-rolling-ball-v1",
         precision_policy_id="background-public-dtype-v2",
@@ -94,7 +98,7 @@ def _background_spec(operation_id: str) -> OperationComputeSpec:
         side_effect_policy_id="pure-v1",
         supported_spatial_ndims=(2, 3),
         supports_device_residency=True,
-        limitations=("experimental-cucim-wheel-v1",),
+        limitations=("native-endian-only-v1",),
     )
 
 
@@ -102,7 +106,7 @@ def _median_spec() -> OperationComputeSpec:
     port_values = {
         "public_dtypes": _MICROSCOPY_DTYPES,
         "internal_dtypes": ("same",),
-        "conversion_policy_id": "cupyx-median-identity-v1",
+        "conversion_policy_id": "cupy-median-identity-v1",
         "nonfinite_policy_id": "finite-no-negative-zero-v1",
         "rounding_policy_id": "median-bitwise-v1",
         "overflow_policy_id": "preserve-public-dtype-v1",
@@ -111,23 +115,23 @@ def _median_spec() -> OperationComputeSpec:
     }
     return OperationComputeSpec(
         operation_id="median_filter",
-        implementation_id="cupyx-median-filter-v1",
+        implementation_id="cupy-median-filter-v1",
         implementation_version="1",
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
-        implementation_library_id="cupyx",
+        implementation_library_id="cupy",
         callable_ref="napari_vipp.core.gpu.cupy_median:median_filter",
         host_boundary=False,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+            "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
         ),
         input_ports=(_gpu_image_port(0, name="image", **port_values),),
         output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
         parameter_policy_id="median-parameters-v1",
         workload_policy_id="median-exact-u8-u16-f32-v1",
         parity_policy_id="median-production-bitwise-v1",
-        memory_model_id="cupyx-median-memory-v1",
+        memory_model_id="cupy-radix-median-memory-v1",
         shape_policy_id="shape-preserving-v1",
         boundary_policy_id="scipy-reflect-v1",
         precision_policy_id="median-bitwise-v1",
@@ -143,7 +147,7 @@ def _median_spec() -> OperationComputeSpec:
 def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
     operation_id = "gaussian_blur_3d" if three_dimensional else "gaussian_blur"
     implementation_id = (
-        "cupyx-gaussian-blur-3d-v1" if three_dimensional else "cupyx-gaussian-blur-v1"
+        "cupy-gaussian-blur-3d-v1" if three_dimensional else "cupy-gaussian-blur-v1"
     )
     port_values = {
         # Integer execution is deliberately not advertised.  The reviewed RTX
@@ -151,7 +155,7 @@ def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
         # uint16 remain explicit, first-class CPU regions in policy.
         "public_dtypes": ("float32",),
         "internal_dtypes": ("float32",),
-        "conversion_policy_id": "cupyx-gaussian-float32-v1",
+        "conversion_policy_id": "cupy-gaussian-float32-v1",
         "nonfinite_policy_id": "finite-only-v1",
         "rounding_policy_id": "gaussian-float32-tolerance-v1",
         "overflow_policy_id": "preserve-public-dtype-v1",
@@ -164,12 +168,12 @@ def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
         implementation_version="1",
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
-        implementation_library_id="cupyx",
+        implementation_library_id="cupy",
         callable_ref=(f"napari_vipp.core.gpu.cupy_gaussian:{operation_id}"),
         host_boundary=False,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+            "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
         ),
         input_ports=(_gpu_image_port(0, name="image", **port_values),),
         output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
@@ -180,11 +184,7 @@ def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
         ),
         workload_policy_id="gaussian-finite-f32-v1",
         parity_policy_id="gaussian-float32-tolerance-v1",
-        memory_model_id=(
-            "cupyx-gaussian-3d-memory-v1"
-            if three_dimensional
-            else "cupyx-gaussian-2d-memory-v1"
-        ),
+        memory_model_id="cupy-dynamic-gaussian-memory-v1",
         shape_policy_id="shape-preserving-v1",
         boundary_policy_id="scipy-reflect-v1",
         precision_policy_id="gaussian-float32-v1",
@@ -320,9 +320,7 @@ def _binary_threshold_spec() -> OperationComputeSpec:
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
         implementation_library_id="cupy",
-        callable_ref=(
-            "napari_vipp.core.gpu.cupy_binary_threshold:binary_threshold"
-        ),
+        callable_ref=("napari_vipp.core.gpu.cupy_binary_threshold:binary_threshold"),
         host_boundary=False,
         admission_tier=AdmissionTier.PUBLIC_CUSTOM,
         validated_environment_policy_id=(
@@ -743,8 +741,7 @@ def _mask_cleanup_spec(operation_id: str) -> OperationComputeSpec:
         "remove_small_objects": {
             "implementation_id": "cupyx-remove-small-objects-bool-v1",
             "callable_ref": (
-                "napari_vipp.core.gpu.cupy_remove_small_objects:"
-                "remove_small_objects"
+                "napari_vipp.core.gpu.cupy_remove_small_objects:remove_small_objects"
             ),
             "parameter_policy_id": "remove-small-objects-bool-parameters-v1",
             "workload_policy_id": "remove-small-objects-bool-2d-3d-v1",
@@ -926,18 +923,14 @@ def _measurements_spec(*, include_intensity: bool) -> OperationComputeSpec:
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
         implementation_library_id="cucim",
-        callable_ref=(
-            f"napari_vipp.core.gpu.cucim_measurements:{callable_name}"
-        ),
+        callable_ref=(f"napari_vipp.core.gpu.cucim_measurements:{callable_name}"),
         host_boundary=False,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
             "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
         ),
         input_ports=inputs,
-        output_ports=(
-            _measurement_output_port(include_intensity=include_intensity),
-        ),
+        output_ports=(_measurement_output_port(include_intensity=include_intensity),),
         parameter_policy_id="basic-measurements-parameters-v1",
         workload_policy_id=(
             "measurements-int32-bool-u8-u16-finite-f32-basic-2d-3d-v1"

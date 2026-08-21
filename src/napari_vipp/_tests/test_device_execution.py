@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import threading
+import weakref
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
@@ -40,10 +42,17 @@ from napari_vipp.core.device_execution import (
     DeviceExecutionCancelled,
     DeviceExecutionError,
     DeviceMemoryPreflightError,
+    DevicePlanningError,
     DeviceSegmentUnit,
     HostExecutionUnit,
     execute_device_plan,
     plan_device_execution,
+    preflight_device_execution,
+)
+from napari_vipp.core.execution_telemetry import (
+    DeviceExecutionPhase,
+    DeviceExecutionTelemetryConfig,
+    DeviceSynchronizationPoint,
 )
 from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.pipeline import (
@@ -64,6 +73,40 @@ class _FakeKernelFailure(RuntimeError):
 
 class _FakeCleanupFailure(RuntimeError):
     pass
+
+
+class _SteppingClock:
+    def __init__(self, step: float = 0.25) -> None:
+        self.current = 0.0
+        self.step = step
+
+    def __call__(self) -> float:
+        value = self.current
+        self.current += self.step
+        return value
+
+
+class _HostileClock:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> float:
+        self.calls += 1
+        if self.calls == 1:
+            return 10.0
+        if self.calls == 2:
+            return 9.0
+        raise RuntimeError("diagnostic clock failed")
+
+
+class _HostileNbytesHost:
+    @property
+    def nbytes(self) -> int:
+        raise RuntimeError("host byte metadata failed")
+
+    def __array__(self, dtype=None, copy=None):
+        del copy
+        return np.arange(25, dtype=dtype or np.float32).reshape(5, 5)
 
 
 class _FakeDeviceArray:
@@ -111,6 +154,7 @@ class _FakeRuntime:
         self.oom_was_classified = False
         self.classified_inside_scope: list[bool] = []
         self.traceback_scratch_live = 0
+        self.memory_snapshot_states: list[tuple[str, int, bool]] = []
 
     def allocate(self, payload: object) -> _FakeDeviceArray:
         value = _FakeDeviceArray(self, payload)
@@ -196,12 +240,18 @@ class _FakeRuntime:
         self.events.append(("synchronize", device_id))
 
     def memory_snapshot(self, *, device_id: str = "") -> RuntimeMemorySnapshot:
+        self.memory_snapshot_states.append(
+            (device_id or "fake:0", len(self.live), self.scope_active)
+        )
+        private_bytes = len(self.live) * 64
         return RuntimeMemorySnapshot(
             self.runtime_id,
             device_id or "fake:0",
             "discrete",
             device_total_bytes=self.free_bytes,
             device_free_bytes=self.free_bytes,
+            runtime_live_bytes=private_bytes,
+            runtime_reserved_bytes=private_bytes,
         )
 
     def classify_exception(self, exc: BaseException) -> RuntimeExceptionInfo:
@@ -239,6 +289,78 @@ class _FakeRuntime:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _AliasCheckingRuntime(_FakeRuntime):
+    """Model a private allocator that rejects released-but-reachable arrays."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.released_references: list[weakref.ReferenceType[_FakeDeviceArray]] = []
+
+    @contextmanager
+    def execution_scope(
+        self,
+        *,
+        device_id: str = "",
+        memory_limit_bytes: int | None = None,
+        safety_reserve_bytes: int | None = None,
+    ):
+        with super().execution_scope(
+            device_id=device_id,
+            memory_limit_bytes=memory_limit_bytes,
+            safety_reserve_bytes=safety_reserve_bytes,
+        ):
+            try:
+                yield
+            finally:
+                gc.collect()
+                if any(
+                    reference() is not None for reference in self.released_references
+                ):
+                    raise _FakeCleanupFailure(
+                        "released device input remains reachable during cleanup"
+                    )
+
+    def release(self, value: object) -> None:
+        assert isinstance(value, _FakeDeviceArray)
+        self.released_references.append(weakref.ref(value))
+        super().release(value)
+
+
+class _SynchronizeOOMOnceRuntime(_FakeRuntime):
+    def __init__(self) -> None:
+        super().__init__()
+        self.synchronize_failures_remaining = 1
+
+    def synchronize(self, *, device_id: str = "") -> None:
+        super().synchronize(device_id=device_id)
+        if self.synchronize_failures_remaining:
+            self.synchronize_failures_remaining -= 1
+            raise _FakeOOM("synthetic synchronization OOM")
+
+
+class _TerminalSnapshotFailureRuntime(_FakeRuntime):
+    def memory_snapshot(self, *, device_id: str = "") -> RuntimeMemorySnapshot:
+        if self.memory_snapshot_states:
+            raise RuntimeError("synthetic terminal snapshot failure")
+        return super().memory_snapshot(device_id=device_id)
+
+
+class _TerminalSnapshotIdentityRuntime(_FakeRuntime):
+    def memory_snapshot(self, *, device_id: str = "") -> RuntimeMemorySnapshot:
+        if not self.memory_snapshot_states:
+            return super().memory_snapshot(device_id=device_id)
+        self.memory_snapshot_states.append(
+            ("fake:1", len(self.live), self.scope_active)
+        )
+        return RuntimeMemorySnapshot(
+            self.runtime_id,
+            "fake:1",
+            "discrete",
+            device_total_bytes=self.free_bytes,
+            device_free_bytes=self.free_bytes,
+        )
 
 
 def _device_copy(value: _FakeDeviceArray, **_kwargs) -> _FakeDeviceArray:
@@ -592,6 +714,440 @@ def test_linear_segment_keeps_intermediate_on_device_and_returns_host_only():
     assert all(
         not runtime.is_device_value(value) for value in result.host_values.values()
     )
+    assert result.telemetry is None
+    assert runtime.memory_snapshot_states == [("fake:0", 0, False)]
+    registry.close()
+
+
+def test_device_telemetry_observes_directional_transfers_and_device_phases(
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, median.id).success
+
+    runtime = _FakeRuntime()
+    registry, specs = _registry(
+        runtime,
+        (("gaussian_blur", _device_copy), ("median_filter", _device_copy)),
+    )
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    lease_depth = 0
+
+    @contextmanager
+    def observed_lease(_runtime_id, _device_id, **_kwargs):
+        nonlocal lease_depth
+        lease_depth += 1
+        try:
+            yield
+        finally:
+            lease_depth -= 1
+
+    original_memory_snapshot = runtime.memory_snapshot
+
+    def observed_memory_snapshot(*, device_id=""):
+        if runtime.memory_snapshot_states:
+            assert lease_depth == 1
+        return original_memory_snapshot(device_id=device_id)
+
+    monkeypatch.setattr(device_execution_module, "accelerator_lease", observed_lease)
+    monkeypatch.setattr(runtime, "memory_snapshot", observed_memory_snapshot)
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+        telemetry=DeviceExecutionTelemetryConfig(
+            clock=_SteppingClock(),
+            synchronize_device_phases=True,
+        ),
+    )
+
+    observation = result.telemetry
+    assert observation is not None
+    assert observation.synchronized_device_phases is True
+    assert observation.host_to_device.count == 1
+    assert observation.host_to_device.succeeded_count == 1
+    assert observation.host_to_device.byte_count == data.nbytes
+    assert observation.host_to_device.unknown_byte_count == 0
+    assert observation.host_to_device.elapsed_seconds == pytest.approx(0.75)
+    assert observation.host_to_device.all_synchronized is True
+    assert observation.device_to_host.count == 1
+    assert observation.device_to_host.byte_count == data.nbytes
+    assert observation.device_to_host.elapsed_seconds == pytest.approx(0.75)
+    assert observation.device_to_host.all_synchronized is True
+
+    lease_spans = observation.spans_for(DeviceExecutionPhase.ACCELERATOR_LEASE_WAIT)
+    lease_identities = [
+        (span.runtime_id, span.device_id, span.segment_id) for span in lease_spans
+    ]
+    assert lease_identities == [("fake-device", "fake:0", "")]
+    assert lease_spans[0].elapsed_seconds == pytest.approx(0.25)
+    preflight_spans = observation.spans_for(DeviceExecutionPhase.PREFLIGHT)
+    assert [span.segment_id for span in preflight_spans] == [
+        plan.segments[0].segment_id
+    ]
+    assert preflight_spans[0].elapsed_seconds == pytest.approx(0.25)
+
+    operation_spans = observation.spans_for(DeviceExecutionPhase.DEVICE_OPERATION)
+    assert [
+        (
+            span.node_id,
+            span.operation_id,
+            span.implementation_id,
+            span.segment_id,
+            span.runtime_id,
+            span.device_id,
+        )
+        for span in operation_spans
+    ] == [
+        (
+            gaussian.id,
+            "gaussian_blur",
+            "fake-gaussian_blur-v1",
+            plan.segments[0].segment_id,
+            "fake-device",
+            "fake:0",
+        ),
+        (
+            median.id,
+            "median_filter",
+            "fake-median_filter-v1",
+            plan.segments[0].segment_id,
+            "fake-device",
+            "fake:0",
+        ),
+    ]
+    assert all(span.elapsed_seconds == pytest.approx(0.75) for span in operation_spans)
+    resolution_spans = observation.spans_for(
+        DeviceExecutionPhase.IMPLEMENTATION_RESOLUTION
+    )
+    assert [span.node_id for span in resolution_spans] == [gaussian.id, median.id]
+    assert all(span.elapsed_seconds == pytest.approx(0.25) for span in resolution_spans)
+
+    synchronization_spans = observation.spans_for(
+        DeviceExecutionPhase.DEVICE_SYNCHRONIZE
+    )
+    assert [span.synchronization_point for span in synchronization_spans] == [
+        DeviceSynchronizationPoint.AFTER_HOST_TO_DEVICE,
+        DeviceSynchronizationPoint.AFTER_DEVICE_OPERATION,
+        DeviceSynchronizationPoint.AFTER_DEVICE_OPERATION,
+        DeviceSynchronizationPoint.AFTER_DEVICE_TO_HOST,
+        DeviceSynchronizationPoint.SEGMENT_COMPLETE,
+    ]
+    assert all(
+        span.elapsed_seconds == pytest.approx(0.25) for span in synchronization_spans
+    )
+    assert runtime.host_to_device_count == 1
+    assert runtime.device_to_host_count == 1
+    assert runtime.operation_count == 2
+    assert runtime.live == {}
+    assert observation.terminal_memory_snapshots
+    terminal = observation.terminal_memory_snapshots[0]
+    assert terminal.runtime_id == "fake-device"
+    assert terminal.device_id == "fake:0"
+    assert terminal.private_allocations_released is True
+    assert terminal.runtime_live_bytes == 0
+    assert terminal.runtime_reserved_bytes == 0
+    terminal_spans = observation.spans_for(
+        DeviceExecutionPhase.TERMINAL_MEMORY_SNAPSHOT
+    )
+    assert len(terminal_spans) == 1
+    assert terminal_spans[0].succeeded is True
+    assert runtime.memory_snapshot_states[-1] == ("fake:0", 0, False)
+    assert lease_depth == 0
+    registry.close()
+
+
+def test_terminal_memory_snapshot_failure_cannot_change_scientific_result():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _TerminalSnapshotFailureRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+        telemetry=DeviceExecutionTelemetryConfig(clock=_SteppingClock()),
+    )
+
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(gaussian.id, 0)],
+        data,
+    )
+    assert result.telemetry is not None
+    assert result.telemetry.terminal_memory_snapshots == ()
+    terminal_spans = result.telemetry.spans_for(
+        DeviceExecutionPhase.TERMINAL_MEMORY_SNAPSHOT
+    )
+    assert len(terminal_spans) == 1
+    assert terminal_spans[0].succeeded is False
+    assert runtime.live == {}
+    registry.close()
+
+
+def test_terminal_memory_snapshot_rejects_mismatched_provider_identity():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _TerminalSnapshotIdentityRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+        telemetry=DeviceExecutionTelemetryConfig(clock=_SteppingClock()),
+    )
+
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(gaussian.id, 0)],
+        data,
+    )
+    assert result.telemetry is not None
+    assert result.telemetry.terminal_memory_snapshots == ()
+    terminal_spans = result.telemetry.spans_for(
+        DeviceExecutionPhase.TERMINAL_MEMORY_SNAPSHOT
+    )
+    assert len(terminal_spans) == 1
+    assert terminal_spans[0].succeeded is False
+    registry.close()
+
+
+def test_device_plan_rejects_a_different_execution_request_before_runtime_work():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    different_request = replace(request, device_id="fake:1")
+
+    with pytest.raises(DevicePlanningError, match="does not match"):
+        preflight_device_execution(plan, registry, different_request)
+    with pytest.raises(DevicePlanningError, match="does not match"):
+        execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            different_request,
+            host_values={OutputPortKey("input", 0): np.ones((4, 4))},
+            prepare_call=_prepare_call(pipeline),
+        )
+
+    assert runtime.events == []
+    assert runtime.memory_snapshot_states == []
+    registry.close()
+
+
+def test_device_plan_rejects_a_decision_outside_explicit_runtime_affinity():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = replace(_request(), runtime_id="different-runtime")
+
+    with pytest.raises(DevicePlanningError, match="compute request requires"):
+        plan_device_execution(
+            pipeline,
+            _decisions(pipeline, specs),
+            registry,
+            request,
+        )
+
+    assert runtime.events == []
+    registry.close()
+
+
+def test_explicit_missing_device_is_rejected_before_memory_or_scope_work():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = replace(_request(), device_id="fake:1")
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    with pytest.raises(DevicePlanningError, match="did not report requested device"):
+        execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={OutputPortKey("input", 0): np.ones((4, 4))},
+            prepare_call=_prepare_call(pipeline),
+        )
+
+    assert runtime.memory_snapshot_states == []
+    assert runtime.events == []
+    registry.close()
+
+
+def test_telemetry_failures_cannot_change_scientific_result_or_primary_error():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): _HostileNbytesHost()},
+        prepare_call=_prepare_call(pipeline),
+        telemetry=DeviceExecutionTelemetryConfig(clock=_HostileClock()),
+    )
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(gaussian.id, 0)],
+        np.arange(25, dtype=np.float32).reshape(5, 5),
+    )
+    assert runtime.live == {}
+    registry.close()
+
+    failing_runtime = _FakeRuntime()
+    failing_registry, failing_specs = _registry(
+        failing_runtime,
+        (("gaussian_blur", _device_fail),),
+    )
+    failing_plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, failing_specs),
+        failing_registry,
+        request,
+    )
+    with pytest.raises(DeviceExecutionError) as raised:
+        execute_device_plan(
+            failing_plan,
+            pipeline,
+            failing_registry,
+            request,
+            host_values={OutputPortKey("input", 0): _HostileNbytesHost()},
+            prepare_call=_prepare_call(pipeline),
+            telemetry=DeviceExecutionTelemetryConfig(clock=_HostileClock()),
+        )
+    assert raised.value.failure.reason_code == "fake_kernel_failure"
+    assert failing_runtime.live == {}
+    failing_registry.close()
+
+
+def test_failed_diagnostic_barrier_is_not_reported_as_synchronized():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _SynchronizeOOMOnceRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request(FallbackPolicy.VISIBLE)
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+        telemetry=DeviceExecutionTelemetryConfig(
+            clock=_SteppingClock(),
+            synchronize_device_phases=True,
+        ),
+    )
+
+    assert result.fallback_segment_ids == (plan.segments[0].segment_id,)
+    assert result.telemetry is not None
+    transfer_spans = result.telemetry.spans_for(DeviceExecutionPhase.HOST_TO_DEVICE)
+    assert len(transfer_spans) == 1
+    assert transfer_spans[0].succeeded is False
+    assert transfer_spans[0].synchronized is False
+    assert result.telemetry.host_to_device.all_synchronized is False
+    synchronization_spans = result.telemetry.spans_for(
+        DeviceExecutionPhase.DEVICE_SYNCHRONIZE
+    )
+    failed_barrier = next(
+        span
+        for span in synchronization_spans
+        if span.synchronization_point is DeviceSynchronizationPoint.AFTER_HOST_TO_DEVICE
+    )
+    assert failed_barrier.succeeded is False
+    assert failed_barrier.synchronized is False
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(gaussian.id, 0)],
+        data,
+    )
+    assert len(result.telemetry.terminal_memory_snapshots) == 1
+    assert result.telemetry.terminal_memory_snapshots[0].private_allocations_released
+    assert runtime.live == {}
     registry.close()
 
 
@@ -880,6 +1436,7 @@ def test_host_finalizer_terminates_even_an_alternate_branch_join_path():
             host_values={OutputPortKey("input", 0): data},
             prepare_call=_prepare_call(pipeline),
             node_outputs_callback=observe,
+            telemetry=DeviceExecutionTelemetryConfig(clock=_SteppingClock()),
         )
     finally:
         _HOST_FINALIZER_RUNTIME = None
@@ -898,6 +1455,25 @@ def test_host_finalizer_terminates_even_an_alternate_branch_join_path():
     assert runtime.device_to_host_count == 3
     assert runtime.operation_count == 3
     assert runtime.live == {}
+    assert result.telemetry is not None
+    finalizer_spans = result.telemetry.spans_for(DeviceExecutionPhase.HOST_FINALIZER)
+    assert len(finalizer_spans) == 1
+    assert (
+        finalizer_spans[0].node_id,
+        finalizer_spans[0].operation_id,
+        finalizer_spans[0].implementation_id,
+        finalizer_spans[0].segment_id,
+        finalizer_spans[0].runtime_id,
+        finalizer_spans[0].device_id,
+    ) == (
+        terminal.id,
+        "gaussian_blur",
+        "fake-gaussian_blur-v1",
+        plan.segments[0].segment_id,
+        "fake-device",
+        "fake:0",
+    )
+    assert finalizer_spans[0].elapsed_seconds == pytest.approx(0.25)
     registry.close()
 
 
@@ -953,6 +1529,64 @@ def test_cancellation_after_payload_transfer_skips_finalizer_and_cleans_up():
     registry.close()
 
 
+def test_cancellation_during_call_preparation_detaches_private_input_traceback():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    gaussian.params["sigma"] = 0.0
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _AliasCheckingRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    def cancel_prepare(_node_id: str, inputs: tuple[object, ...]):
+        device_input_alias = inputs[0]
+        assert runtime.is_device_value(device_input_alias)
+        raise OperationCancelled("cancelled after the target node started")
+
+    with pytest.raises(DeviceExecutionCancelled) as caught:
+        execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={OutputPortKey("input", 0): np.ones((8, 8), dtype=np.float32)},
+            prepare_call=cancel_prepare,
+        )
+
+    assert caught.value.cleanup_succeeded is True
+    assert str(caught.value) == "cancelled after the target node started"
+    assert runtime.live == {}
+    gc.collect()
+    assert all(reference() is None for reference in runtime.released_references)
+
+    reused = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={
+            OutputPortKey("input", 0): np.arange(64, dtype=np.float32).reshape(8, 8)
+        },
+        prepare_call=_prepare_call(pipeline),
+    )
+
+    np.testing.assert_array_equal(
+        reused.host_values[OutputPortKey(gaussian.id, 0)],
+        np.arange(64, dtype=np.float32).reshape(8, 8),
+    )
+    assert runtime.live == {}
+    gc.collect()
+    assert all(reference() is None for reference in runtime.released_references)
+    registry.close()
+
+
 def test_visible_cpu_fallback_bypasses_device_host_finalizer():
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
@@ -964,9 +1598,7 @@ def test_visible_cpu_fallback_bypasses_device_host_finalizer():
     registry, specs = _registry(
         runtime,
         (("gaussian_blur", _device_oom_once),),
-        host_finalizer_refs={
-            "gaussian_blur": "missing.host_finalizer.module:finalize"
-        },
+        host_finalizer_refs={"gaussian_blur": "missing.host_finalizer.module:finalize"},
     )
     request = _request(FallbackPolicy.VISIBLE)
     plan = plan_device_execution(
@@ -1269,8 +1901,7 @@ def test_only_typed_retryable_oom_gets_one_visible_cpu_fallback(
             data,
         )
         assert all(
-            not runtime.is_device_value(value)
-            for value in result.host_values.values()
+            not runtime.is_device_value(value) for value in result.host_values.values()
         )
 
     assert runtime.operation_count == 1
@@ -1311,9 +1942,7 @@ def test_oom_record_survives_failed_or_cancelled_cpu_retry(cancelled: bool):
             pipeline,
             registry,
             request,
-            host_values={
-                OutputPortKey("input", 0): np.ones((5, 5), dtype=np.float32)
-            },
+            host_values={OutputPortKey("input", 0): np.ones((5, 5), dtype=np.float32)},
             prepare_call=_prepare_call(pipeline),
             node_outputs_callback=fail_retry,
         )
@@ -1460,9 +2089,7 @@ def test_real_cupy_kernel_oom_falls_back_and_runtime_remains_reusable():
             first.host_values[OutputPortKey(gaussian.id, 0)],
             data,
         )
-        first_terminal = runtime.memory_snapshot(
-            device_id=probe.selected_device_id
-        )
+        first_terminal = runtime.memory_snapshot(device_id=probe.selected_device_id)
         assert first_terminal.runtime_live_bytes == 0
         assert first_terminal.runtime_reserved_bytes == 0
         assert runtime.probe(refresh=True).available
@@ -1482,9 +2109,7 @@ def test_real_cupy_kernel_oom_falls_back_and_runtime_remains_reusable():
             second.host_values[OutputPortKey(gaussian.id, 0)],
             data,
         )
-        second_terminal = runtime.memory_snapshot(
-            device_id=probe.selected_device_id
-        )
+        second_terminal = runtime.memory_snapshot(device_id=probe.selected_device_id)
         assert second_terminal.runtime_live_bytes == 0
         assert second_terminal.runtime_reserved_bytes == 0
         assert runtime.probe(refresh=True).available
@@ -1516,9 +2141,7 @@ def test_cleanup_failure_overrides_oom_and_prevents_visible_cpu_fallback():
             pipeline,
             registry,
             request,
-            host_values={
-                OutputPortKey("input", 0): np.ones((4, 4), dtype=np.float32)
-            },
+            host_values={OutputPortKey("input", 0): np.ones((4, 4), dtype=np.float32)},
             prepare_call=_prepare_call(pipeline),
         )
 
@@ -1526,5 +2149,93 @@ def test_cleanup_failure_overrides_oom_and_prevents_visible_cpu_fallback():
     assert error.value.failure.reason_code == "fake_cleanup_incomplete"
     assert not error.value.failure.retryable
     assert runtime.operation_count == 1
+    assert runtime.live == {}
+    registry.close()
+
+
+def test_resident_callback_borrows_only_materialized_ports_after_d2h():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    pipeline.set_param(median.id, "size", 1)
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, median.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(
+        runtime,
+        (
+            ("gaussian_blur", _device_copy),
+            ("median_filter", _device_copy),
+        ),
+    )
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    observed: list[tuple[OutputPortKey, str]] = []
+
+    def observe(port, value, borrowed_runtime, device_id):
+        assert runtime.scope_active
+        assert borrowed_runtime is runtime
+        assert isinstance(value, _FakeDeviceArray)
+        assert not value.released
+        assert runtime.device_to_host_count == 1
+        assert runtime.events[-1] == "to-host"
+        observed.append((port, device_id))
+
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): np.ones((4, 4), dtype=np.float32)},
+        prepare_call=_prepare_call(pipeline),
+        resident_output_callback=observe,
+    )
+
+    assert observed == [(OutputPortKey(median.id, 0), "fake:0")]
+    assert OutputPortKey(gaussian.id, 0) not in result.host_values
+    assert runtime.device_to_host_count == 1
+    assert runtime.live == {}
+    registry.close()
+
+
+def test_resident_callback_cancellation_propagates_after_scoped_cleanup():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    def cancel_resident(_port, _value, _runtime, _device_id):
+        raise OperationCancelled("resident presentation cancelled")
+
+    with pytest.raises(DeviceExecutionCancelled) as error:
+        execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={OutputPortKey("input", 0): np.ones((4, 4), dtype=np.float32)},
+            prepare_call=_prepare_call(pipeline),
+            resident_output_callback=cancel_resident,
+        )
+
+    assert error.value.cleanup_succeeded
+    assert runtime.device_to_host_count == 1
     assert runtime.live == {}
     registry.close()

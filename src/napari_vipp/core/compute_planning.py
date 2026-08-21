@@ -222,6 +222,19 @@ def plan_compute_decisions(
             ),
         )
 
+    if (
+        environment is not None
+        and request.runtime_id
+        and request.device_id
+        and request.runtime_id in environment.runtime_ids
+        and environment.device_id != request.device_id
+    ):
+        raise ValueError(
+            "The supplied compute environment describes device "
+            f"{environment.device_id!r}, but the request requires "
+            f"{request.device_id!r} for runtime {request.runtime_id!r}."
+        )
+
     selected_registry = registry or ComputeRegistry()
     owns_registry = registry is None
     try:
@@ -660,9 +673,7 @@ def _admit_candidates(
     environment: ComputeEnvironment,
     facts: tuple[ArrayFacts, ...],
     evidence: Mapping[tuple[str, str], PerformanceEvidence],
-    exact_workload_qualifications: frozenset[
-        ExactWorkloadCandidateQualification
-    ],
+    exact_workload_qualifications: frozenset[ExactWorkloadCandidateQualification],
     exact_workload_qualification_scope_digest: str,
 ) -> tuple[tuple[_Candidate, ...], tuple[SupportDecision, ...]]:
     candidates: list[_Candidate] = []
@@ -895,9 +906,7 @@ def _residency_aware_specs(
         spec for spec, support in support_by_spec.items() if not support.supported
     )
     retained = tuple(
-        spec
-        for spec in placement_eligible
-        if receives_compatible_device_array(spec)
+        spec for spec in placement_eligible if receives_compatible_device_array(spec)
     )
     if retained:
         return (*rejected, *retained), ()

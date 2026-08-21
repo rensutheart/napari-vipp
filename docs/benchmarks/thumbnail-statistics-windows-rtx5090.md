@@ -118,3 +118,43 @@ the requested channel. `--nd2-time-index` can deliberately select one time
 point. The JSON records only anonymized workload metadata and timing/provenance
 fields; it omits the supplied path, filename, pixels, content hash, and contrast
 limits.
+
+## 2026-08-20 float32 and resident-output addendum
+
+The qualified `float32` Percentile and Min-max implementation uses bounded
+radix reductions rather than an unbounded device sort. Protected RTX tests
+matched the authoritative CPU limits bit-for-bit across non-finite values,
+signed zero, subnormals, interpolation boundaries, channel layouts, and
+strided inputs. Cancellation and every healthy terminal path returned the
+private runtime pool to zero live and reserved bytes.
+
+The normal host-input path still starts from the scientific host result and
+therefore performs one explicit full-image H2D upload. A separate measurement
+borrowed the same device-resident output before its existing scientific scope
+was released. It did not remove the required scientific D2H result transfer;
+it removed only the later redundant thumbnail H2D upload.
+
+| float32 input | Host-input body | Resident body | Time saved | Relative reduction |
+|---:|---:|---:|---:|---:|
+| 2 MiB | 3.641 ms | 2.998 ms | 0.643 ms | 17.7% |
+| 32 MiB | 23.801 ms | 18.653 ms | 5.148 ms | 21.6% |
+| 128 MiB | 93.078 ms | 68.267 ms | 24.810 ms | 26.7% |
+| 512 MiB | 369.204 ms | 277.246 ms | 91.958 ms | 24.9% |
+
+The absolute gain is negligible for the bundled 576 KiB example and becomes
+material at 128 MiB. Production therefore requests the resident shortcut only
+for one warm, selected, retained `float32` image card under Prefer GPU, with a
+128 MiB minimum. Other cards keep the asynchronous, cancellable host-input
+worker so rapid scientific edits are not delayed by presentation scans.
+
+The resident result records `resident_borrow`, zero logical input H2D bytes,
+and only bounded auxiliary/D2H metadata. It returns immutable host limits and
+does not retain or release the borrowed scientific array. Recoverable
+presentation failure is a soft miss; cancellation propagates; any scratch
+release failure is fatal and marks the CUDA runtime unhealthy. Resident scan
+wall time is excluded from completed-run scientific timing history.
+
+This remains machine-local screening evidence, not a portable speed promise.
+The anonymized measurement artifact was written outside the repository at
+`D:\Temp\vipp-float32-resident-benchmark-20260820.json` with SHA-256
+`189dadbcdf1daae9c0f03c89e94e95701c66d6e85b5838fc17ad76287aaee0c1`.

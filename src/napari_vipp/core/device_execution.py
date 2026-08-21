@@ -39,6 +39,17 @@ from napari_vipp.core.compute_registry import (
     RuntimeProtocol,
 )
 from napari_vipp.core.compute_specs import OperationComputeSpec, compute_specs_for
+from napari_vipp.core.execution_telemetry import (
+    DeviceExecutionObservation,
+    DeviceExecutionPhase,
+    DeviceExecutionTelemetryConfig,
+    DeviceSynchronizationPoint,
+    DeviceTerminalMemorySnapshot,
+    _begin_device_execution_telemetry,
+    _DeviceExecutionTelemetryRecorder,
+    _finish_device_execution_telemetry,
+    _observed_host_nbytes,
+)
 from napari_vipp.core.host_finalization import (
     apply_host_finalizer,
     normalize_operation_outputs,
@@ -103,8 +114,7 @@ class DeviceExecutionError(RuntimeError):
         self.fallback_records = tuple(fallback_records)
         detail = failure.message or failure.reason_code
         super().__init__(
-            f"Device segment {segment_id!r} failed "
-            f"({failure.kind.value}: {detail})."
+            f"Device segment {segment_id!r} failed ({failure.kind.value}: {detail})."
         )
 
 
@@ -183,14 +193,19 @@ class DeviceGraphPlan:
     schedule: PipelineExecutionPlan
     units: tuple[ExecutionUnit, ...]
     decisions: tuple[NodeExecutionDecision, ...]
+    request_fingerprint: str
     retained_ports: tuple[OutputPortKey, ...] = ()
+
+    def __post_init__(self) -> None:
+        request_fingerprint = str(self.request_fingerprint).strip()
+        if not request_fingerprint:
+            raise ValueError("request_fingerprint must not be empty.")
+        object.__setattr__(self, "request_fingerprint", request_fingerprint)
 
     @property
     def segments(self) -> tuple[ExecutionSegment, ...]:
         return tuple(
-            unit.segment
-            for unit in self.units
-            if isinstance(unit, DeviceSegmentUnit)
+            unit.segment for unit in self.units if isinstance(unit, DeviceSegmentUnit)
         )
 
 
@@ -202,6 +217,11 @@ class DeviceExecutionResult:
     fallback_segment_ids: tuple[str, ...] = ()
     fallback_records: tuple[ExecutionFallbackRecord, ...] = ()
     cleanup_succeeded: bool = True
+    telemetry: DeviceExecutionObservation | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -215,6 +235,11 @@ class DeviceExecutionResult:
             tuple(self.fallback_segment_ids),
         )
         object.__setattr__(self, "fallback_records", tuple(self.fallback_records))
+        if self.telemetry is not None and not isinstance(
+            self.telemetry,
+            DeviceExecutionObservation,
+        ):
+            raise TypeError("telemetry must be a DeviceExecutionObservation or None.")
 
 
 class PrepareNodeCall(Protocol):
@@ -237,6 +262,19 @@ class NodeOutputsCallback(Protocol):
         call: PreparedNodeCall,
         outputs: tuple[object, ...],
         runtime_id: str,
+        /,
+    ) -> None: ...
+
+
+class ResidentOutputCallback(Protocol):
+    """Borrow one already-materialized device output before segment cleanup."""
+
+    def __call__(
+        self,
+        port: OutputPortKey,
+        value: object,
+        runtime: RuntimeProtocol,
+        device_id: str,
         /,
     ) -> None: ...
 
@@ -340,9 +378,7 @@ class _SegmentStore:
                 f"Device liveness consumed missing port {port!r}."
             ) from exc
         if wrapped.remaining_consumers < 1:
-            raise DevicePlanningError(
-                f"Device liveness over-consumed port {port!r}."
-            )
+            raise DevicePlanningError(f"Device liveness over-consumed port {port!r}.")
         wrapped.remaining_consumers -= 1
         if wrapped.remaining_consumers == 0 and not wrapped.persistent:
             self._drop_port(port)
@@ -445,6 +481,11 @@ def plan_device_execution(
                 writer_boundary=writer_boundary,
             )
             continue
+        if request.runtime_id and decision.runtime_id != request.runtime_id:
+            raise DevicePlanningError(
+                f"Node {node_id!r} selected runtime {decision.runtime_id!r}, "
+                f"but the compute request requires {request.runtime_id!r}."
+            )
         try:
             implementation = registry.implementation_spec(
                 decision.implementation_id,
@@ -536,10 +577,7 @@ def plan_device_execution(
                     connection.source_id,
                     connection.source_port,
                 )
-                if (
-                    connection.source_id in component_set
-                    or source_port in entry_ports
-                ):
+                if connection.source_id in component_set or source_port in entry_ports:
                     consumer_counts[source_port] += 1
 
         decisions_for_component = tuple(eligible[node_id][0] for node_id in component)
@@ -608,46 +646,98 @@ def plan_device_execution(
     selected_decisions = tuple(
         decisions[node_id] for node_id in order if node_id in decisions
     )
-    return DeviceGraphPlan(schedule, tuple(units), selected_decisions, retained)
+    return DeviceGraphPlan(
+        schedule=schedule,
+        units=tuple(units),
+        decisions=selected_decisions,
+        request_fingerprint=request.fingerprint,
+        retained_ports=retained,
+    )
 
 
 def preflight_device_execution(
     plan: DeviceGraphPlan,
     registry: ComputeRegistry,
     request: ComputeRequest,
+    *,
+    _telemetry: _DeviceExecutionTelemetryRecorder | None = None,
 ) -> None:
     """Reject impossible memory requests before any scientific node runs."""
 
+    _validate_device_plan_request(plan, request)
     for unit in plan.units:
         if not isinstance(unit, DeviceSegmentUnit):
             continue
         segment = unit.segment
-        runtime = registry.runtime(segment.runtime_id)
+        started = None if _telemetry is None else _telemetry.start()
+        snapshot = None
+        succeeded = False
         try:
+            probe = registry.probe_runtime(segment.runtime_id)
+            if not probe.available:
+                raise DevicePlanningError(
+                    f"Runtime {segment.runtime_id!r} is unavailable: "
+                    f"{probe.reason_code}: {probe.message}"
+                )
+            if request.device_id and request.device_id not in {
+                device.device_id for device in probe.devices
+            }:
+                raise DevicePlanningError(
+                    f"Runtime {segment.runtime_id!r} did not report requested "
+                    f"device {request.device_id!r}."
+                )
+            runtime = registry.runtime(segment.runtime_id)
             snapshot = runtime.memory_snapshot(device_id=request.device_id)
+            if snapshot.runtime_id != segment.runtime_id or (
+                request.device_id and snapshot.device_id != request.device_id
+            ):
+                raise DevicePlanningError(
+                    "Runtime memory snapshot did not match the requested "
+                    "runtime and device."
+                )
+            required = (
+                segment.memory_estimate.total_device_peak_bytes
+                + segment.memory_estimate.uncertainty_bytes
+            )
+            available_candidates: list[int] = []
+            if snapshot.device_free_bytes is not None:
+                reserve = request.accelerator_safety_reserve_bytes or 0
+                available_candidates.append(
+                    max(0, snapshot.device_free_bytes - reserve)
+                )
+            if request.accelerator_memory_cap_bytes is not None:
+                available_candidates.append(request.accelerator_memory_cap_bytes)
+            if available_candidates:
+                available = min(available_candidates)
+                if required > available:
+                    raise DeviceMemoryPreflightError(
+                        segment.segment_id,
+                        segment.runtime_id,
+                        required,
+                        available,
+                    )
+            succeeded = True
+        except DevicePlanningError:
+            raise
         except Exception as exc:
             raise DevicePlanningError(
                 f"Could not inspect memory for runtime {segment.runtime_id!r}: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
-        required = (
-            segment.memory_estimate.total_device_peak_bytes
-            + segment.memory_estimate.uncertainty_bytes
-        )
-        available_candidates: list[int] = []
-        if snapshot.device_free_bytes is not None:
-            reserve = request.accelerator_safety_reserve_bytes or 0
-            available_candidates.append(max(0, snapshot.device_free_bytes - reserve))
-        if request.accelerator_memory_cap_bytes is not None:
-            available_candidates.append(request.accelerator_memory_cap_bytes)
-        if available_candidates:
-            available = min(available_candidates)
-            if required > available:
-                raise DeviceMemoryPreflightError(
-                    segment.segment_id,
-                    segment.runtime_id,
-                    required,
-                    available,
+        finally:
+            if _telemetry is not None:
+                observed_device_id = str(request.device_id).strip() or "default"
+                if snapshot is not None:
+                    observed_device_id = (
+                        str(snapshot.device_id).strip() or observed_device_id
+                    )
+                _telemetry.record(
+                    started,
+                    DeviceExecutionPhase.PREFLIGHT,
+                    runtime_id=segment.runtime_id,
+                    device_id=observed_device_id,
+                    segment_id=segment.segment_id,
+                    succeeded=succeeded,
                 )
 
 
@@ -661,9 +751,18 @@ def execute_device_plan(
     prepare_call: PrepareNodeCall,
     cancel_callback: Callable[[], bool] | None = None,
     node_outputs_callback: NodeOutputsCallback | None = None,
+    resident_output_callback: ResidentOutputCallback | None = None,
+    telemetry: DeviceExecutionTelemetryConfig | None = None,
 ) -> DeviceExecutionResult:
-    """Execute one plan while exclusively owning all of its accelerators."""
+    """Execute one plan while exclusively owning all of its accelerators.
 
+    ``telemetry`` is an opt-in, volatile diagnostic observation.  Omitting it
+    preserves the normal execution path and does not sample a clock.
+    """
+
+    _validate_device_plan_request(plan, request)
+    _validate_requested_runtime_devices(plan, registry, request)
+    telemetry_recorder = _begin_device_execution_telemetry(telemetry)
     runtime_ids = sorted(
         {
             unit.segment.runtime_id
@@ -672,7 +771,7 @@ def execute_device_plan(
         }
     )
     if not runtime_ids:
-        return _execute_device_plan_under_leases(
+        result = _execute_device_plan_under_leases(
             plan,
             pipeline,
             registry,
@@ -681,21 +780,44 @@ def execute_device_plan(
             prepare_call=prepare_call,
             cancel_callback=cancel_callback,
             node_outputs_callback=node_outputs_callback,
+            resident_output_callback=resident_output_callback,
+            _telemetry=telemetry_recorder,
+        )
+        return replace(
+            result,
+            telemetry=_finish_device_execution_telemetry(telemetry_recorder),
         )
     try:
         _check_cancelled(cancel_callback)
+        resolved_device_ids: dict[str, str] = {}
         with ExitStack() as leases:
             for runtime_id in runtime_ids:
                 runtime = registry.runtime(runtime_id)
                 device_id = _accelerator_lease_device_id(runtime, request.device_id)
-                leases.enter_context(
-                    accelerator_lease(
-                        runtime_id,
-                        device_id,
-                        cancelled=cancel_callback,
-                    )
+                resolved_device_ids[runtime_id] = device_id
+                started = (
+                    None if telemetry_recorder is None else telemetry_recorder.start()
                 )
-            return _execute_device_plan_under_leases(
+                succeeded = False
+                try:
+                    leases.enter_context(
+                        accelerator_lease(
+                            runtime_id,
+                            device_id,
+                            cancelled=cancel_callback,
+                        )
+                    )
+                    succeeded = True
+                finally:
+                    if telemetry_recorder is not None:
+                        telemetry_recorder.record(
+                            started,
+                            DeviceExecutionPhase.ACCELERATOR_LEASE_WAIT,
+                            runtime_id=runtime_id,
+                            device_id=device_id,
+                            succeeded=succeeded,
+                        )
+            result = _execute_device_plan_under_leases(
                 plan,
                 pipeline,
                 registry,
@@ -704,7 +826,18 @@ def execute_device_plan(
                 prepare_call=prepare_call,
                 cancel_callback=cancel_callback,
                 node_outputs_callback=node_outputs_callback,
+                resident_output_callback=resident_output_callback,
+                _telemetry=telemetry_recorder,
             )
+            _record_terminal_memory_snapshots(
+                telemetry_recorder,
+                registry,
+                resolved_device_ids,
+            )
+        return replace(
+            result,
+            telemetry=_finish_device_execution_telemetry(telemetry_recorder),
+        )
     except DeviceExecutionCancelled:
         raise
     except OperationCancelled as exc:
@@ -724,6 +857,8 @@ def _execute_device_plan_under_leases(
     prepare_call: PrepareNodeCall,
     cancel_callback: Callable[[], bool] | None = None,
     node_outputs_callback: NodeOutputsCallback | None = None,
+    resident_output_callback: ResidentOutputCallback | None = None,
+    _telemetry: _DeviceExecutionTelemetryRecorder | None = None,
 ) -> DeviceExecutionResult:
     """Execute ``plan`` and return an atomic host-only result mapping.
 
@@ -743,7 +878,12 @@ def _execute_device_plan_under_leases(
         committed[port] = value
 
     # This must happen before sources, CPU nodes, and especially writers.
-    preflight_device_execution(plan, registry, request)
+    preflight_device_execution(
+        plan,
+        registry,
+        request,
+        _telemetry=_telemetry,
+    )
     runtimes = {
         unit.segment.runtime_id: registry.runtime(unit.segment.runtime_id)
         for unit in plan.units
@@ -801,6 +941,8 @@ def _execute_device_plan_under_leases(
                 cancel_callback,
                 segment_cleanup,
                 node_outputs_callback,
+                resident_output_callback,
+                _telemetry,
             )
         except OperationCancelled as exc:
             cleanup_succeeded = cleanup_succeeded and segment_cleanup.succeeded
@@ -815,9 +957,7 @@ def _execute_device_plan_under_leases(
             failure = _classify_runtime_exception(runtime, exc)
             failure_cause = exc
         finally:
-            cleanup_succeeded = (
-                cleanup_succeeded and segment_cleanup.succeeded
-            )
+            cleanup_succeeded = cleanup_succeeded and segment_cleanup.succeeded
         if failure is not None:
             if (
                 failure.kind is RuntimeExceptionKind.OUT_OF_MEMORY
@@ -949,8 +1089,7 @@ def _execute_host_unit(
     if node_outputs_callback is not None:
         node_outputs_callback(node_id, call, outputs, CPU_RUNTIME_ID)
     provisional = {
-        OutputPortKey(node_id, index): value
-        for index, value in enumerate(outputs)
+        OutputPortKey(node_id, index): value for index, value in enumerate(outputs)
     }
     committed.update(provisional)
 
@@ -966,6 +1105,8 @@ def _execute_device_segment(
     cancel_callback: Callable[[], bool] | None,
     cleanup_status: _CleanupStatus,
     node_outputs_callback: NodeOutputsCallback | None,
+    resident_output_callback: ResidentOutputCallback | None,
+    telemetry: _DeviceExecutionTelemetryRecorder | None,
 ) -> dict[OutputPortKey, object]:
     lease_device_id = _accelerator_lease_device_id(runtime, request.device_id)
     with accelerator_lease(
@@ -984,6 +1125,9 @@ def _execute_device_segment(
             cancel_callback,
             cleanup_status,
             node_outputs_callback,
+            resident_output_callback,
+            telemetry,
+            telemetry_device_id=lease_device_id,
         )
 
 
@@ -998,8 +1142,20 @@ def _execute_device_segment_under_lease(
     cancel_callback: Callable[[], bool] | None,
     cleanup_status: _CleanupStatus,
     node_outputs_callback: NodeOutputsCallback | None,
+    resident_output_callback: ResidentOutputCallback | None,
+    telemetry: _DeviceExecutionTelemetryRecorder | None,
+    *,
+    telemetry_device_id: str,
 ) -> dict[OutputPortKey, object]:
     segment = unit.segment
+    implementations_by_node = {
+        node_id: implementation
+        for node_id, implementation in zip(
+            segment.node_ids,
+            unit.implementation_specs,
+            strict=True,
+        )
+    }
     counts = dict(segment.remaining_consumers)
     finalizer_output_ports = tuple(
         OutputPortKey(node_id, port_index)
@@ -1020,6 +1176,7 @@ def _execute_device_segment_under_lease(
     materialized: dict[OutputPortKey, object] = {}
     pending_finalizations: list[_PendingHostFinalization] = []
     detached_failure: RuntimeExceptionInfo | None = None
+    cancelled_message: str | None = None
     with runtime.execution_scope(
         device_id=request.device_id,
         memory_limit_bytes=request.accelerator_memory_cap_bytes,
@@ -1036,23 +1193,61 @@ def _execute_device_segment_under_lease(
                             f"Segment {segment.segment_id!r} is missing host entry "
                             f"{port.node_id!r} output {port.port_index}."
                         ) from exc
-                    device_value = runtime.to_device(
-                        host_value,
-                        device_id=request.device_id,
+                    transfer_started = None if telemetry is None else telemetry.start()
+                    transfer_succeeded = False
+                    transfer_synchronized = (
+                        False
+                        if telemetry is not None and telemetry.synchronize_device_phases
+                        else None
                     )
                     try:
-                        store.add(
-                            port,
-                            device_value,
-                            remaining_consumers=counts.get(port, 0),
-                            persistent=False,
+                        device_value = runtime.to_device(
+                            host_value,
+                            device_id=request.device_id,
                         )
-                    except Exception:
-                        if runtime.is_device_value(device_value) and not store.owns(
-                            device_value
+                        try:
+                            store.add(
+                                port,
+                                device_value,
+                                remaining_consumers=counts.get(port, 0),
+                                persistent=False,
+                            )
+                        except Exception:
+                            if runtime.is_device_value(device_value) and not store.owns(
+                                device_value
+                            ):
+                                _release_quietly(runtime, device_value)
+                            raise
+                        if (
+                            telemetry is not None
+                            and telemetry.synchronize_device_phases
                         ):
-                            _release_quietly(runtime, device_value)
-                        raise
+                            _synchronize_runtime(
+                                runtime,
+                                request.device_id,
+                                telemetry=telemetry,
+                                telemetry_device_id=telemetry_device_id,
+                                segment_id=segment.segment_id,
+                                point=(DeviceSynchronizationPoint.AFTER_HOST_TO_DEVICE),
+                                node_id=port.node_id,
+                                port=port,
+                            )
+                            transfer_synchronized = True
+                        transfer_succeeded = True
+                    finally:
+                        if telemetry is not None:
+                            telemetry.record(
+                                transfer_started,
+                                DeviceExecutionPhase.HOST_TO_DEVICE,
+                                runtime_id=segment.runtime_id,
+                                device_id=telemetry_device_id,
+                                segment_id=segment.segment_id,
+                                node_id=port.node_id,
+                                port=port,
+                                byte_count=_observed_host_nbytes(host_value),
+                                synchronized=transfer_synchronized,
+                                succeeded=transfer_succeeded,
+                            )
 
                 for node_id, implementation in zip(
                     segment.node_ids,
@@ -1078,23 +1273,87 @@ def _execute_device_segment_under_lease(
                     )
                     # Resolution remains lazy and occurs only after preflight and
                     # after the segment's runtime scope has been entered.
-                    implementation_callable = registry.implementation_callable(
-                        implementation,
-                        allow_experimental=request.allow_experimental,
+                    resolution_started = (
+                        None if telemetry is None else telemetry.start()
                     )
-                    raw = implementation_callable(
-                        call.positional_input(),
-                        **_provider_keyword_arguments(call),
+                    resolution_succeeded = False
+                    try:
+                        implementation_callable = registry.implementation_callable(
+                            implementation,
+                            allow_experimental=request.allow_experimental,
+                        )
+                        resolution_succeeded = True
+                    finally:
+                        if telemetry is not None:
+                            telemetry.record(
+                                resolution_started,
+                                DeviceExecutionPhase.IMPLEMENTATION_RESOLUTION,
+                                runtime_id=segment.runtime_id,
+                                device_id=telemetry_device_id,
+                                segment_id=segment.segment_id,
+                                node_id=node_id,
+                                operation_id=implementation.operation_id,
+                                implementation_id=(implementation.implementation_id),
+                                succeeded=resolution_succeeded,
+                            )
+                    operation_started = None if telemetry is None else telemetry.start()
+                    operation_succeeded = False
+                    operation_synchronized = (
+                        False
+                        if telemetry is not None and telemetry.synchronize_device_phases
+                        else None
                     )
+                    try:
+                        raw = implementation_callable(
+                            call.positional_input(),
+                            **_provider_keyword_arguments(call),
+                        )
+                        if (
+                            telemetry is not None
+                            and telemetry.synchronize_device_phases
+                        ):
+                            try:
+                                _synchronize_runtime(
+                                    runtime,
+                                    request.device_id,
+                                    telemetry=telemetry,
+                                    telemetry_device_id=telemetry_device_id,
+                                    segment_id=segment.segment_id,
+                                    point=(
+                                        DeviceSynchronizationPoint.AFTER_DEVICE_OPERATION
+                                    ),
+                                    node_id=node_id,
+                                    operation_id=implementation.operation_id,
+                                    implementation_id=(
+                                        implementation.implementation_id
+                                    ),
+                                )
+                            except Exception:
+                                _release_orphan_outputs(runtime, raw, store)
+                                raise
+                            operation_synchronized = True
+                        operation_succeeded = True
+                    finally:
+                        if telemetry is not None:
+                            telemetry.record(
+                                operation_started,
+                                DeviceExecutionPhase.DEVICE_OPERATION,
+                                runtime_id=segment.runtime_id,
+                                device_id=telemetry_device_id,
+                                segment_id=segment.segment_id,
+                                node_id=node_id,
+                                operation_id=implementation.operation_id,
+                                implementation_id=(implementation.implementation_id),
+                                synchronized=operation_synchronized,
+                                succeeded=operation_succeeded,
+                            )
                     try:
                         outputs = _normalized_outputs(raw, call.output_port_count)
                     except Exception:
                         _release_orphan_outputs(runtime, raw, store)
                         raise
                     invalid = tuple(
-                        value
-                        for value in outputs
-                        if not runtime.is_device_value(value)
+                        value for value in outputs if not runtime.is_device_value(value)
                     )
                     if invalid:
                         _release_orphan_outputs(runtime, outputs, store)
@@ -1157,11 +1416,88 @@ def _execute_device_segment_under_lease(
                     )
                 ):
                     _check_cancelled(cancel_callback)
-                    materialized[port] = runtime.to_host(store.value(port))
+                    transfer_started = None if telemetry is None else telemetry.start()
+                    transfer_succeeded = False
+                    transfer_synchronized = (
+                        False
+                        if telemetry is not None and telemetry.synchronize_device_phases
+                        else None
+                    )
+                    host_value = None
+                    try:
+                        host_value = runtime.to_host(store.value(port))
+                        if (
+                            telemetry is not None
+                            and telemetry.synchronize_device_phases
+                        ):
+                            _synchronize_runtime(
+                                runtime,
+                                request.device_id,
+                                telemetry=telemetry,
+                                telemetry_device_id=telemetry_device_id,
+                                segment_id=segment.segment_id,
+                                point=(DeviceSynchronizationPoint.AFTER_DEVICE_TO_HOST),
+                                node_id=port.node_id,
+                                port=port,
+                            )
+                            transfer_synchronized = True
+                        transfer_succeeded = True
+                    finally:
+                        if telemetry is not None:
+                            telemetry.record(
+                                transfer_started,
+                                DeviceExecutionPhase.DEVICE_TO_HOST,
+                                runtime_id=segment.runtime_id,
+                                device_id=telemetry_device_id,
+                                segment_id=segment.segment_id,
+                                node_id=port.node_id,
+                                port=port,
+                                byte_count=(
+                                    None
+                                    if host_value is None
+                                    else _observed_host_nbytes(host_value)
+                                ),
+                                synchronized=transfer_synchronized,
+                                succeeded=transfer_succeeded,
+                            )
+                    materialized[port] = host_value
+                if resident_output_callback is not None:
+                    # The scientific outputs have completed their required
+                    # D2H transfers and all transient inputs/intermediates are
+                    # dead.  Borrow only ports the plan already retained; the
+                    # observer must not extend ownership beyond this call.
+                    for port in _unique_ports(
+                        (
+                            *segment.exit_ports,
+                            *segment.retained_ports,
+                            *finalizer_output_ports,
+                        )
+                    ):
+                        _check_cancelled(cancel_callback)
+                        resident_output_callback(
+                            port,
+                            store.value(port),
+                            runtime,
+                            telemetry_device_id,
+                        )
                 _check_cancelled(cancel_callback)
-                runtime.synchronize(device_id=request.device_id)
-            except OperationCancelled:
-                raise
+                _synchronize_runtime(
+                    runtime,
+                    request.device_id,
+                    telemetry=telemetry,
+                    telemetry_device_id=telemetry_device_id,
+                    segment_id=segment.segment_id,
+                    point=DeviceSynchronizationPoint.SEGMENT_COMPLETE,
+                )
+            except OperationCancelled as exc:
+                # Do not carry a cancellation traceback across private-scope
+                # cleanup.  A checkpoint may fire while provider-owned inputs
+                # are arguments in nested preparation/progress frames; retaining
+                # those frames until the caller catches the exception can make a
+                # correctly released CuPy allocation appear live when the scope
+                # validates its private pool.  Recreate the lightweight public
+                # cancellation after every scoped alias has been cleared.
+                cancelled_message = str(exc)
             except Exception as exc:
                 # Classify while provider types are available, then suppress
                 # the provider exception before leaving the private allocator
@@ -1172,9 +1508,7 @@ def _execute_device_segment_under_lease(
             # Release while the runtime's private allocator/device scope still
             # owns these arrays.  Releasing after ``__exit__`` can strand pool
             # allocations and violates runtimes that enforce scoped ownership.
-            cleanup_status.succeeded = (
-                cleanup_status.succeeded and store.release_all()
-            )
+            cleanup_status.succeeded = cleanup_status.succeeded and store.release_all()
             # ``release`` relinquishes VIPP's ownership; it must not forcibly
             # recycle storage while a Python alias can still reach it.  Clear
             # this frame's transient references before the runtime validates
@@ -1189,6 +1523,8 @@ def _execute_device_segment_under_lease(
             invalid = ()
             value = None
 
+    if cancelled_message is not None:
+        raise OperationCancelled(cancelled_message) from None
     if detached_failure is not None:
         raise _DetachedRuntimeFailure(detached_failure) from None
     # Finalizers are deliberately outside the runtime scope: every payload has
@@ -1199,11 +1535,29 @@ def _execute_device_segment_under_lease(
     for pending in pending_finalizations:
         _check_cancelled(cancel_callback)
         payloads = tuple(materialized[port] for port in pending.output_ports)
-        finalized = apply_host_finalizer(
-            pending.finalizer_ref,
-            payloads,
-            pending.call,
-        )
+        implementation = implementations_by_node[pending.node_id]
+        finalizer_started = None if telemetry is None else telemetry.start()
+        finalizer_succeeded = False
+        try:
+            finalized = apply_host_finalizer(
+                pending.finalizer_ref,
+                payloads,
+                pending.call,
+            )
+            finalizer_succeeded = True
+        finally:
+            if telemetry is not None:
+                telemetry.record(
+                    finalizer_started,
+                    DeviceExecutionPhase.HOST_FINALIZER,
+                    runtime_id=segment.runtime_id,
+                    device_id=telemetry_device_id,
+                    segment_id=segment.segment_id,
+                    node_id=pending.node_id,
+                    operation_id=pending.call.operation_id,
+                    implementation_id=implementation.implementation_id,
+                    succeeded=finalizer_succeeded,
+                )
         public_values = {
             port: value
             for port, value in zip(
@@ -1235,6 +1589,44 @@ def _execute_device_segment_under_lease(
         for port in _unique_ports((*segment.exit_ports, *segment.retained_ports))
     }
     return provisional
+
+
+def _synchronize_runtime(
+    runtime: RuntimeProtocol,
+    requested_device_id: str,
+    *,
+    telemetry: _DeviceExecutionTelemetryRecorder | None,
+    telemetry_device_id: str,
+    segment_id: str,
+    point: DeviceSynchronizationPoint,
+    node_id: str = "",
+    operation_id: str = "",
+    implementation_id: str = "",
+    port: OutputPortKey | None = None,
+) -> None:
+    """Synchronize once and record the exact reason when telemetry is enabled."""
+
+    started = None if telemetry is None else telemetry.start()
+    succeeded = False
+    try:
+        runtime.synchronize(device_id=requested_device_id)
+        succeeded = True
+    finally:
+        if telemetry is not None:
+            telemetry.record(
+                started,
+                DeviceExecutionPhase.DEVICE_SYNCHRONIZE,
+                runtime_id=runtime.runtime_id,
+                device_id=telemetry_device_id,
+                segment_id=segment_id,
+                node_id=node_id,
+                operation_id=operation_id,
+                implementation_id=implementation_id,
+                port=port,
+                synchronized=succeeded,
+                synchronization_point=point,
+                succeeded=succeeded,
+            )
 
 
 def _accelerator_lease_device_id(
@@ -1278,9 +1670,7 @@ def _execute_cpu_segment_fallback(
         outputs = _normalized_outputs(raw, call.output_port_count)
         for value in outputs:
             if runtime.is_device_value(value):
-                raise DevicePlanningError(
-                    "CPU fallback returned a device-owned value."
-                )
+                raise DevicePlanningError("CPU fallback returned a device-owned value.")
         if node_outputs_callback is not None:
             node_outputs_callback(node_id, call, outputs, CPU_RUNTIME_ID)
         for index, value in enumerate(outputs):
@@ -1578,6 +1968,101 @@ def _best_effort_memory_snapshot(runtime: RuntimeProtocol, device_id: str):
         return None
 
 
+def _record_terminal_memory_snapshots(
+    telemetry: _DeviceExecutionTelemetryRecorder | None,
+    registry: ComputeRegistry,
+    resolved_device_ids: Mapping[str, str],
+) -> None:
+    """Observe cleaned private pools while each exact device lease remains held."""
+
+    if telemetry is None:
+        return
+    for runtime_id, device_id in sorted(resolved_device_ids.items()):
+        started = telemetry.start()
+        succeeded = False
+        try:
+            runtime = registry.runtime(runtime_id)
+            snapshot = runtime.memory_snapshot(device_id=device_id)
+            snapshot_runtime_id = str(snapshot.runtime_id).strip()
+            snapshot_device_id = str(snapshot.device_id).strip()
+            if snapshot_runtime_id != runtime_id or snapshot_device_id != device_id:
+                raise ValueError(
+                    "Terminal memory snapshot identity did not match the "
+                    "leased runtime and device."
+                )
+            topology = getattr(snapshot.topology, "value", snapshot.topology)
+            telemetry.record_terminal_memory_snapshot(
+                DeviceTerminalMemorySnapshot(
+                    runtime_id=snapshot_runtime_id,
+                    device_id=snapshot_device_id,
+                    topology=str(topology).strip(),
+                    device_total_bytes=snapshot.device_total_bytes,
+                    device_free_bytes=snapshot.device_free_bytes,
+                    runtime_live_bytes=snapshot.runtime_live_bytes,
+                    runtime_reserved_bytes=snapshot.runtime_reserved_bytes,
+                    out_of_pool_bytes=snapshot.out_of_pool_bytes,
+                )
+            )
+            succeeded = True
+        except Exception:
+            # Terminal memory evidence is diagnostic only. A provider snapshot
+            # failure must not replace a completed scientific result.
+            pass
+        finally:
+            telemetry.record(
+                started,
+                DeviceExecutionPhase.TERMINAL_MEMORY_SNAPSHOT,
+                runtime_id=runtime_id,
+                device_id=device_id,
+                succeeded=succeeded,
+            )
+
+
+def _validate_device_plan_request(
+    plan: DeviceGraphPlan,
+    request: ComputeRequest,
+) -> None:
+    if not isinstance(plan, DeviceGraphPlan):
+        raise TypeError("plan must be a DeviceGraphPlan.")
+    if not isinstance(request, ComputeRequest):
+        raise TypeError("request must be a ComputeRequest.")
+    if plan.request_fingerprint != request.fingerprint:
+        raise DevicePlanningError(
+            "Device execution request does not match the request used to build "
+            "this plan. Rebuild the plan for the current runtime, device, and "
+            "execution policy."
+        )
+
+
+def _validate_requested_runtime_devices(
+    plan: DeviceGraphPlan,
+    registry: ComputeRegistry,
+    request: ComputeRequest,
+) -> None:
+    """Reject stale or missing explicit affinity before acquiring any lease."""
+
+    runtime_ids = {segment.runtime_id for segment in plan.segments}
+    for runtime_id in sorted(runtime_ids):
+        if request.runtime_id and runtime_id != request.runtime_id:
+            raise DevicePlanningError(
+                f"Device plan uses runtime {runtime_id!r}, but the request "
+                f"requires {request.runtime_id!r}."
+            )
+        probe = registry.probe_runtime(runtime_id)
+        if not probe.available:
+            raise DevicePlanningError(
+                f"Runtime {runtime_id!r} is unavailable: "
+                f"{probe.reason_code}: {probe.message}"
+            )
+        if request.device_id and request.device_id not in {
+            device.device_id for device in probe.devices
+        }:
+            raise DevicePlanningError(
+                f"Runtime {runtime_id!r} did not report requested device "
+                f"{request.device_id!r}."
+            )
+
+
 def _attach_fallback_records(
     exc: BaseException,
     records: Sequence[ExecutionFallbackRecord],
@@ -1648,6 +2133,7 @@ __all__ = [
     "HostExecutionUnit",
     "NodeOutputsCallback",
     "PrepareNodeCall",
+    "ResidentOutputCallback",
     "execute_device_plan",
     "plan_device_execution",
     "preflight_device_execution",
