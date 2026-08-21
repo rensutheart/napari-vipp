@@ -16717,11 +16717,19 @@ def test_insert_existing_loose_node_on_connection_full_splice_is_undoable(qtbot)
     inserted_position = QPointF(widget.graph_view.node_position(node.id))
     target_after = QPointF(widget.graph_view.node_position("gaussian"))
 
+    def assert_position_restored(node_id: str, expected: QPointF) -> None:
+        actual = widget.graph_view.node_position(node_id)
+        assert actual is not None
+        # QGraphicsProxyWidget can settle onto a neighboring quarter-pixel on
+        # macOS while preserving the same visible scene position.
+        assert actual.x() == pytest.approx(expected.x(), abs=0.5)
+        assert actual.y() == pytest.approx(expected.y(), abs=0.5)
+
     widget.undo()
 
     assert node.id in widget.pipeline.nodes
-    assert widget.graph_view.node_position(node.id) == old_pos
-    assert widget.graph_view.node_position("gaussian") == target_before
+    assert_position_restored(node.id, old_pos)
+    assert_position_restored("gaussian", target_before)
     assert ("input", "gaussian") in {
         (connection.source_id, connection.target_id)
         for connection in widget.pipeline.connections
@@ -16733,8 +16741,8 @@ def test_insert_existing_loose_node_on_connection_full_splice_is_undoable(qtbot)
 
     widget.redo()
 
-    assert widget.graph_view.node_position(node.id) == inserted_position
-    assert widget.graph_view.node_position("gaussian") == target_after
+    assert_position_restored(node.id, inserted_position)
+    assert_position_restored("gaussian", target_after)
     assert GraphConnection("input", node.id) in widget.pipeline.connections
     assert GraphConnection(node.id, "gaussian") in widget.pipeline.connections
     assert GraphConnection("input", "gaussian") not in widget.pipeline.connections
