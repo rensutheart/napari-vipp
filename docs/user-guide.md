@@ -1441,14 +1441,19 @@ automatically a scientifically better reconstruction.
 
 Some conventional TIFF readers use `Q` for a page dimension whose scientific
 meaning is not encoded in the file. VIPP does not blindly assume that `Q` is Z.
-For a new unsaved source, `Image stack` initially says
-`Automatic (recommended)`. Only when an exact `QYX` representative reaches a
-workflow step that explicitly requires `ZYX` does VIPP select
-`Pages are depth slices (Z stack)` and retry. A visible notice says why the
-choice changed, that it will be saved, and that pixel order is unchanged. The
-workflow requirement makes the suggestion useful; it does not prove that the
-acquisition really contains depth slices.
-Review the choice against the acquisition or the images themselves.
+The Image Source inspector therefore starts at `Use the file's labels
+unchanged`. If you know independently that the pages are depth slices, choose
+`Pages are depth slices (Z stack)` there; the reviewed choice is saved with the
+workflow.
+
+The collection batch workspace uses the same **Image stack** control. A new
+unsaved batch row starts at `Automatic (recommended)`. Only when an exact
+`QYX` representative reaches a workflow step that explicitly requires `ZYX`
+does VIPP select `Pages are depth slices (Z stack)` and retry. A visible notice
+says why the choice changed, that it will be saved, and that pixel order is
+unchanged. The workflow requirement makes the suggestion useful; it does not
+prove that the acquisition really contains depth slices. Review either choice
+against the acquisition or the images themselves.
 
 Choosing `Pages are depth slices (Z stack)` records this declaration:
 
@@ -1457,13 +1462,14 @@ QYX -> ZYX
 ```
 
 This is a guarded reinterpretation. `QYX` must match the reader-reported axes
-exactly, including order and rank, and `ZYX` is the meaning VIPP will use in the
-representative graph and full batch. If a file reports something else, that
-item fails rather than receiving the declaration accidentally. Only make a
-declaration when you have independent knowledge of what every position means.
-To reject VIPP's suggestion, choose `Use the file's labels unchanged`; the
-workspace respects that opt-out. `Something else (advanced)...` exposes the
-original text form only for an uncommon reviewed mapping.
+exactly, including order and rank, and `ZYX` is the meaning VIPP will use in
+interactive calculation, exported Python, and batch execution. If a file
+reports something else, that item fails rather than receiving the declaration
+accidentally. Only make a declaration when you have independent knowledge of
+what every position means. To reject VIPP's batch suggestion, choose `Use the
+file's labels unchanged`; that explicit batch choice overrides an inherited
+workflow declaration for the collection. `Something else (advanced)...`
+exposes the original text form only for an uncommon reviewed mapping.
 
 Page interpretation and `Reorder Axes` solve different problems:
 
@@ -1487,20 +1493,40 @@ channel axis and a matching channel count, so the node cannot silently attach a
 wavelength to Z, time, or an absent channel. The authored values travel with
 the image metadata and appear in workflow history without changing pixels.
 
-The menu is a friendly front end to the durable source declaration. A headless
-Python configuration can state the same decision with
-`AxisDeclaration("QYX", "ZYX")`; serialized config version 3 stores exact
-`source_axes` and `effective_axes` values. Without that explicit saved
-declaration, headless execution remains strict and does not apply the GUI
-suggestion implicitly.
+The shared menu is a friendly front end to the durable source declaration. In
+a workflow, Image Source stores the optional `axis_declaration` value
+`QYX -> ZYX`; batch config version 3 stores the same decision as exact
+`source_axes` and `effective_axes` values. Both use
+`AxisDeclaration("QYX", "ZYX")` and `apply_axis_declaration()` at the common
+source boundary. Without an explicit saved declaration, headless execution
+remains strict and does not apply a GUI suggestion implicitly.
 
-The recommended mode is deliberately UI-only until it resolves. Saving it
-before any suggestion is needed writes no source declaration, and reloading
-shows `Use the file's labels unchanged`. Historic and headless configs
-with a blank declaration are represented the same way, so opening them can
-never silently activate automatic reinterpretation. After VIPP applies the
-guarded suggestion, saving writes the concrete `QYX -> ZYX` declaration and
-reloading restores the Z-stack choice.
+The batch workspace's recommended mode is deliberately UI-only until it
+resolves. Saving it before any suggestion is needed writes no source
+declaration, and reloading shows `Use the file's labels unchanged`. Historic
+workflows and headless configs with a blank declaration are represented the
+same way, so opening them can never silently activate reinterpretation. After
+you choose or VIPP applies the guarded suggestion, saving writes the concrete
+`QYX -> ZYX` declaration and reloading restores the Z-stack choice.
+
+### Rescale Axes with inferred names
+
+`Rescale Axes` can safely resize unique carried Y and X axes even when those
+names came from shape inference. The inspector shows an amber warning so you
+can review the orientation before calculation. If either inferred X/Y output
+size actually changes, the reviewed Y/X plane is recorded as explicit in the
+output history; other inferred axes retain their original name, scale, origin,
+unit, source mapping, and confidence. A true no-op changes no confidence.
+
+This exception does not infer depth. For a generic `QYX` TIFF, X/Y rescaling
+leaves Q untouched and the Q dimension keeps the same number of samples. To
+resize that leading dimension as Z, first choose `Pages are depth slices (Z
+stack)` in Image Source (the reviewed `QYX -> ZYX` declaration), and only do so
+when you know independently that Q really represents depth. After the source
+recalculates, Rescale Axes shows both `Z scale factor` and `Z output size`.
+Likewise, a shape-inferred Z axis must be made explicit before applying a
+nontrivial Z scale or output size. These rules are identical in the interactive
+editor, saved workflows, exported Python, and batch preflight.
 
 ### Composite → RGB
 

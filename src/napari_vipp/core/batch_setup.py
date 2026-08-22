@@ -110,20 +110,25 @@ def pipeline_from_workflow(workflow: dict) -> PrototypePipeline:
 
 def batch_source_rows(pipeline: PrototypePipeline) -> list[dict[str, str]]:
     """Return stable Image Source descriptors for the collection dialog."""
-    rows = [
-        {
+    rows = []
+    for node_id in pipeline.topological_order():
+        node = pipeline.nodes[node_id]
+        if node.operation_id != "input":
+            continue
+        row = {
             "node_id": node_id,
-            "title": pipeline.nodes[node_id].title,
+            "title": node.title,
             "binding_mode": str(
-                pipeline.nodes[node_id].params.get(
+                node.params.get(
                     "binding_mode",
                     "single item",
                 )
             ),
         }
-        for node_id in pipeline.topological_order()
-        if pipeline.nodes[node_id].operation_id == "input"
-    ]
+        declaration = str(node.params.get("axis_declaration", "")).strip()
+        if declaration:
+            row["axis_declaration"] = declaration
+        rows.append(row)
     return rows or [
         {
             "node_id": "input",

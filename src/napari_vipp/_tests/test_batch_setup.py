@@ -175,6 +175,14 @@ def test_batch_source_rows_follow_topological_source_order():
     ]
 
 
+def test_batch_source_rows_carry_saved_image_source_axis_declaration():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "axis_declaration", "QYX -> ZYX")
+
+    assert batch_source_rows(pipeline)[0]["axis_declaration"] == "QYX -> ZYX"
+
+
 def test_default_collection_bindings_preserve_topological_source_order(tmp_path):
     pipeline, _output_id = _explicit_batch_pipeline()
     pipeline.nodes["input"].params["binding_mode"] = "collection"

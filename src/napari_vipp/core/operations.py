@@ -5872,35 +5872,19 @@ def rescale_axes(
     arr = np.asarray(data)
     if arr.ndim == 0:
         return arr.copy()
-    x_scale = _positive_float(x_scale, 1.0)
-    y_scale = x_scale if bool(lock_xy) else _positive_float(y_scale, 1.0)
-    z_scale = _positive_float(z_scale, 1.0)
-
-    axis_map = _xyz_axis_indices(
-        arr.ndim,
+    output_shape = _rescale_axes_target_shape(
+        arr.shape,
+        x_scale=x_scale,
+        y_scale=y_scale,
+        z_scale=z_scale,
+        lock_xy=lock_xy,
+        resize_mode=resize_mode,
+        x_size=x_size,
+        y_size=y_size,
+        z_size=z_size,
         axis_names=axis_names,
         axis_types=axis_types,
-        shape=arr.shape,
     )
-    output_shape = list(arr.shape)
-    if str(resize_mode).strip().lower().startswith("output"):
-        requested_sizes = {"x": x_size, "y": y_size, "z": z_size}
-        for role, axis in axis_map.items():
-            output_shape[axis] = _positive_int(
-                requested_sizes.get(role),
-                arr.shape[axis],
-            )
-    else:
-        scale_by_axis = {axis_map["x"]: x_scale}
-        if "y" in axis_map:
-            scale_by_axis[axis_map["y"]] = y_scale
-        if "z" in axis_map:
-            scale_by_axis[axis_map["z"]] = z_scale
-        output_shape = [
-            max(int(round(size * scale_by_axis.get(axis, 1.0))), 1)
-            for axis, size in enumerate(arr.shape)
-        ]
-    output_shape = tuple(output_shape)
     if output_shape == arr.shape:
         return arr.copy()
     if progress is not None:
@@ -5925,6 +5909,85 @@ def rescale_axes(
     if progress is not None:
         progress.report(1, 1, "Resampling complete")
     return _restore_rescaled_axes_dtype(resized, arr, semantic)
+
+
+def _rescale_axes_target_shape(
+    shape: Sequence[int],
+    *,
+    x_scale: float = 1.0,
+    y_scale: float = 1.0,
+    z_scale: float = 1.0,
+    lock_xy: bool = True,
+    resize_mode: str = "Scale factor",
+    x_size: int = 0,
+    y_size: int = 0,
+    z_size: int = 0,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+) -> tuple[int, ...]:
+    """Return the exact shape produced by :func:`rescale_axes`.
+
+    An unknown Q axis is not spatial and therefore is never treated as Z.  A
+    positive saved Z output size equal to the unchanged third-last dimension
+    remains compatible with older inspector state, but a request that would
+    change an unnamed Z candidate is rejected instead of being silently ignored.
+    """
+    input_shape = tuple(int(size) for size in shape)
+    if not input_shape:
+        return input_shape
+
+    resolved_x_scale = _positive_float(x_scale, 1.0)
+    resolved_y_scale = (
+        resolved_x_scale
+        if bool(lock_xy)
+        else _positive_float(y_scale, 1.0)
+    )
+    resolved_z_scale = _positive_float(z_scale, 1.0)
+    axis_map = _xyz_axis_indices(
+        len(input_shape),
+        axis_names=axis_names,
+        axis_types=axis_types,
+        shape=input_shape,
+    )
+
+    output_shape = list(input_shape)
+    output_size_mode = str(resize_mode).strip().lower().startswith("output")
+    if output_size_mode:
+        requested_sizes = {"x": x_size, "y": y_size, "z": z_size}
+        for role, axis in axis_map.items():
+            output_shape[axis] = _positive_int(
+                requested_sizes.get(role),
+                input_shape[axis],
+            )
+    else:
+        scale_by_axis: dict[int, float] = {}
+        if "x" in axis_map:
+            scale_by_axis[axis_map["x"]] = resolved_x_scale
+        if "y" in axis_map:
+            scale_by_axis[axis_map["y"]] = resolved_y_scale
+        if "z" in axis_map:
+            scale_by_axis[axis_map["z"]] = resolved_z_scale
+        output_shape = [
+            max(int(round(size * scale_by_axis.get(axis, 1.0))), 1)
+            for axis, size in enumerate(input_shape)
+        ]
+
+    if "z" not in axis_map:
+        if output_size_mode:
+            requested_z = _positive_int(
+                z_size,
+                input_shape[-3] if len(input_shape) >= 3 else 1,
+            )
+            unchanged_z = input_shape[-3] if len(input_shape) >= 3 else 1
+            nontrivial_z = requested_z != unchanged_z
+        else:
+            nontrivial_z = resolved_z_scale != 1.0
+        if nontrivial_z:
+            raise ValueError(
+                "Rescale Axes cannot change Z without a Z spatial mapping."
+            )
+
+    return tuple(output_shape)
 
 
 def select_axis_slice(

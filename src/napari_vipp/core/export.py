@@ -1330,6 +1330,7 @@ def _coerce_source_payload(
             name or value.name,
             value.image_state if image_state is None else image_state,
             value.revision_token,
+            value.axis_semantics_resolved,
         )
     if isinstance(value, ImageDataset):
         selected = getattr(value, "selected_series", None)

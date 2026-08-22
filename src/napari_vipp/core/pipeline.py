@@ -654,6 +654,17 @@ _RESOLVED_SPATIAL_NDIM_PARAMETER = ParameterSpec(
 )
 
 _OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
+    "input": (
+        ParameterSpec(
+            "axis_declaration",
+            "Image stack",
+            "text",
+            "",
+            0,
+            0,
+            1,
+        ),
+    ),
     "select_axis_slice": (
         ParameterSpec("axes", "Selected axes", "text", "", 0, 0, 1),
         ParameterSpec("indices", "Selected indices", "text", "", 0, 0, 1),
@@ -727,6 +738,7 @@ _OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
 # is self-describing.  Keep this allowlisted: many optional parameters encode
 # derived or legacy UI state and must not be initialized generically.
 _NEW_NODE_OPTIONAL_DEFAULTS: dict[str, dict[str, Any]] = {
+    "input": {"axis_declaration": ""},
     "composite_to_rgb": {
         "channel_axis_mode": COMPOSITE_RGB_AUTO,
         "mapping_mode": COMPOSITE_RGB_AUTO,
@@ -773,6 +785,11 @@ def validate_optional_persisted_parameter(
     if operation_spec.id == "rescale_axes" and parameter.name.endswith("_size"):
         if int(value) < 1:
             raise ValueError(f"{label} must be a positive integer.")
+    if operation_spec.id == "input" and parameter.name == "axis_declaration":
+        try:
+            _metadata.AxisDeclaration.from_value(value)
+        except ValueError as exc:
+            raise ValueError(f"{label} is invalid: {exc}") from exc
 
 
 def validate_parameter_value(
@@ -931,6 +948,7 @@ class SourcePayload:
     name: str = ""
     image_state: ImageState | None = None
     revision_token: object | None = None
+    axis_semantics_resolved: bool = False
 
 
 @dataclass
@@ -1299,7 +1317,6 @@ SPATIAL_OPERATIONS = {
 
 _EXPLICIT_AXIS_METADATA_OPERATIONS = {
     "orthogonal_projection",
-    "rescale_axes",
     "set_pixel_size",
 }
 _EXPLICIT_CHANNEL_AXIS_OPERATIONS = {
@@ -1380,6 +1397,7 @@ _AXIS_CONTRACT_RANK_CHANGING_OPERATIONS = frozenset(
         "mip",
         "orthogonal_projection",
         "project_image",
+        "rescale_axes",
         "select_axis_slice",
         "skeleton_graph_overlay",
         "skeleton_keypoints",
@@ -5439,6 +5457,7 @@ class PrototypePipeline:
                 "series_index": 0,
                 "binding_mode": "single item",
                 "channel_colors": "",
+                "axis_declaration": "",
             }
         )
         self.nodes = {input_node.id: input_node}
@@ -7579,7 +7598,9 @@ class PrototypePipeline:
         output_axes = None
         output_channels = None
 
-        if operation_id == "select_axis_slice":
+        if operation_id == "rescale_axes":
+            output_shape = _rescale_axes_target_shape_from_state(input_state, params)
+        elif operation_id == "select_axis_slice":
             if not shape:
                 return self._axis_contract_unary_result(
                     call,
@@ -7869,6 +7890,12 @@ class PrototypePipeline:
             node.title,
             params,
         )
+        if node.operation_id == "rescale_axes":
+            history_item = _metadata._rescale_axis_confidence_history(
+                history_item,
+                input_state.axes,
+                axes,
+            )
         state = self._axis_contract_replaced_state(
             input_state,
             output_shape,
@@ -8269,6 +8296,16 @@ class PrototypePipeline:
                 acquisition=(state.acquisition if state is not None else None),
                 source=(state.source if state is not None else None),
             )
+        if not payload.axis_semantics_resolved:
+            declaration = _metadata.AxisDeclaration.from_value(
+                node.params.get("axis_declaration")
+            )
+            if declaration is not None:
+                state = _metadata.apply_axis_declaration(
+                    state,
+                    declaration,
+                    declaration_source="Image Source",
+                )
         state = with_channel_colors(state, node.params.get("channel_colors", ""))
         return [(payload.data, state)]
 
@@ -9174,6 +9211,14 @@ def _validate_operation_axis_semantics(
     kwargs: dict[str, Any],
 ) -> None:
     image_state = state if isinstance(state, ImageState) else None
+    if node.operation_id == "rescale_axes":
+        _validate_rescale_axes_semantics(
+            image_state,
+            kwargs,
+            operation_title=node.title,
+            failing_node_id=node.id,
+        )
+        return
     if node.operation_id in _EXPLICIT_AXIS_METADATA_OPERATIONS:
         _require_explicit_spatial_axes(
             image_state,
@@ -9214,6 +9259,174 @@ def _validate_operation_axis_semantics(
             operation_title=node.title,
             purpose="derive PSF sampling and channel parameters",
         )
+
+
+def _validate_rescale_axes_semantics(
+    state: ImageState | None,
+    kwargs: dict[str, Any],
+    *,
+    operation_title: str,
+    failing_node_id: str,
+) -> None:
+    """Permit a reviewed inferred Y/X plane without inferring a Z volume."""
+    if state is None:
+        if _rescale_request_is_identity_without_shape(kwargs):
+            return
+        raise AmbiguousAxisError(
+            f"{operation_title} cannot resize named axes without image-axis "
+            "metadata. Supply explicit metadata or run an identity/no-op.",
+            failing_node_id=failing_node_id,
+        )
+
+    shape = tuple(int(size) for size in state.shape)
+    axis_names = tuple(axis.name for axis in state.axes)
+    axis_types = tuple(axis.type for axis in state.axes)
+    axis_map = _operations._xyz_axis_indices(
+        len(shape),
+        axis_names=axis_names,
+        axis_types=axis_types,
+        shape=shape,
+    )
+    z_index = axis_map.get("z")
+    if _rescale_z_request_is_nontrivial(state, kwargs, z_index) and (
+        z_index is None or not _rescale_axis_is_explicit_spatial(state, z_index)
+    ):
+        _raise_rescale_z_axis_error(
+            state,
+            operation_title=operation_title,
+            failing_node_id=failing_node_id,
+        )
+
+    try:
+        target_shape = _rescale_axes_target_shape_from_state(state, kwargs)
+    except ValueError as exc:
+        if "Z spatial mapping" not in str(exc):
+            raise
+        _raise_rescale_z_axis_error(
+            state,
+            operation_title=operation_title,
+            failing_node_id=failing_node_id,
+        )
+
+    if target_shape == shape:
+        return
+    named_xy = {
+        role: tuple(
+            index
+            for index, axis in enumerate(state.axes)
+            if axis.name.strip().casefold() == role and axis.type == "space"
+        )
+        for role in ("x", "y")
+    }
+    has_unique_named_xy_pair = all(len(indices) == 1 for indices in named_xy.values())
+    for role in ("x", "y"):
+        axis_index = axis_map.get(role)
+        if axis_index is None or target_shape[axis_index] == shape[axis_index]:
+            continue
+        axis = state.axes[axis_index]
+        explicit_spatial = axis.is_explicit and axis.type == "space"
+        inferred_named_role = bool(
+            has_unique_named_xy_pair and named_xy[role] == (axis_index,)
+        )
+        if explicit_spatial or inferred_named_role:
+            continue
+        detail = f"{state.axis_order} axes with {state.axis_confidence} confidence"
+        raise AmbiguousAxisError(
+            f"{operation_title} cannot resize {role.upper()} from {detail}. "
+            "An inferred plane is accepted only when it carries one unique "
+            "space axis named Y and one unique space axis named X; otherwise "
+            "supply explicit axis metadata.",
+            failing_node_id=failing_node_id,
+        )
+
+
+def _rescale_axes_target_shape_from_state(
+    state: ImageState,
+    kwargs: Mapping[str, Any],
+) -> tuple[int, ...]:
+    return _operations._rescale_axes_target_shape(
+        state.shape,
+        x_scale=kwargs.get("x_scale", 1.0),
+        y_scale=kwargs.get("y_scale", 1.0),
+        z_scale=kwargs.get("z_scale", 1.0),
+        lock_xy=bool(kwargs.get("lock_xy", True)),
+        resize_mode=kwargs.get("resize_mode", "Scale factor"),
+        x_size=kwargs.get("x_size", 0),
+        y_size=kwargs.get("y_size", 0),
+        z_size=kwargs.get("z_size", 0),
+        axis_names=tuple(axis.name for axis in state.axes),
+        axis_types=tuple(axis.type for axis in state.axes),
+    )
+
+
+def _rescale_request_is_identity_without_shape(kwargs: Mapping[str, Any]) -> bool:
+    if str(kwargs.get("resize_mode", "Scale factor")).strip().lower().startswith(
+        "output"
+    ):
+        return all(
+            _operations._positive_int(kwargs.get(f"{role}_size", 0), 0) == 0
+            for role in ("x", "y", "z")
+        )
+    x_scale = _operations._positive_float(kwargs.get("x_scale", 1.0), 1.0)
+    y_scale = (
+        x_scale
+        if bool(kwargs.get("lock_xy", True))
+        else _operations._positive_float(kwargs.get("y_scale", 1.0), 1.0)
+    )
+    z_scale = _operations._positive_float(kwargs.get("z_scale", 1.0), 1.0)
+    return x_scale == y_scale == z_scale == 1.0
+
+
+def _rescale_z_request_is_nontrivial(
+    state: ImageState,
+    kwargs: Mapping[str, Any],
+    z_index: int | None,
+) -> bool:
+    if str(kwargs.get("resize_mode", "Scale factor")).strip().lower().startswith(
+        "output"
+    ):
+        current_size = (
+            int(state.shape[z_index])
+            if z_index is not None
+            else int(state.shape[-3])
+            if len(state.shape) >= 3
+            else 1
+        )
+        requested_size = _operations._positive_int(
+            kwargs.get("z_size", 0),
+            current_size,
+        )
+        return requested_size != current_size
+    return (
+        _operations._positive_float(kwargs.get("z_scale", 1.0), 1.0) != 1.0
+    )
+
+
+def _rescale_axis_is_explicit_spatial(
+    state: ImageState,
+    axis_index: int,
+) -> bool:
+    axis = state.axes[axis_index]
+    return bool(axis.is_explicit and axis.type == "space")
+
+
+def _raise_rescale_z_axis_error(
+    state: ImageState,
+    *,
+    operation_title: str,
+    failing_node_id: str,
+) -> None:
+    detected = state.axis_order or "scalar"
+    raise AmbiguousAxisError(
+        f"{operation_title} cannot change Z from {detected} axes with "
+        f"{state.axis_confidence} confidence. Nontrivial Z resizing requires "
+        "an explicit Z spatial mapping. If a generic leading axis is truly "
+        "depth, record an explicit declaration such as QYX -> ZYX first.",
+        code="positional_spatial_layout",
+        detected_axes=detected,
+        required_axes="ZYX",
+        failing_node_id=failing_node_id,
+    )
 
 
 def _validate_positional_spatial_layout(

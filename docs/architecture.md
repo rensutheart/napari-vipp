@@ -876,25 +876,33 @@ Source metadata comes from, in order of preference:
 3. explicit layer axis hints such as `axes`, `axis_order`, or `vipp_axis_order`;
 4. inferred axes from shape, explicitly labelled as inferred.
 
-At the collection-source boundary, `AxisDeclaration` adds one deliberately
-separate repair mechanism for a reader label that is known to be incomplete or
-wrong. It stores an exact raw order and an effective order, for example `QYX ->
-ZYX`. `apply_axis_declaration()` first requires the raw names and rank to match,
-then replaces semantic names/types/confidence without changing array shape or
-order. The original and effective axes and the declaration are retained in
-provenance. Existing scale, unit, translation, and `source_axis` fields remain
-attached to their positions; relabelling Q as Z therefore does not establish a
-correct Z spacing or unit. Calibration repair remains the job of `Set Pixel
-Size / Units`.
+At the shared source boundary, `AxisDeclaration` adds one deliberately separate
+repair mechanism for a reader label that is known to be incomplete or wrong.
+It stores an exact raw order and an effective order, for example `QYX -> ZYX`.
+`apply_axis_declaration()` first requires the raw names and rank to match, then
+replaces semantic names/types/confidence without changing array shape or order.
+Image Source persists the reviewed declaration for interactive, exported, and
+headless runs. Collection-batch bindings use the same implementation and are
+authoritative for that batch, including an explicit blank opt-out; an internal
+resolved-boundary marker prevents double application. The original and
+effective axes and the declaration are retained in provenance. Existing scale,
+unit, translation, and `source_axis` fields remain attached to their positions;
+relabelling Q as Z therefore does not establish a correct Z spacing or unit.
+Calibration repair remains the job of `Set Pixel Size / Units`.
 
-Shape inference is descriptive fallback metadata, not authority to choose a
-scientific interpretation. Before operations use names/types to resolve an
-automatic spatial mode, channel axis, named projection, or automatic PSF
-parameters, `core/pipeline.py` requires the relevant axes to be explicit. A
+Shape inference is descriptive fallback metadata, not general authority to
+choose a scientific interpretation. Before operations use names/types to
+resolve an automatic spatial mode, channel axis, named projection, or automatic
+PSF parameters, `core/pipeline.py` requires the relevant axes to be explicit. A
 shape-inferred state raises `AmbiguousAxisError` with the explicit metadata,
-mode, or axis-index remedy. This prevents a three-plane volume or
-three-column image from silently becoming RGB, and prevents a leading axis from
-silently becoming Z.
+mode, or axis-index remedy. The narrow exception is `Rescale Axes`: it may use a
+unique inferred Y/X pair under a visible warning because those exact named
+dimensions are the authored resize target. When either size changes, the
+reviewed inferred Y/X plane becomes explicit in the output; unrelated Q/T/C
+and inferred Z metadata remain unresolved. Nontrivial Z scaling still requires
+an explicit Z declaration. This prevents a three-plane volume or three-column
+image from silently becoming RGB, and prevents a leading Q axis from silently
+becoming Z.
 
 `Set Pixel Size / Units` is the explicit calibration repair node for files or
 napari layers that lack reliable physical metadata. It updates X/Y pixel size,

@@ -327,6 +327,33 @@ def test_batch_source_axis_declaration_roundtrips_through_dialog_values(
     assert dialog.values()["source_bindings"][0]["axis_declaration"] == ""
 
 
+def test_batch_source_row_inherits_workflow_axis_choice_and_allows_blank_opt_out(
+    qtbot,
+):
+    dialog = CollectionBatchDialog(
+        source_nodes=[
+            {
+                "node_id": "input",
+                "title": "Image Source",
+                "binding_mode": "collection",
+                "axis_declaration": "QYX -> ZYX",
+            }
+        ]
+    )
+    qtbot.addWidget(dialog)
+    control = dialog._source_rows[0]["axis_declaration"]
+
+    assert control.mode_combo.currentData() == AxisInterpretationControl.Z_STACK
+    assert dialog.values()["source_bindings"][0]["axis_declaration"] == (
+        "QYX -> ZYX"
+    )
+
+    file_index = control.mode_combo.findData(AxisInterpretationControl.FILE_METADATA)
+    control.mode_combo.setCurrentIndex(file_index)
+
+    assert dialog.values()["source_bindings"][0]["axis_declaration"] == ""
+
+
 def test_loaded_blank_axis_choice_is_strict_file_metadata_opt_out(qtbot, tmp_path):
     result = _preview_result(tmp_path)
     dialog = CollectionBatchDialog(actions=_actions(result, []))

@@ -609,13 +609,24 @@ def transform_image_state(
             f"transform produced {len(axes)} axes."
         )
 
+    history_item = _operation_history(
+        input_state,
+        operation_id,
+        operation_title,
+        params,
+    )
+    if operation_id == "rescale_axes":
+        history_item = _rescale_axis_confidence_history(
+            history_item,
+            input_state.axes,
+            axes,
+        )
     state = image_state_from_array(
         arr,
         axes=axes,
         metadata_source=metadata_source,
         source_name=input_state.source_name,
-        history=input_state.history
-        + (_operation_history(input_state, operation_id, operation_title, params),),
+        history=input_state.history + (history_item,),
         channels=_transformed_channels(input_state, operation_id, params),
         acquisition=_transformed_acquisition(input_state, operation_id, params),
         source=input_state.source,
@@ -1933,6 +1944,14 @@ def _rescaled_axes(
     output_shape: tuple[int, ...],
 ) -> tuple[AxisMetadata, ...]:
     axis_map = _xyz_axis_map_for_metadata(axes)
+    z_index = axis_map.get("z")
+    if (
+        z_index is not None
+        and axes[z_index].name.strip().casefold() != "z"
+        and not axes[z_index].is_explicit
+    ):
+        # Inferred custom axes cannot acquire Z semantics positionally.
+        axis_map.pop("z")
     if not axis_map:
         return axes
     axis_scale_factors = {}
@@ -1942,12 +1961,87 @@ def _rescaled_axes(
         input_size = max(int(input_shape[axis_index]), 1)
         output_size = max(int(output_shape[axis_index]), 1)
         axis_scale_factors[axis_index] = output_size / input_size
+    xy_changed = any(
+        (
+            axis_index := axis_map.get(role)
+        ) is not None
+        and axis_index < len(input_shape)
+        and axis_index < len(output_shape)
+        and int(input_shape[axis_index]) != int(output_shape[axis_index])
+        for role in ("x", "y")
+    )
+    unique_named_xy = {
+        role: tuple(
+            index
+            for index, axis in enumerate(axes)
+            if axis.name.strip().casefold() == role and axis.type == "space"
+        )
+        for role in ("x", "y")
+    }
+    has_unique_named_xy_pair = all(
+        len(indices) == 1 for indices in unique_named_xy.values()
+    )
+    promoted_indices = (
+        {indices[0] for indices in unique_named_xy.values()}
+        if xy_changed and has_unique_named_xy_pair
+        else set()
+    )
     return tuple(
-        replace(axis, scale=axis.scale / axis_scale_factors[index])
-        if index in axis_scale_factors and axis_scale_factors[index] > 0
-        else axis
+        replace(
+            axis,
+            scale=(
+                axis.scale / axis_scale_factors[index]
+                if index in axis_scale_factors and axis_scale_factors[index] > 0
+                else axis.scale
+            ),
+            confidence=(
+                AXIS_CONFIDENCE_EXPLICIT
+                if index in promoted_indices
+                and axis.confidence == AXIS_CONFIDENCE_INFERRED
+                else axis.confidence
+            ),
+        )
         for index, axis in enumerate(axes)
     )
+
+
+def _rescale_axis_confidence_history(
+    history_item: str,
+    input_axes: tuple[AxisMetadata, ...],
+    output_axes: tuple[AxisMetadata, ...],
+) -> str:
+    """Append one auditable clause for inferred named-plane handling."""
+    inferred_xy = tuple(
+        role.upper()
+        for role in ("x", "y")
+        if any(
+            axis.name.strip().casefold() == role
+            and axis.type == "space"
+            and axis.confidence == AXIS_CONFIDENCE_INFERRED
+            for axis in input_axes
+        )
+    )
+    if not inferred_xy:
+        return history_item
+    promoted_xy = tuple(
+        role.upper()
+        for role in ("x", "y")
+        if any(
+            before.name.strip().casefold() == role
+            and before.confidence == AXIS_CONFIDENCE_INFERRED
+            and after.confidence == AXIS_CONFIDENCE_EXPLICIT
+            for before, after in zip(input_axes, output_axes, strict=False)
+        )
+    )
+    if promoted_xy:
+        roles = "/".join(promoted_xy)
+        clause = (
+            f"confirmed inferred {roles} plane names after the plane size changed; "
+            "other axis confidence preserved"
+        )
+    else:
+        clause = "inferred Y/X plane names retained because their sizes did not change"
+    return f"{history_item}; {clause}"
 
 
 def _psf_axes(

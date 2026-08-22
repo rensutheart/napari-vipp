@@ -42,6 +42,7 @@ from napari_vipp.core.compute_specs import (
     accelerator_compute_specs,
     validate_compute_specs,
 )
+from napari_vipp.core.gpu.cupy_imports import import_cupyx_signal_module
 
 _CUCIM_MEASUREMENT_CACHE_LOCK = threading.RLock()
 _CUCIM_MEASUREMENT_CACHE_POOLS: dict[
@@ -1064,7 +1065,7 @@ def _probe_cupyx_library() -> ImplementationLibraryProbeResult:
 
     cupy = importlib.import_module("cupy")
     ndimage = importlib.import_module("cupyx.scipy.ndimage")
-    signal = importlib.import_module("cupyx.scipy.signal")
+    signal = import_cupyx_signal_module()
     if (
         not callable(getattr(ndimage, "gaussian_filter", None))
         or not callable(getattr(ndimage, "median_filter", None))
