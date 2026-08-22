@@ -56,11 +56,14 @@ main SHA, exact-tag reproducible archives, installed a7-to-a8 lifecycle, final
 unsigned installer, public-package verification, and manual deployment remain
 publication gates.
 
-Before a8 is published, append its replacement domain rows with the exact
-release SHA and final-main CI, RTX GPU evidence, normal-installer acceptance,
-wheel/source/Windows artifact hashes, and companion-documentation deployment
-run. Until those facts exist, no a8 row below may be described as qualified or
-carried forward.
+After the immutable a8 tag has produced its exact archives and installer,
+append the replacement domain rows as a release-ledger follow-up on `main`.
+Record the peeled release SHA and final-main CI, RTX GPU evidence, installed
+normal-installer acceptance, wheel/source/Windows artifact hashes, public
+package verification, and companion-documentation deployment. Those
+post-build facts cannot truthfully be embedded in the source tag that creates
+the artifacts. Until the public release record contains them, no a8 row below
+may be described as a carried-forward baseline.
 
 ## Starting Baseline: `v0.13.0a7`
 
