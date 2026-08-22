@@ -37,10 +37,9 @@ and [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requi
 
 ### Windows Installer (Recommended Path)
 
-The `0.13.0a8` links below become valid only when the official
-`v0.13.0a8` GitHub prerelease and checksum sidecars are public. Until then, use
-the published `0.13.0a7` release or an explicitly marked development checkout;
-do not download a file from a guessed asset URL.
+VIPP `0.13.0a8` is published as an official GitHub prerelease with checksum
+sidecars and as an exact-version package on PyPI. Use only those official
+release surfaces; do not download a file from a guessed asset URL.
 
 The normal experience is one Windows `.exe`: download
 [`VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED.exe`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a8/VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED.exe)

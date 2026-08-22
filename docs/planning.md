@@ -39,9 +39,9 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.13.0a8` is the current prepared alpha line. Treat it as published only when
-the official GitHub prerelease and PyPI package are public; until then,
-`0.13.0a7` remains the latest published alpha. The a8 line provides:
+`0.13.0a8` is the current published alpha line. Its official GitHub prerelease,
+checksum sidecars, PyPI package, and numbered/stable documentation are public.
+The a8 line provides:
 
 - workflow schema 4 and batch schema 3 with portable compute intent, explicit
   outputs, checkpoints, manifests, and exact implementation provenance;
@@ -84,7 +84,7 @@ the [qualification baseline](release-qualification-baseline.md).
 The a8 work closes the thumbnail-integrity, responsive-parameter-tuning,
 truthful GPU/optimizer, named-axis, and contained correctness slices below.
 Their detailed contracts remain here as the delivered record. Final a8
-qualification covers their union; new source-loading and installer feature work
+qualification covered their union; new source-loading and installer feature work
 moves to `0.14.0a1`, with security or data-loss defects remaining exceptions.
 
 Delivered dependency order:
