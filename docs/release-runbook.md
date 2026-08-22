@@ -36,8 +36,9 @@ These facts are unique to each artifact and cannot be carried forward:
 1. The version, changelog, release notes, and package metadata agree.
 2. The exact final `main` commit passed the normal CI matrix.
 3. The immutable tag resolves to that exact clean commit.
-4. The wheel and source archive are built once, pass metadata checks, and have
-   recorded SHA-256 hashes.
+4. The wheel and source archive pass metadata checks and have recorded SHA-256
+   hashes. When packaging changed, two independent builds must match before one
+   artifact pair is retained for publication.
 5. Published GitHub and PyPI bytes match those hashes.
 6. The numbered documentation resolves; when selected, the `stable` alias
    points to the same version.
@@ -170,40 +171,146 @@ if ((git rev-parse "v$releaseVersion^{}").Trim() -ne $releaseSha) {
 Never move a published tag. If code changes after tagging, prepare the next
 version instead.
 
-### 4. Build once
+### 4. Build and reproduce
 
-Build the wheel and source archive once from the clean tag, or reuse retained
-CI artifacts only when they are cryptographically bound to that exact commit.
-Run Twine metadata validation and record hashes.
+Build the wheel and source archive from the clean tag, or reuse retained CI
+artifacts only when they are cryptographically bound to that exact commit.
+When packaging changed, produce independent A and B builds. Canonicalize each
+source archive with the tagged commit's `SOURCE_DATE_EPOCH` before comparing
+hashes; never compare a canonical archive with the build backend's raw gzip
+output. Run Twine metadata validation on both builds and retain A only after
+the complete wheel/source-archive pairs match.
 
-The canonical manual build sequence is:
+The canonical reproducibility sequence is:
 
 ```powershell
+$ErrorActionPreference = "Stop"
 $releaseVersion = "<version>"
 $taggedSha = (git rev-parse "v$releaseVersion^{}").Trim()
-$artifactDir = Join-Path $env:TEMP `
-    "vipp-release-$releaseVersion-$($taggedSha.Substring(0, 12))"
-if (Test-Path -LiteralPath $artifactDir) {
-    throw "Refusing to reuse release directory: $artifactDir"
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not resolve the release tag"
 }
-New-Item -ItemType Directory -Path $artifactDir | Out-Null
+$artifactRoot = Join-Path $env:TEMP `
+    "vipp-release-$releaseVersion-$($taggedSha.Substring(0, 12))"
+$sourceDirA = Join-Path $artifactRoot "source-A"
+$sourceDirB = Join-Path $artifactRoot "source-B"
+$artifactDirA = Join-Path $artifactRoot "artifacts-A"
+$artifactDirB = Join-Path $artifactRoot "artifacts-B"
+$builderVenv = Join-Path $env:TEMP `
+    "vipp-release-builder-$releaseVersion-$($taggedSha.Substring(0, 12))"
+foreach ($reservedPath in @(
+    $artifactRoot,
+    $sourceDirA,
+    $sourceDirB,
+    $artifactDirA,
+    $artifactDirB,
+    $builderVenv
+)) {
+    if (Test-Path -LiteralPath $reservedPath) {
+        throw "Refusing to reuse release path: $reservedPath"
+    }
+}
+New-Item -ItemType Directory -Path $artifactRoot | Out-Null
+New-Item -ItemType Directory -Path $artifactDirA, $artifactDirB | Out-Null
+
+git worktree add --detach $sourceDirA $taggedSha
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not create detached source worktree A"
+}
+git worktree add --detach $sourceDirB $taggedSha
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not create detached source worktree B"
+}
 
 $releasePython = "C:\path\to\cpython-3.12.10\python.exe"
-$builderVenv = "$artifactDir-builder"
 & $releasePython -m venv $builderVenv
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not create the release builder environment"
+}
 $builderPython = Join-Path $builderVenv "Scripts\python.exe"
-& $builderPython -m pip install ".[installer-build]" twine
+$installerBuildRequirements = & $releasePython -c `
+    "import pathlib, sys, tomllib; data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')); print(*data['project']['optional-dependencies']['installer-build'], sep='\n')" `
+    (Join-Path $sourceDirA "pyproject.toml")
+if ($LASTEXITCODE -ne 0 -or -not $installerBuildRequirements) {
+    throw "Could not read the exact-tag release build-tool pins"
+}
+& $builderPython -m pip install @installerBuildRequirements "twine>=6"
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not install the exact-tag release build tools"
+}
 
 $env:PYTHONHASHSEED = "0"
-$env:SOURCE_DATE_EPOCH = (git show -s --format=%ct $taggedSha).Trim()
-& $builderPython -m build --sdist --no-isolation --outdir $artifactDir
-& $builderPython -m build --wheel --no-isolation --outdir $artifactDir
-& $builderPython -m twine check `
-    "$artifactDir/napari_vipp-$releaseVersion.tar.gz" `
-    "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl"
-Get-FileHash -Algorithm SHA256 `
-    "$artifactDir/napari_vipp-$releaseVersion.tar.gz", `
-    "$artifactDir/napari_vipp-$releaseVersion-py3-none-any.whl"
+$env:SOURCE_DATE_EPOCH = `
+    (git -C $sourceDirA show -s --format=%ct $taggedSha).Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not resolve SOURCE_DATE_EPOCH"
+}
+$sdistName = "napari_vipp-$releaseVersion.tar.gz"
+$wheelName = "napari_vipp-$releaseVersion-py3-none-any.whl"
+
+$candidates = @(
+    [pscustomobject]@{ Source = $sourceDirA; Output = $artifactDirA },
+    [pscustomobject]@{ Source = $sourceDirB; Output = $artifactDirB }
+)
+foreach ($candidate in $candidates) {
+    Push-Location -LiteralPath $candidate.Source
+    try {
+        $candidateSha = (git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0 -or $candidateSha -ne $taggedSha) {
+            throw "Candidate worktree is not the exact tagged commit"
+        }
+        $candidateStatus = `
+            git status --porcelain --untracked-files=all --ignored
+        if ($LASTEXITCODE -ne 0 -or $candidateStatus) {
+            throw "Candidate worktree is not pristine, including ignored files"
+        }
+        foreach ($cachePath in @("build", "src/napari_vipp.egg-info")) {
+            if (Test-Path -LiteralPath $cachePath) {
+                throw "Candidate contains stale build cache: $cachePath"
+            }
+        }
+
+        & $builderPython -m build --sdist --no-isolation `
+            --outdir $candidate.Output
+        if ($LASTEXITCODE -ne 0) {
+            throw "Source-archive build failed"
+        }
+        & $builderPython scripts/canonicalize_sdist.py `
+            (Join-Path $candidate.Output $sdistName)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Source-archive canonicalization failed"
+        }
+        & $builderPython -m build --wheel --no-isolation `
+            --outdir $candidate.Output
+        if ($LASTEXITCODE -ne 0) {
+            throw "Wheel build failed"
+        }
+        & $builderPython -m twine check `
+            (Join-Path $candidate.Output $sdistName) `
+            (Join-Path $candidate.Output $wheelName)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Distribution metadata validation failed"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+$hashesA = Get-FileHash -Algorithm SHA256 `
+    (Join-Path $artifactDirA $sdistName), `
+    (Join-Path $artifactDirA $wheelName)
+$hashesB = Get-FileHash -Algorithm SHA256 `
+    (Join-Path $artifactDirB $sdistName), `
+    (Join-Path $artifactDirB $wheelName)
+if ($hashesA[0].Hash -ne $hashesB[0].Hash -or `
+    $hashesA[1].Hash -ne $hashesB[1].Hash) {
+    throw "Independent release builds do not match"
+}
+$hashesA
+
+# Downstream packaging and publication retain candidate A only.
+$artifactDir = $artifactDirA
 ```
 
 Routine alphas may publish only the wheel and source archive. If a Windows EXE

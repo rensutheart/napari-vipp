@@ -46,8 +46,14 @@ jobs:
       - name: Lint
         run: python -m ruff check .
 
+      - name: Set deterministic source-archive epoch
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
       - name: Build distributions
         run: python -m build
+
+      - name: Canonicalize source distribution
+        run: python scripts/canonicalize_sdist.py dist/*.tar.gz
 
       - name: Reject retired provider files in release archives
         run: |
