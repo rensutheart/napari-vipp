@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build CPU/cuCIM basic object-measurement evidence on a real CUDA device.
+"""Build CPU/CuPy basic object-measurement evidence on a real CUDA device.
 
 The harness treats a GPU measurement as a vertical slice: resident label and
 intensity inputs, a resident packed ``float64`` result, mandatory device-to-host
@@ -16,7 +16,7 @@ large confocal-like stacks.  Results are machine-local evidence, not portable
 speed claims or durable optimizer records.
 
 Importing this module, asking for ``--help``, and ``--validate-existing`` do not
-import CuPy, cuCIM, NumPy, or initialize CUDA.
+import CuPy, NumPy, or initialize CUDA.
 """
 
 from __future__ import annotations
@@ -41,15 +41,15 @@ from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
 
-SCHEMA = "napari-vipp-cucim-basic-measurements-evidence"
+SCHEMA = "napari-vipp-cupy-basic-measurements-evidence"
 SCHEMA_VERSION = 1
 MORPHOLOGY_OPERATION_ID = "measure_objects"
 INTENSITY_OPERATION_ID = "measure_objects_intensity"
 IMPLEMENTATION_IDS = {
-    MORPHOLOGY_OPERATION_ID: "cucim-measure-objects-basic-v1",
-    INTENSITY_OPERATION_ID: "cucim-measure-objects-intensity-basic-v1",
+    MORPHOLOGY_OPERATION_ID: "cupy-measure-objects-basic-v1",
+    INTENSITY_OPERATION_ID: "cupy-measure-objects-intensity-basic-v1",
 }
-MEMORY_MODEL_ID = "cucim-basic-measurements-memory-v1"
+MEMORY_MODEL_ID = "cupy-basic-measurements-memory-v1"
 PARITY_POLICY_ID = "basic-measurement-table-v1"
 GENERATOR_ID = "numpy-pcg64-sparse-object-measurements-v1"
 BENCHMARK_ROUNDS = 5
@@ -57,11 +57,17 @@ ADMISSION_REPEATS = 3
 PLANE_EXTENTS = (256, 512, 1024, 2048)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = (
+    PROJECT_ROOT / "docs/benchmarks/measurements-cupy-windows-rtx5090.json"
+)
+HISTORICAL_CUCIM_OUTPUT = (
     PROJECT_ROOT / "docs/benchmarks/measurements-cucim-windows-rtx5090.json"
 )
 SOURCE_PROVENANCE_PATHS = (
     Path("src/napari_vipp/core/measurements.py"),
-    Path("src/napari_vipp/core/gpu/cucim_measurements.py"),
+    Path("src/napari_vipp/core/operations.py"),
+    Path("src/napari_vipp/core/compute_policy.py"),
+    Path("src/napari_vipp/core/compute_specs.py"),
+    Path("src/napari_vipp/core/gpu/cupy_measurements.py"),
     Path("scripts/benchmark_gpu_measurements.py"),
 )
 
@@ -172,6 +178,7 @@ class PerformanceDefinition:
     intensity_dtype: str | None
     seed: int
     family: str
+    pattern: str = "sparse"
 
     @property
     def operation_id(self) -> str:
@@ -325,11 +332,11 @@ def build_evidence(profile: str, device_index: int) -> dict[str, object]:
 
 
 def _warm_runtime(cp, functions: Mapping[str, object]) -> None:
-    # cuCIM lazily materializes small process-lifetime Euler lookup arrays for
-    # each spatial rank.  Initialize both ranks with the ordinary/default
-    # allocator before any isolated evidence pool; otherwise the first 3D call
-    # can correctly retain that cache but make it look like a leaked private
-    # execution allocation.  Intensity calls also compile both reduction paths.
+    # The provider lazily compiles its CuPy RawKernels and materializes small
+    # process-lifetime Euler coefficient arrays for each spatial rank. Initialize
+    # both ranks with the ordinary/default allocator before any isolated evidence
+    # pool; otherwise first-call caches can look like leaked private execution
+    # allocations. Intensity calls also compile both grouped-reduction paths.
     for shape, spatial_mode in (((16, 16), "2D YX"), ((8, 12, 12), "3D ZYX")):
         labels = cp.zeros(shape, dtype=cp.int32)
         labels[tuple(slice(2, min(6, size)) for size in shape)] = 7
@@ -704,6 +711,16 @@ def _performance_cases(profile: str) -> tuple[PerformanceDefinition, ...]:
             52_006,
             "confocal-stack-morphology",
         ),
+        PerformanceDefinition(
+            "many-objects-256x256-intensity-uint16",
+            "256² morphology + uint16 intensity, 1,024 objects",
+            (256, 256),
+            2,
+            "uint16",
+            52_007,
+            "many-object-intensity-uint16",
+            "many-objects",
+        ),
     )
     if profile == "quick":
         representative = (representative[0], representative[2])
@@ -715,9 +732,7 @@ def _make_inputs(definition: AdmissionDefinition | PerformanceDefinition):
     canonical_labels = _make_labels(
         definition.canonical_shape,
         definition.spatial_ndim,
-        "sparse"
-        if isinstance(definition, PerformanceDefinition)
-        else definition.pattern,
+        definition.pattern,
         definition.seed,
     )
     order = (
@@ -756,6 +771,14 @@ def _make_labels(
             continue
         rng = np.random.default_rng(seed + block_number * 10_007)
         spatial_elements = math.prod(block.shape)
+        if pattern == "many-objects":
+            object_count = min(1_024, spatial_elements // 3)
+            flattened = block.reshape(-1)
+            flattened[: object_count * 3] = np.repeat(
+                np.arange(1, object_count + 1, dtype=np.int32),
+                3,
+            )
+            continue
         object_count = min(96, max(4, spatial_elements // 16_384))
         if spatial_elements < 16_384:
             object_count = min(12, max(4, spatial_elements // 384))
@@ -1523,7 +1546,11 @@ def _estimated_memory(
     working_copies = int(input_bytes)
     per_block_workspace = spatial_elements * (224 if include_intensity else 128)
     managed_peak = (
-        int(input_bytes) + output_upper + working_copies + per_block_workspace
+        int(input_bytes)
+        + output_upper
+        + working_copies
+        + per_block_workspace
+        + output_upper
     )
     uncertainty = max(64 * 1024**2, managed_peak // 4)
     return {
@@ -1564,7 +1591,7 @@ def _timing_summary(
         "input_transfer_and_allocation_seconds": max(
             transfer_median - public_median, 0.0
         ),
-        "screening_choice": "GPU-cuCIM" if transfer_median < cpu_median else "CPU",
+        "screening_choice": "GPU-CuPy" if transfer_median < cpu_median else "CPU",
     }
 
 
@@ -1631,8 +1658,8 @@ def _operation_contracts() -> dict[str, object]:
             "operation_id": operation_id,
             "implementation_id": IMPLEMENTATION_IDS[operation_id],
             "runtime_id": "cuda-cupy",
-            "implementation_library_id": "cucim",
-            "provider_version": "26.06.00",
+            "implementation_library_id": "cupy",
+            "provider_version": "implementation-v1",
             "parameter_policy_id": "basic-measurements-parameters-v1",
             "parity_policy_id": PARITY_POLICY_ID,
             "memory_model_id": MEMORY_MODEL_ID,
@@ -1695,7 +1722,7 @@ def _method_record(profile: str, rounds: int) -> dict[str, object]:
             "2d-and-3d-morphology-and-intensity-before-private-pools-v1"
         ),
         "provider_cache_scope": (
-            "process-lifetime-cucim-lookups-excluded-from-per-call-private-pool-v1"
+            "process-lifetime-cupy-kernels-and-lookups-excluded-from-private-pool-v1"
         ),
         "timing_note": (
             "The typed host table is mandatory. Resident packed compute is diagnostic; "
@@ -1738,7 +1765,6 @@ def _executable_name(executable: str) -> str:
 def _package_record(cp, np) -> dict[str, str]:
     packages = {"numpy": str(np.__version__), "cupy": str(cp.__version__)}
     for distribution in (
-        "cucim",
         "scipy",
         "scikit-image",
         "cupy-cuda13x",
@@ -2032,6 +2058,60 @@ def _canonical_json(document: Mapping[str, object]) -> str:
     )
 
 
+def _historical_provider_comparison(
+    document: Mapping[str, object],
+) -> tuple[str, ...]:
+    """Summarize like-for-like transfer-inclusive medians when history exists."""
+
+    try:
+        historical = json.loads(HISTORICAL_CUCIM_OUTPUT.read_text(encoding="utf-8"))
+        current_results = document["performance"]["results"]
+        historical_results = historical["performance"]["results"]
+    except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError):
+        return ()
+    historical_by_id = {item["case_id"]: item for item in historical_results}
+    ratios: list[float] = []
+    for current in current_results:
+        previous = historical_by_id.get(current["case_id"])
+        if previous is None:
+            continue
+        if (
+            previous.get("label_input_sha256")
+            != current.get("label_input_sha256")
+            or previous.get("intensity_input_sha256")
+            != current.get("intensity_input_sha256")
+        ):
+            continue
+        current_seconds = float(
+            current["summary"]["gpu_transfer_inclusive_median_seconds"]
+        )
+        previous_seconds = float(
+            previous["summary"]["gpu_transfer_inclusive_median_seconds"]
+        )
+        if current_seconds > 0.0 and previous_seconds > 0.0:
+            ratios.append(previous_seconds / current_seconds)
+    if not ratios:
+        return ()
+    geometric_mean = math.exp(statistics.fmean(math.log(value) for value in ratios))
+    wins = sum(value > 1.0 for value in ratios)
+    return (
+        "## Historical-provider comparison",
+        "",
+        (
+            "The preserved `measurements-cucim-windows-rtx5090.json` artifact "
+            f"contains {len(ratios)} matching case IDs and input SHA-256 values. "
+            "Comparing transfer-inclusive medians, the production CuPy provider "
+            f"is faster in {wins} of {len(ratios)} matched cases: "
+            f"**{geometric_mean:.2f}×** geometric mean, with a "
+            f"**{min(ratios):.2f}–{max(ratios):.2f}×** range. This comparison "
+            "is the basis for removing cuCIM from the active measurement and "
+            "installation paths; the old artifact remains immutable historical "
+            "evidence."
+        ),
+        "",
+    )
+
+
 def _render_markdown(document: Mapping[str, object]) -> str:
     environment = document["environment"]
     admission = document["admission"]
@@ -2099,9 +2179,9 @@ def _render_markdown(document: Mapping[str, object]) -> str:
             )
             + " |"
         )
+    lines.extend(("", *_historical_provider_comparison(document)))
     lines.extend(
         (
-            "",
             "## Method notes",
             "",
             "- CPU samples are complete typed-table calls.",
@@ -2111,7 +2191,7 @@ def _render_markdown(document: Mapping[str, object]) -> str:
             "- Screening compares CPU with the full public GPU boundary.",
             (
                 "- The memory bound is the production "
-                "`cucim-basic-measurements-memory-v1` model including its "
+                "`cupy-basic-measurements-memory-v1` model including its "
                 "uncertainty reserve."
             ),
             "",
@@ -2121,7 +2201,7 @@ def _render_markdown(document: Mapping[str, object]) -> str:
             "python scripts/benchmark_gpu_measurements.py --profile full",
             (
                 "python scripts/benchmark_gpu_measurements.py --validate-existing "
-                "docs/benchmarks/measurements-cucim-windows-rtx5090.json"
+                "docs/benchmarks/measurements-cupy-windows-rtx5090.json"
             ),
             "```",
             "",
@@ -2174,10 +2254,10 @@ def _cupy():
 
 @cache
 def _operation_functions() -> dict[str, object]:
-    from napari_vipp.core.gpu.cucim_measurements import (
+    from napari_vipp.core.gpu.cupy_measurements import (
         measure_objects as gpu_morphology,
     )
-    from napari_vipp.core.gpu.cucim_measurements import (
+    from napari_vipp.core.gpu.cupy_measurements import (
         measure_objects_with_intensity as gpu_intensity,
     )
     from napari_vipp.core.measurements import (

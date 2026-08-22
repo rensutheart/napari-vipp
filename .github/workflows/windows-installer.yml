@@ -70,7 +70,7 @@ jobs:
             'napari_vipp-',
             'THIRD-PARTY-NOTICES.txt',
             'vipp-logo-dark.png',
-            'phase1-gpu-public-v9.json'
+            'phase1-gpu-public-v10.json'
           ) | ForEach-Object {
             if (-not ($listing -match [regex]::Escape($_))) { throw "Missing frozen entry: $_" }
           }

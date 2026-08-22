@@ -741,7 +741,7 @@ deprecated NumPy shape assignment in vendored padding code with `reshape` for
 strict NumPy 2.5 compatibility. These are packaging/build-compatibility changes,
 not image-processing formula changes. The fixed release builder now performs
 the broader six-adaptation procedure documented in the source evaluation:
-[`scripts/build_cucim_windows.ps1`](../scripts/build_cucim_windows.ps1).
+[historical `scripts/build_cucim_windows.ps1` builder](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/scripts/build_cucim_windows.ps1).
 
 The synchronized RTX 5090 standard benchmark produced primitive-level
 feasibility evidence. Times include one input and output transfer. A speedup

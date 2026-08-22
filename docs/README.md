@@ -17,7 +17,7 @@ reviewing VIPP itself.
 - [User guide](user-guide.md): build, inspect, save, export, and batch-run
   workflows.
 - [GPU guide](gpu-guide.md): optional GPU qualification, compute modes,
-  supported operation families, fallback, benchmarking, cuCIM, and
+  supported operation families, fallback, benchmarking, and
   reproducibility.
 - [Image import and export](io-user-guide.md): supported formats, optional
   microscope readers, batch input binding, and output choices.
@@ -77,8 +77,8 @@ reviewing VIPP itself.
   delivered chronology and detailed qualification rationale removed from the
   active roadmap.
 - [Desktop startup and installer plan](desktop-startup-and-installer-plan.md)
-  defines the branded launch profiles, napari loading host, separate local-build
-  cuCIM bundle, and staged Windows/Linux/macOS installer path.
+  defines the branded launch profiles, napari loading host, and staged
+  Windows/Linux/macOS installer path.
 - [Windows installer and planning contract](windows-installation-planner.md)
   documents the read-only plan schema, transactional managed
   executor, update/repair ownership rules, and signed-release boundary.
@@ -87,9 +87,6 @@ reviewing VIPP itself.
   benchmarking,
   the Windows/Linux CUDA path, Apple-provider investigation, implementation-
   library choices, installation UX, and release gates.
-- [cuCIM native-Windows port plan](cucim-windows-port-plan.md) defines the
-  upstream-tracking fork, MSVC/Clara port, CUDA/Python wheel matrix, validation,
-  distribution, installation, and upstream contribution work.
 - [App improvements plan](app-improvements-plan.md) records the completed UI,
   graph-feedback, and RL-TV safety work packages.
 - [Node roadmap](node-roadmap.md) tracks current capability gaps by node family.
@@ -122,8 +119,10 @@ override the current planning documents above.
 - [Richardson-Lucy TV large-stack CPU/GPU timing](benchmarks/rl-tv-cupy-performance-windows-rtx5090.md)
 - [Canny/Otsu exact-mask CPU/GPU evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md)
 - [Connected Components exact-label CPU/GPU evidence](benchmarks/connected-components-cupyx-windows-rtx5090.md)
-- [Basic Measurements CPU/GPU evidence](benchmarks/measurements-cucim-windows-rtx5090.md)
+- [Current CuPy Basic Measurements CPU/GPU evidence](benchmarks/measurements-cupy-windows-rtx5090.md)
+- [Preserved historical cuCIM Measurements evidence](benchmarks/measurements-cucim-windows-rtx5090.md)
 - [cuCIM native-Windows source evaluation](cucim-windows-source-evaluation.md)
+- [Archived cuCIM native-Windows port plan](cucim-windows-port-plan.md)
 - [Context-aware controls audit](context-aware-controls-audit.md)
 - [Object and mesh morphology](object-mesh-morphology-plan.md)
 - [Colocalization and RACC](colocalization-racc-plan.md)

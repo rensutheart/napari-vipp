@@ -346,7 +346,8 @@ def test_managed_cuda13_accepts_any_qualified_nvidia_model(
     assert "verify_cuda13" in {action["id"] for action in document["acceptance"]}
     serialized = plan.to_json().casefold()
     assert "system cuda toolkit" not in serialized
-    assert document["cucim"]["included"] is False
+    assert document["schema_version"] == 2
+    assert "cucim" not in document
     assert device_name.casefold() in serialized
 
 
@@ -894,7 +895,7 @@ def test_plan_json_is_stable_across_input_order(tmp_path):
     assert first_json.endswith("\n")
     document = json.loads(first_json)
     assert document["schema"] == "napari-vipp-install-plan"
-    assert document["schema_version"] == 1
+    assert document["schema_version"] == 2
     assert document["plan_only"] is True
     assert document["mutation_performed"] is False
     assert document["discovery"]["request_fingerprint"] == (
@@ -1943,7 +1944,6 @@ def test_installer_import_does_not_load_gui_scientific_or_gpu_modules():
         "zarr",
         "cupy",
         "cupyx",
-        "cucim",
     )
     code = (
         "import sys; import napari_vipp.installer; "

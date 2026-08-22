@@ -146,8 +146,8 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
         normalized = " ".join(document.split())
         assert "15 GiB" in normalized
         assert "disk storage, not GPU memory (VRAM)" in normalized
-        assert "standard GPU installation works without" in normalized
-        assert "cuCIM" in normalized
+        assert "standard GPU installation includes every current" in normalized
+        assert "cuCIM" not in normalized
     assert "exact managed location" in packaging_readme
     assert "CPU or CUDA 13" in packaging_readme
     assert "installation-drive storage" in packaging_readme
@@ -207,7 +207,7 @@ def test_main_readme_is_concise_and_routes_gpu_details():
         "## Compute Modes",
         "## Current Windows CUDA Qualification",
         "## Accelerated Operation Families",
-        "## Optional cuCIM Add-on",
+        "## CuPy-only basic measurements",
         "## Cross-device Reproducibility",
     ):
         assert required_section in gpu_guide

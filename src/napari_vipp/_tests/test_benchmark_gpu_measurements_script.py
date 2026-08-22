@@ -15,7 +15,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "benchmark_gpu_measurements.py"
 ARTIFACT_PATH = (
-    PROJECT_ROOT / "docs" / "benchmarks" / "measurements-cucim-windows-rtx5090.json"
+    PROJECT_ROOT / "docs" / "benchmarks" / "measurements-cupy-windows-rtx5090.json"
 )
 
 
@@ -190,7 +190,7 @@ def test_help_is_cuda_and_numpy_safe_in_a_fresh_process() -> None:
             "import builtins, runpy, sys",
             "real_import = builtins.__import__",
             "def guarded_import(name, *args, **kwargs):",
-            "    if name == 'numpy' or name.startswith(('numpy.', 'cupy', 'cucim')):",
+            "    if name == 'numpy' or name.startswith(('numpy.', 'cupy')):",
             "        raise RuntimeError('help imported numeric or CUDA libraries')",
             "    return real_import(name, *args, **kwargs)",
             "builtins.__import__ = guarded_import",
@@ -272,6 +272,11 @@ def test_full_performance_manifest_has_crossovers_and_large_confocal_shapes(
     assert any(
         len(definition.shape) > definition.spatial_ndim for definition in definitions
     )
+    assert any(
+        definition.case_id == "many-objects-256x256-intensity-uint16"
+        and definition.pattern == "many-objects"
+        for definition in definitions
+    )
     assert evidence_script.BENCHMARK_ROUNDS == 5
 
 
@@ -280,36 +285,26 @@ def test_source_provenance_is_strictly_operation_owned(evidence_script) -> None:
 
     assert paths == (
         "src/napari_vipp/core/measurements.py",
-        "src/napari_vipp/core/gpu/cucim_measurements.py",
+        "src/napari_vipp/core/operations.py",
+        "src/napari_vipp/core/compute_policy.py",
+        "src/napari_vipp/core/compute_specs.py",
+        "src/napari_vipp/core/gpu/cupy_measurements.py",
         "scripts/benchmark_gpu_measurements.py",
     )
-    assert all(
-        broad not in paths
-        for broad in (
-            "src/napari_vipp/core/operations.py",
-            "src/napari_vipp/core/compute_specs.py",
-            "src/napari_vipp/core/compute_policy.py",
-            "src/napari_vipp/core/execution.py",
-        )
-    )
+    assert "src/napari_vipp/core/execution.py" not in paths
 
 
-def test_provenance_detects_each_owner_but_ignores_shared_registries(
+def test_provenance_detects_each_scientific_and_policy_owner(
     evidence_script,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    shared = Path("src/napari_vipp/core/compute_specs.py")
-    for relative_path in (*evidence_script.SOURCE_PROVENANCE_PATHS, shared):
+    for relative_path in evidence_script.SOURCE_PROVENANCE_PATHS:
         destination = tmp_path / relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes((PROJECT_ROOT / relative_path).read_bytes())
     monkeypatch.setattr(evidence_script, "PROJECT_ROOT", tmp_path)
     baseline = evidence_script._source_provenance()
-
-    shared_path = tmp_path / shared
-    shared_path.write_bytes(shared_path.read_bytes() + b"\n# unrelated registry edit\n")
-    assert evidence_script._source_provenance() == baseline
 
     for relative_path in evidence_script.SOURCE_PROVENANCE_PATHS:
         owner = tmp_path / relative_path
@@ -320,7 +315,7 @@ def test_provenance_detects_each_owner_but_ignores_shared_registries(
         assert evidence_script._source_provenance() == baseline
 
 
-def test_operation_contracts_pin_both_providers_and_host_boundary(
+def test_operation_contracts_pin_both_operations_and_host_boundary(
     evidence_script,
 ) -> None:
     contracts = evidence_script._operation_contracts()
@@ -337,12 +332,13 @@ def test_operation_contracts_pin_both_providers_and_host_boundary(
         "measure_objects_intensity",
     }
     assert {item["implementation_id"] for item in snapshots} == {
-        "cucim-measure-objects-basic-v1",
-        "cucim-measure-objects-intensity-basic-v1",
+        "cupy-measure-objects-basic-v1",
+        "cupy-measure-objects-intensity-basic-v1",
     }
     assert {item["memory_model_id"] for item in snapshots} == {
-        "cucim-basic-measurements-memory-v1"
+        "cupy-basic-measurements-memory-v1"
     }
+    assert {item["implementation_library_id"] for item in snapshots} == {"cupy"}
     assert all(
         item["parity_policy_id"] == "basic-measurement-table-v1" for item in snapshots
     )
@@ -383,6 +379,10 @@ def test_generators_are_deterministic_readonly_sparse_repeated_and_empty(
 
 
 def test_memory_model_matches_registered_formula(evidence_script) -> None:
+    from napari_vipp.core.compute import WorkloadDescriptor
+    from napari_vipp.core.compute_policy import estimate_candidate_memory
+    from napari_vipp.core.compute_specs import compute_specs_for
+
     morphology = evidence_script._estimated_memory(
         (8, 512, 512),
         2,
@@ -407,6 +407,38 @@ def test_memory_model_matches_registered_formula(evidence_script) -> None:
         intensity["device_peak_with_uncertainty_bytes"]
         > intensity["runtime_managed_peak_bytes"]
     )
+    for operation_id, shape, spatial_ndim, benchmark_estimate in (
+        ("measure_objects", (8, 512, 512), 2, morphology),
+        ("measure_objects_intensity", (64, 512, 512), 3, intensity),
+    ):
+        (spec,) = compute_specs_for(operation_id, include_cpu=False)
+        input_shapes = (shape, shape) if "intensity" in operation_id else (shape,)
+        input_dtypes = (
+            ("int32", "uint16") if "intensity" in operation_id else ("int32",)
+        )
+        workload = WorkloadDescriptor(
+            "measurements",
+            operation_id,
+            input_shapes,
+            input_dtypes,
+            parameters=(
+                (
+                    "spatial_mode",
+                    "2D YX" if spatial_ndim == 2 else "3D ZYX",
+                ),
+            ),
+            resolved_spatial_ndim=spatial_ndim,
+        )
+        production = estimate_candidate_memory(spec, workload)
+        assert benchmark_estimate["runtime_managed_peak_bytes"] == (
+            production.runtime_managed_peak_bytes
+        )
+        assert benchmark_estimate["device_peak_with_uncertainty_bytes"] == (
+            production.total_device_peak_bytes + production.uncertainty_bytes
+        )
+        assert benchmark_estimate["host_materialization_peak_bytes"] == (
+            production.host_materialization_peak_bytes
+        )
 
 
 def test_synthetic_round_trip_validation_and_markdown_are_cuda_safe(
@@ -428,7 +460,7 @@ def test_synthetic_round_trip_validation_and_markdown_are_cuda_safe(
             "import builtins, runpy, sys",
             "real_import = builtins.__import__",
             "def guarded_import(name, *args, **kwargs):",
-            "    if name == 'numpy' or name.startswith(('numpy.', 'cupy', 'cucim')):",
+            "    if name == 'numpy' or name.startswith(('numpy.', 'cupy')):",
             (
                 "        raise RuntimeError('validation imported numeric or CUDA "
                 "libraries')"
@@ -461,7 +493,7 @@ def test_checked_in_full_artifact_is_current_and_complete(evidence_script) -> No
     assert document["admission"]["case_count"] == 11
     assert document["rejections"]["case_count"] == 11
     assert document["lifecycle"]["case_count"] == 2
-    assert document["performance"]["case_count"] == 14
+    assert document["performance"]["case_count"] == 15
     assert document["performance"]["all_memory_estimates_cover_observed"] is True
     confocal = next(
         result

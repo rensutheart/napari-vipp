@@ -150,9 +150,6 @@ _RELEVANT_DISTRIBUTIONS = frozenset(
         "cupy-cuda13x",
         "cuda-pathfinder",
         "cuda-toolkit",
-        "cucim",
-        "cucim-cu12",
-        "cucim-cu13",
     }
 )
 

@@ -461,19 +461,16 @@ land in 0.13 if it remains contained; it is not a blocker for every 0.13 alpha.
 
 ### `0.14.0a1`: Source-Aware Loading And Per-Sample Batch Alpha
 
-The first 0.14 alpha targets three connected source-aware outcomes and one
-parallel installer-usability outcome:
+The first 0.14 alpha targets three connected source-aware outcomes:
 
 1. durable SourceItem identity;
 2. pyramid-aware source loading and presentation preview;
-3. typed per-sample batch parameters; and
-4. clearer installer/cuCIM environment discovery.
+3. typed per-sample batch parameters.
 
 The source-aware outcomes form one coherent user story: select a scientific item
 once, see a useful preview before the exact full-resolution snapshot is ready,
-and apply reviewed item-specific batch parameters. The independent installer
-lane makes the managed environment discoverable when an optional component is
-installed. The a1 preview improves time to first display; exact background
+and apply reviewed item-specific batch parameters. The a1 preview improves time
+to first display; exact background
 verification and level-0 materialization still complete before scientific
 execution.
 
@@ -487,8 +484,7 @@ Implementation order and pull-request boundaries:
    generation contracts established by SourceItem and 0.13-A;
 4. add the typed batch-override schema, resolver, execution/provenance path, and
    workspace table on the propagated identity;
-5. implement installer/cuCIM discovery independently in parallel; and
-6. finish with one integration example containing multiple source items, two
+5. finish with one integration example containing multiple source items, two
    effective thresholds, and a pyramid preview whose level differs visibly from
    the unchanged full-resolution analysis level.
 
@@ -627,49 +623,14 @@ parity; config and effective hash changes; checkpoint evidence; and unchanged
 base-workflow state. CSV import/export may follow after the typed core and UI are
 stable.
 
-#### 0.14-D. Installer And Optional cuCIM Discovery ([#26](https://github.com/rensutheart/napari-vipp/issues/26))
-
-Goal: a user installing the optional cuCIM component should not have to discover
-where VIPP placed its managed CUDA Python.
-
-Implementation contract:
-
-- retain explicit target, environment override, and active-environment
-  precedence;
-- otherwise perform read-only standalone discovery from the canonical Windows
-  LocalAppData managed CUDA ownership record before Python is known;
-- before executing any discovered interpreter, resolve and re-check strict
-  containment and require every component from the canonical managed root
-  through the ownership record, active environment, `Scripts`, and
-  `python.exe` to be non-reparse/non-link, with the interpreter a regular file;
-- validate ownership schema/version, track exactly `cuda13`, canonical managed
-  root, and active environment as a strict managed-store descendant;
-- visibly show the discovered path with Continue/Cancel before invoking the
-  existing Python backend, which remains the authoritative environment and
-  package validation boundary;
-- on failure, explain the reason and open the picker at the best safe managed
-  location rather than the user profile; and
-- on CUDA13 success, show the active environment location on the main installer
-  success screen and state that the optional cuCIM add-on will find it
-  automatically. CPU success must not make that claim.
-
-Ordinary Windows CI covers valid current/repaired ownership, retired roots,
-CPU/foreign/malformed/oversized/outside-store/missing-Python records, junction or
-symlink redirection at the environment, `Scripts`, or interpreter boundary,
-override precedence, bundle contents, CUDA-versus-CPU success text, and zero
-backend invocation on discovery failure. This feature does not require real-GPU
-or full installer lifecycle qualification unless the authoritative installer
-transaction changes.
-
 #### 0.14.0a1 Release Boundary And Non-Goals
 
 The source-aware core of the alpha is complete when SourceItem identity,
 pyramid-aware presentation, and per-sample scalar parameters agree across their
-documented surfaces and compatibility gates. Installer and cuCIM discovery is a
-planned parallel `0.14.0a1` work package, but it does not gate that source-aware
-core. Every work package must pass its own acceptance before it ships; an
-unfinished independent package moves visibly to the next alpha rather than
-holding a coherent release. The milestone does not imply completion of:
+documented surfaces and compatibility gates. Every work package must pass its
+own acceptance before it ships; an unfinished independent package moves
+visibly to the next alpha rather than holding a coherent release. The milestone
+does not imply completion of:
 
 - arbitrary conditional branches or filename expressions;
 - full operation-level lazy/chunked execution;

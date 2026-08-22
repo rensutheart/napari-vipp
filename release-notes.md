@@ -16,7 +16,7 @@ This remains alpha software. Keep the original data and workflow, test represent
 ### Optimizer results that can actually be read
 
 - **Find fastest pipeline** now keeps completed scientific and timing results visible even when CPU and GPU are too close to name a safe winner. In that case VIPP leaves the saved backend unchanged and explains why.
-- Results are grouped by node, with one subrow per tested CPU, CuPy, or cuCIM implementation. The main view emphasizes total time, scientific agreement, and outcome; optional detail shows compute, transfer, first-run cost, memory, and evidence information.
+- Results are grouped by node, with one subrow per tested CPU or CuPy implementation. The main view emphasizes total time, scientific agreement, and outcome; optional detail shows compute, transfer, first-run cost, memory, and evidence information.
 
 ### A connected GPU segmentation path
 
@@ -46,15 +46,15 @@ For the shortest route, download `VIPP-Setup-0.13.0a7-Windows-x86_64-UNSIGNED.ex
 
 This alpha is intentionally not Authenticode-signed. Windows will show **Unknown publisher** and may show **Windows protected your PC**. After verifying the official checksum, select **More info > Run anyway**. Stop if the checksum differs or antivirus reports a threat; never disable Windows security. If organizational policy does not allow the unsigned installer, use the manual installation route in the Quick Start.
 
-The managed installer can install CPU or compatible NVIDIA CUDA 13 environments, keep CPU and GPU installations side by side, create launch shortcuts, repair or update an owned installation, and remove it without touching unrelated Python or napari environments. The standard CUDA installation includes the reviewed CuPy/CuPyX route and works without optional cuCIM.
+The managed installer can install CPU or compatible NVIDIA CUDA 13 environments, keep CPU and GPU installations side by side, create launch shortcuts, repair or update an owned installation, and remove it without touching unrelated Python or napari environments. The standard CUDA installation includes every current reviewed CuPy/CuPyX route.
 
 One-click setup accepts only the exact per-track roots beneath the canonical Windows Local App Data directory returned by `SHGetKnownFolderPath(FOLDERID_LocalAppData)`: `VIPP\environments\cpu` and `VIPP\environments\cuda13`. Custom managed roots are not accepted. CUDA requires the complete canonical path to contain ASCII characters in this release. If it does not, one-click CUDA is unavailable and the UI offers CPU; the fixed CPU root remains supported. Expert-selected existing environments remain separate and unchanged.
 
 The CUDA root and Windows temporary directory are separate. If Python's effective temporary directory contains a non-ASCII character, VIPP uses process-local in-memory CuPy compilation. CuPy's disk kernel cache is then off for that process, so Compute Doctor or the first GPU work may pay the cold compilation cost again in a new process; scientific kernels and results are unchanged. One RTX 5090 reference check took about 52 seconds cold and about 0.87 seconds when refreshed in the same process; those observations are not a performance guarantee. A failed kernel compile now preserves the real CuPy `CompileException` instead of masking it as a false 512-byte private-pool leak.
 
-## Optional cuCIM
+## CuPy-only basic measurements
 
-After a standard CUDA installation passes Compute Doctor, users who need the cuCIM-backed operations can download `napari-vipp-cucim-installer-0.13.0a7-windows.zip` from the same release. The bundle contains no cuCIM wheel: it builds the pinned source locally, verifies the result, and installs the private wheel only into the selected VIPP environment. Rebuild it with the matching a7 bundle after upgrading; do not reuse an a6 private wheel or copy one between environments.
+**Measure Objects** and **Measure Objects + Intensity** now use the standard CuPy installation. Saved `cucim-measure-objects-basic-v1` and `cucim-measure-objects-intensity-basic-v1` pins migrate to their corresponding `cupy-*` IDs. A broad saved `library:cucim` preference remains visibly unavailable because it does not identify one unambiguous replacement.
 
 ## Manual installation or upgrade
 

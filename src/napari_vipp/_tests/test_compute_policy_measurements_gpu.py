@@ -96,13 +96,13 @@ def _facts(
     (
         (
             "measure_objects",
-            "cucim-measure-objects-basic-v1",
+            "cupy-measure-objects-basic-v1",
             "measure_objects",
             1,
         ),
         (
             "measure_objects_intensity",
-            "cucim-measure-objects-intensity-basic-v1",
+            "cupy-measure-objects-intensity-basic-v1",
             "measure_objects_with_intensity",
             2,
         ),
@@ -117,16 +117,18 @@ def test_measurement_specs_are_public_typed_host_boundaries(
     spec = _spec(operation_id)
 
     assert spec.implementation_id == implementation_id
-    assert spec.callable_ref.endswith(f":{callable_name}")
+    assert spec.callable_ref == (
+        f"napari_vipp.core.gpu.cupy_measurements:{callable_name}"
+    )
     assert spec.admission_tier is AdmissionTier.PUBLIC_AUTO_CANDIDATE
-    assert spec.implementation_library_id == "cucim"
+    assert spec.implementation_library_id == "cupy"
     assert spec.supports_device_residency
     assert not spec.host_boundary
     assert len(spec.input_ports) == input_count
     assert spec.output_ports[0].value_kind.value == "table"
     assert spec.output_ports[0].internal_dtypes == ("float64",)
     assert spec.parity_policy_id == "basic-measurement-table-v1"
-    assert spec.memory_model_id == "cucim-basic-measurements-memory-v1"
+    assert spec.memory_model_id == "cupy-basic-measurements-memory-v1"
     assert spec.host_finalizer_ref == (
         "napari_vipp.core.measurements:finalize_basic_measurement_outputs"
     )

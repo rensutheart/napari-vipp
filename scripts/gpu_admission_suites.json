@@ -135,17 +135,17 @@
     },
     {
       "operation_id": "measure_objects",
-      "implementation_id": "cucim-measure-objects-basic-v1",
+      "implementation_id": "cupy-measure-objects-basic-v1",
       "implementation_version": "1",
       "runtime_id": "cuda-cupy",
-      "library_id": "cucim"
+      "library_id": "cupy"
     },
     {
       "operation_id": "measure_objects_intensity",
-      "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+      "implementation_id": "cupy-measure-objects-intensity-basic-v1",
       "implementation_version": "1",
       "runtime_id": "cuda-cupy",
-      "library_id": "cucim"
+      "library_id": "cupy"
     }
   ],
   "runners": [
@@ -565,8 +565,8 @@
       "id": "measurements-evidence",
       "kind": "evidence",
       "implementations": [
-        "measure_objects::cucim-measure-objects-basic-v1",
-        "measure_objects_intensity::cucim-measure-objects-intensity-basic-v1"
+        "measure_objects::cupy-measure-objects-basic-v1",
+        "measure_objects_intensity::cupy-measure-objects-intensity-basic-v1"
       ],
       "facets": [
         "cpu_oracle_parity", "adversarial_workloads", "metadata", "memory",
@@ -578,15 +578,15 @@
         "full": ["{python}", "scripts/benchmark_gpu_measurements.py", "--profile", "full", "--output", "{artifact}", "--device-index", "{device_index}"]
       },
       "artifact": "measurements.json",
-      "artifact_schema": "napari-vipp-cucim-basic-measurements-evidence",
+      "artifact_schema": "napari-vipp-cupy-basic-measurements-evidence",
       "artifact_schema_version": 1
     },
     {
       "id": "measurements-provider-contracts",
       "kind": "pytest",
       "implementations": [
-        "measure_objects::cucim-measure-objects-basic-v1",
-        "measure_objects_intensity::cucim-measure-objects-intensity-basic-v1"
+        "measure_objects::cupy-measure-objects-basic-v1",
+        "measure_objects_intensity::cupy-measure-objects-intensity-basic-v1"
       ],
       "facets": ["input_integrity"],
       "owner_paths": ["src/napari_vipp/_tests/test_gpu_measurements_provider.py"],
@@ -614,8 +614,8 @@
         "otsu_threshold::cupy-otsu-threshold-exact-v1",
         "sigma_filter::cupy-sigma-filter-v1",
         "label_connected_components::cupyx-connected-components-v1",
-        "measure_objects::cucim-measure-objects-basic-v1",
-        "measure_objects_intensity::cucim-measure-objects-intensity-basic-v1"
+        "measure_objects::cupy-measure-objects-basic-v1",
+        "measure_objects_intensity::cupy-measure-objects-intensity-basic-v1"
       ],
       "facets": ["fallback"],
       "owner_paths": [

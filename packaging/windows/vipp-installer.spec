@@ -30,7 +30,7 @@ datas = [
             / "src"
             / "napari_vipp"
             / "compute_policies"
-            / "phase1-gpu-public-v9.json"
+            / "phase1-gpu-public-v10.json"
         ),
         "napari_vipp/compute_policies",
     ),

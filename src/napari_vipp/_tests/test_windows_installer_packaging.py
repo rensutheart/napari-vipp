@@ -369,7 +369,7 @@ def test_pyinstaller_spec_embeds_wheel_policy_licenses_and_branding():
     assert "VIPP_INSTALLER_WHEEL" in spec
     assert "VIPP_INSTALLER_LICENSE_DIRECTORY" in spec
     assert "VIPP_INSTALLER_LOGO" in spec
-    assert "phase1-gpu-public-v9.json" in spec
+    assert "phase1-gpu-public-v10.json" in spec
     assert "icon=str(ICON)" in spec
     assert "console=False" in spec
     assert "uac_admin=False" in spec
@@ -587,6 +587,9 @@ def test_finalize_rechecks_payload_after_copy_and_writes_sidecars(
     assert result["artifact"]["sha256"] == hashlib.sha256(
         final.read_bytes()
     ).hexdigest()
+    assert result["schema_version"] == packager.RELEASE_SCHEMA_VERSION
+    assert "cucim_companion" not in result
+    assert "relationship" not in result
     assert (tmp_path / "release/SHA256SUMS-Windows-0.13.0a4.txt").is_file()
 
 
@@ -620,6 +623,9 @@ def test_finalize_unsigned_uses_explicit_name_and_checksum_sidecars(
         tmp_path / "release/VIPP-Setup-0.13.0a4-Windows-x86_64.exe"
     ).exists()
     assert result["release_channel"] == "explicitly-unsigned"
+    assert result["schema_version"] == packager.RELEASE_SCHEMA_VERSION
+    assert "cucim_companion" not in result
+    assert "relationship" not in result
     assert result["signature"]["status"] == "NotSigned"
     assert result["user_warning"] == {
         "signed": False,

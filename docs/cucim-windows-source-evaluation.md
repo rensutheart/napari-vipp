@@ -3,9 +3,10 @@
 Initial evaluation: 2026-07-15
 Phase 1 checksum/install refresh: 2026-07-27
 Release-distribution/local-build audit: 2026-08-06
-Status: successful research build and public background candidate in the exact
-validated environment; **locally rebuildable from the pinned recipe, not
-distributed by VIPP**
+Status: **historical and superseded**. This records the successful research
+build and its dated measurements. cuCIM is no longer an active VIPP provider or
+installation option; see the [current GPU guide](gpu-guide.md) for the CuPy-only
+decision and replacement evidence. The results below have not been rewritten.
 
 ## 2026-08-06 distribution and local-build boundary
 
@@ -170,8 +171,8 @@ The fixed recipe makes six explicit adaptations and controls:
 
 `rapids-build-backend 0.4.1` also invokes Unix `which`; the script locates the
 copy supplied by Git for Windows. No image-processing formula was changed. The
-implementation is
-[`scripts/build_cucim_windows.ps1`](../scripts/build_cucim_windows.ps1), which
+implementation was the
+[historical `scripts/build_cucim_windows.ps1` builder](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/scripts/build_cucim_windows.ps1), which
 performs two clean builds, validates the manifest and licence payload, installs
 the second wheel into its isolated build environment, and runs real Gaussian,
 rolling-ball, and labeling kernels:
@@ -180,6 +181,9 @@ rolling-ball, and labeling kernels:
 $python312 = py -3.12 -c "import sys; print(sys.executable)"
 .\scripts\build_cucim_windows.ps1 -Python $python312
 ```
+
+This command is a historical reproduction record and is not available in the
+current checkout.
 
 The builder installs every build input and the exact local wheel with
 `--no-deps` so pip cannot silently resolve an undeclared transitive or change

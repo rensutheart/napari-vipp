@@ -29,7 +29,7 @@ process rather than advancing a cosmetic timer:
 
 Elapsed time and a retained diagnostic log remain available when startup
 fails. After five minutes, the user can keep waiting or hide the splash; neither
-choice terminates VIPP. This matters on a first CUDA/cuCIM launch, when local
+choice terminates VIPP. This matters on a first CUDA launch, when local
 kernel compilation and cache creation can legitimately take several minutes.
 
 Installed entry points are split by intent:
@@ -129,40 +129,11 @@ Documentation must remain truthful while delivery is staged:
   the headless planner, raw pip commands, and environment repair into
   **Advanced** or troubleshooting sections;
 - explain CPU versus Automatic/Prefer-GPU behavior without suggesting that a
-  GPU installation forces every workflow node onto a GPU; and
-- introduce the separate cuCIM local-build installer only after the ordinary
-  CUDA environment has passed acceptance.
+  GPU installation forces every workflow node onto a GPU.
 
 The maintained [quick start](quick-start.md) is the source-tree version of that
 user journey. Installer implementation and documentation changes belong in the
 same reviewed change so the public path cannot lag behind executable behavior.
-
-## Separate cuCIM Local-Build Installer
-
-cuCIM remains a separate Windows download because VIPP does not redistribute a
-prebuilt private cuCIM wheel. Release maintainers create the deterministic
-bundle from a clean, committed source tree with:
-
-```powershell
-py -3.12 .\scripts\package_cucim_windows_installer.py
-```
-
-After extraction, the user double-clicks `Install VIPP cuCIM.cmd`. The bundle:
-
-- asks for `python.exe` in an already installed released VIPP CUDA 13
-  environment;
-- runs the pinned local source build and independent reproduction/probes;
-- passes the resulting wheel and strict build manifest to the existing
-  released-environment setup verifier;
-- runs CUDA, cuCIM, provenance, and `pip check` acceptance; and
-- retains the local wheel, manifest, log, and atomic run journal so a completed
-  build can resume installation without rebuilding.
-
-The ZIP contains no cuCIM wheel. Its manifest records the VIPP version, exact
-source commit, entry point, file sizes, and SHA-256 of every bundled helper.
-There is no approval hash for a user to type or edit. See
-[`scripts/README-cucim-windows-installer.md`](../scripts/README-cucim-windows-installer.md)
-for prerequisites and support paths.
 
 ## Installer Delivery Stages
 
@@ -178,9 +149,7 @@ for prerequisites and support paths.
    independent CPU/GPU Apps & Features entries, ownership-safe uninstall, and
    signed and explicitly-unsigned asset gates are implemented. Complete the
    clean-machine acceptance, immutable tagging, selected release finalization,
-   and release publication before
-   making the `.exe` the live Quick Start. Keep cuCIM as the separate locally
-   building bundle.
+   and release publication before making the `.exe` the live Quick Start.
 4. **Linux desktop package:** reuse the same Python launcher and environment
    plan, creating `.desktop` entries and icons without assuming one desktop
    environment.

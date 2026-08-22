@@ -18,14 +18,13 @@ from importlib import resources
 from typing import Any
 
 POLICY_SCHEMA_ID = "napari-vipp-compute-policy-artifact-v1"
-PHASE1_POLICY_ID = "phase1-gpu-public-v9"
-PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v9.json"
+PHASE1_POLICY_ID = "phase1-gpu-public-v10"
+PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v10.json"
 PHASE1_POLICY_SHA256 = (
-    "b39d6205a09b1b1570a9e45501aac488c98952dc1e641e1a97d96160862e963f"
+    "042c120a8821a85f489cae1fd2868f61c80cdcaf793fbe8bd20937070753a286"
 )
 _POLICY_PACKAGE = "napari_vipp.compute_policies"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _IDENTIFIER_RE = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
 
 
@@ -85,16 +84,7 @@ class PlatformAdmissionPolicy:
     nvidia_device_class: str
     minimum_nvidia_compute_capability: str
     reference_validation_devices: tuple[str, ...]
-    cucim_versions: tuple[str, ...]
-    cucim_environment_record_schema: str
-    cucim_environment_record_schema_version: int
-    cucim_environment_track: str
     cupy_distribution: str
-    cucim_distribution: str
-    cucim_wheel_payload_sha256: str
-    cucim_source_tag: str
-    cucim_source_commit: str
-    cucim_build_recipe_id: str
     validated_environment_policy_ids: tuple[str, ...]
     linux_policy: str
     macos_policy: str
@@ -239,7 +229,7 @@ def parse_compute_policy_artifact(
     if policy_id != PHASE1_POLICY_ID:
         raise ComputePolicyArtifactError(f"Unsupported Phase 1 policy {policy_id!r}.")
     policy_version = _integer(root["policy_version"], "$.policy_version", minimum=1)
-    if policy_version != 9:
+    if policy_version != 10:
         raise ComputePolicyArtifactError(
             f"Unsupported Phase 1 policy version {policy_version}."
         )
@@ -465,38 +455,13 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
             "nvidia_device_class",
             "minimum_nvidia_compute_capability",
             "reference_validation_devices",
-            "cucim_versions",
-            "cucim_environment_record_schema",
-            "cucim_environment_record_schema_version",
-            "cucim_environment_track",
             "cupy_distribution",
-            "cucim_distribution",
-            "cucim_wheel_payload_sha256",
-            "cucim_source_tag",
-            "cucim_source_commit",
-            "cucim_build_recipe_id",
             "validated_environment_policy_ids",
             "linux_policy",
             "macos_policy",
             "public_advertisement_enabled",
         },
     )
-    cucim_wheel_payload_sha256 = _string(
-        record["cucim_wheel_payload_sha256"],
-        f"{path}.cucim_wheel_payload_sha256",
-    )
-    if not _SHA256_RE.fullmatch(cucim_wheel_payload_sha256):
-        raise ComputePolicyArtifactError(
-            f"{path}.cucim_wheel_payload_sha256 must be a lowercase SHA-256 "
-            "digest."
-        )
-    cucim_source_commit = _string(
-        record["cucim_source_commit"], f"{path}.cucim_source_commit"
-    )
-    if not _GIT_COMMIT_RE.fullmatch(cucim_source_commit):
-        raise ComputePolicyArtifactError(
-            f"{path}.cucim_source_commit must be a lowercase full Git commit."
-        )
     return PlatformAdmissionPolicy(
         operating_systems=_string_tuple(
             record["operating_systems"], f"{path}.operating_systems", nonempty=True
@@ -567,35 +532,8 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
             f"{path}.reference_validation_devices",
             nonempty=True,
         ),
-        cucim_versions=_string_tuple(
-            record["cucim_versions"], f"{path}.cucim_versions", nonempty=True
-        ),
-        cucim_environment_record_schema=_identifier(
-            record["cucim_environment_record_schema"],
-            f"{path}.cucim_environment_record_schema",
-        ),
-        cucim_environment_record_schema_version=_integer(
-            record["cucim_environment_record_schema_version"],
-            f"{path}.cucim_environment_record_schema_version",
-            minimum=1,
-        ),
-        cucim_environment_track=_identifier(
-            record["cucim_environment_track"],
-            f"{path}.cucim_environment_track",
-        ),
         cupy_distribution=_identifier(
             record["cupy_distribution"], f"{path}.cupy_distribution"
-        ),
-        cucim_distribution=_identifier(
-            record["cucim_distribution"], f"{path}.cucim_distribution"
-        ),
-        cucim_wheel_payload_sha256=cucim_wheel_payload_sha256,
-        cucim_source_tag=_identifier(
-            record["cucim_source_tag"], f"{path}.cucim_source_tag"
-        ),
-        cucim_source_commit=cucim_source_commit,
-        cucim_build_recipe_id=_identifier(
-            record["cucim_build_recipe_id"], f"{path}.cucim_build_recipe_id"
         ),
         validated_environment_policy_ids=_identifier_tuple(
             record["validated_environment_policy_ids"],

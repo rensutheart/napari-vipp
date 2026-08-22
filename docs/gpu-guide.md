@@ -104,15 +104,14 @@ A passing report identifies the selected device and confirms that CuPy GPU
 execution is available. `python -m pip check` must also report no broken
 requirements.
 
-Compute Doctor answers three separate questions instead of treating a working
+Compute Doctor answers two separate questions instead of treating a working
 CUDA import as the whole result:
 
 1. **CUDA and GPU** — can the pinned CUDA/CuPy runtime really allocate and run;
-2. **Optional cuCIM** — is the separately built add-on usable; and
-3. **VIPP GPU coverage** — how many of the current reviewed operation regions
+2. **VIPP GPU coverage** — how many of the current reviewed operation regions
    VIPP will actually admit on this machine.
 
-The **Compute setup and memory** window presents those three short rows and one
+The **Compute setup and memory** window presents those two short rows and one
 next step. Memory, provider messages, and other technical evidence begin under
 **Show advanced details** so a new user does not have to interpret them first.
 After a check, **Save privacy-redacted support report…** writes an atomic JSON
@@ -254,27 +253,30 @@ branching to, or retaining intermediate outputs can require additional
 downloads. VIPP reports the actual implementations and transfers rather than
 turning this best case into a blanket promise.
 
-## Optional cuCIM Add-on
+## CuPy-only basic measurements
 
-cuCIM is not required for VIPP or for the other qualified CuPy/CuPyX
-operations. It supplies the currently reviewed rolling-ball/background and
-basic-measurement candidates in its exact admitted environment.
+The reviewed **Measure Objects** and **Measure Objects + Intensity** providers
+now use CuPy directly, so every current GPU operation is available through the
+standard CUDA installation. No separately built provider is needed.
 
-VIPP does not redistribute a private cuCIM wheel. Windows users may download
-the exact
-[`0.13.0a7` optional cuCIM local-build add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a7/napari-vipp-cucim-installer-0.13.0a7-windows.zip)
-only after the standard CUDA Compute Doctor passes. Verify its SHA-256 against
-the release's `SHA256SUMS-Windows-0.13.0a7.txt`, extract it, and double-click
-**Install VIPP cuCIM.cmd**. The bundle contains no wheel: it performs the pinned
-build locally, verifies the resulting bytes and provenance, runs real GPU
-probes, and records approval in the selected released VIPP environment. The
-first build and kernel warm-up can take a long time; later probes normally
-reuse the compiled cache. See the bundle's
-[complete instructions](../scripts/README-cucim-windows-installer.md) for the
-expected checksum, retained records, and command-line recovery route.
+The replacement's full production evidence passed 11 admission cases, 11
+rejection cases, two lifecycle cases, and 15 performance cases with zero
+private-pool residue. Against the preserved historical artifact, CuPy won all
+14 matched transfer-inclusive cases with a 1.78x geometric-mean speedup. A
+final replay of the supplied acceptance workflow passed the complete CPU table
+parity contract for both nodes. One-pixel objects now correctly report
+population standard deviation `0` instead of a nonfinite or rounded artifact.
 
-When cuCIM is absent or rejected, affected nodes remain scientifically usable
-on CPU.
+See the [generated CuPy evidence](benchmarks/measurements-cupy-windows-rtx5090.md)
+and its [reproduction protocol](benchmarks/measurements-cupy-evidence-protocol.md).
+
+Exact saved pins migrate from `cucim-measure-objects-basic-v1` to
+`cupy-measure-objects-basic-v1`, and from
+`cucim-measure-objects-intensity-basic-v1` to
+`cupy-measure-objects-intensity-basic-v1`. A broad saved `library:cucim`
+preference remains unavailable because it does not identify one unambiguous
+replacement. The old phase record and benchmark artifacts remain linked below
+as dated evidence; they are not current installation instructions.
 
 ## Benchmark Node And Find Fastest Pipeline
 
@@ -337,7 +339,7 @@ For consequential analyses and publications, retain:
 - actual implementation IDs and versions for every node;
 - GPU model, ordinal, compute capability, and VRAM;
 - NVIDIA driver and CUDA driver/runtime/component versions;
-- Python, CuPy/CuPyX/cuCIM, NumPy, SciPy, and scikit-image versions; and
+- Python, CuPy/CuPyX, NumPy, SciPy, and scikit-image versions; and
 - parameters, fallback decisions, and validation against the CPU reference.
 
 Do not treat a speedup measured on one device as a portable performance
@@ -355,7 +357,7 @@ reference evidence for their exact environments and revisions.
 - [Sigma Filter implementation record](gpu-phase4-sigma-filter-implementation-report.md)
 - [Connected Components implementation record](gpu-phase5-connected-components-implementation-report.md)
 - [Basic Measurements implementation record](gpu-phase6-measurements-implementation-report.md)
-- [Windows cuCIM source evaluation](cucim-windows-source-evaluation.md)
+- [Historical Windows cuCIM source evaluation](cucim-windows-source-evaluation.md)
 - [GPU benchmark records](benchmarks/)
 
 These records contain exact operation matrices, formulas, parity policies,

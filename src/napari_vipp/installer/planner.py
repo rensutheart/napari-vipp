@@ -83,30 +83,18 @@ def create_install_plan(
     )
     _validate_disk(discovery, required_free, issues)
     _validate_shortcuts(request, discovery, issues)
-    issues.extend(
-        (
-            PlanIssue(
-                code="dependency_resolution_deferred",
-                severity=IssueSeverity.INFO,
-                subject="packages",
-                message=(
-                    "This slice records the exact top-level release requirement; "
-                    "transitive dependency resolution is deferred."
-                ),
-                remediation=(
-                    "The later executor must resolve and display concrete package "
-                    "changes before Apply is enabled."
-                ),
+    issues.append(
+        PlanIssue(
+            code="dependency_resolution_deferred",
+            severity=IssueSeverity.INFO,
+            subject="packages",
+            message=(
+                "This slice records the exact top-level release requirement; "
+                "transitive dependency resolution is deferred."
             ),
-            PlanIssue(
-                code="cucim_separate_installer",
-                severity=IssueSeverity.INFO,
-                subject="cucim",
-                message="cuCIM is not included in the standard CPU/CUDA plan.",
-                remediation=(
-                    "Use the separate verified VIPP cuCIM local-build installer "
-                    "after the CUDA environment is accepted."
-                ),
+            remediation=(
+                "The later executor must resolve and display concrete package "
+                "changes before Apply is enabled."
             ),
         )
     )

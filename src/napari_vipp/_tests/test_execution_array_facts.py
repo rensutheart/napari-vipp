@@ -32,10 +32,6 @@ from napari_vipp.core.compute_planning import (
     probe_compute_environment,
 )
 from napari_vipp.core.compute_policy import (
-    PHASE1_CUCIM_BUILD_RECIPE_ID,
-    PHASE1_CUCIM_SOURCE_COMMIT,
-    PHASE1_CUCIM_SOURCE_TAG,
-    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
     ArrayFactsCache,
     ArrayFactsKey,
     PerformanceEvidence,
@@ -177,35 +173,9 @@ class _ProbeRegistry(ComputeRegistry):
         return ImplementationLibraryProbeResult(
             library_id,
             self.library_available,
-            version=(
-                "26.6.0"
-                if self.library_available and library_id == "cucim"
-                else "14.1.1"
-                if self.library_available
-                else ""
-            ),
+            version="14.1.1" if self.library_available else "",
             reason_code="" if self.library_available else "library_unavailable",
             message=("" if self.library_available else f"{library_id} is unavailable."),
-            metadata=(
-                (
-                    ("environment_record_schema", "napari-vipp-gpu-environment"),
-                    ("environment_record_schema_version", "2"),
-                    ("environment_track", "cuda13"),
-                    ("cupy_distribution", "cupy-cuda13x"),
-                    ("cucim_distribution", "cucim-cu13"),
-                    ("cucim_distribution_version", "26.6.0"),
-                    ("cucim_artifact_sha256", "a" * 64),
-                    (
-                        "cucim_wheel_payload_sha256",
-                        PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
-                    ),
-                    ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
-                    ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
-                    ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
-                )
-                if self.library_available and library_id == "cucim"
-                else ()
-            ),
         )
 
 
@@ -2364,7 +2334,7 @@ def test_unresolved_host_shape_keeps_all_transitive_workloads_unresolved():
         )
 
 
-def test_fresh_intensity_example_prefer_gpu_completes_without_cucim(
+def test_fresh_intensity_example_prefer_gpu_completes_without_gpu_libraries(
     intensity_example_sample,
 ):
     pipeline = _restored_intensity_example()
@@ -2430,7 +2400,7 @@ def test_fresh_intensity_example_prefer_gpu_completes_without_cucim(
     assert measurement.reason_text
 
 
-def test_resolved_measurement_planning_explains_missing_cucim():
+def test_resolved_measurement_planning_explains_missing_cupy():
     workload = WorkloadDescriptor(
         node_id="measurement",
         operation_id="measure_objects_intensity",
@@ -2491,9 +2461,9 @@ def test_resolved_measurement_planning_explains_missing_cucim():
             environment=environment,
         )
 
-    assert "cucim" in registry.library_probe_ids
+    assert registry.library_probe_ids == ["cupy"]
     decision = planning.decisions_by_node[workload.node_id]
     assert decision.runtime_id == "cpu-numpy"
     assert decision.decision_kind is DecisionKind.POLICY_CPU
     assert decision.reason is DecisionReason.DEPENDENCY_UNAVAILABLE
-    assert "cucim" in decision.reason_text.casefold()
+    assert "cupy" in decision.reason_text.casefold()

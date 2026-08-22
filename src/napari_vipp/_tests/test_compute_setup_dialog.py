@@ -353,11 +353,6 @@ def test_success_renders_separate_ram_and_vram_rows(qtbot):
             "CuPy GPU execution is available on Test RTX.",
         ),
         (
-            "Optional cuCIM",
-            "Not checked (optional)",
-            "No cuCIM probe result was recorded.",
-        ),
-        (
             "VIPP GPU coverage",
             "No reviewed regions available",
             "Only reviewed combinations are offered automatically; CPU remains safe.",

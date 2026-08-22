@@ -2,9 +2,11 @@
 
 Date: 2026-07-16
 Product-matrix revision: 2026-07-27
-Status: approved planning direction; the existing `cucim.skimage` wheel remains
-research evidence and no downstream cuCIM package is a supported VIPP
-dependency yet.
+Status: **archived and superseded**. VIPP retired cuCIM from its active runtime,
+installer, and release matrix after the replacement CuPy measurement provider
+won every matched transfer-inclusive benchmark. No cuCIM port or distribution
+work is currently scheduled. The proposal below is retained as historical
+engineering context; see the [current GPU guide](gpu-guide.md).
 
 ## Purpose and relationship to the GPU plan
 

@@ -213,8 +213,8 @@ EXPECTED_IMPLEMENTATIONS = {
     "fill_holes": "cupyx-fill-holes-all-v1",
     "remove_small_objects": "cupyx-remove-small-objects-bool-v1",
     "remove_binary_outliers": "cupy-remove-binary-outliers-v1",
-    "measure_objects": "cucim-measure-objects-basic-v1",
-    "measure_objects_intensity": "cucim-measure-objects-intensity-basic-v1",
+    "measure_objects": "cupy-measure-objects-basic-v1",
+    "measure_objects_intensity": "cupy-measure-objects-intensity-basic-v1",
 }
 
 _MASK_INPUT_TARGETS = frozenset(

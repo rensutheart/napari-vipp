@@ -724,7 +724,7 @@ class InstallPlan:
         )
         return {
             "schema": "napari-vipp-install-plan",
-            "schema_version": 1,
+            "schema_version": 2,
             "plan_only": True,
             "mutation_performed": False,
             "status": self.status.value,
@@ -753,12 +753,6 @@ class InstallPlan:
                 "required_free_bytes": self.required_free_bytes,
                 "observed_free_bytes": free,
                 "shortfall_bytes": shortfall,
-            },
-            "cucim": {
-                "included": False,
-                "note": (
-                    "cuCIM remains an optional separate Windows local-build installer."
-                ),
             },
             "shortcuts": [shortcut.as_dict() for shortcut in self.shortcuts],
             "rollback": self.rollback.as_dict(),

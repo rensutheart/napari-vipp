@@ -131,36 +131,8 @@ After the connection recovers, **Try again** rechecks the computer-use and
 shortcut choices currently shown and presents them for review
 before **Install** can be selected again.
 
-The standard GPU installation works without cuCIM. The optional, separate
-cuCIM Windows installer performs its verified build locally after the standard
-VIPP CUDA environment is working; cuCIM is not required to start VIPP or use
-the other qualified CuPy/CuPyX GPU operations.
-
-To add cuCIM to a working `0.13.0a7` CUDA installation:
-
-1. Download
-   [`napari-vipp-cucim-installer-0.13.0a7-windows.zip`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a7/napari-vipp-cucim-installer-0.13.0a7-windows.zip)
-   and `SHA256SUMS-Windows-0.13.0a7.txt` from the same official release.
-2. In PowerShell, run:
-
-   ```powershell
-   Get-FileHash -Algorithm SHA256 `
-     .\napari-vipp-cucim-installer-0.13.0a7-windows.zip
-   ```
-
-   Compare the result with the line for that ZIP in the downloaded checksum
-   file. Stop and delete the ZIP if the values do not match.
-3. Use **Extract All**. In the extracted folder, double-click
-   **Install VIPP cuCIM.cmd** and select `Scripts\python.exe` inside the
-   released VIPP CUDA 13 environment when asked. The download contains no
-   cuCIM wheel; it builds the pinned source on that computer, verifies the
-   result and its provenance, and admits it only after real CUDA/cuCIM probes
-   pass. The first build can take a long time.
-
-The complete [Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a7/getting-started/windows-cuda/)
-also retains the source-checkout procedure as an Advanced alternative. Do not
-run either cuCIM route until the standard CUDA Compute Doctor passes, and do
-not share the private wheel produced on one computer with another user.
+The standard GPU installation includes every current reviewed CuPy/CuPyX
+implementation. No separately built GPU provider is required.
 
 ## Manual Alpha Installation (Advanced And Non-Windows)
 
@@ -208,7 +180,7 @@ probes all ordinals before choosing its default; the installer must identify
 any failing ordinal. Unsupported work stays on CPU with an explanation.
 
 For troubleshooting or the Advanced source-checkout route, follow the
-[Windows CUDA and cuCIM guide](https://rensutheart.github.io/vipp-mkdocs/0.13.0a7/getting-started/windows-cuda/).
+[GPU guide](gpu-guide.md).
 
 ### Existing napari Environment (Advanced)
 
@@ -246,7 +218,7 @@ full workflow interface starts.
 ## Advanced And Implementation References
 
 - [GPU guide](gpu-guide.md): qualification, compute modes, eligible operation
-  families, CPU fallback, benchmarking, cuCIM, and reproducibility.
+  families, CPU fallback, benchmarking, and reproducibility.
 - [Windows installer and planning contract](windows-installation-planner.md):
   the implemented read-only planner, transactional managed installer, update
   and repair behavior, and release-safety boundary.

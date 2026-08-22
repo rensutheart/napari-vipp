@@ -2,6 +2,12 @@
 
 Last reviewed: 2026-08-15
 
+> **Supersession note (2026-08-22):** The CuPy measurement migration and
+> removal of the separate provider installer invalidate the GPU/scientific,
+> Windows-installer, packaging, and documentation carry-forward rows below.
+> Their a7 facts remain an historical record; establish new rows from the next
+> exact release artifact rather than editing those facts in place.
+
 This page records expensive behavioral evidence that future releases may carry
 forward. It prevents a version-only release change from triggering unrelated
 installer, GPU, schema, or manual-UI qualification.

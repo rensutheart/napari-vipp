@@ -47,12 +47,6 @@ from napari_vipp.core.compute import (
 from napari_vipp.core.compute_benchmark_adapter import operation_parity
 from napari_vipp.core.compute_history import JsonPipelineTimingStore
 from napari_vipp.core.compute_planning import plan_compute_decisions
-from napari_vipp.core.compute_policy import (
-    PHASE1_CUCIM_BUILD_RECIPE_ID,
-    PHASE1_CUCIM_SOURCE_COMMIT,
-    PHASE1_CUCIM_SOURCE_TAG,
-    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
-)
 from napari_vipp.core.compute_registry import (
     ComputeRegistry,
     ImplementationLibraryProbeResult,
@@ -227,7 +221,7 @@ class _StaticPlanner:
             request,
             ComputeEnvironment(
                 runtime_ids=("cpu-numpy", "cuda-cupy"),
-                implementation_libraries=("cpu", "cupy", "cupyx", "cucim"),
+                implementation_libraries=("cpu", "cupy", "cupyx"),
                 device_id="cuda:0",
                 device_name="NVIDIA GeForce RTX 5090",
                 device_class="nvidia-cuda",
@@ -261,9 +255,11 @@ def _test_registry(
 ) -> tuple[ComputeRegistry, dict[str, OperationComputeSpec]]:
     shaped: dict[str, OperationComputeSpec] = {}
     for operation_id, function in implementations:
-        uses_cucim = operation_id in {
+        uses_cupy = operation_id in {
             "rolling_ball_background",
             "subtract_background",
+            "measure_objects",
+            "measure_objects_intensity",
         }
         shaped[operation_id] = _shape_preserving_spec(
             replace(
@@ -271,10 +267,10 @@ def _test_registry(
                 runtime_id="cuda-cupy",
                 array_domain="cuda-cupy",
                 callable_ref=f"{function.__module__}:{function.__name__}",
-                implementation_library_id=("cucim" if uses_cucim else "cupyx"),
+                implementation_library_id=("cupy" if uses_cupy else "cupyx"),
                 validated_environment_policy_id=(
-                    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
-                    if uses_cucim
+                    "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+                    if uses_cupy
                     else "cuda-cupy-14.1.1-cpython312-windows-native-v3"
                 ),
                 host_finalizer_ref=((host_finalizer_refs or {}).get(operation_id, "")),
@@ -282,36 +278,13 @@ def _test_registry(
         )
     library_ids = {spec.implementation_library_id for spec in shaped.values()}
     library_probes = {}
-    if "cupyx" in library_ids:
-        library_probes["cupyx"] = lambda: ImplementationLibraryProbeResult(
-            "cupyx",
-            True,
-            version="14.1.1",
-        )
-    if "cucim" in library_ids:
-        library_probes["cucim"] = lambda: ImplementationLibraryProbeResult(
-            "cucim",
-            True,
-            version="26.06.00",
-            metadata=(
-                ("environment_record_schema", "napari-vipp-gpu-environment"),
-                ("environment_record_schema_version", "2"),
-                ("environment_track", "cuda13"),
-                ("cupy_distribution", "cupy-cuda13x"),
-                ("cucim_distribution", "cucim-cu13"),
-                ("cucim_distribution_version", "26.6.0"),
-                (
-                    "cucim_artifact_sha256",
-                    "a" * 64,
-                ),
-                (
-                    "cucim_wheel_payload_sha256",
-                    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
-                ),
-                ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
-                ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
-                ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
-            ),
+    for library_id in library_ids:
+        library_probes[library_id] = (
+            lambda library_id=library_id: ImplementationLibraryProbeResult(
+                library_id,
+                True,
+                version="14.1.1",
+            )
         )
     return (
         ComputeRegistry(
@@ -2057,17 +2030,15 @@ def test_real_headless_measurements_pipeline_finalizes_public_table_and_cleans(
 ):
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
-    if importlib.util.find_spec("cucim") is None:
-        pytest.skip("The optional cuCIM wheel is not installed.")
 
     registry = ComputeRegistry()
     try:
         runtime_probe = registry.probe_runtime("cuda-cupy", refresh=True)
         if not runtime_probe.available or not runtime_probe.selected_device_id:
             pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
-        library_probe = registry.probe_library("cucim", refresh=True)
+        library_probe = registry.probe_library("cupy", refresh=True)
         if not library_probe.available:
-            pytest.skip(library_probe.message or "cuCIM is unavailable.")
+            pytest.skip(library_probe.message or "CuPy is unavailable.")
 
         pipeline = PrototypePipeline()
         pipeline.reset_empty_graph()
@@ -2140,7 +2111,7 @@ def test_real_headless_measurements_pipeline_finalizes_public_table_and_cleans(
                 node_preferences={
                     otsu.id: "cpu",
                     components.id: "cpu",
-                    measurement.id: "implementation:cucim-measure-objects-basic-v1",
+                    measurement.id: "implementation:cupy-measure-objects-basic-v1",
                 },
                 runtime_id="cuda-cupy",
                 device_id=runtime_probe.selected_device_id,
@@ -2171,8 +2142,8 @@ def test_real_headless_measurements_pipeline_finalizes_public_table_and_cleans(
         )
         assert decision.decision_kind is DecisionKind.SELECTED
         assert decision.runtime_id == "cuda-cupy"
-        assert decision.implementation_library_id == "cucim"
-        assert decision.implementation_id == "cucim-measure-objects-basic-v1"
+        assert decision.implementation_library_id == "cupy"
+        assert decision.implementation_id == "cupy-measure-objects-basic-v1"
         assert len(gpu_result.execution_report.plan.segments) == 1
         assert gpu_result.execution_report.plan.segments[0].node_ids == (
             measurement.id,
@@ -2188,8 +2159,8 @@ def test_real_headless_measurements_pipeline_finalizes_public_table_and_cleans(
             measurement.id
         ].actual_implementation
         assert provenance.runtime_id == "cuda-cupy"
-        assert provenance.implementation_library_id == "cucim"
-        assert provenance.implementation_id == "cucim-measure-objects-basic-v1"
+        assert provenance.implementation_library_id == "cupy"
+        assert provenance.implementation_id == "cupy-measure-objects-basic-v1"
 
         _assert_private_cuda_scope_clean(
             runtime,
@@ -3159,15 +3130,13 @@ def test_real_extreme_float_background_keeps_finite_only_nodes_on_cpu(
 ):
     if importlib.util.find_spec("cupy") is None:
         pytest.skip("CuPy is not installed.")
-    if importlib.util.find_spec("cucim") is None:
-        pytest.skip("The optional cuCIM wheel is not installed.")
 
     registry = ComputeRegistry()
     try:
         runtime_probe = registry.probe_runtime("cuda-cupy")
         if not runtime_probe.available or not runtime_probe.selected_device_id:
             pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
-        for library_id in ("cucim", "cupyx"):
+        for library_id in ("cupy", "cupyx"):
             library_probe = registry.probe_library(library_id)
             if not library_probe.available:
                 pytest.skip(
