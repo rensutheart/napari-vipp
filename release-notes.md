@@ -1,78 +1,182 @@
-# VIPP 0.13.0a7
+# VIPP 0.13.0a8
 
-VIPP 0.13.0a7 makes GPU acceleration easier to understand, inspect, and apply. It can explain when a visible dtype conversion is the only thing preventing a node from using a reviewed GPU implementation, add that ordinary conversion in the correct place with one click, and keep the change fully reviewable and undoable.
+VIPP 0.13.0a8 makes interactive GPU workflows more responsive and easier to
+trust, adds Fiji-style binary outlier cleanup, improves everyday graph and
+intensity editing, and removes the separate cuCIM installation route. Every
+reviewed GPU implementation in this release is available through the normal
+CuPy/CuPyX CUDA installation.
 
-This remains alpha software. Keep the original data and workflow, test representative images, and review important outputs before using them for scientific conclusions or publication. A GPU agreement check establishes agreement with VIPP's CPU implementation in a stated region; it does not by itself validate the input data, parameters, PSF, or biological interpretation.
+This remains alpha software. Keep the original data and workflow, test
+representative images, and review important outputs before using them for
+scientific conclusions or publication. A CPU/GPU agreement check establishes
+agreement with VIPP's CPU implementation in a stated region; it does not by
+itself validate the input data, parameters, PSF, or biological interpretation.
 
 ## Features added
 
-### A clearer path from a GPU blocker to a safe repair
+### Clean fuzzy binary edges with Remove Outliers
 
-- Nodes now show a subtle **GPU tip** when input dtype is the only remaining blocker for an otherwise reviewed GPU implementation.
-- Selecting the node explains the exact conversion and memory trade-off. **Add conversion** inserts a normal, visible **Convert Dtype** node on the affected input only. The insertion is one Undo action and does not silently alter shared branches or authored processing parameters.
-- The tip remains available in **Prefer GPU** after calculation, rather than disappearing when a CPU result has been cached.
-- The lossless `uint8`/`uint16` to `float32` **Preserve** conversion itself can remain GPU-resident with the following reviewed operation, avoiding an unnecessary device round trip.
+- Added **Remove Outliers (Binary)**, aligned with ImageJ/Fiji's circular
+  neighborhood and nearest-edge behavior. It can remove isolated foreground
+  specks or fill small background notches on each YX plane.
+- The node accepts Boolean masks and canonical `uint8` masks containing 0/1 or
+  0/255. Invalid grayscale inputs fail visibly instead of being silently
+  thresholded.
+- The authoritative CPU implementation has an exact resident CuPy candidate,
+  so **Find fastest pipeline** can compare both implementations for the active
+  image and parameters.
 
-### Optimizer results that can actually be read
+### Use one normal CUDA installation
 
-- **Find fastest pipeline** now keeps completed scientific and timing results visible even when CPU and GPU are too close to name a safe winner. In that case VIPP leaves the saved backend unchanged and explains why.
-- Results are grouped by node, with one subrow per tested CPU or CuPy implementation. The main view emphasizes total time, scientific agreement, and outcome; optional detail shows compute, transfer, first-run cost, memory, and evidence information.
+- **Measure Objects** and **Measure Objects + Intensity** now use resident CuPy
+  implementations. A separate cuCIM source build, add-on ZIP, and provider
+  installer are no longer needed or shipped.
+- Exact saved `cucim-measure-objects-basic-v1` and
+  `cucim-measure-objects-intensity-basic-v1` pins migrate to their corresponding
+  `cupy-*` implementation IDs. A broad saved `library:cucim` preference remains
+  visibly unavailable because it does not identify one unambiguous replacement.
+- Preserved RTX 5090 evidence records 11 admission cases, 11 rejection cases,
+  two lifecycle cases, and 15 performance cases for the CuPy replacement. CuPy
+  won all 14 matched transfer-inclusive comparisons with the historical cuCIM
+  implementation in that bounded environment. These measurements are evidence
+  for that machine and workload, not a portable speed guarantee.
 
-### A connected GPU segmentation path
+### Interpret unknown TIFF pages deliberately
 
-- Added reviewed GPU implementations for scalar `float32` **Binary Threshold** and explicitly described **Extract Channel** inputs.
-- Added reviewed boolean-mask GPU implementations for **Remove Small Objects** in resolved 2D/3D Face/Full connectivity regions and **Fill Holes** when `max_hole_size` is zero.
-- The annotated **Portable GPU Segmentation Bridge** example connects channel selection, dtype conversion, Gaussian blur, thresholding, mask cleanup, and connected components. It remains usable on CPU when an accelerator or an exact GPU region is unavailable.
-- Integer-label small-object cleanup and positive bounded-hole-size cleanup deliberately remain on CPU with a visible explanation.
+- **Image Source** now shares the batch workspace's reviewed **Image stack**
+  control. Choosing `QYX -> ZYX` reinterprets pages as depth without transposing
+  pixels and remains intact through undo, workflow save/load, export, batch, and
+  headless execution.
+- **Rescale Axes** exposes Z scaling and output size after that explicit
+  declaration. It can also use unique carried X/Y names inferred from shape,
+  with a visible warning and explicit output provenance.
+- VIPP never silently assumes that an unknown Q axis is depth. Inferred or
+  missing Z still requires the source declaration before Z can be resized.
 
-### Broader Richardson-Lucy agreement without parameter rewriting
+## Workflow and control improvements
 
-- Ordinary Richardson-Lucy GPU eligibility now covers finite authored `filter_epsilon` values from `1e-12` through `1e-6` and 1 through 100 iterations in the reviewed odd-PSF/default-safe region. Lambda-zero RL-TV inherits that region; positive-TV runs retain their narrower reviewed points.
-- CPU/GPU comparison now uses a documented 0.5% agreement policy with finite, nonnegative outputs and matching shape/dtype requirements. The former much tighter near-identity observations remain useful diagnostics rather than an arbitrary scientific validity boundary.
-- VIPP never changes the authored epsilon or iteration count merely to qualify a GPU call. The bundled 3D RL/RL-TV example keeps 25 iterations and `filter_epsilon=1e-12` on both branches.
+- Dropping a disconnected compatible node onto a green-highlighted wire now
+  inserts it between the wire's source and target as one undoable edit.
+- Every numeric **Intensity & Contrast** node now shows the shared exact input
+  histogram as well as its output histogram.
+- Clip bounds, Rescale Intensity output bounds, and Mask Image's outside value
+  use whole-number controls for integer images. Floating-point images retain
+  fractional controls, and invalid legacy values remain visible for correction.
+- Parameter sliders can use a practical window without narrowing direct numeric
+  entry. Sigma Filter now has a useful `0..10` Sigma-width slider while its
+  numeric field still accepts the full supported range.
 
-## Bug fixes
+## Faster, more stable GPU interaction
 
-- Ordinary finite decimal Binary Threshold values no longer look GPU-ineligible merely because whole-pipeline timings cannot justify a backend change.
-- GPU conversion suggestions now fail closed if their saved candidate no longer exists, the input changed, or Custom mode explicitly selected another implementation.
-- Conversion repairs placed through a named tunnel stay beside the affected subscriber instead of moving an unrelated source or branch.
-- A scientifically successful but speed-inconclusive optimizer run is no longer presented as an eligibility failure with its measurements hidden.
+- Gaussian Blur, Rolling-Ball/Subtract Background, and Median Filter now use
+  radius- or size-independent CuPy kernels. Tuning to a previously unseen
+  supported value no longer creates a parameter-specific compilation pause.
+- Thumbnail contrast work keeps the last complete preview visible while new
+  statistics are calculated, cancels stale work promptly, and reports concise
+  CPU/GPU/fallback/cached status without losing detailed provenance.
+- Qualified `float32` percentile and min-max thumbnail statistics can run on
+  CuPy with exact CPU agreement. Large retained GPU-resident outputs can avoid
+  a redundant thumbnail upload in the reviewed region.
+- Compute Setup can bind each workflow tab to Automatic or one exact qualified
+  runtime/device on the current machine. This machine choice is intentionally
+  excluded from portable workflow files and undo history.
+- The exact CuPy 14.1.1 `cupyx.jit.rawkernel is experimental` FutureWarning is
+  suppressed only around the known lazy CuPyX import. Other warnings and all
+  import or execution failures remain visible.
+
+## Optimizer fixes
+
+- **Find fastest pipeline** now separates genuine small numerical CPU/GPU
+  differences from assignment failures and presents reviewed differences for
+  explicit acceptance. Shape, dtype, non-finite classification, and larger
+  differences still fail closed.
+- Save Image and Batch Output nodes may remain in the requested retention scope,
+  but detached scientific analysis excludes writers so benchmarking cannot
+  create files.
+- Applying measured assignments no longer treats the fixed CPU Image Source row
+  as a changed runtime assignment. Every executable node still has to match its
+  accepted measured backend.
 
 ## Windows installation
 
-The a7-specific links and downloads are valid only after the official `v0.13.0a7` GitHub prerelease is published. Until that release and its checksum sidecars exist, use the public 0.13.0a6 release or an explicitly marked development checkout; do not treat a guessed a7 asset URL as a download.
+The a8-specific links below are valid only after the official `v0.13.0a8`
+GitHub prerelease and its checksum sidecars are public. Until then, use the
+public 0.13.0a7 release or an explicitly marked development checkout; do not
+treat a guessed a8 asset URL as a download.
 
-For the shortest route, download `VIPP-Setup-0.13.0a7-Windows-x86_64-UNSIGNED.exe` and `SHA256SUMS-Windows-0.13.0a7.txt` from this GitHub release. Verify the SHA-256 value before opening the installer.
+For the shortest route, download
+`VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED.exe` and
+`SHA256SUMS-Windows-0.13.0a8.txt` from that release. Verify the SHA-256 value
+before opening the installer. There is no a8 cuCIM add-on asset: the normal
+CUDA installation contains every current reviewed CuPy/CuPyX implementation.
 
-This alpha is intentionally not Authenticode-signed. Windows will show **Unknown publisher** and may show **Windows protected your PC**. After verifying the official checksum, select **More info > Run anyway**. Stop if the checksum differs or antivirus reports a threat; never disable Windows security. If organizational policy does not allow the unsigned installer, use the manual installation route in the Quick Start.
+This alpha is intentionally not Authenticode-signed. Windows will show
+**Unknown publisher** and may show **Windows protected your PC**. After
+verifying the official checksum, select **More info > Run anyway**. Stop if the
+checksum differs or antivirus reports a threat; never disable Windows security.
+If organizational policy does not allow the unsigned installer, use the manual
+installation route in the Quick Start.
 
-The managed installer can install CPU or compatible NVIDIA CUDA 13 environments, keep CPU and GPU installations side by side, create launch shortcuts, repair or update an owned installation, and remove it without touching unrelated Python or napari environments. The standard CUDA installation includes every current reviewed CuPy/CuPyX route.
-
-One-click setup accepts only the exact per-track roots beneath the canonical Windows Local App Data directory returned by `SHGetKnownFolderPath(FOLDERID_LocalAppData)`: `VIPP\environments\cpu` and `VIPP\environments\cuda13`. Custom managed roots are not accepted. CUDA requires the complete canonical path to contain ASCII characters in this release. If it does not, one-click CUDA is unavailable and the UI offers CPU; the fixed CPU root remains supported. Expert-selected existing environments remain separate and unchanged.
-
-The CUDA root and Windows temporary directory are separate. If Python's effective temporary directory contains a non-ASCII character, VIPP uses process-local in-memory CuPy compilation. CuPy's disk kernel cache is then off for that process, so Compute Doctor or the first GPU work may pay the cold compilation cost again in a new process; scientific kernels and results are unchanged. One RTX 5090 reference check took about 52 seconds cold and about 0.87 seconds when refreshed in the same process; those observations are not a performance guarantee. A failed kernel compile now preserves the real CuPy `CompileException` instead of masking it as a false 512-byte private-pool leak.
-
-## CuPy-only basic measurements
-
-**Measure Objects** and **Measure Objects + Intensity** now use the standard CuPy installation. Saved `cucim-measure-objects-basic-v1` and `cucim-measure-objects-intensity-basic-v1` pins migrate to their corresponding `cupy-*` IDs. A broad saved `library:cucim` preference remains visibly unavailable because it does not identify one unambiguous replacement.
+The managed installer can keep CPU and compatible NVIDIA CUDA 13 installations
+side by side, create launch shortcuts, repair or update an owned installation,
+and remove it without touching unrelated Python or napari environments.
+One-click setup continues to accept only the fixed CPU and CUDA roots beneath
+canonical Windows Local App Data. The complete CUDA path must contain ASCII
+characters because of the pinned CuPy 14.1.1 NVRTC path boundary; spaces remain
+supported.
 
 ## Manual installation or upgrade
 
-VIPP supports CPython 3.12 and 3.13 for CPU use. In PowerShell, Command Prompt, or a terminal with the intended environment activated:
+VIPP supports CPython 3.12 and 3.13 for CPU use. In PowerShell, Command Prompt,
+or a terminal with the intended environment activated:
 
 ```text
-python -m pip install --upgrade "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a7"
+python -m pip install --upgrade "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a8"
 vipp
 ```
 
-For the supported native-Windows CUDA 13 route, use CPython 3.12 and follow the versioned Windows CUDA guide instead of mixing CUDA packages manually. Preserve the old environment and copies of important workflows first. This release continues to read workflow schema 3 and writes schema 4; batch configuration and manifest schema remain version 3.
+For the supported native-Windows CUDA 13 route, use CPython 3.12 and follow the
+versioned Windows CUDA guide instead of mixing CUDA packages manually. Preserve
+the old environment and copies of important workflows first. This release
+continues to read workflow schema 3 and writes schema 4; batch configuration and
+manifest schema remain version 3.
 
-When upgrading an installer-managed 0.13.0a6 installation, run the a7 installer, select the same CPU or CUDA route, review the copy detected at that track's fixed root, and let setup retain the old working copy until a7 passes its checks. CPU and CUDA tracks can coexist, but two managed versions of the same track cannot. An installer-owned CUDA copy under an incompatible root is not moved or repaired in place; after any separately recorded recovery from a prior interrupted transaction, the newly blocked selection performs no new mutation. Remove that copy only through its ownership-bound uninstaller. Do not point setup at an unrelated manually managed napari environment.
+When moving from 0.13.0a7, use the normal a8 installer or create a clean,
+version-pinned environment. Do not reuse the a7 cuCIM add-on bundle or copy its
+private wheel into a8. Existing workflows with exact cuCIM measurement pins are
+migrated as described above; VIPP no longer imports or executes cuCIM providers.
 
-## What we validated
+## Qualification status
 
-The complete source suite for the release candidate passed with 5,084 tests passing, five environment-dependent tests skipped, and two documented expected failures. All 13 pull-request CI jobs passed across Windows, Linux, and macOS on supported Python versions, including clean wheel and source archive installation. The strict admission catalogue accounts for 18 public GPU implementations and 23 executable evidence owners.
+The CuPy measurement replacement and its preserved comparison artifact have
+passed the bounded scientific, lifecycle, and performance checks summarized
+above. The changed Remove Outliers, source-axis, rescaling, optimizer, graph,
+control, thumbnail, installer, packaging, and documentation paths have focused
+automated coverage in the source tree.
 
-RTX 5090 development evidence covers the connected segmentation corridor with one upload and one terminal download when only the final result is retained, plus exact CPU agreement in the admitted mask-cleanup regions. This does not claim qualification on every NVIDIA model or platform. The public support matrix remains scoped, and exact tagged-installer acceptance is a separate release gate that editable-checkout or pull-request testing cannot satisfy.
+The release candidate at `7189cf40280d` passed all 13 jobs in
+[CI run 32578260799](https://github.com/rensutheart/napari-vipp/actions/runs/32578260799),
+including clean wheel and source-archive installs across Windows, Linux, and
+macOS. Its normal unsigned-installer build smoke also passed in
+[run 32578260812](https://github.com/rensutheart/napari-vipp/actions/runs/32578260812).
 
-See the [Quick Start](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/docs/quick-start.md), [GPU Guide](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/docs/gpu-guide.md), [full changelog](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/CHANGELOG.md#0130a7---2026-08-14), and [roadmap](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a7/docs/planning.md) for complete scopes and remaining qualification work.
+The same clean candidate passed the full RTX 5090 admission catalogue: 19
+public implementations and all 24 evidence owners completed successfully on
+`cuda:0`. The retained
+[aggregate](docs/benchmarks/gpu-admission-0.13.0a8-windows-rtx5090.json)
+has SHA-256
+`0365366dc23750e000c6e9c4f8b384cdf706afdcb338ae3a9f80cfad3d1d8506`.
+The refreshed Remove Outliers and CuPy measurement reports are linked from the
+architecture and GPU guides.
+
+Publication requires a recorded exact-`main` CI result, final RTX GPU
+qualification, normal-installer acceptance, and hashes for the wheel, source
+archive, and finalized Windows assets. The immutable release record and
+download checksums identify the exact results and artifacts that satisfied
+those gates.
+
+See the [Quick Start](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a8/docs/quick-start.md),
+[GPU Guide](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a8/docs/gpu-guide.md),
+[full changelog](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a8/CHANGELOG.md#0130a8---2026-08-22),
+and [roadmap](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a8/docs/planning.md)
+for complete scope and remaining qualification work.

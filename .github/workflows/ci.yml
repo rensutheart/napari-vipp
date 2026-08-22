@@ -49,6 +49,10 @@ jobs:
       - name: Build distributions
         run: python -m build
 
+      - name: Reject retired provider files in release archives
+        run: |
+          python -c "import pathlib; from scripts.package_windows_installer import retired_provider_paths_in_release_archive as retired; wheels = list(pathlib.Path('dist').glob('*.whl')); sdists = list(pathlib.Path('dist').glob('*.tar.gz')); assert len(wheels) == len(sdists) == 1, (wheels, sdists); assert not retired(wheels[0]), retired(wheels[0]); assert not retired(sdists[0]), retired(sdists[0])"
+
       - name: Check distribution metadata
         run: python -m twine check dist/*
 

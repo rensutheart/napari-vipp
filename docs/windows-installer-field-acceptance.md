@@ -33,7 +33,7 @@ Stop if the filename, tag, or checksum does not match the official GitHub
 release. An alpha installer may show **Unknown publisher**, but it must also say
 `UNSIGNED` in its filename and the warning must match the release instructions.
 
-For `0.13.0a7`, Windows supplies canonical Local App Data through
+For `0.13.0a8`, Windows supplies canonical Local App Data through
 `SHGetKnownFolderPath(FOLDERID_LocalAppData)`. Managed setup accepts only
 `VIPP\environments\cpu` or `VIPP\environments\cuda13` beneath it; custom
 managed roots are rejected. The fixed CPU location supports spaces and
@@ -99,12 +99,32 @@ Result: pass / fail
 
 What was confusing, if anything:
 
-## 0.13.0a7 guided-GPU feature smoke
+## 0.13.0a8 changed-feature smoke
 
 Complete these checks in a qualified CUDA installation. Repeat the portable
 example on CPU-only if that route is part of this acceptance run; a visible CPU
 explanation is a pass where the exact GPU region is unavailable.
 
+- [ ] Compute Doctor reports **CUDA and GPU** and **VIPP GPU coverage** without
+      offering an optional cuCIM installation or requiring a separate provider
+      bundle.
+- [ ] Calculate the basic **Measure Objects** and **Measure Objects + Intensity**
+      schemas through Prefer GPU. Their execution reports name the reviewed
+      CuPy implementations, match the CPU tables, and leave no private GPU
+      memory after cleanup.
+- [ ] Add **Remove Outliers (Binary)** after a small Boolean segmentation mask.
+      Check both foreground removal and background filling, compare CPU and GPU
+      outputs, and confirm that noncanonical grayscale `uint8` input is rejected
+      rather than silently thresholded.
+- [ ] Load a reviewed QYX TIFF, choose `QYX -> ZYX` in **Image Source**, and
+      confirm that **Rescale Axes** exposes Z controls. Save, reopen, and run the
+      workflow; the declaration and resized Z metadata must remain intact.
+- [ ] Drop a disconnected compatible node onto a green-highlighted wire and
+      confirm that it is inserted between the exact endpoints as one Undo action.
+- [ ] Inspect several **Intensity & Contrast** nodes and confirm that each shows
+      the exact input and output histograms. Integer Clip bounds must use
+      whole-number controls, while Sigma Filter keeps a practical slider and a
+      wider direct-entry range.
 - [ ] Open **Portable GPU Segmentation Bridge**, calculate the graph, and
       confirm that the 19-voxel speck is removed, 31 enclosed cavity voxels are
       restored, and the final component volumes are 685, 599, 595, and 561.
@@ -121,7 +141,9 @@ explanation is a pass where the exact GPU region is unavailable.
 - [ ] Run **Find fastest pipeline** in a Custom workflow. Confirm that results
       are grouped by node and implementation, and that completed measurements
       remain inspectable even if VIPP says neither assignment is decisively
-      faster and leaves the saved backends unchanged.
+      faster and leaves the saved backends unchanged. Apply a clean measured
+      assignment and confirm that the fixed CPU Image Source row does not make
+      the proposal stale.
 - [ ] Open the bundled 3D RL/RL-TV example and confirm that both branches retain
       25 iterations and `filter_epsilon=1e-12`; GPU eligibility must not rewrite
       either authored value.

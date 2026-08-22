@@ -126,9 +126,9 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     )
     assert (
         "https://github.com/rensutheart/napari-vipp/releases/download/"
-        "v0.13.0a7/VIPP-Setup-0.13.0a7-Windows-x86_64-UNSIGNED.exe"
+        "v0.13.0a8/VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED.exe"
     ) in quick_start
-    assert "SHA256SUMS-Windows-0.13.0a7.txt" in quick_start
+    assert "SHA256SUMS-Windows-0.13.0a8.txt" in quick_start
     assert "**Unknown publisher**" in quick_start
     assert "**More info**, confirm" in quick_start
     assert "**Run anyway**" in quick_start

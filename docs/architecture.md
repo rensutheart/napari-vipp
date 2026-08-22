@@ -5,7 +5,7 @@ prototype.
 
 Last reviewed: 2026-08-14
 
-It reflects the live codebase through VIPP `0.13.0a7`, including restoration,
+It reflects the live codebase through VIPP `0.13.0a8`, including restoration,
 optional microscope-reader routing, reproducible collection batch execution,
 graph restore hardening, the unified CPU/GPU execution contract, and graph
 fragment authoring.

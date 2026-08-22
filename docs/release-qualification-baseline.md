@@ -1,12 +1,13 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-08-15
+Last reviewed: 2026-08-22
 
-> **Supersession note (2026-08-22):** The CuPy measurement migration and
-> removal of the separate provider installer invalidate the GPU/scientific,
-> Windows-installer, packaging, and documentation carry-forward rows below.
-> Their a7 facts remain an historical record; establish new rows from the next
-> exact release artifact rather than editing those facts in place.
+> **0.13.0a8 candidate note (2026-08-22):** The complete post-a7 change set
+> invalidates every domain row below. Core/UI and workflow/provenance changed
+> alongside GPU/scientific, Windows-installer, packaging, dependencies, and
+> documentation work. The a7 facts remain an historical record; append new a8
+> rows from the exact release commit and artifacts rather than editing those
+> facts in place.
 
 This page records expensive behavioral evidence that future releases may carry
 forward. It prevents a version-only release change from triggering unrelated
@@ -15,6 +16,54 @@ installer, GPU, schema, or manual-UI qualification.
 The baseline is evidence, not a claim that untested platforms or scenarios are
 supported. A release may carry an entry forward only while none of its listed
 invalidators changed.
+
+## `0.13.0a8` Candidate Domain Declaration
+
+Changed since `v0.13.0a7`:
+
+```yaml
+core_ui: true
+workflow_schema_provenance: true
+gpu_scientific: true
+windows_installer: true
+dependencies_toolchain: true
+packaging_release: true
+documentation: true
+```
+
+The merged CuPy-only measurement migration at `db61a19` passed all 13 jobs in
+[main CI run 32567020754](https://github.com/rensutheart/napari-vipp/actions/runs/32567020754).
+The reported full-suite lanes were 5,296 passed/404 skipped on Windows 3.12;
+5,291/409 on Windows 3.13 and Ubuntu 3.12; 5,286/414 on Ubuntu 3.13; and
+5,282/418 on both macOS lanes. This is valid evidence for that merged migration
+commit, not the final a8 release commit.
+
+The clean a8 candidate at `7189cf40280d895b61b061f1468767164ccfbcf4`
+passed all 13 jobs in
+[candidate CI run 32578260799](https://github.com/rensutheart/napari-vipp/actions/runs/32578260799),
+including clean wheel and sdist installations on Windows, Linux, and macOS. Its
+normal unsigned-installer build smoke passed in
+[run 32578260812](https://github.com/rensutheart/napari-vipp/actions/runs/32578260812).
+On the same clean source commit, the full RTX 5090 GPU admission passed all 19
+public implementations and 24 evidence owners on `cuda:0`. The retained
+[aggregate](benchmarks/gpu-admission-0.13.0a8-windows-rtx5090.json) has SHA-256
+`0365366dc23750e000c6e9c4f8b384cdf706afdcb338ae3a9f80cfad3d1d8506`;
+the refreshed CuPy measurement and Remove Outliers artifacts have SHA-256
+`ad31968934dd7f12ffcdfceeaf2c4f1a9c0a864918d67f881c4a299d47f39785`
+and `af4aa96e08bf613b658a18c7911843c04baace277807aba48dbb5b0c619098f3`.
+These results qualify the candidate code and GPU catalogue. The final merged
+main SHA, exact-tag reproducible archives, installed a7-to-a8 lifecycle, final
+unsigned installer, public-package verification, and manual deployment remain
+publication gates.
+
+After the immutable a8 tag has produced its exact archives and installer,
+append the replacement domain rows as a release-ledger follow-up on `main`.
+Record the peeled release SHA and final-main CI, RTX GPU evidence, installed
+normal-installer acceptance, wheel/source/Windows artifact hashes, public
+package verification, and companion-documentation deployment. Those
+post-build facts cannot truthfully be embedded in the source tag that creates
+the artifacts. Until the public release record contains them, no a8 row below
+may be described as a carried-forward baseline.
 
 ## Starting Baseline: `v0.13.0a7`
 

@@ -11,7 +11,7 @@ reviewing VIPP itself.
 
 ## Use VIPP
 
-- [Quick start](quick-start.md): the signed-Windows-installer experience,
+- [Quick start](quick-start.md): the installer-first Windows experience,
   manual Linux/macOS and advanced routes, CPU/GPU choices, and a first
   workflow. Start here if you are installing VIPP rather than developing it.
 - [User guide](user-guide.md): build, inspect, save, export, and batch-run
@@ -120,6 +120,7 @@ override the current planning documents above.
 - [Canny/Otsu exact-mask CPU/GPU evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md)
 - [Connected Components exact-label CPU/GPU evidence](benchmarks/connected-components-cupyx-windows-rtx5090.md)
 - [Current CuPy Basic Measurements CPU/GPU evidence](benchmarks/measurements-cupy-windows-rtx5090.md)
+- [0.13.0a8 full GPU admission aggregate](benchmarks/gpu-admission-0.13.0a8-windows-rtx5090.json)
 - [Preserved historical cuCIM Measurements evidence](benchmarks/measurements-cucim-windows-rtx5090.md)
 - [cuCIM native-Windows source evaluation](cucim-windows-source-evaluation.md)
 - [Archived cuCIM native-Windows port plan](cucim-windows-port-plan.md)

@@ -1,9 +1,9 @@
 # Windows Installer And Planning Contract
 
-VIPP `0.13.0a7` contains both the read-only installation planner and a
+VIPP `0.13.0a8` contains both the read-only installation planner and a
 transactional managed-environment executor behind a novice-facing Windows
-setup window. The 0.13.0a7 release executable must be built from the immutable
-`v0.13.0a7` tag with that tag's exact wheel, published only with an explicit
+setup window. The 0.13.0a8 release executable must be built from the immutable
+`v0.13.0a8` tag with that tag's exact wheel, published only with an explicit
 `-UNSIGNED` filename, and bound to its release manifest and SHA-256 checksum.
 Windows therefore reports **Unknown publisher** for this alpha; the
 [installer-first quick start](quick-start.md) requires checksum verification
@@ -42,7 +42,7 @@ ordinal 0 as its default, every visible device must meet that architecture
 floor; device ordinals are retained in the plan. The installer still runs the
 complete VIPP compute doctor before it activates an installation.
 
-For `0.13.0a7`, one-click managed setup calls
+For `0.13.0a8`, one-click managed setup calls
 `SHGetKnownFolderPath(FOLDERID_LocalAppData)` and accepts only the exact track
 roots `VIPP\environments\cpu` and `VIPP\environments\cuda13` beneath that
 canonical directory. A custom managed root is a blocking request, not an
