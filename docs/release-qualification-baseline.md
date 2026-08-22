@@ -1,12 +1,13 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-08-15
+Last reviewed: 2026-08-22
 
-> **Supersession note (2026-08-22):** The CuPy measurement migration and
-> removal of the separate provider installer invalidate the GPU/scientific,
-> Windows-installer, packaging, and documentation carry-forward rows below.
-> Their a7 facts remain an historical record; establish new rows from the next
-> exact release artifact rather than editing those facts in place.
+> **0.13.0a8 candidate note (2026-08-22):** The complete post-a7 change set
+> invalidates every domain row below. Core/UI and workflow/provenance changed
+> alongside GPU/scientific, Windows-installer, packaging, dependencies, and
+> documentation work. The a7 facts remain an historical record; append new a8
+> rows from the exact release commit and artifacts rather than editing those
+> facts in place.
 
 This page records expensive behavioral evidence that future releases may carry
 forward. It prevents a version-only release change from triggering unrelated
@@ -15,6 +16,33 @@ installer, GPU, schema, or manual-UI qualification.
 The baseline is evidence, not a claim that untested platforms or scenarios are
 supported. A release may carry an entry forward only while none of its listed
 invalidators changed.
+
+## `0.13.0a8` Candidate Domain Declaration
+
+Changed since `v0.13.0a7`:
+
+```yaml
+core_ui: true
+workflow_schema_provenance: true
+gpu_scientific: true
+windows_installer: true
+dependencies_toolchain: true
+packaging_release: true
+documentation: true
+```
+
+The merged CuPy-only measurement migration at `db61a19` passed all 13 jobs in
+[main CI run 32567020754](https://github.com/rensutheart/napari-vipp/actions/runs/32567020754).
+The reported full-suite lanes were 5,296 passed/404 skipped on Windows 3.12;
+5,291/409 on Windows 3.13 and Ubuntu 3.12; 5,286/414 on Ubuntu 3.13; and
+5,282/418 on both macOS lanes. This is valid evidence for that merged migration
+commit, not the final a8 release commit.
+
+Before a8 is published, append its replacement domain rows with the exact
+release SHA and final-main CI, RTX GPU evidence, normal-installer acceptance,
+wheel/source/Windows artifact hashes, and companion-documentation deployment
+run. Until those facts exist, no a8 row below may be described as qualified or
+carried forward.
 
 ## Starting Baseline: `v0.13.0a7`
 

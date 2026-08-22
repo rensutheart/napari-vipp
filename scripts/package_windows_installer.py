@@ -21,6 +21,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 import zipfile
@@ -46,6 +47,12 @@ BUILD_VERSION_PINS = {
 BUILD_SCHEMA = "napari-vipp-windows-installer-build"
 RELEASE_SCHEMA = "napari-vipp-windows-installer-release"
 PAYLOAD_SCHEMA = "napari-vipp-windows-installer-payload"
+_RETIRED_PROVIDER_WHEEL_PATHS = frozenset(
+    {
+        "napari_vipp/core/gpu/cucim_background.py",
+        "napari_vipp/core/gpu/cucim_measurements.py",
+    }
+)
 SCHEMA_VERSION = 1
 # Release schema v2 removes the retired optional companion-asset fields.
 RELEASE_SCHEMA_VERSION = 2
@@ -812,6 +819,46 @@ def inspect_source(root: Path) -> SourceState:
     )
 
 
+def retired_provider_paths_in_release_archive(path: Path) -> tuple[str, ...]:
+    """Return retired provider paths bundled in a wheel or source archive."""
+
+    archive_path = path.expanduser().resolve()
+    try:
+        if archive_path.suffix.lower() == ".whl":
+            with zipfile.ZipFile(archive_path) as archive:
+                names = archive.namelist()
+            strip_root = False
+        elif archive_path.name.lower().endswith(".tar.gz"):
+            with tarfile.open(archive_path, "r:gz") as archive:
+                names = archive.getnames()
+            strip_root = True
+        else:
+            raise InstallerPackagingError(
+                f"Unsupported VIPP release archive: {archive_path}"
+            )
+    except InstallerPackagingError:
+        raise
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        raise InstallerPackagingError(
+            f"Could not inspect the VIPP release archive: {archive_path}"
+        ) from exc
+
+    normalized = {
+        _normalize_release_archive_member(name, strip_root=strip_root)
+        for name in names
+    }
+    return tuple(sorted(normalized.intersection(_RETIRED_PROVIDER_WHEEL_PATHS)))
+
+
+def _normalize_release_archive_member(name: str, *, strip_root: bool) -> str:
+    parts = [part for part in name.replace("\\", "/").split("/") if part]
+    if strip_root and parts:
+        parts = parts[1:]
+    if parts and parts[0] == "src":
+        parts = parts[1:]
+    return "/".join(parts)
+
+
 def inspect_wheel(path: Path, *, expected_version: str) -> WheelRecord:
     wheel = path.expanduser().resolve()
     if not wheel.is_file() or wheel.suffix.lower() != ".whl":
@@ -822,6 +869,12 @@ def inspect_wheel(path: Path, *, expected_version: str) -> WheelRecord:
         )
     try:
         with zipfile.ZipFile(wheel) as archive:
+            retired_paths = retired_provider_paths_in_release_archive(wheel)
+            if retired_paths:
+                raise InstallerPackagingError(
+                    "The VIPP wheel contains retired cuCIM provider modules: "
+                    + ", ".join(retired_paths)
+                )
             metadata_names = [
                 name
                 for name in archive.namelist()

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import struct
+import tarfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -291,6 +293,51 @@ def test_inspect_wheel_records_exact_universal_artifact(tmp_path):
     assert record.distribution == "napari-vipp"
     assert record.version == "0.13.0a4"
     assert record.sha256 == hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "retired_path",
+    [
+        "napari_vipp/core/gpu/cucim_background.py",
+        "napari_vipp/core/gpu/cucim_measurements.py",
+    ],
+)
+def test_inspect_wheel_rejects_retired_cucim_provider_modules(
+    tmp_path,
+    retired_path,
+):
+    wheel = _wheel(tmp_path / "napari_vipp-0.13.0a4-py3-none-any.whl")
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(retired_path, "# stale build output\n")
+
+    with pytest.raises(
+        packager.InstallerPackagingError,
+        match="retired cuCIM provider modules",
+    ):
+        packager.inspect_wheel(wheel, expected_version="0.13.0a4")
+
+
+@pytest.mark.parametrize(
+    "retired_path",
+    [
+        "napari_vipp/core/gpu/cucim_background.py",
+        "napari_vipp/core/gpu/cucim_measurements.py",
+    ],
+)
+def test_release_archive_guard_rejects_retired_modules_in_src_layout_sdist(
+    tmp_path,
+    retired_path,
+):
+    sdist = tmp_path / "napari_vipp-0.13.0a8.tar.gz"
+    member = tarfile.TarInfo(f"napari_vipp-0.13.0a8/src/{retired_path}")
+    content = b"# stale build output\n"
+    member.size = len(content)
+    with tarfile.open(sdist, "w:gz") as archive:
+        archive.addfile(member, io.BytesIO(content))
+
+    assert packager.retired_provider_paths_in_release_archive(sdist) == (
+        retired_path,
+    )
 
 
 def test_development_plan_cannot_claim_official_filename(tmp_path, monkeypatch):

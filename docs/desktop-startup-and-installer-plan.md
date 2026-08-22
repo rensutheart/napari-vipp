@@ -187,8 +187,9 @@ Every installer or launcher release should verify:
 - Windows CUDA installation, compute doctor, real eligible GPU execution,
   visible CPU decisions, cleanup, and fallback reporting;
 - spaces in managed CPU and CUDA paths, Unicode managed CPU paths, and the
-  pre-download ASCII-only guidance for managed and existing CUDA paths in
-  `0.13.0a7`, including exact canonical Local-App-Data roots, rejection of
+  pre-download ASCII-only guidance for managed and existing CUDA paths,
+  introduced in `0.13.0a7` and retained in `0.13.0a8`, including exact
+  canonical Local-App-Data roots, rejection of
   custom managed roots, CPU availability when canonical Local App Data makes
   CUDA incompatible, a separate non-mutating existing-environment route, and
   separately reported prior-transaction recovery;

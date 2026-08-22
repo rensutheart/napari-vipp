@@ -11,7 +11,7 @@ reviewing VIPP itself.
 
 ## Use VIPP
 
-- [Quick start](quick-start.md): the signed-Windows-installer experience,
+- [Quick start](quick-start.md): the installer-first Windows experience,
   manual Linux/macOS and advanced routes, CPU/GPU choices, and a first
   workflow. Start here if you are installing VIPP rather than developing it.
 - [User guide](user-guide.md): build, inspect, save, export, and batch-run

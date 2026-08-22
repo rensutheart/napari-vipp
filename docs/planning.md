@@ -39,19 +39,24 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-The current published alpha is `0.13.0a7`. It provides:
+`0.13.0a8` is the current prepared alpha line. Treat it as published only when
+the official GitHub prerelease and PyPI package are public; until then,
+`0.13.0a7` remains the latest published alpha. The a8 line provides:
 
 - workflow schema 4 and batch schema 3 with portable compute intent, explicit
   outputs, checkpoints, manifests, and exact implementation provenance;
 - shared execution across interactive, batch, generated Python/CLI, and export;
 - graph editing, manual/cached nodes, isolated tuning, cancellation, and memory
   controls;
+- explicit source-axis interpretation for unknown TIFF page axes, including
+  reviewed QYX-to-ZYX declaration and Z rescaling;
 - common image formats, local OME-Zarr, optional microscope readers, and an
   initial multi-series batch model;
 - PSF/restoration, segmentation and cleanup, measurement, skeleton,
   colocalization, and spatial-association workflows; and
-- a deliberately bounded set of reviewed CUDA implementations, with CPU as the
-  portable scientific reference and fallback.
+- a deliberately bounded CuPy/CuPyX CUDA catalogue, including binary Remove
+  Outliers and basic object measurements through the normal CUDA installation,
+  with CPU as the portable scientific reference and fallback.
 
 Important remaining limits are:
 
@@ -60,10 +65,10 @@ Important remaining limits are:
 - one container can hold several scientific images, but selected-item identity
   is not yet durable across every interactive, batch, naming, and provenance
   surface;
-- thumbnail presentation can publish provisional images, misstate cached
-  backend provenance, and use an unreadably long status line;
-- repeated Prefer-GPU parameter edits can pay avoidable setup, transfer,
-  synchronization, and presentation costs; and
+- per-sample batch parameters and pyramid-aware interactive loading are not yet
+  available;
+- accelerator qualification remains limited to the exact published runtime,
+  device, operation, dtype, dimensionality, and parameter regions; and
 - validation and platform qualification remain uneven outside the exact
   published CPU and reviewed CUDA regions.
 
@@ -74,14 +79,15 @@ does not wait for every item in a cycle when a coherent, useful subset is ready.
 Unchanged installer, GPU, schema, and UI evidence carries forward according to
 the [qualification baseline](release-qualification-baseline.md).
 
-### Remaining `0.13.0` Cycle: Interactive GPU And Correctness Stabilization
+### `0.13.0a8`: Interactive GPU And Correctness Stabilization
 
-The remaining 0.13 alphas focus on thumbnail integrity, responsive parameter
-tuning, truthful GPU/optimizer behavior, and contained correctness fixes. They
-do not introduce SourceItem or broad lazy execution. Installer feature work is
-deferred to `0.14.0a1`; a security or data-loss defect remains an exception.
+The a8 work closes the thumbnail-integrity, responsive-parameter-tuning,
+truthful GPU/optimizer, named-axis, and contained correctness slices below.
+Their detailed contracts remain here as the delivered record. Final a8
+qualification covers their union; new source-loading and installer feature work
+moves to `0.14.0a1`, with security or data-loss defects remaining exceptions.
 
-Recommended dependency order:
+Delivered dependency order:
 
 1. concise thumbnail presentation and backend provenance;
 2. atomic final-thumbnail publication;
@@ -90,9 +96,9 @@ Recommended dependency order:
    resident-output reuse through a shared execution seam; and
 5. evidence-justified cross-run scientific residency.
 
-Optimizer fixes `#31` then `#32`, Rescale Axes `#33`, and the separate volume-
-crop feature are non-blocking 0.13 workstreams that may proceed in parallel.
-They do not gate the thumbnail/GPU sequence or every 0.13 alpha.
+Optimizer fixes `#31` then `#32` and Rescale Axes `#33` are included in a8.
+The separately scoped volume-crop feature is not an a8 release blocker and must
+not delay the SourceItem work merely because it remains useful.
 
 Items with disjoint ownership may proceed in parallel, but later work must use
 the generation, provenance, and measurement contracts established earlier.
@@ -446,7 +452,7 @@ images/masks/labels, physical origins, save/reopen/export/batch, rapid drag
 events, one committed calculation, and stale/cancelled completion. This work can
 land in 0.13 if it remains contained; it is not a blocker for every 0.13 alpha.
 
-#### 0.13 Release Boundary
+#### 0.13.0a8 Release Boundary
 
 - Run focused ordinary CI for presentation, optimizer-writer, and axis/crop
   changes.

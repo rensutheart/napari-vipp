@@ -1,9 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.13.0a8 - 2026-08-22
 
 ### Features
 
+- Replaced the optional cuCIM-backed basic object-measurement providers with
+  resident CuPy implementations available through the normal CUDA
+  installation. Exact saved `cucim-measure-objects-basic-v1` and
+  `cucim-measure-objects-intensity-basic-v1` pins migrate to the corresponding
+  `cupy-*` IDs, while an ambiguous broad `library:cucim` preference remains
+  visibly unavailable. The separate cuCIM source-build bundle, installer, and
+  hosted canary are retired; historical implementation and benchmark evidence
+  remain preserved as a dated record.
 - Added **Remove Outliers (Binary)**, a source-aligned ImageJ/Fiji mask-cleanup
   node for removing foreground specks or filling background notches. It uses
   ImageJ's exact circular-footprint construction and nearest-edge behavior,
