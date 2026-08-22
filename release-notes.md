@@ -99,10 +99,8 @@ itself validate the input data, parameters, PSF, or biological interpretation.
 
 ## Windows installation
 
-The a8-specific links below are valid only after the official `v0.13.0a8`
-GitHub prerelease and its checksum sidecars are public. Until then, use the
-public 0.13.0a7 release or an explicitly marked development checkout; do not
-treat a guessed a8 asset URL as a download.
+The official `v0.13.0a8` GitHub prerelease and checksum sidecars are public.
+Use only that release surface; do not treat a guessed asset URL as a download.
 
 For the shortest route, download
 `VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED.exe` and
@@ -154,29 +152,36 @@ above. The changed Remove Outliers, source-axis, rescaling, optimizer, graph,
 control, thumbnail, installer, packaging, and documentation paths have focused
 automated coverage in the source tree.
 
-The release candidate at `7189cf40280d` passed all 13 jobs in
+The GPU qualification source at `7189cf40280d` passed all 13 jobs in
 [CI run 32578260799](https://github.com/rensutheart/napari-vipp/actions/runs/32578260799),
 including clean wheel and source-archive installs across Windows, Linux, and
 macOS. Its normal unsigned-installer build smoke also passed in
 [run 32578260812](https://github.com/rensutheart/napari-vipp/actions/runs/32578260812).
 
-The same clean candidate passed the full RTX 5090 admission catalogue: 19
+The same clean source passed the full RTX 5090 admission catalogue: 19
 public implementations and all 24 evidence owners completed successfully on
 `cuda:0`. The retained
 [aggregate](docs/benchmarks/gpu-admission-0.13.0a8-windows-rtx5090.json)
 has SHA-256
 `0365366dc23750e000c6e9c4f8b384cdf706afdcb338ae3a9f80cfad3d1d8506`.
 The refreshed Remove Outliers and CuPy measurement reports are linked from the
-architecture and GPU guides.
+architecture and GPU guides. Production GPU code was unchanged between that
+source and the final release commit; the later production delta was limited to
+deterministic source-archive canonicalization.
 
-Publication requires a recorded exact-`main` CI result, final RTX GPU
-qualification, normal-installer acceptance, and hashes for the wheel, source
-archive, and finalized Windows assets. The immutable release record and
-download checksums identify the exact results and artifacts that satisfied
-those gates.
+The tagged release commit
+`5a66ae9d1098ca5a8d409a4075c585692e3c3638` passed all 13 jobs in
+[exact-main CI run 32584690313](https://github.com/rensutheart/napari-vipp/actions/runs/32584690313),
+and its normal installer smoke passed in
+[run 32585512509](https://github.com/rensutheart/napari-vipp/actions/runs/32585512509).
+The final CUDA installer updated an owned a7 environment to a8 with no retired
+cuCIM/nvimgcodec residue, healthy dependencies, Doctor 19/19, qualified CuPy
+measurements, and the a8 GUI. The exact six GitHub assets and matching PyPI
+wheel/source bytes are recorded in the
+[release qualification baseline](docs/release-qualification-baseline.md).
 
 See the [Quick Start](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a8/docs/quick-start.md),
 [GPU Guide](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a8/docs/gpu-guide.md),
 [full changelog](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a8/CHANGELOG.md#0130a8---2026-08-22),
 and [roadmap](https://github.com/rensutheart/napari-vipp/blob/v0.13.0a8/docs/planning.md)
-for complete scope and remaining qualification work.
+for the complete delivered scope and remaining product milestones.

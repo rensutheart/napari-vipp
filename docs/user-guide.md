@@ -12,11 +12,11 @@ your data and acquisition settings.
 
 ## Start VIPP
 
-Begin with the [installer-first quick start](quick-start.md). Once the official
-`0.13.0a8` prerelease and checksum sidecars are public, its explicitly unsigned
-Windows `.exe` is the recommended ordinary-user route. Until then, use the
-published `0.13.0a7` release. Always verify the published SHA-256 before
-accepting Windows' **Unknown publisher** warning. Manual pip installation
+Begin with the [installer-first quick start](quick-start.md). The official
+`0.13.0a8` prerelease and checksum sidecars are public, and its explicitly
+unsigned Windows `.exe` is the recommended ordinary-user route. Always verify
+the published SHA-256 before accepting Windows' **Unknown publisher** warning.
+Manual pip installation
 remains available for Linux, macOS, and advanced use. Installing into an
 existing napari environment,
 raw planner commands, and environment repair are advanced routes.

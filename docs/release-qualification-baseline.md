@@ -2,12 +2,10 @@
 
 Last reviewed: 2026-08-22
 
-> **0.13.0a8 candidate note (2026-08-22):** The complete post-a7 change set
-> invalidates every domain row below. Core/UI and workflow/provenance changed
-> alongside GPU/scientific, Windows-installer, packaging, dependencies, and
-> documentation work. The a7 facts remain an historical record; append new a8
-> rows from the exact release commit and artifacts rather than editing those
-> facts in place.
+> **0.13.0a8 release record (2026-08-22):** Every domain invalidated by the
+> complete post-a7 change set was requalified at the boundaries recorded below.
+> The a7 rows remain unchanged as an historical record; the a8 rows are the
+> current carry-forward baseline.
 
 This page records expensive behavioral evidence that future releases may carry
 forward. It prevents a version-only release change from triggering unrelated
@@ -17,7 +15,19 @@ The baseline is evidence, not a claim that untested platforms or scenarios are
 supported. A release may carry an entry forward only while none of its listed
 invalidators changed.
 
-## `0.13.0a8` Candidate Domain Declaration
+## `v0.13.0a8` Release Qualification
+
+- Tag and release commit:
+  `5a66ae9d1098ca5a8d409a4075c585692e3c3638`.
+- [Exact-main CI run 32584690313](https://github.com/rensutheart/napari-vipp/actions/runs/32584690313):
+  all 13 jobs passed.
+- [Normal Windows-installer smoke run 32585512509](https://github.com/rensutheart/napari-vipp/actions/runs/32585512509):
+  passed.
+- [GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a8)
+  and [PyPI 0.13.0a8](https://pypi.org/project/napari-vipp/0.13.0a8/):
+  published and verified.
+- [PyPI publication run 32592042093](https://github.com/rensutheart/napari-vipp/actions/runs/32592042093):
+  passed; the public wheel and source archive matched the qualified bytes.
 
 Changed since `v0.13.0a7`:
 
@@ -31,41 +41,70 @@ packaging_release: true
 documentation: true
 ```
 
-The merged CuPy-only measurement migration at `db61a19` passed all 13 jobs in
-[main CI run 32567020754](https://github.com/rensutheart/napari-vipp/actions/runs/32567020754).
-The reported full-suite lanes were 5,296 passed/404 skipped on Windows 3.12;
-5,291/409 on Windows 3.13 and Ubuntu 3.12; 5,286/414 on Ubuntu 3.13; and
-5,282/418 on both macOS lanes. This is valid evidence for that merged migration
-commit, not the final a8 release commit.
+### GPU and installed-update evidence
 
-The clean a8 candidate at `7189cf40280d895b61b061f1468767164ccfbcf4`
-passed all 13 jobs in
-[candidate CI run 32578260799](https://github.com/rensutheart/napari-vipp/actions/runs/32578260799),
-including clean wheel and sdist installations on Windows, Linux, and macOS. Its
-normal unsigned-installer build smoke passed in
-[run 32578260812](https://github.com/rensutheart/napari-vipp/actions/runs/32578260812).
-On the same clean source commit, the full RTX 5090 GPU admission passed all 19
-public implementations and 24 evidence owners on `cuda:0`. The retained
+The clean GPU qualification source was
+`7189cf40280d895b61b061f1468767164ccfbcf4`. On an RTX 5090 at `cuda:0`, all
+19 public implementations and all 24 evidence owners passed. The retained
 [aggregate](benchmarks/gpu-admission-0.13.0a8-windows-rtx5090.json) has SHA-256
-`0365366dc23750e000c6e9c4f8b384cdf706afdcb338ae3a9f80cfad3d1d8506`;
-the refreshed CuPy measurement and Remove Outliers artifacts have SHA-256
-`ad31968934dd7f12ffcdfceeaf2c4f1a9c0a864918d67f881c4a299d47f39785`
-and `af4aa96e08bf613b658a18c7911843c04baace277807aba48dbb5b0c619098f3`.
-These results qualify the candidate code and GPU catalogue. The final merged
-main SHA, exact-tag reproducible archives, installed a7-to-a8 lifecycle, final
-unsigned installer, public-package verification, and manual deployment remain
-publication gates.
+`0365366dc23750e000c6e9c4f8b384cdf706afdcb338ae3a9f80cfad3d1d8506`.
+Production GPU code did not change between that source and the release commit;
+the later production delta was the packaging-only deterministic source-archive
+canonicalizer.
 
-After the immutable a8 tag has produced its exact archives and installer,
-append the replacement domain rows as a release-ledger follow-up on `main`.
-Record the peeled release SHA and final-main CI, RTX GPU evidence, installed
-normal-installer acceptance, wheel/source/Windows artifact hashes, public
-package verification, and companion-documentation deployment. Those
-post-build facts cannot truthfully be embedded in the source tag that creates
-the artifacts. Until the public release record contains them, no a8 row below
-may be described as a carried-forward baseline.
+The installed CUDA route then passed a focused a7-to-a8 update with the final
+unsigned installer. The active a8 environment contained no cuCIM,
+`nvidia-nvimgcodec`, or old VIPP cuCIM-provider residue; `pip check` passed;
+Doctor admitted 19 of 19 implementations; and the two CuPy measurement
+implementations passed parity, cancellation, resident-output reuse, and zero
+cleanup checks without fallback. The GUI showed VIPP 0.13.0a8. The healthy a7
+rollback environment was deliberately preserved under the risk-based
+minor-release scope instead of repeating the unchanged CPU, cancellation,
+repair, and uninstall matrix. The retained installed-acceptance summary has
+SHA-256
+`661e7d3fdb84393161e684c2a4f2a6a273a5d52b4456a50d697a11f522c58532`.
 
-## Starting Baseline: `v0.13.0a7`
+### Published artifacts
+
+The GitHub prerelease contains exactly these six qualified assets:
+
+| Asset | SHA-256 |
+| --- | --- |
+| `napari_vipp-0.13.0a8-py3-none-any.whl` | `77f18e4f34541847c93aa0a54b230a586b9967cc9a66d97370ea0f15ff593ec5` |
+| `napari_vipp-0.13.0a8.tar.gz` | `4e1a7b40669832ad8e19e7e0297bae0c3d19fc175f7a99ba3d5284425dbbb433` |
+| `VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED.exe` | `5b8233a05696efbf8fea7557012934385021ea3e9018befdd7789bf624740528` |
+| `VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED-release.json` | `cac0276a7b0e4556bf93ba1c7bb270f209460070906be061157f783beee33d58` |
+| `VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED-THIRD-PARTY-NOTICES.txt` | `95ca668d0977be347ab39af820f97652ed3565ed7ea4218205bb3a716a847e2d` |
+| `SHA256SUMS-Windows-0.13.0a8.txt` | `93ad582d443dd95625b1d512d0f3b572d909676565eeb694d53d5b4ffe0b0ab6` |
+
+The PyPI wheel and source archive matched the first two rows byte for byte.
+No cuCIM add-on asset was published.
+
+### Companion documentation deployment
+
+Companion documentation PR
+[`vipp-mkdocs#16`](https://github.com/rensutheart/vipp-mkdocs/pull/16) merged as
+`b6567eeb5a8921926c7b446c4997c42513d0ec34`. Nightly/deployment checks
+[32592434921](https://github.com/rensutheart/vipp-mkdocs/actions/runs/32592434921)
+and
+[32592434943](https://github.com/rensutheart/vipp-mkdocs/actions/runs/32592434943)
+passed, followed by successful stable-release deployment
+[32592472705](https://github.com/rensutheart/vipp-mkdocs/actions/runs/32592472705).
+The public `/0.13.0a8/`, `/stable/`, and `versions.json` surfaces were verified.
+
+## Current Domain Records: `v0.13.0a8`
+
+| Domain | Qualified at | Baseline evidence | Carry forward when | Invalidate when |
+| --- | --- | --- | --- | --- |
+| Core/UI | `v0.13.0a8` / `5a66ae9` / 2026-08-22 | Exact-main CI and focused regressions covered the changed graph, inspector, optimizer, thumbnail, source-axis, numeric-control, and workflow journeys. | The specific UI components, worker/ownership behavior, examples, and interaction contracts being relied on are unchanged. | Affected UI, interaction, worker, or example behavior changes. Smoke only the changed journey. |
+| Windows installer | `v0.13.0a8` / `5a66ae9` / 2026-08-22 | Exact-main installer smoke passed. The final hash-locked unsigned EXE updated the installed CUDA a7 environment to a8 with zero retired-provider residue, healthy dependencies, Doctor 19/19, qualified CuPy measurements, and a visible a8 GUI. The healthy a7 rollback was preserved; unchanged CPU/cancellation/repair/uninstall behavior carries forward from a7 and was deliberately not repeated. | Installer code, runtime/build pins, dependency routes, ownership layout, update cleanup, and Windows support assumptions are unchanged. | Any relevant install/update/repair/rollback/uninstall/network/path/ownership behavior or installer dependency changes; signing policy changes; or a canary fails. Version and unrelated embedded feature changes alone do not invalidate lifecycle behavior. |
+| GPU/scientific catalogue | `v0.13.0a8` / `7189cf4` plus tag `5a66ae9` / 2026-08-22 | Full RTX 5090 admission passed 19 public implementations and 24 evidence owners on `cuda:0`; aggregate SHA-256 `0365366dc23750e000c6e9c4f8b384cdf706afdcb338ae3a9f80cfad3d1d8506`. Production GPU code was unchanged through the tag, and installed a8 repeated the changed measurement path without fallback. | GPU implementations, scientific contracts, compute policy/specs, dispatch/fallback/cleanup/provenance/memory code, admission catalogue, NumPy/SciPy/scikit-image/CuPy/CUDA pins, and supported hardware assumptions are unchanged. | Any listed input changes or a real-GPU canary fails. Qualify affected providers only unless a shared layer or the catalogue changed. |
+| Workflow/schema/provenance | `v0.13.0a8` / `5a66ae9` / 2026-08-22 | Exact-main CI covered workflow schema 4, batch/config/manifest schema 3, source-axis declarations, generated/export paths, migrations, batch planning, and implementation provenance. | Schema versions, serializers, migrations, graph/source identity, batch planning, manifest/checkpoint, and generated-runner contracts are unchanged. | Any schema, migration, source identity, serializer, batch, provenance, or generated-runner contract changes. |
+| Dependencies/toolchain | `v0.13.0a8` / `5a66ae9` / 2026-08-22 | Cross-platform exact-main CI, clean wheel/sdist installs, final installer smoke, and the installed CUDA update qualified the a8 pins and the removal of cuCIM/nvimgcodec from the public route. | Runtime/build pins, supported Python/OS/toolchain matrix, dependency groups, and accelerator stack are unchanged. | Any relevant runtime, build, installer, Python, OS, or accelerator dependency changes. Requalify only the affected routes. |
+| Packaging/release | `v0.13.0a8` / `5a66ae9` / 2026-08-22 | Independent builds produced identical wheels and canonical source archives; clean installs, metadata, resources, entry points, manifests, and archive guards passed. Exactly six hash-locked GitHub assets were published, and PyPI run 32592042093 published matching wheel/sdist bytes. | Build backend, canonicalizer, package-data/resource layout, entry points, publication workflows, dependency declarations, and asset composition are unchanged. | Any listed input changes or a publication canary fails. Exact tag/version/hash/public-URL facts are regenerated for every release. |
+| Documentation | `v0.13.0a8` / `b6567ee` / 2026-08-22 | Companion PR #16 merged; strict/nightly checks passed; release deployment 32592472705 succeeded; numbered, stable, and version-index surfaces were verified. | Site configuration, navigation, installation/upgrade behavior, UI shown in screenshots, and changed feature documentation are unchanged. | Relevant documentation or pictured behavior changes. Inspect only changed pages. |
+
+## Historical Starting Baseline: `v0.13.0a7`
 
 The first ledger snapshot is a7. Each domain can later advance independently;
 the qualification tag/commit is therefore recorded on every row rather than
@@ -79,7 +118,7 @@ assuming one global version forever.
 - PyPI release: <https://pypi.org/project/napari-vipp/0.13.0a7/>
 - Published bundle canary: 31872248297 passed.
 
-## Domain Records
+### Historical a7 Domain Records
 
 | Domain | Qualified at | Baseline evidence | Carry forward when | Invalidate when |
 | --- | --- | --- | --- | --- |

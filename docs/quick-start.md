@@ -8,10 +8,8 @@ The normal VIPP experience is one Windows installer: download the explicitly
 named unsigned `.exe`, verify it, review the proposed location and compute
 option, and launch VIPP from the shortcuts it creates.
 
-The `0.13.0a8` links below become valid only after the official prerelease and
-its checksum sidecars are public. Until then, use the published `0.13.0a7`
-release or an explicitly marked development checkout; never download a guessed
-release asset.
+The official `0.13.0a8` prerelease and its checksum sidecars are public. Use
+only that release surface; never download a guessed release asset.
 
 **[Download the VIPP 0.13.0a8 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a8/VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED.exe)**
 
