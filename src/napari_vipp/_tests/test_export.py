@@ -28,8 +28,11 @@ from napari_vipp.core.export import (
 )
 from napari_vipp.core.io import ImageDataset, ImageSeriesInfo, SourceInspection
 from napari_vipp.core.metadata import (
+    AXIS_CONFIDENCE_EXPLICIT,
+    AXIS_CONFIDENCE_INFERRED,
     AmbiguousAxisError,
     AxisDeclaration,
+    AxisMetadata,
     ChannelMetadata,
     image_state_from_array,
 )
@@ -50,6 +53,30 @@ def _starter_pipeline() -> PrototypePipeline:
     pipeline = PrototypePipeline()
     pipeline.reset_starter_graph()
     return pipeline
+
+
+def _inferred_qyx_state(data: np.ndarray):
+    return image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata(
+                "q",
+                "unknown",
+                confidence=AXIS_CONFIDENCE_INFERRED,
+            ),
+            AxisMetadata(
+                "y",
+                "space",
+                confidence=AXIS_CONFIDENCE_INFERRED,
+            ),
+            AxisMetadata(
+                "x",
+                "space",
+                confidence=AXIS_CONFIDENCE_INFERRED,
+            ),
+        ),
+        metadata_source="shape-inferred test state",
+    )
 
 
 def _assert_embedded_operation(code: str, operation_id: str) -> None:
@@ -996,6 +1023,77 @@ def test_exported_rescale_axes_preserves_output_size_mode():
     assert '"resize_mode":"Output size"' in code
     assert '"x_size":12' in code
     assert results[node.id].shape == (5, 8, 12)
+
+
+def test_exported_rescale_axes_matches_native_for_inferred_qyx():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node("rescale_axes")
+    assert pipeline.connect("input", node.id).success
+    pipeline.set_param(node.id, "x_scale", 1.5)
+    pipeline.set_param(node.id, "y_scale", 0.5)
+    pipeline.set_param(node.id, "z_scale", 1.0)
+    pipeline.set_param(node.id, "lock_xy", False)
+    pipeline.set_param(node.id, "interpolation", "Nearest neighbor")
+    pipeline.set_param(node.id, "anti_aliasing", False)
+    image = np.arange(3 * 8 * 10, dtype=np.uint16).reshape(3, 8, 10)
+    payload = SourcePayload(image, image_state=_inferred_qyx_state(image))
+
+    native = pipeline.run(
+        None,
+        source_payloads={"input": payload},
+    )[node.id]
+    native_state = pipeline.output_states[node.id]
+    code = export_pipeline_to_python(
+        pipeline,
+        compute_request=ComputeRequest(mode="cpu"),
+    )
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+
+    exported = namespace["run_pipeline"](payload)
+    exported_state = exported.output_states[node.id]
+
+    np.testing.assert_array_equal(exported[node.id], native)
+    assert exported[node.id].shape == (3, 4, 15)
+    assert exported_state.to_dict() == native_state.to_dict()
+    assert exported_state.axis_order == "QYX"
+    assert [axis.confidence for axis in exported_state.axes] == [
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_EXPLICIT,
+        AXIS_CONFIDENCE_EXPLICIT,
+    ]
+
+
+def test_exported_image_source_axis_declaration_enables_z_rescale():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "axis_declaration", "QYX -> ZYX")
+    node = pipeline.add_node("rescale_axes")
+    assert pipeline.connect("input", node.id).success
+    pipeline.set_param(node.id, "z_scale", 2.0)
+    pipeline.set_param(node.id, "interpolation", "Nearest neighbor")
+    pipeline.set_param(node.id, "anti_aliasing", False)
+    image = np.arange(3 * 8 * 10, dtype=np.uint16).reshape(3, 8, 10)
+    raw_state = image_state_from_array(image, layer_metadata={"axes": "QYX"})
+    payload = SourcePayload(image, image_state=raw_state)
+
+    native = pipeline.run(None, source_payloads={"input": payload})[node.id]
+    native_state = pipeline.output_states[node.id]
+    code = export_pipeline_to_python(
+        pipeline,
+        compute_request=ComputeRequest(mode="cpu"),
+    )
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+
+    exported = namespace["run_pipeline"](payload)
+
+    np.testing.assert_array_equal(exported[node.id], native)
+    assert exported[node.id].shape == (6, 8, 10)
+    assert exported.output_states[node.id].to_dict() == native_state.to_dict()
+    assert exported.output_states["input"].axis_order == "ZYX"
+    assert "Image Source" in exported.output_states["input"].history[-1]
 
 
 def test_export_handles_multi_input_nodes():

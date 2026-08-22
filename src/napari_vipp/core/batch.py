@@ -2579,11 +2579,16 @@ def _preflight_representative_scientific_contract(
                 summaries,
                 generic_undeclared,
             )
-        declaration = None if binding is None else binding.axis_declaration
+        declaration = (
+            AxisDeclaration.from_value(node.params.get("axis_declaration"))
+            if binding is None
+            else binding.axis_declaration
+        )
         try:
             effective_state, axis_semantics = _declared_batch_source_state(
                 raw_state,
                 binding,
+                image_source_declaration=node.params.get("axis_declaration"),
             )
             summaries.append(
                 f"{title}: raw {axis_semantics['raw_axes']}, effective "
@@ -2622,6 +2627,7 @@ def _preflight_representative_scientific_contract(
             },
             selected.name or path.name,
             effective_state,
+            axis_semantics_resolved=True,
         )
     try:
         contract_pipeline.preflight_axis_contract(payloads)
@@ -2757,6 +2763,7 @@ def _source_payloads_for_item(
         effective_state, axis_semantics = _declared_batch_source_state(
             raw_state,
             binding,
+            image_source_declaration=node.params.get("axis_declaration"),
         )
         provenance = _json_safe(dataset.provenance)
         effective_provenance = (
@@ -2776,6 +2783,7 @@ def _source_payloads_for_item(
             },
             dataset.selected_series.name or path.name,
             effective_state,
+            axis_semantics_resolved=True,
         )
         identity = {
             **_path_identity(path),
@@ -2811,15 +2819,22 @@ def _source_payloads_for_item(
 def _declared_batch_source_state(
     raw_state,
     binding: BatchSourceConfig | None,
+    *,
+    image_source_declaration: object = None,
 ):
-    declaration = None if binding is None else binding.axis_declaration
+    declaration_source = "batch config" if binding is not None else "Image Source"
+    declaration = (
+        AxisDeclaration.from_value(image_source_declaration)
+        if binding is None
+        else binding.axis_declaration
+    )
     effective_state = (
         raw_state
         if declaration is None
         else apply_axis_declaration(
             raw_state,
             declaration,
-            declaration_source="batch config",
+            declaration_source=declaration_source,
         )
     )
     declaration_record = (
@@ -2827,7 +2842,7 @@ def _declared_batch_source_state(
         if declaration is None
         else {
             **declaration.to_dict(),
-            "source": "batch config",
+            "source": declaration_source,
             "applied": True,
             "data_order_changed": False,
         }

@@ -843,6 +843,179 @@ def test_qyx_scientific_preflight_stops_before_any_batch_artifact(
     assert not output_dir.exists()
 
 
+def test_qyx_xy_rescale_preflight_matches_second_rescale_execution(
+    tmp_path,
+    monkeypatch,
+):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.arange(3 * 8 * 10, dtype=np.uint16).reshape(3, 8, 10)
+    tifffile.imwrite(inputs / "generic.tif", source, photometric="minisblack")
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    first = pipeline.add_node("rescale_axes")
+    assert pipeline.connect("input", first.id).success
+    pipeline.set_param(first.id, "x_scale", 2.0)
+    pipeline.set_param(first.id, "y_scale", 0.5)
+    pipeline.set_param(first.id, "z_scale", 1.0)
+    pipeline.set_param(first.id, "lock_xy", False)
+    pipeline.set_param(first.id, "interpolation", "Nearest neighbor")
+    pipeline.set_param(first.id, "anti_aliasing", False)
+    second = pipeline.add_node("rescale_axes")
+    assert pipeline.connect(first.id, second.id).success
+    pipeline.set_param(second.id, "resize_mode", "Output size")
+    pipeline.set_param(second.id, "x_size", 7)
+    pipeline.set_param(second.id, "y_size", 6)
+    pipeline.set_param(second.id, "z_size", 3)
+    pipeline.set_param(second.id, "lock_xy", False)
+    pipeline.set_param(second.id, "interpolation", "Nearest neighbor")
+    pipeline.set_param(second.id, "anti_aliasing", False)
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(second.id, output.id).success
+    workflow = serialize_workflow(pipeline)
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, (output.id,))
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.tif"),),
+    )
+    observed_states = {}
+    original_preflight = PrototypePipeline.preflight_axis_contract
+
+    def capture_preflight_states(contract_pipeline, source_payloads):
+        result = original_preflight(contract_pipeline, source_payloads)
+        observed_states.update(contract_pipeline.output_states)
+        return result
+
+    monkeypatch.setattr(
+        PrototypePipeline,
+        "preflight_axis_contract",
+        capture_preflight_states,
+    )
+
+    plan = preflight_batch(workflow, config)
+
+    assert observed_states[first.id].shape == (3, 4, 20)
+    assert observed_states[second.id].shape == (3, 6, 7)
+    assert observed_states[second.id].axis_order == "QYX"
+    assert not output_dir.exists()
+
+    result = run_batch(
+        workflow,
+        config,
+        plan=plan,
+        compute_request=ComputeRequest(mode="cpu"),
+    )
+
+    assert result.summary["completed"] == 1
+    assert np.load(output_dir / "generic__output.npy").shape == (3, 6, 7)
+
+
+def test_qyx_rescale_z_change_stops_with_declaration_suggestion(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.arange(3 * 8 * 10, dtype=np.uint16).reshape(3, 8, 10)
+    tifffile.imwrite(inputs / "generic.tif", source, photometric="minisblack")
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    rescale = pipeline.add_node("rescale_axes")
+    assert pipeline.connect("input", rescale.id).success
+    pipeline.set_param(rescale.id, "x_scale", 1.0)
+    pipeline.set_param(rescale.id, "y_scale", 1.0)
+    pipeline.set_param(rescale.id, "z_scale", 2.0)
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(rescale.id, output.id).success
+    workflow = serialize_workflow(pipeline)
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, (output.id,))
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.tif"),),
+    )
+
+    with pytest.raises(BatchScientificPreflightError) as error:
+        preflight_batch(workflow, config)
+
+    assert "Z" in str(error.value)
+    assert "QYX -> ZYX" in str(error.value)
+    suggestion = error.value.axis_suggestion
+    assert suggestion is not None
+    assert suggestion.source_node_id == "input"
+    assert suggestion.declaration == AxisDeclaration("QYX", "ZYX")
+    assert not output_dir.exists()
+
+
+def test_saved_and_batch_axis_declarations_apply_once(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.arange(3 * 8 * 10, dtype=np.uint16).reshape(3, 8, 10)
+    tifffile.imwrite(inputs / "generic.tif", source, photometric="minisblack")
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "axis_declaration", "QYX -> ZYX")
+    rescale = pipeline.add_node("rescale_axes")
+    assert pipeline.connect("input", rescale.id).success
+    pipeline.set_param(rescale.id, "z_scale", 2.0)
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(rescale.id, output.id).success
+    workflow = serialize_workflow(pipeline)
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, (output.id,))
+    config = replace(
+        config,
+        sources=(
+            replace(
+                config.sources[0],
+                pattern="*.tif",
+                axis_declaration=AxisDeclaration("QYX", "ZYX"),
+            ),
+        ),
+    )
+
+    plan = preflight_batch(workflow, config)
+    result = run_batch(
+        workflow,
+        config,
+        plan=plan,
+        compute_request=ComputeRequest(mode="cpu"),
+    )
+
+    assert result.summary["completed"] == 1
+    assert np.load(output_dir / "generic__output.npy").shape == (6, 8, 10)
+    source_record = result.manifest.items[0].sources[0]
+    assert source_record["raw_axes"] == "QYX"
+    assert source_record["effective_axes"] == "ZYX"
+
+
+def test_blank_batch_axis_choice_overrides_saved_image_source_choice(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.arange(3 * 8 * 10, dtype=np.uint16).reshape(3, 8, 10)
+    tifffile.imwrite(inputs / "generic.tif", source, photometric="minisblack")
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "axis_declaration", "QYX -> ZYX")
+    rescale = pipeline.add_node("rescale_axes")
+    assert pipeline.connect("input", rescale.id).success
+    pipeline.set_param(rescale.id, "z_scale", 2.0)
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(rescale.id, output.id).success
+    workflow = serialize_workflow(pipeline)
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, (output.id,))
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.tif"),),
+    )
+
+    with pytest.raises(BatchScientificPreflightError) as error:
+        preflight_batch(workflow, config)
+
+    assert error.value.axis_suggestion is not None
+    assert error.value.axis_suggestion.declaration == AxisDeclaration("QYX", "ZYX")
+    assert not output_dir.exists()
+
+
 def test_non_tiff_qyx_contract_never_offers_automatic_z_suggestion():
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
@@ -922,6 +1095,40 @@ def test_unbound_fixed_qyx_source_does_not_offer_unusable_axis_suggestion(tmp_pa
 
     assert error.value.axis_suggestion is None
     assert not output_dir.exists()
+
+
+def test_unbound_fixed_qyx_source_uses_saved_image_source_declaration(tmp_path):
+    inputs = tmp_path / "inputs"
+    _write_arrays(inputs, field=np.zeros((8, 9), dtype=np.uint16))
+    fixed_path = tmp_path / "fixed.tif"
+    tifffile.imwrite(
+        fixed_path,
+        np.zeros((3, 8, 9), dtype=np.uint16),
+        photometric="minisblack",
+    )
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    fixed = pipeline.add_node("input")
+    pipeline.set_param(fixed.id, "source_mode", "file path")
+    pipeline.set_param(fixed.id, "file_path", str(fixed_path))
+    pipeline.set_param(fixed.id, "axis_declaration", "QYX -> ZYX")
+    subtract = pipeline.add_node("subtract_background")
+    pipeline.set_param(subtract.id, "spatial_mode", "3D ZYX")
+    assert pipeline.connect(fixed.id, subtract.id).success
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(subtract.id, output.id).success
+    workflow = serialize_workflow(pipeline)
+    config = _batch_config(
+        workflow,
+        inputs,
+        tmp_path / "outputs",
+        (output.id,),
+    )
+
+    plan = preflight_batch(workflow, config)
+
+    assert len(plan.items) == 1
+    assert not config.output_dir.exists()
 
 
 def test_qyx_scientific_preflight_crosses_multi_output_image_nodes(tmp_path):

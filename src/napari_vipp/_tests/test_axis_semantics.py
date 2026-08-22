@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 
 from napari_vipp.core.metadata import (
+    AXIS_CONFIDENCE_EXPLICIT,
+    AXIS_CONFIDENCE_INFERRED,
     AXIS_CONFIDENCE_MIXED,
     AcquisitionMetadata,
     AmbiguousAxisError,
@@ -33,6 +35,45 @@ def _pipeline_with(operation_id: str) -> tuple[PrototypePipeline, str]:
     node = pipeline.add_node(operation_id)
     assert pipeline.connect("input", node.id).success
     return pipeline, node.id
+
+
+def _inferred_named_state(
+    data,
+    names: str,
+    *,
+    scales: tuple[float, ...] | None = None,
+    translations: tuple[float, ...] | None = None,
+    source_axes: tuple[int, ...] | None = None,
+):
+    """Build carried named axes whose semantic provenance remains inferred."""
+    normalized = tuple(name.casefold() for name in names)
+    axis_types = {
+        "t": "time",
+        "c": "channel",
+        "z": "space",
+        "y": "space",
+        "x": "space",
+    }
+    count = len(normalized)
+    scales = scales or (1.0,) * count
+    translations = translations or (0.0,) * count
+    source_axes = source_axes or tuple(range(count))
+    axes = tuple(
+        AxisMetadata(
+            name,
+            axis_types.get(name, "unknown"),
+            scale=scales[index],
+            translation=translations[index],
+            source_axis=source_axes[index],
+            confidence=AXIS_CONFIDENCE_INFERRED,
+        )
+        for index, name in enumerate(normalized)
+    )
+    return image_state_from_array(
+        data,
+        axes=axes,
+        metadata_source="carried inferred test axes",
+    )
 
 
 @pytest.mark.parametrize(
@@ -770,7 +811,7 @@ def test_multi_input_positional_operation_rejects_noncanonical_explicit_axes():
 
 @pytest.mark.parametrize(
     "operation_id",
-    ("orthogonal_projection", "rescale_axes", "set_pixel_size"),
+    ("orthogonal_projection", "set_pixel_size"),
 )
 def test_named_spatial_role_operations_require_explicit_spatial_axes(operation_id):
     data = np.zeros((3, 8, 9), dtype=np.float32)
@@ -782,6 +823,307 @@ def test_named_spatial_role_operations_require_explicit_spatial_axes(operation_i
     explicit_but_nonspatial, _nonspatial_id = _pipeline_with(operation_id)
     with pytest.raises(AmbiguousAxisError, match="explicit spatial ax"):
         explicit_but_nonspatial.run(data, input_metadata={"axes": "ABC"})
+
+
+def test_rescale_axes_accepts_inferred_yx_and_records_the_authored_plane():
+    data = np.arange(8 * 10, dtype=np.uint16).reshape(8, 10)
+    input_state = image_state_from_array(data)
+    pipeline, node_id = _pipeline_with("rescale_axes")
+    pipeline.set_param(node_id, "lock_xy", False)
+    pipeline.set_param(node_id, "x_scale", 2.0)
+    pipeline.set_param(node_id, "y_scale", 0.5)
+
+    pipeline.run(
+        None,
+        source_payloads={
+            "input": SourcePayload(data, image_state=input_state),
+        },
+    )
+
+    output_state = pipeline.output_states[node_id]
+    assert output_state is not None
+    assert pipeline.outputs[node_id].shape == (4, 20)
+    assert output_state.axis_order == "YX"
+    assert output_state.axis_confidence == AXIS_CONFIDENCE_EXPLICIT
+    assert [axis.confidence for axis in output_state.axes] == [
+        AXIS_CONFIDENCE_EXPLICIT,
+        AXIS_CONFIDENCE_EXPLICIT,
+    ]
+    assert [axis.scale for axis in output_state.axes] == [2.0, 0.5]
+    history = output_state.history[-1].casefold()
+    assert "inferred" in history
+    assert "x/y" in history or "y/x" in history
+    assert "confidence" in history
+
+
+def test_rescale_axes_true_noop_preserves_inferred_axis_confidence():
+    data = np.arange(6 * 7, dtype=np.float32).reshape(6, 7)
+    input_state = image_state_from_array(data)
+    pipeline, node_id = _pipeline_with("rescale_axes")
+
+    pipeline.run(
+        None,
+        source_payloads={
+            "input": SourcePayload(data, image_state=input_state),
+        },
+    )
+
+    output_state = pipeline.output_states[node_id]
+    assert output_state is not None
+    assert pipeline.outputs[node_id].shape == data.shape
+    assert output_state.axes == input_state.axes
+    assert output_state.axis_confidence == AXIS_CONFIDENCE_INFERRED
+    history = output_state.history[-1].casefold()
+    assert "inferred y/x" in history or "inferred x/y" in history
+    assert "retained" in history
+    assert "sizes did not change" in history
+
+
+def test_rescale_axes_changes_inferred_yx_but_preserves_q_metadata():
+    data = np.arange(3 * 8 * 10, dtype=np.uint16).reshape(3, 8, 10)
+    input_state = _inferred_named_state(
+        data,
+        "QYX",
+        scales=(7.0, 0.5, 0.25),
+        translations=(11.0, 22.0, 33.0),
+        source_axes=(4, 5, 6),
+    )
+    pipeline, node_id = _pipeline_with("rescale_axes")
+    pipeline.set_param(node_id, "lock_xy", False)
+    pipeline.set_param(node_id, "x_scale", 2.0)
+    pipeline.set_param(node_id, "y_scale", 0.5)
+
+    pipeline.run(
+        None,
+        source_payloads={
+            "input": SourcePayload(data, image_state=input_state),
+        },
+    )
+
+    output_state = pipeline.output_states[node_id]
+    assert output_state is not None
+    assert pipeline.outputs[node_id].shape == (3, 4, 20)
+    assert output_state.axis_order == "QYX"
+    assert output_state.axes[0] == input_state.axes[0]
+    assert output_state.axis_confidence == AXIS_CONFIDENCE_MIXED
+    assert [axis.confidence for axis in output_state.axes] == [
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_EXPLICIT,
+        AXIS_CONFIDENCE_EXPLICIT,
+    ]
+    assert [axis.scale for axis in output_state.axes] == [7.0, 1.0, 0.125]
+    assert [axis.translation for axis in output_state.axes] == [11.0, 22.0, 33.0]
+    assert [axis.source_axis for axis in output_state.axes] == [4, 5, 6]
+    history = output_state.history[-1].casefold()
+    assert "inferred" in history
+    assert "x/y" in history or "y/x" in history
+    assert "confidence" in history
+
+
+@pytest.mark.parametrize(
+    ("resize_mode", "parameter", "value"),
+    (
+        ("Scale factor", "z_scale", 1.0001),
+        ("Scale factor", "z_scale", 2.0),
+        ("Output size", "z_size", 6),
+    ),
+)
+def test_rescale_axes_never_treats_explicit_q_as_z(
+    resize_mode,
+    parameter,
+    value,
+):
+    data = np.zeros((3, 8, 10), dtype=np.uint16)
+    pipeline, node_id = _pipeline_with("rescale_axes")
+    pipeline.set_param(node_id, "resize_mode", resize_mode)
+    pipeline.set_param(node_id, parameter, value)
+
+    with pytest.raises(AmbiguousAxisError, match=r"Q.*Z|Z.*Q"):
+        pipeline.run(data, input_metadata={"axes": "QYX"})
+
+    assert pipeline.outputs[node_id] is None
+
+
+@pytest.mark.parametrize(
+    ("resize_mode", "parameter", "value"),
+    (
+        ("Scale factor", "z_scale", 2.0),
+        ("Output size", "z_size", 6),
+    ),
+)
+def test_rescale_axes_blocks_nontrivial_inferred_z(
+    resize_mode,
+    parameter,
+    value,
+):
+    data = np.zeros((3, 8, 10), dtype=np.float32)
+    input_state = image_state_from_array(data)
+    pipeline, node_id = _pipeline_with("rescale_axes")
+    pipeline.set_param(node_id, "resize_mode", resize_mode)
+    pipeline.set_param(node_id, parameter, value)
+
+    with pytest.raises(AmbiguousAxisError, match=r"explicit Z|Z.*explicit"):
+        pipeline.run(
+            None,
+            source_payloads={
+                "input": SourcePayload(data, image_state=input_state),
+            },
+        )
+
+    assert pipeline.outputs[node_id] is None
+
+
+def test_rescale_axes_rejects_an_incomplete_inferred_yx_pair():
+    data = np.zeros((3, 8, 10), dtype=np.float32)
+    input_state = _inferred_named_state(data, "QAX")
+    pipeline, node_id = _pipeline_with("rescale_axes")
+    pipeline.set_param(node_id, "x_scale", 2.0)
+
+    with pytest.raises(AmbiguousAxisError, match=r"unique.*Y.*X|Y.*X.*unique"):
+        pipeline.run(
+            None,
+            source_payloads={
+                "input": SourcePayload(data, image_state=input_state),
+            },
+        )
+
+    assert pipeline.outputs[node_id] is None
+
+
+def test_rescale_axes_leaves_inferred_z_unpromoted_during_yx_rescale():
+    data = np.zeros((3, 8, 10), dtype=np.float32)
+    input_state = image_state_from_array(data)
+    pipeline, node_id = _pipeline_with("rescale_axes")
+    pipeline.set_param(node_id, "lock_xy", False)
+    pipeline.set_param(node_id, "x_scale", 2.0)
+    pipeline.set_param(node_id, "y_scale", 0.5)
+
+    pipeline.run(
+        None,
+        source_payloads={
+            "input": SourcePayload(data, image_state=input_state),
+        },
+    )
+
+    output_state = pipeline.output_states[node_id]
+    assert output_state is not None
+    assert pipeline.outputs[node_id].shape == (3, 4, 20)
+    assert output_state.axes[0] == input_state.axes[0]
+    assert [axis.confidence for axis in output_state.axes] == [
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_EXPLICIT,
+        AXIS_CONFIDENCE_EXPLICIT,
+    ]
+    assert output_state.axis_confidence == AXIS_CONFIDENCE_MIXED
+
+
+def test_rescale_axes_preserves_inferred_tcz_while_recording_yx():
+    data = np.zeros((2, 3, 4, 6, 8), dtype=np.uint16)
+    input_state = _inferred_named_state(data, "TCZYX")
+    pipeline, node_id = _pipeline_with("rescale_axes")
+    pipeline.set_param(node_id, "lock_xy", False)
+    pipeline.set_param(node_id, "x_scale", 1.5)
+    pipeline.set_param(node_id, "y_scale", 0.5)
+
+    pipeline.run(
+        None,
+        source_payloads={
+            "input": SourcePayload(data, image_state=input_state),
+        },
+    )
+
+    output_state = pipeline.output_states[node_id]
+    assert output_state is not None
+    assert pipeline.outputs[node_id].shape == (2, 3, 4, 3, 12)
+    assert output_state.axis_order == "TCZYX"
+    assert output_state.axes[:3] == input_state.axes[:3]
+    assert [axis.confidence for axis in output_state.axes] == [
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_EXPLICIT,
+        AXIS_CONFIDENCE_EXPLICIT,
+    ]
+    assert output_state.axis_confidence == AXIS_CONFIDENCE_MIXED
+
+
+def test_rescale_axes_follows_inferred_yx_names_after_reorder():
+    data = np.zeros((3, 8, 10), dtype=np.uint16)
+    input_state = _inferred_named_state(
+        data,
+        "QYX",
+        scales=(7.0, 0.5, 0.25),
+        translations=(11.0, 22.0, 33.0),
+        source_axes=(4, 5, 6),
+    )
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    reorder = pipeline.add_node("reorder_axes")
+    rescale = pipeline.add_node("rescale_axes")
+    assert pipeline.connect("input", reorder.id).success
+    assert pipeline.connect(reorder.id, rescale.id).success
+    pipeline.set_param(reorder.id, "order", "YQX")
+    pipeline.set_param(rescale.id, "lock_xy", False)
+    pipeline.set_param(rescale.id, "x_scale", 2.0)
+    pipeline.set_param(rescale.id, "y_scale", 0.5)
+
+    pipeline.run(
+        None,
+        source_payloads={
+            "input": SourcePayload(data, image_state=input_state),
+        },
+    )
+
+    output_state = pipeline.output_states[rescale.id]
+    assert output_state is not None
+    assert pipeline.outputs[rescale.id].shape == (4, 3, 20)
+    assert output_state.axis_order == "YQX"
+    assert output_state.axes[1] == input_state.axes[0]
+    assert [axis.source_axis for axis in output_state.axes] == [5, 4, 6]
+    assert [axis.confidence for axis in output_state.axes] == [
+        AXIS_CONFIDENCE_EXPLICIT,
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_EXPLICIT,
+    ]
+
+
+def test_rescale_axes_axis_preflight_matches_execution_after_inferred_yx():
+    data = np.zeros((6, 7), dtype=np.float32)
+    input_state = image_state_from_array(data)
+
+    def workflow():
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        rescale = pipeline.add_node("rescale_axes")
+        calibrate = pipeline.add_node("set_pixel_size")
+        assert pipeline.connect("input", rescale.id).success
+        assert pipeline.connect(rescale.id, calibrate.id).success
+        pipeline.set_param(rescale.id, "x_scale", 2.0)
+        return pipeline, rescale.id, calibrate.id
+
+    preflight, preflight_rescale, preflight_calibrate = workflow()
+    preflight.preflight_axis_contract(
+        {"input": SourcePayload(data, image_state=input_state)}
+    )
+    executed, executed_rescale, executed_calibrate = workflow()
+    executed.run(
+        None,
+        source_payloads={
+            "input": SourcePayload(data, image_state=input_state),
+        },
+    )
+
+    projected_rescale = preflight.output_states[preflight_rescale]
+    actual_rescale = executed.output_states[executed_rescale]
+    projected_calibrate = preflight.output_states[preflight_calibrate]
+    actual_calibrate = executed.output_states[executed_calibrate]
+    assert projected_rescale is not None and actual_rescale is not None
+    assert projected_calibrate is not None and actual_calibrate is not None
+    assert projected_rescale.shape == actual_rescale.shape == (12, 14)
+    assert projected_rescale.axes == actual_rescale.axes
+    assert projected_rescale.history == actual_rescale.history
+    assert projected_calibrate.axis_confidence == AXIS_CONFIDENCE_EXPLICIT
+    assert actual_calibrate.axis_confidence == AXIS_CONFIDENCE_EXPLICIT
 
 
 def test_channel_operations_reject_shape_only_rgb_guess():

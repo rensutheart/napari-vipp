@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
 
 from napari_vipp.core.io import MICROSCOPE_FILE_FILTER
 from napari_vipp.ui import recent_paths
+from napari_vipp.ui.axis_interpretation import AxisInterpretationControl
 
 
 @dataclass(frozen=True)
@@ -643,6 +644,10 @@ class ImageSourceControl(QWidget):
         self.series_combo = QComboBox()
         self.binding_combo = QComboBox()
         self.binding_combo.addItems(["single item", "collection"])
+        self.axis_control = AxisInterpretationControl(
+            allow_automatic=False,
+            save_target="workflow",
+        )
         self.source_summary = QLabel()
         self.source_summary.setWordWrap(True)
         self.source_summary.setStyleSheet("color: #94a3b8;")
@@ -676,6 +681,7 @@ class ImageSourceControl(QWidget):
         layout.addRow("File", self.file_row)
         layout.addRow("Series / image", self.series_row)
         layout.addRow("Binding", self.binding_combo)
+        layout.addRow("Image stack", self.axis_control)
         layout.addRow("Sample", self.sample_row)
         layout.addRow(self.source_summary)
 
@@ -694,6 +700,7 @@ class ImageSourceControl(QWidget):
         self.path_edit.textChanged.connect(self._on_changed)
         self.series_combo.currentIndexChanged.connect(self._on_changed)
         self.binding_combo.currentTextChanged.connect(self._on_changed)
+        self.axis_control.textChanged.connect(self._on_changed)
         self.path_button.clicked.connect(self._browse_path)
         self.zarr_button.clicked.connect(self._browse_zarr_path)
 
@@ -705,6 +712,7 @@ class ImageSourceControl(QWidget):
             "sample_name": self.sample_combo.currentText(),
             "series_index": int(self.series_combo.currentData() or 0),
             "binding_mode": self.binding_combo.currentText(),
+            "axis_declaration": self.axis_control.text(),
         }
 
     def set_options(
@@ -743,6 +751,8 @@ class ImageSourceControl(QWidget):
             binding = "single item"
         with QSignalBlocker(self.binding_combo):
             self.binding_combo.setCurrentText(binding)
+        with QSignalBlocker(self.axis_control):
+            self.axis_control.setText(str(current.get("axis_declaration", "")))
         self.source_summary.setText(source_summary)
         self._sync_rows()
         if emit:

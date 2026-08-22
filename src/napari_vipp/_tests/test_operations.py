@@ -4722,6 +4722,8 @@ def test_rescale_axes_z_scale_only_changes_semantic_z_dimension_in_pipeline():
         "y": 1.0,
         "x": 1.0,
     }
+    assert state.axes_explicit
+    assert "inferred" not in state.history[-1].casefold()
 
 
 def test_rescaled_z_orthogonal_projection_does_not_upscale_xy_panel():
@@ -4772,22 +4774,65 @@ def test_rescale_axes_uses_current_reordered_spatial_semantics():
     assert rescale_state.axis_order == "CYZX"
 
 
-def test_rescale_axes_auto_uses_nearest_for_masks_and_labels():
-    mask = np.array([[False, True], [True, False]], dtype=bool)
-    labels = np.array([[0, 1], [2, 0]], dtype=np.int32)
-
-    scaled_mask = rescale_axes(mask, x_scale=2.0, y_scale=2.0)
-    scaled_labels = rescale_axes(
-        labels,
+@pytest.mark.parametrize(
+    ("data", "input_kind", "expected_values"),
+    (
+        (
+            np.array(
+                [
+                    [[0, 64], [128, 255]],
+                    [[255, 128], [64, 0]],
+                ],
+                dtype=np.uint8,
+            ),
+            "intensity image",
+            None,
+        ),
+        (
+            np.array(
+                [
+                    [[False, True], [True, False]],
+                    [[True, False], [False, True]],
+                ],
+                dtype=bool,
+            ),
+            "binary mask",
+            {False, True},
+        ),
+        (
+            np.array(
+                [
+                    [[0, 1], [2, 0]],
+                    [[2, 0], [0, 1]],
+                ],
+                dtype=np.int32,
+            ),
+            "label image",
+            {0, 1, 2},
+        ),
+    ),
+    ids=("image", "mask", "labels"),
+)
+def test_rescale_axes_named_yx_plane_preserves_image_mask_and_label_semantics(
+    data,
+    input_kind,
+    expected_values,
+):
+    scaled = rescale_axes(
+        data,
         x_scale=2.0,
         y_scale=2.0,
-        input_kind="label image",
+        z_scale=1.0,
+        interpolation="Cubic (bicubic/tricubic)",
+        axis_names=("q", "y", "x"),
+        axis_types=("unknown", "space", "space"),
+        input_kind=input_kind,
     )
 
-    assert scaled_mask.dtype == bool
-    assert scaled_mask.shape == (4, 4)
-    assert scaled_labels.dtype == labels.dtype
-    assert set(np.unique(scaled_labels)) == {0, 1, 2}
+    assert scaled.shape == (2, 4, 4)
+    assert scaled.dtype == data.dtype
+    if expected_values is not None:
+        assert set(np.unique(scaled)) == expected_values
 
 
 def test_extract_channel_supports_czyx_stacks():

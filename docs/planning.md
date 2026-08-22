@@ -402,6 +402,13 @@ were bitwise exact, and private GPU memory cleaned successfully.
 Goal: common named Y/X inputs work safely in Rescale Axes without weakening the
 axis contract for ambiguous data.
 
+**Implemented:** Rescale Axes now resolves unique carried Y/X names at inferred
+confidence under one persistent inspector warning. When either output size
+changes, the reviewed inferred Y/X plane is recorded explicitly in output
+provenance, while Q/T/C and inferred Z remain untouched. Nontrivial inferred or
+missing Z requests still require an explicit declaration, and exact no-ops
+preserve every confidence value.
+
 - accept carried, unambiguous named Y/X axes with inferred confidence under one
   visible warning;
 - leave an unknown leading axis such as Q untouched;

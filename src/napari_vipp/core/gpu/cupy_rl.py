@@ -16,13 +16,15 @@ from itertools import product
 from numbers import Integral
 from types import ModuleType
 
+from napari_vipp.core.gpu.cupy_imports import import_cupyx_signal_module
+
 
 @cache
 def _cupy_modules() -> tuple[ModuleType, ModuleType]:
     """Load optional CUDA modules only for explicit accelerator execution."""
 
     cupy = importlib.import_module("cupy")
-    signal = importlib.import_module("cupyx.scipy.signal")
+    signal = import_cupyx_signal_module()
     return cupy, signal
 
 

@@ -18,9 +18,28 @@
   carried through scientific execution and asynchronous thumbnail statistics,
   remains independent between tabs, and is deliberately excluded from
   workflow files and undo history.
+- Image Source now shares the batch workspace's reviewed **Image stack**
+  control. A saved `QYX -> ZYX` choice reinterprets TIFF pages as depth without
+  transposing pixels, is preserved by workflow undo/save/load, export, and
+  headless execution, and makes Rescale Axes expose its Z scale and Z output
+  size. Batch source rows inherit that choice but retain an explicit
+  file-labels-unchanged override.
 
 ### Bug Fixes
 
+- The exact CuPy 14.1.1 `cupyx.jit.rawkernel is experimental` import notice is
+  no longer surfaced as an end-user napari warning. VIPP filters only that
+  known upstream `FutureWarning` around its lazy CuPyX signal import; other
+  warnings and all import/execution failures remain visible, and the pinned
+  behavior is recorded in the developer notes for upgrade review.
+- **Rescale Axes** now accepts unique carried Y/X names even when their
+  confidence came from shape inference. The inspector warns before relying on
+  those names, the reviewed inferred X/Y plane is recorded explicitly in output
+  provenance, and unrelated Q/T/C axes remain untouched. Inferred or missing Z
+  still requires an explicit axis declaration before Z can be resized, so a
+  generic QYX TIFF is never silently treated as ZYX. True no-op rescaling is
+  allowed without changing axis confidence, and batch preflight now predicts
+  the same resized shape and metadata as real execution.
 - Dropping a completely disconnected node onto a compatible green-highlighted
   wire now inserts it between the wire's source and target. The splice keeps
   exact source/target ports, rolls back atomically on failure, and is restored

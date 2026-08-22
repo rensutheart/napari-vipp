@@ -4296,6 +4296,61 @@ def test_image_source_node_can_select_napari_layer(qtbot):
     assert _metadata_value(widget, "Dimensions") == "z=3, y=6, x=7"
 
 
+def test_image_source_axis_declaration_enables_rescale_z_and_undo(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "QYX"}))
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    source_control = widget._parameter_widgets["image_source"]
+
+    assert source_control.axis_control.mode_combo.findData("automatic") == -1
+    z_stack_index = source_control.axis_control.mode_combo.findData("z_stack")
+    source_control.axis_control.mode_combo.setCurrentIndex(z_stack_index)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+
+    assert widget.pipeline.nodes["input"].params["axis_declaration"] == (
+        "QYX -> ZYX"
+    )
+    assert widget.pipeline.output_states["input"].axis_order == "ZYX"
+    assert "saved with the workflow" in source_control.axis_control.notice_label.text()
+
+    widget.undo()
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    assert not widget.pipeline.nodes["input"].params.get("axis_declaration", "")
+    assert widget.pipeline.output_states["input"].axis_order == "QYX"
+
+    widget.redo()
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    assert widget.pipeline.output_states["input"].axis_order == "ZYX"
+
+    rescale = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", rescale.id)
+    widget.graph_view.select_node(rescale.id)
+    assert "z_scale" in widget._parameter_widgets
+    assert "rescale_axes_axis_notice" not in widget._parameter_widgets
+
+    mode = widget._parameter_widgets["resize_mode"]
+    mode.combo.setCurrentIndex(mode.combo.findData("Output size"))
+    assert "z_size" in widget._parameter_widgets
+    widget._parameter_widgets["z_size"].value_box.setValue(5)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(rescale.id) is not None
+        ),
+        timeout=30_000,
+    )
+    output = widget.pipeline.outputs[rescale.id]
+    assert output is not None, widget.status_label.text()
+    assert output.shape == (5, 8, 9)
+
+
 def test_input_node_tile_binding_subtitle_updates_live(qtbot, tmp_path):
     viewer = _Viewer()
     viewer.layers.append(_Layer(np.ones((4, 5), dtype=np.uint8), "second layer"))
@@ -6208,6 +6263,105 @@ def test_rescale_axes_uses_numeric_entry_without_sliders(qtbot):
     x_scale.value_box.setValue(20.25)
 
     assert widget.pipeline.nodes[node.id].params["x_scale"] == 20.25
+
+
+def test_rescale_axes_warns_for_inferred_yx_without_presenting_q_as_z(qtbot):
+    data = np.zeros((3, 16, 18), dtype=np.float32)
+    inferred_state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("q", "unknown", confidence="shape-inferred"),
+            AxisMetadata("y", "space", confidence="shape-inferred"),
+            AxisMetadata("x", "space", confidence="shape-inferred"),
+        ),
+    )
+    viewer = _Viewer(
+        data,
+        metadata={"vipp_image_state": inferred_state.to_dict()},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "x_scale" in widget._parameter_widgets
+    assert "y_scale" in widget._parameter_widgets
+    assert "z_scale" not in widget._parameter_widgets
+    notice = widget._parameter_widgets["rescale_axes_axis_notice"]
+    assert "Y/X axis labels are inferred" in notice.text()
+    assert "Q is not treated as Z" in notice.text()
+
+
+def test_rescale_axes_explicit_axes_do_not_show_inferred_warning(qtbot):
+    viewer = _Viewer(
+        np.zeros((3, 16, 18), dtype=np.float32),
+        metadata={"axes": "ZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "z_scale" in widget._parameter_widgets
+    assert "rescale_axes_axis_notice" not in widget._parameter_widgets
+
+
+@pytest.mark.parametrize(
+    ("initial_confidence", "final_confidence", "initial_notice", "final_notice"),
+    [
+        ("shape-inferred", "explicit", True, False),
+        ("explicit", "shape-inferred", False, True),
+    ],
+)
+def test_rescale_axes_warning_tracks_axis_confidence_without_control_changes(
+    qtbot,
+    initial_confidence,
+    final_confidence,
+    initial_notice,
+    final_notice,
+):
+    data = np.zeros((3, 16, 18), dtype=np.float32)
+
+    def state(confidence):
+        return image_state_from_array(
+            data,
+            axes=(
+                AxisMetadata("q", "unknown", confidence=confidence),
+                AxisMetadata("y", "space", confidence=confidence),
+                AxisMetadata("x", "space", confidence=confidence),
+            ),
+        )
+
+    initial_state = state(initial_confidence)
+    viewer = _Viewer(
+        data,
+        metadata={"vipp_image_state": initial_state.to_dict()},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert ("rescale_axes_axis_notice" in widget._parameter_widgets) is initial_notice
+    assert "x_scale" in widget._parameter_widgets
+    assert "y_scale" in widget._parameter_widgets
+    assert "z_scale" not in widget._parameter_widgets
+
+    final_state = state(final_confidence)
+    widget.pipeline.output_states["input"] = final_state
+    widget.pipeline.node_output_states["input"] = [final_state]
+
+    assert widget._refresh_selected_parameter_visibility()
+    assert ("rescale_axes_axis_notice" in widget._parameter_widgets) is final_notice
+    assert "x_scale" in widget._parameter_widgets
+    assert "y_scale" in widget._parameter_widgets
+    assert "z_scale" not in widget._parameter_widgets
 
 
 def test_float_spinners_accept_decimal_point_or_comma(qtbot):
@@ -17577,6 +17731,8 @@ def test_palette_registry_nodes_are_constructible():
         node = pipeline.add_node(spec.id)
         assert node.operation_id == spec.id
         expected_params = {param.name: param.default for param in spec.parameters}
+        if spec.id == "input":
+            expected_params["axis_declaration"] = ""
         if spec.id == "composite_to_rgb":
             expected_params.update(
                 {

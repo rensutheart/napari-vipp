@@ -8,7 +8,13 @@ import pytest
 
 import napari_vipp.core.atomic_io as atomic_io_module
 from napari_vipp.core.compute import ComputeMode, ComputeRequest
-from napari_vipp.core.metadata import ChannelMetadata, image_state_from_array
+from napari_vipp.core.metadata import (
+    AXIS_CONFIDENCE_EXPLICIT,
+    AXIS_CONFIDENCE_INFERRED,
+    AxisMetadata,
+    ChannelMetadata,
+    image_state_from_array,
+)
 from napari_vipp.core.operations import (
     COMPOSITE_RGB_AUTO,
     COMPOSITE_RGB_MANUAL,
@@ -44,6 +50,30 @@ def _build_pipeline() -> PrototypePipeline:
 
 def _workflow_temporary_files(target: Path) -> list[Path]:
     return list(target.parent.glob(f".{target.name}.*.tmp"))
+
+
+def _inferred_qyx_state(data: np.ndarray):
+    return image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata(
+                "q",
+                "unknown",
+                confidence=AXIS_CONFIDENCE_INFERRED,
+            ),
+            AxisMetadata(
+                "y",
+                "space",
+                confidence=AXIS_CONFIDENCE_INFERRED,
+            ),
+            AxisMetadata(
+                "x",
+                "space",
+                confidence=AXIS_CONFIDENCE_INFERRED,
+            ),
+        ),
+        metadata_source="shape-inferred test state",
+    )
 
 
 def test_serialize_roundtrip_preserves_graph(tmp_path):
@@ -663,6 +693,119 @@ def test_workflow_preserves_supported_optional_ui_parameters():
 
     assert restored_node.params["resize_mode"] == "Output size"
     assert restored_node.params["x_size"] == 12
+
+
+def test_image_source_axis_declaration_is_optional_validated_and_applied():
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    raw_state = image_state_from_array(data, layer_metadata={"axes": "QYX"})
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "axis_declaration", "QYX -> ZYX")
+
+    document = serialize_workflow(pipeline)
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == "input")
+    assert restored_node.params["axis_declaration"] == "QYX -> ZYX"
+
+    restored_pipeline = PrototypePipeline()
+    restored_pipeline.restore_graph(
+        restored["nodes"],
+        restored["connections"],
+        restored["output_tunnels"],
+    )
+    restored_pipeline.run(
+        None,
+        source_payloads={"input": SourcePayload(data, image_state=raw_state)},
+    )
+    state = restored_pipeline.output_states["input"]
+
+    assert state.axis_order == "ZYX"
+    assert state.axes_explicit
+    assert "Image Source" in state.history[-1]
+    assert "data order unchanged" in state.history[-1]
+
+    legacy = serialize_workflow(pipeline)
+    serialized = next(item for item in legacy["nodes"] if item["id"] == "input")
+    serialized["params"].pop("axis_declaration")
+    legacy_restored = deserialize_workflow(legacy)
+    legacy_node = next(item for item in legacy_restored["nodes"] if item.id == "input")
+    assert "axis_declaration" not in legacy_node.params
+
+    malformed = serialize_workflow(pipeline)
+    serialized = next(item for item in malformed["nodes"] if item["id"] == "input")
+    serialized["params"]["axis_declaration"] = "ZYX"
+    with pytest.raises(ValueError, match="axis_declaration.*reviewed mapping"):
+        deserialize_workflow(malformed)
+
+
+def test_resolved_source_payload_prevents_double_axis_declaration():
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    effective_state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "axis_declaration", "QYX -> ZYX")
+
+    pipeline.run(
+        None,
+        source_payloads={
+            "input": SourcePayload(
+                data,
+                image_state=effective_state,
+                axis_semantics_resolved=True,
+            )
+        },
+    )
+
+    assert pipeline.output_states["input"].axis_order == "ZYX"
+    assert not pipeline.output_states["input"].history
+
+
+def test_restored_rescale_axes_accepts_inferred_qyx_xy_plane():
+    data = np.arange(3 * 8 * 10, dtype=np.uint16).reshape(3, 8, 10)
+    payload = SourcePayload(data, image_state=_inferred_qyx_state(data))
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    rescale = pipeline.add_node("rescale_axes")
+    assert pipeline.connect("input", rescale.id).success
+    pipeline.set_param(rescale.id, "x_scale", 1.5)
+    pipeline.set_param(rescale.id, "y_scale", 0.5)
+    pipeline.set_param(rescale.id, "z_scale", 1.0)
+    pipeline.set_param(rescale.id, "lock_xy", False)
+    pipeline.set_param(rescale.id, "interpolation", "Nearest neighbor")
+    pipeline.set_param(rescale.id, "anti_aliasing", False)
+
+    native = pipeline.run(
+        None,
+        source_payloads={"input": payload},
+    )[rescale.id]
+    native_state = pipeline.output_states[rescale.id]
+    restored_workflow = deserialize_workflow(serialize_workflow(pipeline))
+    restored = PrototypePipeline()
+    restored.restore_graph(
+        restored_workflow["nodes"],
+        restored_workflow["connections"],
+        restored_workflow["output_tunnels"],
+    )
+
+    restored_result = restored.run(
+        None,
+        source_payloads={"input": payload},
+    )[rescale.id]
+    restored_state = restored.output_states[rescale.id]
+
+    np.testing.assert_array_equal(restored_result, native)
+    assert restored_result.shape == (3, 4, 15)
+    assert restored_state.to_dict() == native_state.to_dict()
+    assert restored_state.axis_order == "QYX"
+    assert [axis.confidence for axis in restored_state.axes] == [
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_EXPLICIT,
+        AXIS_CONFIDENCE_EXPLICIT,
+    ]
+    assert restored_state.axes[0] == payload.image_state.axes[0]
+    assert [axis.source_axis for axis in restored_state.axes] == [0, 1, 2]
+    assert "confirmed inferred" in restored_state.history[-1].casefold()
+    assert "other axis confidence preserved" in restored_state.history[-1].casefold()
 
 
 @pytest.mark.parametrize(

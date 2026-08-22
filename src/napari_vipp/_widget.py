@@ -13228,6 +13228,7 @@ class VippWidget(QWidget):
                     value_pattern=cached.value_pattern,
                 ),
                 payload.revision_token,
+                payload.axis_semantics_resolved,
             )
 
     def _resolve_source_payload(
@@ -13306,24 +13307,32 @@ class VippWidget(QWidget):
             (source for source in config.sources if source.node_id == node_id),
             None,
         )
-        if binding is None or binding.axis_declaration is None:
+        if binding is None:
             return payload
         raw_state = payload.image_state or image_state_from_array(
             payload.data,
             layer_metadata=payload.metadata,
             source_name=payload.name,
         )
-        effective_state = apply_axis_declaration(
-            raw_state,
-            binding.axis_declaration,
-            declaration_source="batch config",
+        effective_state = (
+            raw_state
+            if binding.axis_declaration is None
+            else apply_axis_declaration(
+                raw_state,
+                binding.axis_declaration,
+                declaration_source="batch config",
+            )
         )
-        declaration = {
-            **binding.axis_declaration.to_dict(),
-            "source": "batch config",
-            "applied": True,
-            "data_order_changed": False,
-        }
+        declaration = (
+            None
+            if binding.axis_declaration is None
+            else {
+                **binding.axis_declaration.to_dict(),
+                "source": "batch config",
+                "applied": True,
+                "data_order_changed": False,
+            }
+        )
         metadata = dict(payload.metadata or {})
         metadata["vipp_axis_semantics"] = {
             "raw_axes": raw_state.axis_order,
@@ -13336,6 +13345,7 @@ class VippWidget(QWidget):
             payload.name,
             effective_state,
             payload.revision_token,
+            True,
         )
 
     @contextmanager
@@ -13373,6 +13383,7 @@ class VippWidget(QWidget):
             payload.name,
             self._viewer_aligned_state(state),
             payload.revision_token,
+            payload.axis_semantics_resolved,
         )
 
     def _viewer_aligned_image_state(
@@ -14873,6 +14884,12 @@ class VippWidget(QWidget):
             node_id,
             self.pipeline.node_parameter_specs(node_id),
         )
+        inferred_axis_warning = self._rescale_axes_inferred_axis_warning(node_id)
+        if inferred_axis_warning:
+            note = _InspectorNoteLabel(inferred_axis_warning)
+            note.setStyleSheet("color: #f59e0b;")
+            self.parameter_form.addRow(note)
+            self._parameter_widgets["rescale_axes_axis_notice"] = note
         self.parameter_group.setHidden(False)
 
     @staticmethod
@@ -16307,6 +16324,7 @@ class VippWidget(QWidget):
             "sample_name": node.params.get("sample_name", ""),
             "series_index": node.params.get("series_index", 0),
             "binding_mode": node.params.get("binding_mode", "single item"),
+            "axis_declaration": node.params.get("axis_declaration", ""),
         }
 
     def _apply_image_source_params(
@@ -16323,7 +16341,14 @@ class VippWidget(QWidget):
             "sample_name",
             "series_index",
             "binding_mode",
+            "axis_declaration",
         ):
+            if (
+                name == "axis_declaration"
+                and name not in node.params
+                and not str(value.get(name, "")).strip()
+            ):
+                continue
             node.params[name] = value.get(name, "")
         self._sync_input_node_subtitle(node_id)
 
@@ -16892,9 +16917,14 @@ class VippWidget(QWidget):
         if node is not None and node.operation_id == "rescale_axes":
             expected = {spec.name for spec in self._rescale_axes_visible_specs(node_id)}
             actual = {
-                name for name in self._parameter_widgets if not name.endswith("_reset")
+                name
+                for name in self._parameter_widgets
+                if not name.endswith("_reset")
+                and name != "rescale_axes_axis_notice"
             }
-            return actual != expected
+            expected_notice = bool(self._rescale_axes_inferred_axis_warning(node_id))
+            actual_notice = "rescale_axes_axis_notice" in self._parameter_widgets
+            return actual != expected or actual_notice != expected_notice
         for spec in self.pipeline.node_parameter_specs(node_id):
             if str(getattr(spec, "visibility", "always") or "always") == "always":
                 continue
@@ -17314,26 +17344,38 @@ class VippWidget(QWidget):
     ) -> dict[str, AxisSliceOption]:
         options = self._axis_slice_options_for(node_id)
         role_map: dict[str, AxisSliceOption] = {}
-        for option in options:
-            name = option.name.strip().lower()
-            if name in {"x", "y", "z"}:
-                role_map[name] = option
-        spatial_options = [
-            option for option in options if option.axis_type.lower() == "space"
-        ]
-        if spatial_options:
-            role_map.setdefault("x", spatial_options[-1])
-        if len(spatial_options) >= 2:
-            role_map.setdefault("y", spatial_options[-2])
-        if len(spatial_options) >= 3:
-            role_map.setdefault("z", spatial_options[-3])
         state = self.pipeline.input_state_for_node(node_id)
-        axes_resolved = bool(
-            state is not None
-            and getattr(state, "axes_explicit", False)
-            and tuple(getattr(state, "axes", ()))
-        )
-        if not axes_resolved:
+        carried_axes = tuple(getattr(state, "axes", ())) if state is not None else ()
+        if carried_axes:
+            name_counts: dict[str, int] = {}
+            for option in options:
+                name = option.name.strip().lower()
+                name_counts[name] = name_counts.get(name, 0) + 1
+            for option in options:
+                name = option.name.strip().lower()
+                if (
+                    name in {"x", "y", "z"}
+                    and name_counts.get(name) == 1
+                    and option.axis_type.strip().lower() == "space"
+                ):
+                    role_map[name] = option
+
+            # Positional spatial fallback remains valid only when the carried
+            # metadata is authoritative.  In particular, inferred QYX must
+            # never present Q as an editable Z axis.
+            if bool(getattr(state, "spatial_axes_explicit", False)):
+                spatial_options = [
+                    option
+                    for option in options
+                    if option.axis_type.lower() == "space"
+                ]
+                if spatial_options:
+                    role_map.setdefault("x", spatial_options[-1])
+                if len(spatial_options) >= 2:
+                    role_map.setdefault("y", spatial_options[-2])
+                if len(spatial_options) >= 3:
+                    role_map.setdefault("z", spatial_options[-3])
+        else:
             data = self.pipeline.input_data_for_node(node_id)
             shape = tuple(getattr(data, "shape", ()))
             for fallback_index, role in enumerate(("x", "y", "z")):
@@ -17348,6 +17390,46 @@ class VippWidget(QWidget):
                     ),
                 )
         return role_map
+
+    def _rescale_axes_inferred_axis_warning(self, node_id: str) -> str:
+        state = self.pipeline.input_state_for_node(node_id)
+        axes = tuple(getattr(state, "axes", ())) if state is not None else ()
+        if not axes:
+            return ""
+        names = [str(getattr(axis, "name", "")).strip().casefold() for axis in axes]
+        named_xy = {
+            name: [index for index, candidate in enumerate(names) if candidate == name]
+            for name in ("y", "x")
+        }
+        if any(len(indices) != 1 for indices in named_xy.values()):
+            return ""
+        xy_axes = tuple(axes[indices[0]] for indices in named_xy.values())
+        if not any(not _axis_is_explicit(axis) for axis in xy_axes):
+            return ""
+        if any(
+            str(getattr(axis, "type", "")).casefold() != "space"
+            for axis in xy_axes
+        ):
+            return ""
+
+        parts = [
+            "Y/X axis labels are inferred. VIPP will use the named Y/X plane "
+            "for this rescale and record that plane explicitly when either "
+            "output size changes. Other inferred axes remain unresolved and "
+            "unchanged."
+        ]
+        if "q" in names and "z" not in names:
+            parts.append(
+                "Q is not treated as Z; declare QYX → ZYX before changing Z."
+            )
+        elif "z" in names:
+            z_axis = axes[names.index("z")]
+            if not _axis_is_explicit(z_axis):
+                parts.append(
+                    "Z remains inferred and cannot be resized until its meaning "
+                    "is explicit."
+                )
+        return " ".join(parts)
 
     def _available_spatial_modes(self, node_id: str) -> tuple[str, ...]:
         node = self.pipeline.nodes.get(node_id)

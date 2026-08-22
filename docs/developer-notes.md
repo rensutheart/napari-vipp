@@ -38,6 +38,17 @@ napari / npe2
 
 `test_architecture.py` enforces the first two rules.
 
+## Known Upstream Notices
+
+CuPy 14.1.1 emits `cupyx.jit.rawkernel is experimental. The interface can
+change in the future.` twice while `cupyx.scipy.signal` imports its internal
+peak-finding and filter-design kernels. This is an upstream API-stability
+notice, not a calculation failure or CPU fallback. VIPP suppresses only that
+exact `FutureWarning`, and only inside its lazy CuPyX signal import, so it does
+not become an end-user napari notification. Other warnings and all import or
+execution errors remain visible. Recheck this narrow filter whenever the
+pinned CuPy version changes.
+
 ## Ownership Map
 
 | Question | Start in |

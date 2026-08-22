@@ -2176,6 +2176,7 @@ def _detach_source_payloads(
                 "name": payload.name,
                 "image_state": _identity_value(image_state),
                 "revision_token": _identity_value(payload.revision_token),
+                "axis_semantics_resolved": payload.axis_semantics_resolved,
             }
         )
         payloads[node_id] = SourcePayload(
@@ -2184,6 +2185,7 @@ def _detach_source_payloads(
             str(payload.name),
             image_state,
             fingerprint,
+            payload.axis_semantics_resolved,
         )
         fingerprints[node_id] = fingerprint
     return _DetachedSources(
