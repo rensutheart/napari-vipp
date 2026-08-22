@@ -1,6 +1,6 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-08-22
+Last reviewed: 2026-08-23
 
 > **0.13.0a8 release record (2026-08-22):** Every domain invalidated by the
 > complete post-a7 change set was requalified at the boundaries recorded below.
@@ -159,7 +159,14 @@ For the planned first SourceItem slice, the expected changed domains are
 cover SourceItem migration, save/reopen, batch naming, generated execution,
 and provenance compatibility.
 
-Unless that implementation also changes their listed inputs, carry the a7
-Windows-installer and GPU/scientific-catalogue baselines forward. Do not run a
-full installer lifecycle or full GPU admission merely because the package
-version becomes `0.14.0a1`.
+Unless that implementation also changes their listed inputs, carry the current
+`v0.13.0a8` Windows-installer and GPU/scientific-catalogue baselines forward. Do
+not run a full installer lifecycle or full GPU admission merely because the
+package version becomes `0.14.0a1`.
+
+If installer issue
+[`#42`](https://github.com/rensutheart/napari-vipp/issues/42) ships in a1, select
+the Windows-installer and documentation domains and requalify the changed
+capacity, progress, and stall presentation. Carry forward unchanged
+transactional lifecycle and GPU/scientific evidence; do not rerun the full
+installer or GPU matrices solely for that focused UI change.

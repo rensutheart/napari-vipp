@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-23
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -39,8 +39,9 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.13.0a8` is the current published alpha line. Its official GitHub prerelease,
-checksum sidecars, PyPI package, and numbered/stable documentation are public.
+`0.13.0a8` is the current published alpha and carry-forward qualification
+baseline. Its official GitHub prerelease, checksum sidecars, PyPI package, and
+numbered/stable documentation are public. Development now targets `0.14.0a1`.
 The a8 line provides:
 
 - workflow schema 4 and batch schema 3 with portable compute intent, explicit
@@ -74,12 +75,16 @@ Important remaining limits are:
 
 ## Active Release Order
 
+The current development line is `0.14.0a1`, beginning with immutable SourceItem
+identity. The detailed `0.13.0a8` sections below are a delivered contract record,
+not unfinished work or a reason to cut another 0.13 alpha.
+
 Small changes should land as independent, reviewable pull requests. A release
 does not wait for every item in a cycle when a coherent, useful subset is ready.
 Unchanged installer, GPU, schema, and UI evidence carries forward according to
 the [qualification baseline](release-qualification-baseline.md).
 
-### `0.13.0a8`: Interactive GPU And Correctness Stabilization
+### Delivered Record: `0.13.0a8` Interactive GPU And Correctness Stabilization
 
 The a8 work closes the thumbnail-integrity, responsive-parameter-tuning,
 truthful GPU/optimizer, named-axis, and contained correctness slices below.
@@ -97,8 +102,8 @@ Delivered dependency order:
 5. evidence-justified cross-run scientific residency.
 
 Optimizer fixes `#31` then `#32` and Rescale Axes `#33` are included in a8.
-The separately scoped volume-crop feature is not an a8 release blocker and must
-not delay the SourceItem work merely because it remains useful.
+Responsive Volume Crop did not ship and is retained as a post-a1 follow-up; it
+must not delay SourceItem work merely because it remains useful.
 
 Items with disjoint ownership may proceed in parallel, but later work must use
 the generation, provenance, and measurement contracts established earlier.
@@ -150,7 +155,7 @@ radius/size-independent kernels remove those repeated compile cliffs while
 preserving their reviewed result contracts. The remaining evidence-led
 residency decision is complete below; measured transfer time did not justify
 cross-run scientific GPU residency.
-The current development slice carries provider-neutral device observations
+The released a8 slice carries provider-neutral device observations
 through detached pipeline results and adds explicit, bounded interaction
 reports for standard scientific parameter controls. Those reports distinguish
 invalidation, the actual debounce, worker queue and result-delivery delay,
@@ -199,7 +204,7 @@ Ordered parameter-specialization follow-up:
    thumbnail statistics now use exact fixed-workspace CuPy radix reductions;
    the resident-output reuse slice remains in 0.13-C.
 
-All five items have an implemented first slice in the current development tree.
+All five items shipped in `0.13.0a8`.
 Parameter-sweep timing remains machine-local diagnostic evidence rather than a
 new per-release performance gate.
 
@@ -424,35 +429,9 @@ preserve every confidence value.
 
 Tests cover QYX, ZYX, TCZYX, reordered axes, images/masks/labels, metadata
 confidence/history, workflow restore, export, and batch. This contained bug fix
-may ship independently and does not wait for the crop feature below.
+shipped independently of the optional crop follow-up.
 
-#### 0.13-F. Responsive Volume Crop (new issue required)
-
-Goal: make Crop Stack a discoverable volume ROI tool without recalculating on
-every drag event. Track this as a separate feature issue before implementation;
-it is not part of `#33`.
-
-- preserve the existing operation and old workflows while adding persisted
-  nonnegative `z_start` and `z_end` crop margins, measured as samples removed
-  from the leading and trailing ends of an explicitly named Z axis;
-- default both new parameters to zero when loading an old workflow;
-- show the controls only when metadata contains explicit Z or the user has
-  authored an exact axis mapping; inferred QYX must never treat Q as Z;
-- preserve T/C axes, leave at least one sample on every cropped axis, and update
-  physical origins, history, and output-size summaries;
-- while dragging, draw an immediate translucent ROI outline/mask over the
-  cached display rather than constructing a full zero-filled image;
-- keep draft control values during interaction, then commit one undoable
-  scientific edit on release or after roughly 300-500 ms idle; and
-- flush a pending draft before Calculate, Calculate all, any Run or execution
-  snapshot, save, export, batch start, tab change, or close.
-
-Tests cover ZYX, TCZYX, noncanonical explicit layouts, rejection of inferred QYX,
-images/masks/labels, physical origins, save/reopen/export/batch, rapid drag
-events, one committed calculation, and stale/cancelled completion. This work can
-land in 0.13 if it remains contained; it is not a blocker for every 0.13 alpha.
-
-#### 0.13.0a8 Release Boundary
+#### Delivered `0.13.0a8` Qualification Boundary
 
 - Run focused ordinary CI for presentation, optimizer-writer, and axis/crop
   changes.
@@ -465,7 +444,7 @@ land in 0.13 if it remains contained; it is not a blocker for every 0.13 alpha.
 - Describe measured performance as machine-local unless more than one reviewed
   hardware class supports a broader claim.
 
-### `0.14.0a1`: Source-Aware Loading And Per-Sample Batch Alpha
+### Current: `0.14.0a1` Source-Aware Loading And Per-Sample Batch Alpha
 
 The first 0.14 alpha targets three connected source-aware outcomes:
 
@@ -493,6 +472,10 @@ Implementation order and pull-request boundaries:
 5. finish with one integration example containing multiple source items, two
    effective thresholds, and a pyramid preview whose level differs visibly from
    the unchanged full-resolution analysis level.
+
+Installer issue [#42](https://github.com/rensutheart/napari-vipp/issues/42) is
+an independent pull-request boundary and may proceed in parallel. It does not
+alter or block the source-aware dependency order.
 
 #### 0.14-A. Immutable SourceItem Identity
 
@@ -629,6 +612,29 @@ parity; config and effective hash changes; checkpoint evidence; and unchanged
 base-workflow state. CSV import/export may follow after the typed core and UI are
 stable.
 
+#### 0.14-D. Installer Capacity And Activity ([#42](https://github.com/rensutheart/napari-vipp/issues/42))
+
+Goal: keep a healthy long Windows installation visibly active and make its
+storage requirements plain and actionable. This is the canonical scope that
+absorbed the older wording-only draft in
+[pull request #25](https://github.com/rensutheart/napari-vipp/pull/25).
+
+- Before confirmation, show route-specific approximate download, installed, and
+  peak temporary-disk requirements. State the CUDA safety minimum as at least
+  15 GiB of free disk space on the installation drive, without referring to
+  VRAM, and retain the separate temporary-files/installer-record requirement.
+- During apply, show the named phase, elapsed time, and byte progress only when
+  trustworthy; otherwise use indeterminate activity plus periodic still-working
+  updates.
+- Keep the latest concrete activity and detailed log easy to reach, and
+  distinguish slow progress from a stalled or failed operation.
+- Preserve transactional install, rollback, repair, cancellation, and recovery
+  behavior.
+
+Acceptance covers size formatting, CPU/CUDA estimates, phase transitions,
+indeterminate progress, stale-activity/stall messaging, direct readiness
+wording, and unchanged transactional behavior.
+
 #### 0.14.0a1 Release Boundary And Non-Goals
 
 The source-aware core of the alpha is complete when SourceItem identity,
@@ -648,6 +654,33 @@ does not imply completion of:
 Those items require later evidence or remain in [product ideas](product-ideas.md).
 
 ### Committed Follow-Ups After `0.14.0a1`
+
+#### Responsive Volume Crop (issue required before implementation)
+
+Goal: make Crop Stack a discoverable volume ROI tool without recalculating on
+every drag event. This optional work did not ship in `0.13.0a8`, is not part of
+the current `0.14.0a1` scope, and must not delay SourceItem work. Create a
+separate feature issue before implementation; it remains independent of `#33`.
+
+- preserve the existing operation and old workflows while adding persisted
+  nonnegative `z_start` and `z_end` crop margins, measured as samples removed
+  from the leading and trailing ends of an explicitly named Z axis;
+- default both new parameters to zero when loading an old workflow;
+- show the controls only when metadata contains explicit Z or the user has
+  authored an exact axis mapping; inferred QYX must never treat Q as Z;
+- preserve T/C axes, leave at least one sample on every cropped axis, and update
+  physical origins, history, and output-size summaries;
+- while dragging, draw an immediate translucent ROI outline/mask over the
+  cached display rather than constructing a full zero-filled image;
+- keep draft control values during interaction, then commit one undoable
+  scientific edit on release or after roughly 300-500 ms idle; and
+- flush a pending draft before Calculate, Calculate all, any Run or execution
+  snapshot, save, export, batch start, tab change, or close.
+
+Tests cover ZYX, TCZYX, noncanonical explicit layouts, rejection of inferred QYX,
+images/masks/labels, physical origins, save/reopen/export/batch, rapid drag
+events, one committed calculation, and stale/cancelled completion. This remains
+a committed post-a1 follow-up, not unfinished 0.13 work.
 
 #### Safe Node Bypass And Batch Execution Profiles
 
