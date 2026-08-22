@@ -38,6 +38,24 @@ The reported full-suite lanes were 5,296 passed/404 skipped on Windows 3.12;
 5,282/418 on both macOS lanes. This is valid evidence for that merged migration
 commit, not the final a8 release commit.
 
+The clean a8 candidate at `7189cf40280d895b61b061f1468767164ccfbcf4`
+passed all 13 jobs in
+[candidate CI run 32578260799](https://github.com/rensutheart/napari-vipp/actions/runs/32578260799),
+including clean wheel and sdist installations on Windows, Linux, and macOS. Its
+normal unsigned-installer build smoke passed in
+[run 32578260812](https://github.com/rensutheart/napari-vipp/actions/runs/32578260812).
+On the same clean source commit, the full RTX 5090 GPU admission passed all 19
+public implementations and 24 evidence owners on `cuda:0`. The retained
+[aggregate](benchmarks/gpu-admission-0.13.0a8-windows-rtx5090.json) has SHA-256
+`0365366dc23750e000c6e9c4f8b384cdf706afdcb338ae3a9f80cfad3d1d8506`;
+the refreshed CuPy measurement and Remove Outliers artifacts have SHA-256
+`ad31968934dd7f12ffcdfceeaf2c4f1a9c0a864918d67f881c4a299d47f39785`
+and `af4aa96e08bf613b658a18c7911843c04baace277807aba48dbb5b0c619098f3`.
+These results qualify the candidate code and GPU catalogue. The final merged
+main SHA, exact-tag reproducible archives, installed a7-to-a8 lifecycle, final
+unsigned installer, public-package verification, and manual deployment remain
+publication gates.
+
 Before a8 is published, append its replacement domain rows with the exact
 release SHA and final-main CI, RTX GPU evidence, normal-installer acceptance,
 wheel/source/Windows artifact hashes, and companion-documentation deployment

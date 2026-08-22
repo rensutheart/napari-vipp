@@ -154,11 +154,20 @@ above. The changed Remove Outliers, source-axis, rescaling, optimizer, graph,
 control, thumbnail, installer, packaging, and documentation paths have focused
 automated coverage in the source tree.
 
-The merged CuPy-only measurement migration at `db61a19` passed all 13 jobs in
-main CI run 32567020754. Its reported full-suite lanes ranged from 5,282 passed
-and 418 skipped on macOS to 5,296 passed and 404 skipped on Windows with Python
-3.12. That run validates the merged migration commit; it is not a substitute
-for the final a8 release-commit run.
+The release candidate at `7189cf40280d` passed all 13 jobs in
+[CI run 32578260799](https://github.com/rensutheart/napari-vipp/actions/runs/32578260799),
+including clean wheel and source-archive installs across Windows, Linux, and
+macOS. Its normal unsigned-installer build smoke also passed in
+[run 32578260812](https://github.com/rensutheart/napari-vipp/actions/runs/32578260812).
+
+The same clean candidate passed the full RTX 5090 admission catalogue: 19
+public implementations and all 24 evidence owners completed successfully on
+`cuda:0`. The retained
+[aggregate](docs/benchmarks/gpu-admission-0.13.0a8-windows-rtx5090.json)
+has SHA-256
+`0365366dc23750e000c6e9c4f8b384cdf706afdcb338ae3a9f80cfad3d1d8506`.
+The refreshed Remove Outliers and CuPy measurement reports are linked from the
+architecture and GPU guides.
 
 Publication requires a recorded exact-`main` CI result, final RTX GPU
 qualification, normal-installer acceptance, and hashes for the wheel, source

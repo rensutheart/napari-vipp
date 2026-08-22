@@ -1,0 +1,1604 @@
+{
+  "created_utc": "2026-08-22T15:06:37.832666+00:00",
+  "device_selection": {
+    "device_id": "cuda:0",
+    "device_index": 0
+  },
+  "facet_owners": {
+    "binary_threshold::cupy-binary-threshold-f32-exact-v1": {
+      "adversarial_workloads": [
+        "segmentation-bridge-evidence"
+      ],
+      "cancellation": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "cleanup": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "cpu_oracle_parity": [
+        "segmentation-bridge-evidence"
+      ],
+      "fallback": [
+        "segmentation-bridge-evidence"
+      ],
+      "input_integrity": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "memory": [
+        "segmentation-bridge-evidence"
+      ],
+      "metadata": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "provenance": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "transfer_inclusive_timing": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ]
+    },
+    "canny_edges::cupyx-canny-edges-exact-v1": {
+      "adversarial_workloads": [
+        "canny-otsu-evidence"
+      ],
+      "cancellation": [
+        "canny-otsu-evidence"
+      ],
+      "cleanup": [
+        "canny-otsu-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "canny-otsu-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "canny-otsu-provider-contracts"
+      ],
+      "memory": [
+        "canny-otsu-evidence"
+      ],
+      "metadata": [
+        "canny-otsu-evidence"
+      ],
+      "provenance": [
+        "canny-otsu-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "canny-otsu-evidence"
+      ]
+    },
+    "convert_dtype::cupyx-convert-dtype-preserve-f32-v1": {
+      "adversarial_workloads": [
+        "convert-dtype-evidence"
+      ],
+      "cancellation": [
+        "convert-dtype-evidence",
+        "convert-dtype-provider-contracts"
+      ],
+      "cleanup": [
+        "convert-dtype-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "convert-dtype-evidence"
+      ],
+      "fallback": [
+        "convert-dtype-evidence",
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "convert-dtype-evidence",
+        "convert-dtype-provider-contracts"
+      ],
+      "memory": [
+        "convert-dtype-evidence"
+      ],
+      "metadata": [
+        "convert-dtype-evidence"
+      ],
+      "provenance": [
+        "convert-dtype-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "convert-dtype-evidence"
+      ]
+    },
+    "extract_channel::cupy-extract-channel-view-v1": {
+      "adversarial_workloads": [
+        "segmentation-bridge-evidence"
+      ],
+      "cancellation": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "cleanup": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "cpu_oracle_parity": [
+        "segmentation-bridge-evidence"
+      ],
+      "fallback": [
+        "segmentation-bridge-evidence"
+      ],
+      "input_integrity": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "memory": [
+        "segmentation-bridge-evidence"
+      ],
+      "metadata": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "provenance": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ],
+      "transfer_inclusive_timing": [
+        "segmentation-bridge-evidence",
+        "segmentation-bridge-provider-contracts"
+      ]
+    },
+    "fill_holes::cupyx-fill-holes-all-v1": {
+      "adversarial_workloads": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-provider-contracts"
+      ],
+      "cancellation": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-provider-contracts"
+      ],
+      "cleanup": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts"
+      ],
+      "cpu_oracle_parity": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts"
+      ],
+      "fallback": [
+        "mask-cleanup-evidence"
+      ],
+      "input_integrity": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts",
+        "mask-cleanup-provider-contracts"
+      ],
+      "memory": [
+        "mask-cleanup-evidence"
+      ],
+      "metadata": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts"
+      ],
+      "provenance": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts"
+      ],
+      "transfer_inclusive_timing": [
+        "mask-cleanup-evidence"
+      ]
+    },
+    "gaussian_blur::cupy-gaussian-blur-v1": {
+      "adversarial_workloads": [
+        "core-provider-contracts"
+      ],
+      "cancellation": [
+        "core-provider-contracts"
+      ],
+      "cleanup": [
+        "core-production-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "core-production-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "core-provider-contracts"
+      ],
+      "memory": [
+        "core-production-evidence"
+      ],
+      "metadata": [
+        "core-provider-contracts"
+      ],
+      "provenance": [
+        "core-production-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "core-production-evidence"
+      ]
+    },
+    "gaussian_blur_3d::cupy-gaussian-blur-3d-v1": {
+      "adversarial_workloads": [
+        "core-provider-contracts"
+      ],
+      "cancellation": [
+        "core-provider-contracts"
+      ],
+      "cleanup": [
+        "core-production-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "core-production-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "core-provider-contracts"
+      ],
+      "memory": [
+        "core-production-evidence"
+      ],
+      "metadata": [
+        "core-provider-contracts"
+      ],
+      "provenance": [
+        "core-production-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "core-production-evidence"
+      ]
+    },
+    "label_connected_components::cupyx-connected-components-v1": {
+      "adversarial_workloads": [
+        "connected-components-evidence"
+      ],
+      "cancellation": [
+        "connected-components-evidence"
+      ],
+      "cleanup": [
+        "connected-components-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "connected-components-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "connected-components-provider-contracts"
+      ],
+      "memory": [
+        "connected-components-evidence"
+      ],
+      "metadata": [
+        "connected-components-provider-contracts"
+      ],
+      "provenance": [
+        "connected-components-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "connected-components-evidence"
+      ]
+    },
+    "measure_objects::cupy-measure-objects-basic-v1": {
+      "adversarial_workloads": [
+        "measurements-evidence"
+      ],
+      "cancellation": [
+        "measurements-evidence"
+      ],
+      "cleanup": [
+        "measurements-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "measurements-evidence"
+      ],
+      "fallback": [
+        "measurements-evidence",
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "measurements-provider-contracts"
+      ],
+      "memory": [
+        "measurements-evidence"
+      ],
+      "metadata": [
+        "measurements-evidence"
+      ],
+      "provenance": [
+        "measurements-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "measurements-evidence"
+      ]
+    },
+    "measure_objects_intensity::cupy-measure-objects-intensity-basic-v1": {
+      "adversarial_workloads": [
+        "measurements-evidence"
+      ],
+      "cancellation": [
+        "measurements-evidence"
+      ],
+      "cleanup": [
+        "measurements-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "measurements-evidence"
+      ],
+      "fallback": [
+        "measurements-evidence",
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "measurements-provider-contracts"
+      ],
+      "memory": [
+        "measurements-evidence"
+      ],
+      "metadata": [
+        "measurements-evidence"
+      ],
+      "provenance": [
+        "measurements-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "measurements-evidence"
+      ]
+    },
+    "median_filter::cupy-median-filter-v1": {
+      "adversarial_workloads": [
+        "core-provider-contracts"
+      ],
+      "cancellation": [
+        "core-provider-contracts"
+      ],
+      "cleanup": [
+        "core-production-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "core-production-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "core-provider-contracts"
+      ],
+      "memory": [
+        "core-production-evidence"
+      ],
+      "metadata": [
+        "core-provider-contracts"
+      ],
+      "provenance": [
+        "core-production-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "core-production-evidence"
+      ]
+    },
+    "otsu_threshold::cupy-otsu-threshold-exact-v1": {
+      "adversarial_workloads": [
+        "canny-otsu-evidence"
+      ],
+      "cancellation": [
+        "canny-otsu-evidence"
+      ],
+      "cleanup": [
+        "canny-otsu-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "canny-otsu-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "canny-otsu-provider-contracts"
+      ],
+      "memory": [
+        "canny-otsu-evidence"
+      ],
+      "metadata": [
+        "canny-otsu-evidence"
+      ],
+      "provenance": [
+        "canny-otsu-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "canny-otsu-evidence"
+      ]
+    },
+    "remove_binary_outliers::cupy-remove-binary-outliers-v1": {
+      "adversarial_workloads": [
+        "remove-binary-outliers-evidence"
+      ],
+      "cancellation": [
+        "remove-binary-outliers-evidence"
+      ],
+      "cleanup": [
+        "remove-binary-outliers-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "remove-binary-outliers-evidence"
+      ],
+      "fallback": [
+        "remove-binary-outliers-evidence"
+      ],
+      "input_integrity": [
+        "remove-binary-outliers-evidence"
+      ],
+      "memory": [
+        "remove-binary-outliers-evidence"
+      ],
+      "metadata": [
+        "remove-binary-outliers-evidence"
+      ],
+      "provenance": [
+        "remove-binary-outliers-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "remove-binary-outliers-evidence"
+      ]
+    },
+    "remove_small_objects::cupyx-remove-small-objects-bool-v1": {
+      "adversarial_workloads": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-provider-contracts"
+      ],
+      "cancellation": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-provider-contracts"
+      ],
+      "cleanup": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts"
+      ],
+      "cpu_oracle_parity": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts"
+      ],
+      "fallback": [
+        "mask-cleanup-evidence"
+      ],
+      "input_integrity": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts",
+        "mask-cleanup-provider-contracts"
+      ],
+      "memory": [
+        "mask-cleanup-evidence"
+      ],
+      "metadata": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts"
+      ],
+      "provenance": [
+        "mask-cleanup-evidence",
+        "mask-cleanup-execution-contracts"
+      ],
+      "transfer_inclusive_timing": [
+        "mask-cleanup-evidence"
+      ]
+    },
+    "richardson_lucy_deconvolution::rl-cupy-f32-v1": {
+      "adversarial_workloads": [
+        "rl-admission-evidence"
+      ],
+      "cancellation": [
+        "rl-provider-contracts"
+      ],
+      "cleanup": [
+        "rl-performance-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "rl-admission-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "rl-provider-contracts"
+      ],
+      "memory": [
+        "rl-performance-evidence"
+      ],
+      "metadata": [
+        "rl-performance-evidence"
+      ],
+      "provenance": [
+        "rl-admission-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "rl-performance-evidence"
+      ]
+    },
+    "richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1": {
+      "adversarial_workloads": [
+        "rl-tv-admission-evidence"
+      ],
+      "cancellation": [
+        "rl-tv-provider-contracts"
+      ],
+      "cleanup": [
+        "rl-tv-performance-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "rl-tv-admission-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "rl-tv-provider-contracts"
+      ],
+      "memory": [
+        "rl-tv-performance-evidence"
+      ],
+      "metadata": [
+        "rl-tv-performance-evidence"
+      ],
+      "provenance": [
+        "rl-tv-admission-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "rl-tv-performance-evidence"
+      ]
+    },
+    "rolling_ball_background::cupy-rolling-ball-background-v1": {
+      "adversarial_workloads": [
+        "core-provider-contracts"
+      ],
+      "cancellation": [
+        "core-provider-contracts"
+      ],
+      "cleanup": [
+        "core-production-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "core-production-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "core-provider-contracts"
+      ],
+      "memory": [
+        "core-production-evidence"
+      ],
+      "metadata": [
+        "core-provider-contracts"
+      ],
+      "provenance": [
+        "core-production-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "core-production-evidence"
+      ]
+    },
+    "sigma_filter::cupy-sigma-filter-v1": {
+      "adversarial_workloads": [
+        "sigma-evidence"
+      ],
+      "cancellation": [
+        "sigma-evidence"
+      ],
+      "cleanup": [
+        "sigma-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "sigma-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts",
+        "sigma-evidence"
+      ],
+      "input_integrity": [
+        "sigma-evidence"
+      ],
+      "memory": [
+        "sigma-evidence"
+      ],
+      "metadata": [
+        "sigma-evidence"
+      ],
+      "provenance": [
+        "sigma-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "sigma-evidence"
+      ]
+    },
+    "subtract_background::cupy-subtract-background-v1": {
+      "adversarial_workloads": [
+        "core-provider-contracts"
+      ],
+      "cancellation": [
+        "core-provider-contracts"
+      ],
+      "cleanup": [
+        "core-production-evidence"
+      ],
+      "cpu_oracle_parity": [
+        "core-production-evidence"
+      ],
+      "fallback": [
+        "public-fallback-policy-contracts"
+      ],
+      "input_integrity": [
+        "core-provider-contracts"
+      ],
+      "memory": [
+        "core-production-evidence"
+      ],
+      "metadata": [
+        "core-provider-contracts"
+      ],
+      "provenance": [
+        "core-production-evidence"
+      ],
+      "transfer_inclusive_timing": [
+        "core-production-evidence"
+      ]
+    }
+  },
+  "harness": {
+    "path": "scripts/run_gpu_admission.py",
+    "sha256": "d054fe0baefa69080856e8d87774e4d830670e6c90903fe026e708b14d2792c0"
+  },
+  "implementations": [
+    {
+      "implementation_id": "cupy-rolling-ball-background-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "rolling_ball_background",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-subtract-background-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "subtract_background",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-median-filter-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "median_filter",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-gaussian-blur-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "gaussian_blur",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-gaussian-blur-3d-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "gaussian_blur_3d",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupyx-convert-dtype-preserve-f32-v1",
+      "implementation_version": "1",
+      "library_id": "cupyx",
+      "operation_id": "convert_dtype",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-binary-threshold-f32-exact-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "binary_threshold",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-extract-channel-view-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "extract_channel",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "rl-cupy-f32-v1",
+      "implementation_version": "1",
+      "library_id": "cupyx",
+      "operation_id": "richardson_lucy_deconvolution",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "rl-tv-cupy-f32-v1",
+      "implementation_version": "1",
+      "library_id": "cupyx",
+      "operation_id": "richardson_lucy_tv_deconvolution",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupyx-canny-edges-exact-v1",
+      "implementation_version": "1",
+      "library_id": "cupyx",
+      "operation_id": "canny_edges",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-otsu-threshold-exact-v1",
+      "implementation_version": "1",
+      "library_id": "cupyx",
+      "operation_id": "otsu_threshold",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-sigma-filter-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "sigma_filter",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupyx-connected-components-v1",
+      "implementation_version": "1",
+      "library_id": "cupyx",
+      "operation_id": "label_connected_components",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupyx-fill-holes-all-v1",
+      "implementation_version": "1",
+      "library_id": "cupyx",
+      "operation_id": "fill_holes",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupyx-remove-small-objects-bool-v1",
+      "implementation_version": "1",
+      "library_id": "cupyx",
+      "operation_id": "remove_small_objects",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-remove-binary-outliers-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "remove_binary_outliers",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-measure-objects-basic-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "measure_objects",
+      "runtime_id": "cuda-cupy"
+    },
+    {
+      "implementation_id": "cupy-measure-objects-intensity-basic-v1",
+      "implementation_version": "1",
+      "library_id": "cupy",
+      "operation_id": "measure_objects_intensity",
+      "runtime_id": "cuda-cupy"
+    }
+  ],
+  "manifest": {
+    "filename": "gpu_admission_suites.json",
+    "schema": "napari-vipp-gpu-admission-suite-manifest",
+    "schema_version": 1,
+    "sha256": "a2c5b2192cdb6dbd21c3a25d08b89d8424f5489cdff12d55f2cdcc57f15c2cbf"
+  },
+  "platform": {
+    "machine": "AMD64",
+    "python": "3.12.9",
+    "python_implementation": "CPython",
+    "release": "10",
+    "system": "Windows"
+  },
+  "profile": "full",
+  "required_facets": [
+    "cpu_oracle_parity",
+    "adversarial_workloads",
+    "metadata",
+    "input_integrity",
+    "memory",
+    "cancellation",
+    "cleanup",
+    "fallback",
+    "provenance",
+    "transfer_inclusive_timing"
+  ],
+  "runners": [
+    {
+      "artifact": {
+        "relative_path": "core-production.json",
+        "schema": "napari-vipp-core-public-gpu-benchmark-evidence",
+        "schema_version": 2,
+        "sha256": "fd9f52b129c46d3e608f5fd77f49273433c6ae6470e6114241e68d5145ee2cde",
+        "size_bytes": 90874
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_phase1.py",
+        "--output",
+        "<artifact-directory>\\core-production.json",
+        "--device-id",
+        "cuda:0"
+      ],
+      "duration_seconds": 4.485038100043312,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "memory",
+        "cleanup",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "rolling_ball_background::cupy-rolling-ball-background-v1",
+        "subtract_background::cupy-subtract-background-v1",
+        "median_filter::cupy-median-filter-v1",
+        "gaussian_blur::cupy-gaussian-blur-v1",
+        "gaussian_blur_3d::cupy-gaussian-blur-3d-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "core-production-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "201a722e0f271514619d65c9e2d46cf4419cae59120a9a5c7965aca132640e99"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_background.py",
+        "src/napari_vipp/_tests/test_gpu_gaussian.py",
+        "src/napari_vipp/_tests/test_gpu_median.py",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_run_batch_gpu_provenance_cleanup_and_reuse",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_headless_background_gaussian_median_forms_one_device_segment"
+      ],
+      "duration_seconds": 12.030359899974428,
+      "exit_code": 0,
+      "facets": [
+        "adversarial_workloads",
+        "metadata",
+        "input_integrity",
+        "cancellation"
+      ],
+      "implementations": [
+        "rolling_ball_background::cupy-rolling-ball-background-v1",
+        "subtract_background::cupy-subtract-background-v1",
+        "median_filter::cupy-median-filter-v1",
+        "gaussian_blur::cupy-gaussian-blur-v1",
+        "gaussian_blur_3d::cupy-gaussian-blur-3d-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "core-provider-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "bc6e402cb1699d490fff556776bdb829f34ee140da1b1a2759b98a1f6066bdaf"
+    },
+    {
+      "artifact": {
+        "relative_path": "rl-admission.json",
+        "schema": "napari-vipp-cupy-rl-admission-evidence",
+        "schema_version": 2,
+        "sha256": "2f8ad3b77fccf72196bf843b0c35fcc2c332464a2a79f61210efce4a23f51ca8",
+        "size_bytes": 3172625
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_rl_admission.py",
+        "--output",
+        "<artifact-directory>\\rl-admission.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 195.4460526999319,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "provenance"
+      ],
+      "implementations": [
+        "richardson_lucy_deconvolution::rl-cupy-f32-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "rl-admission-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "91e06f6396857f4eccbfc4b050cf07ae22b7ec1e763db0a535142625bdac4b90"
+    },
+    {
+      "artifact": {
+        "relative_path": "rl-performance.json",
+        "schema": "napari-vipp-cupy-rl-performance-evidence",
+        "schema_version": 1,
+        "sha256": "9e5387cf2a43fb22ca82e762c5a35af04dd998198a74c2a36570ef997f95afb9",
+        "size_bytes": 19545
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_rl_performance.py",
+        "--profile",
+        "large",
+        "--output",
+        "<artifact-directory>\\rl-performance.json",
+        "--device-id",
+        "cuda:0"
+      ],
+      "duration_seconds": 858.0974527000217,
+      "exit_code": 0,
+      "facets": [
+        "metadata",
+        "memory",
+        "cleanup",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "richardson_lucy_deconvolution::rl-cupy-f32-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "rl-performance-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "5acd954124a040dce6687cf50c76c5224780142af68677d9f8f888b254806583"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_rl.py"
+      ],
+      "duration_seconds": 6.243589099962264,
+      "exit_code": 0,
+      "facets": [
+        "input_integrity",
+        "cancellation"
+      ],
+      "implementations": [
+        "richardson_lucy_deconvolution::rl-cupy-f32-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "rl-provider-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "37c103bdd9623d21ea1368a522c204a5441cf692f5ba7d8be3023d302f642a31"
+    },
+    {
+      "artifact": {
+        "relative_path": "rl-tv-admission.json",
+        "schema": "napari-vipp-cupy-rl-tv-admission-evidence",
+        "schema_version": 2,
+        "sha256": "2f22fbebe6d608f3fd907dd000b7f2e005578766ac2236716284ac3ad0fd73c0",
+        "size_bytes": 3761587
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_rl_tv_admission.py",
+        "--output",
+        "<artifact-directory>\\rl-tv-admission.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 1195.1841875999235,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "provenance"
+      ],
+      "implementations": [
+        "richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "rl-tv-admission-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "7cbf4a671599d078a5af284dcd2c338e5616557b78cd61f8ad3b1d31679627b8"
+    },
+    {
+      "artifact": {
+        "relative_path": "rl-tv-performance.json",
+        "schema": "napari-vipp-cupy-rl-tv-performance-evidence",
+        "schema_version": 1,
+        "sha256": "db02ae389c0b937246eba0e2903a16f47e49f236cbe9ec7f91d615c939a0bdad",
+        "size_bytes": 12451
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_rl_tv_performance.py",
+        "--profile",
+        "practical",
+        "--output",
+        "<artifact-directory>\\rl-tv-performance.json",
+        "--device-id",
+        "cuda:0"
+      ],
+      "duration_seconds": 272.3897348999744,
+      "exit_code": 0,
+      "facets": [
+        "metadata",
+        "memory",
+        "cleanup",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "rl-tv-performance-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "6582cab684629f2ba0b176d368e53c163971dacdc3064ac9f9fd2c2e1a9ecf20"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_rl_tv.py"
+      ],
+      "duration_seconds": 7.660098599968478,
+      "exit_code": 0,
+      "facets": [
+        "input_integrity",
+        "cancellation"
+      ],
+      "implementations": [
+        "richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "rl-tv-provider-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "0434e59326057b95d9317170a79c3882e4ea59dfe616b5a1866f7d88b4dff48f"
+    },
+    {
+      "artifact": {
+        "relative_path": "canny-otsu.json",
+        "schema": "napari-vipp-cupy-canny-otsu-evidence",
+        "schema_version": 3,
+        "sha256": "e6878aab77b19cadbcd6dec2290b90ff318a24a7dd4400dae41c411fd8ab55c2",
+        "size_bytes": 33028
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_canny_otsu.py",
+        "--output",
+        "<artifact-directory>\\canny-otsu.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 8.406113900011405,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "metadata",
+        "memory",
+        "cancellation",
+        "cleanup",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "canny_edges::cupyx-canny-edges-exact-v1",
+        "otsu_threshold::cupy-otsu-threshold-exact-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "canny-otsu-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "74acc9d6fa202641fc979156572a626805e7bd9aa30d33c80f08280c380c2bd5"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_canny.py",
+        "src/napari_vipp/_tests/test_gpu_otsu.py"
+      ],
+      "duration_seconds": 7.501980399945751,
+      "exit_code": 0,
+      "facets": [
+        "input_integrity"
+      ],
+      "implementations": [
+        "canny_edges::cupyx-canny-edges-exact-v1",
+        "otsu_threshold::cupy-otsu-threshold-exact-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "canny-otsu-provider-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "ed91e772ba6119e8812b9a1f460b2d5a5657ceefdc0b800210e28425d33dc58d"
+    },
+    {
+      "artifact": {
+        "relative_path": "convert-dtype.json",
+        "schema": "napari-vipp-cupyx-convert-dtype-evidence",
+        "schema_version": 1,
+        "sha256": "dadd4fa27080f679077c7401c6f357e9fed71a32a7e64b1c27ea52432901a608",
+        "size_bytes": 23845
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_convert_dtype.py",
+        "--profile",
+        "full",
+        "--output",
+        "<artifact-directory>\\convert-dtype.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 4.939940700074658,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "metadata",
+        "input_integrity",
+        "memory",
+        "cancellation",
+        "cleanup",
+        "fallback",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "convert_dtype::cupyx-convert-dtype-preserve-f32-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "convert-dtype-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "719cf5cebe0b625db788fde2d0aea40ca1915708730592b95af124565380125a"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_convert_dtype_provider.py"
+      ],
+      "duration_seconds": 6.309796600020491,
+      "exit_code": 0,
+      "facets": [
+        "input_integrity",
+        "cancellation"
+      ],
+      "implementations": [
+        "convert_dtype::cupyx-convert-dtype-preserve-f32-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "convert-dtype-provider-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "cfcd6a0545613bf02184f3587603c86681f521c6208100123aa850f8e3eafe56"
+    },
+    {
+      "artifact": {
+        "relative_path": "segmentation-bridge.json",
+        "schema": "napari-vipp-cupy-segmentation-bridge-evidence",
+        "schema_version": 1,
+        "sha256": "b72e4b3d4c5622ce1e30fd55bf36626b8d3b02b51592b59cb3c5e20ed8fc412e",
+        "size_bytes": 43305
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_segmentation_bridge.py",
+        "--profile",
+        "full",
+        "--output",
+        "<artifact-directory>\\segmentation-bridge.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 4.609453299897723,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "metadata",
+        "input_integrity",
+        "memory",
+        "cancellation",
+        "cleanup",
+        "fallback",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "binary_threshold::cupy-binary-threshold-f32-exact-v1",
+        "extract_channel::cupy-extract-channel-view-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "segmentation-bridge-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "1942720c296c233b9ad16b8a443b7c0fe12f7ad354e11a06b207d605fdf2800f"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py",
+        "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment"
+      ],
+      "duration_seconds": 7.066715199965984,
+      "exit_code": 0,
+      "facets": [
+        "metadata",
+        "input_integrity",
+        "cancellation",
+        "cleanup",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "binary_threshold::cupy-binary-threshold-f32-exact-v1",
+        "extract_channel::cupy-extract-channel-view-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "segmentation-bridge-provider-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "369a14cc661ae9e1a16e6bd63672ab462b9cba9ccabcb6747f3ef2b2727da7f1"
+    },
+    {
+      "artifact": {
+        "relative_path": "sigma.json",
+        "schema": "napari-vipp-cupy-sigma-filter-evidence",
+        "schema_version": 1,
+        "sha256": "4fca85259793addd4a16d9b70b3478eff7ba77d189fae46572de5ee24a676989",
+        "size_bytes": 85429
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_sigma.py",
+        "--profile",
+        "full",
+        "--output",
+        "<artifact-directory>\\sigma.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 232.67949610005599,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "metadata",
+        "input_integrity",
+        "memory",
+        "cancellation",
+        "cleanup",
+        "fallback",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "sigma_filter::cupy-sigma-filter-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "sigma-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "c9eabc00355fa8ee3c0341fa11aa06aea283bde195b5dcc049f2923a316119b9"
+    },
+    {
+      "artifact": {
+        "relative_path": "connected-components.json",
+        "schema": "napari-vipp-cupyx-connected-components-evidence",
+        "schema_version": 1,
+        "sha256": "b11ac048d50c3be9ca8084d8703b08582ccd104d019ddbaffaf822beaa94c7b5",
+        "size_bytes": 91647
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_connected_components.py",
+        "--profile",
+        "full",
+        "--output",
+        "<artifact-directory>\\connected-components.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 5.8353797000600025,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "memory",
+        "cancellation",
+        "cleanup",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "label_connected_components::cupyx-connected-components-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "connected-components-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "b02d850374c33f7126ff0a26fb850949977b5b9596df67919ca9bc4e637d6230"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_connected_components_provider.py"
+      ],
+      "duration_seconds": 4.685837800032459,
+      "exit_code": 0,
+      "facets": [
+        "metadata",
+        "input_integrity"
+      ],
+      "implementations": [
+        "label_connected_components::cupyx-connected-components-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "connected-components-provider-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "d80b2fd4bdf820062e69e6a0af044744ca494f293fea6f8e967866a4ea79eaf9"
+    },
+    {
+      "artifact": {
+        "relative_path": "mask-cleanup.json",
+        "schema": "napari-vipp-cupyx-mask-cleanup-evidence",
+        "schema_version": 1,
+        "sha256": "877a587449f0e0b59e74ecb5bd7246c26d26c8b72982ea35ee2265d26b7883e9",
+        "size_bytes": 47999
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_mask_cleanup.py",
+        "--profile",
+        "full",
+        "--output",
+        "<artifact-directory>\\mask-cleanup.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 4.926816200022586,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "metadata",
+        "input_integrity",
+        "memory",
+        "cancellation",
+        "cleanup",
+        "fallback",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "mask-cleanup-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "6de55f13be49983124a4577db5cd314232e9a1943b4d82ebcad30ec7a6f56f4e"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_fill_holes_provider.py",
+        "src/napari_vipp/_tests/test_gpu_remove_small_objects_provider.py"
+      ],
+      "duration_seconds": 7.3422045999905095,
+      "exit_code": 0,
+      "facets": [
+        "adversarial_workloads",
+        "input_integrity",
+        "cancellation"
+      ],
+      "implementations": [
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "mask-cleanup-provider-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "c5e9f923414f07870deaaaed1b992c878a33cb5f11ccff95b8aed995c000586c"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_student_gaussian_otsu_remove_corridor_attests_exact_assignments",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance"
+      ],
+      "duration_seconds": 6.66568630002439,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "metadata",
+        "input_integrity",
+        "cleanup",
+        "provenance"
+      ],
+      "implementations": [
+        "fill_holes::cupyx-fill-holes-all-v1",
+        "remove_small_objects::cupyx-remove-small-objects-bool-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "mask-cleanup-execution-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "2c4549a25882278b30c338f0758c721815af4ab9a28426339f5623c62c29f1fb"
+    },
+    {
+      "artifact": {
+        "relative_path": "remove-binary-outliers.json",
+        "schema": "napari-vipp-cupy-remove-binary-outliers-evidence",
+        "schema_version": 1,
+        "sha256": "af4aa96e08bf613b658a18c7911843c04baace277807aba48dbb5b0c619098f3",
+        "size_bytes": 42087
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_remove_binary_outliers.py",
+        "--profile",
+        "full",
+        "--output",
+        "<artifact-directory>\\remove-binary-outliers.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 6.367804699926637,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "metadata",
+        "input_integrity",
+        "memory",
+        "cancellation",
+        "cleanup",
+        "fallback",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "remove_binary_outliers::cupy-remove-binary-outliers-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "remove-binary-outliers-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "d140843f392c1bb31d72ded9f9b1f41237dde2786ef0bee80a17ba217da98232"
+    },
+    {
+      "artifact": {
+        "relative_path": "measurements.json",
+        "schema": "napari-vipp-cupy-basic-measurements-evidence",
+        "schema_version": 1,
+        "sha256": "ad31968934dd7f12ffcdfceeaf2c4f1a9c0a864918d67f881c4a299d47f39785",
+        "size_bytes": 131450
+      },
+      "command": [
+        "<python>",
+        "scripts/benchmark_gpu_measurements.py",
+        "--profile",
+        "full",
+        "--output",
+        "<artifact-directory>\\measurements.json",
+        "--device-index",
+        "0"
+      ],
+      "duration_seconds": 28.972182299941778,
+      "exit_code": 0,
+      "facets": [
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "metadata",
+        "memory",
+        "cancellation",
+        "cleanup",
+        "fallback",
+        "provenance",
+        "transfer_inclusive_timing"
+      ],
+      "implementations": [
+        "measure_objects::cupy-measure-objects-basic-v1",
+        "measure_objects_intensity::cupy-measure-objects-intensity-basic-v1"
+      ],
+      "kind": "evidence",
+      "runner_id": "measurements-evidence",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "7d2a7b5c9803173149f1f8f963aa47ed1659012017e2ffe32019cada5be0c3e4"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_gpu_measurements_provider.py"
+      ],
+      "duration_seconds": 8.061430700006895,
+      "exit_code": 0,
+      "facets": [
+        "input_integrity"
+      ],
+      "implementations": [
+        "measure_objects::cupy-measure-objects-basic-v1",
+        "measure_objects_intensity::cupy-measure-objects-intensity-basic-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "measurements-provider-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "9a640c039c849947ab8e546c46f69a4447dedf77c2032231875a1a8a242e9a7c"
+    },
+    {
+      "artifact": null,
+      "command": [
+        "<python>",
+        "-m",
+        "pytest",
+        "-q",
+        "src/napari_vipp/_tests/test_broad_gpu_admission_regressions.py",
+        "src/napari_vipp/_tests/test_compute_policy_convert_dtype_gpu.py",
+        "src/napari_vipp/_tests/test_compute_policy.py",
+        "src/napari_vipp/_tests/test_compute_planning.py"
+      ],
+      "duration_seconds": 6.639819200034253,
+      "exit_code": 0,
+      "facets": [
+        "fallback"
+      ],
+      "implementations": [
+        "rolling_ball_background::cupy-rolling-ball-background-v1",
+        "subtract_background::cupy-subtract-background-v1",
+        "median_filter::cupy-median-filter-v1",
+        "gaussian_blur::cupy-gaussian-blur-v1",
+        "gaussian_blur_3d::cupy-gaussian-blur-3d-v1",
+        "convert_dtype::cupyx-convert-dtype-preserve-f32-v1",
+        "richardson_lucy_deconvolution::rl-cupy-f32-v1",
+        "richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1",
+        "canny_edges::cupyx-canny-edges-exact-v1",
+        "otsu_threshold::cupy-otsu-threshold-exact-v1",
+        "sigma_filter::cupy-sigma-filter-v1",
+        "label_connected_components::cupyx-connected-components-v1",
+        "measure_objects::cupy-measure-objects-basic-v1",
+        "measure_objects_intensity::cupy-measure-objects-intensity-basic-v1"
+      ],
+      "kind": "pytest",
+      "runner_id": "public-fallback-policy-contracts",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "80996d258629abf3eab978bd49b34132503afd1204774989d12bf37626eaf711"
+    }
+  ],
+  "schema": "napari-vipp-gpu-admission-aggregate",
+  "schema_version": 1,
+  "source": {
+    "commit": "7189cf40280d895b61b061f1468767164ccfbcf4",
+    "git_available": true,
+    "worktree_dirty": false
+  },
+  "status": "pass"
+}

@@ -1777,7 +1777,7 @@
     "repeat_count": 3,
     "status": "pass"
   },
-  "created_utc": "2026-08-22T08:14:17.238733+00:00",
+  "created_utc": "2026-08-22T15:06:22.695934+00:00",
   "durable_optimizer_record": false,
   "environment": {
     "compute_capability": "12.0",
@@ -2108,7 +2108,7 @@
   "packages": {
     "cupy": "14.1.1",
     "cupy-cuda13x": "14.1.1",
-    "napari-vipp": "0.13.0a7",
+    "napari-vipp": "0.13.0a8",
     "numpy": "2.5.1",
     "scikit-image": "0.26.0",
     "scipy": "1.18.0"
@@ -2161,35 +2161,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.0011642000172287226,
+          "cpu_case_cold_seconds": 0.0011446999851614237,
           "cpu_seconds": [
-            0.0010716000106185675,
-            0.001039800001308322,
-            0.0010103998938575387,
-            0.0010058000916615129,
-            0.0011786998948082328
+            0.001004899968393147,
+            0.0010031999554485083,
+            0.0010164000559598207,
+            0.0010022999485954642,
+            0.0009976000292226672
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.02491180005017668,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.002978999982587993,
           "gpu_resident_compute_seconds": [
-            0.0018010999774560332,
-            0.002001299988478422,
-            0.0019237999804317951,
-            0.0016380000161007047,
-            0.001601099967956543
+            0.0016079000197350979,
+            0.001623000018298626,
+            0.0015891999937593937,
+            0.0016639000969007611,
+            0.0016164000844582915
           ],
           "gpu_resident_public_seconds": [
-            0.001904199947603047,
-            0.0019120000069960952,
-            0.0019031999399885535,
-            0.0019073999719694257,
-            0.002225399948656559
+            0.0018766999710351229,
+            0.0020297999726608396,
+            0.00214669993147254,
+            0.001906599965877831,
+            0.0018936999840661883
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.002304999972693622,
-            0.002027899958193302,
-            0.001989200012758374,
-            0.0019838999724015594,
-            0.002012499957345426
+            0.002018700004555285,
+            0.0020089999306946993,
+            0.0020502000115811825,
+            0.001986699993722141,
+            0.0019639000529423356
           ]
         },
         "seed": 51156,
@@ -2200,17 +2200,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.0011642000172287226,
-          "cpu_median_seconds": 0.001039800001308322,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.02491180005017668,
-          "gpu_resident_compute_median_seconds": 0.0018010999774560332,
-          "gpu_resident_compute_speedup": 0.5773138717024411,
-          "gpu_resident_public_median_seconds": 0.0019073999719694257,
-          "gpu_resident_public_speedup": 0.5451399898232719,
-          "gpu_transfer_inclusive_median_seconds": 0.002012499957345426,
-          "gpu_transfer_inclusive_speedup": 0.5166708190542587,
-          "input_transfer_and_allocation_seconds": 0.0001050999853760004,
-          "mandatory_table_boundary_seconds": 0.00010629999451339245,
+          "cpu_case_cold_seconds": 0.0011446999851614237,
+          "cpu_median_seconds": 0.0010031999554485083,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.002978999982587993,
+          "gpu_resident_compute_median_seconds": 0.0016164000844582915,
+          "gpu_resident_compute_speedup": 0.6206383958367049,
+          "gpu_resident_public_median_seconds": 0.001906599965877831,
+          "gpu_resident_public_speedup": 0.5261722298345988,
+          "gpu_transfer_inclusive_median_seconds": 0.0020089999306946993,
+          "gpu_transfer_inclusive_speedup": 0.49935290694689477,
+          "input_transfer_and_allocation_seconds": 0.0001023999648168683,
+          "mandatory_table_boundary_seconds": 0.00029019988141953945,
           "screening_choice": "CPU"
         }
       },
@@ -2258,35 +2258,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.00138819997664541,
+          "cpu_case_cold_seconds": 0.00137339998036623,
           "cpu_seconds": [
-            0.0013643000274896622,
-            0.0012478999560698867,
-            0.0012356999795883894,
-            0.001244800048880279,
-            0.0012284000404179096
+            0.0012728000292554498,
+            0.0012387000024318695,
+            0.001248299959115684,
+            0.001249499968253076,
+            0.0012327999575063586
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.008047199924476445,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.007811999996192753,
           "gpu_resident_compute_seconds": [
-            0.006036399980075657,
-            0.00564469990786165,
-            0.006191299995407462,
-            0.005639399983920157,
-            0.005474000005051494
+            0.005966200027614832,
+            0.005704000010155141,
+            0.005913100088946521,
+            0.00647299992851913,
+            0.006647199974395335
           ],
           "gpu_resident_public_seconds": [
-            0.006723299971781671,
-            0.0061150999972596765,
-            0.006956900004297495,
-            0.006200499949045479,
-            0.006006299983710051
+            0.007479700027033687,
+            0.006988699897192419,
+            0.007272400078363717,
+            0.00734890007879585,
+            0.0067755000200122595
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.007314999937079847,
-            0.006743300007656217,
-            0.007590399938635528,
-            0.006393599906004965,
-            0.006171400076709688
+            0.006415999960154295,
+            0.006189299980178475,
+            0.007066900026984513,
+            0.006235799985006452,
+            0.006584299961104989
           ]
         },
         "seed": 52156,
@@ -2297,17 +2297,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.00138819997664541,
-          "cpu_median_seconds": 0.001244800048880279,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.008047199924476445,
-          "gpu_resident_compute_median_seconds": 0.00564469990786165,
-          "gpu_resident_compute_speedup": 0.22052546091008046,
-          "gpu_resident_public_median_seconds": 0.006200499949045479,
-          "gpu_resident_public_speedup": 0.20075801291989476,
-          "gpu_transfer_inclusive_median_seconds": 0.006743300007656217,
-          "gpu_transfer_inclusive_speedup": 0.18459805250648145,
-          "input_transfer_and_allocation_seconds": 0.0005428000586107373,
-          "mandatory_table_boundary_seconds": 0.0005558000411838293,
+          "cpu_case_cold_seconds": 0.00137339998036623,
+          "cpu_median_seconds": 0.001248299959115684,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.007811999996192753,
+          "gpu_resident_compute_median_seconds": 0.005966200027614832,
+          "gpu_resident_compute_speedup": 0.2092286469340401,
+          "gpu_resident_public_median_seconds": 0.007272400078363717,
+          "gpu_resident_public_speedup": 0.17164896673239,
+          "gpu_transfer_inclusive_median_seconds": 0.006415999960154295,
+          "gpu_transfer_inclusive_speedup": 0.1945604686515092,
+          "input_transfer_and_allocation_seconds": 0.0,
+          "mandatory_table_boundary_seconds": 0.0013062000507488847,
           "screening_choice": "CPU"
         }
       },
@@ -2355,35 +2355,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.004329200019128621,
+          "cpu_case_cold_seconds": 0.003158200066536665,
           "cpu_seconds": [
-            0.003004099940881133,
-            0.0029272999381646514,
-            0.0027296000625938177,
-            0.002878099912777543,
-            0.0027526000048965216
+            0.0027472999645397067,
+            0.0027086000191047788,
+            0.0027067000046372414,
+            0.002718700096011162,
+            0.0030593000119552016
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.0035221000434830785,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0256253998959437,
           "gpu_resident_compute_seconds": [
-            0.0021126000210642815,
-            0.0017833999590948224,
-            0.00174840004183352,
-            0.002335099969059229,
-            0.0020580999553203583
+            0.0017204999458044767,
+            0.001755799981765449,
+            0.001617399975657463,
+            0.0015844000736251473,
+            0.0015691999578848481
           ],
           "gpu_resident_public_seconds": [
-            0.0021303000394254923,
-            0.0021112000104039907,
-            0.0024202000349760056,
-            0.002278100000694394,
-            0.0020459999796003103
+            0.0019853999838232994,
+            0.001987399999052286,
+            0.0019555999897420406,
+            0.001973700011149049,
+            0.0022048999089747667
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.0024963999167084694,
-            0.002108599990606308,
-            0.0021193999564275146,
-            0.002137599978595972,
-            0.0023428999120369554
+            0.002316200057975948,
+            0.002246699994429946,
+            0.002181399962864816,
+            0.002185199991799891,
+            0.0021900999126955867
           ]
         },
         "seed": 51412,
@@ -2394,17 +2394,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.004329200019128621,
-          "cpu_median_seconds": 0.002878099912777543,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.0035221000434830785,
-          "gpu_resident_compute_median_seconds": 0.0020580999553203583,
-          "gpu_resident_compute_speedup": 1.3984257204502712,
-          "gpu_resident_public_median_seconds": 0.0021303000394254923,
-          "gpu_resident_public_speedup": 1.3510303053619246,
-          "gpu_transfer_inclusive_median_seconds": 0.002137599978595972,
-          "gpu_transfer_inclusive_speedup": 1.346416514594068,
-          "input_transfer_and_allocation_seconds": 7.2999391704797745e-06,
-          "mandatory_table_boundary_seconds": 7.220008410513401e-05,
+          "cpu_case_cold_seconds": 0.003158200066536665,
+          "cpu_median_seconds": 0.002718700096011162,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0256253998959437,
+          "gpu_resident_compute_median_seconds": 0.001617399975657463,
+          "gpu_resident_compute_speedup": 1.6809077141886484,
+          "gpu_resident_public_median_seconds": 0.0019853999838232994,
+          "gpu_resident_public_speedup": 1.36934628697626,
+          "gpu_transfer_inclusive_median_seconds": 0.0021900999126955867,
+          "gpu_transfer_inclusive_speedup": 1.2413589353852679,
+          "input_transfer_and_allocation_seconds": 0.00020469992887228727,
+          "mandatory_table_boundary_seconds": 0.00036800000816583633,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -2452,35 +2452,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.004767299978993833,
+          "cpu_case_cold_seconds": 0.004650200018659234,
           "cpu_seconds": [
-            0.004448399995453656,
-            0.004383599967695773,
-            0.004321599961258471,
-            0.004546300042420626,
-            0.00457079999614507
+            0.004441000055521727,
+            0.004239099915139377,
+            0.004240100039169192,
+            0.0042143999598920345,
+            0.004372600000351667
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.03025439998600632,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.029857899993658066,
           "gpu_resident_compute_seconds": [
-            0.012667899951338768,
-            0.011840300052426755,
-            0.011816299986094236,
-            0.012185700004920363,
-            0.011805300018750131
+            0.01161269994918257,
+            0.013224299997091293,
+            0.0127521000104025,
+            0.012080600019544363,
+            0.013031199923716486
           ],
           "gpu_resident_public_seconds": [
-            0.01301869994495064,
-            0.011778600048273802,
-            0.012813200009986758,
-            0.012789899948984385,
-            0.01305900001898408
+            0.012142000021412969,
+            0.012973699951544404,
+            0.013495399965904653,
+            0.012688699993304908,
+            0.014211300062015653
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.015605299966409802,
-            0.012866499950177968,
-            0.01427369995508343,
-            0.012984300032258034,
-            0.014115699916146696
+            0.013165000011213124,
+            0.01272979995701462,
+            0.012290299986489117,
+            0.012789399945177138,
+            0.012300399946980178
           ]
         },
         "seed": 52412,
@@ -2491,17 +2491,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.004767299978993833,
-          "cpu_median_seconds": 0.004448399995453656,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.03025439998600632,
-          "gpu_resident_compute_median_seconds": 0.011840300052426755,
-          "gpu_resident_compute_speedup": 0.3756999379877982,
-          "gpu_resident_public_median_seconds": 0.012813200009986758,
-          "gpu_resident_public_speedup": 0.3471732269836201,
-          "gpu_transfer_inclusive_median_seconds": 0.014115699916146696,
-          "gpu_transfer_inclusive_speedup": 0.31513846439631454,
-          "input_transfer_and_allocation_seconds": 0.0013024999061599374,
-          "mandatory_table_boundary_seconds": 0.0009728999575600028,
+          "cpu_case_cold_seconds": 0.004650200018659234,
+          "cpu_median_seconds": 0.004240100039169192,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.029857899993658066,
+          "gpu_resident_compute_median_seconds": 0.0127521000104025,
+          "gpu_resident_compute_speedup": 0.33250210049406287,
+          "gpu_resident_public_median_seconds": 0.012973699951544404,
+          "gpu_resident_public_speedup": 0.3268227302161745,
+          "gpu_transfer_inclusive_median_seconds": 0.01272979995701462,
+          "gpu_transfer_inclusive_speedup": 0.3330845774078901,
+          "input_transfer_and_allocation_seconds": 0.0,
+          "mandatory_table_boundary_seconds": 0.0002215999411419034,
           "screening_choice": "CPU"
         }
       },
@@ -2549,35 +2549,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.011369500076398253,
+          "cpu_case_cold_seconds": 0.01035190001130104,
           "cpu_seconds": [
-            0.010572299943305552,
-            0.010524099925532937,
-            0.010493200039491057,
-            0.010696300072595477,
-            0.010493700043298304
+            0.009803100023418665,
+            0.009965599980205297,
+            0.0096808000234887,
+            0.009636299917474389,
+            0.00997709995135665
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.005420799949206412,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.005115500069223344,
           "gpu_resident_compute_seconds": [
-            0.001691599958576262,
-            0.0018078000284731388,
-            0.00183269998524338,
-            0.0017769999103620648,
-            0.002585000009275973
+            0.0016153999604284763,
+            0.0017464000266045332,
+            0.0017383999656885862,
+            0.0016688000177964568,
+            0.0016070000128820539
           ],
           "gpu_resident_public_seconds": [
-            0.0024712999584153295,
-            0.0025315999519079924,
-            0.00239569996483624,
-            0.002505499986000359,
-            0.0029383000219240785
+            0.0023066001012921333,
+            0.002337199985049665,
+            0.002326000016182661,
+            0.002313900040462613,
+            0.0023816999746486545
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.0031110000563785434,
-            0.0032603000290691853,
-            0.00347140000667423,
-            0.0032553999917581677,
-            0.003471100004389882
+            0.0031696000369265676,
+            0.0029471999732777476,
+            0.00292449991684407,
+            0.0028433999978005886,
+            0.0029448000714182854
           ]
         },
         "seed": 51924,
@@ -2588,17 +2588,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.011369500076398253,
-          "cpu_median_seconds": 0.010524099925532937,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.005420799949206412,
-          "gpu_resident_compute_median_seconds": 0.0018078000284731388,
-          "gpu_resident_compute_speedup": 5.821495607797702,
-          "gpu_resident_public_median_seconds": 0.002505499986000359,
-          "gpu_resident_public_speedup": 4.20039911568031,
-          "gpu_transfer_inclusive_median_seconds": 0.0032603000290691853,
-          "gpu_transfer_inclusive_speedup": 3.2279544310949704,
-          "input_transfer_and_allocation_seconds": 0.0007548000430688262,
-          "mandatory_table_boundary_seconds": 0.0006976999575272202,
+          "cpu_case_cold_seconds": 0.01035190001130104,
+          "cpu_median_seconds": 0.009803100023418665,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.005115500069223344,
+          "gpu_resident_compute_median_seconds": 0.0016688000177964568,
+          "gpu_resident_compute_speedup": 5.874340795107989,
+          "gpu_resident_public_median_seconds": 0.002326000016182661,
+          "gpu_resident_public_speedup": 4.2145743573584,
+          "gpu_transfer_inclusive_median_seconds": 0.0029448000714182854,
+          "gpu_transfer_inclusive_speedup": 3.328952657454012,
+          "input_transfer_and_allocation_seconds": 0.0006188000552356243,
+          "mandatory_table_boundary_seconds": 0.0006571999983862042,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -2646,35 +2646,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.052430200041271746,
+          "cpu_case_cold_seconds": 0.047249200055375695,
           "cpu_seconds": [
-            0.05211859999690205,
-            0.0497363000176847,
-            0.051676100003533065,
-            0.049590300070121884,
-            0.05065039999317378
+            0.04521719994954765,
+            0.04542600002605468,
+            0.04476349998731166,
+            0.045826700050383806,
+            0.04499169997870922
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.025878199958242476,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.021492499974556267,
           "gpu_resident_compute_seconds": [
-            0.005884699989110231,
-            0.007240500068292022,
-            0.005587500054389238,
-            0.006051999982446432,
-            0.005753900040872395
+            0.0058262000093236566,
+            0.005388299934566021,
+            0.005728899966925383,
+            0.005853699985891581,
+            0.005657200003042817
           ],
           "gpu_resident_public_seconds": [
-            0.006376700010150671,
-            0.007559399935416877,
-            0.007019100012257695,
-            0.007214699988253415,
-            0.007709000026807189
+            0.0063838999485597014,
+            0.006651100004091859,
+            0.0065824000630527735,
+            0.006355799967423081,
+            0.0070177000015974045
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.008196600014343858,
-            0.008714099996723235,
-            0.009042100049555302,
-            0.008791000000201166,
-            0.008598600048571825
+            0.007180799962952733,
+            0.007780800107866526,
+            0.007798800012096763,
+            0.0081161999842152,
+            0.007474999991245568
           ]
         },
         "seed": 52924,
@@ -2685,17 +2685,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.052430200041271746,
-          "cpu_median_seconds": 0.05065039999317378,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.025878199958242476,
-          "gpu_resident_compute_median_seconds": 0.005884699989110231,
-          "gpu_resident_compute_speedup": 8.607133768399999,
-          "gpu_resident_public_median_seconds": 0.007214699988253415,
-          "gpu_resident_public_speedup": 7.020444381005451,
-          "gpu_transfer_inclusive_median_seconds": 0.008714099996723235,
-          "gpu_transfer_inclusive_speedup": 5.812464857210712,
-          "input_transfer_and_allocation_seconds": 0.00149940000846982,
-          "mandatory_table_boundary_seconds": 0.0013299999991431832,
+          "cpu_case_cold_seconds": 0.047249200055375695,
+          "cpu_median_seconds": 0.04521719994954765,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.021492499974556267,
+          "gpu_resident_compute_median_seconds": 0.005728899966925383,
+          "gpu_resident_compute_speedup": 7.892824139119165,
+          "gpu_resident_public_median_seconds": 0.0065824000630527735,
+          "gpu_resident_public_speedup": 6.869409260514758,
+          "gpu_transfer_inclusive_median_seconds": 0.007780800107866526,
+          "gpu_transfer_inclusive_speedup": 5.811381775999137,
+          "input_transfer_and_allocation_seconds": 0.0011984000448137522,
+          "mandatory_table_boundary_seconds": 0.0008535000961273909,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -2743,35 +2743,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.022200100007466972,
+          "cpu_case_cold_seconds": 0.023042700020596385,
           "cpu_seconds": [
-            0.020637699984945357,
-            0.02099300001282245,
-            0.020611100015230477,
-            0.02031890000216663,
-            0.02294260007329285
+            0.019918299978598952,
+            0.021089599933475256,
+            0.020791599992662668,
+            0.02004609990399331,
+            0.01977609994355589
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.009297300013713539,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.00897720002103597,
           "gpu_resident_compute_seconds": [
-            0.002070800052024424,
-            0.0022854000562801957,
-            0.002353499992750585,
-            0.001831499976105988,
-            0.0017644999315962195
+            0.0019220999674871564,
+            0.001792200026102364,
+            0.001804900006391108,
+            0.0017782999202609062,
+            0.0017905000131577253
           ],
           "gpu_resident_public_seconds": [
-            0.0027336999773979187,
-            0.002657499979250133,
-            0.0027872000355273485,
-            0.004142199992202222,
-            0.002899100072681904
+            0.0029079000232741237,
+            0.0031652000034227967,
+            0.0026844999520108104,
+            0.003064999938942492,
+            0.0025772000662982464
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.005539600038900971,
-            0.006520999944768846,
-            0.007404000032693148,
-            0.005793899996206164,
-            0.006706999964080751
+            0.005455399979837239,
+            0.00539869989734143,
+            0.005554999923333526,
+            0.005509799928404391,
+            0.005306999897584319
           ]
         },
         "seed": 52948,
@@ -2782,17 +2782,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.022200100007466972,
-          "cpu_median_seconds": 0.020637699984945357,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.009297300013713539,
-          "gpu_resident_compute_median_seconds": 0.002070800052024424,
-          "gpu_resident_compute_speedup": 9.966051509787167,
-          "gpu_resident_public_median_seconds": 0.0027872000355273485,
-          "gpu_resident_public_speedup": 7.404455985176761,
-          "gpu_transfer_inclusive_median_seconds": 0.006520999944768846,
-          "gpu_transfer_inclusive_speedup": 3.1648060358443866,
-          "input_transfer_and_allocation_seconds": 0.0037337999092414975,
-          "mandatory_table_boundary_seconds": 0.0007163999835029244,
+          "cpu_case_cold_seconds": 0.023042700020596385,
+          "cpu_median_seconds": 0.02004609990399331,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.00897720002103597,
+          "gpu_resident_compute_median_seconds": 0.001792200026102364,
+          "gpu_resident_compute_speedup": 11.185191168415008,
+          "gpu_resident_public_median_seconds": 0.0029079000232741237,
+          "gpu_resident_public_speedup": 6.893668882543831,
+          "gpu_transfer_inclusive_median_seconds": 0.005455399979837239,
+          "gpu_transfer_inclusive_speedup": 3.674542650966425,
+          "input_transfer_and_allocation_seconds": 0.002547499956563115,
+          "mandatory_table_boundary_seconds": 0.0011156999971717596,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -2840,35 +2840,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.28892880002968013,
+          "cpu_case_cold_seconds": 0.284533099969849,
           "cpu_seconds": [
-            0.3174879999132827,
-            0.30699499999172986,
-            0.31491119996644557,
-            0.29906960006337613,
-            0.2881865999661386
+            0.2704282000195235,
+            0.28292690007947385,
+            0.290368500049226,
+            0.2933299000142142,
+            0.2747331000864506
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.01333879993762821,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.025994100025855005,
           "gpu_resident_compute_seconds": [
-            0.006159599986858666,
-            0.006660099956206977,
-            0.0074890999821946025,
-            0.006160899996757507,
-            0.006692599970847368
+            0.0061246000695973635,
+            0.006268500001169741,
+            0.0069420000072568655,
+            0.005840900004841387,
+            0.008015700033865869
           ],
           "gpu_resident_public_seconds": [
-            0.007441299967467785,
-            0.009041500044986606,
-            0.008705199928954244,
-            0.007905099890194833,
-            0.006880400003865361
+            0.010028199991211295,
+            0.007734499988146126,
+            0.006924799992702901,
+            0.00978760002180934,
+            0.007684900076128542
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.012270699953660369,
-            0.012519199983216822,
-            0.012386900023557246,
-            0.011721499962732196,
-            0.012227999977767467
+            0.010352899902500212,
+            0.010557499947026372,
+            0.010681799962185323,
+            0.010985700064338744,
+            0.010554099921137094
           ]
         },
         "seed": 53948,
@@ -2879,17 +2879,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.28892880002968013,
-          "cpu_median_seconds": 0.30699499999172986,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.01333879993762821,
-          "gpu_resident_compute_median_seconds": 0.006660099956206977,
-          "gpu_resident_compute_speedup": 46.09465353528537,
-          "gpu_resident_public_median_seconds": 0.007905099890194833,
-          "gpu_resident_public_speedup": 38.835056388409974,
-          "gpu_transfer_inclusive_median_seconds": 0.012270699953660369,
-          "gpu_transfer_inclusive_speedup": 25.018540193394003,
-          "input_transfer_and_allocation_seconds": 0.004365600063465536,
-          "mandatory_table_boundary_seconds": 0.001244999933987856,
+          "cpu_case_cold_seconds": 0.284533099969849,
+          "cpu_median_seconds": 0.28292690007947385,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.025994100025855005,
+          "gpu_resident_compute_median_seconds": 0.006268500001169741,
+          "gpu_resident_compute_speedup": 45.13470527664958,
+          "gpu_resident_public_median_seconds": 0.007734499988146126,
+          "gpu_resident_public_speedup": 36.579856553505316,
+          "gpu_transfer_inclusive_median_seconds": 0.010557499947026372,
+          "gpu_transfer_inclusive_speedup": 26.798664598540974,
+          "input_transfer_and_allocation_seconds": 0.0028229999588802457,
+          "mandatory_table_boundary_seconds": 0.0014659999869763851,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -2937,35 +2937,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.021232199971564114,
+          "cpu_case_cold_seconds": 0.019296100013889372,
           "cpu_seconds": [
-            0.018021899973973632,
-            0.01819570001680404,
-            0.0178827999625355,
-            0.018256700015626848,
-            0.02379790006671101
+            0.01844419992994517,
+            0.01807550003286451,
+            0.0217944000614807,
+            0.018002500059083104,
+            0.01791949989274144
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.011210599914193153,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.010894900071434677,
           "gpu_resident_compute_seconds": [
-            0.005892599932849407,
-            0.004826499964110553,
-            0.00460029998794198,
-            0.005817300057969987,
-            0.004786400008015335
+            0.004603800014592707,
+            0.0063313000136986375,
+            0.004517400055192411,
+            0.004510300001129508,
+            0.005536200013011694
           ],
           "gpu_resident_public_seconds": [
-            0.0061805000295862556,
-            0.007724699913524091,
-            0.005949900019913912,
-            0.0058172999415546656,
-            0.006191799999214709
+            0.005640400107949972,
+            0.006027700030244887,
+            0.006630399962887168,
+            0.005829799920320511,
+            0.0058154999278485775
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.007133200066164136,
-            0.008808900020085275,
-            0.007722900016233325,
-            0.010865799966268241,
-            0.006391300004906952
+            0.008512299973517656,
+            0.007056100061163306,
+            0.007512400043196976,
+            0.00973859999794513,
+            0.00821420003194362
           ]
         },
         "seed": 52001,
@@ -2977,17 +2977,17 @@
         "spatial_mode": "3D ZYX",
         "spatial_ndim": 3,
         "summary": {
-          "cpu_case_cold_seconds": 0.021232199971564114,
-          "cpu_median_seconds": 0.01819570001680404,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.011210599914193153,
-          "gpu_resident_compute_median_seconds": 0.004826499964110553,
-          "gpu_resident_compute_speedup": 3.7699575576723774,
-          "gpu_resident_public_median_seconds": 0.0061805000295862556,
-          "gpu_resident_public_speedup": 2.9440498227814302,
-          "gpu_transfer_inclusive_median_seconds": 0.007722900016233325,
-          "gpu_transfer_inclusive_speedup": 2.356070903230286,
-          "input_transfer_and_allocation_seconds": 0.0015423999866470695,
-          "mandatory_table_boundary_seconds": 0.0013540000654757023,
+          "cpu_case_cold_seconds": 0.019296100013889372,
+          "cpu_median_seconds": 0.01807550003286451,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.010894900071434677,
+          "gpu_resident_compute_median_seconds": 0.004603800014592707,
+          "gpu_resident_compute_speedup": 3.9262131229789374,
+          "gpu_resident_public_median_seconds": 0.005829799920320511,
+          "gpu_resident_public_speedup": 3.100535229324089,
+          "gpu_transfer_inclusive_median_seconds": 0.00821420003194362,
+          "gpu_transfer_inclusive_speedup": 2.200518609550776,
+          "input_transfer_and_allocation_seconds": 0.0023844001116231084,
+          "mandatory_table_boundary_seconds": 0.0012259999057278037,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -3035,35 +3035,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.14428540004882962,
+          "cpu_case_cold_seconds": 0.1381979000288993,
           "cpu_seconds": [
-            0.15127939998637885,
-            0.15759980003349483,
-            0.15368490002583712,
-            0.1547725999262184,
-            0.15273799991700798
+            0.14057239994872361,
+            0.14392529998440295,
+            0.1378083999734372,
+            0.15561509993858635,
+            0.14220640005078167
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.015195099986158311,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.013461400056257844,
           "gpu_resident_compute_seconds": [
-            0.01145130000077188,
-            0.011360700009390712,
-            0.009324999991804361,
-            0.009184200083836913,
-            0.009382599964737892
+            0.008473600028082728,
+            0.010449899942614138,
+            0.00844370003324002,
+            0.00910150003619492,
+            0.009086199919693172
           ],
           "gpu_resident_public_seconds": [
-            0.014296900015324354,
-            0.02802460000384599,
-            0.014057800057344139,
-            0.00997720006853342,
-            0.009413400082848966
+            0.010139600024558604,
+            0.010106600006110966,
+            0.010031000012531877,
+            0.011617999989539385,
+            0.011889999965205789
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.012045599985867739,
-            0.011806500027887523,
-            0.01244990003760904,
-            0.012638899963349104,
-            0.012057300074957311
+            0.01237719994969666,
+            0.012409100076183677,
+            0.011296399985440075,
+            0.010592699982225895,
+            0.010409199981950223
           ]
         },
         "seed": 52002,
@@ -3075,17 +3075,17 @@
         "spatial_mode": "3D ZYX",
         "spatial_ndim": 3,
         "summary": {
-          "cpu_case_cold_seconds": 0.14428540004882962,
-          "cpu_median_seconds": 0.15368490002583712,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.015195099986158311,
-          "gpu_resident_compute_median_seconds": 0.009382599964737892,
-          "gpu_resident_compute_speedup": 16.379777524718374,
-          "gpu_resident_public_median_seconds": 0.014057800057344139,
-          "gpu_resident_public_speedup": 10.932357794173376,
-          "gpu_transfer_inclusive_median_seconds": 0.012057300074957311,
-          "gpu_transfer_inclusive_speedup": 12.746211761374052,
-          "input_transfer_and_allocation_seconds": 0.0,
-          "mandatory_table_boundary_seconds": 0.0046752000926062465,
+          "cpu_case_cold_seconds": 0.1381979000288993,
+          "cpu_median_seconds": 0.14220640005078167,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.013461400056257844,
+          "gpu_resident_compute_median_seconds": 0.009086199919693172,
+          "gpu_resident_compute_speedup": 15.650811264076145,
+          "gpu_resident_public_median_seconds": 0.010139600024558604,
+          "gpu_resident_public_speedup": 14.024853022441798,
+          "gpu_transfer_inclusive_median_seconds": 0.011296399985440075,
+          "gpu_transfer_inclusive_speedup": 12.588647731496001,
+          "input_transfer_and_allocation_seconds": 0.0011567999608814716,
+          "mandatory_table_boundary_seconds": 0.0010534001048654318,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -3133,35 +3133,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.1797899000812322,
+          "cpu_case_cold_seconds": 0.14686119998805225,
           "cpu_seconds": [
-            0.158497600001283,
-            0.1495044999755919,
-            0.15013409999664873,
-            0.1475621999707073,
-            0.1508373999968171
+            0.14598580007441342,
+            0.14245769998524338,
+            0.14314349996857345,
+            0.1425644000992179,
+            0.14134940004441887
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.0162559999153018,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.015189100056886673,
           "gpu_resident_compute_seconds": [
-            0.01245460007339716,
-            0.011865099892020226,
-            0.03459400008432567,
-            0.012108100112527609,
-            0.012079000007361174
+            0.011871299939230084,
+            0.01143800001591444,
+            0.011304100044071674,
+            0.011529999901540577,
+            0.011595000047236681
           ],
           "gpu_resident_public_seconds": [
-            0.013385200058110058,
-            0.013914800016209483,
-            0.0141418999992311,
-            0.014242099947296083,
-            0.014519200078211725
+            0.012853699969127774,
+            0.012924700044095516,
+            0.01253730000462383,
+            0.013134800014086068,
+            0.012764599989168346
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.01610929996240884,
-            0.01513900002464652,
-            0.015575499972328544,
-            0.018459799932315946,
-            0.016992699936963618
+            0.014184999978169799,
+            0.014734799973666668,
+            0.014189999899826944,
+            0.013941499986685812,
+            0.013885800028219819
           ]
         },
         "seed": 52003,
@@ -3173,17 +3173,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.1797899000812322,
-          "cpu_median_seconds": 0.15013409999664873,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.0162559999153018,
-          "gpu_resident_compute_median_seconds": 0.012108100112527609,
-          "gpu_resident_compute_speedup": 12.399476268065618,
-          "gpu_resident_public_median_seconds": 0.0141418999992311,
-          "gpu_resident_public_speedup": 10.61626089880508,
-          "gpu_transfer_inclusive_median_seconds": 0.01610929996240884,
-          "gpu_transfer_inclusive_speedup": 9.31971596202117,
-          "input_transfer_and_allocation_seconds": 0.0019673999631777406,
-          "mandatory_table_boundary_seconds": 0.002033799886703491,
+          "cpu_case_cold_seconds": 0.14686119998805225,
+          "cpu_median_seconds": 0.1425644000992179,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.015189100056886673,
+          "gpu_resident_compute_median_seconds": 0.011529999901540577,
+          "gpu_resident_compute_speedup": 12.364648856603129,
+          "gpu_resident_public_median_seconds": 0.012853699969127774,
+          "gpu_resident_public_speedup": 11.091312263521896,
+          "gpu_transfer_inclusive_median_seconds": 0.014184999978169799,
+          "gpu_transfer_inclusive_speedup": 10.050363082031676,
+          "input_transfer_and_allocation_seconds": 0.0013313000090420246,
+          "mandatory_table_boundary_seconds": 0.0013237000675871968,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -3231,35 +3231,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.09409110003616661,
+          "cpu_case_cold_seconds": 0.09204759995918721,
           "cpu_seconds": [
-            0.09929139993619174,
-            0.09283029998186976,
-            0.09327369998209178,
-            0.09199669992085546,
-            0.10023270000237972
+            0.0905299000442028,
+            0.09248059999663383,
+            0.08983059995807707,
+            0.09050430008210242,
+            0.09385930001735687
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.08575710002332926,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.07238989998586476,
           "gpu_resident_compute_seconds": [
-            0.0904378000413999,
-            0.08135210000909865,
-            0.07486860000062734,
-            0.06985880003776401,
-            0.07136259996332228
+            0.06734810001216829,
+            0.0686196000315249,
+            0.06901199999265373,
+            0.07652279990725219,
+            0.07025560003239661
           ],
           "gpu_resident_public_seconds": [
-            0.07209040003363043,
-            0.07155400002375245,
-            0.0734451999887824,
-            0.07988189999014139,
-            0.08216870005708188
+            0.0719134999671951,
+            0.07290650007780641,
+            0.07004589994903654,
+            0.07003030006308109,
+            0.06986619997769594
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.09202849993016571,
-            0.07853679999243468,
-            0.0793034000089392,
-            0.08339060004800558,
-            0.09847730002366006
+            0.07420180004555732,
+            0.07204769994132221,
+            0.07200470007956028,
+            0.07065299991518259,
+            0.07224430004134774
           ]
         },
         "seed": 52004,
@@ -3271,17 +3271,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.09409110003616661,
-          "cpu_median_seconds": 0.09327369998209178,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.08575710002332926,
-          "gpu_resident_compute_median_seconds": 0.07486860000062734,
-          "gpu_resident_compute_speedup": 1.2458320308021016,
-          "gpu_resident_public_median_seconds": 0.0734451999887824,
-          "gpu_resident_public_speedup": 1.269976798978529,
-          "gpu_transfer_inclusive_median_seconds": 0.08339060004800558,
-          "gpu_transfer_inclusive_speedup": 1.1185157551138472,
-          "input_transfer_and_allocation_seconds": 0.009945400059223175,
-          "mandatory_table_boundary_seconds": 0.0,
+          "cpu_case_cold_seconds": 0.09204759995918721,
+          "cpu_median_seconds": 0.0905299000442028,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.07238989998586476,
+          "gpu_resident_compute_median_seconds": 0.06901199999265373,
+          "gpu_resident_compute_speedup": 1.311799397986432,
+          "gpu_resident_public_median_seconds": 0.07004589994903654,
+          "gpu_resident_public_speedup": 1.2924368180017654,
+          "gpu_transfer_inclusive_median_seconds": 0.07204769994132221,
+          "gpu_transfer_inclusive_speedup": 1.256527274540798,
+          "input_transfer_and_allocation_seconds": 0.002001799992285669,
+          "mandatory_table_boundary_seconds": 0.001033899956382811,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -3329,35 +3329,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 1.134546099929139,
+          "cpu_case_cold_seconds": 1.0776386000216007,
           "cpu_seconds": [
-            1.1397212999872863,
-            1.2193700999487191,
-            1.1865379000082612,
-            1.255379099980928,
-            1.1336491000838578
+            1.1287109999684617,
+            1.1248509000288323,
+            1.0926568999420851,
+            1.099114799988456,
+            1.0928374000359327
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.19390089996159077,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.1684158000862226,
           "gpu_resident_compute_seconds": [
-            0.022764099994674325,
-            0.02042239997535944,
-            0.02127899997867644,
-            0.02207599999383092,
-            0.02099119999911636
+            0.019661500002257526,
+            0.02024719992186874,
+            0.020166500005871058,
+            0.021983599988743663,
+            0.019395100069232285
           ],
           "gpu_resident_public_seconds": [
-            0.024908400024287403,
-            0.020799200050532818,
-            0.02333529992029071,
-            0.02213379996828735,
-            0.024535799981094897
+            0.022573100053705275,
+            0.021843499969691038,
+            0.022172600030899048,
+            0.019976000068709254,
+            0.02109669998753816
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.03869940002914518,
-            0.03647119994275272,
-            0.035898500005714595,
-            0.03699299995787442,
-            0.03539680002722889
+            0.03534830000717193,
+            0.03477889997884631,
+            0.03800339996814728,
+            0.04016100009903312,
+            0.03811099997255951
           ]
         },
         "seed": 52005,
@@ -3369,17 +3369,17 @@
         "spatial_mode": "3D ZYX",
         "spatial_ndim": 3,
         "summary": {
-          "cpu_case_cold_seconds": 1.134546099929139,
-          "cpu_median_seconds": 1.1865379000082612,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.19390089996159077,
-          "gpu_resident_compute_median_seconds": 0.02127899997867644,
-          "gpu_resident_compute_speedup": 55.760980365491044,
-          "gpu_resident_public_median_seconds": 0.02333529992029071,
-          "gpu_resident_public_speedup": 50.84733875550203,
-          "gpu_transfer_inclusive_median_seconds": 0.03647119994275272,
-          "gpu_transfer_inclusive_speedup": 32.533558036772,
-          "input_transfer_and_allocation_seconds": 0.01313590002246201,
-          "mandatory_table_boundary_seconds": 0.00205629994161427,
+          "cpu_case_cold_seconds": 1.0776386000216007,
+          "cpu_median_seconds": 1.099114799988456,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.1684158000862226,
+          "gpu_resident_compute_median_seconds": 0.020166500005871058,
+          "gpu_resident_compute_speedup": 54.50201074397995,
+          "gpu_resident_public_median_seconds": 0.021843499969691038,
+          "gpu_resident_public_speedup": 50.317705565203994,
+          "gpu_transfer_inclusive_median_seconds": 0.03800339996814728,
+          "gpu_transfer_inclusive_speedup": 28.921485996244655,
+          "input_transfer_and_allocation_seconds": 0.01615989999845624,
+          "mandatory_table_boundary_seconds": 0.0016769999638199806,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -3427,35 +3427,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.7072096000192687,
+          "cpu_case_cold_seconds": 0.6951856000814587,
           "cpu_seconds": [
-            0.7101338999345899,
-            0.6969641000032425,
-            0.705225000041537,
-            0.7098953999811783,
-            0.7094840999925509
+            0.6800357999745756,
+            0.6874182999599725,
+            0.6919667999027297,
+            0.6827973000472412,
+            0.6922942999517545
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.058515100041404366,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.043107999954372644,
           "gpu_resident_compute_seconds": [
-            0.023569000069983304,
-            0.023891199962235987,
-            0.023689699941314757,
-            0.02329509996343404,
-            0.02388340001925826
+            0.023104800027795136,
+            0.02412029996048659,
+            0.02534170006401837,
+            0.023148300009779632,
+            0.024394000065512955
           ],
           "gpu_resident_public_seconds": [
-            0.03164129995275289,
-            0.03560589998960495,
-            0.035303100012242794,
-            0.03209200000856072,
-            0.032354499911889434
+            0.031165699940174818,
+            0.031241800053976476,
+            0.03079789993353188,
+            0.030831599957309663,
+            0.030995700042694807
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.06075989990495145,
-            0.045786499977111816,
-            0.04504029999952763,
-            0.04767979995813221,
-            0.04709110001567751
+            0.04192480002529919,
+            0.043842699960805476,
+            0.043758600018918514,
+            0.04560389998368919,
+            0.04397090000566095
           ]
         },
         "seed": 52006,
@@ -3467,17 +3467,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.7072096000192687,
-          "cpu_median_seconds": 0.7094840999925509,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.058515100041404366,
-          "gpu_resident_compute_median_seconds": 0.023689699941314757,
-          "gpu_resident_compute_speedup": 29.949053882071887,
-          "gpu_resident_public_median_seconds": 0.032354499911889434,
-          "gpu_resident_public_speedup": 21.92845205225484,
-          "gpu_transfer_inclusive_median_seconds": 0.04709110001567751,
-          "gpu_transfer_inclusive_speedup": 15.066203587436911,
-          "input_transfer_and_allocation_seconds": 0.014736600103788078,
-          "mandatory_table_boundary_seconds": 0.008664799970574677,
+          "cpu_case_cold_seconds": 0.6951856000814587,
+          "cpu_median_seconds": 0.6874182999599725,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.043107999954372644,
+          "gpu_resident_compute_median_seconds": 0.02412029996048659,
+          "gpu_resident_compute_speedup": 28.499575091772815,
+          "gpu_resident_public_median_seconds": 0.030995700042694807,
+          "gpu_resident_public_speedup": 22.17786012295554,
+          "gpu_transfer_inclusive_median_seconds": 0.043842699960805476,
+          "gpu_transfer_inclusive_speedup": 15.679196321725422,
+          "input_transfer_and_allocation_seconds": 0.012846999918110669,
+          "mandatory_table_boundary_seconds": 0.006875400082208216,
           "screening_choice": "GPU-CuPy"
         }
       },
@@ -3525,35 +3525,35 @@
           "policy_id": "basic-measurement-table-v1"
         },
         "samples": {
-          "cpu_case_cold_seconds": 0.1734199000056833,
+          "cpu_case_cold_seconds": 0.16692639992106706,
           "cpu_seconds": [
-            0.17030270001851022,
-            0.1678214999847114,
-            0.17170880001503974,
-            0.1711635000538081,
-            0.177410600008443
+            0.17122130002826452,
+            0.168680900009349,
+            0.16778989997692406,
+            0.16592780000064522,
+            0.16355789999943227
           ],
-          "gpu_case_cold_transfer_inclusive_seconds": 0.01695229997858405,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.03867519996128976,
           "gpu_resident_compute_seconds": [
-            0.00635749998036772,
-            0.0061916999984532595,
-            0.005564199993386865,
-            0.007682099938392639,
-            0.007116899942047894
+            0.0065113999880850315,
+            0.0057385999243706465,
+            0.006001800065860152,
+            0.005566300009377301,
+            0.0054418999934569
           ],
           "gpu_resident_public_seconds": [
-            0.01621640007942915,
-            0.015892200055532157,
-            0.015389900072477758,
-            0.015700199990533292,
-            0.015738199930638075
+            0.014806800056248903,
+            0.015239899978041649,
+            0.015260900021530688,
+            0.015326400054618716,
+            0.015421000076457858
           ],
           "gpu_transfer_inclusive_seconds": [
-            0.015991499996744096,
-            0.0161894999910146,
-            0.02635179995559156,
-            0.016276600072160363,
-            0.01646800001617521
+            0.015603199950419366,
+            0.015230400022119284,
+            0.015841800021007657,
+            0.015371200046502054,
+            0.015279100043699145
           ]
         },
         "seed": 52007,
@@ -3564,17 +3564,17 @@
         "spatial_mode": "2D YX",
         "spatial_ndim": 2,
         "summary": {
-          "cpu_case_cold_seconds": 0.1734199000056833,
-          "cpu_median_seconds": 0.1711635000538081,
-          "gpu_case_cold_transfer_inclusive_seconds": 0.01695229997858405,
-          "gpu_resident_compute_median_seconds": 0.00635749998036772,
-          "gpu_resident_compute_speedup": 26.923083064470248,
-          "gpu_resident_public_median_seconds": 0.015738199930638075,
-          "gpu_resident_public_speedup": 10.875671983337716,
-          "gpu_transfer_inclusive_median_seconds": 0.016276600072160363,
-          "gpu_transfer_inclusive_speedup": 10.515924658403792,
-          "input_transfer_and_allocation_seconds": 0.0005384001415222883,
-          "mandatory_table_boundary_seconds": 0.009380699950270355,
+          "cpu_case_cold_seconds": 0.16692639992106706,
+          "cpu_median_seconds": 0.16778989997692406,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.03867519996128976,
+          "gpu_resident_compute_median_seconds": 0.0057385999243706465,
+          "gpu_resident_compute_speedup": 29.238821696622388,
+          "gpu_resident_public_median_seconds": 0.015260900021530688,
+          "gpu_resident_public_speedup": 10.994757828188336,
+          "gpu_transfer_inclusive_median_seconds": 0.015371200046502054,
+          "gpu_transfer_inclusive_speedup": 10.91586209725422,
+          "input_transfer_and_allocation_seconds": 0.00011030002497136593,
+          "mandatory_table_boundary_seconds": 0.009522300097160041,
           "screening_choice": "GPU-CuPy"
         }
       }
