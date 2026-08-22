@@ -66,7 +66,7 @@ SOURCE_PROVENANCE_PATHS = (
     "pyproject.toml",
     "scripts/benchmark_ui_interaction.py",
     "scripts/manual_gpu_filter_tuning_workflow.json",
-    "src/napari_vipp/compute_policies/phase1-gpu-public-v9.json",
+    "src/napari_vipp/compute_policies/phase1-gpu-public-v10.json",
 )
 
 

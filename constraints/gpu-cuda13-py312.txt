@@ -22,7 +22,3 @@ nvidia-curand==10.4.2.66
 nvidia-cusolver==12.2.0.11
 nvidia-cusparse==12.7.10.12
 nvidia-nvjitlink==13.2.86
-
-# Required by the experimental source-built cuCIM 26.6 skimage wheel.  The
-# setup helper installs it only when a checksum-verified cuCIM wheel is given.
-nvidia-nvimgcodec-cu13==0.8.0.22

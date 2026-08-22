@@ -1,11 +1,10 @@
 """Headless diagnostics for VIPP's optional GPU compute environment.
 
-Run with ``python -m napari_vipp.core.compute_diagnostics``.  Importing this
-module never imports CuPy, cuCIM, Qt, or napari.  An explicit diagnostic run
-separately answers three questions:
+Run with ``python -m napari_vipp.core.compute_diagnostics``. Importing this
+module never imports CuPy, Qt, or napari. An explicit diagnostic run separately
+answers two questions:
 
 * can the CUDA/CuPy runtime start;
-* are the standard and optional implementation libraries usable; and
 * which current VIPP GPU operation regions are publicly admitted here.
 """
 
@@ -44,14 +43,9 @@ from napari_vipp.core.compute_specs import (
 
 _CUPY_NAMES = ("cupy", "amd-cupy")
 _STANDARD_LIBRARY_IDS = frozenset({"cupy", "cupyx"})
-_OPTIONAL_LIBRARY_ID = "cucim"
 _SUPPORT_SCHEMA = "napari-vipp-compute-support-bundle"
 _SUPPORT_SCHEMA_VERSION = 1
 _SUPPORT_PRIVACY_POLICY = "napari-vipp-compute-support-redaction-v1"
-_CUCIM_GUIDE_URL = (
-    "https://github.com/rensutheart/napari-vipp/blob/main/"
-    "scripts/README-cucim-windows-installer.md"
-)
 _GPU_GUIDE_URL = (
     "https://github.com/rensutheart/napari-vipp/blob/main/docs/gpu-guide.md"
 )
@@ -284,24 +278,13 @@ class ComputeDoctorReport:
 
     @property
     def available(self) -> bool:
-        """Whether the standard public CUDA route passed, excluding optional cuCIM."""
+        """Whether the standard public CUDA route passed."""
 
         return self.status is DoctorStatus.AVAILABLE
 
     @property
     def cuda_ready(self) -> bool:
         return bool(self.runtime_probe is not None and self.runtime_probe.available)
-
-    @property
-    def cucim_probe(self) -> ImplementationLibraryProbeResult | None:
-        return next(
-            (
-                probe
-                for probe in self.library_probes
-                if probe.library_id == _OPTIONAL_LIBRARY_ID
-            ),
-            None,
-        )
 
     @property
     def admitted_regions(self) -> tuple[PublicAdmissionRegion, ...]:
@@ -538,10 +521,7 @@ def collect_compute_diagnostics(
                 refresh=refresh,
             )
         else:
-            resolved_library_probes = _legacy_library_probes(
-                probe,
-                package_records,
-            )
+            resolved_library_probes = _legacy_library_probes(probe)
 
         environment = _diagnostic_environment(
             probe,
@@ -573,10 +553,6 @@ def collect_compute_diagnostics(
     )
     guidance = _repair_guidance(
         status,
-        probe,
-        resolved_library_probes,
-        regions,
-        package_records,
         repair_command=repair,
     )
     return ComputeDoctorReport(
@@ -691,7 +667,7 @@ def build_compute_support_bundle(
                 "required_for_standard_cuda": (
                     library.library_id in _STANDARD_LIBRARY_IDS
                 ),
-                "optional": library.library_id == _OPTIONAL_LIBRARY_ID,
+                "optional": False,
                 "available": library.available,
                 "version": library.version,
                 "reason_code": library.reason_code,
@@ -945,13 +921,12 @@ def _provider_output_guard():
 
 def _legacy_library_probes(
     probe: RuntimeProbeResult,
-    packages: tuple[PackageRecord, ...],
 ) -> tuple[ImplementationLibraryProbeResult, ...]:
-    """Preserve the old injected-runtime testing seam without claiming cuCIM."""
+    """Preserve the injected-runtime testing seam for standard libraries."""
 
     version = probe.version
     standard_available = probe.available
-    results = [
+    return tuple(
         ImplementationLibraryProbeResult(
             library_id,
             standard_available,
@@ -964,23 +939,7 @@ def _legacy_library_probes(
             ),
         )
         for library_id in ("cupy", "cupyx")
-    ]
-    cucim_installed = any(package.name.startswith("cucim") for package in packages)
-    results.append(
-        ImplementationLibraryProbeResult(
-            "cucim",
-            False,
-            reason_code=(
-                "cucim_not_probed" if cucim_installed else "cucim_not_installed"
-            ),
-            message=(
-                "cuCIM was installed but not probed through the injected runtime seam."
-                if cucim_installed
-                else "The optional cuCIM add-on is not installed."
-            ),
-        )
     )
-    return tuple(results)
 
 
 def _diagnostic_environment(
@@ -1156,10 +1115,6 @@ def _overall_result(
 
 def _repair_guidance(
     status: DoctorStatus,
-    probe: RuntimeProbeResult,
-    library_probes: tuple[ImplementationLibraryProbeResult, ...],
-    regions: tuple[PublicAdmissionRegion, ...],
-    packages: tuple[PackageRecord, ...],
     *,
     repair_command: str,
 ) -> RepairGuidance | None:
@@ -1188,38 +1143,6 @@ def _repair_guidance(
             ),
             documentation_url=_GPU_GUIDE_URL,
         )
-    cucim = next(
-        (item for item in library_probes if item.library_id == _OPTIONAL_LIBRARY_ID),
-        None,
-    )
-    cucim_regions = tuple(
-        region
-        for region in regions
-        if region.implementation_library_id == _OPTIONAL_LIBRARY_ID
-    )
-    if cucim is not None and (
-        not cucim.available or not all(region.admitted for region in cucim_regions)
-    ):
-        installed = any(package.name.startswith("cucim") for package in packages)
-        return RepairGuidance(
-            "repair_optional_cucim" if installed else "install_optional_cucim",
-            (
-                "Repair the optional cuCIM add-on"
-                if installed
-                else "Optional: add cuCIM support"
-            ),
-            (
-                "Standard CUDA is ready. Repair cuCIM only if you want its "
-                "reviewed GPU measurement regions."
-                if installed
-                else (
-                    "Standard CUDA is ready. Build cuCIM locally only if you "
-                    "want its reviewed GPU measurement regions."
-                )
-            ),
-            documentation_url=_CUCIM_GUIDE_URL,
-            optional=True,
-        )
     return None
 
 
@@ -1231,12 +1154,6 @@ def _support_library_metadata(
         "environment_record_schema_version",
         "environment_track",
         "cupy_distribution",
-        "cucim_distribution",
-        "cucim_distribution_version",
-        "cucim_wheel_payload_sha256",
-        "cucim_source_tag",
-        "cucim_source_commit",
-        "cucim_build_recipe_id",
     }
     return {
         key: value
@@ -1397,16 +1314,6 @@ def _print_human_report(report: ComputeDoctorReport) -> None:
     print(f"Python: {report.python}")
     print(f"GPU track: {report.track}")
     print("CUDA: " + ("Ready" if report.cuda_ready else "Could not start"))
-    cucim = report.cucim_probe
-    if cucim is None:
-        cucim_text = "Not checked"
-    elif cucim.available:
-        cucim_text = "Ready"
-    elif cucim.reason_code in {"cucim_not_installed", "cucim_provenance_missing"}:
-        cucim_text = "Not installed (optional)"
-    else:
-        cucim_text = "Needs attention (optional)"
-    print(f"Optional cuCIM: {cucim_text}")
     print(
         "VIPP public GPU regions: "
         f"{len(report.admitted_regions)} of {len(report.admission_regions)} ready"
@@ -1467,7 +1374,6 @@ def _is_cupy_distribution(name: str) -> bool:
 def _is_gpu_distribution(name: str) -> bool:
     return (
         _is_cupy_distribution(name)
-        or name.startswith("cucim")
         or name in {"cuda-pathfinder", "cuda-toolkit"}
         or name.startswith("nvidia-cuda-")
         or name.startswith("nvidia-cublas")

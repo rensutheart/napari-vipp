@@ -62,9 +62,6 @@ is blocked in this first installer slice even when another visible GPU
 qualifies. Future per-device selection must be implemented in the runtime and
 persisted by the launcher before the installer can safely relax that boundary.
 
-cuCIM is never folded into the standard plan. It remains the separate verified
-local-build add-on used after the ordinary CUDA environment passes acceptance.
-
 ## Managed Install, Update, And Repair
 
 The setup program uses one fixed managed environment per track and requires only
@@ -190,7 +187,7 @@ registry changes, shortcut creation, temporary-directory creation, or target
 directory writes. It runs only an isolated standard-library identity probe in
 the selected Python (`-I -S -B`) and, for CUDA plans, read-only NVIDIA driver
 API discovery. Installed distributions in an existing venv are inspected from
-metadata without importing napari, Qt, NumPy, CuPy, or cuCIM.
+metadata without importing napari, Qt, NumPy, or CuPy.
 
 The selected interpreter, installation target, and shortcut parents must be
 direct local paths. UNC paths, mapped remote volumes, and symbolic-link or
@@ -206,7 +203,7 @@ known-folder API and derives the exact per-track root. A caller-supplied path
 that differs from that value is rejected before resolution or mutation; setup
 does not search for or create an alternate managed location.
 
-Every planner document is schema `napari-vipp-install-plan`, version 1, and
+Every planner document is schema `napari-vipp-install-plan`, version 2, and
 explicitly records `plan_only: true` and `mutation_performed: false`. It contains:
 
 - the selected interpreter and resolved environment target;
@@ -215,8 +212,7 @@ explicitly records `plan_only: true` and `mutation_performed: false`. It contain
 - the exact top-level VIPP release requirement;
 - proposed future action argument arrays, never shell command strings;
 - intended shortcuts and acceptance commands;
-- disk capacity and the rollback ownership boundary; and
-- an explicit statement that cuCIM and dependency resolution remain separate.
+- disk capacity and the rollback ownership boundary.
 
 The free-space requirement is 5 GiB for a managed CPU environment, 15 GiB for a
 managed CUDA environment, 2 GiB for an existing CPU environment, and 12 GiB

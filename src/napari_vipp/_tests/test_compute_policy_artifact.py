@@ -32,6 +32,12 @@ def _resource_document() -> dict[str, object]:
     return json.loads(resource.read_text(encoding="utf-8"))
 
 
+def _named_document(name: str) -> dict[str, object]:
+    resource = resources.files("napari_vipp.compute_policies").joinpath(name)
+    assert resource.is_file()
+    return json.loads(resource.read_text(encoding="utf-8"))
+
+
 def _encoded(document: dict[str, object]) -> bytes:
     return json.dumps(document, ensure_ascii=False).encode("utf-8")
 
@@ -44,7 +50,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     policy = load_phase1_compute_policy()
 
     assert policy.policy_id == PHASE1_POLICY_ID
-    assert policy.policy_version == 9
+    assert policy.policy_version == 10
     assert policy.content_sha256 == PHASE1_POLICY_SHA256
     assert policy.phase == "phase1"
     assert policy.status == "public-validated"
@@ -53,7 +59,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     assert not policy.exposure.developer_enablement_required
 
     with pytest.raises(FrozenInstanceError):
-        policy.policy_version = 9  # type: ignore[misc]
+        policy.policy_version = 10  # type: ignore[misc]
 
 
 def test_phase1_operation_ids_and_conservative_settings_are_exact():
@@ -66,8 +72,8 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
         "gaussian_blur_3d": "cupy-gaussian-blur-3d-v1",
         "sigma_filter": "cupy-sigma-filter-v1",
         "label_connected_components": "cupyx-connected-components-v1",
-        "measure_objects": "cucim-measure-objects-basic-v1",
-        "measure_objects_intensity": "cucim-measure-objects-intensity-basic-v1",
+        "measure_objects": "cupy-measure-objects-basic-v1",
+        "measure_objects_intensity": "cupy-measure-objects-intensity-basic-v1",
     }
 
     assert {
@@ -128,21 +134,9 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
         "NVIDIA GeForce RTX 5090 / compute capability 12.0",
         "NVIDIA GeForce RTX 4050 Laptop GPU / compute capability 8.9",
     )
-    assert platform.cucim_versions == ("26.6.0", "26.06.00")
-    assert platform.cucim_environment_record_schema == "napari-vipp-gpu-environment"
-    assert platform.cucim_environment_record_schema_version == 2
-    assert platform.cucim_environment_track == "cuda13"
     assert platform.cupy_distribution == "cupy-cuda13x"
-    assert platform.cucim_distribution == "cucim-cu13"
-    assert platform.cucim_wheel_payload_sha256 == (
-        "d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667"
-    )
-    assert platform.cucim_source_tag == "v26.06.00"
-    assert platform.cucim_source_commit == ("3c15781c207eab93a317dd9803a6e726fe01f7c4")
-    assert platform.cucim_build_recipe_id == "napari-vipp-cucim-windows-v1"
     assert platform.validated_environment_policy_ids == (
         "cuda-cupy-14.1.1-cpython312-windows-native-v3",
-        "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4",
         "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1",
     )
     assert platform.linux_policy == "pending-native-clean-host-evidence-v1"
@@ -277,13 +271,13 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
         assert operation.admission_tier == "public_auto_candidate"
         assert operation.implementation_version == "1"
         assert operation.runtime_id == "cuda-cupy"
-        assert operation.implementation_library_id == "cucim"
+        assert operation.implementation_library_id == "cupy"
         assert operation.environment_policy_id == (
-            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
+            "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
         )
         assert operation.parameter_policy_id == "basic-measurements-parameters-v1"
         assert operation.parity_policy_id == "basic-measurement-table-v1"
-        assert operation.memory_model_id == "cucim-basic-measurements-memory-v1"
+        assert operation.memory_model_id == "cupy-basic-measurements-memory-v1"
         assert operation.supported_spatial_ndims == (2, 3)
         assert operation.supports_device_residency
         assert operation.host_finalizer_ref == (
@@ -353,6 +347,9 @@ def test_v9_updates_dynamic_filters_and_background_endian_region_only():
         "phase1-gpu-public-v8.json": (
             "b31c93407939ae289fee36eb809f995e4bb6d23df3df89854bfad0717880570b"
         ),
+        "phase1-gpu-public-v9.json": (
+            "44f7dfabfaecc4cc727f79d33538d4b06bae65142f3fe393c1b014b91bddc01b"
+        ),
     }
     for name, expected_digest in historical_sha256.items():
         resource = package.joinpath(name)
@@ -365,7 +362,7 @@ def test_v9_updates_dynamic_filters_and_background_endian_region_only():
     v6 = json.loads(package.joinpath("phase1-gpu-public-v6.json").read_bytes())
     v7 = json.loads(package.joinpath("phase1-gpu-public-v7.json").read_bytes())
     v8 = json.loads(package.joinpath("phase1-gpu-public-v8.json").read_bytes())
-    v9 = _resource_document()
+    v9 = _named_document("phase1-gpu-public-v9.json")
     assert v8["policy"]["operations"] == v7["policy"]["operations"]
     v8_platform = v8["policy"]["platform_admission"]
     assert v8_platform["minimum_driver_version"] == "13030"
@@ -377,7 +374,9 @@ def test_v9_updates_dynamic_filters_and_background_endian_region_only():
     assert v9["schema_id"] == v8["schema_id"]
     assert v9["policy_id"] == "phase1-gpu-public-v9"
     assert v9["policy_version"] == 9
-    assert v9["content_sha256"] == PHASE1_POLICY_SHA256
+    assert v9["content_sha256"] == (
+        "b39d6205a09b1b1570a9e45501aac488c98952dc1e641e1a97d96160862e963f"
+    )
     assert {
         key: value for key, value in v9["policy"].items() if key != "operations"
     } == {key: value for key, value in v8["policy"].items() if key != "operations"}
@@ -577,6 +576,81 @@ def test_v9_updates_dynamic_filters_and_background_endian_region_only():
     assert v4_platform == v3_platform
 
 
+def test_v10_replaces_measurement_cucim_identity_without_rewriting_v9():
+    v9 = _named_document("phase1-gpu-public-v9.json")
+    v10 = _resource_document()
+
+    assert v10["policy_id"] == "phase1-gpu-public-v10"
+    assert v10["policy_version"] == 10
+    assert v10["content_sha256"] == PHASE1_POLICY_SHA256
+    assert "cucim" not in json.dumps(v10).lower()
+
+    v9_policy = v9["policy"]
+    v10_policy = v10["policy"]
+    assert {
+        key: value
+        for key, value in v10_policy.items()
+        if key not in {"platform_admission", "operations"}
+    } == {
+        key: value
+        for key, value in v9_policy.items()
+        if key not in {"platform_admission", "operations"}
+    }
+
+    removed_platform_fields = {
+        "cucim_versions",
+        "cucim_environment_record_schema",
+        "cucim_environment_record_schema_version",
+        "cucim_environment_track",
+        "cucim_distribution",
+        "cucim_wheel_payload_sha256",
+        "cucim_source_tag",
+        "cucim_source_commit",
+        "cucim_build_recipe_id",
+    }
+    v9_platform = v9_policy["platform_admission"]
+    v10_platform = v10_policy["platform_admission"]
+    expected_platform = {
+        key: value
+        for key, value in v9_platform.items()
+        if key not in removed_platform_fields
+    }
+    expected_platform["validated_environment_policy_ids"] = [
+        environment_id
+        for environment_id in expected_platform["validated_environment_policy_ids"]
+        if "cucim" not in environment_id
+    ]
+    assert v10_platform == expected_platform
+
+    v9_operations = {
+        operation["operation_id"]: operation for operation in v9_policy["operations"]
+    }
+    v10_operations = {
+        operation["operation_id"]: operation for operation in v10_policy["operations"]
+    }
+    assert list(v10_operations) == list(v9_operations)
+    for operation_id in v10_operations:
+        if operation_id not in {"measure_objects", "measure_objects_intensity"}:
+            assert v10_operations[operation_id] == v9_operations[operation_id]
+
+    assert v10_operations["measure_objects"] | {
+        "implementation_id": "cucim-measure-objects-basic-v1",
+        "implementation_library_id": "cucim",
+        "environment_policy_id": (
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
+        ),
+        "memory_model_id": "cucim-basic-measurements-memory-v1",
+    } == v9_operations["measure_objects"]
+    assert v10_operations["measure_objects_intensity"] | {
+        "implementation_id": "cucim-measure-objects-intensity-basic-v1",
+        "implementation_library_id": "cucim",
+        "environment_policy_id": (
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
+        ),
+        "memory_model_id": "cucim-basic-measurements-memory-v1",
+    } == v9_operations["measure_objects_intensity"]
+
+
 def test_digest_is_canonical_stable_and_detects_tampering():
     document = _resource_document()
 
@@ -602,8 +676,6 @@ def test_strict_schema_rejects_invalid_resigned_content():
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     (
-        ("cucim_wheel_payload_sha256", "not-a-digest", "payload_sha256"),
-        ("cucim_source_commit", "abc123", "full Git commit"),
         ("minimum_driver_version", "13.3", "positive decimal string"),
         (
             "minimum_nvidia_compute_capability",
@@ -617,7 +689,7 @@ def test_strict_schema_rejects_invalid_resigned_content():
         ),
     ),
 )
-def test_strict_schema_rejects_malformed_platform_provenance(
+def test_strict_schema_rejects_malformed_platform_constraints(
     field,
     value,
     message,
@@ -630,23 +702,23 @@ def test_strict_schema_rejects_malformed_platform_provenance(
         parse_compute_policy_artifact(_encoded(invalid))
 
 
-def test_loader_accepts_only_the_pinned_v9_identity_and_version():
+def test_loader_accepts_only_the_pinned_v10_identity_and_version():
     package = resources.files("napari_vipp.compute_policies")
-    signed_v8 = package.joinpath("phase1-gpu-public-v8.json").read_bytes()
+    signed_v9 = package.joinpath("phase1-gpu-public-v9.json").read_bytes()
     with pytest.raises(ComputePolicyArtifactError, match="Unsupported Phase 1 policy"):
-        parse_compute_policy_artifact(signed_v8)
+        parse_compute_policy_artifact(signed_v9)
 
     wrong_version = copy.deepcopy(_resource_document())
-    wrong_version["policy_version"] = 10
+    wrong_version["policy_version"] = 11
     _resign(wrong_version)
     with pytest.raises(
         ComputePolicyArtifactError,
-        match="Unsupported Phase 1 policy version 10",
+        match="Unsupported Phase 1 policy version 11",
     ):
         parse_compute_policy_artifact(_encoded(wrong_version))
 
 
-def test_valid_but_changed_v9_record_cannot_be_resigned_in_place():
+def test_valid_but_changed_v10_record_cannot_be_resigned_in_place():
     changed = copy.deepcopy(_resource_document())
     changed["policy"]["auto_selection"]["non_local_minimum_saving_ms"] = 21.0  # type: ignore[index]
     _resign(changed)

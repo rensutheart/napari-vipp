@@ -78,7 +78,7 @@ def _background_spec(operation_id: str) -> OperationComputeSpec:
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
         implementation_library_id="cupy",
-        callable_ref=(f"napari_vipp.core.gpu.cucim_background:{operation_id}"),
+        callable_ref=(f"napari_vipp.core.gpu.cupy_background:{operation_id}"),
         host_boundary=False,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
@@ -983,9 +983,9 @@ def _measurements_spec(*, include_intensity: bool) -> OperationComputeSpec:
         "measure_objects_intensity" if include_intensity else "measure_objects"
     )
     implementation_id = (
-        "cucim-measure-objects-intensity-basic-v1"
+        "cupy-measure-objects-intensity-basic-v1"
         if include_intensity
-        else "cucim-measure-objects-basic-v1"
+        else "cupy-measure-objects-basic-v1"
     )
     callable_name = (
         "measure_objects_with_intensity" if include_intensity else "measure_objects"
@@ -999,12 +999,12 @@ def _measurements_spec(*, include_intensity: bool) -> OperationComputeSpec:
         implementation_version="1",
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
-        implementation_library_id="cucim",
-        callable_ref=(f"napari_vipp.core.gpu.cucim_measurements:{callable_name}"),
+        implementation_library_id="cupy",
+        callable_ref=(f"napari_vipp.core.gpu.cupy_measurements:{callable_name}"),
         host_boundary=False,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
+            "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
         ),
         input_ports=inputs,
         output_ports=(_measurement_output_port(include_intensity=include_intensity),),
@@ -1015,7 +1015,7 @@ def _measurements_spec(*, include_intensity: bool) -> OperationComputeSpec:
             else "measurements-int32-basic-2d-3d-v1"
         ),
         parity_policy_id="basic-measurement-table-v1",
-        memory_model_id="cucim-basic-measurements-memory-v1",
+        memory_model_id="cupy-basic-measurements-memory-v1",
         shape_policy_id="measurement-packed-rows-v1",
         boundary_policy_id="measurement-leading-spatial-blocks-v1",
         precision_policy_id="basic-measurement-table-v1",

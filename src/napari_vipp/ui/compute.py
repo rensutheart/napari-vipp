@@ -3,9 +3,9 @@
 The widget owns Qt controls and execution lifecycle.  This module owns the
 small, deterministic translations needed by those controls: authored compute
 intent to labels, registered candidates to Custom-mode options, and typed
-execution decisions to compact graph/toolbar presentation.  Candidate listing
-uses declarations only and must never import CuPy, cuCIM, or initialize a
-device.
+execution decisions to compact graph/toolbar presentation. Candidate listing
+uses declarations only and must never import accelerator libraries or initialize
+a device.
 """
 
 from __future__ import annotations

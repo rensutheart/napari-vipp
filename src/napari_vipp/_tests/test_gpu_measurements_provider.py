@@ -6,12 +6,11 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from napari_vipp.core.gpu import cucim_measurements as provider
+from napari_vipp.core.gpu import cupy_measurements as provider
 from napari_vipp.core.measurements import (
     basic_measurement_layout,
     finalize_basic_measurement_table,
@@ -32,17 +31,11 @@ def cupy_module():
     try:
         cupy = importlib.import_module("cupy")
         importlib.import_module("cupyx.scipy.ndimage")
-        cucim = importlib.import_module("cucim")
-        if cucim.__version__ != "26.06.00":
-            pytest.skip(
-                "The reviewed cuCIM 26.06.00 is unavailable: "
-                f"{cucim.__version__}"
-            )
         if int(cupy.cuda.runtime.getDeviceCount()) < 1:
             pytest.skip("No CUDA device is available.")
         cupy.zeros(1, dtype=cupy.uint8).sum().item()
     except Exception as exc:
-        pytest.skip(f"A working CuPy/cuCIM CUDA environment is unavailable: {exc}")
+        pytest.skip(f"A working CuPy CUDA environment is unavailable: {exc}")
     return cupy
 
 
@@ -94,7 +87,7 @@ def test_provider_module_import_is_cuda_lazy_in_a_fresh_process() -> None:
     )
     script = r"""
 import sys
-import napari_vipp.core.gpu.cucim_measurements as module
+import napari_vipp.core.gpu.cupy_measurements as module
 assert module.__all__ == ["measure_objects", "measure_objects_with_intensity"]
 for name in ("cupy", "cupyx", "cucim"):
     assert name not in sys.modules, name
@@ -163,6 +156,69 @@ def test_real_gpu_basic_morphology_is_resident_and_cpu_equivalent(
     assert result.passed, result.detail
 
 
+@pytest.mark.parametrize("spatial_ndim", (2, 3))
+def test_real_gpu_exhaustive_local_euler_configurations_match_cpu(
+    cupy_module,
+    spatial_ndim,
+) -> None:
+    spatial_shape = (2,) * spatial_ndim
+    configuration_count = 2 ** (2**spatial_ndim)
+    labels = np.zeros((configuration_count, *spatial_shape), dtype=np.int32)
+    for configuration in range(configuration_count):
+        bits = (
+            (configuration >> np.arange(2**spatial_ndim, dtype=np.uint16)) & 1
+        ).astype(bool)
+        labels[configuration].reshape(-1)[bits] = 1
+    spatial_mode = "2D YX" if spatial_ndim == 2 else "3D ZYX"
+    kwargs = {"spatial_mode": spatial_mode}
+    expected = cpu_measure_objects(labels, **kwargs)
+
+    packed = provider.measure_objects(cupy_module.asarray(labels), **kwargs)
+    actual = _finalize(
+        packed,
+        labels.shape,
+        include_intensity=False,
+        kwargs=kwargs,
+        cupy=cupy_module,
+    )
+
+    result = measurement_table_parity(expected, actual)
+    assert result.passed, result.detail
+
+
+@pytest.mark.parametrize("spatial_ndim", (2, 3))
+def test_real_gpu_touching_labels_have_independent_euler_numbers(
+    cupy_module,
+    spatial_ndim,
+) -> None:
+    if spatial_ndim == 2:
+        coordinates = np.indices((9, 11))
+        labels = ((coordinates[0] + coordinates[1]) % 3 + 1).astype(np.int32)
+        labels[2:7, 3:8] = 0
+        spatial_mode = "2D YX"
+    else:
+        coordinates = np.indices((7, 8, 9))
+        labels = ((coordinates[0] + coordinates[1] + coordinates[2]) % 3 + 1).astype(
+            np.int32
+        )
+        labels[2:5, 2:6, 3:7] = 0
+        spatial_mode = "3D ZYX"
+    kwargs = {"spatial_mode": spatial_mode}
+    expected = cpu_measure_objects(labels, **kwargs)
+
+    packed = provider.measure_objects(cupy_module.asarray(labels), **kwargs)
+    actual = _finalize(
+        packed,
+        labels.shape,
+        include_intensity=False,
+        kwargs=kwargs,
+        cupy=cupy_module,
+    )
+
+    result = measurement_table_parity(expected, actual)
+    assert result.passed, result.detail
+
+
 @pytest.mark.parametrize("dtype", (np.bool_, np.uint8, np.uint16, np.float32))
 def test_real_gpu_intensity_types_and_sparse_ids_match_cpu(
     cupy_module,
@@ -219,9 +275,8 @@ def test_real_gpu_float32_two_pass_adversarial_reductions(
     labels = np.ones((size, size), dtype=np.int32)
     if fixture_name == "high-offset":
         rng = np.random.default_rng(1947)
-        intensity = (
-            np.float32(1.0e8)
-            + rng.normal(0.0, 32.0, labels.shape).astype(np.float32)
+        intensity = np.float32(1.0e8) + rng.normal(0.0, 32.0, labels.shape).astype(
+            np.float32
         )
     else:
         intensity = np.empty(labels.shape, dtype=np.float32)
@@ -251,6 +306,82 @@ def test_real_gpu_float32_two_pass_adversarial_reductions(
         intensity_dtype="float32",
     )
     assert result.passed, result.detail
+
+
+def test_real_gpu_singleton_population_standard_deviation_is_zero(
+    cupy_module,
+) -> None:
+    labels = np.zeros((7, 9), dtype=np.int32)
+    labels[1, 1] = 101
+    labels[1, 2] = 202
+    labels[1, 3] = 303
+    labels[4:6, 5:8] = 404
+    labels[6, 8] = 505
+    intensity = np.arange(labels.size, dtype=np.uint16).reshape(labels.shape)
+    kwargs = {"spatial_mode": "2D YX"}
+    expected = cpu_measure_objects_with_intensity([labels, intensity], **kwargs)
+
+    packed = provider.measure_objects_with_intensity(
+        [cupy_module.asarray(labels), cupy_module.asarray(intensity)],
+        **kwargs,
+    )
+    actual = _finalize(
+        packed,
+        labels.shape,
+        include_intensity=True,
+        kwargs=kwargs,
+        cupy=cupy_module,
+    )
+
+    result = measurement_table_parity(
+        expected,
+        actual,
+        intensity_dtype="uint16",
+    )
+    assert result.passed, result.detail
+    label_index = actual.columns.index("label_id")
+    std_index = actual.columns.index("intensity_std")
+    std_by_label = {row[label_index]: row[std_index] for row in actual.rows}
+    assert std_by_label[101] == 0.0
+    assert std_by_label[202] == 0.0
+    assert std_by_label[303] == 0.0
+    assert std_by_label[505] == 0.0
+
+
+def test_real_gpu_adjacent_short_group_variance_matches_cpu(cupy_module) -> None:
+    group_count = 512
+    labels = np.zeros((32, 64), dtype=np.int32)
+    intensity = np.zeros(labels.shape, dtype=np.uint16)
+    flat_labels = labels.reshape(-1)
+    flat_intensity = intensity.reshape(-1)
+    for label_id in range(1, group_count + 1):
+        start = (label_id - 1) * 3
+        flat_labels[start : start + 3] = label_id
+        flat_intensity[start : start + 3] = (67, 67, 68)
+    kwargs = {"spatial_mode": "2D YX"}
+    expected = cpu_measure_objects_with_intensity([labels, intensity], **kwargs)
+
+    packed = provider.measure_objects_with_intensity(
+        [cupy_module.asarray(labels), cupy_module.asarray(intensity)],
+        **kwargs,
+    )
+    actual = _finalize(
+        packed,
+        labels.shape,
+        include_intensity=True,
+        kwargs=kwargs,
+        cupy=cupy_module,
+    )
+
+    result = measurement_table_parity(
+        expected,
+        actual,
+        intensity_dtype="uint16",
+    )
+    assert result.passed, result.detail
+    std_index = actual.columns.index("intensity_std")
+    expected_std = float(np.std(np.asarray((67, 67, 68), dtype=np.float64)))
+    assert all(row[std_index] == expected_std for row in actual.rows)
 
 
 def test_real_gpu_compacts_the_full_positive_int32_id_range(cupy_module) -> None:
@@ -365,31 +496,5 @@ def test_real_gpu_rejects_unsupported_regions_before_measurement(cupy_module) ->
         )
 
 
-def test_private_cucim_euler_contract_is_version_and_api_gated(monkeypatch) -> None:
-    real_import = provider.importlib.import_module
-    provider._validated_cucim_modules.cache_clear()
-
-    def wrong_version(name: str):
-        if name == "cucim":
-            return SimpleNamespace(__version__="99.0.0")
-        return real_import(name)
-
-    monkeypatch.setattr(provider.importlib, "import_module", wrong_version)
-    with pytest.raises(RuntimeError, match="pinned to cuCIM 26.06.00"):
-        provider._validated_cucim_modules()
-
-    provider._validated_cucim_modules.cache_clear()
-
-    def missing_private_api(name: str):
-        if name == "cucim":
-            return SimpleNamespace(__version__="26.06.00")
-        if name == "cucim.skimage.measure":
-            return SimpleNamespace()
-        if name.endswith("_regionprops_gpu_misc_kernels"):
-            return SimpleNamespace()
-        return real_import(name)
-
-    monkeypatch.setattr(provider.importlib, "import_module", missing_private_api)
-    with pytest.raises(RuntimeError, match="regionprops_euler"):
-        provider._validated_cucim_modules()
-    provider._validated_cucim_modules.cache_clear()
+def test_provider_has_no_cucim_runtime_hook() -> None:
+    assert not hasattr(provider, "_validated_cucim_modules")

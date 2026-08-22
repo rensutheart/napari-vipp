@@ -263,17 +263,16 @@ def _float32_zero_bound_tie_kernel(cupy):
 def _dynamic_rolling_ball_kernel(cupy, spatial_ndim: int, dtype_name: str):
     """Return one radius-independent erosion kernel for a spatial rank.
 
-    cuCIM constructs a radius-sized footprint and delegates to CuPyX's
-    generated grey-erosion kernel.  CuPyX embeds the footprint shape in the
-    CUDA source, so each new interactive radius incurs another compilation.
+    A generated grey-erosion kernel embeds the footprint shape in its CUDA
+    source, so each new interactive radius incurs another compilation.
     Here the radius and array extents are scalar runtime inputs.  The source
     varies only with the reviewed spatial rank (one, two, or three) and the
     float32/float64 workspace dtype.
 
-    The inner calculation is the same non-flat spherical erosion used by
-    cuCIM: ``min(image - (sqrt(radius**2 - distance**2) - radius))`` over
-    in-bounds points inside the ball.  Omitting out-of-bounds candidates is
-    equivalent to its constant ``+inf`` boundary mode.
+    The inner calculation is the reviewed non-flat spherical erosion:
+    ``min(image - (sqrt(radius**2 - distance**2) - radius))`` over in-bounds
+    points inside the ball. Omitting out-of-bounds candidates is equivalent to
+    constant ``+inf`` boundary mode.
     """
 
     ndim = int(spatial_ndim)

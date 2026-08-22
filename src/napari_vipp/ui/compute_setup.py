@@ -515,7 +515,6 @@ def _pending_check_rows(
 ) -> tuple[ComputeSetupCheckRow, ...]:
     return (
         ComputeSetupCheckRow("cuda", "CUDA and GPU", value, tone),
-        ComputeSetupCheckRow("cucim", "Optional cuCIM", value, tone),
         ComputeSetupCheckRow("vipp", "VIPP GPU coverage", value, tone),
     )
 
@@ -535,34 +534,6 @@ def _completed_check_rows(
             else "No CUDA runtime result was recorded."
         ),
     )
-    cucim = report.cucim_probe
-    if cucim is None:
-        cucim_value = "Not checked (optional)"
-        cucim_tone = ComputeSetupTone.NEUTRAL
-        cucim_detail = "No cuCIM probe result was recorded."
-    elif cucim.available:
-        cucim_value = "Ready"
-        cucim_tone = ComputeSetupTone.SUCCESS
-        cucim_detail = cucim.message
-    elif cucim.reason_code == "cucim_not_installed":
-        cucim_value = "Not installed (optional)"
-        cucim_tone = ComputeSetupTone.NEUTRAL
-        cucim_detail = cucim.message
-    elif cucim.reason_code == "runtime_unavailable":
-        cucim_value = "Not checked (CUDA unavailable)"
-        cucim_tone = ComputeSetupTone.NEUTRAL
-        cucim_detail = cucim.message
-    else:
-        cucim_value = "Needs attention (optional)"
-        cucim_tone = ComputeSetupTone.WARNING
-        cucim_detail = cucim.message
-    cucim_row = ComputeSetupCheckRow(
-        "cucim",
-        "Optional cuCIM",
-        cucim_value,
-        cucim_tone,
-        cucim_detail,
-    )
     admitted = len(report.admitted_regions)
     total = len(report.admission_regions)
     if not total:
@@ -581,7 +552,7 @@ def _completed_check_rows(
         coverage_tone,
         "Only reviewed combinations are offered automatically; CPU remains safe.",
     )
-    return (cuda_row, cucim_row, coverage_row)
+    return (cuda_row, coverage_row)
 
 
 def _memory_rows(

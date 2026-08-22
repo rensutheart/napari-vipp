@@ -1,8 +1,11 @@
 # GPU Phase 6: Basic Measurements
 
-Status: implemented on `codex/gpu-cross-platform-support` and qualified on one
-native-Windows RTX 5090 development environment. This is branch-scoped evidence,
-not a portable speed guarantee or a released-package support claim.
+Status: **historical and superseded**. This report records the original cuCIM
+implementation on `codex/gpu-cross-platform-support`, qualified on one native-
+Windows RTX 5090 development environment. The active provider is now CuPy; see
+the [current GPU guide](gpu-guide.md) for its admission and matched benchmark
+evidence. The dated results below remain unchanged and are not a portable speed
+guarantee or a released-package support claim.
 
 ## Outcome
 

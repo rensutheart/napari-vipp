@@ -521,7 +521,7 @@ variance clamping replaces a NaN-dependent unsigned-zero result. Fixture,
 plugin, ImageJ jar, generator, and Java harness hashes make the evidence
 auditable without treating the VIPP Python implementation as its own oracle.
 
-The CUDA candidate is a lazy CuPy `RawKernel`, not a CuPyX or cuCIM primitive.
+The CUDA candidate is a lazy CuPy `RawKernel`, not a CuPyX primitive.
 It stages arbitrary axis layouts and non-contiguous inputs into one contiguous
 `float32` device workspace, allocates a distinct typed output, and scans the
 footprint twice per output thread without an image-sized sliding-window tensor.
@@ -1126,7 +1126,7 @@ selected node's compact inspector row shows `Calculating…`, `CPU · NumPy`,
 `GPU · CuPy`, `CPU fallback`, or `Error`. It exposes presentation backend,
 algorithm, byte count, timing, crossover, reason, and fallback through hover,
 keyboard What's This help, and its accessibility description without enlarging
-the card or overwriting the scientific CPU/CuPy/cuCIM badge in the node title
+the card or overwriting the scientific CPU/CuPy badge in the node title
 row. Ordinary success is muted; fallback and error remain emphasized. The
 preview retains the same hover detail for quick graph discovery. The shared
 toolbar progress/cancel ownership covers thumbnail scans. CPU integer

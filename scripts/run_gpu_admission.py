@@ -8,7 +8,7 @@ executable owners for parity, adversarial inputs,
 metadata, input integrity, memory, cancellation, cleanup, fallback,
 provenance, and transfer-inclusive timing.
 
-Import, ``--help``, ``--check``, and ``--list`` never import CuPy or cuCIM and
+Import, ``--help``, ``--check``, and ``--list`` never import CuPy and
 never initialize CUDA.  A real run launches each owner in a separate process,
 validates its evidence artifact, and writes the aggregate document only after
 every required facet passes.

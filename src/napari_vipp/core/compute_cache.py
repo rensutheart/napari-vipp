@@ -79,6 +79,8 @@ _REQUIRED_DEPENDENCIES_BY_ENVIRONMENT_POLICY = MappingProxyType(
                 "cuda-runtime",
             }
         ),
+        # Historical v6-v9 cache records remain readable, but no current
+        # implementation or policy artifact can produce these identities.
         "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2": frozenset(
             {
                 "napari-vipp",

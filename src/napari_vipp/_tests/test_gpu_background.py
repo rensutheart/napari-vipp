@@ -13,7 +13,7 @@ from scipy import ndimage as scipy_ndimage
 from skimage import restoration as skimage_restoration
 
 from napari_vipp.core.compute_benchmark_adapter import operation_parity
-from napari_vipp.core.gpu import cucim_background as gpu_background
+from napari_vipp.core.gpu import cupy_background as gpu_background
 from napari_vipp.core.operations import (
     rolling_ball_background as cpu_rolling_ball_background,
 )
@@ -215,7 +215,7 @@ def fake_stack(monkeypatch):
     gpu_background._dynamic_rolling_ball_kernel.cache_clear()
 
 
-def test_import_is_safe_without_cupy_cupyx_or_cucim():
+def test_import_is_safe_without_cupy_or_cupyx():
     source_root = Path(__file__).resolve().parents[2]
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.pathsep.join(
@@ -229,17 +229,16 @@ import sys
 real_import = builtins.__import__
 
 def guarded_import(name, *args, **kwargs):
-    if name == "cupy" or name.startswith("cupyx") or name.startswith("cucim"):
+    if name == "cupy" or name.startswith("cupyx"):
         raise AssertionError(f"optional GPU import attempted: {name}")
     return real_import(name, *args, **kwargs)
 
 builtins.__import__ = guarded_import
-module = importlib.import_module("napari_vipp.core.gpu.cucim_background")
+module = importlib.import_module("napari_vipp.core.gpu.cupy_background")
 assert callable(module.rolling_ball_background)
 assert callable(module.subtract_background)
 assert "cupy" not in sys.modules
 assert not any(name.startswith("cupyx") for name in sys.modules)
-assert not any(name.startswith("cucim") for name in sys.modules)
 """
     completed = subprocess.run(
         [sys.executable, "-c", code],
@@ -773,7 +772,7 @@ _REAL_CASES = (
     _REAL_CASES,
     ids=[case[0] for case in _REAL_CASES],
 )
-def test_real_rtx_cucim_exact_cpu_parity_for_advertised_regions(
+def test_real_rtx_cupy_exact_cpu_parity_for_advertised_regions(
     real_gpu_stack,
     dtype,
     region,
@@ -802,7 +801,7 @@ def test_real_rtx_cucim_exact_cpu_parity_for_advertised_regions(
 
 
 @pytest.mark.parametrize("operation", ("background", "subtract"))
-def test_real_rtx_cucim_exact_nonfinite_policy_parity(real_gpu_stack, operation):
+def test_real_rtx_cupy_exact_nonfinite_policy_parity(real_gpu_stack, operation):
     cupy = real_gpu_stack
     host = _fixture(np.float32, (7, 9))
     host.flat[:3] = (np.nan, np.inf, -np.inf)
@@ -1067,7 +1066,7 @@ def test_real_rtx_randomized_float32_background_v2_parity(
         ),
     ),
 )
-def test_real_rtx_cucim_exact_radius_boundaries(
+def test_real_rtx_cupy_exact_radius_boundaries(
     real_gpu_stack,
     operation,
     region,
@@ -1098,7 +1097,7 @@ def test_real_rtx_cucim_exact_radius_boundaries(
     )
 
 
-def test_real_cucim_uses_runtime_private_allocator_and_common_array_domain(
+def test_real_cupy_background_uses_runtime_private_allocator_and_array_domain(
     real_gpu_stack,
 ):
     from napari_vipp.core.gpu.cupy_runtime import create_runtime
@@ -1175,7 +1174,7 @@ def _assert_exact_with_region(expected, actual, *, region: str, dtype) -> None:
             else float("nan")
         )
         pytest.fail(
-            f"Exact CPU/cuCIM parity failed in {region} for {np.dtype(dtype)}; "
+            f"Exact CPU/CuPy parity failed in {region} for {np.dtype(dtype)}; "
             f"max finite absolute error={maximum}.\n{exc}",
             pytrace=False,
         )

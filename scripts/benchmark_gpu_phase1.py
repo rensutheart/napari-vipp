@@ -50,8 +50,8 @@ SOURCE_PROVENANCE_PATHS = (
     "src/napari_vipp/core/gpu/cupy_runtime.py",
     "src/napari_vipp/core/gpu/cupy_gaussian.py",
     "src/napari_vipp/core/gpu/cupy_median.py",
-    "src/napari_vipp/core/gpu/cucim_background.py",
-    "src/napari_vipp/compute_policies/phase1-gpu-public-v9.json",
+    "src/napari_vipp/core/gpu/cupy_background.py",
+    "src/napari_vipp/compute_policies/phase1-gpu-public-v10.json",
 )
 
 
@@ -164,7 +164,7 @@ def run_benchmarks(*, device_id: str = "") -> dict[str, object]:
 
     # Core imports live behind the explicit execution entry point. In
     # particular, importing this script or asking for --help cannot discover a
-    # CuPy/cuCIM provider or initialize a CUDA context.
+    # CuPy provider or initialize a CUDA context.
     import numpy as np
 
     from napari_vipp.core.compute import ComputeMode, ComputeRequest
@@ -667,7 +667,6 @@ def _package_provenance() -> dict[str, str | None]:
         "scikit-image",
         "cupy-cuda12x",
         "cupy-cuda13x",
-        "cucim-cu13",
     )
     versions = {}
     for name in names:

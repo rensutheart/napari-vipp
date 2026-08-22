@@ -8,7 +8,6 @@ becoming a second execution engine.
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -358,9 +357,6 @@ class PerformanceDecision:
 CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID = (
     "cuda-cupy-14.1.1-cpython312-windows-native-v3"
 )
-CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID = (
-    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v4"
-)
 CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID = (
     "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
 )
@@ -369,14 +365,12 @@ CUDA_CUPY_CORE_WINDOWS_ENVIRONMENT_POLICY_ID = (
 )
 CUDA_ENVIRONMENT_POLICIES = {
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
-    CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_CORE_WINDOWS_ENVIRONMENT_POLICY_ID,
 }
 
 _PHASE1_CUDA_POLICY_PROVIDER = {
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cupyx"),
-    CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cucim"),
     CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cupy"),
     CUDA_CUPY_CORE_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cupy"),
 }
@@ -390,17 +384,6 @@ _PHASE1_CPU_SCIENTIFIC_STACK = {
     "scipy": "1.18.0",
     "scikit-image": "0.26.0",
 }
-_PHASE1_CUCIM_VERSIONS = frozenset({"26.6.0", "26.06.00"})
-PHASE1_CUCIM_SOURCE_TAG = "v26.06.00"
-PHASE1_CUCIM_SOURCE_COMMIT = "3c15781c207eab93a317dd9803a6e726fe01f7c4"
-PHASE1_CUCIM_BUILD_RECIPE_ID = "napari-vipp-cucim-windows-v1"
-# Unlike a wheel archive hash, this canonical, archive-metadata-independent
-# payload digest is identical across independent builds of the pinned recipe.
-PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256 = (
-    "d640d1e17bcce15d32d03841997252bf915b63da855e406c35f0d70c5a5ea667"
-)
-
-
 def evaluate_candidate_environment_support(
     spec: OperationComputeSpec,
     environment: ComputeEnvironment,
@@ -808,54 +791,6 @@ def _evaluate_phase1_cuda_environment(
             f"{compute_capability}. CPU remains authoritative."
         )
 
-    if spec.validated_environment_policy_id == (
-        CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID
-    ):
-        cucim_version = versions.get("cucim", "")
-        if cucim_version not in _PHASE1_CUCIM_VERSIONS:
-            return rejected(
-                "Phase-1 cuCIM admission requires exact cuCIM 26.6.0/26.06.00 "
-                "provenance."
-            )
-        library_metadata = _metadata_for_scope(
-            environment.implementation_library_metadata,
-            "cucim",
-        )
-        expected_metadata = {
-            "environment_record_schema": "napari-vipp-gpu-environment",
-            "environment_record_schema_version": "2",
-            "environment_track": "cuda13",
-            "cupy_distribution": "cupy-cuda13x",
-            "cucim_distribution": "cucim-cu13",
-            "cucim_wheel_payload_sha256": (PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256),
-            "cucim_source_tag": PHASE1_CUCIM_SOURCE_TAG,
-            "cucim_source_commit": PHASE1_CUCIM_SOURCE_COMMIT,
-            "cucim_build_recipe_id": PHASE1_CUCIM_BUILD_RECIPE_ID,
-        }
-        for key, expected in expected_metadata.items():
-            if library_metadata.get(key) != expected:
-                return rejected(
-                    "The cuCIM environment record is missing or has unapproved "
-                    f"{key!r} provenance."
-                )
-        artifact_sha256 = library_metadata.get("cucim_artifact_sha256", "")
-        if re.fullmatch(r"[0-9a-f]{64}", artifact_sha256) is None:
-            return rejected(
-                "The cuCIM environment record is missing a verified local wheel "
-                "SHA-256 provenance value."
-            )
-        if library_metadata.get("cucim_distribution_version") not in (
-            _PHASE1_CUCIM_VERSIONS
-        ):
-            return rejected(
-                "The installed cuCIM distribution version is outside the exact "
-                "Phase-1 matrix."
-            )
-        if int(cuda_runtime) // 1000 != 13:
-            return rejected(
-                "The approved Phase-1 cuCIM artifact is specific to the CUDA 13 "
-                "environment track."
-            )
     return None
 
 
@@ -944,7 +879,7 @@ def estimate_candidate_memory(
         )
         for port in spec.output_ports
     )
-    if spec.memory_model_id == "cucim-basic-measurements-memory-v1":
+    if spec.memory_model_id == "cupy-basic-measurements-memory-v1":
         measurement_layout = _basic_measurement_layout_for_workload(workload)
         # At most one positive object can be represented by each authored
         # label element.  The provider's private output is therefore bounded
@@ -1013,17 +948,7 @@ def estimate_candidate_memory(
             host_materialization_peak_bytes=output_bytes,
             model_id=spec.memory_model_id,
         )
-    if spec.memory_model_id == "cucim-background-memory-v1":
-        workspace_itemsize = max(primary_itemsize, 4)
-        parameters = dict(workload.parameters)
-        requested_radius = _finite_number(parameters.get("radius", 50.0))
-        radius = max(1, int(math.ceil(requested_radius or 1.0)))
-        spatial_ndim = _background_spatial_ndim(workload, parameters)
-        footprint_elements = (2 * radius + 1) ** spatial_ndim
-        image_workspace = primary_elements * workspace_itemsize * 8
-        footprint_workspace = footprint_elements * workspace_itemsize * 3
-        workspace = image_workspace + footprint_workspace
-    elif spec.memory_model_id == "cupy-dynamic-background-memory-v1":
+    if spec.memory_model_id == "cupy-dynamic-background-memory-v1":
         # The dynamic RawKernel scans the spherical neighbourhood directly;
         # radius no longer creates a device footprint.  Retain a conservative
         # eight image-sized work-buffer allowance for finite-value repair,
@@ -1285,13 +1210,13 @@ def estimate_candidate_memory(
                 block_elements
                 * REMOVE_SMALL_OBJECTS_WORKSPACE_BYTES_PER_SPATIAL_ELEMENT
             )
-    elif spec.memory_model_id == "cucim-basic-measurements-memory-v1":
+    elif spec.memory_model_id == "cupy-basic-measurements-memory-v1":
         layout = _basic_measurement_layout_for_workload(workload)
         block_elements = math.prod(layout.spatial_shape)
         include_intensity = len(workload.input_shapes) == 2
         # The complete authored arrays may be retained in canonical axis order.
-        # Per active block, reserve compaction/search/sort arrays, cuCIM's
-        # region-property workspace, grouped float64 reductions, and packing.
+        # Per active block, reserve compaction/search/sort arrays, custom CuPy
+        # morphology kernels, grouped float64 reductions, and packing.
         # Packed rows retained across blocks are already represented by
         # ``output_bytes`` above.
         working_copies = input_bytes
@@ -2935,7 +2860,6 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
         },
         PolicyKind.MEMORY: {
             "host-reference-v1",
-            "cucim-background-memory-v1",
             "cupy-dynamic-background-memory-v1",
             "cupyx-median-memory-v1",
             "cupy-radix-median-memory-v1",
@@ -2953,7 +2877,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-fill-holes-memory-v1",
             "cupyx-remove-small-objects-memory-v1",
             "cupyx-connected-components-memory-v1",
-            "cucim-basic-measurements-memory-v1",
+            "cupy-basic-measurements-memory-v1",
         },
         PolicyKind.SHAPE: {
             "cpu-reference-v1",
@@ -3150,7 +3074,6 @@ __all__ = [
     "ArrayFacts",
     "ArrayFactsCache",
     "ArrayFactsKey",
-    "CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_CUPY_CORE_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID",
@@ -3161,10 +3084,6 @@ __all__ = [
     "FactCompleteness",
     "PerformanceDecision",
     "PerformanceEvidence",
-    "PHASE1_CUCIM_BUILD_RECIPE_ID",
-    "PHASE1_CUCIM_SOURCE_COMMIT",
-    "PHASE1_CUCIM_SOURCE_TAG",
-    "PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256",
     "MASK_CLEANUP_MAXIMUM_SPATIAL_BLOCK_ELEMENTS",
     "PolicyCatalog",
     "PolicyKind",

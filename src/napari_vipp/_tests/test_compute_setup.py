@@ -189,7 +189,7 @@ def test_available_discrete_gpu_has_separate_ram_and_vram_rows():
     assert presentation.actions[0].refresh_runtime
 
 
-def test_completed_check_is_three_plain_rows_with_optional_cucim_clear():
+def test_completed_check_is_two_plain_rows_with_cuda_and_coverage():
     regions = tuple(
         PublicAdmissionRegion(
             operation_id=f"operation-{index}",
@@ -211,12 +211,6 @@ def test_completed_check_is_three_plain_rows_with_optional_cucim_clear():
         library_probes=(
             ImplementationLibraryProbeResult("cupy", True, version="14.1.1"),
             ImplementationLibraryProbeResult("cupyx", True, version="14.1.1"),
-            ImplementationLibraryProbeResult(
-                "cucim",
-                False,
-                reason_code="cucim_not_installed",
-                message="Optional add-on is absent.",
-            ),
         ),
         admission_regions=regions,
     )
@@ -226,12 +220,10 @@ def test_completed_check_is_three_plain_rows_with_optional_cucim_clear():
     assert presentation.state is ComputeSetupState.DEGRADED
     assert [row.label for row in presentation.check_rows] == [
         "CUDA and GPU",
-        "Optional cuCIM",
         "VIPP GPU coverage",
     ]
     assert [row.value for row in presentation.check_rows] == [
         "Ready",
-        "Not installed (optional)",
         "2 of 3 reviewed regions ready",
     ]
 

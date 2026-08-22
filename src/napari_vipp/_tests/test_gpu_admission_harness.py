@@ -36,7 +36,7 @@ def test_cpu_safe_surfaces_do_not_import_optional_gpu_packages(action):
 import builtins, runpy, sys
 real_import = builtins.__import__
 def guarded_import(name, *args, **kwargs):
-    if name == 'cupy' or name.startswith(('cupy.', 'cupyx', 'cucim')):
+    if name == 'cupy' or name.startswith(('cupy.', 'cupyx')):
         raise RuntimeError('CPU-safe harness surface imported a GPU package')
     return real_import(name, *args, **kwargs)
 builtins.__import__ = guarded_import

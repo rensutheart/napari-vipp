@@ -47,8 +47,10 @@ BUILD_SCHEMA = "napari-vipp-windows-installer-build"
 RELEASE_SCHEMA = "napari-vipp-windows-installer-release"
 PAYLOAD_SCHEMA = "napari-vipp-windows-installer-payload"
 SCHEMA_VERSION = 1
-# Payload schema v2 requires an explicit development Boolean.  Build and release
-# sidecar schemas remain at v1 because their existing contracts are unchanged.
+# Release schema v2 removes the retired optional companion-asset fields.
+RELEASE_SCHEMA_VERSION = 2
+# Payload schema v2 requires an explicit development Boolean.  The build sidecar
+# schema remains at v1 because that contract is unchanged.
 PAYLOAD_SCHEMA_VERSION = 2
 ARCHITECTURE = "x86_64"
 PAYLOAD_MANIFEST_NAME = "payload-manifest.json"
@@ -116,7 +118,6 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--build-manifest", type=Path, required=True)
     finalize.add_argument("--output-directory", type=Path, required=True)
     finalize.add_argument("--expected-signer-thumbprint", required=True)
-    finalize.add_argument("--cucim-bundle", type=Path)
 
     finalize_unsigned = commands.add_parser(
         "finalize-unsigned",
@@ -130,7 +131,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finalize_unsigned.add_argument("--build-manifest", type=Path, required=True)
     finalize_unsigned.add_argument("--output-directory", type=Path, required=True)
-    finalize_unsigned.add_argument("--cucim-bundle", type=Path)
     return parser
 
 
@@ -177,7 +177,6 @@ def main(argv: list[str] | None = None) -> int:
                 build_manifest_path=args.build_manifest,
                 output_directory=args.output_directory,
                 expected_signer_thumbprint=args.expected_signer_thumbprint,
-                cucim_bundle=args.cucim_bundle,
             )
         else:
             result = finalize_unsigned_installer(
@@ -185,7 +184,6 @@ def main(argv: list[str] | None = None) -> int:
                 unsigned_staging_executable=args.unsigned_staging_executable,
                 build_manifest_path=args.build_manifest,
                 output_directory=args.output_directory,
-                cucim_bundle=args.cucim_bundle,
             )
     except InstallerPackagingError as exc:
         print(json.dumps({"status": "error", "message": str(exc)}, sort_keys=True))
@@ -392,7 +390,6 @@ def finalize_installer(
     build_manifest_path: Path,
     output_directory: Path,
     expected_signer_thumbprint: str,
-    cucim_bundle: Path | None = None,
     authenticode_probe=None,
     frozen_payload_probe=None,
 ) -> dict[str, object]:
@@ -510,18 +507,6 @@ def finalize_installer(
     ):
         raise InstallerPackagingError("The third-party notices changed after build.")
 
-    companion = None
-    if cucim_bundle is not None:
-        if cucim_bundle.expanduser().resolve().parent != output_dir:
-            raise InstallerPackagingError(
-                "The cuCIM companion must already be in the release artifact "
-                "directory."
-            )
-        companion = inspect_cucim_bundle(
-            cucim_bundle,
-            expected_version=source.version,
-            expected_commit=source.commit,
-        )
     output_dir.mkdir(parents=True, exist_ok=True)
     published: list[Path] = []
     try:
@@ -562,18 +547,13 @@ def finalize_installer(
 
             document: dict[str, object] = {
                 "schema": RELEASE_SCHEMA,
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": RELEASE_SCHEMA_VERSION,
                 "source": _source_dict(source),
                 "artifact": _file_record(temporary_executable),
                 "embedded_wheel": build_document.get("wheel"),
                 "frozen_payload": staging_payload,
                 "signature": copied_signature,
                 "third_party_notices": _file_record(temporary_notices),
-                "cucim_companion": companion,
-                "relationship": {
-                    "primary_installer_contains_cucim": False,
-                    "cucim_is_optional_separate_local_build": companion is not None,
-                },
             }
             _write_json(temporary_manifest, document)
             checksum_files = [
@@ -581,8 +561,6 @@ def finalize_installer(
                 temporary_notices,
                 temporary_manifest,
             ]
-            if cucim_bundle is not None:
-                checksum_files.append(cucim_bundle.resolve())
             temporary_checksums.write_text(
                 "".join(
                     f"{_sha256(path)}  {path.name}\n" for path in checksum_files
@@ -621,7 +599,6 @@ def finalize_unsigned_installer(
     unsigned_staging_executable: Path,
     build_manifest_path: Path,
     output_directory: Path,
-    cucim_bundle: Path | None = None,
     authenticode_probe=None,
     frozen_payload_probe=None,
 ) -> dict[str, object]:
@@ -727,19 +704,6 @@ def finalize_unsigned_installer(
             "The build's third-party notices are missing or changed."
         )
 
-    companion = None
-    if cucim_bundle is not None:
-        if cucim_bundle.expanduser().resolve().parent != output_dir:
-            raise InstallerPackagingError(
-                "The cuCIM companion must already be in the release artifact "
-                "directory."
-            )
-        companion = inspect_cucim_bundle(
-            cucim_bundle,
-            expected_version=source.version,
-            expected_commit=source.commit,
-        )
-
     output_dir.mkdir(parents=True, exist_ok=True)
     published: list[Path] = []
     try:
@@ -766,7 +730,7 @@ def finalize_unsigned_installer(
                 )
             document: dict[str, object] = {
                 "schema": RELEASE_SCHEMA,
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": RELEASE_SCHEMA_VERSION,
                 "release_channel": "explicitly-unsigned",
                 "source": _source_dict(source),
                 "artifact": _file_record(temporary_executable),
@@ -780,11 +744,6 @@ def finalize_unsigned_installer(
                     "verify_sha256_before_running": True,
                 },
                 "third_party_notices": _file_record(temporary_notices),
-                "cucim_companion": companion,
-                "relationship": {
-                    "primary_installer_contains_cucim": False,
-                    "cucim_is_optional_separate_local_build": companion is not None,
-                },
             }
             _write_json(temporary_manifest, document)
             checksum_files = [
@@ -792,8 +751,6 @@ def finalize_unsigned_installer(
                 temporary_notices,
                 temporary_manifest,
             ]
-            if cucim_bundle is not None:
-                checksum_files.append(cucim_bundle.resolve())
             temporary_checksums.write_text(
                 "".join(
                     f"{_sha256(path)}  {path.name}\n" for path in checksum_files
@@ -899,45 +856,6 @@ def inspect_wheel(path: Path, *, expected_version: str) -> WheelRecord:
     )
 
 
-def inspect_cucim_bundle(
-    path: Path,
-    *,
-    expected_version: str,
-    expected_commit: str,
-) -> dict[str, object]:
-    bundle = path.expanduser().resolve()
-    if not bundle.is_file() or bundle.suffix.lower() != ".zip":
-        raise InstallerPackagingError("The optional cuCIM companion must be a ZIP.")
-    try:
-        with zipfile.ZipFile(bundle) as archive:
-            names = archive.namelist()
-            if any(name.lower().endswith(".whl") for name in names):
-                raise InstallerPackagingError(
-                    "The cuCIM local-build companion must not contain a wheel."
-                )
-            manifest = json.loads(archive.read("bundle-manifest.json"))
-    except InstallerPackagingError:
-        raise
-    except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
-        raise InstallerPackagingError(
-            "Could not validate the cuCIM companion ZIP."
-        ) from exc
-    if (
-        manifest.get("vipp_version") != expected_version
-        or manifest.get("source_commit") != expected_commit
-        or manifest.get("contains_prebuilt_cucim_wheel") is not False
-    ):
-        raise InstallerPackagingError(
-            "The cuCIM companion does not match this release version and commit."
-        )
-    return {
-        **_file_record(bundle),
-        "role": "optional-cucim-local-build-installer",
-        "bundled_in_primary_installer": False,
-        "contains_prebuilt_cucim_wheel": False,
-    }
-
-
 def inspect_frozen_payload(path: Path) -> dict[str, object]:
     """Extract and revalidate the wheel and manifest inside a PyInstaller EXE."""
 
@@ -963,7 +881,7 @@ def inspect_frozen_payload(path: Path) -> dict[str, object]:
     required = {
         "installer_branding/vipp-logo-dark.png",
         "installer_licenses/THIRD-PARTY-NOTICES.txt",
-        "napari_vipp/compute_policies/phase1-gpu-public-v9.json",
+        "napari_vipp/compute_policies/phase1-gpu-public-v10.json",
     }
     if (
         len(manifest_names) != 1

@@ -490,9 +490,7 @@ assert module.main(['--describe']) == 0
 loaded = set(sys.modules)
 assert 'cupy' not in loaded
 assert 'cupyx' not in loaded
-assert 'cucim' not in loaded
 assert not any(name.startswith('cupy.') for name in loaded)
-assert not any(name.startswith('cucim.') for name in loaded)
 """
 
     result = subprocess.run(

@@ -54,7 +54,7 @@ def test_help_is_provider_and_ui_lazy_in_a_fresh_process() -> None:
         (
             "import builtins, runpy, sys",
             "real_import = builtins.__import__",
-            "blocked = ('cupy', 'cupyx', 'cucim', 'napari', 'napari_vipp', 'qtpy')",
+            "blocked = ('cupy', 'cupyx', 'napari', 'napari_vipp', 'qtpy')",
             "def guarded_import(name, *args, **kwargs):",
             "    blocked_import = any(",
             "        name == item or name.startswith(item + '.') for item in blocked",
@@ -90,7 +90,7 @@ def test_source_provenance_covers_affinity_and_terminal_memory_producers(
     paths = set(benchmark_script._source_provenance_paths())
 
     assert {
-        "src/napari_vipp/compute_policies/phase1-gpu-public-v9.json",
+        "src/napari_vipp/compute_policies/phase1-gpu-public-v10.json",
         "src/napari_vipp/core/compute_cache.py",
         "src/napari_vipp/core/compute_policy.py",
         "src/napari_vipp/core/compute_planning.py",
@@ -99,7 +99,7 @@ def test_source_provenance_covers_affinity_and_terminal_memory_producers(
         "src/napari_vipp/core/device_execution.py",
         "src/napari_vipp/core/execution.py",
         "src/napari_vipp/core/execution_telemetry.py",
-        "src/napari_vipp/core/gpu/cucim_background.py",
+        "src/napari_vipp/core/gpu/cupy_background.py",
         "src/napari_vipp/core/gpu/cupy_runtime.py",
         "src/napari_vipp/core/gpu/cupy_thumbnail_statistics.py",
         "src/napari_vipp/core/gpu/cupy_median.py",

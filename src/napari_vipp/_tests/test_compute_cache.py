@@ -600,6 +600,25 @@ def test_environment_policy_requires_every_exact_dependency_identifier(
             _key(spec, dependency_versions=dependencies)
 
 
+@pytest.mark.parametrize(
+    "operation_id",
+    ("measure_objects", "measure_objects_intensity"),
+)
+def test_current_measurements_require_only_the_cupy_gpu_dependency_set(
+    operation_id,
+):
+    (spec,) = compute_specs_for(operation_id, include_cpu=False)
+
+    assert set(required_scientific_dependency_ids(spec)) == {
+        "napari-vipp",
+        "numpy",
+        "scipy",
+        "scikit-image",
+        "cupy",
+        "cuda-runtime",
+    }
+
+
 def test_unknown_environment_policy_is_not_cacheable():
     unknown = replace(
         _spec(),

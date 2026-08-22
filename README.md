@@ -57,8 +57,7 @@ needs at least 15 GiB free on the installation drive while it runs. This is disk
 storage, not GPU memory (VRAM). It also needs at least 5 GiB free on each drive
 used for Windows temporary files and VIPP installer records; CPU setup needs at
 least 1 GiB there. Setup names the exact location if that check fails. The
-standard GPU installation works without cuCIM; that optional add-on is installed
-separately afterward.
+standard GPU installation includes every current GPU implementation.
 
 For `0.13.0a7`, one-click managed installation uses only two fixed per-track
 roots. Windows supplies the canonical Local App Data directory through
@@ -93,10 +92,6 @@ Local App Data path is ASCII-compatible.
 The [VIPP Quick Start](docs/quick-start.md) explains the installer-first flow,
 current manual commands, CPU/GPU choices, prerequisites, the advanced
 existing-napari route, update/repair/uninstall behavior, and a first workflow.
-After a standard CUDA installation passes Compute Doctor, the separate
-[`0.13.0a7` cuCIM add-on](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a7/napari-vipp-cucim-installer-0.13.0a7-windows.zip)
-can build the optional pinned provider locally. It contains no prebuilt cuCIM
-wheel; verify the ZIP against the release checksum before extracting it.
 
 ### Manual Installation (Advanced And Non-Windows)
 
@@ -157,12 +152,11 @@ for reproducibility rather than used as an allowlist.
 **Auto** is recommended and may correctly choose CPU. **Prefer GPU**
 requests every scientifically eligible GPU implementation, while **Custom**
 adds per-node choices and **Find fastest pipeline…**. Unsupported operations,
-data, parameters, environments, or memory conditions visibly use CPU. cuCIM is
-optional and separately installed.
+data, parameters, environments, or memory conditions visibly use CPU.
 
 See the [GPU Guide](docs/gpu-guide.md) for qualification, supported operation
-families, setup, benchmarking, fallback, cuCIM, and cross-device
-reproducibility. Durable batch/generated-Python behavior is documented in
+families, setup, benchmarking, fallback, and cross-device reproducibility.
+Durable batch/generated-Python behavior is documented in
 [Durable GPU execution](docs/durable-gpu-execution.md); exact scientific and
 benchmark evidence remains in the linked phase records rather than this
 landing page.
@@ -204,7 +198,7 @@ uninstall, and acceptance checks. It installs into a private managed location
 and never overwrites an unrelated folder or manually managed napari environment.
 It also provides branded Automatic/CPU/Prefer-GPU
 launchers, lightweight in-napari loading host, read-only planning CLI, and the
-separate optional cuCIM local-build add-on.
+same reviewed CuPy/CuPyX implementation set in every CUDA installation.
 
 See the [Desktop startup and installer plan](docs/desktop-startup-and-installer-plan.md)
 and [Windows installation planner](docs/windows-installation-planner.md).

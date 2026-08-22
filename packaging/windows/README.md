@@ -41,9 +41,8 @@ texts from the pinned build runtime, the public compute policy, and a VIPP icon.
 The combined third-party notices are also a persistent release sidecar and are
 available from the installer's advanced details.
 
-cuCIM is never part of the primary EXE. When selected, its deterministic
-no-wheel local-build ZIP is a separate companion release asset. Finalization
-binds that ZIP's version, source commit, and SHA-256 into the release manifest.
+The standard CUDA environment contains every current reviewed GPU provider;
+there is no separate companion provider asset.
 
 The canonical release build commands and risk-based gate selection are in the
 [release runbook](../../docs/release-runbook.md). Full clean-machine lifecycle

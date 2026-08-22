@@ -84,6 +84,14 @@ class NodePreferenceKind(StrEnum):
     IMPLEMENTATION = "implementation"
 
 
+_LEGACY_IMPLEMENTATION_PREFERENCE_ALIASES = {
+    "cucim-measure-objects-basic-v1": "cupy-measure-objects-basic-v1",
+    "cucim-measure-objects-intensity-basic-v1": (
+        "cupy-measure-objects-intensity-basic-v1"
+    ),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class NodeComputePreference:
     """Portable authored preference for one node.
@@ -109,6 +117,8 @@ class NodeComputePreference:
                 f"expected one of {choices}."
             ) from exc
         value = str(self.value).strip()
+        if kind is NodePreferenceKind.IMPLEMENTATION:
+            value = _LEGACY_IMPLEMENTATION_PREFERENCE_ALIASES.get(value, value)
         needs_value = kind in {
             NodePreferenceKind.LIBRARY,
             NodePreferenceKind.IMPLEMENTATION,

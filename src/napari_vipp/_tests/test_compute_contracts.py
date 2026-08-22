@@ -72,6 +72,26 @@ def test_legacy_selective_mode_loads_as_canonical_custom():
     assert request.as_dict()["mode"] == "custom"
 
 
+@pytest.mark.parametrize(
+    ("legacy_id", "current_id"),
+    (
+        (
+            "cucim-measure-objects-basic-v1",
+            "cupy-measure-objects-basic-v1",
+        ),
+        (
+            "cucim-measure-objects-intensity-basic-v1",
+            "cupy-measure-objects-intensity-basic-v1",
+        ),
+    ),
+)
+def test_legacy_cucim_measurement_pins_migrate_to_cupy(legacy_id, current_id):
+    preference = NodeComputePreference.parse(f"implementation:{legacy_id}")
+
+    assert preference.kind is NodePreferenceKind.IMPLEMENTATION
+    assert preference.value == current_id
+
+
 def test_prefer_gpu_is_a_round_trippable_visible_fallback_policy():
     request = ComputeRequest(
         mode="prefer_gpu",

@@ -128,12 +128,12 @@ back to Custom. `Benchmark node…` and `Find fastest pipeline…` are also
 Custom-only. Developer-hidden implementations are not considered unless an
 advanced request explicitly enables experimental admission; doing so is not a
 public support claim. Node-card badges always report what the accepted run
-actually used: CPU, CuPy, cuCIM, or an amber CPU fallback.
+actually used: CPU, CuPy, or an amber CPU fallback.
 
 On native Windows, all three GPU-using policies accept a successfully probed
 NVIDIA CUDA device with compute capability 7.5 or newer and a matching numeric
 driver API of at least `13030`, provided the exact supported Python, scientific
-stack, CUDA runtime, CuPy/provider, and cuCIM provenance checks also pass. The
+stack, CUDA runtime, and CuPy/provider checks also pass. The
 GPU model is recorded in provenance; it is not restricted to one exact model.
 Auto and Prefer GPU do not perform a local parity benchmark on first use of a
 qualifying model. Use `Benchmark node…` or `Find fastest pipeline…` in Custom
@@ -143,7 +143,7 @@ Floating-point calculations may differ slightly between GPU models or
 driver/JIT combinations while remaining within the operation's documented
 parity tolerance. Bitwise-contract integer operations remain exact. For a
 reproducible paper or methods report, record the VIPP version, GPU model,
-compute capability, driver API, CUDA runtime, CuPy/cuCIM and NumPy/SciPy/
+compute capability, driver API, CUDA runtime, CuPy and NumPy/SciPy/
 scikit-image versions, workflow parameters, and the actual per-node
 implementations from the execution provenance.
 
@@ -191,8 +191,8 @@ forward and saved in workflow schema 4.
 
 `Find fastest pipeline…` shows two levels of progress. The overall bar tracks
 the complete analysis across nodes and validation stages. The current-operation
-bar identifies the node, CPU/CuPy/cuCIM implementation, measurement phase, and
-round in progress. Some NumPy, SciPy, CuPy, and cuCIM operations run as one
+bar identifies the node, CPU/CuPy implementation, measurement phase, and round
+in progress. Some NumPy, SciPy, and CuPy operations run as one
 synchronized call, so VIPP can report immediately before and after the call but
 cannot update a percentage from inside it. An unchanged current-operation bar
 therefore does not by itself mean that the worker is stuck.
@@ -217,7 +217,7 @@ paired comparison against itself. GPU candidates are not discarded from one-off 
 elapsed time because residency can amortize those transfers across a pipeline.
 
 Completed results are grouped by workflow node. Each implementation receives
-its own subrow, so CPU, CuPy, and cuCIM measurements are not compressed into one
+its own subrow, so CPU and CuPy measurements are not compressed into one
 long cell. The compact view shows the typical measured total, scientific check,
 and outcome. **Show timing details** adds compute time, data movement,
 first-run cost, peak memory, and whether evidence was newly measured or reused.
@@ -553,7 +553,7 @@ Select a node to see this display work in the compact `Thumbnail contrast` row
 near the top of its inspector: `Calculating…`, `CPU · NumPy`, `GPU · CuPy`,
 `CPU fallback`, or `Error`. Ordinary success is muted; fallback and error use
 stronger warning colours. This inspector status must not be confused with the
-scientific `CPU`, `GPU · CuPy`, `GPU · cuCIM`, and `CPU fallback` compute badges
+scientific `CPU`, `GPU · CuPy`, and `CPU fallback` compute badges
 that remain in node title rows. Hover the inspector row or thumbnail for render
 detail, scope, algorithm, processed bytes, elapsed time, selection reason,
 crossover, and any fallback or failure; keyboard What's This help and screen
@@ -1112,7 +1112,7 @@ per-item/output status. For sources successfully read during item execution,
 version-3 manifests record the reader-reported raw axes, effective axes, and
 applied declaration, so `QYX -> ZYX` remains auditable. The embedded config
 retains the intended declaration for an item skipped or failed before reading.
-They also record the actual CPU/CuPy/cuCIM identity and version
+They also record the actual CPU/CuPy identity and version
 selected for every completed node, the environment and decision reasons,
 structured OOM/CPU-retry records, warnings, and cleanup evidence. The manifest
 embeds the canonical config and scientific graph;

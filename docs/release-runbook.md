@@ -84,7 +84,7 @@ to uncertainty by running every gate in the repository.
 | --- | --- | --- |
 | Core or UI | User-visible node, graph, inspector, viewer, worker, or interaction changes | Focused automated tests and one manual smoke of the changed behavior. Do not replay unrelated UI scenarios. |
 | Workflow/schema | Workflow, batch, manifest, provenance, source identity, serializer, or migration changes | Affected old-version fixtures, save/reopen and round-trip checks, and one representative generated/batch path when relevant. |
-| GPU/scientific | Provider algorithm, numerical contract, dtype/axes behavior, compute policy, dispatch, fallback, cleanup, memory, provenance, catalogue, or CUDA/CuPy/cuCIM pins | Qualify only the changed provider or shared layer on real hardware. Run the full catalogue only for a catalogue-wide/shared-layer change, an RC, or a production baseline refresh. |
+| GPU/scientific | Provider algorithm, numerical contract, dtype/axes behavior, compute policy, dispatch, fallback, cleanup, memory, provenance, catalogue, or CUDA/CuPy pins | Qualify only the changed provider or shared layer on real hardware. Run the full catalogue only for a catalogue-wide/shared-layer change, an RC, or a production baseline refresh. |
 | Windows installer | Installer/repair/update/rollback/network/path/ownership code, dependency resolution, PyInstaller, signing policy, or supported Windows/Python route | Run packaging tests plus the affected lifecycle scenario. Full new/install/repair/update/rollback/uninstall and fresh-account matrices are reserved for cross-cutting installer changes, RCs, or production refreshes. |
 | Dependencies/toolchain | Runtime/build dependency, Python support, compiler, build backend, or packaging tool changes | Clean package installs first, then only the scientific/installer domains affected by that dependency. Test-only dependency changes do not invalidate runtime evidence. |
 | Packaging/release | Package data, entry points, build backend, resource layout, publishing workflows, or release asset composition | Exact artifact content/entry-point checks. Reproducibility comparison is required when packaging changed, not for an unrelated app-only alpha. |
@@ -115,9 +115,9 @@ When a domain is invalidated:
 3. update the qualification baseline for that domain; and
 4. carry the new baseline forward until another declared invalidator changes.
 
-A failed hosted bundle canary invalidates the packaging/bundle domain. A
-failed real-GPU canary invalidates the GPU domain. A stale canary calls for a
-quick smoke, not automatically for the full historical matrix.
+A failed installer packaging job invalidates the packaging domain. A failed
+real-GPU canary invalidates the GPU domain. A stale GPU canary calls for a quick
+smoke, not automatically for the full historical matrix.
 
 ## Fast Path: Iterative Alpha
 
@@ -213,17 +213,6 @@ the automated frozen-payload, embedded-wheel, version, signature-state, and
 hash checks; carry forward lifecycle evidence. Do not repeat manual
 install/repair/update/rollback/uninstall testing.
 
-The same rule applies to the optional cuCIM local-build bundle: rebuild and
-verify its exact tag/commit/no-wheel contract when publishing it, but rerun
-scientific GPU admission only when its scientific/runtime inputs changed.
-
-```powershell
-$cucimInstaller = `
-    "$artifactDir/napari-vipp-cucim-installer-$releaseVersion-windows.zip"
-& $builderPython scripts/package_cucim_windows_installer.py `
-    --output $cucimInstaller
-```
-
 When publishing an alpha EXE, build it from the exact wheel above. Choose one
 finalization route—signed or explicitly unsigned—rather than both:
 
@@ -241,8 +230,7 @@ $buildManifest = `
 & $builderPython scripts/package_windows_installer.py finalize-unsigned `
     --unsigned-staging-executable $stagingExe `
     --build-manifest $buildManifest `
-    --output-directory $artifactDir `
-    --cucim-bundle $cucimInstaller
+    --output-directory $artifactDir
 
 # Signed release instead:
 # .\scripts\sign_windows_installer.ps1 -InputPath $stagingExe `
@@ -251,11 +239,8 @@ $buildManifest = `
 #     --signed-staging-executable $stagingExe `
 #     --build-manifest $buildManifest `
 #     --output-directory $artifactDir `
-#     --expected-signer-thumbprint '<approved-thumbprint>' `
-#     --cucim-bundle $cucimInstaller
+#     --expected-signer-thumbprint '<approved-thumbprint>'
 ```
-
-Omit `--cucim-bundle` when that optional asset is not shipped.
 
 Detailed Windows build and signing commands live in
 [`packaging/windows/README.md`](../packaging/windows/README.md). Full installer
@@ -272,10 +257,7 @@ and are conditional, not alpha defaults.
 4. Verify the PyPI version and hashes.
 5. Deploy the companion numbered manual once with `make_stable=true` when that
    alpha should be the default manual.
-6. If a cuCIM bundle was published, update the scheduled hosted bundle canary
-   to the new tag. Its next run verifies bundle reproducibility; a manual
-   dispatch is needed only when the bundle or packaging logic changed.
-7. Verify GitHub, PyPI, numbered/stable docs, and repository cleanliness.
+6. Verify GitHub, PyPI, numbered/stable docs, and repository cleanliness.
 
 napari hub indexing is asynchronous and non-blocking once PyPI metadata and the
 napari manifest are correct. Record it as pending propagation rather than
@@ -333,11 +315,9 @@ domain it invalidates.
 - [ ] Final `main` CI passes and its commit is recorded.
 - [ ] Tag resolves to that exact commit.
 - [ ] Wheel/source archive metadata and hashes pass.
-- [ ] Optional EXE/cuCIM assets pass their exact-artifact integrity checks.
+- [ ] An optional EXE passes its exact-artifact integrity checks.
 - [ ] GitHub prerelease and PyPI bytes match.
 - [ ] Numbered documentation resolves; `stable` is moved if intended.
-- [ ] Scheduled hosted bundle canary points to the release when applicable;
-      an immediate run is required only for bundle/packaging changes.
 - [ ] napari hub is either updated or truthfully recorded as asynchronously pending.
 
 Anything beyond this list must be justified by the release tier or a declared
@@ -346,9 +326,9 @@ changed domain.
 ## Automation Follow-Up
 
 The next release-infrastructure slice should make this fast path one manual
-workflow with inputs for the tag, tier, optional EXE, and optional cuCIM bundle.
+workflow with inputs for the tag, tier, and optional EXE.
 It should build once, publish the same bytes to GitHub/PyPI, deploy docs once,
-and update the scheduled canary. A path-based report can pre-fill the domain
+and report the exact artifacts. A path-based report can pre-fill the domain
 declaration, but a maintainer still confirms it.
 
 Current-version documentation should also move to one shared data value so a

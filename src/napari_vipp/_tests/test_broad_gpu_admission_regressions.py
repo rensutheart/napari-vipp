@@ -10,10 +10,7 @@ from napari_vipp.core.compute import (
 )
 from napari_vipp.core.compute_planning import plan_compute_decisions
 from napari_vipp.core.compute_policy import (
-    PHASE1_CUCIM_BUILD_RECIPE_ID,
-    PHASE1_CUCIM_SOURCE_COMMIT,
-    PHASE1_CUCIM_SOURCE_TAG,
-    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
+    evaluate_candidate_environment_support,
     evaluate_candidate_support,
 )
 from napari_vipp.core.compute_specs import compute_specs_for
@@ -100,52 +97,20 @@ def test_rtx4050_admission_rejects_mismatched_cupy_provenance(runtime_versions):
     assert "14.1.1 provenance" in decision.reason_text
 
 
-def test_rtx4050_admission_rejects_bad_cucim_build_provenance():
-    bad_payload_digest = (
-        "0" * 64 if PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256 != "0" * 64 else "1" * 64
-    )
-    metadata = (
-        ("environment_record_schema", "napari-vipp-gpu-environment"),
-        ("environment_record_schema_version", "2"),
-        ("environment_track", "cuda13"),
-        ("cupy_distribution", "cupy-cuda13x"),
-        ("cucim_distribution", "cucim-cu13"),
-        ("cucim_distribution_version", "26.6.0"),
-        ("cucim_artifact_sha256", "a" * 64),
-        ("cucim_wheel_payload_sha256", bad_payload_digest),
-        ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
-        ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
-        ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
-    )
-    environment = _rtx4050_environment(
-        implementation_libraries=("cpu", "cucim"),
-        runtime_versions=(("cuda-cupy", "14.1.1"), ("cucim", "26.6.0")),
-        implementation_library_metadata=(("cucim", metadata),),
-    )
-    spec = compute_specs_for(
-        "measure_objects",
-        include_cpu=False,
-        allow_experimental=True,
-    )[0]
-    workload = WorkloadDescriptor(
-        node_id="measurements",
-        operation_id="measure_objects",
-        input_shapes=((31, 37),),
-        input_dtypes=("int32",),
-        resolved_spatial_ndim=2,
-    )
+def test_rtx4050_admits_cupy_measurements_without_cucim_provenance():
+    spec = compute_specs_for("measure_objects", include_cpu=False)[0]
 
-    decision = evaluate_candidate_support(
+    decision = evaluate_candidate_environment_support(
         spec,
-        workload,
-        environment,
-        allow_experimental=True,
+        _rtx4050_environment(),
+        allow_experimental=False,
     )
 
-    assert not decision.supported
-    assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
-    assert "cucim_wheel_payload_sha256" in decision.reason_text
-    assert "provenance" in decision.reason_text.lower()
+    assert decision.supported
+    assert spec.implementation_library_id == "cupy"
+    assert spec.validated_environment_policy_id == (
+        "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+    )
 
 
 @pytest.mark.parametrize(

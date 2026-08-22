@@ -4,8 +4,8 @@ Last reviewed: 2026-08-14
 
 Use this page for a tagged VIPP installer on a fresh Windows account. It is a
 short evidence record, not an installation guide. The ordinary installation
-steps remain in the [quick start](quick-start.md), and CUDA/cuCIM details remain
-in the [GPU guide](gpu-guide.md).
+steps remain in the [quick start](quick-start.md), and CUDA details remain in
+the [GPU guide](gpu-guide.md).
 
 Do not publish names, usernames, local paths, support reports, or screenshots
 without reviewing them for private information.
@@ -80,8 +80,7 @@ Complete this on a machine that satisfies the published CUDA requirements.
       separate non-mutating operation and never suggested moving, editing, or
       converting that environment into a managed installation.
 - [ ] Installation completed and the Automatic, CPU, and Prefer-GPU shortcuts opened.
-- [ ] Compute Doctor separately reported **CUDA and GPU**, **Optional cuCIM**, and
-      **VIPP GPU coverage**.
+- [ ] Compute Doctor separately reported **CUDA and GPU** and **VIPP GPU coverage**.
 - [ ] A reviewed GPU operation actually ran on the GPU; its execution report records
       the GPU implementation rather than merely detecting CUDA.
 - [ ] A deliberately unsupported or CPU-selected step visibly explained its CPU
@@ -95,13 +94,6 @@ Complete this on a machine that satisfies the published CUDA requirements.
       and did not offer a second or custom managed CUDA copy or describe an
       in-place/fallback migration.
 - [ ] Uninstall removed VIPP-owned shortcuts and files without removing unrelated data.
-
-If optional cuCIM is included in this acceptance run:
-
-- [ ] The official no-wheel ZIP checksum matched before extraction.
-- [ ] `Install VIPP cuCIM.cmd` built cuCIM locally for this exact VIPP environment.
-- [ ] Compute Doctor changed only the optional cuCIM and admitted-coverage results
-      that the add-on genuinely enabled.
 
 Result: pass / fail
 

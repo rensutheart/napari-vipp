@@ -12,14 +12,9 @@ from napari_vipp.core.compute import (
     WorkloadDescriptor,
 )
 from napari_vipp.core.compute_policy import (
-    CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_ENVIRONMENT_POLICIES,
-    PHASE1_CUCIM_BUILD_RECIPE_ID,
-    PHASE1_CUCIM_SOURCE_COMMIT,
-    PHASE1_CUCIM_SOURCE_TAG,
-    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
     ArrayFacts,
     ArrayFactsCache,
     ArrayFactsKey,
@@ -585,220 +580,27 @@ def test_every_public_phase1_gpu_spec_uses_the_shared_cpu_stack_gate():
         assert "numpy 2.5.0 (validated 2.5.1)" in decision.reason_text.lower()
 
 
-def _cucim_environment(**updates):
-    values = {
-        "implementation_libraries": ("cpu", "cucim"),
-        "runtime_versions": (
-            ("cuda-cupy", "14.1.1"),
-            ("cucim", "26.6.0"),
-        ),
-        "implementation_library_metadata": (
-            (
-                "cucim",
-                (
-                    (
-                        "environment_record_schema",
-                        "napari-vipp-gpu-environment",
-                    ),
-                    ("environment_record_schema_version", "2"),
-                    ("environment_track", "cuda13"),
-                    ("cupy_distribution", "cupy-cuda13x"),
-                    ("cucim_distribution", "cucim-cu13"),
-                    ("cucim_distribution_version", "26.6.0"),
-                    (
-                        "cucim_artifact_sha256",
-                        "a" * 64,
-                    ),
-                    (
-                        "cucim_wheel_payload_sha256",
-                        PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
-                    ),
-                    ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
-                    ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
-                    ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
-                ),
-            ),
-        ),
-    }
-    values.update(updates)
-    return _cuda_environment(**values)
-
-
-def _cucim_environment_with_metadata(**updates):
-    metadata = dict(dict(_cucim_environment().implementation_library_metadata)["cucim"])
-    metadata.update(updates)
-    return _cucim_environment(
-        implementation_library_metadata=(("cucim", tuple(metadata.items())),)
-    )
-
-
-def _synthetic_cucim_spec():
-    return replace(
-        _gpu_spec(),
-        implementation_id="synthetic-cucim-provider-probe-v1",
-        implementation_library_id="cucim",
-        validated_environment_policy_id=(CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID),
-    )
-
-
-def test_compatible_device_admission_preserves_cupy_and_cucim_provenance():
-    compatible_updates = {
-        "device_name": "NVIDIA GeForce RTX 4050 Laptop GPU",
-        "device_metadata": (("compute_capability", "8.9"),),
-    }
+def test_exact_environment_policies_reject_runtime_library_relabeling():
     raw_spec = compute_specs_for(
         "sigma_filter",
         include_cpu=False,
         allow_experimental=True,
     )[0]
-    raw_workload = WorkloadDescriptor(
-        node_id="sigma",
-        operation_id="sigma_filter",
-        input_shapes=((31, 37),),
-        input_dtypes=("uint16",),
-        parameters=(
-            ("minimum_pixel_fraction", 0.2),
-            ("outlier_aware", True),
-            ("radius", 2.0),
-            ("sigma_width", 2.0),
-        ),
-        resolved_spatial_ndim=2,
-    )
-    raw_environment = _cuda_environment(
-        **compatible_updates,
-        implementation_libraries=("cpu", "cupy"),
-        runtime_versions=(("cuda-cupy", "14.1.1"), ("cupy", "14.1.1")),
-    )
-    cucim_environment = _cucim_environment(**compatible_updates)
-
-    decisions = (
-        evaluate_candidate_support(
-            raw_spec,
-            raw_workload,
-            raw_environment,
-            allow_experimental=True,
-        ),
-        evaluate_candidate_support(
-            _synthetic_cucim_spec(),
-            _workload(),
-            cucim_environment,
-            allow_experimental=True,
-        ),
-    )
-
-    assert all(decision.supported for decision in decisions)
-
-
-@pytest.mark.parametrize("version", ("26.6.0", "26.06.00"))
-@pytest.mark.parametrize("artifact_sha256", ("a" * 64, "b" * 64))
-def test_cucim_environment_policy_accepts_local_artifacts_with_pinned_payload(
-    version,
-    artifact_sha256,
-):
-    metadata = dict(dict(_cucim_environment().implementation_library_metadata)["cucim"])
-    metadata["cucim_distribution_version"] = version
-    metadata["cucim_artifact_sha256"] = artifact_sha256
-    environment = _cucim_environment(
-        runtime_versions=(("cuda-cupy", "14.1.1"), ("cucim", version)),
-        implementation_library_metadata=(("cucim", tuple(metadata.items())),),
-    )
-
-    decision = evaluate_candidate_support(
-        _synthetic_cucim_spec(),
-        _workload(),
-        environment,
-        allow_experimental=True,
-    )
-
-    assert decision.supported
-
-
-@pytest.mark.parametrize(
-    "environment",
-    [
-        _cucim_environment(
-            runtime_versions=(("cuda-cupy", "14.1.1"), ("cucim", "0.0.0"))
-        ),
-        _cucim_environment(implementation_library_metadata=()),
-        _cucim_environment(
-            implementation_library_metadata=(
-                (
-                    "cucim",
-                    (
-                        ("environment_record_schema", "napari-vipp-gpu-environment"),
-                        ("environment_record_schema_version", "2"),
-                        ("environment_track", "cuda13"),
-                        ("cupy_distribution", "cupy-cuda13x"),
-                        ("cucim_distribution", "cucim-cu13"),
-                        ("cucim_distribution_version", "26.6.0"),
-                        ("cucim_artifact_sha256", "not-a-sha256"),
-                        (
-                            "cucim_wheel_payload_sha256",
-                            PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
-                        ),
-                        ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
-                        ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
-                        ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
-                    ),
-                ),
-            )
-        ),
-        _cucim_environment(os_name="Linux"),
-        _cucim_environment(os_name="Darwin"),
-        _cucim_environment_with_metadata(cucim_wheel_payload_sha256="f" * 64),
-        _cucim_environment_with_metadata(cucim_source_tag="v0.0.0"),
-        _cucim_environment_with_metadata(cucim_source_commit="f" * 40),
-        _cucim_environment_with_metadata(cucim_build_recipe_id="other-recipe-v1"),
-    ],
-    ids=(
-        "version",
-        "missing-metadata",
-        "artifact-digest",
-        "linux",
-        "darwin",
-        "payload-digest",
-        "source-tag",
-        "source-commit",
-        "build-recipe",
-    ),
-)
-def test_cucim_environment_policy_rejects_unapproved_provenance(environment):
-    decision = evaluate_candidate_support(
-        _synthetic_cucim_spec(),
-        _workload(),
-        environment,
-        allow_experimental=True,
-    )
-
-    assert not decision.supported
-    assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
-
-
-def test_exact_environment_policies_reject_runtime_library_relabeling():
-    relabeled_cucim = replace(
-        _synthetic_cucim_spec(),
+    relabeled_cupy = replace(
+        raw_spec,
         validated_environment_policy_id=CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
     )
     relabeled_cupyx = replace(
         _gpu_spec(),
-        validated_environment_policy_id=(CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID),
+        validated_environment_policy_id=(
+            CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID
+        ),
     )
 
-    for spec, workload, environment in (
-        (
-            relabeled_cucim,
-            _workload(),
-            _cucim_environment(
-                runtime_versions=(("cuda-cupy", "14.1.1"),),
-                implementation_library_metadata=(),
-            ),
-        ),
-        (relabeled_cupyx, _workload(), _cuda_environment()),
-    ):
-        decision = evaluate_candidate_support(
+    for spec in (relabeled_cupy, relabeled_cupyx):
+        decision = evaluate_candidate_environment_support(
             spec,
-            workload,
-            environment,
+            _cuda_environment(),
             allow_experimental=True,
         )
 

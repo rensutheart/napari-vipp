@@ -81,7 +81,7 @@ creates an additional legitimate materialization boundary.
 
 On native Windows, Auto, Prefer GPU, and Custom use the same CUDA-device
 admission rule: the exact pinned Python, scientific-stack, CUDA runtime,
-CuPy/provider, and cuCIM provenance gates must pass; the matching numeric driver
+and CuPy/provider gates must pass; the matching numeric driver
 API must be at least `13030`; and the selected NVIDIA CUDA device must report a
 numeric compute capability of at least 7.5. The GPU model itself is recorded as
 provenance rather than used as an exact-model allowlist. Auto and Prefer GPU do
@@ -96,7 +96,7 @@ retryable device OOM still follows the visible one-retry rule described below.
 
 CPU-only installations remain first-class. Importing VIPP, loading workflows,
 importing a generated program, planning a CPU batch, and completely skipping a
-batch item do not import or initialize CuPy or cuCIM. `Auto` and `Prefer GPU`
+batch item do not import or initialize CuPy. `Auto` and `Prefer GPU`
 use CPU normally when no admitted accelerator is available. A Custom request
 follows its saved `visible` or `strict` policy rather than producing an
 optional-package import traceback.
@@ -401,7 +401,7 @@ are finalized on the normal cooperative-cancellation path, and the CLI exits
   driver/JIT combinations while remaining inside their declared parity
   tolerances; integer operations with a bitwise parity contract remain exact.
   Publications should report the VIPP version, GPU model, compute capability,
-  driver API, CUDA runtime, CuPy/cuCIM and CPU scientific-stack versions,
+  driver API, CUDA runtime, CuPy and CPU scientific-stack versions,
   workflow parameters, and actual per-node implementations from the execution
   provenance.
 - `Prefer GPU` is an accelerator-placement preference, not a performance
@@ -422,9 +422,9 @@ are finalized on the normal cooperative-cancellation path, and the CLI exits
   supply any source identity they want recorded. The saved batch runner remains
   the durable surface for multi-source capture, a final source recheck before
   publication, collision planning, checkpoints, manifests, and replay.
-- Native Linux, broader multi-device performance characterization, Apple M1 Max
-  provider feasibility, and feature-complete cuCIM/Clara packaging remain
-  release work. Qualifying native-Windows NVIDIA CUDA devices are available to
+- Native Linux, broader multi-device performance characterization, and Apple
+  M1 Max provider feasibility remain release work. Qualifying native-Windows
+  NVIDIA CUDA devices are available to
   Auto, Prefer GPU, and Custom; CPU execution remains the portable
   Windows/macOS/Linux path.
 

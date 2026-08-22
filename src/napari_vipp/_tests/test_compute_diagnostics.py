@@ -31,12 +31,6 @@ from napari_vipp.core.compute_diagnostics import (
     main,
     write_compute_support_bundle,
 )
-from napari_vipp.core.compute_policy import (
-    PHASE1_CUCIM_BUILD_RECIPE_ID,
-    PHASE1_CUCIM_SOURCE_COMMIT,
-    PHASE1_CUCIM_SOURCE_TAG,
-    PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
-)
 from napari_vipp.core.compute_registry import (
     ImplementationLibraryProbeResult,
     RuntimeDevice,
@@ -131,8 +125,8 @@ def _doctor(runtime, **kwargs):
     )
 
 
-def _library_probes(*, cucim: bool = False, cupyx: bool = True):
-    probes = [
+def _library_probes(*, cupyx: bool = True):
+    return (
         ImplementationLibraryProbeResult("cupy", True, version="14.1.1"),
         ImplementationLibraryProbeResult(
             "cupyx",
@@ -141,41 +135,7 @@ def _library_probes(*, cucim: bool = False, cupyx: bool = True):
             reason_code="" if cupyx else "cupyx_broken",
             message="ready" if cupyx else "CuPyX could not run its primitives.",
         ),
-    ]
-    if cucim:
-        probes.append(
-            ImplementationLibraryProbeResult(
-                "cucim",
-                True,
-                version="26.6.0",
-                metadata=(
-                    ("environment_record_schema", "napari-vipp-gpu-environment"),
-                    ("environment_record_schema_version", "2"),
-                    ("environment_track", "cuda13"),
-                    ("cupy_distribution", "cupy-cuda13x"),
-                    ("cucim_distribution", "cucim-cu13"),
-                    ("cucim_distribution_version", "26.6.0"),
-                    (
-                        "cucim_wheel_payload_sha256",
-                        PHASE1_CUCIM_WHEEL_PAYLOAD_SHA256,
-                    ),
-                    ("cucim_artifact_sha256", "a" * 64),
-                    ("cucim_source_tag", PHASE1_CUCIM_SOURCE_TAG),
-                    ("cucim_source_commit", PHASE1_CUCIM_SOURCE_COMMIT),
-                    ("cucim_build_recipe_id", PHASE1_CUCIM_BUILD_RECIPE_ID),
-                ),
-            )
-        )
-    else:
-        probes.append(
-            ImplementationLibraryProbeResult(
-                "cucim",
-                False,
-                reason_code="cucim_not_installed",
-                message="The optional cuCIM add-on is not installed.",
-            )
-        )
-    return tuple(probes)
+    )
 
 
 def test_available_report_includes_probe_memory_and_is_json_safe():
@@ -194,8 +154,7 @@ def test_available_report_includes_probe_memory_and_is_json_safe():
     assert not runtime.closed  # injected runtimes remain caller-owned
     assert len(report.admission_regions) == len(accelerator_compute_specs())
     assert len(report.admitted_regions) == _public_region_count("cupy", "cupyx")
-    assert report.guidance is not None
-    assert report.guidance.optional
+    assert report.guidance is None
 
 
 def test_mixed_cupy_distributions_refuse_to_import_or_probe():
@@ -372,18 +331,10 @@ def test_cli_converts_unexpected_diagnostic_failure_to_json(monkeypatch, capsys)
     assert payload["details"][0].startswith("ModuleNotFoundError")
 
 
-def test_live_catalog_reports_three_distinct_layers_and_every_public_region():
+def test_live_catalog_reports_standard_libraries_and_every_public_region():
     runtime = _FakeRuntime()
 
     standard = _doctor(runtime, library_probes=_library_probes())
-    complete = _doctor(
-        runtime,
-        library_probes=_library_probes(cucim=True),
-        packages=(
-            PackageRecord("cupy-cuda13x", "14.1.1"),
-            PackageRecord("cucim-cu13", "26.6.0"),
-        ),
-    )
 
     live_ids = {
         spec.implementation_id
@@ -408,22 +359,20 @@ def test_live_catalog_reports_three_distinct_layers_and_every_public_region():
         "cupyx-connected-components-v1",
         "cupyx-remove-small-objects-bool-v1",
         "cupyx-fill-holes-all-v1",
-        "cucim-measure-objects-basic-v1",
-        "cucim-measure-objects-intensity-basic-v1",
+        "cupy-measure-objects-basic-v1",
+        "cupy-measure-objects-intensity-basic-v1",
     }
     assert standard.cuda_ready
     assert {probe.library_id for probe in standard.library_probes} == {
         "cupy",
         "cupyx",
-        "cucim",
     }
     assert {region.implementation_id for region in standard.admission_regions} == (
         live_ids
     )
     assert standard.status is DoctorStatus.AVAILABLE
-    assert len(standard.admitted_regions) == _public_region_count("cupy", "cupyx")
-    assert len(complete.admitted_regions) == len(accelerator_compute_specs())
-    assert complete.guidance is None
+    assert len(standard.admitted_regions) == len(accelerator_compute_specs())
+    assert standard.guidance is None
 
 
 def test_cuda_can_start_while_library_and_public_admission_remain_degraded():
@@ -441,24 +390,18 @@ def test_cuda_can_start_while_library_and_public_admission_remain_degraded():
         for region in report.admission_regions
         if not region.admitted
     }
-    assert failed == {"cupyx", "cucim"}
+    assert failed == {"cupyx"}
 
 
 def test_empty_standard_region_catalog_never_reports_available():
-    cucim_only = tuple(
-        spec
-        for spec in accelerator_compute_specs()
-        if spec.implementation_library_id == "cucim"
-    )
-
     report = _doctor(
         _FakeRuntime(),
-        library_probes=_library_probes(cucim=True),
-        implementation_specs=cucim_only,
+        library_probes=_library_probes(),
+        implementation_specs=(),
     )
 
     assert report.cuda_ready
-    assert len(report.admitted_regions) == 2
+    assert report.admitted_regions == ()
     assert report.status is DoctorStatus.DEGRADED
 
 
@@ -486,7 +429,7 @@ def test_runtime_ready_never_overrides_missing_public_evidence(missing_evidence)
 
     report = _doctor(
         runtime,
-        library_probes=_library_probes(cucim=True),
+        library_probes=_library_probes(),
         **kwargs,
     )
 
@@ -499,7 +442,7 @@ def test_cuda_starts_on_linux_but_current_public_admission_stays_closed():
     report = collect_compute_diagnostics(
         runtime=_FakeRuntime(),
         packages=(PackageRecord("cupy-cuda13x", "14.1.1"),),
-        library_probes=_library_probes(cucim=True),
+        library_probes=_library_probes(),
         platform_name="linux",
         python_implementation="CPython",
         python_version=(3, 12),
@@ -532,7 +475,7 @@ def test_all_provider_noise_is_contained_so_json_output_stays_valid(
     class NoisyRegistry:
         library_descriptors = tuple(
             SimpleNamespace(library_id=value)
-            for value in ("cupy", "cupyx", "cucim")
+            for value in ("cupy", "cupyx")
         )
 
         def probe_runtime(self, _runtime_id, *, refresh=False):
@@ -703,13 +646,7 @@ def test_support_bundle_is_strictly_allowlisted_and_redacts_private_data():
         "public_input_dtypes",
         "limitations",
     }
-    assert set(diagnostic["guidance"]) == {
-        "action_id",
-        "title",
-        "summary",
-        "documentation_url",
-        "optional",
-    }
+    assert diagnostic["guidance"] is None
     assert set(diagnostic["packages"][0]) == {"name", "version"}
     recent_payload = bundle["recent_execution"]
     assert set(recent_payload) == {
