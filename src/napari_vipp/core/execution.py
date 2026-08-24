@@ -132,28 +132,126 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "fill_holes",
         "remove_binary_outliers",
         "remove_small_objects",
+        "rescale_axes",
+        "gamma_correction",
+        "batch_output",
+        "save_output",
+        "assign_channel_colors",
+        "set_microscope_metadata",
+        "set_pixel_size",
+        "reorder_axes",
+        "crop_stack",
         "label_connected_components",
         "prepare_validate_psf",
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",
     }
 )
-_EXACT_HOST_AXIS_CONTRACT_OPERATIONS = frozenset(
+_EXACT_HOST_SHAPE_DTYPE_POLICIES = MappingProxyType(
     {
-        "split_channels",
+        # Shape preserving and exact concrete dtype, including byte order.
+        "assign_channel_colors": "same",
+        "bilateral_filter": "same",
+        "clear_border_objects": "same",
+        "clip_intensity": "same",
+        "expand_labels": "same",
+        "filter_labels_by_volume": "same",
+        "gamma_correction": "same",
+        "linear_scale_offset": "same",
+        "non_local_means_filter": "same",
+        "relabel_sequential": "same",
+        "rescale_intensity": "same",
+        "save_output": "same",
+        "set_microscope_metadata": "same",
+        "set_pixel_size": "same",
+        "sobel_filter": "same",
+        "unsharp_mask": "same",
+        # Shape preserving with an operation-defined output dtype.
+        "adaptive_gaussian_threshold": "fixed:bool",
+        "adaptive_mean_threshold": "fixed:bool",
+        "auto_watershed_from_mask": "fixed:int32",
+        "black_hat": "fixed:bool",
+        "closing": "fixed:bool",
+        "dilate": "fixed:bool",
+        "erode": "fixed:bool",
+        "euclidean_distance_transform": "fixed:float32",
+        "h_maxima_markers": "fixed:int32",
+        "hysteresis_threshold": "fixed:bool",
+        "imagej_auto_threshold": "fixed:bool",
+        "isodata_threshold": "fixed:bool",
+        "label_skeleton_branches": "fixed:int32",
+        "label_skeleton_components": "fixed:int32",
+        "li_threshold": "fixed:bool",
+        "minimum_threshold": "fixed:bool",
+        "morphological_gradient": "fixed:bool",
+        "niblack_threshold": "fixed:bool",
+        "opening": "fixed:bool",
+        "prune_skeleton_branches": "fixed:bool",
+        "remove_binary_outliers": "fixed:bool",
+        "sauvola_threshold": "fixed:bool",
+        "skeletonize": "fixed:bool",
+        "top_hat": "fixed:bool",
+        "triangle_threshold": "fixed:bool",
+        "yen_threshold": "fixed:bool",
+        # These policies encode the few deterministic dtype branches that are
+        # not expressible as a fixed dtype or exact input dtype.
+        "average_blur": "average-blur",
+        "difference_of_gaussians": "native-float-else-float32",
+        "invert": "invert",
+        "laplace_filter": "float-same-else-float32",
+        "normalize_image": "float-same-else-float32",
     }
 )
-_EXACT_HOST_SHAPE_DTYPE_OPERATIONS = frozenset(
+_EXACT_HOST_IDENTITY_OPERATIONS = frozenset({"batch_output"})
+_EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES = MappingProxyType(
     {
-        "rescale_intensity",
-        "unsharp_mask",
+        "add_images": "fixed:float32",
+        "calculate_weighted_image": "fixed:float32",
+        "colocalization_scatter_plot": "fixed:float32",
+        "colocalized_voxels": "fixed:float32",
+        "filter_labels_by_property": "same",
+        "logical_and": "fixed:bool",
+        "logical_or": "fixed:bool",
+        "logical_xor": "fixed:bool",
+        "marker_controlled_watershed": "fixed:int32",
+        "mask_image": "same",
+        "masked_colocalization_scatter_plot": "fixed:float32",
+        "masked_colocalized_voxels": "fixed:float32",
+        "masked_racc_index": "parameter:output_dtype",
+        "racc_index": "parameter:output_dtype",
+        "ratio_image": "fixed:float32",
+        "subtract_images": "fixed:float32",
     }
 )
-_EXACT_HOST_BOOL_SHAPE_OPERATIONS = frozenset(
+_EXACT_HOST_MATCHING_INPUT_SHAPE_OPERATIONS = frozenset(
     {
-        "remove_binary_outliers",
+        "add_images",
+        "calculate_weighted_image",
+        "colocalization_scatter_plot",
+        "colocalized_voxels",
+        "logical_and",
+        "logical_or",
+        "logical_xor",
+        "marker_controlled_watershed",
+        "masked_colocalization_scatter_plot",
+        "masked_colocalized_voxels",
+        "masked_racc_index",
+        "racc_index",
+        "ratio_image",
+        "subtract_images",
     }
 )
+_EXACT_HOST_BOOLEAN_FACT_OPERATIONS = frozenset(
+    operation_id
+    for operation_id, policy_id in _EXACT_HOST_SHAPE_DTYPE_POLICIES.items()
+    if policy_id == "fixed:bool"
+)
+_EXACT_HOST_LABEL_FACT_OPERATIONS = frozenset(
+    operation_id
+    for operation_id, policy_id in _EXACT_HOST_SHAPE_DTYPE_POLICIES.items()
+    if policy_id == "fixed:int32"
+)
+_EXACT_HOST_FINITE_FLOAT_FACT_OPERATIONS = frozenset({"euclidean_distance_transform"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -3002,14 +3100,11 @@ def _project_host_planning_outputs(
     if planning_call is None:
         return None
 
-    contract_results = None
-    if operation_id in _EXACT_HOST_AXIS_CONTRACT_OPERATIONS:
-        try:
-            contract_results = pipeline._axis_contract_transform_results(planning_call)
-        except (TypeError, ValueError):
-            return None
-        if contract_results is None:
-            return None
+    try:
+        contract_results = pipeline._axis_contract_transform_results(planning_call)
+    except (TypeError, ValueError):
+        return None
+    if contract_results is not None:
         if len(contract_results) != planning_call.output_port_count:
             return None
         projected: list[tuple[_ArrayDescription, object | None]] = []
@@ -3034,35 +3129,52 @@ def _project_host_planning_outputs(
             projected.append((_ArrayDescription(shape, dtype), state))
         return tuple(projected)
 
-    if (
-        planning_call.multiple_inputs
-        or planning_call.output_port_count != 1
-        or len(input_shapes) != 1
-        or len(input_dtypes) != 1
-    ):
+    if planning_call.output_port_count != 1:
+        return None
+
+    if planning_call.multiple_inputs:
+        return _project_exact_host_multi_input(
+            pipeline,
+            operation_id,
+            planning_call,
+            input_shapes,
+            input_dtypes,
+        )
+
+    if len(input_shapes) != 1 or len(input_dtypes) != 1:
         return None
 
     input_shape = tuple(input_shapes[0])
     if not input_shape:
         return None
-    if operation_id in _EXACT_HOST_SHAPE_DTYPE_OPERATIONS:
-        output_dtype = np.dtype(input_dtypes[0])
+    if operation_id in _EXACT_HOST_IDENTITY_OPERATIONS:
+        try:
+            output_dtype = np.dtype(input_dtypes[0])
+        except (TypeError, ValueError):
+            return None
+        input_state = (
+            planning_call.input_states[0] if planning_call.input_states else None
+        )
+        return ((_ArrayDescription(input_shape, output_dtype), input_state),)
+
+    if (dtype_policy := _EXACT_HOST_SHAPE_DTYPE_POLICIES.get(operation_id)) is not None:
+        try:
+            input_dtype = np.dtype(input_dtypes[0])
+        except (TypeError, ValueError):
+            return None
+        output_dtype = _exact_host_output_dtype(dtype_policy, input_dtype)
+        if output_dtype is None:
+            return None
         description = _ArrayDescription(input_shape, output_dtype)
         projected_state = None
         if planning_call.input_states and planning_call.input_states[0] is not None:
-            (projected_state,) = pipeline.predict_shape_preserving_node_states(
-                planning_call,
-                output_dtype_policy_ids=("dtype-same-v1",),
-            )
-        return ((description, projected_state),)
-    if operation_id in _EXACT_HOST_BOOL_SHAPE_OPERATIONS:
-        description = _ArrayDescription(input_shape, np.dtype(bool))
-        projected_state = None
-        if planning_call.input_states and planning_call.input_states[0] is not None:
-            (projected_state,) = pipeline.predict_shape_preserving_node_states(
-                planning_call,
-                output_dtype_policy_ids=("fixed:bool",),
-            )
+            try:
+                (projected_state,) = pipeline.predict_shape_preserving_node_states(
+                    planning_call,
+                    output_dtype_policy_ids=(f"fixed:{output_dtype.str}",),
+                )
+            except (TypeError, ValueError):
+                return None
         return ((description, projected_state),)
     if operation_id == "prepare_validate_psf":
         if bool(planning_call.kwargs.get("crop_empty_border", False)):
@@ -3162,6 +3274,124 @@ def _project_host_planning_outputs(
                 ),
                 value_pattern="",
             )
+    return ((description, projected_state),)
+
+
+def _exact_host_output_dtype(
+    policy_id: str,
+    input_dtype: np.dtype,
+) -> np.dtype | None:
+    """Resolve one reviewed host dtype theorem without inspecting pixels."""
+
+    policy = str(policy_id).strip()
+    if policy == "same":
+        return input_dtype
+    if policy.startswith("fixed:"):
+        try:
+            return np.dtype(policy.partition(":")[2])
+        except (TypeError, ValueError):
+            return None
+    if policy == "average-blur":
+        if input_dtype == np.dtype(bool):
+            return np.dtype(np.float32)
+        return np.dtype(input_dtype.name)
+    if policy == "native-float-else-float32":
+        if np.issubdtype(input_dtype, np.floating):
+            return np.dtype(input_dtype.name)
+        return np.dtype(np.float32)
+    if policy == "float-same-else-float32":
+        if np.issubdtype(input_dtype, np.floating):
+            return input_dtype
+        return np.dtype(np.float32)
+    if policy == "invert":
+        # NumPy arithmetic normalizes non-native byte order when at least one
+        # finite value exists, while Invert's all-nonfinite fast path returns an
+        # exact copy. Without pixels there is no single truthful dtype.
+        if input_dtype.isnative or input_dtype == np.dtype(bool):
+            return input_dtype
+        return None
+    raise ValueError(f"Unknown exact host dtype policy {policy_id!r}.")
+
+
+def _project_exact_host_multi_input(
+    pipeline: PrototypePipeline,
+    operation_id: str,
+    planning_call: PreparedNodeCall,
+    input_shapes: Sequence[tuple[int, ...]],
+    input_dtypes: Sequence[str],
+) -> tuple[tuple[_ArrayDescription, object | None], ...] | None:
+    """Project reviewed deterministic multi-input image outputs."""
+
+    dtype_policy = _EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES.get(operation_id)
+    if dtype_policy is None or not input_shapes or not input_dtypes:
+        return None
+    first_shape = tuple(input_shapes[0])
+    if not first_shape:
+        return None
+
+    active_count = len(input_shapes)
+    if "input_count" in planning_call.kwargs:
+        raw_count = planning_call.kwargs.get("input_count")
+        if isinstance(raw_count, (bool, np.bool_)) or not isinstance(
+            raw_count,
+            Integral,
+        ):
+            return None
+        active_count = int(raw_count)
+        if active_count < 1 or active_count > len(input_shapes):
+            return None
+    active_shapes = tuple(tuple(shape) for shape in input_shapes[:active_count])
+    if operation_id in _EXACT_HOST_MATCHING_INPUT_SHAPE_OPERATIONS and any(
+        shape != first_shape for shape in active_shapes[1:]
+    ):
+        return None
+
+    output_shape = first_shape
+    if operation_id in {
+        "colocalization_scatter_plot",
+        "masked_colocalization_scatter_plot",
+    }:
+        try:
+            output_size = int(planning_call.kwargs.get("output_size", 512))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not 64 <= output_size <= 4_096:
+            return None
+        output_shape = (output_size, output_size, 3)
+    elif operation_id in {
+        "colocalized_voxels",
+        "masked_colocalized_voxels",
+    }:
+        if len(first_shape) < 2:
+            return None
+        output_shape = first_shape + (3,)
+
+    try:
+        input_dtype = np.dtype(input_dtypes[0])
+    except (TypeError, ValueError):
+        return None
+    if dtype_policy == "parameter:output_dtype":
+        parameter_dtype = (
+            str(planning_call.kwargs.get("output_dtype", "float32")).strip().casefold()
+        )
+        if parameter_dtype not in {"float32", "uint8"}:
+            return None
+        output_dtype = np.dtype(parameter_dtype)
+    else:
+        output_dtype = _exact_host_output_dtype(dtype_policy, input_dtype)
+    if output_dtype is None:
+        return None
+    description = _ArrayDescription(output_shape, output_dtype)
+    projected_state = None
+    if planning_call.input_states and planning_call.input_states[0] is not None:
+        try:
+            projected_state = pipeline._predict_exact_multi_input_image_state(
+                planning_call,
+                output_shape=output_shape,
+                output_dtype=output_dtype,
+            )
+        except (TypeError, ValueError):
+            return None
     return ((description, projected_state),)
 
 
@@ -4070,7 +4300,12 @@ def _propagate_shape_preserving_facts(
     output_shape: tuple[int, ...] | None = None,
     output_dtype: str | None = None,
 ) -> ArrayFacts | None:
-    if operation_id not in _PHASE_ONE_FACT_OPERATIONS:
+    if operation_id not in (
+        _PHASE_ONE_FACT_OPERATIONS
+        | _EXACT_HOST_BOOLEAN_FACT_OPERATIONS
+        | _EXACT_HOST_LABEL_FACT_OPERATIONS
+        | _EXACT_HOST_FINITE_FLOAT_FACT_OPERATIONS
+    ):
         return None
 
     guarantees = set(facts.guarantees)
@@ -4088,6 +4323,34 @@ def _propagate_shape_preserving_facts(
     dtype_proves_finite = resolved_dtype is not None and (
         resolved_dtype == np.dtype(bool) or np.issubdtype(resolved_dtype, np.integer)
     )
+    if operation_id in {
+        "assign_channel_colors",
+        "batch_output",
+        "reorder_axes",
+        "save_output",
+        "set_microscope_metadata",
+        "set_pixel_size",
+    }:
+        # These operations preserve every value exactly. Reorder Axes changes
+        # layout and Save Output copies to host memory, so storage-layout facts
+        # are intentionally discarded while scientific value facts survive.
+        return ArrayFacts(
+            shape=resolved_shape,
+            dtype=resolved_dtype_name,
+            element_count=output_elements,
+            revision_fingerprint=(
+                f"{facts.revision_fingerprint}>{operation_id}:{output_port.port_index}"
+            ),
+            completeness=facts.completeness,
+            finite_count=facts.finite_count,
+            minimum=facts.minimum,
+            maximum=facts.maximum,
+            label_maximum=facts.label_maximum,
+            label_count=facts.label_count,
+            foreground_density=facts.foreground_density,
+            guarantees=facts.guarantees,
+            scan_seconds=facts.scan_seconds,
+        )
     if operation_id in {"rolling_ball_background", "subtract_background"}:
         float_output_proven_finite = (
             resolved_dtype is not None
@@ -4156,6 +4419,50 @@ def _propagate_shape_preserving_facts(
             guarantees.add("nonnegative")
         else:
             guarantees.discard("nonnegative")
+    elif operation_id == "rescale_axes":
+        # Rescale Axes restores the authored dtype after interpolation. Integer
+        # and boolean outputs therefore remain finite even when the output shape
+        # changes. Float interpolation needs a separate arithmetic bound and is
+        # deliberately left unproven here.
+        guarantees.discard("extrema-conservative-enclosure")
+        if not dtype_proves_finite:
+            return None
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        if resolved_dtype == np.dtype(bool) or (
+            resolved_dtype is not None
+            and np.issubdtype(resolved_dtype, np.unsignedinteger)
+        ):
+            guarantees.update(("nonnegative", "no-negative-zero"))
+        else:
+            guarantees.discard("nonnegative")
+            guarantees.discard("no-negative-zero")
+    elif operation_id == "gamma_correction":
+        # A successful integer/bool Gamma Correction output is restored to an
+        # exact finite dtype and the operation rejects negative input values.
+        # Float arithmetic needs a separate magnitude proof and remains
+        # deliberately unpropagated.
+        guarantees.discard("extrema-conservative-enclosure")
+        guarantees.discard("integer-labels")
+        if not dtype_proves_finite:
+            return None
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.update(("nonnegative", "no-negative-zero"))
+    elif operation_id == "crop_stack":
+        # Cropping selects a strict subset without changing values. Exact source
+        # extrema remain a conservative enclosure even when the cropped result
+        # no longer attains them.
+        if dtype_proves_finite or facts.all_finite is True:
+            finite_count = output_elements
+            completeness = FactCompleteness.COMPLETE
+        else:
+            finite_count = None
+            completeness = FactCompleteness.UNKNOWN
+        if facts.minimum is not None and facts.maximum is not None:
+            minimum = facts.minimum
+            maximum = facts.maximum
+            guarantees.add("extrema-conservative-enclosure")
     elif operation_id == "convert_dtype":
         source_dtype = np.dtype(facts.dtype)
         output_dtype_parameter = (
@@ -4275,6 +4582,20 @@ def _propagate_shape_preserving_facts(
         finite_count = output_elements
         completeness = FactCompleteness.COMPLETE
         guarantees.update(("integer-labels", "nonnegative", "no-negative-zero"))
+    elif operation_id in _EXACT_HOST_BOOLEAN_FACT_OPERATIONS:
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.discard("integer-labels")
+        guarantees.update(("nonnegative", "no-negative-zero"))
+    elif operation_id in _EXACT_HOST_LABEL_FACT_OPERATIONS:
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.update(("integer-labels", "nonnegative", "no-negative-zero"))
+    elif operation_id in _EXACT_HOST_FINITE_FLOAT_FACT_OPERATIONS:
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.discard("integer-labels")
+        guarantees.update(("nonnegative", "no-negative-zero"))
 
     # Exact extrema are generally not propagated because each operation can
     # change them. Sigma Filter is the narrow exception above: its branch

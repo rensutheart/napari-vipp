@@ -54,7 +54,9 @@ from napari_vipp.core.metadata import (
 from napari_vipp.core.operations import canny_edges as cpu_canny_edges
 from napari_vipp.core.operations import otsu_threshold as cpu_otsu_threshold
 from napari_vipp.core.pipeline import (
+    _EXACT_AXIS_CONTRACT_OPERATIONS,
     MANUAL_RUN_SKIP,
+    NODE_LIBRARY,
     PrototypePipeline,
     SourcePayload,
 )
@@ -1582,6 +1584,66 @@ def test_integer_rescale_projects_only_its_dtype_proven_facts():
     assert float_output is None
 
 
+def test_integer_rescale_axes_projects_facts_across_shape_change():
+    integer_source = execution_module._complete_array_facts(
+        np.arange(12, dtype=np.uint16).reshape(3, 4),
+        revision_fingerprint="integer-axis-rescale-source",
+    )
+    float_source = execution_module._complete_array_facts(
+        np.arange(12, dtype=np.float32).reshape(3, 4),
+        revision_fingerprint="float-axis-rescale-source",
+    )
+
+    integer_output = execution_module._propagate_shape_preserving_facts(
+        "rescale_axes",
+        integer_source,
+        {},
+        output_port=OutputPortKey("rescale-axes", 0),
+        output_shape=(6, 8),
+        output_dtype="uint16",
+    )
+    float_output = execution_module._propagate_shape_preserving_facts(
+        "rescale_axes",
+        float_source,
+        {},
+        output_port=OutputPortKey("rescale-axes", 0),
+        output_shape=(6, 8),
+        output_dtype="float32",
+    )
+
+    assert integer_output is not None
+    assert integer_output.shape == (6, 8)
+    assert integer_output.element_count == 48
+    assert integer_output.all_finite is True
+    assert {"nonnegative", "no-negative-zero"} <= set(integer_output.guarantees)
+    assert integer_output.minimum is None
+    assert integer_output.maximum is None
+    assert float_output is None
+
+
+def test_crop_projects_finite_float_facts_to_its_exact_output_shape():
+    source = execution_module._complete_array_facts(
+        np.arange(6 * 8, dtype=np.float32).reshape(6, 8),
+        revision_fingerprint="crop-facts-source",
+    )
+
+    output = execution_module._propagate_shape_preserving_facts(
+        "crop_stack",
+        source,
+        {},
+        output_port=OutputPortKey("crop", 0),
+        output_shape=(4, 5),
+        output_dtype="float32",
+    )
+
+    assert output is not None
+    assert output.shape == (4, 5)
+    assert output.all_finite is True
+    assert output.minimum == source.minimum
+    assert output.maximum == source.maximum
+    assert "extrema-conservative-enclosure" in output.guarantees
+
+
 @pytest.mark.parametrize(
     "operation_id",
     (
@@ -2052,6 +2114,379 @@ def test_split_channels_projection_ignores_none_dtype_attribute():
     assert all(value.dtype == np.dtype(np.uint16) for value in actual)
 
 
+@pytest.mark.parametrize(
+    "dtype",
+    (
+        np.dtype(np.uint16),
+        np.dtype(np.uint16).newbyteorder("S"),
+    ),
+)
+def test_rescale_axes_planning_projects_exact_shape_dtype_and_metadata(dtype):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    rescale = pipeline.add_node("rescale_axes")
+    assert pipeline.connect("input", rescale.id).success
+    pipeline.set_param(rescale.id, "x_scale", 2.0)
+    pipeline.set_param(rescale.id, "y_scale", 0.5)
+    pipeline.set_param(rescale.id, "z_scale", 1.5)
+    pipeline.set_param(rescale.id, "lock_xy", False)
+    pipeline.set_param(rescale.id, "interpolation", "Nearest neighbor")
+
+    data = np.arange(2 * 6 * 5, dtype=np.uint16).reshape(2, 6, 5).astype(dtype)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space", "µm", 1.0),
+            AxisMetadata("y", "space", "µm", 1.0),
+            AxisMetadata("x", "space", "µm", 1.0),
+        ),
+    )
+    assert state is not None
+    call = pipeline.prepare_node_call(rescale.id, (data,), (state,))
+    assert call is not None
+
+    def forbidden_kernel(*_args, **_kwargs):
+        raise AssertionError("Planning must not run the Rescale Axes kernel.")
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "rescale_axes",
+        replace(call, cpu_function=forbidden_kernel),
+        (data.shape,),
+        (data.dtype.str,),
+    )
+
+    assert projected is not None
+    ((description, output_state),) = projected
+    assert description.shape == (3, 3, 10)
+    assert description.dtype == dtype
+    assert output_state is not None
+    assert output_state.shape == description.shape
+    assert output_state.dtype == "uint16"
+    assert tuple(axis.name for axis in output_state.axes) == ("z", "y", "x")
+    assert tuple(axis.scale for axis in output_state.axes) == pytest.approx(
+        (2.0 / 3.0, 2.0, 0.5)
+    )
+
+
+def test_crop_and_reorder_planning_use_exact_axis_contracts_without_kernels():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    reorder = pipeline.add_node("reorder_axes")
+    assert pipeline.connect("input", crop.id).success
+    assert pipeline.connect(crop.id, reorder.id).success
+    pipeline.set_param(crop.id, "top", 1)
+    pipeline.set_param(crop.id, "bottom", 1)
+    pipeline.set_param(crop.id, "left", 2)
+    pipeline.set_param(crop.id, "right", 0)
+    pipeline.set_param(reorder.id, "order", "XZY")
+    dtype = np.dtype(np.uint16).newbyteorder("S")
+    data = np.arange(3 * 6 * 7, dtype=np.uint16).reshape(3, 6, 7).astype(dtype)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    assert state is not None
+
+    def forbidden_kernel(*_args, **_kwargs):
+        raise AssertionError("Planning must not run an axis-transform kernel.")
+
+    crop_call = pipeline.prepare_node_call(crop.id, (data,), (state,))
+    assert crop_call is not None
+    crop_projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "crop_stack",
+        replace(crop_call, cpu_function=forbidden_kernel),
+        (data.shape,),
+        (data.dtype.str,),
+    )
+    assert crop_projected is not None
+    ((crop_description, crop_state),) = crop_projected
+    assert crop_description.shape == (3, 4, 5)
+    assert crop_description.dtype == dtype
+    assert crop_state is not None
+
+    crop_proxy = execution_module._ArrayDescription(
+        crop_description.shape,
+        crop_description.dtype,
+    )
+    reorder_call = pipeline.prepare_node_call(
+        reorder.id,
+        (crop_proxy,),
+        (crop_state,),
+    )
+    assert reorder_call is not None
+    reorder_projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "reorder_axes",
+        replace(reorder_call, cpu_function=forbidden_kernel),
+        (crop_description.shape,),
+        (crop_description.dtype.str,),
+    )
+    assert reorder_projected is not None
+    ((reorder_description, reorder_state),) = reorder_projected
+    assert reorder_description.shape == (5, 3, 4)
+    assert reorder_description.dtype == dtype
+    assert reorder_state is not None
+    assert tuple(axis.name for axis in reorder_state.axes) == ("x", "z", "y")
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "parameters"),
+    (
+        ("mip", {"axis": 0}),
+        (
+            "orthogonal_projection",
+            {"method": "Maximum", "use_physical_scale": False},
+        ),
+    ),
+)
+def test_reducing_axis_contract_matches_native_endian_cpu_output(
+    operation_id,
+    parameters,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node(operation_id)
+    assert pipeline.connect("input", node.id).success
+    for name, value in parameters.items():
+        pipeline.set_param(node.id, name, value)
+    data = (
+        np.arange(3 * 5 * 7, dtype=np.uint16).reshape(3, 5, 7).astype(np.dtype(">u2"))
+    )
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    assert state is not None
+    call = pipeline.prepare_node_call(node.id, (data,), (state,))
+    assert call is not None
+    actual = call.cpu_function(*call.inputs, **call.kwargs)
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        operation_id,
+        call,
+        (data.shape,),
+        (data.dtype.str,),
+    )
+
+    assert projected is not None
+    ((description, output_state),) = projected
+    assert (description.shape, description.dtype) == (actual.shape, actual.dtype)
+    assert description.dtype.isnative
+    assert output_state is not None
+    assert output_state.shape == actual.shape
+    assert output_state.dtype == actual.dtype.name
+
+
+@pytest.mark.parametrize(
+    ("channel_colors", "expected_dtype"),
+    (
+        ("Red,Red", np.dtype(np.float64)),
+        ("Red,Green", np.dtype(np.float32)),
+    ),
+)
+def test_composite_axis_contract_matches_additive_cpu_dtype(
+    channel_colors,
+    expected_dtype,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    composite = pipeline.add_node("composite_to_rgb")
+    assert pipeline.connect("input", composite.id).success
+    pipeline.set_param(composite.id, "mapping_mode", "Manual")
+    pipeline.set_param(composite.id, "channel_colors", channel_colors)
+    pipeline.set_param(composite.id, "intensity_mapping", "Preserve numeric values")
+    data = np.arange(2 * 5 * 7, dtype=np.uint16).reshape(2, 5, 7)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("c", "channel"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+        channels=(ChannelMetadata("first"), ChannelMetadata("second")),
+    )
+    assert state is not None
+    call = pipeline.prepare_node_call(composite.id, (data,), (state,))
+    assert call is not None
+    actual = call.cpu_function(*call.inputs, **call.kwargs)
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "composite_to_rgb",
+        call,
+        (data.shape,),
+        (data.dtype.name,),
+    )
+
+    assert projected is not None
+    ((description, output_state),) = projected
+    assert description.shape == actual.shape == (5, 7, 3)
+    assert description.dtype == actual.dtype == expected_dtype
+    assert output_state is not None
+    assert output_state.dtype == expected_dtype.name
+
+
+def test_set_pixel_size_planning_metadata_matches_authoritative_finalization():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pixel_size = pipeline.add_node("set_pixel_size")
+    assert pipeline.connect("input", pixel_size.id).success
+    pipeline.set_param(pixel_size.id, "x_size", 0.5)
+    pipeline.set_param(pixel_size.id, "y_size", 0.75)
+    pipeline.set_param(pixel_size.id, "z_size", 2.0)
+    pipeline.set_param(pixel_size.id, "unit", "micrometer")
+    data = np.zeros((3, 5, 7), dtype=np.uint16)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    assert state is not None
+    call = pipeline.prepare_node_call(pixel_size.id, (data,), (state,))
+    assert call is not None
+    actual = call.cpu_function(*call.inputs, **call.kwargs)
+    ((_, actual_state),) = pipeline.finalize_node_call(call, actual)
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "set_pixel_size",
+        call,
+        (data.shape,),
+        (data.dtype.name,),
+    )
+
+    assert projected is not None
+    ((_, projected_state),) = projected
+    assert projected_state is not None and actual_state is not None
+    assert projected_state.axes == actual_state.axes
+    assert projected_state.history == actual_state.history
+    assert tuple(axis.scale for axis in projected_state.axes) == (2.0, 0.75, 0.5)
+
+
+def test_rescale_axes_keeps_downstream_prefer_gpu_workload_resolved():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    rescale = pipeline.add_node("rescale_axes")
+    background = pipeline.add_node("subtract_background")
+    convert = pipeline.add_node("convert_dtype")
+    gaussian = pipeline.add_node("gaussian_blur_3d")
+    assert pipeline.connect("input", rescale.id).success
+    assert pipeline.connect(rescale.id, background.id).success
+    assert pipeline.connect(background.id, convert.id).success
+    assert pipeline.connect(convert.id, gaussian.id).success
+    pipeline.set_param(rescale.id, "x_scale", 2.0)
+    pipeline.set_param(rescale.id, "y_scale", 0.5)
+    pipeline.set_param(rescale.id, "z_scale", 1.5)
+    pipeline.set_param(rescale.id, "lock_xy", False)
+    pipeline.set_param(rescale.id, "interpolation", "Nearest neighbor")
+    pipeline.set_param(background.id, "radius", 2.0)
+    pipeline.set_param(background.id, "spatial_mode", "2D YX")
+    pipeline.set_param(convert.id, "output_dtype", "float32")
+    pipeline.set_param(convert.id, "scaling", "preserve")
+
+    data = np.arange(2 * 6 * 5, dtype=np.uint16).reshape(2, 6, 5)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space", "µm", 1.0),
+            AxisMetadata("y", "space", "µm", 1.0),
+            AxisMetadata("x", "space", "µm", 1.0),
+        ),
+    )
+    assert state is not None
+    source_port = OutputPortKey("input", 0)
+    source_facts = execution_module._complete_array_facts(
+        data,
+        revision_fingerprint="rescale-prefer-gpu-source",
+    )
+    request = ComputeRequest(mode=ComputeMode.PREFER_GPU)
+    validated_host = ComputeEnvironment(
+        os_name="Windows",
+        os_release="test",
+        execution_mode="native",
+        python_implementation="CPython",
+        python_version="3.12",
+        python_abi="cpython-312",
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
+    )
+
+    with (
+        _ProbeRegistry() as registry,
+        patch(
+            "napari_vipp.core.compute_planning.ComputeEnvironment",
+            return_value=validated_host,
+        ),
+    ):
+        workloads, facts_by_node, _lineage = execution_module._assemble_workloads(
+            pipeline,
+            frozenset(pipeline.nodes),
+            {source_port: data},
+            {source_port: state},
+            registry,
+            False,
+            seed_facts_by_port={source_port: source_facts},
+        )
+        accelerated_nodes = (background, convert, gaussian)
+        specs = tuple(
+            spec
+            for node in accelerated_nodes
+            for spec in registry.implementations_for_operation(
+                node.operation_id,
+                allow_experimental=False,
+            )
+        )
+        environment, _warnings = probe_compute_environment(
+            registry,
+            request,
+            specs,
+        )
+        planning = plan_compute_decisions(
+            request,
+            workloads,
+            registry=registry,
+            environment=environment,
+            array_facts=facts_by_node,
+        )
+
+    by_node = {workload.node_id: workload for workload in workloads}
+    downstream = by_node[background.id]
+    assert downstream.inputs_resolved is True
+    assert downstream.input_shapes == ((3, 3, 10),)
+    assert downstream.input_dtypes == ("uint16",)
+    assert by_node[gaussian.id].inputs_resolved is True
+    assert by_node[gaussian.id].input_shapes == ((3, 3, 10),)
+    assert by_node[gaussian.id].input_dtypes == ("float32",)
+    expected_implementations = {
+        background.id: "cupy-subtract-background-v1",
+        convert.id: "cupyx-convert-dtype-preserve-f32-v1",
+        gaussian.id: "cupy-gaussian-blur-3d-v1",
+    }
+    for node_id, implementation_id in expected_implementations.items():
+        decision = planning.decisions_by_node[node_id]
+        assert decision.runtime_id == "cuda-cupy"
+        assert decision.implementation_id == implementation_id
+        assert decision.fallback_used is False
+
+
 def test_workload_assembly_publishes_every_split_channels_port():
     pipeline = _restored_intensity_example()
     data = np.arange(4 * 2 * 4 * 5, dtype=np.uint16).reshape(4, 2, 4, 5)
@@ -2116,21 +2551,29 @@ def test_fresh_intensity_example_builds_exact_numeric_downstream_workloads(
 
 
 @pytest.mark.parametrize(
-    ("operation_id", "dtype"),
+    ("operation_id", "input_dtype", "output_dtype"),
     (
-        ("rescale_intensity", np.dtype(np.uint16)),
-        ("unsharp_mask", np.dtype(np.float32)),
+        ("rescale_intensity", np.dtype(np.uint16), np.dtype(np.uint16)),
+        ("unsharp_mask", np.dtype(np.float32), np.dtype(np.float32)),
+        ("gamma_correction", np.dtype(np.uint16), np.dtype(np.uint16)),
+        ("average_blur", np.dtype(bool), np.dtype(np.float32)),
+        ("difference_of_gaussians", np.dtype(np.uint16), np.dtype(np.float32)),
+        ("triangle_threshold", np.dtype(np.uint16), np.dtype(bool)),
+        ("euclidean_distance_transform", np.dtype(bool), np.dtype(np.float32)),
+        ("h_maxima_markers", np.dtype(np.float32), np.dtype(np.int32)),
+        ("save_output", np.dtype(np.uint16), np.dtype(np.uint16)),
     ),
 )
 def test_exact_host_shape_dtype_operations_project_without_running_kernel(
     operation_id,
-    dtype,
+    input_dtype,
+    output_dtype,
 ):
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     node = pipeline.add_node(operation_id)
     assert pipeline.connect("input", node.id).success
-    data = np.arange(5 * 7, dtype=dtype).reshape(5, 7)
+    data = np.arange(5 * 7, dtype=np.uint16).reshape(5, 7).astype(input_dtype)
     state = image_state_from_array(data)
     assert state is not None
     call = pipeline.prepare_node_call(node.id, (data,), (state,))
@@ -2150,10 +2593,258 @@ def test_exact_host_shape_dtype_operations_project_without_running_kernel(
     assert projected is not None
     ((description, output_state),) = projected
     assert description.shape == data.shape
-    assert description.dtype == dtype
+    assert description.dtype == output_dtype
     assert output_state is not None
     assert output_state.shape == data.shape
-    assert output_state.dtype == dtype.name
+    assert output_state.dtype == output_dtype.name
+
+
+def test_every_cpu_only_image_transform_has_a_planning_contract():
+    with ComputeRegistry() as registry:
+        cpu_only = {
+            operation.id
+            for operation in NODE_LIBRARY
+            if operation.has_input
+            and operation.output_type != "table"
+            and not any(
+                implementation.runtime_id != "cpu-numpy"
+                for implementation in registry.implementations_for_operation(
+                    operation.id,
+                    allow_experimental=True,
+                )
+            )
+        }
+    handled = (
+        set(execution_module._EXACT_HOST_SHAPE_DTYPE_POLICIES)
+        | set(execution_module._EXACT_HOST_IDENTITY_OPERATIONS)
+        | set(execution_module._EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES)
+        | set(_EXACT_AXIS_CONTRACT_OPERATIONS)
+        | {"prepare_validate_psf"}
+    )
+
+    assert cpu_only - handled == set()
+
+
+def test_scientific_preflight_uses_the_same_boolean_contract_as_execution():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    triangle = pipeline.add_node("triangle_threshold")
+    assert pipeline.connect("input", triangle.id).success
+    data = np.arange(7 * 9, dtype=np.uint16).reshape(7, 9)
+    state = image_state_from_array(data)
+    assert state is not None
+    call = pipeline.prepare_node_call(
+        triangle.id,
+        (data,),
+        (state,),
+        axis_contract_only=True,
+    )
+    assert call is not None
+
+    ((projected_value, projected_state),) = pipeline._axis_contract_preflight_results(
+        call
+    )
+    actual_value = call.cpu_function(*call.inputs, **call.kwargs)
+    ((_, actual_state),) = pipeline.finalize_node_call(call, actual_value)
+
+    assert projected_value.shape == actual_value.shape == data.shape
+    assert projected_value.dtype == actual_value.dtype == np.dtype(bool)
+    assert projected_state is not None and actual_state is not None
+    assert projected_state.dtype == actual_state.dtype == "bool"
+    assert projected_state.kind == actual_state.kind == "binary mask"
+    assert projected_state.axes == actual_state.axes
+    assert projected_state.history == actual_state.history
+
+
+def test_batch_output_projection_is_an_exact_state_identity():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    batch = pipeline.add_node("batch_output")
+    assert pipeline.connect("input", batch.id).success
+    dtype = np.dtype(np.uint16).newbyteorder("S")
+    data = np.arange(5 * 7, dtype=np.uint16).reshape(5, 7).astype(dtype)
+    state = image_state_from_array(data)
+    assert state is not None
+    call = pipeline.prepare_node_call(batch.id, (data,), (state,))
+    assert call is not None
+
+    def forbidden_kernel(*_args, **_kwargs):
+        raise AssertionError("Planning must not run the Batch Output function.")
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "batch_output",
+        replace(call, cpu_function=forbidden_kernel),
+        (data.shape,),
+        (data.dtype.str,),
+    )
+
+    assert projected is not None
+    ((description, output_state),) = projected
+    assert description.shape == data.shape
+    assert description.dtype == dtype
+    assert output_state is state
+
+
+def test_multi_input_scatter_projection_has_exact_raster_descriptor_and_axes():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    second_source = pipeline.add_node("input")
+    scatter = pipeline.add_node("colocalization_scatter_plot")
+    assert pipeline.connect("input", scatter.id, target_port=0).success
+    assert pipeline.connect(second_source.id, scatter.id, target_port=1).success
+    pipeline.set_param(scatter.id, "output_size", 128)
+    channel_1 = np.arange(8 * 9, dtype=np.uint16).reshape(8, 9)
+    channel_2 = np.flip(channel_1, axis=1).copy()
+    state_1 = image_state_from_array(channel_1)
+    state_2 = image_state_from_array(channel_2)
+    assert state_1 is not None and state_2 is not None
+    call = pipeline.prepare_node_call(
+        scatter.id,
+        (channel_1, channel_2),
+        (state_1, state_2),
+    )
+    assert call is not None
+
+    def forbidden_kernel(*_args, **_kwargs):
+        raise AssertionError("Planning must not render a scatter plot.")
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "colocalization_scatter_plot",
+        replace(call, cpu_function=forbidden_kernel),
+        (channel_1.shape, channel_2.shape),
+        (channel_1.dtype.name, channel_2.dtype.name),
+    )
+
+    assert projected is not None
+    ((description, output_state),) = projected
+    assert description.shape == (128, 128, 3)
+    assert description.dtype == np.dtype(np.float32)
+    assert output_state is not None
+    assert output_state.shape == description.shape
+    assert tuple(axis.name for axis in output_state.axes) == ("y", "x", "rgb")
+    assert all(axis.source_axis is None for axis in output_state.axes)
+
+
+def test_cpu_only_boundaries_keep_later_prefer_gpu_nodes_resolved():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    rescale_axes = pipeline.add_node("rescale_axes")
+    background = pipeline.add_node("subtract_background")
+    rescale_intensity = pipeline.add_node("rescale_intensity")
+    gamma = pipeline.add_node("gamma_correction")
+    sigma = pipeline.add_node("sigma_filter")
+    unsharp = pipeline.add_node("unsharp_mask")
+    otsu = pipeline.add_node("otsu_threshold")
+    outliers = pipeline.add_node("remove_binary_outliers")
+    small = pipeline.add_node("remove_small_objects")
+    batch = pipeline.add_node("batch_output")
+    labels = pipeline.add_node("label_connected_components")
+    for source_id, target_id in (
+        ("input", rescale_axes.id),
+        (rescale_axes.id, background.id),
+        (background.id, rescale_intensity.id),
+        (rescale_intensity.id, gamma.id),
+        (gamma.id, sigma.id),
+        (sigma.id, unsharp.id),
+        (unsharp.id, otsu.id),
+        (otsu.id, outliers.id),
+        (outliers.id, small.id),
+        (small.id, batch.id),
+        (batch.id, labels.id),
+    ):
+        assert pipeline.connect(source_id, target_id).success
+    pipeline.set_param(rescale_axes.id, "x_scale", 1.0)
+    pipeline.set_param(rescale_axes.id, "y_scale", 1.0)
+    pipeline.set_param(rescale_axes.id, "z_scale", 1.0)
+    pipeline.set_param(rescale_axes.id, "lock_xy", False)
+    pipeline.set_param(rescale_axes.id, "interpolation", "Nearest neighbor")
+    pipeline.set_param(background.id, "radius", 2.0)
+    pipeline.set_param(background.id, "spatial_mode", "2D YX")
+    pipeline.set_param(rescale_intensity.id, "cutoff_mode", "Values")
+    pipeline.set_param(rescale_intensity.id, "in_low_value", 0.0)
+    pipeline.set_param(rescale_intensity.id, "in_high_value", 65535.0)
+    pipeline.set_param(rescale_intensity.id, "out_min", 0.0)
+    pipeline.set_param(rescale_intensity.id, "out_max", 65535.0)
+
+    data = np.arange(4 * 24 * 24, dtype=np.uint16).reshape(4, 24, 24)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    assert state is not None
+    source_port = OutputPortKey("input", 0)
+    source_facts = execution_module._complete_array_facts(
+        data,
+        revision_fingerprint="cpu-boundary-chain-source",
+    )
+    request = ComputeRequest(mode=ComputeMode.PREFER_GPU)
+    validated_host = ComputeEnvironment(
+        os_name="Windows",
+        os_release="test",
+        execution_mode="native",
+        python_implementation="CPython",
+        python_version="3.12",
+        python_abi="cpython-312",
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
+    )
+    with (
+        _ProbeRegistry() as registry,
+        patch(
+            "napari_vipp.core.compute_planning.ComputeEnvironment",
+            return_value=validated_host,
+        ),
+    ):
+        workloads, facts_by_node, _lineage = execution_module._assemble_workloads(
+            pipeline,
+            frozenset(pipeline.nodes),
+            {source_port: data},
+            {source_port: state},
+            registry,
+            False,
+            seed_facts_by_port={source_port: source_facts},
+        )
+        accelerated_nodes = (background, sigma, otsu, outliers, small, labels)
+        specs = tuple(
+            spec
+            for node in accelerated_nodes
+            for spec in registry.implementations_for_operation(
+                node.operation_id,
+                allow_experimental=False,
+            )
+        )
+        environment, _warnings = probe_compute_environment(
+            registry,
+            request,
+            specs,
+        )
+        planning = plan_compute_decisions(
+            request,
+            workloads,
+            registry=registry,
+            environment=environment,
+            array_facts=facts_by_node,
+        )
+
+    by_node = {workload.node_id: workload for workload in workloads}
+    assert all(workload.inputs_resolved for workload in by_node.values())
+    assert by_node[sigma.id].input_shapes == (data.shape,)
+    assert by_node[sigma.id].input_dtypes == ("uint16",)
+    assert by_node[labels.id].input_shapes == (data.shape,)
+    assert by_node[labels.id].input_dtypes == ("bool",)
+    for node in accelerated_nodes:
+        decision = planning.decisions_by_node[node.id]
+        assert decision.runtime_id == "cuda-cupy"
+        assert decision.fallback_used is False
 
 
 def test_student_filter_chain_has_exact_fresh_planning_descriptors():

@@ -1388,17 +1388,20 @@ _POSITIONAL_RESOLVED_SPATIAL_OPERATIONS = frozenset(
         "prune_skeleton_branches",
     }
 )
-_AXIS_CONTRACT_RANK_CHANGING_OPERATIONS = frozenset(
+_EXACT_AXIS_CONTRACT_OPERATIONS = frozenset(
     {
         "born_wolf_psf",
         "combine_channels",
         "composite_to_rgb",
+        "crop_stack",
         "extract_channel",
         "mip",
         "orthogonal_projection",
         "project_image",
+        "reorder_axes",
         "rescale_axes",
         "select_axis_slice",
+        "set_pixel_size",
         "skeleton_graph_overlay",
         "skeleton_keypoints",
         "split_axis",
@@ -7550,33 +7553,33 @@ class PrototypePipeline:
             return [(None, None)]
         node = self.nodes[call.node_id]
         spec = self.operation_spec(node.operation_id)
-        if node.operation_id == "reorder_axes":
-            state = call.input_states[0] if call.input_states else None
-            if not isinstance(state, ImageState):
-                return [(call.inputs[0], state)]
-            indices = _metadata._axis_order_indices(
-                call.kwargs.get("order", ""),
-                len(state.axes),
-                [axis.name for axis in state.axes],
-            )
-            if indices is None:
-                raise ValueError(
-                    "Reorder Axes order must be a complete numeric permutation "
-                    "or a complete set of declared axis names."
-                )
-            output = np.transpose(call.inputs[0], indices)
-            reordered_state = replace(
-                state,
-                shape=tuple(state.shape[index] for index in indices),
-                axes=tuple(state.axes[index] for index in indices),
-            )
-            return [(output, reordered_state)]
         if node.operation_id == "batch_output":
             state = call.input_states[0] if call.input_states else None
             return [(call.inputs[0], state)]
         transformed = self._axis_contract_transform_results(call)
         if transformed is not None:
             return transformed
+        # Compute planning and scientific preflight must publish one identical
+        # theorem for host-only output shape, dtype, and metadata. Import the
+        # execution-owned projector lazily to avoid a module import cycle.
+        from napari_vipp.core.execution import (
+            _project_host_planning_outputs,
+            _shape_and_dtype,
+        )
+
+        input_descriptors = tuple(
+            _shape_and_dtype(value, state)
+            for value, state in zip(call.inputs, call.input_states, strict=True)
+        )
+        projected = _project_host_planning_outputs(
+            self,
+            node.operation_id,
+            call,
+            tuple(shape for shape, _dtype in input_descriptors),
+            tuple(dtype for _shape, dtype in input_descriptors),
+        )
+        if projected is not None:
+            return list(projected)
         if spec.is_multi_output:
             ports = self.output_ports(node.id)
             if any(port.output_type != "table" for port in ports):
@@ -7615,7 +7618,7 @@ class PrototypePipeline:
             and call.kwargs.get("channel_axis") is not None
         )
         if (
-            operation_id not in _AXIS_CONTRACT_RANK_CHANGING_OPERATIONS
+            operation_id not in _EXACT_AXIS_CONTRACT_OPERATIONS
             and not channel_collapse
         ):
             return None
@@ -7627,12 +7630,64 @@ class PrototypePipeline:
         shape = tuple(int(size) for size in input_state.shape)
         params = dict(call.kwargs)
         dtype = np.dtype(input_state.dtype)
+        if call.inputs:
+            # ImageState intentionally exposes a user-facing dtype name without
+            # byte order.  Axis transforms operate on the concrete input dtype,
+            # so retain that exact descriptor whenever planning has one.
+            concrete_dtype = getattr(call.inputs[0], "dtype", None)
+            if concrete_dtype is not None:
+                dtype = np.dtype(concrete_dtype)
         output_shape = shape
         output_dtype = dtype
         output_axes = None
         output_channels = None
 
-        if operation_id == "rescale_axes":
+        if operation_id == "crop_stack":
+            channel_axis = _operations._validated_filter_channel_axis(
+                params.get("channel_axis"),
+                len(shape),
+                operation="Crop stack",
+            )
+            if len(shape) < 2:
+                if any(
+                    params.get(name, 0) != 0
+                    for name in ("top", "bottom", "left", "right")
+                ):
+                    raise ValueError("Crop stack requires at least two spatial axes.")
+            else:
+                y_axis, x_axis = _operations._xy_axes(
+                    self._axis_contract_proxy(shape, dtype),
+                    channel_axis=channel_axis,
+                    axis_names=tuple(axis.name for axis in input_state.axes),
+                )
+                top, bottom = _operations._crop_pair(
+                    params.get("top", 0),
+                    params.get("bottom", 0),
+                    shape[y_axis],
+                )
+                left, right = _operations._crop_pair(
+                    params.get("left", 0),
+                    params.get("right", 0),
+                    shape[x_axis],
+                )
+                cropped_shape = list(shape)
+                cropped_shape[y_axis] -= top + bottom
+                cropped_shape[x_axis] -= left + right
+                output_shape = tuple(cropped_shape)
+        elif operation_id == "reorder_axes":
+            indices = _metadata._axis_order_indices(
+                params.get("order", ""),
+                len(input_state.axes),
+                [axis.name for axis in input_state.axes],
+            )
+            if indices is None:
+                raise ValueError(
+                    "Reorder Axes order must be a complete numeric permutation "
+                    "or a complete set of declared axis names."
+                )
+            output_shape = tuple(shape[index] for index in indices)
+            output_axes = tuple(input_state.axes[index] for index in indices)
+        elif operation_id == "rescale_axes":
             output_shape = _rescale_axes_target_shape_from_state(input_state, params)
         elif operation_id == "select_axis_slice":
             if not shape:
@@ -7685,6 +7740,9 @@ class PrototypePipeline:
                 operation="Maximum Projection",
             )
             if len(shape) > 2:
+                # NumPy reductions normalize non-native byte order. The <=2D
+                # no-op branch returns an exact copy and keeps byte order.
+                output_dtype = np.dtype(dtype.name)
                 output_shape = tuple(
                     size for index, size in enumerate(shape) if index != axis
                 )
@@ -7726,6 +7784,9 @@ class PrototypePipeline:
                 shape=shape,
             )
             if len(spatial_axes) >= 3:
+                # The projection and montage stack normalize non-native arrays.
+                # The lower-rank no-op path returns an exact copy.
+                output_dtype = np.dtype(dtype.name)
                 z_axis, y_axis, x_axis = spatial_axes[-3:]
                 display_scales = _operations._orthogonal_display_scales(
                     spatial_axes[-3:],
@@ -7818,9 +7879,58 @@ class PrototypePipeline:
                 self._axis_contract_proxy(shape, dtype),
                 mapping,
             )
+            mapping_mode = _resolved_composite_mapping_mode(params)
+            count = int(shape[channel_axis])
+            true_rgb = _operations._is_true_rgb_channel_axis(
+                count,
+                channel_axis_semantics=str(params.get("channel_axis_semantics", "")),
+            )
+            color_table = None
+            if mapping_mode == COMPOSITE_RGB_AUTO and count == 1:
+                color_table = None
+            elif mapping_mode == COMPOSITE_RGB_AUTO and not true_rgb:
+                color_table = _operations._validated_composite_auto_color_table(
+                    params.get("channel_colors", ""),
+                    count,
+                )
+            elif mapping_mode == COMPOSITE_RGB_MANUAL:
+                serialized_colors = params.get("channel_colors", "")
+                if _operations._composite_has_serialized_channel_assignments(
+                    serialized_colors
+                ):
+                    color_table = _operations._validated_composite_manual_color_table(
+                        serialized_colors,
+                        count,
+                    )
+                else:
+                    selections = _operations._validated_composite_channel_selections(
+                        tuple(
+                            params.get(name, -1)
+                            for name in (
+                                "red_channel",
+                                "green_channel",
+                                "blue_channel",
+                            )
+                        ),
+                        count=count,
+                    )
+                    color_table = _operations._legacy_composite_selection_color_table(
+                        selections,
+                        count,
+                    )
+            if (
+                mapping == COMPOSITE_RGB_PRESERVE_VALUES
+                and color_table is not None
+                and bool(np.any(np.count_nonzero(color_table[:, :3], axis=0) > 1))
+            ):
+                output_dtype = np.dtype(np.result_type(output_dtype, np.float64))
         elif operation_id == "skeleton_graph_overlay":
             output_shape = shape + (3,)
             output_dtype = np.dtype(np.float32)
+        elif operation_id == "set_pixel_size":
+            # Shape and dtype are unchanged; _axis_contract_unary_result applies
+            # the authoritative axis scale/unit transform below.
+            pass
         elif operation_id in {
             "split_axis",
             "split_channels",
@@ -7950,10 +8060,10 @@ class PrototypePipeline:
         operation_id = node.operation_id
         input_shape = tuple(int(size) for size in input_state.shape)
         output_dtype = np.dtype(input_state.dtype)
-        if operation_id == "split_channels" and call.inputs:
-            # This operation only takes copied views from the input array, so
-            # byte order is preserved exactly even though ImageState exposes a
-            # user-facing dtype name without endian information.
+        if call.inputs:
+            # Split operations preserve the concrete array dtype, including
+            # non-native byte order. Fixed-dtype split operations override this
+            # value below.
             concrete_dtype = getattr(call.inputs[0], "dtype", None)
             if concrete_dtype is not None:
                 output_dtype = np.dtype(concrete_dtype)
@@ -8076,7 +8186,13 @@ class PrototypePipeline:
         output_shape = list(first.shape)
         output_shape.insert(channel_axis, len(states))
         output_shape_tuple = tuple(output_shape)
-        output_dtype = np.dtype(np.result_type(*(state.dtype for state in states)))
+        concrete_dtypes = tuple(getattr(value, "dtype", None) for value in call.inputs)
+        dtype_inputs = (
+            concrete_dtypes
+            if all(dtype is not None for dtype in concrete_dtypes)
+            else tuple(state.dtype for state in states)
+        )
+        output_dtype = np.dtype(np.result_type(*dtype_inputs))
         output = self._axis_contract_proxy(output_shape_tuple, output_dtype)
         axes = _metadata._multi_input_axes(
             first.axes,
@@ -8871,6 +8987,60 @@ class PrototypePipeline:
                 node.operation_id,
             ),
         )
+
+    def _predict_exact_multi_input_image_state(
+        self,
+        call: PreparedNodeCall,
+        *,
+        output_shape: tuple[int, ...],
+        output_dtype: np.dtype,
+    ) -> ImageState | None:
+        """Project reviewed multi-input metadata without scanning output pixels."""
+
+        image_states = [
+            state for state in call.input_states if isinstance(state, ImageState)
+        ]
+        if not image_states:
+            return None
+        first = image_states[0]
+        node = self.nodes[call.node_id]
+        params = dict(call.kwargs)
+        output = self._axis_contract_proxy(output_shape, output_dtype)
+        axes = _metadata._multi_input_axes(
+            first.axes,
+            output,
+            operation_id=node.operation_id,
+            params=params,
+        )
+        channels = _metadata._multi_input_channels(
+            image_states,
+            node.operation_id,
+            params,
+        )
+        history_item = _metadata._multi_input_history(
+            image_states,
+            node.operation_id,
+            node.title,
+            params,
+        )
+        state = self._axis_contract_replaced_state(
+            first,
+            output_shape,
+            axes,
+            output_dtype,
+            operation_id=node.operation_id,
+            history_item=history_item,
+            channels=channels,
+        )
+        if node.operation_id in {
+            "colocalization_scatter_plot",
+            "masked_colocalization_scatter_plot",
+        }:
+            state = replace(
+                state,
+                axes=tuple(replace(axis, source_axis=None) for axis in state.axes),
+            )
+        return state
 
     def _validate_multi_input_grids(
         self,
