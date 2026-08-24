@@ -41,7 +41,8 @@ scale, interactivity, and reproducibility foundations below.
 
 `0.13.0a8` is the current published alpha and carry-forward qualification
 baseline. Its official GitHub prerelease, checksum sidecars, PyPI package, and
-numbered/stable documentation are public. Development now targets `0.14.0a1`.
+numbered/stable documentation are public. Development is preparing the focused
+`0.13.0a9` correctness rollup before returning to `0.14.0a1` SourceItem work.
 The a8 line provides:
 
 - workflow schema 4 and batch schema 3 with portable compute intent, explicit
@@ -75,12 +76,13 @@ Important remaining limits are:
 
 ## Active Release Order
 
-The current development line is `0.14.0a1`, beginning with immutable SourceItem
-identity. The detailed `0.13.0a8` sections below are a delivered contract record,
-not unfinished work or a reason to cut another 0.13 alpha.
+The current development line is the focused `0.13.0a9` correctness rollup. Once
+that alpha is accepted, development returns to `0.14.0a1`, beginning with
+immutable SourceItem identity. The detailed `0.13.0a8` sections below remain a
+delivered contract record.
 
-Before SourceItem feature work continues, the first 0.14 integration tranche
-closes four urgent correctness and diagnostics gaps found with real 0.13
+Before SourceItem feature work continues, a9 closes four urgent correctness and
+diagnostics gaps found with real 0.13
 workflows: immediate QYX-to-ZYX Gaussian inspector propagation
 ([#43](https://github.com/rensutheart/napari-vipp/issues/43)), explicit verified
 volumetric skeletonization
@@ -90,8 +92,10 @@ VRAM admission errors
 measurement caches for Merge Tables
 ([#46](https://github.com/rensutheart/napari-vipp/issues/46)). These repairs are
 release-blocking because they affect scientific dimensionality, graph
-executability, or users' ability to act safely on a failed calculation; they do
-not expand the SourceItem feature scope described below.
+executability, or users' ability to act safely on a failed calculation. It also
+keeps reviewed GPU providers eligible after intervening CPU-only nodes when
+Prefer GPU is selected. These fixes do not expand the SourceItem feature scope
+described below.
 
 Small changes should land as independent, reviewable pull requests. A release
 does not wait for every item in a cycle when a coherent, useful subset is ready.

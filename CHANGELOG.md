@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.14.0a1 - Unreleased
+## 0.13.0a9 - 2026-08-24
 
 ### Features
 
@@ -17,6 +17,11 @@
 
 ### Bug Fixes
 
+- Prefer GPU planning now carries exact shape, dtype, and axis facts through
+  CPU-only nodes such as Rescale Axes, Rescale Intensity, and Unsharp Mask.
+  Reviewed downstream CuPy and CuPyX providers therefore remain eligible after
+  a host boundary instead of being deferred to CPU because their inputs appear
+  unresolved.
 - Changing Image Source from QYX to ZYX now immediately projects the effective
   axes through the selected branch, so Gaussian Blur 3D exposes Sigma Z without
   waiting for a successful full-graph pixel run. Unrelated source or execution
