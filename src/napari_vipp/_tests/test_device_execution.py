@@ -1734,6 +1734,160 @@ def test_source_and_writer_are_host_boundaries_and_memory_fails_before_calls():
     registry.close()
 
 
+def test_memory_preflight_reports_device_binding_shortfall_and_every_node():
+    gib = 1024**3
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    median.title = "Student cleanup"
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, median.id).success
+
+    runtime = _FakeRuntime(free_bytes=6 * gib)
+    registry, specs = _registry(
+        runtime,
+        (("gaussian_blur", _device_copy), ("median_filter", _device_copy)),
+    )
+    decisions = _decisions(pipeline, specs)
+    decisions[gaussian.id] = _decision(
+        gaussian.id,
+        gaussian.operation_id,
+        specs[gaussian.operation_id],
+        memory_bytes=2 * gib,
+    )
+    decisions[median.id] = _decision(
+        median.id,
+        median.operation_id,
+        specs[median.operation_id],
+        memory_bytes=3 * gib,
+    )
+    request = replace(
+        _request(memory_cap=8 * gib),
+        accelerator_safety_reserve_bytes=2 * gib,
+    )
+    plan = plan_device_execution(pipeline, decisions, registry, request)
+
+    with pytest.raises(DeviceMemoryPreflightError) as raised:
+        preflight_device_execution(plan, registry, request)
+
+    error = raised.value
+    assert error.device_id == "fake:0"
+    assert error.device_name == "Fake device"
+    assert error.required_bytes == 5 * gib
+    assert error.available_bytes == 4 * gib
+    assert error.shortfall_bytes == gib
+    assert error.device_free_bytes == 6 * gib
+    assert error.safety_reserve_bytes == 2 * gib
+    assert error.memory_cap_bytes == 8 * gib
+    assert error.limiting_constraint == "free_vram_minus_reserve"
+    assert error.node_ids == (gaussian.id, median.id)
+    assert [item.title for item in error.node_estimates] == [
+        "Gaussian Blur",
+        "Student cleanup",
+    ]
+    assert [item.required_bytes for item in error.node_estimates] == [
+        2 * gib,
+        3 * gib,
+    ]
+    assert "shortfall is 1.00 GiB" in str(error)
+    assert f"Gaussian Blur [{gaussian.id}]" in str(error)
+    assert f"Student cleanup [{median.id}]" in str(error)
+    assert "assigning one or more listed nodes" in str(error)
+    assert error.as_dict()["shortfall_bytes"] == gib
+    registry.close()
+
+
+def test_memory_preflight_identifies_configured_cap_as_binding_constraint():
+    gib = 1024**3
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime(free_bytes=10 * gib)
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = replace(
+        _request(memory_cap=4 * gib),
+        accelerator_safety_reserve_bytes=gib,
+    )
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs, memory_bytes=5 * gib),
+        registry,
+        request,
+    )
+
+    with pytest.raises(DeviceMemoryPreflightError) as raised:
+        preflight_device_execution(plan, registry, request)
+
+    assert raised.value.available_bytes == 4 * gib
+    assert raised.value.limiting_constraint == "configured_cap"
+    assert "configured GPU memory cap" in str(raised.value)
+    registry.close()
+
+
+def test_assigning_otsu_to_cpu_splits_segment_and_admits_remove_small_objects():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    otsu = pipeline.add_node("otsu_threshold")
+    remove = pipeline.add_node("remove_small_objects")
+    assert pipeline.connect("input", otsu.id).success
+    assert pipeline.connect(otsu.id, remove.id).success
+    runtime = _FakeRuntime(free_bytes=5_314_183_168)
+    registry, specs = _registry(
+        runtime,
+        (
+            ("otsu_threshold", _device_copy),
+            ("remove_small_objects", _device_copy),
+        ),
+    )
+    request = _request()
+    decisions = _decisions(pipeline, specs)
+    decisions[otsu.id] = _decision(
+        otsu.id,
+        otsu.operation_id,
+        specs[otsu.operation_id],
+        memory_bytes=2_573_388_802,
+    )
+    decisions[remove.id] = _decision(
+        remove.id,
+        remove.operation_id,
+        specs[remove.operation_id],
+        memory_bytes=4_603_545_600,
+    )
+    combined = plan_device_execution(pipeline, decisions, registry, request)
+    with pytest.raises(DeviceMemoryPreflightError) as raised:
+        preflight_device_execution(combined, registry, request)
+    assert raised.value.required_bytes == 7_176_934_402
+    assert raised.value.available_bytes == 5_314_183_168
+    assert raised.value.shortfall_bytes == 1_862_751_234
+    assert raised.value.limiting_constraint == "free_vram_minus_reserve"
+    assert raised.value.node_ids == (otsu.id, remove.id)
+    assert [
+        item.required_bytes for item in raised.value.node_estimates
+    ] == [2_573_388_802, 4_603_545_600]
+    assert (
+        f"Largest estimate: Remove Small Objects [{remove.id}] at 4.29 GiB"
+        in str(raised.value)
+    )
+
+    cpu_otsu_spec = compute_specs_for("otsu_threshold")[0]
+    decisions[otsu.id] = replace(
+        _decision(
+            otsu.id,
+            otsu.operation_id,
+            cpu_otsu_spec,
+        ),
+        decision_kind=DecisionKind.POLICY_CPU,
+        reason=DecisionReason.EXPLICIT_CPU,
+        reason_text="The node is explicitly assigned to CPU.",
+    )
+    split = plan_device_execution(pipeline, decisions, registry, request)
+    assert split.segments[0].node_ids == (remove.id,)
+    preflight_device_execution(split, registry, request)
+    registry.close()
+
+
 def test_cancellation_releases_all_live_device_values_without_materializing():
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()

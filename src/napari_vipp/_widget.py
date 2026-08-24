@@ -267,8 +267,10 @@ from napari_vipp.core.pipeline import (
     OperationSpec,
     OutputTunnel,
     ParameterSpec,
+    ParameterVisibilityContext,
     PrototypePipeline,
     SourcePayload,
+    _ambiguous_qyx_suffix_mapping,
     grouped_palette_specs,
     operation_call_parameter_value,
     resolve_parameter_visibility,
@@ -662,6 +664,7 @@ class _IsolatedTuningSnapshot:
     execution_messages: dict[str, str]
     completed_node_ids: frozenset[str]
     compute_provenance: dict[str, CachedNodeComputeProvenance]
+    cache_lineage: dict[str, CachedNodeComputeProvenance]
     compute_decisions: dict[str, NodeExecutionDecision]
     compute_decision_environments: dict[str, ComputeEnvironment]
     compute_repair_suggestions: dict[str, ComputeRepairSuggestion]
@@ -12214,6 +12217,7 @@ class VippWidget(QWidget):
             execution_messages=dict(self.pipeline.node_execution_messages),
             completed_node_ids=frozenset(self.pipeline.completed_node_ids),
             compute_provenance=dict(self.pipeline.node_compute_provenance),
+            cache_lineage=dict(self.pipeline.node_cache_lineage),
             compute_decisions=dict(self._accepted_compute_decisions),
             compute_decision_environments=dict(self._compute_decision_environments),
             compute_repair_suggestions=dict(self._compute_repair_suggestions),
@@ -12326,6 +12330,7 @@ class VippWidget(QWidget):
         self.pipeline.node_execution_messages = dict(snapshot.execution_messages)
         self.pipeline.completed_node_ids = set(snapshot.completed_node_ids)
         self.pipeline.node_compute_provenance = dict(snapshot.compute_provenance)
+        self.pipeline.node_cache_lineage = dict(snapshot.cache_lineage)
         self._accepted_compute_decisions = dict(snapshot.compute_decisions)
         self._compute_decision_environments = dict(
             snapshot.compute_decision_environments
@@ -12520,7 +12525,10 @@ class VippWidget(QWidget):
                                 payload.revision_token.sha256,
                                 payload.revision_token.regular_file_count,
                                 payload.revision_token.size_bytes,
-                                id(payload.data),
+                                *self._local_source_selector_signature(
+                                    node_id,
+                                    payload,
+                                ),
                             )
                             if isinstance(
                                 payload.revision_token,
@@ -12537,6 +12545,41 @@ class VippWidget(QWidget):
                 ),
             )
         return ("sources", ())
+
+    def _local_source_selector_signature(
+        self,
+        node_id: str,
+        payload: SourcePayload,
+    ) -> tuple[str | None, int | str | None]:
+        """Return the stable logical item selected from one verified source.
+
+        ``LocalSourceIdentity`` verifies the bytes of the complete file or
+        store, while path and series identify the logical item selected from
+        it.  Array object identity must not participate here: interactive
+        browsing may rematerialize the same pinned revision into a new owned
+        NumPy array without changing the scientific source.
+        """
+
+        metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
+        source_path = metadata.get("vipp_source_path")
+        series_index = metadata.get("vipp_source_series_index")
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "input":
+            cache_key = self._file_source_cache_key(node)
+            if cache_key is not None:
+                if source_path is None:
+                    source_path = cache_key[0]
+                if series_index is None:
+                    series_index = cache_key[1]
+        normalized_path = None if source_path is None else str(source_path)
+        if series_index is None:
+            normalized_series_index: int | str | None = None
+        else:
+            try:
+                normalized_series_index = int(series_index)
+            except (TypeError, ValueError):
+                normalized_series_index = str(series_index)
+        return normalized_path, normalized_series_index
 
     def _dirty_nodes_for_run(self, source_signature: tuple) -> set[str] | None:
         if source_signature != self._last_pipeline_source_signature:
@@ -13163,22 +13206,48 @@ class VippWidget(QWidget):
 
     def _source_payloads_for_pipeline(
         self,
+        *,
+        defer_statistics: bool = False,
+        source_node_ids: Iterable[str] | None = None,
     ) -> tuple[dict[str, SourcePayload], list[object]]:
+        """Resolve source payloads, optionally for a private branch projection.
+
+        Ordinary execution resolves every source and synchronizes the live-layer
+        subscriptions. Inspector metadata projection instead supplies the source
+        ancestors of the selected node. Keeping that restricted read separate
+        prevents a missing or invalid source on an unrelated branch from
+        suppressing otherwise resolvable parameter visibility, and it must not
+        disconnect live-layer subscriptions owned by the complete graph.
+        """
         payloads: dict[str, SourcePayload] = {}
         layers: list[object] = []
         live_bindings: dict[str, object] = {}
+        restricted_source_ids = (
+            None
+            if source_node_ids is None
+            else {str(node_id) for node_id in source_node_ids}
+        )
         for node_id, node in self.pipeline.nodes.items():
             if node.operation_id != "input":
                 continue
-            payload, layer = self._resolve_source_payload(node)
+            if (
+                restricted_source_ids is not None
+                and node_id not in restricted_source_ids
+            ):
+                continue
+            payload, layer = self._resolve_source_payload(
+                node,
+                defer_statistics=defer_statistics,
+            )
             if payload is not None:
                 payloads[node_id] = payload
             if layer is not None:
                 layers.append(layer)
                 live_bindings[node_id] = layer
-        self._live_source_adapter.sync_layers(layers)
-        self._live_source_node_layers = live_bindings
-        self._reuse_cached_source_statistics(payloads)
+        if restricted_source_ids is None:
+            self._live_source_adapter.sync_layers(layers)
+            self._live_source_node_layers = live_bindings
+            self._reuse_cached_source_statistics(payloads)
         return payloads, layers
 
     def _reuse_cached_source_statistics(
@@ -13234,6 +13303,8 @@ class VippWidget(QWidget):
     def _resolve_source_payload(
         self,
         node,
+        *,
+        defer_statistics: bool = False,
     ) -> tuple[SourcePayload | None, object | None]:
         mode = str(node.params.get("source_mode", "napari layer"))
         if mode == "file path" or node.id in self._interactive_collection_source_paths:
@@ -13245,7 +13316,14 @@ class VippWidget(QWidget):
                 return SourcePayload(None, {}, ""), None
             cached = self._cached_file_source_payload(node)
             if cached is not None:
-                return self._declared_interactive_batch_payload(node.id, cached), None
+                return (
+                    self._declared_interactive_batch_payload(
+                        node.id,
+                        cached,
+                        defer_statistics=defer_statistics,
+                    ),
+                    None,
+                )
             if self._file_source_should_load_async(node):
                 return None, None
             resolved_path = str(source_path)
@@ -13257,8 +13335,18 @@ class VippWidget(QWidget):
             )
             self._cache_file_source_snapshot(key, snapshot)
             self._prune_file_source_payload_cache()
-            payload = self._viewer_aligned_source_payload(snapshot.payload)
-            return self._declared_interactive_batch_payload(node.id, payload), None
+            payload = self._viewer_aligned_source_payload(
+                snapshot.payload,
+                defer_statistics=defer_statistics,
+            )
+            return (
+                self._declared_interactive_batch_payload(
+                    node.id,
+                    payload,
+                    defer_statistics=defer_statistics,
+                ),
+                None,
+            )
         if mode == "sample":
             sample_name = str(node.params.get("sample_name", "")).strip()
             payloads = self._sample_payloads()
@@ -13267,7 +13355,13 @@ class VippWidget(QWidget):
             payload = payloads.get(sample_name)
             if payload is None:
                 return None, None
-            return self._viewer_aligned_source_payload(payload), None
+            return (
+                self._viewer_aligned_source_payload(
+                    payload,
+                    defer_statistics=defer_statistics,
+                ),
+                None,
+            )
 
         layer_name = str(node.params.get("layer_name", "")).strip()
         if not layer_name:
@@ -13288,7 +13382,10 @@ class VippWidget(QWidget):
                 snapshot.data,
                 snapshot.metadata,
                 snapshot.name,
-                self._viewer_aligned_live_layer_state(snapshot),
+                self._viewer_aligned_live_layer_state(
+                    snapshot,
+                    defer_statistics=defer_statistics,
+                ),
                 snapshot.token,
             ),
             layer,
@@ -13298,6 +13395,8 @@ class VippWidget(QWidget):
         self,
         node_id: str,
         payload: SourcePayload,
+        *,
+        defer_statistics: bool = False,
     ) -> SourcePayload:
         """Apply the active batch binding's reviewed axes to a raw cache view."""
         config = self._interactive_collection_batch_config
@@ -13313,6 +13412,7 @@ class VippWidget(QWidget):
             payload.data,
             layer_metadata=payload.metadata,
             source_name=payload.name,
+            defer_statistics=defer_statistics,
         )
         effective_state = (
             raw_state
@@ -13370,12 +13470,16 @@ class VippWidget(QWidget):
     def _viewer_aligned_source_payload(
         self,
         payload: SourcePayload,
+        *,
+        defer_statistics: bool = False,
     ) -> SourcePayload:
         state = payload.image_state or image_state_from_array(
             payload.data,
             layer_metadata=payload.metadata,
             source_name=payload.name,
-            defer_statistics=_should_auto_background_data(payload.data),
+            defer_statistics=(
+                defer_statistics or _should_auto_background_data(payload.data)
+            ),
         )
         return SourcePayload(
             payload.data,
@@ -13400,12 +13504,19 @@ class VippWidget(QWidget):
         )
         return self._viewer_aligned_state(state)
 
-    def _viewer_aligned_live_layer_state(self, snapshot: LiveLayerSnapshot):
+    def _viewer_aligned_live_layer_state(
+        self,
+        snapshot: LiveLayerSnapshot,
+        *,
+        defer_statistics: bool = False,
+    ):
         state = image_state_from_array(
             snapshot.data,
             layer_metadata=snapshot.metadata,
             source_name=snapshot.name,
-            defer_statistics=_should_auto_background_data(snapshot.data),
+            defer_statistics=(
+                defer_statistics or _should_auto_background_data(snapshot.data)
+            ),
         )
         state = apply_live_layer_axis_transform(state, snapshot)
         return self._viewer_aligned_state(state)
@@ -14734,11 +14845,20 @@ class VippWidget(QWidget):
 
         if not preserve_authored_values:
             self._sync_rescale_output_range_defaults(node_id)
+        visibility_context = self._parameter_visibility_context_for_render(node_id)
         rendered = False
         for spec in specs:
-            if self._parameter_spec_hidden(node_id, spec):
+            if self._parameter_spec_hidden(
+                node_id,
+                spec,
+                context=visibility_context,
+            ):
                 continue
-            spec = self._effective_parameter_spec(node_id, spec)
+            spec = self._effective_parameter_spec(
+                node_id,
+                spec,
+                context=visibility_context,
+            )
             bounds = self._parameter_bounds_for(node_id, spec)
             locked_split_channel = (
                 node.operation_id == "split_channels"
@@ -14785,7 +14905,11 @@ class VippWidget(QWidget):
             self._apply_parameter_tooltip(spec, widget)
             self._parameter_widgets[spec.name] = widget
             rendered = True
-        if self._add_parameter_visibility_note(node_id, specs):
+        if self._add_parameter_visibility_note(
+            node_id,
+            specs,
+            context=visibility_context,
+        ):
             rendered = True
         if node.operation_id == "fill_holes":
             note = QLabel()
@@ -14814,12 +14938,23 @@ class VippWidget(QWidget):
         if isinstance(label, QWidget):
             label.setToolTip(display_tooltip)
 
-    def _add_parameter_visibility_note(self, node_id: str, specs) -> bool:
+    def _add_parameter_visibility_note(
+        self,
+        node_id: str,
+        specs,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ) -> bool:
         """Add at most one explanation for contextual inspector rows."""
+        resolved_context = (
+            self.pipeline.parameter_visibility_context(node_id)
+            if context is None
+            else context
+        )
         results = [
             resolve_parameter_visibility(
                 spec,
-                context=self.pipeline.parameter_visibility_context(node_id),
+                context=resolved_context,
             )
             for spec in specs
             if str(getattr(spec, "visibility", "always") or "always") != "always"
@@ -16728,7 +16863,12 @@ class VippWidget(QWidget):
             return False
         changed = False
         node = self.pipeline.nodes[self._selected_node_id]
-        if self._refresh_selected_parameter_visibility():
+        visibility_context = self._parameter_visibility_context_for_render(
+            self._selected_node_id
+        )
+        if self._refresh_selected_parameter_visibility(
+            context=visibility_context,
+        ):
             # Visibility is presentation-only.  Do not pass freshly rendered
             # controls through value normalization or report a graph change.
             return False
@@ -16826,7 +16966,11 @@ class VippWidget(QWidget):
             widget = self._parameter_widgets.get(spec.name)
             if widget is None:
                 continue
-            spec = self._effective_parameter_spec(self._selected_node_id, spec)
+            spec = self._effective_parameter_spec(
+                self._selected_node_id,
+                spec,
+                context=visibility_context,
+            )
             previous = node.params.get(spec.name)
             if spec.kind == "choice" and previous not in spec.choices:
                 previous = spec.default
@@ -16897,11 +17041,18 @@ class VippWidget(QWidget):
                 return True
         return False
 
-    def _refresh_selected_parameter_visibility(self) -> bool:
+    def _refresh_selected_parameter_visibility(
+        self,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ) -> bool:
         """Rebuild contextual rows without changing any serialized state."""
         node_id = self._selected_node_id
         node = self.pipeline.nodes.get(node_id)
-        if node is None or not self._parameter_visibility_controls_changed(node_id):
+        if node is None or not self._parameter_visibility_controls_changed(
+            node_id,
+            context=context,
+        ):
             return False
         saved_params = deepcopy(node.params)
         try:
@@ -16911,7 +17062,12 @@ class VippWidget(QWidget):
             node.params.update(saved_params)
         return True
 
-    def _parameter_visibility_controls_changed(self, node_id: str) -> bool:
+    def _parameter_visibility_controls_changed(
+        self,
+        node_id: str,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ) -> bool:
         """Return whether input-aware controls need the form to be rebuilt."""
         node = self.pipeline.nodes.get(node_id)
         if node is not None and node.operation_id == "rescale_axes":
@@ -16925,15 +17081,95 @@ class VippWidget(QWidget):
             expected_notice = bool(self._rescale_axes_inferred_axis_warning(node_id))
             actual_notice = "rescale_axes_axis_notice" in self._parameter_widgets
             return actual != expected or actual_notice != expected_notice
+        visibility_context = (
+            self._parameter_visibility_context_for_render(node_id)
+            if context is None
+            else context
+        )
         for spec in self.pipeline.node_parameter_specs(node_id):
             if str(getattr(spec, "visibility", "always") or "always") == "always":
                 continue
-            expected = not self._parameter_spec_hidden(node_id, spec)
+            expected = not self._parameter_spec_hidden(
+                node_id,
+                spec,
+                context=visibility_context,
+            )
             if (spec.name in self._parameter_widgets) != expected:
                 return True
         return False
 
-    def _parameter_spec_hidden(self, node_id: str, spec) -> bool:
+    def _parameter_visibility_context_for_render(
+        self,
+        node_id: str,
+    ) -> ParameterVisibilityContext:
+        """Return current metadata context without waiting for pixel execution.
+
+        Cached arrays and their carried states stay paired on the live pipeline.
+        When a source ancestor is pending, this method instead stages only the
+        selected node's ancestor branch in a detached graph.  The metadata walk
+        is statistics-lazy and never invokes a scientific pixel kernel, so an
+        unrelated compute or VRAM failure cannot keep the inspector stale.
+        """
+
+        cached = self.pipeline.parameter_visibility_context(node_id)
+        if not cached.connected_input_ports:
+            return cached
+        ancestors = self.pipeline.ancestors_inclusive({node_id})
+        source_ancestors = {
+            ancestor_id
+            for ancestor_id in ancestors
+            if not self.pipeline.operation_spec(
+                self.pipeline.nodes[ancestor_id].operation_id
+            ).has_input
+        }
+        dirty_node_ids = set(self._pending_dirty_node_ids)
+        if self._inflight_dirty_node_ids is not None:
+            dirty_node_ids.update(self._inflight_dirty_node_ids)
+        if self._inflight_full_graph:
+            dirty_node_ids.update(self.pipeline.nodes)
+        unresolved = any(
+            cached.input_state_by_port.get(port_name) is None
+            for port_name in cached.connected_input_ports
+        )
+        if not unresolved and not (source_ancestors & dirty_node_ids):
+            return cached
+
+        staged = GraphSnapshot.from_pipeline(self.pipeline).to_pipeline()
+        try:
+            source_payloads, _layers = self._source_payloads_for_pipeline(
+                defer_statistics=True,
+                source_node_ids=source_ancestors,
+            )
+            try:
+                staged.preflight_axis_contract(
+                    source_payloads,
+                    target_node_ids={node_id},
+                )
+            except Exception:
+                # A selected node can reject the newly projected contract (for
+                # example, Gaussian Blur 3D on QYX). Upstream commits in the
+                # private graph are still authoritative for deciding which
+                # parameter rows apply.
+                pass
+            projected = staged.parameter_visibility_context(node_id)
+        except Exception:
+            # Inspector rendering must remain conservative if a source cannot
+            # currently be materialized or its metadata cannot be projected.
+            return cached
+        if any(
+            projected.input_state_by_port.get(port_name) is not None
+            for port_name in projected.connected_input_ports
+        ):
+            return projected
+        return cached
+
+    def _parameter_spec_hidden(
+        self,
+        node_id: str,
+        spec,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ) -> bool:
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return False
@@ -16944,7 +17180,11 @@ class VippWidget(QWidget):
             return False
         visibility = resolve_parameter_visibility(
             spec,
-            context=self.pipeline.parameter_visibility_context(node_id),
+            context=(
+                self.pipeline.parameter_visibility_context(node_id)
+                if context is None
+                else context
+            ),
         )
         return not visibility.visible
 
@@ -17004,7 +17244,13 @@ class VippWidget(QWidget):
             )
         )
 
-    def _effective_parameter_spec(self, node_id: str, spec):
+    def _effective_parameter_spec(
+        self,
+        node_id: str,
+        spec,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ):
         node = self.pipeline.nodes.get(node_id)
         if (
             node is not None
@@ -17089,11 +17335,18 @@ class VippWidget(QWidget):
         ):
             return replace(spec, label=f"{spec.label} (only used output)")
         if spec.name == "spatial_mode":
-            choices = self._available_spatial_modes(node_id)
+            choices = self._available_spatial_modes(
+                node_id,
+                context=context,
+            )
             return replace(
                 spec,
                 choices=choices,
-                choice_labels=self._spatial_mode_choice_labels(node_id, choices),
+                choice_labels=self._spatial_mode_choice_labels(
+                    node_id,
+                    choices,
+                    context=context,
+                ),
             )
         if (
             node is not None
@@ -17209,9 +17462,14 @@ class VippWidget(QWidget):
         self,
         node_id: str,
         choices: tuple[str, ...],
+        *,
+        context: ParameterVisibilityContext | None = None,
     ) -> tuple[str, ...]:
         labels = list(choices)
-        resolved = self._resolved_auto_spatial_mode_label(node_id)
+        resolved = self._resolved_auto_spatial_mode_label(
+            node_id,
+            context=context,
+        )
         if resolved:
             for index, choice in enumerate(choices):
                 if str(choice).startswith("Auto from axes"):
@@ -17220,7 +17478,11 @@ class VippWidget(QWidget):
                     else:
                         labels[index] = f"Auto from axes - using {resolved}"
                     break
-        state = self.pipeline.input_state_for_node(node_id)
+        state = (
+            context.primary_input_state
+            if context is not None
+            else self.pipeline.input_state_for_node(node_id)
+        )
         spatial_count = (
             sum(axis.type == "space" for axis in state.axes)
             if state is not None and getattr(state, "axes_explicit", False)
@@ -17232,10 +17494,28 @@ class VippWidget(QWidget):
                     labels[index] = f"{choice} - unavailable for resolved input"
         return tuple(labels)
 
-    def _resolved_auto_spatial_mode_label(self, node_id: str) -> str:
-        state = self.pipeline.input_state_for_node(node_id)
+    def _resolved_auto_spatial_mode_label(
+        self,
+        node_id: str,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ) -> str:
+        state = (
+            context.primary_input_state
+            if context is not None
+            else self.pipeline.input_state_for_node(node_id)
+        )
         if state is None or not bool(getattr(state, "spatial_axes_explicit", False)):
             return "unavailable (axes are inferred or missing)"
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "skeletonize":
+            mapping = _ambiguous_qyx_suffix_mapping(state)
+            if mapping is not None:
+                detected_axes, required_axes = mapping
+                return (
+                    "unavailable (declare "
+                    f"{detected_axes} -> {required_axes} or choose 2D YX)"
+                )
         spatial_count = sum(axis.type == "space" for axis in state.axes)
         if spatial_count >= 3:
             return "3D ZYX"
@@ -17431,7 +17711,12 @@ class VippWidget(QWidget):
                 )
         return " ".join(parts)
 
-    def _available_spatial_modes(self, node_id: str) -> tuple[str, ...]:
+    def _available_spatial_modes(
+        self,
+        node_id: str,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ) -> tuple[str, ...]:
         node = self.pipeline.nodes.get(node_id)
         if node is not None and node.operation_id == "fill_holes":
             choices = (
@@ -17443,7 +17728,11 @@ class VippWidget(QWidget):
             choices = ("Auto from axes", "3D ZYX")
         else:
             choices = ("Auto from axes", "2D YX", "3D ZYX")
-        state = self.pipeline.input_state_for_node(node_id)
+        state = (
+            context.primary_input_state
+            if context is not None
+            else self.pipeline.input_state_for_node(node_id)
+        )
         if state is None or not getattr(state, "axes_explicit", False):
             return choices
         spatial_count = sum(axis.type == "space" for axis in state.axes)
@@ -21355,7 +21644,13 @@ class VippWidget(QWidget):
                 InteractionLatencyOutcome.FAILED,
                 detail=str(exc),
             )
-            for node_id in manual_node_ids or ():
+            affected_error_nodes = set(manual_node_ids or ())
+            affected_error_nodes.update(
+                node_id
+                for node_id in getattr(exc, "node_ids", ())
+                if node_id in self.pipeline.nodes
+            )
+            for node_id in affected_error_nodes:
                 self.pipeline.set_node_execution_error(node_id, str(exc))
             self._sync_execution_ui()
             self._set_status(
@@ -21827,7 +22122,10 @@ class VippWidget(QWidget):
             ),
             cached_execution_states=(dict(self.pipeline.node_execution_states)),
             cached_execution_messages=(dict(self.pipeline.node_execution_messages)),
-            cached_compute_provenance=(dict(self.pipeline.node_compute_provenance)),
+            cached_compute_provenance={
+                **self.pipeline.node_cache_lineage,
+                **self.pipeline.node_compute_provenance,
+            },
             completed_node_ids=frozenset(self.pipeline.completed_node_ids),
             manual_node_ids=(frozenset(manual_node_ids) if manual_node_ids else None),
             target_node_ids=(
@@ -22095,12 +22393,22 @@ class VippWidget(QWidget):
         runnable_node_ids: Iterable[str],
         processing_node_id: str | None,
         error: str,
+        failure=None,
     ) -> dict[str, str]:
         """Resolve a detached run failure to the node that actually failed."""
 
         candidates = {
             node_id for node_id in runnable_node_ids if node_id in self.pipeline.nodes
         }
+        if getattr(failure, "kind", "") == "memory_preflight":
+            affected = tuple(
+                node_id
+                for node_id in getattr(failure, "node_ids", ())
+                if node_id in self.pipeline.nodes
+                and (not candidates or node_id in candidates)
+            )
+            if affected:
+                return {node_id: error for node_id in affected}
         if result_pipeline is not None:
             if not candidates:
                 candidates = set(result_pipeline.nodes) & set(self.pipeline.nodes)
@@ -22278,6 +22586,7 @@ class VippWidget(QWidget):
                     runnable_node_ids,
                     processing_node_id,
                     result.error,
+                    result.failure,
                 ).items():
                     self.pipeline.set_node_execution_error(node_id, message)
             self._compute_runtime_quarantined_reason = (
@@ -22403,6 +22712,7 @@ class VippWidget(QWidget):
                 runnable_node_ids,
                 processing_node_id,
                 result.error,
+                result.failure,
             )
             can_publish_cpu_partial = bool(
                 result.execution_report is not None
@@ -22672,6 +22982,11 @@ class VippWidget(QWidget):
             is not None
             and node_id in self.pipeline.completed_node_ids
         }
+        self.pipeline.node_cache_lineage = {
+            node_id: provenance
+            for node_id, provenance in result_pipeline.node_cache_lineage.items()
+            if node_id in live_node_id_set
+        }
         self.pipeline.node_execution_states = {
             node_id: (
                 result_pipeline.node_execution_states.get(
@@ -22762,6 +23077,29 @@ class VippWidget(QWidget):
                 self.pipeline.node_compute_provenance.pop(node_id, None)
             else:
                 self.pipeline.node_compute_provenance[node_id] = provenance
+        # Low-memory execution can intentionally release the host arrays for a
+        # completed node's ancestors while retaining their small, chained
+        # provenance records.  A later detached sibling run needs that lineage
+        # to validate the retained result without treating the pruned ancestors
+        # as a scientific change.  Import only the ancestry of results that this
+        # partial-publication path accepted, and apply the same live/result
+        # operation-identity gate used for the materialized outputs above.
+        lineage_ancestors = result_pipeline.ancestors_inclusive(completed)
+        for node_id in lineage_ancestors:
+            live_node = self.pipeline.nodes.get(node_id)
+            result_node = result_pipeline.nodes.get(node_id)
+            provenance = result_pipeline.node_cache_lineage.get(node_id)
+            if (
+                live_node is None
+                or result_node is None
+                or live_node.operation_id != result_node.operation_id
+                or provenance is None
+                or provenance.node_id != node_id
+                or provenance.actual_implementation.operation_id
+                != result_node.operation_id
+            ):
+                continue
+            self.pipeline.node_cache_lineage[node_id] = provenance
         self.pipeline.completed_node_ids.update(completed)
         cleared = self._discard_background_node_result_overrides(completed)
         self._refresh_node_presentation_surfaces(cleared)

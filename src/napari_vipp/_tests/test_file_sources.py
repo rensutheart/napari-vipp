@@ -107,6 +107,7 @@ def test_frozen_file_snapshot_is_owned_read_only_and_preserves_state(tmp_path):
     assert snapshot.payload.metadata == {
         "vipp_source_path": str(source.resolve()),
         "vipp_source_identity": snapshot.identity.to_dict(),
+        "vipp_source_series_index": 2,
         "vipp_source_snapshot_policy": FILE_SOURCE_SNAPSHOT_POLICY,
     }
     assert snapshot.inspection.original_metadata == {"scientific": "metadata"}

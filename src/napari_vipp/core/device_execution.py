@@ -74,6 +74,56 @@ class DevicePlanningError(RuntimeError):
     """Raised when decisions cannot form a safe executable graph plan."""
 
 
+def _format_device_bytes(value: int | None) -> str:
+    """Format a byte count compactly while exact values remain structured."""
+
+    if value is None:
+        return "unknown"
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    amount = float(value)
+    unit = units[0]
+    for unit in units:
+        if abs(amount) < 1024.0 or unit == units[-1]:
+            break
+        amount /= 1024.0
+    if unit == "B":
+        return f"{int(amount)} {unit}"
+    return f"{amount:.2f} {unit}"
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceMemoryNodeEstimate:
+    """One node's transparent contribution to a device-segment estimate."""
+
+    node_id: str
+    operation_id: str
+    title: str
+    required_bytes: int
+    model_id: str
+
+    def __post_init__(self) -> None:
+        for name in ("node_id", "operation_id", "title", "model_id"):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must not be empty.")
+            object.__setattr__(self, name, value)
+        if (
+            isinstance(self.required_bytes, bool)
+            or not isinstance(self.required_bytes, int)
+            or self.required_bytes < 0
+        ):
+            raise ValueError("required_bytes must be a non-negative integer.")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "node_id": self.node_id,
+            "operation_id": self.operation_id,
+            "title": self.title,
+            "required_bytes": self.required_bytes,
+            "model_id": self.model_id,
+        }
+
+
 class DeviceMemoryPreflightError(DevicePlanningError):
     """Raised before scientific execution when a segment cannot fit in memory."""
 
@@ -83,16 +133,111 @@ class DeviceMemoryPreflightError(DevicePlanningError):
         runtime_id: str,
         required_bytes: int,
         available_bytes: int,
+        *,
+        device_id: str = "",
+        device_name: str = "",
+        device_total_bytes: int | None = None,
+        device_free_bytes: int | None = None,
+        safety_reserve_bytes: int = 0,
+        memory_cap_bytes: int | None = None,
+        limiting_constraint: str = "",
+        node_estimates: Iterable[DeviceMemoryNodeEstimate] = (),
     ) -> None:
-        self.segment_id = segment_id
-        self.runtime_id = runtime_id
-        self.required_bytes = required_bytes
-        self.available_bytes = available_bytes
-        super().__init__(
-            f"Device segment {segment_id!r} requires approximately "
-            f"{required_bytes} bytes, but runtime {runtime_id!r} has only "
-            f"{available_bytes} bytes available under the active limits."
+        self.segment_id = str(segment_id).strip()
+        self.runtime_id = str(runtime_id).strip()
+        self.device_id = str(device_id).strip()
+        self.device_name = str(device_name).strip()
+        self.required_bytes = int(required_bytes)
+        self.available_bytes = int(available_bytes)
+        self.shortfall_bytes = max(0, self.required_bytes - self.available_bytes)
+        self.device_total_bytes = device_total_bytes
+        self.device_free_bytes = device_free_bytes
+        self.safety_reserve_bytes = int(safety_reserve_bytes)
+        self.memory_cap_bytes = memory_cap_bytes
+        self.limiting_constraint = str(limiting_constraint).strip()
+        self.node_estimates = tuple(node_estimates)
+        if any(
+            not isinstance(item, DeviceMemoryNodeEstimate)
+            for item in self.node_estimates
+        ):
+            raise TypeError(
+                "node_estimates must contain DeviceMemoryNodeEstimate values."
+            )
+        self.node_ids = tuple(item.node_id for item in self.node_estimates)
+        super().__init__(self._message())
+
+    def _message(self) -> str:
+        device = self.device_name or "GPU"
+        if self.device_id:
+            device = f"{device} ({self.device_id})"
+        binding = {
+            "free_vram_minus_reserve": "free VRAM after the safety reserve",
+            "configured_cap": "the configured GPU memory cap",
+            "free_vram_minus_reserve_and_cap": (
+                "both free VRAM after the safety reserve and the configured cap"
+            ),
+        }.get(self.limiting_constraint, "the active GPU memory limit")
+        lines = [
+            f"GPU VRAM preflight failed for {device}: this segment needs about "
+            f"{_format_device_bytes(self.required_bytes)}, but only "
+            f"{_format_device_bytes(self.available_bytes)} is available "
+            f"({binding}); the shortfall is "
+            f"{_format_device_bytes(self.shortfall_bytes)}. Runtime: "
+            f"{self.runtime_id}."
+        ]
+        if self.node_estimates:
+            lines.append("Affected GPU nodes (estimated peak contribution):")
+            lines.extend(
+                f"- {item.title} [{item.node_id}]: "
+                f"{_format_device_bytes(item.required_bytes)}"
+                for item in self.node_estimates
+            )
+            largest = max(self.node_estimates, key=lambda item: item.required_bytes)
+            lines.append(
+                f"Largest estimate: {largest.title} [{largest.node_id}] at "
+                f"{_format_device_bytes(largest.required_bytes)}."
+            )
+        lines.append(
+            "Try assigning one or more listed nodes (starting with the largest) "
+            "to CPU to split the GPU segment, reducing/cropping the input, or "
+            "closing other GPU applications. If planning offers a visible CPU "
+            "fallback, accepting it is also safe; this pre-execution admission "
+            "rejection itself does not retry automatically. Change the safety "
+            "reserve or memory cap only when you can still leave adequate GPU "
+            "headroom."
         )
+        technical = [
+            f"raw free {_format_device_bytes(self.device_free_bytes)}",
+            f"safety reserve {_format_device_bytes(self.safety_reserve_bytes)}",
+        ]
+        technical.append(
+            "configured cap not set"
+            if self.memory_cap_bytes is None
+            else f"configured cap {_format_device_bytes(self.memory_cap_bytes)}"
+        )
+        if self.device_total_bytes is not None:
+            technical.append(
+                f"device total {_format_device_bytes(self.device_total_bytes)}"
+            )
+        lines.append("Technical limits: " + "; ".join(technical) + ".")
+        return "\n".join(lines)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "segment_id": self.segment_id,
+            "runtime_id": self.runtime_id,
+            "device_id": self.device_id,
+            "device_name": self.device_name,
+            "required_bytes": self.required_bytes,
+            "available_bytes": self.available_bytes,
+            "shortfall_bytes": self.shortfall_bytes,
+            "device_total_bytes": self.device_total_bytes,
+            "device_free_bytes": self.device_free_bytes,
+            "safety_reserve_bytes": self.safety_reserve_bytes,
+            "memory_cap_bytes": self.memory_cap_bytes,
+            "limiting_constraint": self.limiting_constraint,
+            "node_estimates": [item.as_dict() for item in self.node_estimates],
+        }
 
 
 class DeviceExecutionError(RuntimeError):
@@ -195,12 +340,22 @@ class DeviceGraphPlan:
     decisions: tuple[NodeExecutionDecision, ...]
     request_fingerprint: str
     retained_ports: tuple[OutputPortKey, ...] = ()
+    node_titles: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         request_fingerprint = str(self.request_fingerprint).strip()
         if not request_fingerprint:
             raise ValueError("request_fingerprint must not be empty.")
         object.__setattr__(self, "request_fingerprint", request_fingerprint)
+        titles = tuple(
+            (str(node_id).strip(), str(title).strip())
+            for node_id, title in self.node_titles
+        )
+        if any(not node_id or not title for node_id, title in titles):
+            raise ValueError("node_titles must contain non-empty node IDs and titles.")
+        if len({node_id for node_id, _title in titles}) != len(titles):
+            raise ValueError("node_titles must not repeat node IDs.")
+        object.__setattr__(self, "node_titles", titles)
 
     @property
     def segments(self) -> tuple[ExecutionSegment, ...]:
@@ -652,6 +807,13 @@ def plan_device_execution(
         decisions=selected_decisions,
         request_fingerprint=request.fingerprint,
         retained_ports=retained,
+        node_titles=tuple(
+            (
+                decision.node_id,
+                pipeline.nodes[decision.node_id].title,
+            )
+            for decision in selected_decisions
+        ),
     )
 
 
@@ -665,6 +827,8 @@ def preflight_device_execution(
     """Reject impossible memory requests before any scientific node runs."""
 
     _validate_device_plan_request(plan, request)
+    decisions_by_node = {decision.node_id: decision for decision in plan.decisions}
+    titles_by_node = dict(plan.node_titles)
     for unit in plan.units:
         if not isinstance(unit, DeviceSegmentUnit):
             continue
@@ -699,22 +863,87 @@ def preflight_device_execution(
                 segment.memory_estimate.total_device_peak_bytes
                 + segment.memory_estimate.uncertainty_bytes
             )
-            available_candidates: list[int] = []
+            available_candidates: list[tuple[str, int]] = []
             if snapshot.device_free_bytes is not None:
                 reserve = request.accelerator_safety_reserve_bytes or 0
                 available_candidates.append(
-                    max(0, snapshot.device_free_bytes - reserve)
+                    (
+                        "free_vram_minus_reserve",
+                        max(0, snapshot.device_free_bytes - reserve),
+                    )
                 )
             if request.accelerator_memory_cap_bytes is not None:
-                available_candidates.append(request.accelerator_memory_cap_bytes)
+                available_candidates.append(
+                    ("configured_cap", request.accelerator_memory_cap_bytes)
+                )
             if available_candidates:
-                available = min(available_candidates)
+                available = min(value for _constraint, value in available_candidates)
                 if required > available:
+                    bindings = tuple(
+                        constraint
+                        for constraint, value in available_candidates
+                        if value == available
+                    )
+                    limiting_constraint = (
+                        "free_vram_minus_reserve_and_cap"
+                        if len(bindings) > 1
+                        else bindings[0]
+                    )
+                    device_id = (
+                        str(snapshot.device_id).strip()
+                        or str(request.device_id).strip()
+                        or str(probe.selected_device_id).strip()
+                    )
+                    matching_device = next(
+                        (
+                            device
+                            for device in probe.devices
+                            if device.device_id == device_id
+                        ),
+                        None,
+                    )
+                    node_estimates = tuple(
+                        DeviceMemoryNodeEstimate(
+                            node_id=node_id,
+                            operation_id=decisions_by_node[node_id].operation_id,
+                            title=(
+                                titles_by_node.get(node_id)
+                                or decisions_by_node[node_id].operation_id
+                            ),
+                            required_bytes=(
+                                decisions_by_node[
+                                    node_id
+                                ].memory_estimate.total_device_peak_bytes
+                                + decisions_by_node[
+                                    node_id
+                                ].memory_estimate.uncertainty_bytes
+                            ),
+                            model_id=(
+                                decisions_by_node[node_id].memory_estimate.model_id
+                            ),
+                        )
+                        for node_id in segment.node_ids
+                        if node_id in decisions_by_node
+                    )
                     raise DeviceMemoryPreflightError(
                         segment.segment_id,
                         segment.runtime_id,
                         required,
                         available,
+                        device_id=device_id,
+                        device_name=(
+                            ""
+                            if matching_device is None
+                            else matching_device.display_name
+                        ),
+                        device_total_bytes=snapshot.device_total_bytes,
+                        device_free_bytes=snapshot.device_free_bytes,
+                        safety_reserve_bytes=(
+                            request.accelerator_safety_reserve_bytes or 0
+                        ),
+                        memory_cap_bytes=request.accelerator_memory_cap_bytes,
+                        limiting_constraint=limiting_constraint,
+                        node_estimates=node_estimates,
                     )
             succeeded = True
         except DevicePlanningError:
@@ -2126,6 +2355,7 @@ __all__ = [
     "DeviceExecutionError",
     "DeviceExecutionResult",
     "DeviceGraphPlan",
+    "DeviceMemoryNodeEstimate",
     "DeviceMemoryPreflightError",
     "DevicePlanningError",
     "DeviceSegmentUnit",

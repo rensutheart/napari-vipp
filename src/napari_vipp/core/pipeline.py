@@ -5417,6 +5417,7 @@ class PrototypePipeline:
         self.output_tunnels: dict[str, OutputTunnel] = {}
         self.completed_node_ids: set[str] = set()
         self.node_compute_provenance: dict[str, CachedNodeComputeProvenance] = {}
+        self.node_cache_lineage: dict[str, CachedNodeComputeProvenance] = {}
         self.node_execution_states: dict[str, str] = {}
         self.node_execution_messages: dict[str, str] = {}
         self._colocalization_costes_cache: dict[
@@ -5436,6 +5437,7 @@ class PrototypePipeline:
         self.output_tunnels = {}
         self.completed_node_ids = set()
         self.node_compute_provenance = {}
+        self.node_cache_lineage = {}
         self.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
         }
@@ -5469,6 +5471,7 @@ class PrototypePipeline:
         self.output_tunnels = {}
         self.completed_node_ids = set()
         self.node_compute_provenance = {}
+        self.node_cache_lineage = {}
         self.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
         }
@@ -5507,6 +5510,7 @@ class PrototypePipeline:
         restored.output_tunnels = {}
         restored.completed_node_ids = set()
         restored.node_compute_provenance = {}
+        restored.node_cache_lineage = {}
         restored.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in restored.nodes
         }
@@ -5580,6 +5584,7 @@ class PrototypePipeline:
         self.output_tunnels = restored.output_tunnels
         self.completed_node_ids = restored.completed_node_ids
         self.node_compute_provenance = restored.node_compute_provenance
+        self.node_cache_lineage = restored.node_cache_lineage
         self.node_execution_states = restored.node_execution_states
         self.node_execution_messages = restored.node_execution_messages
         self._colocalization_costes_cache = {}
@@ -5651,6 +5656,7 @@ class PrototypePipeline:
         self.node_outputs.pop(node_id, None)
         self.node_output_states.pop(node_id, None)
         self.node_compute_provenance.pop(node_id, None)
+        self.node_cache_lineage.pop(node_id, None)
         self.node_execution_states.pop(node_id, None)
         self.node_execution_messages.pop(node_id, None)
         for tunnel_name in removed_tunnels:
@@ -6882,15 +6888,34 @@ class PrototypePipeline:
         requested_dirty_node_ids = (
             targets if dirty_node_ids is None and targets else dirty_node_ids
         )
+        requested_dirty_nodes = (
+            None
+            if requested_dirty_node_ids is None
+            else {
+                node_id
+                for node_id in requested_dirty_node_ids
+                if node_id in self.nodes
+            }
+        )
         dirty_nodes = self._validated_dirty_nodes(
-            requested_dirty_node_ids,
+            requested_dirty_nodes,
             candidate_node_ids=required_nodes,
         )
-        candidates = (
-            set(self.nodes)
-            if dirty_nodes is None
-            else self.descendants_inclusive(dirty_nodes)
-        )
+        if dirty_nodes is None:
+            candidates = set(self.nodes)
+        else:
+            # ``_validated_dirty_nodes`` also adds pruned upstream caches that
+            # must be recomputed to supply the requested dirty branch.  Those
+            # are support nodes, not new scientific dirty roots: expanding all
+            # of their descendants would incorrectly stale an unchanged cached
+            # sibling (and its merge) in Low-memory mode.
+            requested_descendants = self.descendants_inclusive(
+                requested_dirty_nodes or (),
+            )
+            if required_nodes is not None:
+                requested_descendants.intersection_update(required_nodes)
+            support_nodes = dirty_nodes - (requested_dirty_nodes or set())
+            candidates = requested_descendants | support_nodes
         if required_nodes is not None:
             candidates.intersection_update(required_nodes)
         candidates = self._nodes_with_available_input_chains(candidates)
@@ -7271,6 +7296,7 @@ class PrototypePipeline:
             }
             self.node_execution_messages = {node_id: "" for node_id in self.nodes}
             self.node_compute_provenance = {}
+            self.node_cache_lineage = {}
             preserved = barriers | blocked
             remaining = candidates - preserved
             completed: set[str] = set()
@@ -7316,6 +7342,8 @@ class PrototypePipeline:
             self.completed_node_ids.difference_update(
                 remaining | barriers | blocked_manual_nodes
             )
+            for node_id in candidates:
+                self.node_cache_lineage.pop(node_id, None)
             for node_id in remaining:
                 self.outputs[node_id] = None
                 self.output_states[node_id] = None
@@ -7358,6 +7386,7 @@ class PrototypePipeline:
         )
         self.node_execution_messages[node_id] = ""
         self.node_compute_provenance.pop(node_id, None)
+        self.node_cache_lineage.pop(node_id, None)
         execution.remaining_node_ids.remove(node_id)
         execution.completed_node_ids.add(node_id)
         self.completed_node_ids.add(node_id)
@@ -7384,6 +7413,7 @@ class PrototypePipeline:
         self.node_execution_states[node_id] = EXECUTION_READY
         self.node_execution_messages[node_id] = ""
         self.node_compute_provenance.pop(node_id, None)
+        self.node_cache_lineage.pop(node_id, None)
         execution.remaining_node_ids.remove(node_id)
         # An unmaterialized device value is no longer a reusable host result.
         self.completed_node_ids.discard(node_id)
@@ -7465,6 +7495,8 @@ class PrototypePipeline:
     def preflight_axis_contract(
         self,
         source_payloads: Mapping[str, SourcePayload],
+        *,
+        target_node_ids: Iterable[str] | None = None,
     ) -> None:
         """Validate deterministic source/axis contracts without pixel kernels.
 
@@ -7477,6 +7509,7 @@ class PrototypePipeline:
         """
         execution = self.prepare_execution(
             manual_node_ids=self.manual_node_ids(),
+            target_node_ids=target_node_ids,
         )
         remaining = execution.remaining_node_ids
         completed = execution.completed_node_ids
@@ -7499,6 +7532,7 @@ class PrototypePipeline:
                         None,
                         "",
                         source_payloads,
+                        defer_statistics=True,
                     )
                 else:
                     call = self.prepare_node_call(
@@ -8217,10 +8251,10 @@ class PrototypePipeline:
             if candidate_node_ids is None
             else set(candidate_node_ids) & set(self.nodes)
         )
+        nodes_to_run = self.descendants_inclusive(dirty_nodes)
+        if candidate_nodes is not None:
+            nodes_to_run.intersection_update(candidate_nodes)
         while True:
-            nodes_to_run = self.descendants_inclusive(dirty_nodes)
-            if candidate_nodes is not None:
-                nodes_to_run.intersection_update(candidate_nodes)
             required_cached_sources = {
                 source_id
                 for node_id in nodes_to_run
@@ -8231,6 +8265,11 @@ class PrototypePipeline:
             if not missing_upstream:
                 break
             dirty_nodes.update(missing_upstream)
+            # Missing cached ancestors are execution support, not additional
+            # scientific dirty roots. Recompute only those ancestors and their
+            # own missing inputs; expanding their descendants here would pull
+            # unchanged sibling branches into the dirty scope.
+            nodes_to_run.update(missing_upstream)
         return dirty_nodes
 
     def _run_node(
@@ -8274,6 +8313,8 @@ class PrototypePipeline:
         input_metadata: dict | None,
         input_name: str,
         source_payloads: Mapping[str, SourcePayload],
+        *,
+        defer_statistics: bool = False,
     ) -> list[tuple[Any, ImageState | TableState | None]]:
         """Resolve one source boundary without invoking an operation callable."""
         node = self.nodes[node_id]
@@ -8295,6 +8336,7 @@ class PrototypePipeline:
                 channels=(state.channels if state is not None else None),
                 acquisition=(state.acquisition if state is not None else None),
                 source=(state.source if state is not None else None),
+                defer_statistics=defer_statistics,
             )
         if not payload.axis_semantics_resolved:
             declaration = _metadata.AxisDeclaration.from_value(
@@ -8394,6 +8436,12 @@ class PrototypePipeline:
             spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
             if node.operation_id == "clear_border_objects":
                 spatial_mode = "Auto from axes"
+            if node.operation_id == "skeletonize":
+                _validate_skeletonize_auto_axes(
+                    node,
+                    primary_state,
+                    spatial_mode,
+                )
             resolved_spatial_ndim = _resolved_spatial_ndim(
                 primary_state,
                 primary_input,
@@ -8403,6 +8451,11 @@ class PrototypePipeline:
             kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
             node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
         _validate_positional_spatial_layout(node, primary_state, kwargs)
+        if node.operation_id == "skeletonize":
+            _operations._skeletonize_method(
+                kwargs.get("method", "Auto"),
+                spatial_ndim=int(kwargs["resolved_spatial_ndim"]),
+            )
 
         if axis_contract_only:
             if multiple_inputs:
@@ -9652,6 +9705,47 @@ def _resolved_spatial_ndim(
             f"for a {ndim}D input."
         )
     return requested
+
+
+def _validate_skeletonize_auto_axes(
+    node: GraphNode,
+    state: ImageState | TableState | None,
+    spatial_mode: object,
+) -> None:
+    """Reject an unresolved trailing QYX layout in automatic mode."""
+    if not str(spatial_mode).strip().casefold().startswith("auto"):
+        return
+    mapping = _ambiguous_qyx_suffix_mapping(state)
+    if mapping is None:
+        return
+    detected_axes, required_axes = mapping
+    raise AmbiguousAxisError(
+        f"{node.title} cannot resolve 'Auto from axes' for {detected_axes} "
+        "because its trailing Q has "
+        "unknown spatial meaning. If Q contains depth slices, declare "
+        f"{detected_axes} -> {required_axes} at Image Source. If Q is "
+        "deliberately non-spatial, choose 2D YX explicitly.",
+        code="ambiguous_skeletonize_qyx",
+        detected_axes=detected_axes,
+        required_axes=required_axes,
+        failing_node_id=node.id,
+    )
+
+
+def _ambiguous_qyx_suffix_mapping(
+    state: ImageState | TableState | None,
+) -> tuple[str, str] | None:
+    """Return the explicit declaration needed for an unknown trailing QYX."""
+    if not isinstance(state, ImageState) or len(state.axes) < 3:
+        return None
+    suffix = state.axes[-3:]
+    names = tuple(axis.name.strip().casefold() for axis in suffix)
+    types = tuple(axis.type.strip().casefold() for axis in suffix)
+    if names != ("q", "y", "x") or types != ("unknown", "space", "space"):
+        return None
+    detected_axes = "".join(axis.short_label for axis in state.axes)
+    required_axes = f"{detected_axes[:-3]}ZYX"
+    return detected_axes, required_axes
 
 
 def _clone_node(node: GraphNode) -> GraphNode:

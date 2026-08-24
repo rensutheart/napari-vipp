@@ -598,6 +598,16 @@ class PipelineExecutionFailure:
     available_bytes: int | None = None
     cleanup_succeeded: bool | None = None
     fallback_records: tuple[ExecutionFallbackRecord, ...] = ()
+    shortfall_bytes: int | None = None
+    device_total_bytes: int | None = None
+    device_free_bytes: int | None = None
+    safety_reserve_bytes: int | None = None
+    memory_cap_bytes: int | None = None
+    device_id: str = ""
+    device_name: str = ""
+    limiting_constraint: str = ""
+    node_ids: tuple[str, ...] = ()
+    device_memory_node_estimates: tuple[tuple[str, str, str, int, str], ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -607,18 +617,57 @@ class PipelineExecutionFailure:
             "reason_code",
             "segment_id",
             "runtime_id",
+            "device_id",
+            "device_name",
+            "limiting_constraint",
         ):
             object.__setattr__(self, name, str(getattr(self, name)).strip())
         if not self.kind or not self.error_type or not self.message:
             raise ValueError("Failure kind, error_type, and message must not be empty.")
         if not isinstance(self.retryable, bool):
             raise TypeError("retryable must be a boolean.")
-        for name in ("required_bytes", "available_bytes"):
+        for name in (
+            "required_bytes",
+            "available_bytes",
+            "shortfall_bytes",
+            "device_total_bytes",
+            "device_free_bytes",
+            "safety_reserve_bytes",
+            "memory_cap_bytes",
+        ):
             value = getattr(self, name)
             if value is not None and (
                 isinstance(value, bool) or not isinstance(value, int) or value < 0
             ):
                 raise ValueError(f"{name} must be a non-negative integer or None.")
+        node_ids = tuple(str(node_id).strip() for node_id in self.node_ids)
+        if any(not node_id for node_id in node_ids):
+            raise ValueError("node_ids must not contain empty values.")
+        object.__setattr__(self, "node_ids", tuple(dict.fromkeys(node_ids)))
+        estimates = tuple(self.device_memory_node_estimates)
+        for estimate in estimates:
+            if len(estimate) != 5:
+                raise ValueError(
+                    "device_memory_node_estimates entries must contain node ID, "
+                    "operation ID, title, required bytes, and model ID."
+                )
+            node_id, operation_id, title, required_bytes, model_id = estimate
+            if not all(
+                str(value).strip() for value in (node_id, operation_id, title, model_id)
+            ):
+                raise ValueError(
+                    "device_memory_node_estimates text fields must not be empty."
+                )
+            if (
+                isinstance(required_bytes, bool)
+                or not isinstance(required_bytes, int)
+                or required_bytes < 0
+            ):
+                raise ValueError(
+                    "device_memory_node_estimates required bytes must be a "
+                    "non-negative integer."
+                )
+        object.__setattr__(self, "device_memory_node_estimates", estimates)
         if self.cleanup_succeeded is not None and not isinstance(
             self.cleanup_succeeded,
             bool,
@@ -640,14 +689,49 @@ class PipelineExecutionFailure:
             "message": self.message,
             "retryable": self.retryable,
         }
-        for name in ("reason_code", "segment_id", "runtime_id"):
+        for name in (
+            "reason_code",
+            "segment_id",
+            "runtime_id",
+            "device_id",
+            "device_name",
+            "limiting_constraint",
+        ):
             value = getattr(self, name)
             if value:
                 result[name] = value
-        for name in ("required_bytes", "available_bytes", "cleanup_succeeded"):
+        for name in (
+            "required_bytes",
+            "available_bytes",
+            "shortfall_bytes",
+            "device_total_bytes",
+            "device_free_bytes",
+            "safety_reserve_bytes",
+            "memory_cap_bytes",
+            "cleanup_succeeded",
+        ):
             value = getattr(self, name)
             if value is not None:
                 result[name] = value
+        if self.node_ids:
+            result["node_ids"] = list(self.node_ids)
+        if self.device_memory_node_estimates:
+            result["device_memory_node_estimates"] = [
+                {
+                    "node_id": node_id,
+                    "operation_id": operation_id,
+                    "title": title,
+                    "required_bytes": required_bytes,
+                    "model_id": model_id,
+                }
+                for (
+                    node_id,
+                    operation_id,
+                    title,
+                    required_bytes,
+                    model_id,
+                ) in self.device_memory_node_estimates
+            ]
         if self.fallback_records:
             result["fallback_records"] = [
                 record.as_dict() for record in self.fallback_records
@@ -1322,6 +1406,16 @@ def _pipeline_execution_failure(
     runtime_id = str(getattr(exc, "runtime_id", "")).strip()
     segment_id = str(getattr(exc, "segment_id", "")).strip()
     if required is not None or available is not None:
+        node_estimates = tuple(
+            (
+                str(getattr(item, "node_id", "")).strip(),
+                str(getattr(item, "operation_id", "")).strip(),
+                str(getattr(item, "title", "")).strip(),
+                int(getattr(item, "required_bytes", 0)),
+                str(getattr(item, "model_id", "")).strip(),
+            )
+            for item in getattr(exc, "node_estimates", ())
+        )
         return PipelineExecutionFailure(
             kind="memory_preflight",
             error_type=error_type,
@@ -1331,6 +1425,20 @@ def _pipeline_execution_failure(
             runtime_id=runtime_id,
             required_bytes=required,
             available_bytes=available,
+            shortfall_bytes=getattr(exc, "shortfall_bytes", None),
+            device_total_bytes=getattr(exc, "device_total_bytes", None),
+            device_free_bytes=getattr(exc, "device_free_bytes", None),
+            safety_reserve_bytes=getattr(exc, "safety_reserve_bytes", None),
+            memory_cap_bytes=getattr(exc, "memory_cap_bytes", None),
+            device_id=str(getattr(exc, "device_id", "")).strip(),
+            device_name=str(getattr(exc, "device_name", "")).strip(),
+            limiting_constraint=str(getattr(exc, "limiting_constraint", "")).strip(),
+            node_ids=tuple(
+                str(node_id).strip()
+                for node_id in getattr(exc, "node_ids", ())
+                if str(node_id).strip()
+            ),
+            device_memory_node_estimates=node_estimates,
             cleanup_succeeded=True,
             fallback_records=fallback_records,
         )
@@ -5023,11 +5131,11 @@ def _hydrate_cached_pipeline_outputs(
     requested_completed = set(request.completed_node_ids) & set(pipeline.nodes)
     accepted_completed: set[str] = set()
     accepted_provenance: dict[str, CachedNodeComputeProvenance] = {}
+    validated_lineage: dict[str, CachedNodeComputeProvenance] = {}
     cached_provenance = request.cached_compute_provenance
     for node_id in pipeline.topological_order():
-        if node_id not in requested_completed or not pipeline._has_cached_output(
-            node_id
-        ):
+        provenance = cached_provenance.get(node_id)
+        if provenance is None:
             continue
         node = pipeline.nodes[node_id]
         operation = pipeline.operation_spec(node.operation_id)
@@ -5037,7 +5145,6 @@ def _hydrate_cached_pipeline_outputs(
                 node_id,
                 "",
             )
-            provenance = cached_provenance.get(node_id)
             if source_context is None or not cached_source_provenance_matches(
                 provenance,
                 node_id=node_id,
@@ -5046,37 +5153,37 @@ def _hydrate_cached_pipeline_outputs(
                 source_reuse_envelope_fingerprint=source_reuse_envelope,
             ):
                 continue
+        else:
+            if any(
+                connection.source_id not in validated_lineage
+                for connection in pipeline._input_connections(node_id)
+            ):
+                continue
+            try:
+                scientific_context = _processing_scientific_context_fingerprint(
+                    pipeline,
+                    node_id,
+                    validated_lineage,
+                    cancel_callback=cancel_callback,
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not cached_node_provenance_matches(
+                provenance,
+                request=request.compute_request,
+                node_id=node_id,
+                operation_id=node.operation_id,
+                scientific_context_fingerprint=scientific_context,
+                implementation_specs=implementation_specs,
+            ):
+                continue
+        validated_lineage[node_id] = provenance
+        if node_id in requested_completed and pipeline._has_cached_output(node_id):
             accepted_completed.add(node_id)
             accepted_provenance[node_id] = provenance
-            continue
-        if any(
-            connection.source_id not in accepted_completed
-            for connection in pipeline._input_connections(node_id)
-        ):
-            continue
-        try:
-            scientific_context = _processing_scientific_context_fingerprint(
-                pipeline,
-                node_id,
-                accepted_provenance,
-                cancel_callback=cancel_callback,
-            )
-        except (KeyError, TypeError, ValueError):
-            continue
-        provenance = cached_provenance.get(node_id)
-        if provenance is None or not cached_node_provenance_matches(
-            provenance,
-            request=request.compute_request,
-            node_id=node_id,
-            operation_id=node.operation_id,
-            scientific_context_fingerprint=scientific_context,
-            implementation_specs=implementation_specs,
-        ):
-            continue
-        accepted_completed.add(node_id)
-        accepted_provenance[node_id] = provenance
     pipeline.completed_node_ids = accepted_completed
     pipeline.node_compute_provenance = accepted_provenance
+    pipeline.node_cache_lineage = validated_lineage
 
 
 def _publish_cpu_compute_provenance(
@@ -5138,7 +5245,7 @@ def _publish_actual_compute_provenance(
     """Attach exact chained provenance to materialized host node caches."""
 
     decisions_by_node = {decision.node_id: decision for decision in decisions}
-    prior_provenance = dict(pipeline.node_compute_provenance)
+    prior_provenance = dict(pipeline.node_cache_lineage)
     resolved_provenance: dict[str, CachedNodeComputeProvenance] = {}
     published_provenance: dict[str, CachedNodeComputeProvenance] = {}
     for node_id in pipeline.topological_order():
@@ -5211,6 +5318,7 @@ def _publish_actual_compute_provenance(
         ):
             published_provenance[node_id] = provenance
     pipeline.node_compute_provenance = published_provenance
+    pipeline.node_cache_lineage = resolved_provenance
 
 
 __all__ = [

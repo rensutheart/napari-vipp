@@ -1,6 +1,6 @@
 # Skeleton Nodes
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-08-24
 
 VIPP skeleton nodes are generic graph-analysis tools for curvilinear or
 network-like structures such as mitochondria, neurites, vessels, fibers, and
@@ -112,11 +112,52 @@ Checked-in reference workflows:
 - **Output:** binary skeleton mask.
 - **Purpose:** Converts foreground objects into one-pixel/voxel-wide
   centerlines.
-- **Key settings:** 2D/3D spatial processing and skeletonization method where
-  available.
+- **Spatial processing:** `3D ZYX` thins each complete ZYX volume once. Leading
+  non-spatial axes are independent blocks, so `TZYX` runs one ZYX volume per
+  timepoint. `2D YX` thins each YX plane independently.
+- **Auto from axes:** explicit `ZYX` selects volumetric 3D processing and
+  explicit `YX` selects 2D processing. A generic `QYX` stack is ambiguous and
+  is rejected until Image Source records a reviewed declaration such as
+  `QYX -> ZYX`, or the user deliberately chooses `2D YX`.
+- **Methods:** `Auto` resolves deterministically to Lee for 3D and Zhang for
+  2D. Lee is valid for 2D and 3D. `Zhang 2D` is never valid for a 3D block,
+  including an empty volume.
+- **Algorithm contract:** the 3D path uses scikit-image's implementation of the
+  Lee, Kashyap, and Chu volumetric thinning algorithm. Lee examines a 3x3x3
+  neighbourhood and rechecks deletion candidates to preserve connectivity.
+  Each processed block is surrounded by background at its boundary. The
+  output preserves input shape, axis records, calibration, and leading-axis
+  identity.
+- **Provenance:** the output metadata history records the actual Lee or Zhang
+  method, resolved 2D/3D block scope, neighbourhood, and boundary assumption.
 - **Use before:** `Analyze Skeleton`, `Measure Skeleton Branches`, `Skeleton
   Keypoints`, `Skeleton Graph Overlay`, `Label Skeleton Components`, `Label
   Skeleton Branches`, and `Prune Skeleton Branches`.
+
+The Lee implementation follows T.-C. Lee, R. L. Kashyap, and C.-N. Chu,
+"Building skeleton models via 3-D medial surface/axis thinning algorithms",
+*Computer Vision, Graphics, and Image Processing* 56(6), 1994. VIPP currently
+pins scikit-image 0.26.0 in its supported Python 3.12 application environments.
+
+### Orthogonal 3D Skeleton QC
+
+Use this small comparison before relying on a new volumetric segmentation:
+
+1. Send the same explicit ZYX binary mask to two `Skeletonize` nodes. Set one
+   to `3D ZYX` with `Lee` and the other to `2D YX` with `Auto`.
+2. Inspect the source mask and both skeleton outputs in XY, XZ, and YZ views.
+   A true 3D centerline should remain connected while it curves or branches
+   through Z. A slice-wise result often appears plausible in XY but becomes a
+   ribbon, a set of parallel paths, or disconnected fragments in XZ/YZ.
+3. Connect each result to `Skeleton Keypoints` or `Skeleton Graph Overlay` and
+   compare endpoints and junctions in all three orientations.
+4. Connect each result to `Analyze Skeleton`. Review component, endpoint,
+   junction, branch, and cycle counts. Large changes between the two modes are
+   evidence that the spatial-processing choice materially affects network
+   topology.
+5. Keep `3D ZYX` only when Z is an explicitly declared spatial axis. For an
+   anisotropic volume, set the Z/Y/X calibration before interpreting physical
+   branch lengths.
 
 ### Analyze Skeleton
 

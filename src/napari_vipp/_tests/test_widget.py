@@ -137,7 +137,9 @@ from napari_vipp.core.compute_pipeline_optimizer import (
 )
 from napari_vipp.core.execution import (
     PipelineExecutionFailure,
+    PipelineRunRequest,
     ResidentThumbnailStatisticsObservation,
+    execute_pipeline_request,
 )
 from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.graph_fragments import (
@@ -2285,6 +2287,35 @@ def test_background_auto_run_is_detached_and_cancel_button_remains_usable(qtbot)
     assert widget.compute_mode_combo.isEnabled()
 
 
+def test_gpu_memory_preflight_error_is_attached_to_every_affected_node(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    median = widget.pipeline.add_node("median_filter")
+    failure = PipelineExecutionFailure(
+        kind="memory_preflight",
+        error_type="DeviceMemoryPreflightError",
+        message="GPU VRAM preflight failed",
+        reason_code="device_memory_preflight",
+        node_ids=("gaussian", median.id),
+        required_bytes=7_000,
+        available_bytes=5_000,
+        shortfall_bytes=2_000,
+    )
+
+    messages = widget._background_pipeline_failure_messages(
+        None,
+        {"gaussian", median.id},
+        None,
+        failure.message,
+        failure,
+    )
+
+    assert messages == {
+        "gaussian": failure.message,
+        median.id: failure.message,
+    }
+
+
 def test_small_auto_wait_keeps_qt_cancel_action_responsive(qtbot, monkeypatch):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
     qtbot.addWidget(widget)
@@ -4349,6 +4380,168 @@ def test_image_source_axis_declaration_enables_rescale_z_and_undo(qtbot):
     output = widget.pipeline.outputs[rescale.id]
     assert output is not None, widget.status_label.text()
     assert output.shape == (5, 8, 9)
+
+
+def test_qyx_declaration_updates_gaussian_z_visibility_before_pixels_run(
+    qtbot,
+    monkeypatch,
+):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "QYX"}))
+    qtbot.addWidget(widget)
+    subtract = widget.add_node_from_palette("subtract_background")
+    rescale = widget.add_node_from_palette("rescale_intensity")
+    gaussian = widget.add_node_from_palette("gaussian_blur_3d")
+    unrelated = widget.add_node_from_palette("median_filter")
+    widget.pipeline.set_param(subtract.id, "spatial_mode", "2D YX")
+    assert widget.pipeline.connect("input", subtract.id).success
+    assert widget.pipeline.connect(subtract.id, rescale.id).success
+
+    source_payloads, _layers = widget._source_payloads_for_pipeline()
+    widget.pipeline.run(
+        None,
+        source_payloads=source_payloads,
+        target_node_ids={rescale.id},
+    )
+    assert widget.pipeline.connect(rescale.id, gaussian.id).success
+    assert widget.pipeline.connect("input", unrelated.id).success
+    widget.pipeline.set_param(gaussian.id, "sigma_z", 3.25)
+
+    widget.graph_view.select_node(gaussian.id)
+    assert "sigma_z" not in widget._parameter_widgets
+    assert widget.pipeline.output_states[rescale.id].axis_order == "QYX"
+
+    def unexpected_statistics(*_args, **_kwargs):
+        raise AssertionError("inspector projection must not calculate statistics")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.metadata._value_range_label",
+        unexpected_statistics,
+    )
+
+    widget.pipeline.set_node_execution_error(
+        unrelated.id,
+        "Synthetic GPU VRAM preflight failure",
+    )
+    widget.graph_view.select_node("input")
+    source_control = widget._parameter_widgets["image_source"]
+    z_stack_index = source_control.axis_control.mode_combo.findData("z_stack")
+    source_control.axis_control.mode_combo.setCurrentIndex(z_stack_index)
+    widget._debounce_timer.stop()
+
+    widget.graph_view.select_node(gaussian.id)
+    assert widget.pipeline.node_execution_states[unrelated.id] == EXECUTION_ERROR
+    assert widget.pipeline.output_states[rescale.id].axis_order == "QYX"
+    assert "sigma_z" in widget._parameter_widgets
+    assert widget._parameter_widgets["sigma_z"].value() == pytest.approx(3.25)
+
+    widget.graph_view.select_node("input")
+    source_control = widget._parameter_widgets["image_source"]
+    unchanged_index = source_control.axis_control.mode_combo.findData("file")
+    source_control.axis_control.mode_combo.setCurrentIndex(unchanged_index)
+    widget._debounce_timer.stop()
+
+    widget.graph_view.select_node(gaussian.id)
+    assert "sigma_z" not in widget._parameter_widgets
+    assert widget.pipeline.nodes[gaussian.id].params["sigma_z"] == pytest.approx(3.25)
+    assert widget.pipeline.output_states[rescale.id].axis_order == "QYX"
+
+
+def test_gaussian_axis_projection_ignores_unrelated_broken_source(
+    qtbot,
+    tmp_path,
+):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "QYX"}))
+    qtbot.addWidget(widget)
+    subtract = widget.add_node_from_palette("subtract_background")
+    rescale = widget.add_node_from_palette("rescale_intensity")
+    gaussian = widget.add_node_from_palette("gaussian_blur_3d")
+    widget.pipeline.set_param(subtract.id, "spatial_mode", "2D YX")
+    assert widget.pipeline.connect("input", subtract.id).success
+    assert widget.pipeline.connect(subtract.id, rescale.id).success
+
+    source_payloads, _layers = widget._source_payloads_for_pipeline()
+    widget.pipeline.run(
+        None,
+        source_payloads=source_payloads,
+        target_node_ids={rescale.id},
+    )
+    assert widget.pipeline.connect(rescale.id, gaussian.id).success
+
+    unrelated_source = widget.add_node_from_palette("input")
+    unrelated_filter = widget.add_node_from_palette("median_filter")
+    widget.pipeline.set_param(unrelated_source.id, "source_mode", "file path")
+    widget.pipeline.set_param(
+        unrelated_source.id,
+        "file_path",
+        str(tmp_path / "missing-unrelated-source.tif"),
+    )
+    assert widget.pipeline.connect(
+        unrelated_source.id,
+        unrelated_filter.id,
+    ).success
+
+    widget.graph_view.select_node(gaussian.id)
+    assert "sigma_z" not in widget._parameter_widgets
+
+    widget.graph_view.select_node("input")
+    source_control = widget._parameter_widgets["image_source"]
+    z_stack_index = source_control.axis_control.mode_combo.findData("z_stack")
+    source_control.axis_control.mode_combo.setCurrentIndex(z_stack_index)
+    widget._debounce_timer.stop()
+
+    widget.graph_view.select_node(gaussian.id)
+    assert "sigma_z" in widget._parameter_widgets
+    assert widget.pipeline.output_states[unrelated_source.id] is None
+
+
+def test_qyx_gaussian_visibility_survives_workflow_save_and_reopen_without_run(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "axis_declaration", "QYX -> ZYX")
+    subtract = pipeline.add_node("subtract_background")
+    pipeline.set_param(subtract.id, "spatial_mode", "2D YX")
+    rescale = pipeline.add_node("rescale_intensity")
+    gaussian = pipeline.add_node("gaussian_blur_3d")
+    pipeline.set_param(gaussian.id, "sigma_z", 3.25)
+    assert pipeline.connect("input", subtract.id).success
+    assert pipeline.connect(subtract.id, rescale.id).success
+    assert pipeline.connect(rescale.id, gaussian.id).success
+    path = tmp_path / "qyx-gaussian.json"
+    save_workflow(
+        path,
+        pipeline,
+        {},
+        metadata={
+            "vipp": {
+                "inspector": {
+                    "selected_node_id": gaussian.id,
+                    "right_panel_visible": True,
+                }
+            }
+        },
+    )
+
+    restored = VippWidget(_Viewer(np.zeros((3, 8, 9)), metadata={"axes": "QYX"}))
+    qtbot.addWidget(restored)
+    run_calls = []
+    monkeypatch.setattr(restored, "run_pipeline", lambda: run_calls.append(True))
+
+    restored.load_workflow_file(path)
+
+    assert run_calls == [True]
+    assert restored._selected_node_id == gaussian.id
+    assert restored.pipeline.nodes["input"].params["axis_declaration"] == (
+        "QYX -> ZYX"
+    )
+    assert "sigma_z" in restored._parameter_widgets
+    assert restored._parameter_widgets["sigma_z"].value() == pytest.approx(3.25)
+    assert restored.pipeline.output_states[rescale.id] is None
 
 
 def test_input_node_tile_binding_subtitle_updates_live(qtbot, tmp_path):
@@ -7340,6 +7533,152 @@ def test_hidden_parameter_round_trips_through_current_workflow_schema(qtbot):
     assert "histogram_bins=8192" in widget._node_code_text(node.id)
     exported = export_pipeline_to_python(widget.pipeline)
     assert '"histogram_bins":8192' in exported
+
+
+def test_skeletonize_inspector_reports_volumetric_auto_resolution(qtbot):
+    viewer = _Viewer(
+        np.zeros((3, 16, 18), dtype=np.float32),
+        metadata={"axes": "ZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("skeletonize")
+    widget._connect_nodes("threshold", node.id)
+    widget.graph_view.select_node(node.id)
+
+    spatial_control = widget._parameter_widgets["spatial_mode"]
+    spatial_choices = [
+        spatial_control.combo.itemText(index)
+        for index in range(spatial_control.combo.count())
+    ]
+    method_control = widget._parameter_widgets["method"]
+    method_choices = [
+        method_control.combo.itemText(index)
+        for index in range(method_control.combo.count())
+    ]
+
+    assert spatial_choices == [
+        "Auto from axes - using 3D ZYX",
+        "2D YX",
+        "3D ZYX",
+    ]
+    assert method_choices == ["Auto", "Lee", "Zhang 2D"]
+
+
+def test_skeletonize_inspector_marks_qyx_auto_as_unavailable(qtbot):
+    viewer = _Viewer(
+        np.zeros((3, 16, 18), dtype=np.float32),
+        metadata={"axes": "QYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("skeletonize")
+    widget._connect_nodes("threshold", node.id)
+    widget.graph_view.select_node(node.id)
+
+    control = widget._parameter_widgets["spatial_mode"]
+    choices = [
+        control.combo.itemText(index) for index in range(control.combo.count())
+    ]
+
+    assert choices == [
+        "Auto from axes - unavailable (declare QYX -> ZYX or choose 2D YX)",
+        "2D YX",
+    ]
+    assert widget.pipeline.nodes[node.id].params["spatial_mode"] == (
+        "Auto from axes"
+    )
+
+
+def test_skeletonize_inspector_projects_qyx_declaration_before_recalculation(
+    qtbot,
+):
+    viewer = _Viewer(
+        np.zeros((3, 16, 18), dtype=np.float32),
+        metadata={"axes": "QYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("skeletonize")
+    widget._connect_nodes("threshold", node.id)
+    widget.graph_view.select_node(node.id)
+    control = widget._parameter_widgets["spatial_mode"]
+    assert [
+        control.combo.itemText(index)
+        for index in range(control.combo.count())
+    ] == [
+        "Auto from axes - unavailable (declare QYX -> ZYX or choose 2D YX)",
+        "2D YX",
+    ]
+
+    widget.graph_view.select_node("input")
+    source_control = widget._parameter_widgets["image_source"]
+    z_stack_index = source_control.axis_control.mode_combo.findData("z_stack")
+    source_control.axis_control.mode_combo.setCurrentIndex(z_stack_index)
+    widget._debounce_timer.stop()
+
+    # The live carried state deliberately remains paired with the old cached
+    # pixels until execution succeeds. Inspector choices must use the detached
+    # metadata projection of the newly authored source declaration instead.
+    assert widget.pipeline.nodes["input"].params["axis_declaration"] == (
+        "QYX -> ZYX"
+    )
+    assert widget.pipeline.input_state_for_node(node.id).axis_order == "QYX"
+
+    widget.graph_view.select_node(node.id)
+    control = widget._parameter_widgets["spatial_mode"]
+    assert [
+        control.combo.itemText(index)
+        for index in range(control.combo.count())
+    ] == [
+        "Auto from axes - using 3D ZYX",
+        "2D YX",
+        "3D ZYX",
+    ]
+    assert widget.pipeline.nodes[node.id].params["spatial_mode"] == (
+        "Auto from axes"
+    )
+    assert widget.pipeline.input_state_for_node(node.id).axis_order == "QYX"
+
+    assert widget._refresh_selected_parameter_controls() is False
+    control = widget._parameter_widgets["spatial_mode"]
+    assert [
+        control.combo.itemText(index)
+        for index in range(control.combo.count())
+    ] == [
+        "Auto from axes - using 3D ZYX",
+        "2D YX",
+        "3D ZYX",
+    ]
+
+
+def test_skeletonize_inspector_marks_trailing_qyx_as_unavailable(qtbot):
+    viewer = _Viewer(
+        np.zeros((2, 3, 16, 18), dtype=np.float32),
+        metadata={"axes": "TQYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("skeletonize")
+    widget._connect_nodes("threshold", node.id)
+    widget.graph_view.select_node(node.id)
+
+    control = widget._parameter_widgets["spatial_mode"]
+    choices = [
+        control.combo.itemText(index) for index in range(control.combo.count())
+    ]
+
+    assert choices == [
+        "Auto from axes - unavailable (declare TQYX -> TZYX or choose 2D YX)",
+        "2D YX",
+    ]
+    assert widget.pipeline.nodes[node.id].params["spatial_mode"] == (
+        "Auto from axes"
+    )
 
 
 def test_auto_watershed_hides_spatial_mode_for_2d_input(qtbot):
@@ -12240,19 +12579,23 @@ def test_source_statistics_reuse_rejects_unrecognized_revision_tokens(
     )
 
 
-def test_file_source_signature_distinguishes_pinned_series_arrays(qtbot):
+def test_file_source_signature_uses_revision_and_logical_series_not_array(qtbot):
     widget = VippWidget(_Viewer(np.zeros((4, 4), dtype=np.float32)))
     qtbot.addWidget(widget)
     identity = LocalSourceIdentity("file", "a" * 64, 1, 4096)
+    metadata = {
+        "vipp_source_path": "C:/verified/source.czi",
+        "vipp_source_series_index": 2,
+    }
     first = SourcePayload(
         np.zeros((8, 8), dtype=np.uint16),
-        {},
+        metadata,
         "Same series name",
         revision_token=identity,
     )
-    second = SourcePayload(
+    rematerialized = SourcePayload(
         np.full((8, 8), 900, dtype=np.uint16),
-        {},
+        dict(metadata),
         "Same series name",
         revision_token=identity,
     )
@@ -12263,14 +12606,217 @@ def test_file_source_signature_distinguishes_pinned_series_arrays(qtbot):
         "",
         {"input": first},
     )
-    second_signature = widget._pipeline_source_signature(
+    rematerialized_signature = widget._pipeline_source_signature(
         None,
         None,
         "",
-        {"input": second},
+        {"input": rematerialized},
     )
 
-    assert first_signature != second_signature
+    assert first_signature == rematerialized_signature
+
+    different_series = replace(
+        rematerialized,
+        metadata={**metadata, "vipp_source_series_index": 3},
+    )
+    different_revision = replace(
+        rematerialized,
+        revision_token=LocalSourceIdentity("file", "b" * 64, 1, 4096),
+    )
+
+    assert first_signature != widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        {"input": different_series},
+    )
+    assert first_signature != widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        {"input": different_revision},
+    )
+
+
+@pytest.mark.parametrize(
+    "calculation_order",
+    (("intensity", "mesh"), ("mesh", "intensity")),
+)
+@pytest.mark.parametrize(
+    "cache_mode",
+    (CACHE_MODE_KEEP_ALL, CACHE_MODE_LOW_MEMORY),
+)
+def test_rematerialized_file_source_preserves_sibling_measurements_for_merge(
+    qtbot,
+    monkeypatch,
+    calculation_order,
+    cache_mode,
+):
+    image = np.zeros((8, 12, 12), dtype=np.float32)
+    image[1:4, 1:4, 1:4] = 10
+    image[4:7, 7:10, 7:10] = 20
+    widget = VippWidget(_Viewer(image, metadata={"axes": "ZYX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
+    qtbot.addWidget(widget)
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    intensity = widget.add_node_from_palette("measure_objects_intensity")
+    mesh = widget.add_node_from_palette("measure_3d_mesh_morphology")
+    merged = widget.add_node_from_palette("merge_tables")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget.pipeline.set_param(mesh.id, "minimum_voxel_count", 1)
+    widget.pipeline.set_param(mesh.id, "include_convex_hull_metrics", False)
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget._connect_nodes(labels.id, intensity.id, target_port=0)
+    widget._connect_nodes("input", intensity.id, target_port=1)
+    widget._connect_nodes(labels.id, mesh.id)
+    widget._connect_nodes(intensity.id, merged.id, target_port=0)
+    widget._connect_nodes(mesh.id, merged.id, target_port=1)
+    widget._debounce_timer.stop()
+    widget.cache_mode_combo.setCurrentText(cache_mode)
+
+    identity = LocalSourceIdentity("file", "a" * 64, 1, image.nbytes)
+    metadata = {
+        "axes": "ZYX",
+        "vipp_source_path": "C:/verified/source.czi",
+        "vipp_source_series_index": 2,
+    }
+
+    def rematerialized_source_payloads():
+        data = np.array(image, copy=True)
+        data.setflags(write=False)
+        return (
+            {
+                "input": SourcePayload(
+                    data,
+                    dict(metadata),
+                    "Volume series",
+                    revision_token=identity,
+                )
+            },
+            [],
+        )
+
+    monkeypatch.setattr(
+        widget,
+        "_source_payloads_for_pipeline",
+        rematerialized_source_payloads,
+    )
+    widget.run_pipeline(force_sync=True)
+    measurement_nodes = {"intensity": intensity, "mesh": mesh}
+
+    first, second = (measurement_nodes[name] for name in calculation_order)
+    widget.run_pipeline(force_sync=True, manual_node_ids={first.id})
+
+    assert widget.pipeline.node_execution_states[first.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[second.id] == (
+        EXECUTION_NOT_CALCULATED
+    )
+    assert widget.pipeline.node_execution_states[merged.id] == EXECUTION_BLOCKED
+
+    widget.run_pipeline(force_sync=True, manual_node_ids={second.id})
+
+    assert widget.pipeline.node_execution_states[intensity.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[mesh.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[merged.id] == EXECUTION_READY
+    assert {intensity.id, mesh.id, merged.id} <= widget.pipeline.completed_node_ids
+    assert widget.pipeline.outputs[merged.id].row_count == 2
+
+    widget.run_pipeline(force_sync=True, manual_node_ids={first.id})
+
+    assert widget.pipeline.node_execution_states[intensity.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[mesh.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[merged.id] == EXECUTION_READY
+
+
+def test_partial_publication_imports_only_accepted_result_lineage(
+    qtbot,
+    monkeypatch,
+):
+    image = np.zeros((12, 12), dtype=np.float32)
+    image[1:4, 1:4] = 10
+    image[7:10, 7:10] = 20
+    authored = PrototypePipeline()
+    authored.reset_empty_graph()
+    threshold = authored.add_node("binary_threshold")
+    labels = authored.add_node("label_connected_components")
+    morphology = authored.add_node("measure_objects")
+    intensity = authored.add_node("measure_objects_intensity")
+    merged = authored.add_node("merge_tables")
+    unrelated = authored.add_node("median_filter")
+    authored.set_param(threshold.id, "threshold", 5)
+    authored.set_param(unrelated.id, "size", 1)
+    assert authored.connect("input", threshold.id).success
+    assert authored.connect(threshold.id, labels.id).success
+    assert authored.connect(labels.id, morphology.id).success
+    assert authored.connect(labels.id, intensity.id, target_port=0).success
+    assert authored.connect("input", intensity.id, target_port=1).success
+    assert authored.connect(morphology.id, merged.id, target_port=0).success
+    assert authored.connect(intensity.id, merged.id, target_port=1).success
+    assert authored.connect("input", unrelated.id).success
+
+    identity = LocalSourceIdentity("file", "a" * 64, 1, image.nbytes)
+
+    def rematerialized_payload() -> SourcePayload:
+        current = np.array(image, copy=True)
+        current.setflags(write=False)
+        return SourcePayload(
+            current,
+            {
+                "axes": "YX",
+                "vipp_source_path": "C:/verified/source.tif",
+                "vipp_source_series_index": 0,
+            },
+            "Verified series",
+            revision_token=identity,
+        )
+
+    retained = frozenset({morphology.id, intensity.id, merged.id})
+    first = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=146,
+            workflow=serialize_workflow(authored),
+            input_data=None,
+            input_metadata=None,
+            input_name="",
+            source_payloads={"input": rematerialized_payload()},
+            manual_node_ids=frozenset({morphology.id}),
+            retain_node_ids=retained,
+            prune_unretained=True,
+        )
+    )
+    assert first.error == ""
+    assert first.pipeline is not None
+    assert first.pipeline.outputs[labels.id] is None
+    assert unrelated.id in first.pipeline.node_cache_lineage
+
+    workflow = deserialize_workflow(serialize_workflow(authored))
+    live = PrototypePipeline()
+    live.restore_graph(
+        workflow["nodes"],
+        workflow["connections"],
+        workflow["output_tunnels"],
+    )
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+    widget.pipeline = live
+    monkeypatch.setattr(
+        widget,
+        "_refresh_node_presentation_surfaces",
+        lambda *_args, **_kwargs: None,
+    )
+
+    published = widget._merge_completed_pipeline_run_result(
+        first.pipeline,
+        include_processing=True,
+    )
+
+    required_lineage = {"input", threshold.id, labels.id, morphology.id}
+    assert published == {morphology.id}
+    assert required_lineage <= set(widget.pipeline.node_cache_lineage)
+    assert unrelated.id not in widget.pipeline.node_cache_lineage
 
 
 def test_background_result_from_old_live_source_revision_is_rejected(

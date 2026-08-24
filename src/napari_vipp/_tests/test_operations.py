@@ -6,8 +6,9 @@ from fractions import Fraction
 import numpy as np
 import pytest
 import tifffile
+from scipy import ndimage as ndi
 from scipy import signal
-from skimage import exposure
+from skimage import exposure, morphology
 
 import napari_vipp.core.operations as operations
 from napari_vipp._sample_data import make_sample_data
@@ -1855,6 +1856,78 @@ def test_manual_execution_barrier_is_operation_agnostic():
     assert pipeline.outputs[selected.id] is not cached_selected
 
 
+@pytest.mark.parametrize("calculation_order", ((0, 1), (1, 0)))
+def test_pruned_support_recompute_preserves_cached_manual_sibling(
+    calculation_order,
+):
+    data = np.zeros((9, 9), dtype=np.float32)
+    data[1:4, 1:4] = 10
+    data[6:8, 6:8] = 20
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    morphology = pipeline.add_node("measure_objects")
+    intensity = pipeline.add_node("measure_objects_intensity")
+    merged = pipeline.add_node("merge_tables")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    assert pipeline.connect("input", threshold.id).success
+    assert pipeline.connect(threshold.id, labels.id).success
+    assert pipeline.connect(labels.id, morphology.id).success
+    assert pipeline.connect(labels.id, intensity.id, target_port=0).success
+    assert pipeline.connect("input", intensity.id, target_port=1).success
+    assert pipeline.connect(morphology.id, merged.id, target_port=0).success
+    assert pipeline.connect(intensity.id, merged.id, target_port=1).success
+
+    retained = {morphology.id, intensity.id, merged.id}
+    pipeline.run(
+        data,
+        input_metadata={"axes": "YX"},
+        manual_mode=MANUAL_RUN_SKIP,
+        retain_node_ids=retained,
+        prune_unretained=True,
+    )
+    assert pipeline.outputs[labels.id] is None
+
+    manual_nodes = (morphology, intensity)
+    first, second = (manual_nodes[index] for index in calculation_order)
+    for node in (first, second, first):
+        pipeline.run(
+            data,
+            input_metadata={"axes": "YX"},
+            dirty_node_ids={node.id},
+            manual_mode=MANUAL_RUN_SKIP,
+            manual_node_ids={node.id},
+            retain_node_ids=retained,
+            prune_unretained=True,
+        )
+
+    assert pipeline.node_execution_states[morphology.id] == EXECUTION_READY
+    assert pipeline.node_execution_states[intensity.id] == EXECUTION_READY
+    assert pipeline.node_execution_states[merged.id] == EXECUTION_READY
+    assert {morphology.id, intensity.id, merged.id} <= (
+        pipeline.completed_node_ids
+    )
+    assert pipeline.outputs[merged.id].row_count == 2
+
+    pipeline.set_param(threshold.id, "threshold", 15)
+    pipeline.run(
+        data,
+        input_metadata={"axes": "YX"},
+        dirty_node_ids={threshold.id},
+        manual_mode=MANUAL_RUN_SKIP,
+        retain_node_ids=retained,
+        prune_unretained=True,
+    )
+
+    assert pipeline.node_execution_states[morphology.id] == EXECUTION_STALE
+    assert pipeline.node_execution_states[intensity.id] == EXECUTION_STALE
+    assert pipeline.node_execution_states[merged.id] == EXECUTION_BLOCKED
+    assert morphology.id not in pipeline.completed_node_ids
+    assert intensity.id not in pipeline.completed_node_ids
+    assert pipeline.outputs[merged.id] is not None
+
+
 def test_stale_manual_node_blocks_automatic_descendants_until_recalculated(
     monkeypatch,
 ):
@@ -2277,6 +2350,29 @@ def test_colocalization_csv_reports_explicit_threshold_population_fields(tmp_pat
         assert header.index(canonical) < header.index(compatibility_alias)
 
 
+def _oblique_branching_volume() -> np.ndarray:
+    shape = (17, 33, 33)
+    center = np.asarray((8, 16, 16))
+    endpoints = (
+        np.asarray((2, 5, 5)),
+        np.asarray((14, 5, 27)),
+        np.asarray((14, 27, 16)),
+    )
+    centerline = np.zeros(shape, dtype=bool)
+    for endpoint in endpoints:
+        sample_count = int(np.max(np.abs(endpoint - center))) + 1
+        coordinates = np.stack(
+            [
+                np.rint(
+                    np.linspace(center[axis], endpoint[axis], sample_count)
+                ).astype(int)
+                for axis in range(3)
+            ]
+        )
+        centerline[tuple(coordinates)] = True
+    return ndi.binary_dilation(centerline, structure=morphology.ball(2))
+
+
 def test_skeletonize_mask_reduces_binary_objects_to_skeleton():
     mask = np.zeros((7, 7), dtype=bool)
     mask[2:5, 1:6] = True
@@ -2286,6 +2382,156 @@ def test_skeletonize_mask_reduces_binary_objects_to_skeleton():
     assert skeleton.dtype == bool
     assert skeleton.sum() < mask.sum()
     assert skeleton.any()
+
+
+def test_skeletonize_auto_dispatches_explicit_algorithm_once_per_spatial_block(
+    monkeypatch,
+):
+    volume = _oblique_branching_volume()
+    original = operations.morphology.skeletonize
+    calls: list[tuple[tuple[int, ...], str | None]] = []
+
+    def record_call(block, *, method=None):
+        calls.append((tuple(block.shape), method))
+        return original(block, method=method)
+
+    monkeypatch.setattr(operations.morphology, "skeletonize", record_call)
+
+    skeletonize_mask(
+        volume,
+        spatial_mode="Auto from axes",
+        method="Auto",
+        resolved_spatial_ndim=3,
+    )
+    assert calls == [((17, 33, 33), "lee")]
+
+    calls.clear()
+    time_series = np.stack((volume, np.flip(volume, axis=2)))
+    output = skeletonize_mask(
+        time_series,
+        spatial_mode="Auto from axes",
+        method="Auto",
+        resolved_spatial_ndim=3,
+    )
+    assert calls == [((17, 33, 33), "lee"), ((17, 33, 33), "lee")]
+    assert output.shape == time_series.shape
+
+    calls.clear()
+    skeletonize_mask(
+        volume[8],
+        spatial_mode="Auto from axes",
+        method="Auto",
+        resolved_spatial_ndim=2,
+    )
+    assert calls == [((33, 33), "zhang")]
+
+
+@pytest.mark.parametrize("has_foreground", (False, True))
+def test_skeletonize_rejects_zhang_for_3d_before_empty_short_circuit(
+    has_foreground,
+):
+    volume = np.zeros((3, 7, 7), dtype=bool)
+    if has_foreground:
+        volume[:, 2:5, 2:5] = True
+
+    with pytest.raises(
+        ValueError,
+        match="Zhang 2D.*cannot process a 3D ZYX volume",
+    ):
+        skeletonize_mask(
+            volume,
+            spatial_mode="3D ZYX",
+            method="Zhang 2D",
+        )
+
+
+def test_skeletonize_rejects_unknown_method_instead_of_treating_it_as_auto():
+    with pytest.raises(ValueError, match="must be Auto, Lee, or Zhang 2D"):
+        skeletonize_mask(
+            np.ones((7, 7), dtype=bool),
+            spatial_mode="2D YX",
+            method="unknown",
+        )
+
+
+def test_volumetric_skeletonize_preserves_known_3d_branch_topology():
+    volume = _oblique_branching_volume()
+
+    volumetric = skeletonize_mask(
+        volume,
+        spatial_mode="3D ZYX",
+        method="Lee",
+    )
+    slice_wise = skeletonize_mask(
+        volume,
+        spatial_mode="2D YX",
+        method="Auto",
+    )
+
+    assert volumetric.shape == volume.shape
+    assert volumetric.dtype == bool
+    assert len(np.unique(np.argwhere(volumetric)[:, 0])) > 1
+    assert not np.array_equal(volumetric, slice_wise)
+
+    volumetric_record = analyze_skeleton(
+        volumetric,
+        resolved_spatial_ndim=3,
+    ).records()[0]
+    slice_record = analyze_skeleton(
+        slice_wise,
+        resolved_spatial_ndim=3,
+    ).records()[0]
+    branch_records = measure_skeleton_branches(
+        volumetric,
+        resolved_spatial_ndim=3,
+    ).records()
+    network_record = measure_overall_skeleton_network(
+        volumetric,
+        resolved_spatial_ndim=3,
+    ).records()[0]
+
+    assert volumetric_record["component_count_in_block"] == 1
+    assert volumetric_record["endpoint_voxel_count"] == 3
+    assert volumetric_record["junction_voxel_count"] == 1
+    assert volumetric_record["branch_count"] == 3
+    assert volumetric_record["cycle_count"] == 0
+    assert slice_record["junction_voxel_count"] > 1
+    assert slice_record["branch_count"] > 3
+    assert slice_record["cycle_count"] > 0
+    assert len(branch_records) == 3
+    assert {record["branch_type"] for record in branch_records} == {
+        "endpoint_to_junction"
+    }
+    assert network_record["component_count"] == 1
+    assert network_record["endpoint_voxel_count"] == 3
+    assert network_record["junction_voxel_count"] == 1
+    assert network_record["branch_count"] == 3
+    assert network_record["cycle_count"] == 0
+
+
+def test_tzyx_volumetric_skeletons_remain_independent_downstream_blocks():
+    volume = _oblique_branching_volume()
+    time_series = np.stack((volume, np.flip(volume, axis=2)))
+    skeleton = skeletonize_mask(
+        time_series,
+        spatial_mode="3D ZYX",
+        method="Lee",
+    )
+
+    table = analyze_skeleton(
+        skeleton,
+        spatial_mode="3D ZYX",
+        axis_names=("t", "z", "y", "x"),
+        axis_types=("time", "space", "space", "space"),
+    )
+    records = table.records()
+
+    assert [record["t_index"] for record in records] == [0, 1]
+    assert all(record["component_count_in_block"] == 1 for record in records)
+    assert all(record["endpoint_voxel_count"] == 3 for record in records)
+    assert all(record["junction_voxel_count"] == 1 for record in records)
+    assert all(record["branch_count"] == 3 for record in records)
+    assert all(record["cycle_count"] == 0 for record in records)
 
 
 def test_skeleton_keypoints_identifies_endpoints_junctions_and_isolates():
@@ -2810,10 +3056,12 @@ def test_gaussian_3d_spreads_across_z_axis():
     data[1, 4, 4] = 1.0
 
     blurred = gaussian_blur_3d(data, sigma_z=1.0, sigma_y=0.0, sigma_x=0.0)
+    unblurred = gaussian_blur_3d(data, sigma_z=0.0, sigma_y=0.0, sigma_x=0.0)
 
     assert blurred.shape == data.shape
     assert blurred[0, 4, 4] > 0
     assert blurred[2, 4, 4] > 0
+    np.testing.assert_array_equal(unblurred, data)
 
 
 def test_born_wolf_psf_generates_normalized_3d_metadata_sized_kernel():

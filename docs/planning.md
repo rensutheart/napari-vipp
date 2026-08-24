@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-08-23
+Last reviewed: 2026-08-24
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -78,6 +78,20 @@ Important remaining limits are:
 The current development line is `0.14.0a1`, beginning with immutable SourceItem
 identity. The detailed `0.13.0a8` sections below are a delivered contract record,
 not unfinished work or a reason to cut another 0.13 alpha.
+
+Before SourceItem feature work continues, the first 0.14 integration tranche
+closes four urgent correctness and diagnostics gaps found with real 0.13
+workflows: immediate QYX-to-ZYX Gaussian inspector propagation
+([#43](https://github.com/rensutheart/napari-vipp/issues/43)), explicit verified
+volumetric skeletonization
+([#44](https://github.com/rensutheart/napari-vipp/issues/44)), actionable GPU
+VRAM admission errors
+([#45](https://github.com/rensutheart/napari-vipp/issues/45)), and stable sibling
+measurement caches for Merge Tables
+([#46](https://github.com/rensutheart/napari-vipp/issues/46)). These repairs are
+release-blocking because they affect scientific dimensionality, graph
+executability, or users' ability to act safely on a failed calculation; they do
+not expand the SourceItem feature scope described below.
 
 Small changes should land as independent, reviewable pull requests. A release
 does not wait for every item in a cycle when a coherent, useful subset is ready.

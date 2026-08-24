@@ -682,6 +682,73 @@ def test_workflow_preserves_valid_runtime_derived_parameter():
     assert restored_node.params["resolved_spatial_ndim"] == 3
 
 
+def test_workflow_roundtrip_preserves_explicit_volumetric_skeletonization():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    assert pipeline.connect("input", threshold.id).success
+    skeletonize = pipeline.add_node("skeletonize")
+    pipeline.set_param(skeletonize.id, "spatial_mode", "3D ZYX")
+    pipeline.set_param(skeletonize.id, "method", "Lee")
+    pipeline.set_param(skeletonize.id, "resolved_spatial_ndim", 3)
+    assert pipeline.connect(threshold.id, skeletonize.id).success
+
+    restored = deserialize_workflow(serialize_workflow(pipeline))
+    restored_node = next(
+        item for item in restored["nodes"] if item.id == skeletonize.id
+    )
+
+    assert restored_node.params["spatial_mode"] == "3D ZYX"
+    assert restored_node.params["method"] == "Lee"
+    assert restored_node.params["resolved_spatial_ndim"] == 3
+
+
+def test_workflow_roundtrip_preserves_sibling_measurement_merge_topology():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    intensity = pipeline.add_node("measure_objects_intensity")
+    mesh = pipeline.add_node("measure_3d_mesh_morphology")
+    merged = pipeline.add_node("merge_tables")
+    assert pipeline.connect("input", threshold.id).success
+    assert pipeline.connect(threshold.id, labels.id).success
+    assert pipeline.connect(labels.id, intensity.id, target_port=0).success
+    assert pipeline.connect("input", intensity.id, target_port=1).success
+    assert pipeline.connect(labels.id, mesh.id).success
+    assert pipeline.connect(intensity.id, merged.id, target_port=0).success
+    assert pipeline.connect(mesh.id, merged.id, target_port=1).success
+
+    workflow = deserialize_workflow(serialize_workflow(pipeline))
+    restored = PrototypePipeline()
+    restored.restore_graph(
+        workflow["nodes"],
+        workflow["connections"],
+        workflow["output_tunnels"],
+    )
+
+    assert restored.nodes[intensity.id].operation_id == (
+        "measure_objects_intensity"
+    )
+    assert restored.nodes[mesh.id].operation_id == "measure_3d_mesh_morphology"
+    assert restored.nodes[merged.id].operation_id == "merge_tables"
+    assert GraphConnection(labels.id, intensity.id, target_port=0) in (
+        restored.connections
+    )
+    assert GraphConnection("input", intensity.id, target_port=1) in (
+        restored.connections
+    )
+    assert GraphConnection(labels.id, mesh.id, target_port=0) in (
+        restored.connections
+    )
+    assert GraphConnection(intensity.id, merged.id, target_port=0) in (
+        restored.connections
+    )
+    assert GraphConnection(mesh.id, merged.id, target_port=1) in (
+        restored.connections
+    )
+
+
 def test_workflow_preserves_supported_optional_ui_parameters():
     pipeline = PrototypePipeline()
     node = pipeline.add_node("rescale_axes")

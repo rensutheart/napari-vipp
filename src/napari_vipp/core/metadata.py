@@ -2636,6 +2636,8 @@ def _operation_history(
         return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
     if operation_id == "composite_to_rgb":
         return _composite_to_rgb_history(input_state, operation_title, params)
+    if operation_id == "skeletonize":
+        return _skeletonize_history(operation_title, params)
     if operation_id == "skeleton_graph_overlay":
         return f"{operation_title}: {params.get('display_mode', 'RGB graph overlay')}"
     if operation_id == "crop_stack":
@@ -2709,6 +2711,42 @@ def _operation_history(
             f"via {params.get('scaling', 'rescale')}"
         )
     return operation_title
+
+
+def _skeletonize_history(
+    operation_title: str,
+    params: dict[str, Any],
+) -> str:
+    """Describe the resolved scientific thinning contract in image history."""
+    try:
+        spatial_ndim = int(params.get("resolved_spatial_ndim", 0))
+    except (TypeError, ValueError):
+        spatial_ndim = 0
+    if spatial_ndim not in {2, 3}:
+        mode = str(params.get("spatial_mode", "Auto from axes")).casefold()
+        spatial_ndim = 3 if mode.startswith("3d") else 2 if mode.startswith("2d") else 0
+
+    authored_method = str(params.get("method", "Auto")).strip()
+    normalized_method = authored_method.casefold()
+    if normalized_method == "auto":
+        actual_method = "Lee" if spatial_ndim == 3 else "Zhang 2D"
+        method_label = f"{actual_method} (Auto-resolved)"
+    elif normalized_method == "lee":
+        method_label = "Lee"
+    else:
+        method_label = "Zhang 2D"
+
+    if spatial_ndim == 3:
+        scope = "3D ZYX volumetric block per leading index"
+        neighborhood = "3x3x3 neighborhood"
+    else:
+        scope = "2D YX block per leading index"
+        neighborhood = "3x3 neighborhood"
+    return (
+        f"{operation_title}: method={method_label}; resolved={scope}; "
+        f"connectivity-preserving thinning with {neighborhood}; "
+        "outside-block boundary=background"
+    )
 
 
 def _automatic_threshold_history(

@@ -143,6 +143,7 @@ def load_frozen_file_source_snapshot(
         {
             "vipp_source_path": str(source),
             "vipp_source_identity": identity.to_dict(),
+            "vipp_source_series_index": int(series_index),
             "vipp_source_snapshot_policy": FILE_SOURCE_SNAPSHOT_POLICY,
         },
         dataset.selected_series.name,

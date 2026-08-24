@@ -1865,13 +1865,11 @@ def skeletonize_mask(
         spatial_mode,
         resolved_spatial_ndim,
     )
-    method_value = _skeletonize_method(method)
+    method_value = _skeletonize_method(method, spatial_ndim=spatial_ndim)
 
     def skeletonize_block(block: np.ndarray) -> np.ndarray:
         if not np.any(block):
             return np.zeros_like(block, dtype=bool)
-        if method_value == "zhang" and block.ndim != 2:
-            raise ValueError("Zhang skeletonization is only valid for 2D blocks.")
         return morphology.skeletonize(block, method=method_value)
 
     return _apply_spatial_blocks(mask, spatial_ndim, skeletonize_block, dtype=bool)
@@ -7404,15 +7402,24 @@ class _SkeletonBranchTrace:
     euclidean_physical_distance: float
 
 
-def _skeletonize_method(method: str) -> str | None:
-    value = str(method).strip().lower()
+def _skeletonize_method(method: str, *, spatial_ndim: int) -> str:
+    """Resolve and validate the exact scikit-image thinning implementation."""
+    if spatial_ndim not in {2, 3}:
+        raise ValueError("Skeletonize supports only 2D YX or 3D ZYX blocks.")
+
+    value = str(method).strip().casefold()
     if value == "auto":
-        return None
-    if value.startswith("lee"):
+        return "lee" if spatial_ndim == 3 else "zhang"
+    if value == "lee":
         return "lee"
-    if value.startswith("zhang"):
+    if value in {"zhang", "zhang 2d"}:
+        if spatial_ndim != 2:
+            raise ValueError(
+                "Zhang 2D skeletonization cannot process a 3D ZYX volume. "
+                "Choose Lee or Auto for volumetric skeletonization."
+            )
         return "zhang"
-    return None
+    raise ValueError("Skeletonize method must be Auto, Lee, or Zhang 2D.")
 
 
 def _skeleton_adjacency(

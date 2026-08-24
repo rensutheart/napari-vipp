@@ -254,6 +254,56 @@ def test_gaussian_3d_real_device_anisotropic_parity(
     )
 
 
+def test_gaussian_3d_real_device_sigma_z_controls_depth_spread(real_cupy):
+    host = np.zeros((5, 9, 9), dtype=np.float32)
+    host[2, 4, 4] = 1.0
+
+    _assert_device_parity(
+        real_cupy,
+        host,
+        cpu_operation=gaussian_blur_3d,
+        gpu_operation=cupy_gaussian_blur_3d,
+        region="3D/ZYX/z-only-positive",
+        kwargs={
+            "sigma_z": 1.0,
+            "sigma_y": 0.0,
+            "sigma_x": 0.0,
+            "lock_xy": False,
+        },
+    )
+    _assert_device_parity(
+        real_cupy,
+        host,
+        cpu_operation=gaussian_blur_3d,
+        gpu_operation=cupy_gaussian_blur_3d,
+        region="3D/ZYX/z-only-zero",
+        kwargs={
+            "sigma_z": 0.0,
+            "sigma_y": 0.0,
+            "sigma_x": 0.0,
+            "lock_xy": False,
+        },
+    )
+
+    positive = gaussian_blur_3d(
+        host,
+        sigma_z=1.0,
+        sigma_y=0.0,
+        sigma_x=0.0,
+        lock_xy=False,
+    )
+    zero = gaussian_blur_3d(
+        host,
+        sigma_z=0.0,
+        sigma_y=0.0,
+        sigma_x=0.0,
+        lock_xy=False,
+    )
+    assert positive[1, 4, 4] > 0.0
+    assert positive[3, 4, 4] > 0.0
+    np.testing.assert_array_equal(zero, host)
+
+
 @pytest.mark.parametrize("sigma", (0.0, 12.0))
 def test_gaussian_2d_float32_public_sigma_boundaries(real_cupy, sigma):
     host = _image(np.float32, (31, 37), seed=1217 + int(sigma))

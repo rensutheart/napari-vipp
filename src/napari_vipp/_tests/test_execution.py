@@ -16,6 +16,10 @@ from napari_vipp.core.compute_planning import (
     ComputePreflightError,
     ComputePreflightFailure,
 )
+from napari_vipp.core.device_execution import (
+    DeviceMemoryNodeEstimate,
+    DeviceMemoryPreflightError,
+)
 from napari_vipp.core.execution import (
     PipelineExecutionFailure,
     PipelineNodeResult,
@@ -65,7 +69,10 @@ def _pipeline_cache_kwargs(pipeline: PrototypePipeline) -> dict[str, object]:
         "completed_node_ids": frozenset(pipeline.completed_node_ids),
         "cached_execution_states": dict(pipeline.node_execution_states),
         "cached_execution_messages": dict(pipeline.node_execution_messages),
-        "cached_compute_provenance": dict(pipeline.node_compute_provenance),
+        "cached_compute_provenance": {
+            **pipeline.node_cache_lineage,
+            **pipeline.node_compute_provenance,
+        },
     }
 
 
@@ -639,6 +646,55 @@ def test_host_memory_error_records_available_physical_and_commit_headroom(
     assert detail.available_bytes == 2_000
 
 
+def test_device_memory_preflight_failure_keeps_machine_readable_diagnostics():
+    error = DeviceMemoryPreflightError(
+        "device-segment-001",
+        "cuda-cupy",
+        7_176_934_402,
+        5_314_183_168,
+        device_id="cuda:0",
+        device_name="NVIDIA Test GPU",
+        device_total_bytes=8_000_000_000,
+        device_free_bytes=6_387_925_992,
+        safety_reserve_bytes=1_073_742_824,
+        memory_cap_bytes=7_000_000_000,
+        limiting_constraint="free_vram_minus_reserve",
+        node_estimates=(
+            DeviceMemoryNodeEstimate(
+                "otsu-2",
+                "otsu_threshold",
+                "Otsu Threshold",
+                2_573_388_802,
+                "otsu-test-v1",
+            ),
+            DeviceMemoryNodeEstimate(
+                "remove-4",
+                "remove_small_objects",
+                "Remove Small Objects",
+                4_603_545_600,
+                "remove-test-v1",
+            ),
+        ),
+    )
+
+    detail = execution_module._pipeline_execution_failure(error)
+    document = detail.as_dict()
+
+    assert detail.kind == "memory_preflight"
+    assert detail.node_ids == ("otsu-2", "remove-4")
+    assert detail.shortfall_bytes == 1_862_751_234
+    assert detail.device_free_bytes == 6_387_925_992
+    assert detail.safety_reserve_bytes == 1_073_742_824
+    assert detail.limiting_constraint == "free_vram_minus_reserve"
+    assert document["device_memory_node_estimates"][1] == {
+        "node_id": "remove-4",
+        "operation_id": "remove_small_objects",
+        "title": "Remove Small Objects",
+        "required_bytes": 4_603_545_600,
+        "model_id": "remove-test-v1",
+    }
+
+
 def test_accelerated_planning_error_preserves_only_resolved_source_boundary():
     pipeline = PrototypePipeline()
     pipeline.reset_starter_graph()
@@ -706,6 +762,96 @@ def test_dirty_execution_hydrates_and_reuses_clean_cached_outputs():
     assert result.pipeline is not None
     assert result.pipeline.outputs["input"] is cached_input
     np.testing.assert_array_equal(result.pipeline.outputs["gaussian"], data)
+
+
+def test_detached_low_memory_run_preserves_manual_sibling_across_wrappers():
+    data = np.zeros((9, 9), dtype=np.float32)
+    data[1:4, 1:4] = 10
+    data[6:8, 6:8] = 20
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    morphology = pipeline.add_node("measure_objects")
+    intensity = pipeline.add_node("measure_objects_intensity")
+    merged = pipeline.add_node("merge_tables")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    assert pipeline.connect("input", threshold.id).success
+    assert pipeline.connect(threshold.id, labels.id).success
+    assert pipeline.connect(labels.id, morphology.id).success
+    assert pipeline.connect(labels.id, intensity.id, target_port=0).success
+    assert pipeline.connect("input", intensity.id, target_port=1).success
+    assert pipeline.connect(morphology.id, merged.id, target_port=0).success
+    assert pipeline.connect(intensity.id, merged.id, target_port=1).success
+
+    identity = LocalSourceIdentity("file", "a" * 64, 1, data.nbytes)
+    retained = frozenset({morphology.id, intensity.id, merged.id})
+
+    def rematerialized_payload() -> SourcePayload:
+        current = np.array(data, copy=True)
+        current.setflags(write=False)
+        return SourcePayload(
+            current,
+            {
+                "axes": "YX",
+                "vipp_source_path": "C:/verified/source.tif",
+                "vipp_source_series_index": 0,
+            },
+            "Verified series",
+            revision_token=identity,
+        )
+
+    initial = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=130,
+            workflow=serialize_workflow(pipeline),
+            input_data=None,
+            input_metadata=None,
+            input_name="",
+            source_payloads={"input": rematerialized_payload()},
+            retain_node_ids=retained,
+            prune_unretained=True,
+        )
+    ).pipeline
+    assert initial is not None
+    assert initial.outputs[labels.id] is None
+    assert {"input", threshold.id, labels.id} <= set(
+        initial.node_cache_lineage
+    )
+
+    current = initial
+    cached_intensity = None
+    for run_id, manual_node in (
+        (131, morphology),
+        (132, intensity),
+        (133, morphology),
+    ):
+        result = execute_pipeline_request(
+            PipelineRunRequest(
+                run_id=run_id,
+                workflow=serialize_workflow(current),
+                input_data=None,
+                input_metadata=None,
+                input_name="",
+                source_payloads={"input": rematerialized_payload()},
+                dirty_node_ids=frozenset({manual_node.id}),
+                manual_node_ids=frozenset({manual_node.id}),
+                retain_node_ids=retained,
+                prune_unretained=True,
+                **_pipeline_cache_kwargs(current),
+            )
+        )
+        assert result.error == ""
+        assert result.pipeline is not None
+        current = result.pipeline
+        if run_id == 132:
+            cached_intensity = current.outputs[intensity.id]
+
+    assert current.node_execution_states[morphology.id] == EXECUTION_READY
+    assert current.node_execution_states[intensity.id] == EXECUTION_READY
+    assert current.node_execution_states[merged.id] == EXECUTION_READY
+    assert current.outputs[intensity.id] is cached_intensity
+    assert current.outputs[merged.id].row_count == 2
 
 
 def test_successful_cpu_request_publishes_processing_node_provenance():
@@ -777,6 +923,7 @@ def test_dirty_cpu_request_reuses_only_provenance_admitted_upstream_cache():
     assert result.pipeline.outputs["gaussian"] is cached_gaussian
 
     initial.node_compute_provenance.pop("gaussian")
+    initial.node_cache_lineage.pop("gaussian")
     started.clear()
     rejected = execute_pipeline_request(
         PipelineRunRequest(

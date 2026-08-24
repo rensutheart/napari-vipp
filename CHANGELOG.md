@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.14.0a1 - Unreleased
+
+### Features
+
+- Skeletonize now makes volumetric processing explicit and verifiable. Auto
+  selects Lee thinning for declared ZYX data, leading dimensions are processed
+  as independent ZYX blocks, Zhang is rejected for 3D, and the resolved method
+  and dimensionality are preserved in provenance. Ambiguous page axes fail
+  closed until their spatial meaning is declared.
+- GPU VRAM admission failures now identify the CUDA device and every affected
+  graph node, format the estimated peak, available memory, and shortfall in
+  readable units, explain whether free VRAM/reserve or the configured cap is
+  binding, retain exact byte counts as structured diagnostics, and suggest
+  concrete ways to make the graph fit.
+
+### Bug Fixes
+
+- Changing Image Source from QYX to ZYX now immediately projects the effective
+  axes through the selected branch, so Gaussian Blur 3D exposes Sigma Z without
+  waiting for a successful full-graph pixel run. Unrelated source or execution
+  failures cannot force the inspector back to stale QYX metadata, and reverting
+  the declaration hides—without deleting—the stored Z parameter.
+- Re-materializing the same file revision no longer changes its source identity
+  merely because its array wrapper is new. Sequential sibling measurements can
+  therefore remain ready together and feed Merge Tables in either execution
+  order, including after Low-memory cache pruning; genuine upstream changes
+  still invalidate the affected descendants.
+
 ## 0.13.0a8 - 2026-08-22
 
 ### Features

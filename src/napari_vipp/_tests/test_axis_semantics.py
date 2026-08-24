@@ -3,10 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import napari_vipp.core.operations as operations
 from napari_vipp.core.metadata import (
     AXIS_CONFIDENCE_EXPLICIT,
     AXIS_CONFIDENCE_INFERRED,
     AXIS_CONFIDENCE_MIXED,
+    DEFERRED_VALUE_RANGE,
     AcquisitionMetadata,
     AmbiguousAxisError,
     AxisDeclaration,
@@ -263,6 +265,204 @@ def test_qyx_volume_needs_declaration_before_sequential_zyx_processing():
     assert accepted.output_states[accepted_output].axis_order == "ZYX"
 
 
+def _skeletonize_pipeline() -> tuple[PrototypePipeline, str]:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    assert pipeline.connect("input", threshold.id).success
+    skeletonize = pipeline.add_node("skeletonize")
+    assert pipeline.connect(threshold.id, skeletonize.id).success
+    return pipeline, skeletonize.id
+
+
+def test_skeletonize_auto_rejects_ambiguous_qyx_before_pixel_execution(
+    monkeypatch,
+):
+    data = np.ones((3, 8, 9), dtype=np.uint8)
+    raw_state = image_state_from_array(data, layer_metadata={"axes": "QYX"})
+    pipeline, _skeletonize_id = _skeletonize_pipeline()
+
+    def unexpected_kernel(*_args, **_kwargs):
+        raise AssertionError("axis preflight must not execute pixel kernels")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.pipeline.execute_prepared_node_call",
+        unexpected_kernel,
+    )
+
+    with pytest.raises(
+        AmbiguousAxisError,
+        match="QYX.*unknown spatial meaning.*QYX -> ZYX",
+    ):
+        pipeline.preflight_axis_contract(
+            {"input": SourcePayload(data, image_state=raw_state)}
+        )
+
+
+def test_skeletonize_auto_rejects_trailing_qyx_below_leading_time_axis(
+    monkeypatch,
+):
+    data = np.ones((2, 3, 8, 9), dtype=np.uint8)
+    raw_state = image_state_from_array(data, layer_metadata={"axes": "TQYX"})
+    pipeline, _skeletonize_id = _skeletonize_pipeline()
+
+    def unexpected_kernel(*_args, **_kwargs):
+        raise AssertionError("axis preflight must not execute pixel kernels")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.pipeline.execute_prepared_node_call",
+        unexpected_kernel,
+    )
+
+    with pytest.raises(
+        AmbiguousAxisError,
+        match="TQYX.*unknown spatial meaning.*TQYX -> TZYX",
+    ) as raised:
+        pipeline.preflight_axis_contract(
+            {"input": SourcePayload(data, image_state=raw_state)}
+        )
+
+    assert raised.value.detected_axes == "TQYX"
+    assert raised.value.required_axes == "TZYX"
+
+
+def test_tqyx_declaration_runs_one_volumetric_lee_block_per_timepoint(
+    monkeypatch,
+):
+    data = np.zeros((2, 3, 8, 9), dtype=np.uint8)
+    data[:, :, 2:6, 2:7] = 1
+    raw_state = image_state_from_array(data, layer_metadata={"axes": "TQYX"})
+    pipeline, skeletonize_id = _skeletonize_pipeline()
+    pipeline.set_param("input", "axis_declaration", "TQYX -> TZYX")
+
+    original = operations.morphology.skeletonize
+    calls: list[tuple[tuple[int, ...], str | None]] = []
+
+    def record_call(block, *, method=None):
+        calls.append((tuple(block.shape), method))
+        return original(block, method=method)
+
+    monkeypatch.setattr(operations.morphology, "skeletonize", record_call)
+    pipeline.run(
+        None,
+        source_payloads={"input": SourcePayload(data, image_state=raw_state)},
+    )
+
+    assert calls == [((3, 8, 9), "lee"), ((3, 8, 9), "lee")]
+    assert pipeline.nodes[skeletonize_id].params["resolved_spatial_ndim"] == 3
+    assert pipeline.output_states[skeletonize_id].axis_order == "TZYX"
+
+
+def test_image_source_qyx_declaration_runs_one_volumetric_lee_block(monkeypatch):
+    data = np.zeros((3, 8, 9), dtype=np.uint8)
+    data[:, 2:6, 2:7] = 1
+    raw_state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata(
+                "q",
+                "unknown",
+                unit="micrometer",
+                scale=2.0,
+                translation=10.0,
+            ),
+            AxisMetadata(
+                "y",
+                "space",
+                unit="micrometer",
+                scale=0.5,
+                translation=20.0,
+            ),
+            AxisMetadata(
+                "x",
+                "space",
+                unit="micrometer",
+                scale=0.25,
+                translation=30.0,
+            ),
+        ),
+    )
+    pipeline, skeletonize_id = _skeletonize_pipeline()
+    pipeline.set_param("input", "axis_declaration", "QYX -> ZYX")
+
+    original = operations.morphology.skeletonize
+    calls: list[tuple[tuple[int, ...], str | None]] = []
+
+    def record_call(block, *, method=None):
+        calls.append((tuple(block.shape), method))
+        return original(block, method=method)
+
+    monkeypatch.setattr(operations.morphology, "skeletonize", record_call)
+    pipeline.run(
+        None,
+        source_payloads={"input": SourcePayload(data, image_state=raw_state)},
+    )
+
+    output_state = pipeline.output_states[skeletonize_id]
+    assert calls == [((3, 8, 9), "lee")]
+    assert pipeline.nodes[skeletonize_id].params["resolved_spatial_ndim"] == 3
+    assert output_state.axis_order == "ZYX"
+    assert output_state.axes == pipeline.output_states["input"].axes
+    assert [axis.scale for axis in output_state.axes] == [2.0, 0.5, 0.25]
+    assert [axis.translation for axis in output_state.axes] == [10.0, 20.0, 30.0]
+    assert [axis.unit for axis in output_state.axes] == ["micrometer"] * 3
+    assert "method=Lee (Auto-resolved)" in output_state.history[-1]
+    assert "resolved=3D ZYX volumetric block" in output_state.history[-1]
+    assert "3x3x3 neighborhood" in output_state.history[-1]
+    assert "boundary=background" in output_state.history[-1]
+
+
+def test_skeletonize_explicit_2d_keeps_q_as_independent_leading_blocks(
+    monkeypatch,
+):
+    data = np.ones((3, 8, 9), dtype=np.uint8)
+    raw_state = image_state_from_array(data, layer_metadata={"axes": "QYX"})
+    pipeline, skeletonize_id = _skeletonize_pipeline()
+    pipeline.set_param(skeletonize_id, "spatial_mode", "2D YX")
+
+    original = operations.morphology.skeletonize
+    calls: list[tuple[tuple[int, ...], str | None]] = []
+
+    def record_call(block, *, method=None):
+        calls.append((tuple(block.shape), method))
+        return original(block, method=method)
+
+    monkeypatch.setattr(operations.morphology, "skeletonize", record_call)
+    pipeline.run(
+        None,
+        source_payloads={"input": SourcePayload(data, image_state=raw_state)},
+    )
+
+    assert calls == [((8, 9), "zhang")] * 3
+    assert pipeline.nodes[skeletonize_id].params["resolved_spatial_ndim"] == 2
+    assert pipeline.output_states[skeletonize_id].axis_order == "QYX"
+
+
+def test_skeletonize_preflight_rejects_zhang_for_empty_zyx_without_kernels(
+    monkeypatch,
+):
+    data = np.zeros((3, 8, 9), dtype=np.uint8)
+    state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+    pipeline, skeletonize_id = _skeletonize_pipeline()
+    pipeline.set_param(skeletonize_id, "method", "Zhang 2D")
+
+    def unexpected_kernel(*_args, **_kwargs):
+        raise AssertionError("scientific preflight must not execute pixel kernels")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.pipeline.execute_prepared_node_call",
+        unexpected_kernel,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Zhang 2D.*cannot process a 3D ZYX volume",
+    ):
+        pipeline.preflight_axis_contract(
+            {"input": SourcePayload(data, image_state=state)}
+        )
+
+
 def test_axis_preflight_propagates_through_reorder_and_convert_without_kernels(
     monkeypatch,
 ):
@@ -320,6 +520,52 @@ def test_axis_preflight_never_scans_lazy_source_statistics(monkeypatch):
     pipeline.preflight_axis_contract(
         {"input": SourcePayload(source, image_state=state)}
     )
+
+
+def test_targeted_axis_preflight_projects_only_declared_gaussian_branch(
+    monkeypatch,
+):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "axis_declaration", "QYX -> ZYX")
+    subtract = pipeline.add_node("subtract_background")
+    pipeline.set_param(subtract.id, "spatial_mode", "2D YX")
+    assert pipeline.connect("input", subtract.id).success
+    rescale = pipeline.add_node("rescale_intensity")
+    assert pipeline.connect(subtract.id, rescale.id).success
+    gaussian = pipeline.add_node("gaussian_blur_3d")
+    assert pipeline.connect(rescale.id, gaussian.id).success
+    unrelated = pipeline.add_node("reorder_axes")
+    pipeline.set_param(unrelated.id, "order", "invalid")
+    assert pipeline.connect("input", unrelated.id).success
+
+    def unexpected_statistics(*_args, **_kwargs):
+        raise AssertionError("metadata projection must not calculate statistics")
+
+    def unexpected_kernel(*_args, **_kwargs):
+        raise AssertionError("metadata projection must not execute pixel kernels")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.metadata._value_range_label",
+        unexpected_statistics,
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.pipeline.execute_prepared_node_call",
+        unexpected_kernel,
+    )
+
+    pipeline.preflight_axis_contract(
+        {"input": SourcePayload(data, {"axes": "QYX"})},
+        target_node_ids={gaussian.id},
+    )
+
+    assert [
+        pipeline.output_states[node_id].axis_order
+        for node_id in ("input", subtract.id, rescale.id, gaussian.id)
+    ] == ["ZYX"] * 4
+    assert pipeline.output_states["input"].value_range == DEFERRED_VALUE_RANGE
+    assert pipeline.output_states[unrelated.id] is None
 
 
 def test_axis_preflight_propagates_qyx_through_axis_slice():
