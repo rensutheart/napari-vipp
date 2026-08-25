@@ -646,18 +646,20 @@ def test_full_synthetic_batch_demo_completes_in_each_compute_mode(tmp_path, mode
             )
             continue
 
-        no_implementation_nodes = {
-            "logical_and_1",
-            "add_images_1",
+        expected_prefer_gpu_reasons = {
+            "binary_threshold_1": DecisionReason.WORKLOAD_UNSUPPORTED,
+            "binary_threshold_2": DecisionReason.WORKLOAD_UNSUPPORTED,
+            "logical_and_1": DecisionReason.NO_VALIDATED_IMPLEMENTATION,
+            "label_connected_components_1": DecisionReason.DEPENDENCY_UNAVAILABLE,
+            "measure_objects_1": DecisionReason.DEPENDENCY_UNAVAILABLE,
+            "add_images_1": DecisionReason.NO_VALIDATED_IMPLEMENTATION,
+            "batch_output_1": DecisionReason.NO_VALIDATED_IMPLEMENTATION,
+            "batch_output_2": DecisionReason.NO_VALIDATED_IMPLEMENTATION,
+            "batch_output_3": DecisionReason.WORKLOAD_UNSUPPORTED,
         }
-        assert all(
-            nodes[node_id]["reason"]
-            == DecisionReason.NO_VALIDATED_IMPLEMENTATION.value
-            for node_id in no_implementation_nodes
-        )
-        deferred_nodes = set(nodes) - no_implementation_nodes
-        assert all(
-            nodes[node_id]["reason"]
-            == DecisionReason.WORKLOAD_UNSUPPORTED.value
-            for node_id in deferred_nodes
-        )
+        assert {
+            node_id: node["reason"] for node_id, node in nodes.items()
+        } == {
+            node_id: reason.value
+            for node_id, reason in expected_prefer_gpu_reasons.items()
+        }

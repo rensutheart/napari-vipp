@@ -10,7 +10,7 @@ This remains alpha software. Keep the original data and workflow, test
 representative images, and review important outputs before using them for
 scientific conclusions or publication.
 
-## Prefer GPU now survives CPU-only nodes
+## Prefer GPU planning preserves eligibility across CPU-only nodes
 
 - **Prefer GPU** planning now preserves exact shape, dtype, and axis facts
   through CPU-only operations including Rescale Axes, Rescale Intensity, and
@@ -19,6 +19,9 @@ scientific conclusions or publication.
   merely because an earlier node must execute on the host.
 - The requested global compute intent remains distinct from saved per-node
   preferences, and CPU-only nodes continue to execute on CPU as intended.
+- GPU execution still requires a healthy, compatible runtime and installed
+  provider. Compute details report the exact eligibility or fallback reason
+  when a machine cannot use an otherwise reviewed GPU implementation.
 
 ## More reliable 3D workflows
 
@@ -74,3 +77,21 @@ propagation through CPU-only boundaries, real-device execution of the affected
 CuPy/CuPyX nodes, and an update using the newly built Windows installer. The
 unchanged installer transaction model and dependency pins carry forward from
 the qualified 0.13.0a8 baseline.
+
+The release-domain declaration is:
+
+- changed: core/UI, workflow/provenance, GPU/scientific planning, and
+  documentation;
+- unchanged: installer transaction behavior, dependency/toolchain pins, and
+  package/release infrastructure; and
+- carried forward: the 0.13.0a8 installer lifecycle, dependency, and packaging
+  baselines, while exact a9 tag, artifact, checksum, publication, and update
+  facts are regenerated.
+
+On the release workstation, the original student workflow completed under
+global Prefer GPU across CPU-only Rescale Axes, Rescale Intensity, and Unsharp
+Mask boundaries. Subtract Background, Convert Dtype, Gaussian Blur, Otsu,
+Remove Outliers, and Remove Small Objects executed on `cuda-cupy` with no
+fallback. This bounded result verifies the planner and reviewed providers on
+that environment; it is not a claim that every separate installation has a
+healthy CUDA runtime.

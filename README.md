@@ -37,13 +37,13 @@ and [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requi
 
 ### Windows Installer (Recommended Path)
 
-VIPP `0.13.0a8` is published as an official GitHub prerelease with checksum
+VIPP `0.13.0a9` is published as an official GitHub prerelease with checksum
 sidecars and as an exact-version package on PyPI. Use only those official
 release surfaces; do not download a file from a guessed asset URL.
 
 The normal experience is one Windows `.exe`: download
-[`VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED.exe`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a8/VIPP-Setup-0.13.0a8-Windows-x86_64-UNSIGNED.exe)
-from the official `v0.13.0a8` release, double-click it, and keep the recommended
+[`VIPP-Setup-0.13.0a9-Windows-x86_64-UNSIGNED.exe`](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a9/VIPP-Setup-0.13.0a9-Windows-x86_64-UNSIGNED.exe)
+from the official `v0.13.0a9` release, double-click it, and keep the recommended
 managed VIPP environment. Review CPU or qualified NVIDIA GPU setup, then launch
 VIPP from the shortcuts it creates. A supported 64-bit Python is a separate prerequisite;
 if it is missing, setup links to the official Python 3.12.10 installer and lets
@@ -58,7 +58,7 @@ used for Windows temporary files and VIPP installer records; CPU setup needs at
 least 1 GiB there. Setup names the exact location if that check fails. The
 standard GPU installation includes every current GPU implementation.
 
-For `0.13.0a8`, one-click managed installation uses only two fixed per-track
+For `0.13.0a9`, one-click managed installation uses only two fixed per-track
 roots. Windows supplies the canonical Local App Data directory through
 `SHGetKnownFolderPath(FOLDERID_LocalAppData)`; setup appends
 `VIPP\environments\cpu` or `VIPP\environments\cuda13`. Custom managed roots are
@@ -82,7 +82,7 @@ Local App Data path is ASCII-compatible.
 > so Windows will show **Unknown publisher** and may show
 > **Windows protected your PC**. Download only the explicitly named
 > `-UNSIGNED.exe` from the official
-> [`v0.13.0a8` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a8),
+> [`v0.13.0a9` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a9),
 > verify its SHA-256 against the attached `SHA256SUMS` file, then select
 > **More info > Run anyway**. Stop if the hash differs or antivirus identifies
 > a threat; never disable Windows security. The [Quick Start](docs/quick-start.md)
@@ -94,11 +94,11 @@ existing-napari route, update/repair/uninstall behavior, and a first workflow.
 
 ### Manual Installation (Advanced And Non-Windows)
 
-VIPP `0.13.0a8` supports CPython 3.12 and 3.13. Create and activate a dedicated
+VIPP `0.13.0a9` supports CPython 3.12 and 3.13. Create and activate a dedicated
 virtual environment, then install:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a8"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a9"
 vipp
 ```
 
@@ -181,7 +181,7 @@ environment that launches VIPP, never a global/base Python. Keep the VIPP
 version pinned and restart napari afterward. For example:
 
 ```bash
-python -m pip install "napari-vipp[nd2]==0.13.0a8"
+python -m pip install "napari-vipp[nd2]==0.13.0a9"
 ```
 
 Available extras include `nd2`, `czi`, `microscope`, and `bioformats`. See
@@ -190,7 +190,7 @@ the matching commands.
 
 ## Windows Installer And Startup
 
-VIPP `0.13.0a8` provides a novice-facing Windows setup window, automatic CPU/GPU
+VIPP `0.13.0a9` provides a novice-facing Windows setup window, automatic CPU/GPU
 recommendation, exact dependency review, transactional install/update/repair,
 owned shortcuts, independent CPU/GPU Apps & Features entries, ownership-safe
 uninstall, and acceptance checks. It installs into a private managed location
@@ -232,16 +232,15 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Use
 
 ## Current Alpha
 
-`0.13.0a8` adds Fiji-style binary outlier cleanup, explicit QYX-to-ZYX source
-interpretation and Z rescaling, drop-on-wire graph insertion, shared intensity
-histograms, dtype-aware numeric controls, and more reliable optimizer results.
-Interactive GPU tuning avoids parameter-specific compilation pauses, thumbnail
-work is more responsive and truthful, and basic object measurements now use
-the normal CuPy-only CUDA installation instead of a separate provider add-on. CPU
-remains the portable reference, and unsupported inputs or parameters continue
+`0.13.0a9` is a focused workflow-correctness release. It makes declared ZYX
+axes update 3D controls immediately, makes volumetric skeletonization explicit,
+keeps sibling measurements available for Merge Tables, reports actionable GPU
+memory shortfalls, and preserves reviewed Prefer-GPU eligibility across
+CPU-only processing boundaries. CPU remains the portable reference, and
+unsupported inputs, parameters, environments, or memory conditions continue
 to use it visibly.
 
-See the categorized [0.13.0a8 release notes](CHANGELOG.md#0130a8---2026-08-22)
+See the categorized [0.13.0a9 release notes](CHANGELOG.md#0130a9---2026-08-25)
 and [roadmap](docs/planning.md) for details and remaining milestones.
 
 ## Citation, Acknowledgement, And License
