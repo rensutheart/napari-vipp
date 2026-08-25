@@ -55,15 +55,16 @@ scientific conclusions or publication.
 
 ## Windows installer and compatibility
 
-The normal Windows installer continues to offer CPU and managed NVIDIA CUDA 13
-routes from one executable. The CUDA route includes the complete pinned CuPy,
-CUDA runtime, cuBLAS, cuFFT, and related dependency set; no separate GPU add-on
-is required.
+VIPP 0.13.0a9 includes its own Windows installer:
+`VIPP-Setup-0.13.0a9-Windows-x86_64-UNSIGNED.exe`. It offers CPU and managed
+NVIDIA CUDA 13 routes from one executable. The CUDA route includes the complete
+pinned CuPy, CUDA runtime, cuBLAS, cuFFT, and related dependency set; no
+separate GPU add-on is required.
 
-Pre-publication installer candidates are deliberately labelled
-**DEVELOPMENT BUILD — local testing only**. A final alpha installer is produced
-only from a clean immutable `v0.13.0a9` tag and is published together with its
-SHA-256 checksum and release manifest.
+The published `0.13.0a9` installer is the release-specific build created from
+the clean immutable `v0.13.0a9` tag. It is intentionally unsigned, so Windows
+displays **Unknown publisher**; its SHA-256 checksum and release manifest are
+supplied alongside it.
 
 Workflow schema remains version 4, and batch configuration and manifest schema
 remain version 3. Existing 0.13 workflows remain supported. Preserve copies of
@@ -74,9 +75,9 @@ important workflows before updating a managed installation.
 This alpha changes core/UI, workflow-planning, and GPU/scientific behavior. Its
 acceptance focuses on the four reported workflow regressions, exact metadata
 propagation through CPU-only boundaries, real-device execution of the affected
-CuPy/CuPyX nodes, and an update using the newly built Windows installer. The
-unchanged installer transaction model and dependency pins carry forward from
-the qualified 0.13.0a8 baseline.
+CuPy/CuPyX nodes, and exact-tag Windows installer integrity. The unchanged
+installer transaction model and dependency pins carry forward from the
+qualified 0.13.0a8 baseline.
 
 The release-domain declaration is:
 
@@ -85,8 +86,8 @@ The release-domain declaration is:
 - unchanged: installer transaction behavior, dependency/toolchain pins, and
   package/release infrastructure; and
 - carried forward: the 0.13.0a8 installer lifecycle, dependency, and packaging
-  baselines, while exact a9 tag, artifact, checksum, publication, and update
-  facts are regenerated.
+  baselines, while exact a9 tag, artifact, checksum, and publication facts are
+  regenerated.
 
 On the release workstation, the original student workflow completed under
 global Prefer GPU across CPU-only Rescale Axes, Rescale Intensity, and Unsharp
