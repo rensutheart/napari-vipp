@@ -14,6 +14,9 @@
   ND2, LIF, CZI, OIR/OIB, VSI/IMS, and LSM routes; OIB pixels and ImageState
   agree on CZYX; multifile VSI/ETS and OIF companion trees participate in the
   exact source revision; and optional Java/Bio-Formats failures are actionable.
+- Corrected the frozen Leica LIF contract to preserve its semantic Alexa dye
+  names rather than confusing them with display LUT colours, and normalize
+  combined objective labels such as `63x, 1.3NA` from Imaris metadata.
 - Added a local OME-Zarr 0.4/0.5 presentation preview that enumerates declared
   levels and transforms, slices requested axes and regions before computing,
   preserves label semantics, reports observable I/O where available, and keeps

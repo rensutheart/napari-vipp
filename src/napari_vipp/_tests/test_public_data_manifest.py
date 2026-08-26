@@ -7,11 +7,13 @@ from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PUBLIC_DATA_DIR = REPO_ROOT / "docs" / "validation" / "public-data"
-CORPUS_PATH = PUBLIC_DATA_DIR / "corpus-v3.json"
+CORPUS_PATH = PUBLIC_DATA_DIR / "corpus-v4.json"
 FROZEN_V1_PATH = PUBLIC_DATA_DIR / "corpus-v1.json"
 FROZEN_V1_SHA256 = "806c536a2796b93e2afde08d8150720adc51729b19523d243853ed4fe9e1ebef"
 FROZEN_V2_PATH = PUBLIC_DATA_DIR / "corpus-v2.json"
 FROZEN_V2_SHA256 = "1dbdfcaa314adb5c0a53eecf38d466f12f633d210fb46b6cb4abaf64a2dd381f"
+FROZEN_V3_PATH = PUBLIC_DATA_DIR / "corpus-v3.json"
+FROZEN_V3_SHA256 = "39f1771abc2405f696b8d8558d412df10b34f86709e8e6f8655329582efb4502"
 SHA256 = re.compile(r"[0-9a-f]{64}")
 IDENTITY_DOMAIN = b"napari-vipp-local-source-v1\0"
 
@@ -55,7 +57,7 @@ def test_public_data_corpus_is_versioned_complete_and_nonredundant() -> None:
     corpus = _corpus()
     assert corpus["schema"] == "napari-vipp-public-data-corpus"
     assert corpus["schema_version"] == 1
-    assert corpus["corpus_version"] == "0.14.0a1-v3"
+    assert corpus["corpus_version"] == "0.14.0a1-v4"
     assert corpus["policy"]["ordinary_ci_network_access"] is False
     assert corpus["policy"]["source_drift"].startswith("fail-closed")
 
@@ -81,11 +83,12 @@ def test_public_data_corpus_is_versioned_complete_and_nonredundant() -> None:
     )
 
 
-def test_v3_names_and_preserves_its_immutable_v2_base() -> None:
+def test_v4_names_and_preserves_its_immutable_v3_base() -> None:
     corpus = _corpus()
     revision = corpus["revision"]
-    assert revision["base_manifest"] == FROZEN_V2_PATH.name
-    assert revision["base_sha256"] == FROZEN_V2_SHA256
+    assert revision["base_manifest"] == FROZEN_V3_PATH.name
+    assert revision["base_sha256"] == FROZEN_V3_SHA256
+    assert hashlib.sha256(FROZEN_V3_PATH.read_bytes()).hexdigest() == (FROZEN_V3_SHA256)
     assert hashlib.sha256(FROZEN_V2_PATH.read_bytes()).hexdigest() == (FROZEN_V2_SHA256)
     assert hashlib.sha256(FROZEN_V1_PATH.read_bytes()).hexdigest() == (FROZEN_V1_SHA256)
     assert revision["changes"]
@@ -195,6 +198,11 @@ def test_lif_manifest_records_metadata_parity_and_reader_topology_limit() -> Non
 
     lif = datasets["bia-s-biad1390-leica-lif"]
     assert lif["known_current_gaps"] == ["native liffile pixel access is eager"]
+    assert lif["expected"]["channel_names"] == [
+        "ALEXA 488",
+        "ALEXA 546",
+        "ALEXA 405",
+    ]
     assert "metadata-only-state-matches-read-state" in lif["acceptance_cases"]
 
     topology = datasets["ome-pr2729-leica-lif"]

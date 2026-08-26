@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
@@ -454,6 +455,15 @@ def test_bioio_reports_logical_decoded_size_and_no_unproven_pyramid(
     monkeypatch,
     tmp_path,
 ):
+    class FakeBioFile:
+        @staticmethod
+        def ensure_open():
+            return nullcontext()
+
+        @staticmethod
+        def global_metadata():
+            return {"Lenspower": "63x, 1.3NA"}
+
     class FakeBioImage:
         scenes = ("Resolution Level 1",)
         shape = (1, 2, 64, 109, 143)
@@ -461,10 +471,11 @@ def test_bioio_reports_logical_decoded_size_and_no_unproven_pyramid(
         dims = SimpleNamespace(order="TCZYX")
         physical_pixel_sizes = SimpleNamespace(X=0.1646, Y=0.1646, Z=0.2)
         channel_names = ("CollagenIV", "GFAP")
-        metadata = {"objectiveName": "63x, 1.3NA"}
+        metadata = {}
 
         def __init__(self, _path):
             self.current_scene = self.scenes[0]
+            self.reader = SimpleNamespace(_bf=FakeBioFile())
 
         def set_scene(self, scene):
             if scene != self.scenes[0]:
@@ -498,6 +509,34 @@ def test_bioio_reports_logical_decoded_size_and_no_unproven_pyramid(
         "CollagenIV",
         "GFAP",
     ]
+    assert selected.image_state.acquisition.objective == "63x, 1.3NA"
+    assert selected.image_state.acquisition.objective_magnification == 63.0
+    assert selected.image_state.acquisition.objective_na == 1.3
+
+
+def test_bioio_global_metadata_failure_keeps_normalized_metadata():
+    class FailingBioFile:
+        @staticmethod
+        def ensure_open():
+            return nullcontext()
+
+        @staticmethod
+        def global_metadata():
+            raise RuntimeError("proprietary metadata unavailable")
+
+    image = SimpleNamespace(
+        metadata={"objectiveName": "20x/0.75"},
+        current_scene="primary",
+        reader=SimpleNamespace(_bf=FailingBioFile()),
+    )
+
+    metadata = microscope_io._bioio_metadata(image)
+    acquisition = microscope_io._acquisition_from_metadata(metadata)
+
+    assert "global_metadata" not in metadata
+    assert acquisition.objective == "20x/0.75"
+    assert acquisition.objective_magnification == 20.0
+    assert acquisition.objective_na == 0.75
 
 
 def test_bioio_java_initialization_failure_is_actionable(monkeypatch, tmp_path):

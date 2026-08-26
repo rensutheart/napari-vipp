@@ -33,6 +33,9 @@ outputs before using them for scientific conclusions or publication.
   retained.
 - Optional-reader and Bio-Formats/Java readiness failures preserve a structured
   stage, backend, and remediation instead of becoming a generic import error.
+- Leica LIF channel identity now preserves the reader's semantic Alexa dye
+  names rather than substituting display LUT colours. Combined objective labels
+  such as `63x, 1.3NA` are normalized into magnification and numerical aperture.
 - Readers declare whether inspection/data access is lazy, whether region or
   level reads are supported, and an estimated decoded size where available.
   Native LIF, CZI, OIR, OIB, and LSM pixel access remains truthfully eager.

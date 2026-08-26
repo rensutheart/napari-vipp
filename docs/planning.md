@@ -510,7 +510,7 @@ The shared acceptance inputs are frozen in the
 formats, dtypes, axes, item structures, licences, hashes, and objective
 per-sample cases used below; ordinary CI remains network-free.
 
-Corpus revision `0.14.0a1-v3` extends the focused vendor tier across Nikon ND2,
+Corpus revision `0.14.0a1-v4` extends the focused vendor tier across Nikon ND2,
 Leica LIF, Zeiss CZI/LSM, Olympus OIR/OIB/VSI, and Imaris IMS. Every original is
 explicitly licensed, hash-pinned, and opened through VIPP only from a verified
 opt-in cache. The new files reach native `oirfile`, `oiffile`, and `tifffile`
@@ -522,6 +522,9 @@ source revision, records eager/large-reader capabilities truthfully, and
 resolves the same item across execution surfaces. The detailed implementation,
 format matrix, qualification gates, and deferrals are in the
 [`0.14.0a1` Source-Aware Loading Record](source-aware-loading-0.14.0a1.md).
+Revision v4 preserves v3 byte-for-byte and corrects one predeclared LIF
+expectation: the reader's ALEXA dye-coordinate names are channel identity,
+while Green/Red/Blue in the Leica XML are display LUT colors.
 
 The source-aware outcomes form one coherent user story: select a scientific item
 once, see a useful preview before the exact full-resolution snapshot is ready,

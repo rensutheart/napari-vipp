@@ -1,7 +1,7 @@
 # VIPP `0.14.0a1` Source-Aware Loading Implementation Record
 
 Status: `0.14.0a1` implementation and release-scope record, based on public
-corpus revision `0.14.0a1-v3`. Qualification and publication evidence are
+corpus revision `0.14.0a1-v4`. Qualification and publication evidence are
 recorded separately; this page does not assert the outcome of an external gate.
 
 ## Release Decision
@@ -149,7 +149,7 @@ validated until a licensed frozen source is added.
 
 ### 0. Corpus contract (delivered)
 
-- Record the final corpus-v3 manifest hash and keep previous revisions
+- Record the final corpus-v4 manifest hash and keep previous revisions
   immutable.
 - Build the deterministic mixed-member NPZ and reorderable two-series OME-TIFF
   fixtures with pinned derivation hashes.

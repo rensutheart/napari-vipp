@@ -160,7 +160,7 @@
     "dataset_id": "zenodo-14510432-zeiss-lsm",
     "landing_page": "https://zenodo.org/records/14510432",
     "license": "CC-BY-4.0",
-    "manifest": "corpus-v3.json",
-    "manifest_sha256": "39f1771abc2405f696b8d8558d412df10b34f86709e8e6f8655329582efb4502"
+    "manifest": "corpus-v4.json",
+    "manifest_sha256": "3365b4cec7a220f6399f3c030eb3ac751581bde730fac60f01c9fca3b823714d"
   }
 }

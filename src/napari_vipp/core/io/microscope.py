@@ -1944,10 +1944,22 @@ def _bioio_set_scene(image, scene) -> None:
 
 
 def _bioio_metadata(image) -> dict[str, Any]:
-    return {
+    metadata = {
         "metadata": getattr(image, "metadata", None),
         "current_scene": getattr(image, "current_scene", ""),
     }
+    reader = getattr(image, "reader", None)
+    biofile = getattr(reader, "_bf", None)
+    if biofile is None:
+        return metadata
+    try:
+        with biofile.ensure_open():
+            global_metadata = biofile.global_metadata()
+    except Exception:
+        return metadata
+    if isinstance(global_metadata, Mapping):
+        metadata["global_metadata"] = dict(global_metadata)
+    return metadata
 
 
 def _bioio_axes(image, shape: tuple[int, ...]) -> tuple[AxisMetadata, ...]:
@@ -2132,6 +2144,46 @@ def _channels_from_labels(labels) -> tuple[ChannelMetadata, ...]:
 
 def _acquisition_from_metadata(metadata: Any) -> AcquisitionMetadata:
     deconvolved, method = detect_deconvolution_metadata(metadata)
+    objective = _first_text(
+        metadata,
+        (
+            "objective",
+            "objectiveName",
+            "objective_name",
+            "ObjectiveName",
+            "objectiveLens",
+            "objectiveModel",
+        ),
+    )
+    parsed_magnification, parsed_na = _objective_numbers(objective)
+    lens_power = _first_text(metadata, ("lensPower",))
+    lens_magnification, lens_na = _objective_numbers(lens_power)
+    if lens_magnification is not None and lens_na is not None:
+        if not objective:
+            objective = lens_power
+        if parsed_magnification is None:
+            parsed_magnification = lens_magnification
+        if parsed_na is None:
+            parsed_na = lens_na
+    objective_na = _first_number(
+        metadata,
+        (
+            "objectiveNumericalAperture",
+            "numericalAperture",
+            "lensNA",
+            "lens_na",
+            "naValue",
+            "na",
+        ),
+    )
+    objective_magnification = _first_number(
+        metadata,
+        (
+            "objectiveMagnification",
+            "nominalMagnification",
+            "magnification",
+        ),
+    )
     return AcquisitionMetadata(
         description=_first_text(metadata, ("description", "notes", "comment")),
         acquisition_date=_first_text(
@@ -2143,40 +2195,17 @@ def _acquisition_from_metadata(metadata: Any) -> AcquisitionMetadata:
                 "creationDate",
             ),
         ),
-        objective=_first_text(
-            metadata,
-            (
-                "objective",
-                "objectiveName",
-                "objective_name",
-                "ObjectiveName",
-                "objectiveLens",
-                "objectiveModel",
-            ),
-        ),
+        objective=objective,
         instrument=_first_text(
             metadata,
             ("instrument", "microscope", "system", "systemName"),
         ),
         detector=_first_text(metadata, ("detector", "camera", "Detector")),
-        objective_na=_first_number(
-            metadata,
-            (
-                "objectiveNumericalAperture",
-                "numericalAperture",
-                "lensNA",
-                "lens_na",
-                "naValue",
-                "na",
-            ),
-        ),
-        objective_magnification=_first_number(
-            metadata,
-            (
-                "objectiveMagnification",
-                "nominalMagnification",
-                "magnification",
-            ),
+        objective_na=(objective_na if objective_na is not None else parsed_na),
+        objective_magnification=(
+            objective_magnification
+            if objective_magnification is not None
+            else parsed_magnification
         ),
         objective_immersion=_first_text(
             metadata,
@@ -2194,6 +2223,33 @@ def _acquisition_from_metadata(metadata: Any) -> AcquisitionMetadata:
         ),
         deconvolution_applied=deconvolved,
         deconvolution_method=method,
+    )
+
+
+def _objective_numbers(value: str) -> tuple[float | None, float | None]:
+    """Parse conservative magnification/NA fallbacks from an objective label."""
+    text = str(value or "").strip()
+    magnification_match = re.search(
+        r"(?<![\w.])(\d+(?:\.\d+)?)\s*[x\u00d7](?=\s|[,;/]|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    aperture_match = re.search(
+        r"(?<![\w.])(\d+(?:\.\d+)?)\s*NA\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if aperture_match is None:
+        aperture_match = re.search(
+            r"[x\u00d7]\s*/\s*(\d+(?:\.\d+)?)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    return (
+        float(magnification_match.group(1))
+        if magnification_match is not None
+        else None,
+        float(aperture_match.group(1)) if aperture_match is not None else None,
     )
 
 

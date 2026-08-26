@@ -19,7 +19,7 @@ from napari_vipp.core.io.registry import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CORPUS_PATH = REPO_ROOT / "docs" / "validation" / "public-data" / "corpus-v3.json"
+CORPUS_PATH = REPO_ROOT / "docs" / "validation" / "public-data" / "corpus-v4.json"
 VENDOR_DATASET_IDS = (
     "ome-bf007-nikon-nd2",
     "bia-s-biad2080-nikon-nd2",

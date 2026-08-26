@@ -875,6 +875,46 @@ def test_nested_microscope_metadata_does_not_break_acquisition_detection():
 
     assert acquisition.objective == "Plan-Apochromat 63x"
     assert acquisition.objective_na == 1.35
+    assert acquisition.objective_magnification == 63.0
+
+
+def test_microscope_acquisition_parses_combined_objective_label_fallbacks():
+    acquisition = microscope_io._acquisition_from_metadata(
+        {"objectiveName": "63x, 1.3NA"}
+    )
+
+    assert acquisition.objective == "63x, 1.3NA"
+    assert acquisition.objective_magnification == 63.0
+    assert acquisition.objective_na == 1.3
+
+
+def test_explicit_objective_numbers_override_combined_label_fallbacks():
+    acquisition = microscope_io._acquisition_from_metadata(
+        {
+            "objectiveName": "63x/1.3",
+            "objectiveMagnification": 60,
+            "objectiveNumericalAperture": 1.25,
+        }
+    )
+
+    assert acquisition.objective_magnification == 60.0
+    assert acquisition.objective_na == 1.25
+
+
+def test_lenspower_requires_complete_objective_evidence():
+    generic_lens = microscope_io._acquisition_from_metadata(
+        {"Lens": "63x, 1.3NA"}
+    )
+    ambiguous_power = microscope_io._acquisition_from_metadata(
+        {"Lenspower": "tube lens 1.0x"}
+    )
+
+    assert generic_lens.objective == ""
+    assert generic_lens.objective_magnification is None
+    assert generic_lens.objective_na is None
+    assert ambiguous_power.objective == ""
+    assert ambiguous_power.objective_magnification is None
+    assert ambiguous_power.objective_na is None
 
 
 def test_microscope_acquisition_reads_object_style_nested_metadata():

@@ -1,6 +1,6 @@
 # Public Data Corpus For `0.14.0a1`
 
-Status: release acceptance baseline `0.14.0a1-v3`, reviewed on 2026-08-25.
+Status: release acceptance baseline `0.14.0a1-v4`, reviewed on 2026-08-26.
 
 The first 0.14 alpha needs real data diversity, but a larger pile of images is
 not automatically a better test. This corpus is selected against the feature
@@ -9,10 +9,10 @@ happen to pass VIPP. It combines public biological data, standards fixtures,
 and tiny generated boundary cases.
 
 The canonical machine record is
-[`validation/public-data/corpus-v3.json`](validation/public-data/corpus-v3.json).
+[`validation/public-data/corpus-v4.json`](validation/public-data/corpus-v4.json).
 It names the immutable
-[`v2` base](validation/public-data/corpus-v2.json) and its SHA-256; `v2` in turn
-preserves the original [`v1` base](validation/public-data/corpus-v1.json).
+[`v3` base](validation/public-data/corpus-v3.json) and its SHA-256; `v3` and `v2`
+in turn preserve the earlier corpus revisions.
 Public image bytes are cached outside Git and are never fetched by ordinary CI.
 
 ## Selection Rules
@@ -288,7 +288,11 @@ expected shape/dtype/axis/scale, derived recipe, or acceptance role changes.
 Adding an unrelated dataset is not a harmless documentation edit: it must name
 the missing contract it closes and the existing candidate it cannot replace.
 
-`v3` preserves the byte-exact `v2` manifest and names its hash. It adds OIR,
+`v4` preserves the byte-exact `v3` manifest and names its hash. It corrects the
+BIA S-BIAD1390 LIF expectation to the `liffile` semantic dye-coordinate names
+(`ALEXA 488`, `ALEXA 546`, and `ALEXA 405`); the former Green/Red/Blue values
+are display LUT colors in the Leica XML. No source byte or other expectation
+changed. `v3` preserves the byte-exact `v2` manifest and adds OIR,
 OIB, VSI, IMS, and LSM contracts while preserving both historical manifests.
 The OIB expectation remains the predeclared CZYX contract and records the
 release's passing CZYX inspection/read state. PR2729 continues to record the

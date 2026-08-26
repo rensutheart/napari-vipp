@@ -15,7 +15,7 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "generate_sourceitem_contract_fixtures.py"
 PUBLIC_DATA_DIR = REPO_ROOT / "docs" / "validation" / "public-data"
 FIXTURE_DIR = PUBLIC_DATA_DIR / "fixtures"
 RECORD_PATH = FIXTURE_DIR / "sourceitem-contract-fixtures-v1.json"
-CORPUS_PATH = PUBLIC_DATA_DIR / "corpus-v3.json"
+CORPUS_PATH = PUBLIC_DATA_DIR / "corpus-v4.json"
 
 
 def _load_script():
