@@ -5049,6 +5049,40 @@ def test_binding_change_restores_analysis_after_visible_source_preview(
     assert refreshes
 
 
+def test_source_preview_preserves_user_hidden_inspect_visibility(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget._select_node("input")
+    inspect = widget._generated_layers_for_name("VIPP Inspect")[0]
+    inspect.visible = False
+    preview = viewer.add_image(
+        np.zeros((2, 2), dtype=np.uint8),
+        name="Presentation preview",
+        metadata={
+            "napari_vipp_kind": "source_preview",
+            "node_id": "input",
+            "source_item_key": ".",
+        },
+    )
+
+    widget._source_view_modes["input"] = "preview:auto"
+    widget._apply_selected_viewer_surface(select_layer=True)
+    profiles = widget._inspect_display_profile_documents(set(widget.pipeline.nodes))
+
+    assert preview.visible is True
+    assert inspect.visible is False
+    assert next(profile for profile in profiles if profile["node_id"] == "input")[
+        "settings"
+    ]["visible"] is False
+
+    widget._source_view_modes["input"] = "analysis"
+    widget._apply_selected_viewer_surface(select_layer=True)
+
+    assert preview.visible is False
+    assert inspect.visible is False
+
+
 def test_direct_workflow_tab_switch_cancels_and_removes_source_preview(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer, defer_initial_run=True)

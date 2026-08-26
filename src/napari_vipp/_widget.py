@@ -657,6 +657,8 @@ _INSPECT_LAYER_DISPLAY_ATTRIBUTES = (
     "attenuation",
 )
 
+_INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY = "_vipp_source_preview_visibility"
+
 COMPOSITE_CHANNEL_ASSIGNMENT_CHOICES = (
     "Unassigned",
     *CHANNEL_COLOR_CHOICES,
@@ -18406,7 +18408,28 @@ class VippWidget(QWidget):
         inspect_layers = self._generated_layers_for_name(self._inspect_layer_name)
         for layer in inspect_layers:
             try:
-                layer.visible = not show_preview
+                metadata = layer.metadata
+                profile_key = self._inspect_display_profile_key(metadata)
+                hidden_state = metadata.get(
+                    _INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY
+                )
+                if show_preview:
+                    if not (
+                        isinstance(hidden_state, dict)
+                        and hidden_state.get("profile_key") == profile_key
+                    ):
+                        metadata[_INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY] = {
+                            "profile_key": profile_key,
+                            "visible": bool(layer.visible),
+                        }
+                    layer.visible = False
+                else:
+                    metadata.pop(_INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY, None)
+                    if (
+                        isinstance(hidden_state, dict)
+                        and hidden_state.get("profile_key") == profile_key
+                    ):
+                        layer.visible = bool(hidden_state.get("visible", True))
             except Exception:
                 pass
 
@@ -29440,9 +29463,19 @@ class VippWidget(QWidget):
                 # name alone is not a valid round-trip representation.
                 continue
             try:
+                raw_value = getattr(layer, attr)
+                hidden_state = metadata.get(
+                    _INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY
+                )
+                if (
+                    attr == "visible"
+                    and isinstance(hidden_state, dict)
+                    and hidden_state.get("profile_key") == key
+                ):
+                    raw_value = hidden_state.get("visible", raw_value)
                 value = self._serialized_inspect_display_value(
                     attr,
-                    getattr(layer, attr),
+                    raw_value,
                 )
             except Exception:
                 continue
