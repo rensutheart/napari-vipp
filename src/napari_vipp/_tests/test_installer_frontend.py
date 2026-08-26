@@ -13,9 +13,12 @@ from napari_vipp.installer.frontend import (
     InstallerScreen,
     InstallerSelection,
     InstallOutcome,
+    InstallSizeEstimate,
     PreparedInstall,
+    ProgressUnit,
     ProgressUpdate,
     TargetKind,
+    default_install_size_estimate,
 )
 from napari_vipp.installer.models import ComputeTrack
 
@@ -149,6 +152,7 @@ def test_gpu_install_explains_that_the_large_download_can_pause(tmp_path):
         _prepared(TargetKind.NEW, tmp_path),
         track=ComputeTrack.CUDA13,
         required_free_bytes=15 * 1024**3,
+        temporary_free_bytes=5 * 1024**3,
     )
     backend = _Backend(prepared)
     controller = InstallerController(
@@ -159,17 +163,139 @@ def test_gpu_install_explains_that_the_large_download_can_pause(tmp_path):
 
     controller.start()
     workers.pop(0)()
-    assert controller.state.status_message == (
-        "Setup will use GPU acceleration. It needs at least 15 GiB free on the "
-        "installation drive during setup. This is disk storage, not GPU "
-        "memory (VRAM). Windows temporary files and VIPP installer records also "
-        "need at least 5 GiB free on every drive they use."
+    status = controller.state.status_message
+    assert (
+        "at least 15 GiB of free disk space on the installation drive" in status
     )
+    assert "Windows temporary files and VIPP installer records" in status
+    assert "at least 5 GiB" in status
+    assert "every drive they use" in status
+    assert "VRAM" not in status
+    assert "GPU memory" not in status
     controller.confirm()
 
     assert controller.state.screen is InstallerScreen.WORKING
     assert "large download" in controller.state.message
     assert "several minutes" in controller.state.message
+
+
+def test_ready_state_keeps_estimates_separate_from_enforced_space_limits(tmp_path):
+    workers = []
+    estimate = InstallSizeEstimate(
+        download_bytes=250 * 1024**2,
+        installed_bytes=1536 * 1024**2,
+        peak_temporary_bytes=2560 * 1024**2,
+    )
+    prepared = replace(
+        _prepared(TargetKind.NEW, tmp_path),
+        size_estimate=estimate,
+        required_free_bytes=5 * 1024**3,
+        temporary_free_bytes=1 * 1024**3,
+    )
+    controller = InstallerController(
+        _Backend(prepared),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+
+    controller.start()
+    workers.pop(0)()
+
+    assert controller.state.size_estimate == estimate
+    assert controller.state.temporary_free_bytes == 1 * 1024**3
+    assert controller.state.progress_fraction is None
+    assert "at least 5 GiB of free disk space" in controller.state.status_message
+    assert "at least 1 GiB" in controller.state.status_message
+    assert "every drive" in controller.state.status_message
+
+
+def test_release_declared_size_estimates_are_route_specific_and_validated():
+    cpu = default_install_size_estimate(ComputeTrack.CPU)
+    cuda = default_install_size_estimate(ComputeTrack.CUDA13)
+
+    assert cpu.download_bytes == 250 * 1024**2
+    assert cpu.installed_bytes == 1536 * 1024**2
+    assert cpu.peak_temporary_bytes == 2560 * 1024**2
+    assert cuda.download_bytes == 1536 * 1024**2
+    assert cuda.installed_bytes == 5 * 1024**3
+    assert cuda.peak_temporary_bytes == 7 * 1024**3
+    with pytest.raises(ValueError, match="download_bytes"):
+        InstallSizeEstimate(-1, 1, 1)
+
+
+def test_progress_units_distinguish_byte_progress_from_unknown_activity():
+    byte_progress = ProgressUpdate(
+        "download",
+        "Downloading dependencies…",
+        completed=128 * 1024**2,
+        total=512 * 1024**2,
+        unit=ProgressUnit.BYTES,
+    )
+    unknown_activity = ProgressUpdate(
+        "installing",
+        "Installing dependencies…",
+        completed=1,
+        total=4,
+        unit=ProgressUnit.ACTIVITY,
+    )
+
+    assert byte_progress.fraction == pytest.approx(0.25)
+    assert unknown_activity.fraction is None
+
+
+def test_controller_preserves_phase_progress_unit_and_live_log_path(tmp_path):
+    class _PhasedBackend(_Backend):
+        def apply(self, prepared, *, confirmed, progress, cancellation):
+            self.apply_calls.append((prepared, confirmed))
+            progress(
+                ProgressUpdate(
+                    "download",
+                    "Downloading VIPP components…",
+                    completed=3,
+                    total=12,
+                    unit=ProgressUnit.BYTES,
+                    log_path=tmp_path / "setup.log",
+                )
+            )
+            progress(
+                ProgressUpdate(
+                    "installing",
+                    "Installing dependencies…",
+                    unit=ProgressUnit.ACTIVITY,
+                    log_path=tmp_path / "setup.log",
+                )
+            )
+            return InstallOutcome(
+                launcher=prepared.target / "Scripts" / "vipp-app.exe"
+            )
+
+    workers = []
+    states = []
+    backend = _PhasedBackend(_prepared(TargetKind.NEW, tmp_path))
+    controller = InstallerController(
+        backend,
+        states.append,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    workers.pop(0)()
+
+    download = next(
+        state for state in states if state.progress_stage == "download"
+    )
+    installing = next(
+        state for state in states if state.progress_stage == "installing"
+    )
+    assert download.progress_unit is ProgressUnit.BYTES
+    assert download.progress_fraction == pytest.approx(0.25)
+    assert download.log_path == tmp_path / "setup.log"
+    assert installing.progress_unit is ProgressUnit.ACTIVITY
+    assert installing.progress_fraction is None
+    assert installing.log_path == tmp_path / "setup.log"
+    assert controller.state.screen is InstallerScreen.SUCCESS
+    assert controller.state.log_path == tmp_path / "setup.log"
 
 
 def test_current_install_opens_or_prepares_explicit_repair(tmp_path):

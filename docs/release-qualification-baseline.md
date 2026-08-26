@@ -154,19 +154,17 @@ Do not rewrite unaffected rows merely to replace the release version.
 
 ## Expected `0.14.0a1` Selection
 
-For the planned first SourceItem slice, the expected changed domains are
-`core_ui`, `workflow_schema`, and `documentation`. Its release checks should
-cover SourceItem migration, save/reopen, batch naming, generated execution,
-and provenance compatibility.
+For the `0.14.0a1` release, the selected changed domains are `core_ui`,
+`workflow_schema`, `windows_installer`, and `documentation`. Its release checks
+should cover SourceItem migration, save/reopen, batch naming, generated
+execution, provenance compatibility, and the focused installer presentation
+below.
 
-Unless that implementation also changes their listed inputs, carry the current
-`v0.13.0a8` Windows-installer and GPU/scientific-catalogue baselines forward. Do
-not run a full installer lifecycle or full GPU admission merely because the
-package version becomes `0.14.0a1`.
-
-If installer issue
-[`#42`](https://github.com/rensutheart/napari-vipp/issues/42) ships in a1, select
-the Windows-installer and documentation domains and requalify the changed
-capacity, progress, and stall presentation. Carry forward unchanged
-transactional lifecycle and GPU/scientific evidence; do not rerun the full
-installer or GPU matrices solely for that focused UI change.
+Installer issue
+[`#42`](https://github.com/rensutheart/napari-vipp/issues/42) is included, so
+select the Windows-installer and documentation domains and
+requalify the changed capacity, progress, heartbeat, stall/failure, and log
+presentation. Carry forward only the unchanged installer transactional
+lifecycle from `v0.13.0a8`; do not rerun its complete matrix solely for this
+focused UI change. The unchanged full GPU catalogue may likewise carry forward,
+with focused real-GPU parity only at the changed shared axis/metadata boundary.

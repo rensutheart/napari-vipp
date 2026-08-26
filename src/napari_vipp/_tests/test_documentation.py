@@ -18,7 +18,7 @@ RELEASE_TEXT_SUFFIXES = frozenset(
 )
 
 
-def test_014a1_candidate_version_contract_is_consistent() -> None:
+def test_014a1_release_version_contract_is_consistent() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     citation = (REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8")
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -27,11 +27,11 @@ def test_014a1_candidate_version_contract_is_consistent() -> None:
 
     assert project["project"]["version"] == "0.14.0a1"
     assert 'version: "0.14.0a1"' in citation
-    assert "date-released:" not in citation
-    assert changelog.startswith("# Changelog\n\n## 0.14.0a1 - Unreleased")
-    assert release_notes.startswith("# VIPP 0.14.0a1 (release candidate)")
-    assert "0.13.0a9 remains the current\npublished alpha" in release_notes
-    assert "VIPP `0.13.0a9` is published" in readme
+    assert 'date-released: "2026-08-26"' in citation
+    assert changelog.startswith("# Changelog\n\n## 0.14.0a1 - 2026-08-26")
+    assert release_notes.startswith("# VIPP 0.14.0a1\n")
+    assert "release candidate" not in release_notes.casefold()
+    assert "VIPP `0.14.0a1` is published" in readme
 
 
 def test_local_markdown_links_resolve():
@@ -143,9 +143,9 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     )
     assert (
         "https://github.com/rensutheart/napari-vipp/releases/download/"
-        "v0.13.0a9/VIPP-Setup-0.13.0a9-Windows-x86_64-UNSIGNED.exe"
+        "v0.14.0a1/VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED.exe"
     ) in quick_start
-    assert "SHA256SUMS-Windows-0.13.0a9.txt" in quick_start
+    assert "SHA256SUMS-Windows-0.14.0a1.txt" in quick_start
     assert "**Unknown publisher**" in quick_start
     assert "**More info**, confirm" in quick_start
     assert "**Run anyway**" in quick_start

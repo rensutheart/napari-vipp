@@ -21,6 +21,7 @@ from napari_vipp.installer.engine import (
     ManagedInstallerEngine,
     ManagedTargetKind,
     PreparationError,
+    ProgressStage,
     ResolutionError,
     StalePreparedTransaction,
     inspect_managed_target,
@@ -575,6 +576,33 @@ def test_apply_uses_permanent_versioned_environment_and_exact_lock(tmp_path):
     assert ownership.record.environment_root == result.environment_root
     assert ownership.record.resolved_plan_id == prepared.resolution_id
     assert result.log_path.is_file()
+
+
+def test_first_apply_progress_exposes_the_existing_exact_run_log(tmp_path):
+    target = tmp_path / "managed"
+    runner = _FakeRunner()
+    engine = _engine(tmp_path, runner)
+    prepared = engine.prepare(_plan(target, _release()))
+    observations = []
+
+    def record(update):
+        observations.append(
+            (
+                update,
+                update.log_path.is_file() if update.log_path is not None else False,
+            )
+        )
+
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+        progress=record,
+    )
+
+    first, existed_when_reported = observations[0]
+    assert first.stage is ProgressStage.PREPARING
+    assert first.log_path == result.log_path
+    assert existed_when_reported is True
 
 
 def test_failed_update_preserves_active_environment_and_manifest(tmp_path):

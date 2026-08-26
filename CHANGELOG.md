@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.14.0a1 - Unreleased
+## 0.14.0a1 - 2026-08-26
 
 ### Features
 
@@ -31,6 +31,15 @@
   ordinary existing-output collisions offer a safe one-run overwrite prompt.
   Cancel is the default; duplicate destinations, input overlaps, and explicitly
   protected outputs remain hard errors.
+- Completed installer issue
+  [#42](https://github.com/rensutheart/napari-vipp/issues/42): the reviewed setup
+  now shows separate approximate download, installed, and peak working sizes
+  for CPU and CUDA; preserves the distinct enforced installation/temp-drive
+  minimums without presenting them as VRAM; names each phase and elapsed time;
+  uses determinate byte progress only when trustworthy totals exist; keeps a
+  quiet-work heartbeat and latest concrete activity visible; and exposes the
+  setup log from Advanced details so slow, stalled, and failed states are not
+  conflated.
 
 ### Remaining limitations
 

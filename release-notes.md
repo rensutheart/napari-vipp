@@ -1,13 +1,9 @@
-# VIPP 0.14.0a1 (release candidate)
+# VIPP 0.14.0a1
 
 VIPP 0.14.0a1 makes scientific image selection explicit and durable. The same
 selected item, reader evidence, source revision, axes, metadata, and effective
 per-sample parameters now travel through interactive calculation, batch,
 generated execution, replay, export, checkpoints, manifests, and provenance.
-
-This file describes the unreleased candidate. VIPP 0.13.0a9 remains the current
-published alpha until the 0.14.0a1 release gates, tag, packages, installer, and
-documentation deployment are complete.
 
 This remains alpha software. Keep original data and workflows, test
 representative sources through the intended reader, and review important
@@ -87,6 +83,26 @@ unreviewed topology change; it does not claim that those views are equivalent.
   explicitly protected outputs remain hard errors; headless execution retains
   the fail-closed `error` policy.
 
+## Understandable Windows setup activity
+
+- The reviewed setup summary now separates rounded capacity estimates from the
+  conservative disk-space gates that are actually enforced. CPU setup shows
+  approximately 250 MiB to download, 1.5 GiB installed, and 2.5 GiB peak
+  temporary working space. CUDA setup shows approximately 1.5 GiB to download,
+  5 GiB installed, and 7 GiB peak temporary working space.
+- Those estimates do not replace the enforced minimums: managed CPU setup needs
+  5 GiB free on the installation drive and 1 GiB on every drive used for
+  Windows temporary files or VIPP installer records; managed CUDA setup needs
+  15 GiB and 5 GiB respectively. All of these values describe disk storage.
+  Setup does not compare them with GPU memory (VRAM).
+- Setup identifies its current phase and elapsed time. It uses an indeterminate
+  activity bar for work whose progress cannot be observed and reports byte
+  progress only when a dependency tool supplies trustworthy totals.
+- A quiet-operation heartbeat confirms that setup is still working without
+  hiding the latest concrete activity. Advanced details retain the setup-log
+  path and offer a direct way to open the log; a slow operation is kept
+  distinct from an actual reported stall or failure.
+
 ## Large-source loading
 
 - Local source reads provide decoded-memory preflight, truthful progress,
@@ -110,12 +126,13 @@ unreviewed topology change; it does not claim that those views are equivalent.
   filename rules, source selectors, topology changes, CSV import/export, and
   semantic-axis iteration remain deferred.
 
-## Qualification status
+## Qualification scope
 
 Focused core, reader-contract, schema/migration, preview, and override tests are
-part of the candidate. Publication still requires the integrated release suite,
-the strict verified-cache corpus profile in its qualified optional-reader
-environment, exact-tag artifacts, and the release-specific Windows installer.
+part of the release evidence. The complete qualification scope also includes
+the integrated release suite, the strict verified-cache corpus profile in its
+qualified optional-reader environment, exact-tag artifacts, and the
+release-specific Windows installer.
 
 The release-domain declaration for the complete change from `v0.13.0a9` is:
 
@@ -125,17 +142,19 @@ changed:
   core_ui: true
   workflow_schema_provenance: true
   gpu_scientific_shared_axes_metadata: true
-  windows_installer: false
+  windows_installer: true
   dependencies_toolchain: false
   packaging_release_metadata: true
   documentation: true
 carried_forward:
   full_gpu_catalogue: v0.13.0a8
-  windows_installer_lifecycle: v0.13.0a8
+  windows_installer_transactional_lifecycle: v0.13.0a8
   dependencies_toolchain: v0.13.0a8
 ```
 
 Focused real-GPU parity is still required for the changed shared axis/metadata
-boundary. The unchanged full GPU catalogue and Windows installer transaction
-model are carried forward; exact `0.14.0a1` package, installer, hash, and public
-URL facts are regenerated for the immutable release tag.
+boundary. The changed installer capacity/activity presentation receives
+focused qualification, while only its unchanged transactional lifecycle is
+carried forward from `v0.13.0a8`. The unchanged full GPU catalogue is also
+carried forward; exact `0.14.0a1` package, installer, hash, and public URL facts
+are regenerated for the immutable release tag.

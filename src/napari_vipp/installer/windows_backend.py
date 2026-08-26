@@ -22,9 +22,12 @@ from napari_vipp.installer.frontend import (
     InstallerSelection,
     InstallOutcome,
     PreparedInstall,
+    ProgressUnit,
     ProgressUpdate,
     TargetKind,
     TrackChoice,
+    default_install_size_estimate,
+    default_temporary_free_bytes,
 )
 from napari_vipp.installer.models import (
     ComputeTrack,
@@ -422,6 +425,11 @@ class WindowsInstallerBackend:
             launcher=launcher,
             message=visible_message,
             technical_details=_json_details(result),
+            log_path=(
+                Path(result.log_path)
+                if getattr(result, "log_path", None) is not None
+                else None
+            ),
             payload=result,
         )
 
@@ -1016,6 +1024,8 @@ def _prepared_for_transaction(
         ),
         installed_version=installed_version,
         required_free_bytes=plan.required_free_bytes,
+        temporary_free_bytes=default_temporary_free_bytes(plan.request.track),
+        size_estimate=default_install_size_estimate(plan.request.track),
         launcher=Path(launcher) if launcher is not None else None,
         reason=str(getattr(inspection, "reason", "")),
     )
@@ -1081,14 +1091,20 @@ def _transaction_summary(
 def _progress_update(event: object) -> ProgressUpdate:
     stage = getattr(event, "stage", "setup")
     stage_value = str(getattr(stage, "value", stage))
-    indeterminate = stage_value in {"installing", "resolving"}
+    raw_unit = ProgressUnit(str(getattr(event, "unit", ProgressUnit.STEPS.value)))
+    completed = _optional_int(getattr(event, "completed", None))
+    total = _optional_int(getattr(event, "total", None))
+    trustworthy_bytes = (
+        raw_unit is ProgressUnit.BYTES and total is not None and total > 0
+    )
+    indeterminate = stage_value in {"installing", "resolving"} and not trustworthy_bytes
     return ProgressUpdate(
         stage=stage_value,
         message=str(getattr(event, "message", "Working…")),
-        completed=(
-            None if indeterminate else _optional_int(getattr(event, "completed", None))
-        ),
-        total=(None if indeterminate else _optional_int(getattr(event, "total", None))),
+        completed=None if indeterminate else completed,
+        total=None if indeterminate else total,
+        unit=ProgressUnit.ACTIVITY if indeterminate else raw_unit,
+        log_path=getattr(event, "log_path", None),
     )
 
 

@@ -13,7 +13,7 @@ environment, memory, and scientific-parity gates. Work outside those gates
 runs on CPU with an explanation; VIPP does not silently cast data or change an
 authored parameter merely to use a GPU.
 
-The public `0.13.0a9` CUDA route targets native 64-bit Windows and CPython
+The public `0.14.0a1` CUDA route targets native 64-bit Windows and CPython
 3.12. Linux and macOS continue to use the CPU path in this alpha while their
 accelerator policies are qualified separately.
 
@@ -59,7 +59,7 @@ CMake.
 
 ## Install And Verify
 
-The explicitly unsigned Windows installer is the normal 0.13.0a9 route. Follow
+The explicitly unsigned Windows installer is the normal 0.14.0a1 route. Follow
 the checksum and Windows-warning steps in the [Quick Start](quick-start.md).
 
 One-click setup derives Windows Local App Data through

@@ -1,6 +1,6 @@
 # Windows Installer Field Acceptance
 
-Last reviewed: 2026-08-14
+Last reviewed: 2026-08-14. `0.14.0a1` checklist updated: 2026-08-26.
 
 Use this page for a tagged VIPP installer on a fresh Windows account. It is a
 short evidence record, not an installation guide. The ordinary installation
@@ -147,6 +147,38 @@ explanation is a pass where the exact GPU region is unavailable.
 - [ ] Open the bundled 3D RL/RL-TV example and confirm that both branches retain
       25 iterations and `filter_epsilon=1e-12`; GPU eligibility must not rewrite
       either authored value.
+
+Result: pass / fail
+
+What was confusing, if anything:
+
+## 0.14.0a1 installer capacity and activity smoke
+
+Run this focused section for installer issue
+[#42](https://github.com/rensutheart/napari-vipp/issues/42). It qualifies the
+changed presentation; the unchanged transactional install/update/repair and
+rollback lifecycle can retain its existing release evidence.
+
+- [ ] Before confirmation, CPU review shows approximately 250 MiB download,
+      1.5 GiB installed, and 2.5 GiB peak working space.
+- [ ] CUDA review shows approximately 1.5 GiB download, 5 GiB installed, and
+      7 GiB peak working space.
+- [ ] The approximate values are visually separate from the enforced disk
+      minimums: CPU 5 GiB on the installation drive and 1 GiB on temp/records
+      drives; CUDA 15 GiB and 5 GiB respectively.
+- [ ] CUDA-ready wording says **at least 15 GiB of free disk space on the
+      installation drive** and does not compare any disk figure with VRAM.
+- [ ] Setup names each active phase and keeps elapsed time visible. Work without
+      an observable total uses an indeterminate activity bar; byte progress is
+      determinate only when the underlying tool provides trustworthy totals.
+- [ ] During a deliberately quiet operation, a heartbeat eventually confirms
+      activity without replacing the latest concrete activity message or
+      declaring success, failure, or a stall.
+- [ ] Advanced details shows the exact setup-log path and **Open setup log**
+      opens that file once it exists.
+- [ ] An actual reported network stall and an actual failure remain visibly
+      distinct from the quiet-operation heartbeat, with an actionable terminal
+      outcome and retained log location.
 
 Result: pass / fail
 

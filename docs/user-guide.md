@@ -1,6 +1,6 @@
 # VIPP User Guide
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-26
 
 This guide is written for people building visual image-processing workflows in
 VIPP. It focuses on how to use the graph, how to choose the right controls, and
@@ -13,7 +13,7 @@ your data and acquisition settings.
 ## Start VIPP
 
 Begin with the [installer-first quick start](quick-start.md). The official
-`0.13.0a9` prerelease and checksum sidecars are public, and its explicitly
+`0.14.0a1` prerelease and checksum sidecars are public, and its explicitly
 unsigned Windows `.exe` is the recommended ordinary-user route. Always verify
 the published SHA-256 before accepting Windows' **Unknown publisher** warning.
 Manual pip installation

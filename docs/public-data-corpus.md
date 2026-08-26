@@ -1,6 +1,6 @@
 # Public Data Corpus For `0.14.0a1`
 
-Status: candidate acceptance baseline `0.14.0a1-v3`, reviewed on 2026-08-25.
+Status: release acceptance baseline `0.14.0a1-v3`, reviewed on 2026-08-25.
 
 The first 0.14 alpha needs real data diversity, but a larger pile of images is
 not automatically a better test. This corpus is selected against the feature
@@ -191,7 +191,7 @@ download hash before asking VIPP to inspect and open every declared item. It
 asserts item key, name, shape, dtype, axes, and the bounded calibration,
 channel, objective, and acquisition facts exposed by that reader. The files
 originally revealed metadata-only parity gaps, missing Java readiness
-diagnostics, and the OIB C/Z disagreement. The 0.14.0a1 candidate closes those
+diagnostics, and the OIB C/Z disagreement. VIPP 0.14.0a1 closes those
 contracts without weakening the predeclared expectations. Remaining eager
 readers, optional-runtime requirements, cache-gated large decodes, and
 reader-specific topology differences stay explicit limitations.
@@ -290,8 +290,8 @@ the missing contract it closes and the existing candidate it cannot replace.
 
 `v3` preserves the byte-exact `v2` manifest and names its hash. It adds OIR,
 OIB, VSI, IMS, and LSM contracts while preserving both historical manifests.
-The OIB expectation remains the predeclared CZYX contract and now records the
-candidate's passing CZYX inspection/read state. PR2729 continues to record the
+The OIB expectation remains the predeclared CZYX contract and records the
+release's passing CZYX inspection/read state. PR2729 continues to record the
 different `liffile` and Bio-Formats topologies; a pinned backend change is a
 review/refusal boundary, not a silent identity migration.
 

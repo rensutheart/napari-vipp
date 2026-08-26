@@ -8,28 +8,28 @@ The normal VIPP experience is one Windows installer: download the explicitly
 named unsigned `.exe`, verify it, review the proposed location and compute
 option, and launch VIPP from the shortcuts it creates.
 
-The official `0.13.0a9` prerelease and its checksum sidecars are public. Use
+The official `0.14.0a1` prerelease and its checksum sidecars are public. Use
 only that release surface; never download a guessed release asset.
 
-**[Download the VIPP 0.13.0a9 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.13.0a9/VIPP-Setup-0.13.0a9-Windows-x86_64-UNSIGNED.exe)**
+**[Download the VIPP 0.14.0a1 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a1/VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED.exe)**
 
 Use only the file attached to the official
-[`v0.13.0a9` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a9).
+[`v0.14.0a1` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a1).
 This alpha is intentionally not Authenticode-signed. **Unknown publisher** and
 a **Windows protected your PC** warning are therefore expected. The same
 release includes the SHA-256 checksum and release manifest.
 
-1. Download both `VIPP-Setup-0.13.0a9-Windows-x86_64-UNSIGNED.exe` and
-   `SHA256SUMS-Windows-0.13.0a9.txt` from the official release.
+1. Download both `VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED.exe` and
+   `SHA256SUMS-Windows-0.14.0a1.txt` from the official release.
 2. Open PowerShell in the download folder and run:
 
    ```powershell
    Get-FileHash -Algorithm SHA256 `
-     .\VIPP-Setup-0.13.0a9-Windows-x86_64-UNSIGNED.exe
+     .\VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED.exe
    ```
 
    The 64-character hash must exactly match the hash beside that filename in
-   `SHA256SUMS-Windows-0.13.0a9.txt`. Stop and delete the installer if it does
+   `SHA256SUMS-Windows-0.14.0a1.txt`. Stop and delete the installer if it does
    not match.
 3. Double-click the installer. If Windows shows **Windows protected your PC**,
    select **More info**, confirm the app name ends in `-UNSIGNED.exe` and the
@@ -60,7 +60,7 @@ After that one-time Windows warning, the ordinary setup flow is:
    settings it has not checked. Windows obtains canonical Local App Data with
    `SHGetKnownFolderPath(FOLDERID_LocalAppData)`; one-click setup uses only
    `VIPP\environments\cpu` or `VIPP\environments\cuda13` beneath it. Custom
-   managed roots are not accepted. In `0.13.0a9`, the complete CUDA path must
+   managed roots are not accepted. In `0.14.0a1`, the complete CUDA path must
    use ASCII characters only because CuPy 14.1.1 cannot reliably compile CUDA
    kernels from a Windows environment path containing characters such as `Å`
    or `é`. Spaces are supported. If canonical Local App Data contains a
@@ -84,7 +84,7 @@ Managed CPU and CUDA installations can coexist. Remove either one later from
 uninstaller and the other installation is left intact.
 
 An installer-owned CUDA copy already stored in a non-ASCII path is a special
-case: `0.13.0a9` will not update or repair it in place. Graphical setup may
+case: `0.14.0a1` will not update or repair it in place. Graphical setup may
 first complete and record recovery from an earlier interrupted transaction;
 after that separate recovery, the newly blocked selection performs no new
 mutation of the old copy, shortcuts, or ownership record. Do not move or rename
@@ -125,6 +125,17 @@ then retries only a limited number of times; 120 seconds is not a limit on the
 total download or installation time. If a temporary network problem still
 stops setup, the incomplete new copy is rolled back and any previous working
 VIPP remains active.
+
+Setup makes the scale and activity of this work explicit. Its review shows
+rounded estimates of 250 MiB download,
+1.5 GiB installed, and 2.5 GiB peak working space for CPU, or 1.5 GiB, 5 GiB,
+and 7 GiB respectively for CUDA. These estimates are separate from the
+enforced 5/1 GiB CPU and 15/5 GiB CUDA installation/temp-drive minimums above;
+none is a VRAM comparison. During setup, the current phase, elapsed time, quiet
+heartbeat, latest concrete activity, and setup-log access remain visible.
+Progress stays indeterminate unless the underlying dependency tool provides a
+trustworthy byte total.
+
 After the connection recovers, **Try again** rechecks the computer-use and
 shortcut choices currently shown and presents them for review
 before **Install** can be selected again.
@@ -139,12 +150,12 @@ or when installing on Linux or macOS.
 
 ### CPU On Windows, Linux, Or macOS
 
-VIPP `0.13.0a9` supports CPython 3.12 and 3.13. Create and activate a dedicated
+VIPP `0.14.0a1` supports CPython 3.12 and 3.13. Create and activate a dedicated
 virtual environment first; do not install the application into a global/base
 Python. Then run:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.13.0a9"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.14.0a1"
 vipp
 ```
 
@@ -160,7 +171,7 @@ Run these commands from an ASCII-only working directory:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.13.0a9"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.14.0a1"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -187,7 +198,7 @@ Python explicitly. A conservative CPU update is:
 
 ```powershell
 $napariPython = "C:\Path\To\napari-env\Scripts\python.exe"
-& $napariPython -m pip install "napari-vipp==0.13.0a9"
+& $napariPython -m pip install "napari-vipp==0.14.0a1"
 & $napariPython -m pip check
 ```
 

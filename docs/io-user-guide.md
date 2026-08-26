@@ -1,6 +1,6 @@
 # Image Import And Export
 
-Last reviewed: 2026-08-25
+Last reviewed: 2026-08-26
 
 VIPP uses one headless I/O layer for interactive sources, quick saves, Save
 Image nodes, and exported Python scripts. The explicit format choice matters:
@@ -30,26 +30,26 @@ dialog with the required extra and a generic pip suggestion. Use the safer
 environment-bound commands below with the Python interpreter from the
 environment that launches VIPP, never a global/base Python. Keep the VIPP
 release pinned, restart napari after installing a new reader, then reopen the
-file. The commands below install the current published `0.13.0a9` baseline; a
-source checkout of the unreleased 0.14.0a1 candidate should use its managed
-development environment. A future installer should expose these as Add/Repair
-components rather than terminal steps.
+file. The commands below install the current published `0.14.0a1` release. A
+source checkout should use its managed development environment. A future
+installer should expose these as Add/Repair components rather than terminal
+steps.
 
 | Format family | Extensions | Install command |
 | --- | --- | --- |
-| Zeiss CZI | `.czi` | `python -m pip install "napari-vipp[czi]==0.13.0a9"` |
-| Nikon ND2 | `.nd2` | `python -m pip install "napari-vipp[nd2]==0.13.0a9"` |
-| Broad microscope reader set | `.czi`, `.nd2`, `.ims`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `python -m pip install "napari-vipp[microscope]==0.13.0a9"` |
-| BioIO/Bio-Formats fallback | `.ims` and Leica/Olympus/Bio-Formats-backed sources | `python -m pip install "napari-vipp[bioformats]==0.13.0a9"` |
+| Zeiss CZI | `.czi` | `python -m pip install "napari-vipp[czi]==0.14.0a1"` |
+| Nikon ND2 | `.nd2` | `python -m pip install "napari-vipp[nd2]==0.14.0a1"` |
+| Broad microscope reader set | `.czi`, `.nd2`, `.ims`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `python -m pip install "napari-vipp[microscope]==0.14.0a1"` |
+| BioIO/Bio-Formats fallback | `.ims` and Leica/Olympus/Bio-Formats-backed sources | `python -m pip install "napari-vipp[bioformats]==0.14.0a1"` |
 
 Use the format-specific extra when you know what you need. Use
 `napari-vipp[microscope]` on a workstation intended to open mixed acquisition
 formats.
 
-The 0.14.0a1 candidate's qualified reader contract is intentionally narrower
+The 0.14.0a1 qualified reader contract is intentionally narrower
 than the list of advertised extensions:
 
-| Reader route | Candidate evidence | Important limit |
+| Reader route | 0.14.0a1 evidence | Important limit |
 | --- | --- | --- |
 | Nikon ND2 | Lazy inspection/data, decoded-size estimate, stable items, calibration, channels, and objective metadata | Optional `nd2` dependency |
 | Leica LIF | Inspection/read calibration, channels, objective metadata | Eager pixels; `liffile` and Bio-Formats may expose different item topology, so recorded backend changes are refused for review |

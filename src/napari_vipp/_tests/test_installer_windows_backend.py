@@ -19,6 +19,7 @@ from napari_vipp.installer.discovery import (
 from napari_vipp.installer.frontend import (
     BlockedAction,
     InstallerSelection,
+    ProgressUnit,
     TargetKind,
     TrackChoice,
 )
@@ -38,7 +39,10 @@ from napari_vipp.installer.ownership import (
 )
 from napari_vipp.installer.python_discovery import PythonCandidate
 from napari_vipp.installer.uninstall import registry_plan_from_record
-from napari_vipp.installer.windows_backend import WindowsInstallerBackend
+from napari_vipp.installer.windows_backend import (
+    WindowsInstallerBackend,
+    _progress_update,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -950,6 +954,99 @@ def test_automatic_route_falls_back_to_cpu_and_prepares_exact_transaction(
     assert "Automatic selection used CPU" in prepared.technical_details
     assert len(engine.prepared_plans) == 1
     assert engine.prepared_plans[0][0].request.shortcut_scope is ShortcutScope.BOTH
+
+
+@pytest.mark.parametrize(
+    (
+        "choice",
+        "gpu_ok",
+        "required_gib",
+        "temporary_gib",
+        "download_mib",
+        "installed_mib",
+        "peak_mib",
+    ),
+    [
+        (TrackChoice.CPU, False, 5, 1, 250, 1536, 2560),
+        (TrackChoice.CUDA13, True, 15, 5, 1536, 5120, 7168),
+    ],
+)
+def test_prepared_routes_expose_estimates_and_unchanged_space_thresholds(
+    tmp_path,
+    monkeypatch,
+    choice,
+    gpu_ok,
+    required_gib,
+    temporary_gib,
+    download_mib,
+    installed_mib,
+    peak_mib,
+):
+    python = tmp_path / "Python312" / "python312.exe"
+    python.parent.mkdir()
+    python.touch()
+    backend = WindowsInstallerBackend(
+        engine=_Engine(),
+        release=ReleaseSpec("napari-vipp", "0.14.0a1"),
+        services=_services(tmp_path, gpu_ok=gpu_ok),
+        environ={"LOCALAPPDATA": str(tmp_path)},
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.installer.windows_backend._engine_cancellation_token",
+        lambda event: event,
+    )
+
+    prepared = backend.inspect(
+        InstallerSelection(track=choice),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+
+    assert prepared.kind is TargetKind.NEW
+    assert prepared.required_free_bytes == required_gib * 1024**3
+    assert prepared.temporary_free_bytes == temporary_gib * 1024**3
+    assert prepared.size_estimate is not None
+    assert prepared.size_estimate.download_bytes == download_mib * 1024**2
+    assert prepared.size_estimate.installed_bytes == installed_mib * 1024**2
+    assert prepared.size_estimate.peak_temporary_bytes == peak_mib * 1024**2
+
+
+def test_progress_adapter_preserves_stage_unit_log_and_truthful_indeterminacy(
+    tmp_path,
+):
+    log_path = tmp_path / "setup-events.jsonl"
+    byte_event = SimpleNamespace(
+        stage=SimpleNamespace(value="installing"),
+        message="Downloading wheels…",
+        completed=3 * 1024**2,
+        total=12 * 1024**2,
+        unit="bytes",
+        log_path=log_path,
+    )
+
+    byte_update = _progress_update(byte_event)
+
+    assert byte_update.stage == "installing"
+    assert byte_update.unit is ProgressUnit.BYTES
+    assert byte_update.fraction == pytest.approx(0.25)
+    assert byte_update.log_path == log_path
+
+    for stage in ("resolving", "installing"):
+        update = _progress_update(
+            SimpleNamespace(
+                stage=SimpleNamespace(value=stage),
+                message="Working…",
+                completed=2,
+                total=6,
+                unit="steps",
+                log_path=log_path,
+            )
+        )
+        assert update.stage == stage
+        assert update.unit is ProgressUnit.ACTIVITY
+        assert update.fraction is None
+        assert update.log_path == log_path
 
 
 def test_frozen_automatic_route_probes_gpu_with_selected_python(

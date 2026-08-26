@@ -1,11 +1,13 @@
 # Windows Installer And Planning Contract
 
-VIPP `0.13.0a8` contains both the read-only installation planner and a
-transactional managed-environment executor behind a novice-facing Windows
-setup window. The 0.13.0a8 release executable must be built from the immutable
-`v0.13.0a8` tag with that tag's exact wheel, published only with an explicit
+VIPP `0.14.0a1` is the current alpha containing both the read-only
+installation planner and a transactional managed-environment executor behind a
+novice-facing Windows setup window. This release adds clearer capacity and
+activity presentation without changing that
+transactional ownership model. A release executable is built only from its
+immutable tag with that tag's exact wheel, published only with an explicit
 `-UNSIGNED` filename, and bound to its release manifest and SHA-256 checksum.
-Windows therefore reports **Unknown publisher** for this alpha; the
+Windows therefore reports **Unknown publisher** for an unsigned alpha; the
 [installer-first quick start](quick-start.md) requires checksum verification
 before the user chooses **More info > Run anyway**.
 
@@ -118,6 +120,16 @@ exact current selection and presents the resulting package review for a fresh
 confirmation; it never reuses the failed transaction's resolution or
 authorization.
 
+VIPP `0.14.0a1` keeps setup activity inspectable throughout this work.
+It names the current phase and elapsed time, and uses an indeterminate activity
+bar when the active tool cannot report an observable total. Byte progress is
+shown only when a dependency tool provides trustworthy totals. If no new
+concrete activity arrives for a while, a quiet-operation heartbeat confirms
+that setup is still working while preserving the latest real activity message.
+That heartbeat is not a stall or success claim. Advanced details retains the
+exact setup-log path and can open it; a true stall or failure is reported only
+when the backend supplies that outcome.
+
 Adding VIPP to a user-owned existing napari environment remains an Advanced,
 non-mutating route in this installer slice. The setup program can validate it,
 but it does not automatically modify that environment.
@@ -214,13 +226,23 @@ explicitly records `plan_only: true` and `mutation_performed: false`. It contain
 - intended shortcuts and acceptance commands;
 - disk capacity and the rollback ownership boundary.
 
-The free-space requirement is 5 GiB for a managed CPU environment, 15 GiB for a
-managed CUDA environment, 2 GiB for an existing CPU environment, and 12 GiB
-for an existing CUDA environment. These are conservative free-space gates for
-downloads, extraction, installation, and rollback staging on local disks; they
-are not claims about final environment size or GPU memory. A GPU with less than
-15 GiB of VRAM can still qualify. VIPP evaluates available VRAM separately for
-each operation and visibly uses CPU when a particular workload does not fit.
+The review screen first gives rounded planning estimates:
+
+| Track | Approximate download | Approximate installed | Approximate peak working space |
+| --- | ---: | ---: | ---: |
+| CPU | 250 MiB | 1.5 GiB | 2.5 GiB |
+| CUDA 13 | 1.5 GiB | 5 GiB | 7 GiB |
+
+These estimates help a user understand the expected scale; dependency-index
+contents, cache state, and package wheels can change the actual figures. They
+are deliberately distinct from the conservative enforced free-space gates: 5
+GiB for a managed CPU installation drive, 15 GiB for a managed CUDA
+installation drive, 2 GiB for an existing CPU environment, and 12 GiB for an
+existing CUDA environment. The gates cover downloads, extraction,
+installation, and rollback staging on local disks; they are not claims about
+final environment size and are never compared with GPU memory (VRAM). VIPP
+evaluates available VRAM separately for each scientific operation and visibly
+uses CPU when a particular workload does not fit.
 
 Before the guided setup begins dependency resolution, the transactional engine
 also checks every volume used for Windows temporary files and VIPP installer

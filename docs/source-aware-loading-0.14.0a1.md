@@ -1,8 +1,8 @@
 # VIPP `0.14.0a1` Source-Aware Loading Implementation Record
 
-Status: implemented release candidate undergoing integrated qualification,
-based on public corpus revision `0.14.0a1-v3`. This is not a publication record;
-`0.13.0a9` remains the current published alpha.
+Status: `0.14.0a1` implementation and release-scope record, based on public
+corpus revision `0.14.0a1-v3`. Qualification and publication evidence are
+recorded separately; this page does not assert the outcome of an external gate.
 
 ## Release Decision
 
@@ -21,12 +21,13 @@ The minimum coherent release floor is:
    and any limitation or refusal before scientific execution.
 
 Pyramid-aware presentation preview and typed per-sample scalar parameters are
-the two intended feature packages built on that floor. Each ships in a1 only if
-its own acceptance gate passes. An unfinished package moves explicitly to the
-next alpha; it must not weaken or hold an otherwise coherent SourceItem release.
+the two feature packages built on that floor. Both are included in a1 with
+their own acceptance scope. Any future unfinished package moves explicitly to
+the next alpha; it must not weaken or hold an otherwise coherent SourceItem
+release.
 Installer capacity/activity issue
-[#42](https://github.com/rensutheart/napari-vipp/issues/42) remains an independent
-parallel package under the same rule.
+[#42](https://github.com/rensutheart/napari-vipp/issues/42) is integrated in a1
+and receives its own focused installer-presentation gate.
 
 ## Evidence Baseline
 
@@ -43,7 +44,7 @@ place for exhaustive empty, singleton, integer-boundary, NaN, Inf, `float64`,
 and malformed-source contracts. Ordinary CI remains network-free. Original
 public bytes are used only from a verified opt-in cache.
 
-The candidate combines network-free contract tests with a strict opt-in profile
+The release record combines network-free contract tests with a strict opt-in profile
 for the verified public cache. It checks reader format, stable item identity,
 shape, dtype, axes, bounded metadata parity, representative decoded pixels,
 capabilities, source revision, persistence/execution propagation, preview
@@ -250,7 +251,7 @@ migrate and re-save deterministically without invented meaning.
 Exit: all routes serialize the same canonical SourceItem and produce the same
 effective scientific identity. A mismatch stops before any output write.
 
-This is the minimum releasable `0.14.0a1` floor.
+This is the minimum `0.14.0a1` release floor.
 
 ### 5. Image Source user journey (delivered)
 
@@ -315,7 +316,7 @@ Exit: the frozen BBBC016 pair uses its two predeclared thresholds and produces
 distinct expected outputs with preview/batch/runner/CLI parity and an unchanged
 base workflow.
 
-### 8. Integrated release qualification (in progress)
+### 8. Integrated release qualification
 
 - Run one end-to-end case combining reordered item discovery, save/reopen,
   lower-resolution presentation with level-0 analysis, two item-specific
@@ -329,11 +330,13 @@ base workflow.
   focused UI acceptance, schema goldens, strict docs, and only the changed
   release qualification domains.
 
-Expected changed domains are core/UI, workflow schema, and documentation. Add
-focused GPU scientific parity for shared axis/metadata changes; dependency
-toolchain only when reader declarations change; Windows installer only if #42
-ships; and the normal packaging/release checks for the final tag. A full GPU or
-installer matrix is not repeated when those shared inputs are unchanged.
+Expected changed domains are core/UI, workflow schema, Windows installer, and
+documentation. Add focused GPU scientific parity for shared axis/metadata
+changes, focused installer capacity/activity acceptance for #42, dependency
+toolchain only when reader declarations change, and the normal
+packaging/release checks for the final tag. The unchanged installer
+transactional lifecycle and full GPU catalogue are carried forward rather than
+repeating those complete matrices.
 
 ## Release Blockers
 

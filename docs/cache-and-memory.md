@@ -144,7 +144,7 @@ pointwise clamp and does not allocate a whole-stack float copy.
 
 ## Large-Data Direction
 
-The current policy is pragmatic rather than fully lazy. The 0.14.0a1 candidate
+The current policy is pragmatic rather than fully lazy. VIPP 0.14.0a1
 can slice a declared lower local OME-Zarr 0.4/0.5 level for presentation while
 keeping analysis at level 0. Before VIPP can be comfortable on very large
 scientific graphs, the next scale work should add:
