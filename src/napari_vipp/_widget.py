@@ -93,14 +93,18 @@ from napari_vipp.core.batch import (
     BATCH_CONFIG_FILENAME,
     BATCH_SCRIPT_FILENAME,
     BATCH_WORKFLOW_FILENAME,
+    DEFAULT_BATCH_SOURCE_PATTERN,
     BatchConfig,
     BatchExecutionProgress,
     BatchItemPlan,
+    BatchParameterOverride,
     BatchRunResult,
     BatchScientificPreflightError,
+    BatchSourceParameterOverrides,
     ExistingFilePolicy,
     atomic_write_json,
     atomic_write_text,
+    bind_batch_plan_source_items,
     load_batch_config,
     plan_batch,
     preflight_batch,
@@ -115,6 +119,10 @@ from napari_vipp.core.batch_demo import (
     create_synthetic_batch_demo,
     next_synthetic_batch_demo_root,
     validate_synthetic_batch_demo,
+)
+from napari_vipp.core.batch_parameters import (
+    is_batch_parameter_override_eligible,
+    workflow_with_parameter_overrides,
 )
 from napari_vipp.core.benchmark_store_quarantine import (
     ensure_benchmark_store_ready,
@@ -226,13 +234,15 @@ from napari_vipp.core.io import (
     AnalysisLabel,
     OptionalMicroscopeReaderError,
     SourceInspection,
-    detect_deconvolution_metadata,
     inspect_image_source,
+    inspect_image_state,
     read_image,
     write_ome_zarr_analysis_dataset,
 )
+from napari_vipp.core.io.errors import as_image_source_error
 from napari_vipp.core.metadata import (
     DEFERRED_VALUE_RANGE,
+    AxisDeclaration,
     ImageState,
     MetadataRow,
     apply_axis_declaration,
@@ -288,8 +298,24 @@ from napari_vipp.core.source_identity import (
     BundledSampleRevisionToken,
     LocalSourceIdentity,
     SourceChangedError,
-    capture_local_source_identity,
+    capture_local_source_bundle,
+    local_source_identity_from_bundle,
     verify_local_source_identity,
+)
+from napari_vipp.core.source_item_persistence import (
+    SOURCE_ITEM_PARAMETER,
+    params_with_source_item,
+    source_item_from_params,
+)
+from napari_vipp.core.source_preview import (
+    SourcePreviewProgress,
+    SourcePreviewRequest,
+)
+from napari_vipp.core.source_resolution import (
+    resolve_source_item,
+    select_inspected_item,
+    source_item_with_axis_declaration,
+    verify_saved_source_item,
 )
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.thumbnail_statistics import (
@@ -363,14 +389,21 @@ from napari_vipp.ui.axis_controls import (
     _parse_int_list as _parse_int_list,
 )
 from napari_vipp.ui.batch import (
+    BatchOverrideParameterSpec,
+    BatchOverrideSourceItem,
+    CollectionBatchActions,
+)
+from napari_vipp.ui.batch import (
     BatchPreviewResult as BatchPreviewResult,
 )
 from napari_vipp.ui.batch import BatchPreviewRow as BatchPreviewRow
-from napari_vipp.ui.batch import CollectionBatchActions
 from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
 from napari_vipp.ui.batch_controller import CollectionBatchController
 from napari_vipp.ui.batch_navigator import BatchNavigator
 from napari_vipp.ui.batch_workers import (
+    BatchWorkspacePreviewWorker,
+    BatchWorkspacePreviewWorkerOutcome,
+    BatchWorkspacePreviewWorkerSpec,
     CollectionBatchOperationProgress,
     CollectionBatchProgress,
     CollectionBatchWorker,
@@ -417,6 +450,7 @@ from napari_vipp.ui.controls import (
     BoolControl,
     ChoiceControl,
     ImageSourceControl,
+    ImageSourceResolutionPresentation,
     NumericEntryControl,
     ParameterBounds,
     ParameterControl,
@@ -500,6 +534,11 @@ from napari_vipp.ui.file_sources import (
 )
 from napari_vipp.ui.file_sources import SourceFileLoadSpec as SourceFileLoadSpec
 from napari_vipp.ui.file_sources import SourceFileLoadWorker as SourceFileLoadWorker
+from napari_vipp.ui.file_sources import SourceLoadPhase as SourceLoadPhase
+from napari_vipp.ui.file_sources import SourceLoadProgress as SourceLoadProgress
+from napari_vipp.ui.file_sources import (
+    SourceLoadProgressUnit as SourceLoadProgressUnit,
+)
 from napari_vipp.ui.history import WorkflowHistory, WorkflowHistorySnapshot
 from napari_vipp.ui.lifecycle import WidgetLifecycle
 from napari_vipp.ui.palette import NodePalette
@@ -556,6 +595,21 @@ from napari_vipp.ui.source_adapter import (
     LiveLayerSourceAdapter,
     SourceRevisionToken,
     apply_live_layer_axis_transform,
+)
+from napari_vipp.ui.source_inspection import (
+    SourceInspectionWorker,
+    SourceInspectionWorkerProgress,
+    SourceInspectionWorkerResult,
+    SourceInspectionWorkerSpec,
+)
+from napari_vipp.ui.source_metadata import (
+    source_item_metadata_rows,
+)
+from napari_vipp.ui.source_preview import (
+    SourcePreviewSeriesSelection,
+    SourcePreviewWorker,
+    SourcePreviewWorkerResult,
+    SourcePreviewWorkerSpec,
 )
 from napari_vipp.ui.status import MessageSeverity, StatusMessageStrip
 from napari_vipp.ui.view_dims import ViewDimAxis as ViewDimAxis
@@ -687,6 +741,17 @@ class _CollectionBatchJobContext:
     graph_refresh_pending: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _BatchWorkspacePreviewContext:
+    """GUI ownership for one automatic saved-workspace source check."""
+
+    request_id: int
+    origin_session_id: str
+    dialog: CollectionBatchDialog
+    expected_workflow_sha256: str
+    override_count: int
+
+
 RESCALE_VALUE_PARAMETERS = {"in_low_value", "in_high_value"}
 RESCALE_PERCENTILE_PARAMETERS = {"in_low_percentile", "in_high_percentile"}
 RESCALE_CUTOFF_PARAMETERS = RESCALE_VALUE_PARAMETERS | RESCALE_PERCENTILE_PARAMETERS
@@ -696,16 +761,18 @@ QT_SIGNED_INT_MINIMUM = -(2**31)
 QT_SIGNED_INT_MAXIMUM = 2**31 - 1
 INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS = frozenset(
     spec.id
-    for specs in grouped_palette_specs()
-    .get(INTENSITY_CONTRAST_CATEGORY, {})
-    .values()
+    for specs in grouped_palette_specs().get(INTENSITY_CONTRAST_CATEGORY, {}).values()
     for spec in specs
     if spec.input_type == "array" and spec.output_type == "image"
 )
-INPUT_HISTOGRAM_OPERATIONS = INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS | {
-    "binary_threshold",
-    "hysteresis_threshold",
-} | (GLOBAL_THRESHOLD_OPERATIONS - {"imagej_auto_threshold"})
+INPUT_HISTOGRAM_OPERATIONS = (
+    INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS
+    | {
+        "binary_threshold",
+        "hysteresis_threshold",
+    }
+    | (GLOBAL_THRESHOLD_OPERATIONS - {"imagej_auto_threshold"})
+)
 COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "colocalization_metrics",
     "masked_colocalization_metrics",
@@ -1276,11 +1343,15 @@ class VippWidget(QWidget):
     TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH = 1500
     WORKFLOW_TAB_RUNTIME_FIELDS = (
         "_source_inspection_cache",
+        "_source_inspection_errors",
+        "_source_preview_errors",
+        "_source_view_modes",
         "_psf_preflight_cache",
         "_file_source_payload_cache",
         "_file_source_path_identities",
         "_interactive_collection_source_paths",
         "_interactive_collection_source_series_indices",
+        "_interactive_collection_source_refresh_node_ids",
         "_interactive_collection_batch_items",
         "_interactive_collection_batch_config",
         "_interactive_collection_batch_config_path",
@@ -1429,6 +1500,9 @@ class VippWidget(QWidget):
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
         self._source_inspection_cache: dict[str, VerifiedSourceInspection] = {}
+        self._source_inspection_errors: dict[str, str] = {}
+        self._source_preview_errors: dict[str, str] = {}
+        self._source_view_modes: dict[str, str] = {}
         self._psf_preflight_cache: dict[
             str,
             tuple[tuple[object, ...], PsfPreflightResult],
@@ -1440,6 +1514,7 @@ class VippWidget(QWidget):
         self._file_source_path_identities: dict[str, LocalSourceIdentity] = {}
         self._interactive_collection_source_paths: dict[str, Path] = {}
         self._interactive_collection_source_series_indices: dict[str, int] = {}
+        self._interactive_collection_source_refresh_node_ids: set[str] = set()
         self._interactive_collection_batch_items: tuple[BatchItemPlan, ...] = ()
         self._interactive_collection_batch_config: BatchConfig | None = None
         self._interactive_collection_batch_config_path: Path | None = None
@@ -1455,13 +1530,38 @@ class VippWidget(QWidget):
         self._collection_batch_job_serial = 0
         self._active_collection_batch_job: _CollectionBatchJobContext | None = None
         self._collection_batch_workers: dict[int, CollectionBatchWorker] = {}
+        self._batch_workspace_preview_serial = 0
+        self._batch_workspace_preview_workers: dict[
+            int,
+            BatchWorkspacePreviewWorker,
+        ] = {}
+        self._batch_workspace_preview_contexts: dict[
+            int,
+            _BatchWorkspacePreviewContext,
+        ] = {}
         self._pending_collection_batch_start: (
             tuple[CollectionBatchDialog, dict[str, object]] | None
         ) = None
         self._last_workflow_load_detail = ""
         self._active_source_load_id: int | None = None
+        self._active_source_load_worker: SourceFileLoadWorker | None = None
+        self._active_source_inspection_worker: SourceInspectionWorker | None = None
         self._source_load_serial = 0
         self._source_load_pending = False
+        self._source_preview_generation = 0
+        self._source_preview_status_run_id: int | None = None
+        self._active_source_preview_worker: SourcePreviewWorker | None = None
+        self._source_preview_node_id = ""
+        self._source_preview_path = ""
+        self._source_preview_item_key = ""
+        self._source_preview_thread_pool = QThreadPool(self)
+        self._source_preview_thread_pool.setMaxThreadCount(1)
+        self._source_preview_dims_timer = QTimer(self)
+        self._source_preview_dims_timer.setInterval(150)
+        self._source_preview_dims_timer.setSingleShot(True)
+        self._source_preview_dims_timer.timeout.connect(
+            self._refresh_source_preview_for_current_dims
+        )
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
         self._initial_dock_size_applied = False
@@ -1950,6 +2050,8 @@ class VippWidget(QWidget):
         self._pipeline_thread_pool.setMaxThreadCount(1)
         self._collection_batch_thread_pool = QThreadPool(self)
         self._collection_batch_thread_pool.setMaxThreadCount(1)
+        self._batch_workspace_preview_thread_pool = QThreadPool(self)
+        self._batch_workspace_preview_thread_pool.setMaxThreadCount(1)
         self._compute_setup_thread_pool = QThreadPool(self)
         self._compute_setup_thread_pool.setMaxThreadCount(1)
         self._node_benchmark_thread_pool = QThreadPool(self)
@@ -2110,6 +2212,21 @@ class VippWidget(QWidget):
             "Compare CPU and eligible GPU implementations using this node's "
             "exact current input and parameters."
         )
+        self.batch_effective_parameter_group = QGroupBox("Effective batch preview")
+        self.batch_effective_parameter_label = QLabel("")
+        self.batch_effective_parameter_label.setWordWrap(True)
+        self.batch_effective_parameter_label.setTextFormat(Qt.PlainText)
+        self.batch_effective_parameter_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse
+        )
+        self.batch_effective_parameter_label.setAccessibleName(
+            "Effective parameters for selected batch representative"
+        )
+        self.batch_effective_parameter_group.setStyleSheet(
+            "QGroupBox { color: #fbbf24; font-weight: 600; }"
+            "QLabel { color: #fde68a; font-weight: 400; }"
+        )
+        self.batch_effective_parameter_group.hide()
         self.parameter_group = QGroupBox("Parameters")
         self.parameter_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.parameter_form = QFormLayout(self.parameter_group)
@@ -2517,6 +2634,8 @@ class VippWidget(QWidget):
             event.ignore()
             return
         self._closing = True
+        self._cancel_active_source_io(invalidate_generation=True)
+        self._invalidate_source_preview(remove_layer=True)
         if self._colocalization_scatter_dialog is not None:
             self._colocalization_scatter_dialog.close()
         for session in self._workflow_tabs:
@@ -3383,6 +3502,10 @@ class VippWidget(QWidget):
         )
         layout.addWidget(self.compute_repair_panel)
         layout.addWidget(self.compute_group)
+        batch_effective_layout = QVBoxLayout(self.batch_effective_parameter_group)
+        batch_effective_layout.setContentsMargins(8, 8, 8, 8)
+        batch_effective_layout.addWidget(self.batch_effective_parameter_label)
+        layout.addWidget(self.batch_effective_parameter_group)
         layout.addWidget(self.parameter_group)
         auto_layout = QVBoxLayout(self.auto_contrast_group)
         auto_form = QFormLayout()
@@ -6422,6 +6545,27 @@ class VippWidget(QWidget):
         self._update_thumbnails()
         self._update_metadata_panel()
         self._update_histogram()
+        QTimer.singleShot(0, self._refresh_source_preview_for_current_dims)
+
+    def _refresh_source_preview_for_current_dims(self) -> None:
+        node_id = self._source_preview_node_id
+        if not node_id:
+            for layer in self.viewer.layers:
+                metadata = getattr(layer, "metadata", None)
+                if (
+                    isinstance(metadata, Mapping)
+                    and str(metadata.get("napari_vipp_kind", "")) == "source_preview"
+                ):
+                    node_id = str(metadata.get("node_id", ""))
+                    break
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "input":
+            return
+        path = self._file_source_path_for_node(node)
+        source_item = self._file_source_item_for_node(node)
+        if path is None or source_item is None:
+            return
+        self._start_source_preview(node, path, source_item)
         self._sync_view_dims_bar()
 
     def _initialize_workflow_tabs(self) -> None:
@@ -6498,11 +6642,15 @@ class VippWidget(QWidget):
     ) -> dict[str, object]:
         return {
             "_source_inspection_cache": {},
+            "_source_inspection_errors": {},
+            "_source_preview_errors": {},
+            "_source_view_modes": {},
             "_psf_preflight_cache": {},
             "_file_source_payload_cache": {},
             "_file_source_path_identities": {},
             "_interactive_collection_source_paths": {},
             "_interactive_collection_source_series_indices": {},
+            "_interactive_collection_source_refresh_node_ids": set(),
             "_interactive_collection_batch_items": (),
             "_interactive_collection_batch_config": None,
             "_interactive_collection_batch_config_path": None,
@@ -6738,6 +6886,7 @@ class VippWidget(QWidget):
             or self._pipeline_run_pending
             or self._active_source_load_id is not None
             or self._source_load_pending
+            or self._source_preview_status_run_id is not None
             or self._thumbnail_contrast_busy_visible
             or self._auto_contrast_busy_visible
         )
@@ -6846,6 +6995,11 @@ class VippWidget(QWidget):
             )
             return False
 
+        # Preview workers and layers are presentation-only globals. Cancel and
+        # remove them at the central activation seam so direct/internal tab
+        # switches cannot mistake another tab's common input id for their own.
+        self._invalidate_source_preview(remove_layer=True)
+
         current = self._workflow_tabs.current
         if current is not None:
             self._finish_parameter_history_group()
@@ -6894,6 +7048,9 @@ class VippWidget(QWidget):
         self._redo_stack = self._history.redo_stack
         self._restore_workflow_tab_runtime(session)
         self._present_workflow_tab_editor(session.editor_snapshot)
+        restored_workspace_presented = (
+            self._consume_workflow_tab_batch_workspace_preview(session)
+        )
         batch_job = self._active_collection_batch_job
         batch_still_owns_session = (
             self._collection_batch_running
@@ -6909,8 +7066,31 @@ class VippWidget(QWidget):
             self._queue_workflow_tab_pipeline_refresh(session.session_id)
         if batch_still_owns_session:
             self.batch_navigator.set_navigation_enabled(False)
+            return restored_workspace_presented
+        return (
+            self._consume_workflow_tab_batch_outcome(session)
+            or restored_workspace_presented
+        )
+
+    def _consume_workflow_tab_batch_workspace_preview(
+        self,
+        session: WorkflowTabSession,
+    ) -> bool:
+        """Publish a source check that completed while its tab was inactive."""
+
+        payload = session.runtime_cache.pop(
+            "_batch_workspace_preview_outcome",
+            None,
+        )
+        if not isinstance(payload, tuple) or len(payload) != 2:
             return False
-        return self._consume_workflow_tab_batch_outcome(session)
+        context, outcome = payload
+        if not isinstance(context, _BatchWorkspacePreviewContext) or not isinstance(
+            outcome,
+            BatchWorkspacePreviewWorkerOutcome,
+        ):
+            return False
+        return self._present_attached_batch_workspace_preview(context, outcome)
 
     def _consume_workflow_tab_batch_outcome(
         self,
@@ -9530,6 +9710,14 @@ class VippWidget(QWidget):
         self,
         session: WorkflowTabSession,
     ) -> None:
+        deferred_preview = session.runtime_cache.pop(
+            "_batch_workspace_preview_outcome",
+            None,
+        )
+        if isinstance(deferred_preview, tuple) and deferred_preview:
+            context = deferred_preview[0]
+            if isinstance(context, _BatchWorkspacePreviewContext):
+                self._cancel_attached_batch_workspace_preview(context.dialog)
         adapter = session.runtime_cache.get("_live_source_adapter")
         if isinstance(adapter, LiveLayerSourceAdapter):
             adapter.shutdown()
@@ -9543,6 +9731,8 @@ class VippWidget(QWidget):
             dialog = session.runtime_cache.get(name)
             if dialog is None:
                 continue
+            if isinstance(dialog, CollectionBatchDialog):
+                self._cancel_attached_batch_workspace_preview(dialog)
             try:
                 dialog.close()
                 dialog.deleteLater()
@@ -9672,6 +9862,14 @@ class VippWidget(QWidget):
             workflow_file=Path(target.name),
             base_dir=target.parent.resolve(),
         )
+        if config.parameter_overrides:
+            plan = preflight_batch(
+                workflow,
+                config,
+                workflow_path=target,
+                allow_collisions=True,
+            )
+            config = bind_batch_plan_source_items(config, plan)
         workflow["batch_config"] = config.to_dict()
         validate_batch_config(
             workflow,
@@ -10043,13 +10241,26 @@ class VippWidget(QWidget):
                 )
                 self.status_label.setText(self._last_workflow_load_detail)
             else:
-                batch_dialog.preview_status.setText(
-                    "Batch workspace restored from this workflow. Run batch "
-                    "will build a fresh plan; Preview batch is optional."
-                )
-                self._last_workflow_load_detail = (
-                    "Its Batch workspace settings were restored."
-                )
+                try:
+                    self._start_attached_batch_workspace_preview(
+                        batch_dialog,
+                        batch_config,
+                    )
+                except Exception as exc:
+                    self._show_attached_batch_workspace_preview_failure(
+                        batch_dialog,
+                        exc,
+                    )
+                    self._last_workflow_load_detail = (
+                        "Its Batch workspace settings were restored, but the "
+                        "current samples could not be detected automatically."
+                    )
+                else:
+                    self._last_workflow_load_detail = (
+                        "Its Batch workspace settings were restored; current "
+                        "samples and source revisions are being checked "
+                        "automatically."
+                    )
         return source
 
     def _batch_config_from_workflow_attachment(
@@ -10079,6 +10290,225 @@ class VippWidget(QWidget):
             workflow_path=source,
         )
         return config
+
+    def _start_attached_batch_workspace_preview(
+        self,
+        dialog: CollectionBatchDialog,
+        config: BatchConfig,
+    ) -> None:
+        """Detect a saved workspace's samples in a metadata-only worker."""
+
+        session = self._workflow_tabs.current
+        if session is None:
+            raise RuntimeError("No active workflow tab is available.")
+        self._cancel_attached_batch_workspace_preview(dialog)
+        prepared = self._collection_batch_controller.prepare_attached_config_preview(
+            config,
+            preview_limit=25,
+        )
+        self._batch_workspace_preview_serial += 1
+        request_id = self._batch_workspace_preview_serial
+        context = _BatchWorkspacePreviewContext(
+            request_id=request_id,
+            origin_session_id=session.session_id,
+            dialog=dialog,
+            expected_workflow_sha256=prepared.config.workflow_sha256,
+            override_count=len(config.parameter_overrides),
+        )
+        worker = BatchWorkspacePreviewWorker(
+            BatchWorkspacePreviewWorkerSpec(
+                request_id=request_id,
+                origin_session_id=session.session_id,
+                prepared=prepared,
+            )
+        )
+        worker.signals.finished.connect(
+            self._on_attached_batch_workspace_preview_finished
+        )
+        self._batch_workspace_preview_contexts[request_id] = context
+        self._batch_workspace_preview_workers[request_id] = worker
+        dialog.begin_saved_workspace_discovery(context.override_count)
+        self._batch_workspace_preview_thread_pool.start(worker)
+
+    def _cancel_attached_batch_workspace_preview(
+        self,
+        dialog: CollectionBatchDialog,
+        *,
+        review_after_cancel: bool = False,
+    ) -> None:
+        """Supersede only automatic source checks owned by one workspace."""
+
+        matching = [
+            request_id
+            for request_id, context in self._batch_workspace_preview_contexts.items()
+            if context.dialog is dialog
+        ]
+        for request_id in matching:
+            self._batch_workspace_preview_contexts.pop(request_id, None)
+            worker = self._batch_workspace_preview_workers.get(request_id)
+            if worker is not None:
+                worker.cancel()
+        if matching and review_after_cancel:
+            if dialog._pending_parameter_overrides:
+                message = (
+                    "Batch settings changed before saved per-sample values "
+                    "finished matching current exact source revisions."
+                )
+                dialog.parameter_override_editor.mark_saved_overrides_pending_review(
+                    len(dialog._pending_parameter_overrides),
+                    reason=message,
+                )
+            else:
+                message = "Batch settings changed before sample detection finished."
+            dialog.cancel_saved_workspace_discovery(
+                message + " Use Preview batch to verify the edited settings."
+            )
+
+    def _on_attached_batch_workspace_preview_finished(
+        self,
+        outcome: BatchWorkspacePreviewWorkerOutcome,
+    ) -> None:
+        self._batch_workspace_preview_workers.pop(outcome.request_id, None)
+        context = self._batch_workspace_preview_contexts.pop(
+            outcome.request_id,
+            None,
+        )
+        if context is None or outcome.cancelled or self._closing:
+            return
+        if outcome.origin_session_id != context.origin_session_id:
+            return
+        origin = self._workflow_tab_session(context.origin_session_id)
+        if origin is None:
+            return
+        if not self._workflow_tab_is_active(context.origin_session_id):
+            origin.runtime_cache["_batch_workspace_preview_outcome"] = (
+                context,
+                outcome,
+            )
+            return
+        self._present_attached_batch_workspace_preview(context, outcome)
+
+    def _present_attached_batch_workspace_preview(
+        self,
+        context: _BatchWorkspacePreviewContext,
+        outcome: BatchWorkspacePreviewWorkerOutcome,
+    ) -> bool:
+        """Publish one still-current saved-workspace check on the GUI thread."""
+
+        dialog = context.dialog
+        if dialog is not self._active_collection_batch_dialog:
+            return False
+        current_sha256 = scientific_workflow_hash(self._batch_workflow_document())
+        if current_sha256 != context.expected_workflow_sha256:
+            self._show_attached_batch_workspace_preview_failure(
+                dialog,
+                RuntimeError(
+                    "The scientific workflow changed while saved source values "
+                    "were being checked."
+                ),
+            )
+            return True
+        if outcome.error is not None:
+            self._show_attached_batch_workspace_preview_failure(
+                dialog,
+                outcome.error,
+            )
+            return True
+        result = outcome.result
+        if result is None:
+            self._show_attached_batch_workspace_preview_failure(
+                dialog,
+                RuntimeError("The source check returned no batch plan."),
+            )
+            return True
+        configured = self._configure_batch_parameter_overrides(dialog, result)
+        if not configured:
+            detail = dialog.parameter_override_editor.error_message
+            self._show_attached_batch_workspace_preview_failure(
+                dialog,
+                RuntimeError(detail or "Saved values could not be restored."),
+            )
+            return True
+        dialog.apply_preview_result(result, preview_representative=False)
+        dialog.show_saved_workspace_discovery_success(
+            item_count=result.total_items,
+            override_count=context.override_count,
+        )
+        if context.override_count:
+            status = (
+                "Saved Batch workspace verified against current exact source "
+                "revisions; no representative image was calculated."
+            )
+        else:
+            status = (
+                f"Detected {result.total_items} current Batch sample(s); no "
+                "representative image was calculated."
+            )
+        self._set_status(status, severity=MessageSeverity.SUCCESS)
+        self._sync_current_workflow_tab_state()
+        return True
+
+    def _show_attached_batch_workspace_preview_failure(
+        self,
+        dialog: CollectionBatchDialog,
+        error: Exception,
+    ) -> None:
+        """Keep saved values quarantined and explain a real verification issue."""
+
+        if isinstance(error, BatchScientificPreflightError):
+            message = error.user_message
+            technical_detail = error.technical_detail
+        else:
+            technical_detail = str(error).strip()
+            lowered = technical_detail.casefold()
+            if "no longer matches its configured sourceitem" in lowered:
+                message = (
+                    "The saved source collection changed since this Batch "
+                    "workspace was saved."
+                )
+            elif (
+                "parameter overrides reference source items" in lowered
+                or "source content" in lowered
+            ):
+                message = (
+                    "A saved per-sample override no longer matches an exact "
+                    "source revision."
+                )
+            elif "does not exist" in lowered or "no input files" in lowered:
+                message = (
+                    "A saved source folder or matching source item is no longer "
+                    "available."
+                )
+            elif "workflow changed" in lowered:
+                message = (
+                    "The workflow changed before saved per-sample values could "
+                    "be verified."
+                )
+            elif dialog._pending_parameter_overrides:
+                message = (
+                    "Saved per-sample values could not be verified against the "
+                    "current source collection."
+                )
+            else:
+                message = (
+                    "Current batch samples could not be detected from the "
+                    "restored source settings."
+                )
+        dialog.show_saved_workspace_discovery_failure(
+            message,
+            technical_detail=technical_detail,
+        )
+        if dialog is self._active_collection_batch_dialog:
+            suffix = (
+                " The saved values were kept and not reassigned."
+                if dialog._pending_parameter_overrides
+                else " Review the restored source settings and try again."
+            )
+            self._set_status(
+                message + suffix,
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
 
     def _first_image_source_node_id(self) -> str:
         """Return the first Image Source in stable graph order, if present."""
@@ -10199,6 +10629,20 @@ class VippWidget(QWidget):
         dialog.previewInvalidated.connect(
             lambda active=dialog: self._mark_interactive_collection_batch_stale(active)
         )
+        dialog.previewInvalidated.connect(
+            lambda active=dialog: self._cancel_attached_batch_workspace_preview(
+                active,
+                review_after_cancel=True,
+            )
+        )
+        dialog.parameterOverridesChanged.connect(
+            lambda overrides, active=dialog: (
+                self._collection_batch_parameter_overrides_changed(
+                    active,
+                    overrides,
+                )
+            )
+        )
         if config_path is not None:
             try:
                 loaded_config = self._load_collection_batch_config(config_path)
@@ -10301,6 +10745,7 @@ class VippWidget(QWidget):
         dialog: CollectionBatchDialog,
     ) -> None:
         """Permanently discard a replaced workspace instead of hiding it."""
+        self._cancel_attached_batch_workspace_preview(dialog)
         self._cancel_pending_collection_batch_start(dialog, announce=False)
         if dialog is self._active_collection_batch_dialog:
             self._active_collection_batch_dialog = None
@@ -10350,6 +10795,12 @@ class VippWidget(QWidget):
                 "Wait for the active source load or graph calculation to finish "
                 "before running the full batch."
             )
+            dialog.show_workspace_activity(
+                "Waiting · main VIPP is still loading or calculating.",
+                state="working",
+                indeterminate=True,
+                progress_text="Waiting",
+            )
             return
         if (
             self._interactive_collection_batch_items
@@ -10358,6 +10809,12 @@ class VippWidget(QWidget):
             dialog.show_plan_refresh_required(
                 "Wait for the representative calculation to finish before "
                 "running the full batch."
+            )
+            dialog.show_workspace_activity(
+                "Waiting · the representative is still calculating in main VIPP.",
+                state="working",
+                indeterminate=True,
+                progress_text="Graph",
             )
             return
         if self._interactive_collection_batch_items and (
@@ -10368,6 +10825,10 @@ class VippWidget(QWidget):
                 "The representative graph preview is unavailable or failed. "
                 "Retry it or select another sample and wait for a successful "
                 "calculation before running the full batch."
+            )
+            dialog.show_workspace_activity(
+                "Needs attention · representative preview is unavailable.",
+                state="warning",
             )
             return
         if self._active_thumbnail_contrast_run_id is not None:
@@ -10392,14 +10853,49 @@ class VippWidget(QWidget):
                 "their resources. Use Cancel queued batch to abandon it.",
                 severity=MessageSeverity.INFO,
             )
+            dialog.show_workspace_activity(
+                "Waiting · releasing thumbnail resources before the full batch…",
+                state="working",
+                indeterminate=True,
+                progress_text="Waiting",
+            )
             self._sync_compute_policy_editability()
             return
+        preview = dialog._preview_result
+        if preview is not None:
+            source_change = self._reviewed_batch_source_change(preview.items)
+            if source_change:
+                # Check the revisions the user actually reviewed before asking
+                # the planner to resolve them again.  A changed pinned source is
+                # expected to make that fresh preflight fail, but the UI must
+                # still discard the reviewed plan and direct the user to the
+                # explicit Refresh path.
+                dialog.invalidate_for_source_change(
+                    source_change,
+                    before_run_started=True,
+                )
+                self._interactive_collection_batch_plan_stale = True
+                self.batch_navigator.set_session_stale(
+                    True,
+                    message=(
+                        "A reviewed source changed on disk. The graph keeps its "
+                        "pinned earlier revision; press Refresh and wait for it "
+                        "to recalculate before running."
+                    ),
+                )
+                self.status_label.setText(
+                    "Batch stopped because a reviewed source changed. Press "
+                    "Refresh and wait for recalculation before running."
+                )
+                return
+
         fresh_preview = None
         for attempt in range(2):
             try:
                 fresh_preview = self._collection_batch_controller.preview(
                     **values,
                     preview_limit=25,
+                    compute_request=self._compute_request_for_batch_dialog(dialog),
                 )
                 break
             except BatchScientificPreflightError as exc:
@@ -10426,9 +10922,12 @@ class VippWidget(QWidget):
                 )
                 return
         if fresh_preview is None:
+            dialog.show_preflight_error(
+                "Batch preflight returned no plan. Review the source settings "
+                "and try again."
+            )
             return
 
-        preview = dialog._preview_result
         if preview is None:
             # Run owns path planning plus a metadata-only scientific preflight.
             # The optional Preview action remains the only path that calculates
@@ -10454,24 +10953,6 @@ class VippWidget(QWidget):
                 )
                 return
 
-            source_change = self._reviewed_batch_source_change(preview.items)
-            if source_change:
-                dialog.invalidate_for_source_change(source_change)
-                self._interactive_collection_batch_plan_stale = True
-                self.batch_navigator.set_session_stale(
-                    True,
-                    message=(
-                        "A reviewed source changed on disk. The graph keeps its "
-                        "pinned earlier revision; press Refresh and wait for it "
-                        "to recalculate before running."
-                    ),
-                )
-                self.status_label.setText(
-                    "Batch stopped because a reviewed source changed. Press "
-                    "Refresh and wait for recalculation before running."
-                )
-                return
-
             if (
                 fresh_preview.config != preview.config
                 or fresh_preview.items != preview.items
@@ -10488,6 +10969,115 @@ class VippWidget(QWidget):
                 )
                 return
             preview = fresh_preview
+
+        if preview.collision_count:
+            overwrite_values = dict(values)
+            overwrite_values["existing_file_policy"] = (
+                ExistingFilePolicy.OVERWRITE.value
+            )
+            try:
+                overwrite_preview = self._collection_batch_controller.preview(
+                    **overwrite_values,
+                    preview_limit=25,
+                    compute_request=self._compute_request_for_batch_dialog(dialog),
+                )
+            except BatchScientificPreflightError as exc:
+                dialog.show_preflight_error(
+                    exc.user_message,
+                    technical_detail=exc.technical_detail,
+                )
+                self._set_status(
+                    exc.user_message,
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+                return
+            except Exception as exc:
+                message = f"Batch overwrite preflight could not be prepared: {exc}"
+                dialog.show_preflight_error(message)
+                self._set_status(
+                    message,
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+                return
+
+            unresolved_paths = tuple(
+                dict.fromkeys(
+                    output.path
+                    for item in overwrite_preview.items
+                    for output in item.outputs
+                    if output.duplicate
+                    or output.input_collision
+                    or (
+                        output.exists
+                        and output.existing_file_policy == ExistingFilePolicy.ERROR
+                    )
+                )
+            )
+            if overwrite_preview.collision_count or unresolved_paths:
+                dialog.apply_preview_result(
+                    overwrite_preview,
+                    preview_representative=False,
+                )
+                message = (
+                    "Some planned destinations cannot be replaced by the Batch "
+                    "workspace overwrite choice. A destination duplicates another "
+                    "output, overlaps an input, or is explicitly protected by its "
+                    "Batch Output node. Review the output statuses and change the "
+                    "path or node setting."
+                )
+                dialog.show_preflight_error(
+                    message,
+                    technical_detail="\n".join(str(path) for path in unresolved_paths),
+                )
+                self._set_status(
+                    message,
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+                return
+
+            overwrite_paths = tuple(
+                dict.fromkeys(
+                    output.path
+                    for item in overwrite_preview.items
+                    for output in item.outputs
+                    if output.exists
+                    and output.existing_file_policy == ExistingFilePolicy.OVERWRITE
+                    and not output.duplicate
+                    and not output.input_collision
+                )
+            )
+            if not overwrite_paths:
+                dialog.show_preflight_error(
+                    "Batch preflight reported collisions but could not identify "
+                    "any output that is safe to replace. Review the output paths."
+                )
+                return
+            if not self._confirm_collection_batch_overwrite(
+                dialog,
+                overwrite_paths,
+                output_dir=overwrite_preview.config.resolve_path(
+                    overwrite_preview.config.output_dir
+                ),
+            ):
+                dialog.apply_preview_result(
+                    preview,
+                    preview_representative=False,
+                )
+                dialog.show_overwrite_cancelled(len(overwrite_paths))
+                self._set_status(
+                    "Batch not started; existing output files were left unchanged.",
+                    severity=MessageSeverity.INFO,
+                )
+                return
+            values = overwrite_values
+            preview = overwrite_preview
+            dialog.apply_preview_result(
+                preview,
+                preview_representative=False,
+            )
 
         total = preview.total_items
         if total <= 0:
@@ -10514,9 +11104,7 @@ class VippWidget(QWidget):
                 "the representative calculation was superseded by the full batch run",
             )
         if self._active_source_load_id is not None:
-            self._source_load_serial += 1
-            self._active_source_load_id = None
-            self._source_load_pending = False
+            self._cancel_active_source_io(invalidate_generation=True)
             self._set_pipeline_busy(False)
         try:
             self._start_collection_batch_worker(
@@ -10546,6 +11134,60 @@ class VippWidget(QWidget):
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
+
+    def _confirm_collection_batch_overwrite(
+        self,
+        dialog: CollectionBatchDialog,
+        paths: tuple[Path, ...],
+        *,
+        output_dir: Path,
+    ) -> bool:
+        """Ask for one-run consent to replace an exact set of batch outputs."""
+
+        normalized_paths: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            normalized = Path(path).expanduser().resolve(strict=False)
+            key = os.path.normcase(str(normalized))
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized_paths.append(normalized)
+        count = len(normalized_paths)
+        output_word = "file" if count == 1 else "files"
+        preview_labels: list[str] = []
+        resolved_output_dir = Path(output_dir).expanduser().resolve(strict=False)
+        for path in normalized_paths[:3]:
+            try:
+                preview_labels.append(str(path.relative_to(resolved_output_dir)))
+            except ValueError:
+                preview_labels.append(str(path))
+        if count > 3:
+            preview_labels.append(f"… and {count - 3} more")
+
+        box = QMessageBox(dialog)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Overwrite existing batch outputs?")
+        box.setTextFormat(Qt.PlainText)
+        box.setText(f"This batch would replace {count} existing output {output_word}.")
+        box.setInformativeText(
+            "Run the current workflow and replace them with the new results? "
+            "Each successfully completed output is replaced atomically. Input "
+            "images are never changed. Cancel leaves existing files unchanged.\n\n"
+            + "\n".join(preview_labels)
+            + "\n\nFor future runs without this prompt, choose Overwrite without "
+            "asking under Existing files."
+        )
+        box.setDetailedText("\n".join(str(path) for path in normalized_paths))
+        overwrite_button = box.addButton(
+            "Overwrite and run",
+            QMessageBox.DestructiveRole,
+        )
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.setEscapeButton(cancel_button)
+        box.exec()
+        return box.clickedButton() is overwrite_button
 
     def _start_collection_batch_worker(
         self,
@@ -10717,6 +11359,10 @@ class VippWidget(QWidget):
         ):
             self._set_pipeline_busy(False)
         if announce:
+            pending_dialog.show_workspace_activity(
+                "Not checked · queued full batch cancelled.",
+                state="info",
+            )
             self._set_status(
                 "Queued full batch cancelled. Optional thumbnail-statistics "
                 "cleanup will finish without starting the batch.",
@@ -10740,6 +11386,7 @@ class VippWidget(QWidget):
             return
         self._pending_collection_batch_start = None
         self._sync_compute_policy_editability()
+        dialog.begin_run_preflight()
         try:
             current_values = dialog.values()
         except Exception as exc:
@@ -11005,8 +11652,25 @@ class VippWidget(QWidget):
             save_config=lambda path, values: self._save_collection_batch_config(
                 path, **values
             ),
-            preview_item=self._preview_interactive_collection_batch_item,
+            preview_item=self._preview_collection_batch_plan_item,
         )
+
+    def _preview_collection_batch_plan_item(self, index: int) -> bool:
+        """Install a plan-only restore before explicitly calculating one row."""
+
+        if self._interactive_collection_batch_items:
+            return self._preview_interactive_collection_batch_item(index)
+        dialog = self._active_collection_batch_dialog
+        result = None if dialog is None else dialog._preview_result
+        if result is None or not 0 <= int(index) < len(result.items):
+            return False
+        self._activate_interactive_collection_batch(
+            result.items,
+            result.config,
+            config_path=(None if dialog is None else dialog._loaded_config_path),
+            initial_index=int(index),
+        )
+        return True
 
     def _choose_collection_batch_demo(
         self,
@@ -11091,8 +11755,24 @@ class VippWidget(QWidget):
                 (source.node_id, source.axis_declaration) for source in config.sources
             )
         )
+        previous_item = (
+            self._interactive_collection_batch_items[
+                self._interactive_collection_batch_index
+            ]
+            if 0
+            <= self._interactive_collection_batch_index
+            < len(self._interactive_collection_batch_items)
+            else None
+        )
+        previous_override_signature = self._batch_item_parameter_override_signature(
+            previous_item
+        )
+        requested_override_signature = self._batch_item_parameter_override_signature(
+            planned_items[index]
+        )
         reuse_representative = bool(
             self._interactive_collection_batch_items
+            and self._interactive_collection_batch_index >= 0
             and self._interactive_collection_batch_requested_index < 0
             and self._interactive_collection_batch_failed_index < 0
             and self._active_pipeline_run_id is None
@@ -11102,6 +11782,7 @@ class VippWidget(QWidget):
             and representative_series_indices
             == self._interactive_collection_source_series_indices
             and previous_declarations == current_declarations
+            and previous_override_signature == requested_override_signature
             and scientific_workflow_hash(self._batch_workflow_document())
             == config.workflow_sha256
         )
@@ -11134,6 +11815,174 @@ class VippWidget(QWidget):
         self._preview_interactive_collection_batch_item(
             index,
             force_sync=force_sync,
+        )
+
+    @staticmethod
+    def _batch_item_parameter_override_signature(
+        item: BatchItemPlan | None,
+    ) -> str:
+        """Fingerprint exactly the detached scalar substitutions for one item."""
+
+        if item is None or not item.parameter_overrides:
+            return ""
+        return canonical_digest(
+            {
+                "source_item_key": item.parameter_override_source_item_key,
+                "values": [
+                    {
+                        "node_id": override.node_id,
+                        "parameter": override.parameter,
+                        "value": override.value,
+                    }
+                    for override in item.parameter_overrides
+                ],
+            }
+        )
+
+    def _interactive_collection_batch_parameter_overrides(
+        self,
+    ) -> tuple[BatchParameterOverride, ...]:
+        """Return substitutions for the requested or committed representative."""
+
+        item = self._interactive_collection_batch_target_item()
+        return () if item is None else item.parameter_overrides
+
+    def _interactive_collection_batch_target_item(
+        self,
+    ) -> BatchItemPlan | None:
+        """Return the representative generation currently being shown or built."""
+
+        items = self._interactive_collection_batch_items
+        index = self._interactive_collection_batch_requested_index
+        if not 0 <= index < len(items):
+            index = self._interactive_collection_batch_index
+        if not 0 <= index < len(items):
+            return None
+        return items[index]
+
+    @staticmethod
+    def _batch_parameter_value_text(value: object) -> str:
+        """Format one scalar compactly for effective-value explanations."""
+
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if math.isfinite(number) and number.is_integer():
+            return f"{int(number):,}"
+        if math.isfinite(number):
+            return f"{number:,.8g}"
+        return str(value)
+
+    def _batch_item_effective_overrides_summary(
+        self,
+        item: BatchItemPlan,
+    ) -> str:
+        """Summarize exact item exceptions without changing the live workflow."""
+
+        details: list[str] = []
+        for override in item.parameter_overrides:
+            node = self.pipeline.nodes.get(override.node_id)
+            if node is None:
+                continue
+            spec = next(
+                (
+                    candidate
+                    for candidate in self.pipeline.node_parameter_specs(node.id)
+                    if candidate.name == override.parameter
+                ),
+                None,
+            )
+            label = spec.label if spec is not None else override.parameter
+            workflow_value = node.params.get(
+                override.parameter,
+                spec.default if spec is not None else "?",
+            )
+            details.append(
+                f"{node.title} / {label} = "
+                f"{self._batch_parameter_value_text(override.value)} "
+                "(workflow value "
+                f"{self._batch_parameter_value_text(workflow_value)})"
+            )
+        return "; ".join(details)
+
+    def _refresh_batch_effective_parameter_panel(self) -> None:
+        """Explain the values used by the committed representative preview."""
+
+        self.batch_effective_parameter_group.hide()
+        self.batch_effective_parameter_label.clear()
+        self.parameter_group.setTitle("Parameters")
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        items = self._interactive_collection_batch_items
+        index = self._interactive_collection_batch_index
+        if (
+            node is None
+            or node.operation_id in {"input", "batch_output"}
+            or self._interactive_collection_batch_requested_index >= 0
+            or self._interactive_collection_batch_failed_index >= 0
+            or not 0 <= index < len(items)
+        ):
+            return
+        eligible_specs = {
+            spec.name: spec
+            for spec in self.pipeline.node_parameter_specs(node.id)
+            if is_batch_parameter_override_eligible(node.operation_id, spec)
+        }
+        if not eligible_specs:
+            return
+        item = items[index]
+        overrides = {
+            override.parameter: override
+            for override in item.parameter_overrides
+            if override.node_id == node.id and override.parameter in eligible_specs
+        }
+        if not overrides:
+            # Inheritance is the ordinary workflow behavior, not an exception
+            # that needs a second parameter surface. Keep the normal inspector
+            # unchanged unless this exact committed representative substituted
+            # at least one value on the selected node.
+            return
+        item_text = f"Item {index + 1} of {len(items)} ({item.batch_id}). "
+        parts: list[str] = []
+        for name, override in overrides.items():
+            spec = eligible_specs[name]
+            workflow_value = node.params.get(name, spec.default)
+            parts.append(
+                f"{spec.label}: "
+                f"{self._batch_parameter_value_text(override.value)} — "
+                "per-sample override (workflow value: "
+                f"{self._batch_parameter_value_text(workflow_value)})."
+            )
+        detail = " ".join(parts)
+        suffix = (
+            " This is the previous reviewed preview because the batch plan is "
+            "now stale."
+            if self._interactive_collection_batch_plan_stale
+            else ""
+        )
+        self.batch_effective_parameter_label.setText(
+            item_text
+            + detail
+            + " The graph and thumbnails use these effective values; controls "
+            "below edit and save the shared workflow values." + suffix
+        )
+        self.batch_effective_parameter_group.setTitle(
+            "Previous batch preview"
+            if self._interactive_collection_batch_plan_stale
+            else "Effective batch preview"
+        )
+        self.parameter_group.setTitle("Workflow parameters")
+        self.batch_effective_parameter_group.show()
+
+    def _background_batch_parameter_override_is_current(self, run_id: int) -> bool:
+        """Reject pixels from a superseded per-item workflow generation."""
+
+        context = self._pipeline_run_context.get(int(run_id), ())
+        expected_signature = str(context[9]) if len(context) > 9 else ""
+        if not expected_signature:
+            return True
+        return expected_signature == self._batch_item_parameter_override_signature(
+            self._interactive_collection_batch_target_item()
         )
 
     def _preview_interactive_collection_batch_item(
@@ -11279,12 +12128,23 @@ class VippWidget(QWidget):
             if title in source_names:
                 title = f"{title} ({node_id})"
             source_names[title] = item.source_label(node_id)
+        representative_committed = bool(
+            index == self._interactive_collection_batch_index
+            and self._interactive_collection_batch_requested_index < 0
+            and self._interactive_collection_batch_failed_index < 0
+        )
         self.batch_navigator.set_session(
             len(items),
             index,
             item.batch_id,
             source_names,
+            effective_overrides_summary=(
+                self._batch_item_effective_overrides_summary(item)
+                if representative_committed
+                else ""
+            ),
         )
+        self._refresh_batch_effective_parameter_panel()
 
     def _complete_interactive_collection_batch_preview(self) -> None:
         """Commit only the latest representative whose calculation succeeded."""
@@ -11407,6 +12267,54 @@ class VippWidget(QWidget):
         self._interactive_collection_batch_plan_stale = True
         if self._interactive_collection_batch_items:
             self.batch_navigator.set_session_stale(True)
+        self._refresh_batch_effective_parameter_panel()
+        self._sync_current_workflow_tab_state()
+
+    def _collection_batch_parameter_overrides_changed(
+        self,
+        dialog: CollectionBatchDialog,
+        overrides: object,
+    ) -> None:
+        """Invalidate representative pixels when their per-item workflow changes."""
+
+        if dialog is not self._active_collection_batch_dialog:
+            return
+        if self._active_pipeline_run_id is not None and (
+            self._interactive_collection_batch_requested_index >= 0
+        ):
+            # The worker owns an immutable earlier per-item workflow. Let it
+            # unwind without allowing those superseded pixels to become the
+            # reviewed representative.
+            self._abandon_background_pipeline_run()
+        self._interactive_collection_batch_config_path = None
+        self._interactive_collection_batch_plan_stale = True
+        self._interactive_collection_batch_index = -1
+        self._interactive_collection_batch_requested_index = -1
+        self._interactive_collection_batch_failed_index = -1
+        self._last_pipeline_source_signature = None
+        self.pipeline.mark_manual_descendants_stale(self.pipeline.nodes)
+        self.batch_navigator.set_session_stale(
+            True,
+            message=(
+                "Per-sample parameters changed. Preview the batch again to bind "
+                "the exact primary SourceItems and calculate a matching "
+                "representative before running."
+            ),
+        )
+        dialog.set_representative_pending(True)
+        dialog.show_plan_refresh_required(
+            "Per-sample parameters changed. Preview batch again before running "
+            "so the representative uses the exact per-item workflow."
+        )
+        if overrides is None:
+            self._set_status(
+                "A per-sample parameter value is invalid. Correct it, then "
+                "preview the batch again.",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+        self._refresh_batch_effective_parameter_panel()
+        self._sync_execution_ui()
         self._sync_current_workflow_tab_state()
 
     def _mark_collection_batch_workflow_stale_if_needed(self) -> None:
@@ -11437,6 +12345,7 @@ class VippWidget(QWidget):
                 "batch is optional."
             ),
         )
+        self._refresh_batch_effective_parameter_panel()
 
     def _clear_interactive_collection_batch_session(
         self,
@@ -11454,6 +12363,7 @@ class VippWidget(QWidget):
         subtitle_node_ids = self._interactive_collection_source_node_ids()
         self._interactive_collection_source_paths.clear()
         self._interactive_collection_source_series_indices.clear()
+        self._interactive_collection_source_refresh_node_ids.clear()
         self._prune_file_source_payload_cache()
         self._interactive_collection_batch_items = ()
         self._interactive_collection_batch_config = None
@@ -11464,11 +12374,10 @@ class VippWidget(QWidget):
         self._interactive_collection_batch_plan_stale = False
         self._interactive_collection_batch_workflow_stale = False
         self.batch_navigator.clear_session()
+        self._refresh_batch_effective_parameter_panel()
         self._sync_input_node_subtitles(subtitle_node_ids)
         if self._active_source_load_id is not None:
-            self._source_load_serial += 1
-            self._active_source_load_id = None
-            self._source_load_pending = False
+            self._cancel_active_source_io(invalidate_generation=True)
             self._set_pipeline_busy(False)
         if close_workspace and self._active_collection_batch_dialog is not None:
             self._discard_collection_batch_dialog(
@@ -11568,13 +12477,14 @@ class VippWidget(QWidget):
         self,
         input_dir: str | Path,
         output_dir: str | Path,
-        pattern: str = "*.tif",
+        pattern: str = DEFAULT_BATCH_SOURCE_PATTERN,
         image_format: str = "ome-tiff",
         save_workflow_snapshot: bool = True,
         save_python_script: bool = True,
         source_bindings: list[dict] | None = None,
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
+        parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         expected_items: tuple[BatchItemPlan, ...] | None = None,
         *,
         job_id: int,
@@ -11600,6 +12510,7 @@ class VippWidget(QWidget):
             source_bindings=source_bindings,
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
+            parameter_overrides=parameter_overrides,
             workflow=workflow,
             compute_request=compute_request,
         )
@@ -11614,6 +12525,8 @@ class VippWidget(QWidget):
                 "run; click Run batch to refresh the displayed plan, review it, "
                 "then run again."
             )
+        config = bind_batch_plan_source_items(config, plan)
+        plan = replace(plan, config=config)
         output_path.mkdir(parents=True, exist_ok=True)
         artifact_paths: list[Path] = [atomic_write_json(workflow_path, workflow)]
         if save_python_script:
@@ -11639,13 +12552,14 @@ class VippWidget(QWidget):
         self,
         input_dir: str | Path,
         output_dir: str | Path,
-        pattern: str = "*.tif",
+        pattern: str = DEFAULT_BATCH_SOURCE_PATTERN,
         image_format: str = "ome-tiff",
         save_workflow_snapshot: bool = True,
         save_python_script: bool = True,
         source_bindings: list[dict] | None = None,
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
+        parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         expected_items: tuple[BatchItemPlan, ...] | None = None,
     ) -> BatchRunResult:
         """Run a batch synchronously for the public API and focused tests."""
@@ -11660,6 +12574,7 @@ class VippWidget(QWidget):
             source_bindings=source_bindings,
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
+            parameter_overrides=parameter_overrides,
             expected_items=expected_items,
             job_id=0,
             origin_session_id=(session.session_id if session is not None else ""),
@@ -11787,13 +12702,14 @@ class VippWidget(QWidget):
         self,
         input_dir: str | Path,
         output_dir: str | Path,
-        pattern: str = "*.tif",
+        pattern: str = DEFAULT_BATCH_SOURCE_PATTERN,
         image_format: str = "ome-tiff",
         save_workflow_snapshot: bool = True,
         save_python_script: bool = True,
         source_bindings: list[dict] | None = None,
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
+        parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         workflow: dict | None = None,
         compute_request: ComputeRequest | None = None,
     ) -> BatchConfig:
@@ -11807,6 +12723,7 @@ class VippWidget(QWidget):
             source_bindings=source_bindings,
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
+            parameter_overrides=parameter_overrides,
             workflow=workflow,
             compute_request=compute_request,
         )
@@ -11862,7 +12779,7 @@ class VippWidget(QWidget):
         self,
         input_dir: str | Path,
         output_dir: str | Path,
-        pattern: str = "*.tif",
+        pattern: str = DEFAULT_BATCH_SOURCE_PATTERN,
         image_format: str = "ome-tiff",
         save_workflow_snapshot: bool = True,
         save_python_script: bool = True,
@@ -11870,7 +12787,11 @@ class VippWidget(QWidget):
         preview_limit: int = 25,
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
+        parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
     ) -> BatchPreviewResult:
+        dialog = self._active_collection_batch_dialog
+        if dialog is not None:
+            self._cancel_attached_batch_workspace_preview(dialog)
         result = self._collection_batch_controller.preview(
             input_dir=input_dir,
             output_dir=output_dir,
@@ -11882,20 +12803,80 @@ class VippWidget(QWidget):
             preview_limit=preview_limit,
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
+            parameter_overrides=parameter_overrides,
             compute_request=self._compute_request_for_batch_dialog(
                 self._active_collection_batch_dialog
             ),
         )
         config_path = None
-        if self._active_collection_batch_dialog is not None:
-            config_path = self._active_collection_batch_dialog._loaded_config_path
+        if dialog is not None:
+            config_path = dialog._loaded_config_path
         if result.items and result.config is not None:
+            self._configure_batch_parameter_overrides(
+                dialog,
+                result,
+            )
             self._activate_interactive_collection_batch(
                 result.items,
                 result.config,
                 config_path=config_path,
             )
         return result
+
+    def _configure_batch_parameter_overrides(
+        self,
+        dialog: CollectionBatchDialog | None,
+        result: BatchPreviewResult,
+    ) -> bool:
+        """Bind the optional scalar editor to one exact planned collection."""
+
+        if dialog is None or not result.items or not result.config.sources:
+            return False
+        primary_node_id = result.config.sources[0].node_id
+        sources: list[BatchOverrideSourceItem] = []
+        for item in result.items:
+            source_item = item.source_items.get(primary_node_id)
+            if source_item is None:
+                if not result.config.parameter_overrides:
+                    dialog.clear_parameter_override_contract()
+                return False
+            sources.append(
+                BatchOverrideSourceItem(
+                    primary_node_id,
+                    f"{item.batch_id}: {item.source_label(primary_node_id)}",
+                    source_item,
+                )
+            )
+        parameters: list[BatchOverrideParameterSpec] = []
+        for node_id in self.pipeline.topological_order():
+            node = self.pipeline.nodes[node_id]
+            if node.operation_id in {"input", "batch_output"}:
+                continue
+            operation = self.pipeline.operation_spec(node.operation_id)
+            parameters.extend(
+                BatchOverrideParameterSpec(
+                    node_id,
+                    node.title,
+                    node.operation_id,
+                    parameter,
+                    node.params.get(parameter.name, parameter.default),
+                )
+                for parameter in operation.parameters
+                if is_batch_parameter_override_eligible(
+                    node.operation_id,
+                    parameter,
+                )
+            )
+        if not parameters:
+            if result.config.parameter_overrides:
+                return False
+            dialog.clear_parameter_override_contract()
+            return True
+        return dialog.configure_parameter_overrides(
+            sources,
+            parameters,
+            overrides=result.config.parameter_overrides,
+        )
 
     def _batch_source_rows(self) -> list[dict[str, str]]:
         return self._collection_batch_controller.source_rows()
@@ -12025,7 +13006,9 @@ class VippWidget(QWidget):
             self._live_source_adapter.invalidate(layer, notify=False)
         self._invalidate_pipeline_cache()
         self._autobind_default_image_sources()
-        self._refresh_image_source_controls()
+        selected = self.pipeline.nodes.get(self._selected_node_id)
+        if selected is None or not self._file_source_should_load_async(selected):
+            self._refresh_image_source_controls()
         self.run_pipeline()
 
     def _clear_file_source_snapshots(self, *, invalidate_inflight: bool) -> None:
@@ -12033,9 +13016,38 @@ class VippWidget(QWidget):
         self._file_source_payload_cache.clear()
         self._file_source_path_identities.clear()
         self._source_inspection_cache.clear()
+        self._source_inspection_errors.clear()
+        self._invalidate_source_preview(remove_layer=True)
+        self._interactive_collection_source_refresh_node_ids.update(
+            self._interactive_collection_source_paths
+        )
+        # Refresh is the user's explicit request to bind the currently present
+        # container revision.  The saved SourceItem remains immutable during
+        # ordinary re-runs, but retaining it here would correctly reject the
+        # changed revision and make the Refresh action unable to refresh.
+        for node in self.pipeline.nodes.values():
+            if node.operation_id == "input":
+                node.params.pop(SOURCE_ITEM_PARAMETER, None)
         if not invalidate_inflight:
             return
-        self._source_load_serial += 1
+        self._cancel_active_source_io(invalidate_generation=True)
+        control = self._parameter_widgets.get("image_source")
+        if isinstance(control, ImageSourceControl):
+            control.clear_source_load_status()
+
+    def _cancel_active_source_io(self, *, invalidate_generation: bool) -> None:
+        """Cancel full reads and metadata inspections through one lifecycle seam."""
+
+        for worker in (
+            self._active_source_load_worker,
+            self._active_source_inspection_worker,
+        ):
+            if worker is not None:
+                worker.cancel()
+        self._active_source_load_worker = None
+        self._active_source_inspection_worker = None
+        if invalidate_generation:
+            self._source_load_serial += 1
         self._active_source_load_id = None
         self._source_load_pending = False
 
@@ -12550,7 +13562,7 @@ class VippWidget(QWidget):
         self,
         node_id: str,
         payload: SourcePayload,
-    ) -> tuple[str | None, int | str | None]:
+    ) -> tuple[object, ...]:
         """Return the stable logical item selected from one verified source.
 
         ``LocalSourceIdentity`` verifies the bytes of the complete file or
@@ -12559,6 +13571,17 @@ class VippWidget(QWidget):
         browsing may rematerialize the same pinned revision into a new owned
         NumPy array without changing the scientific source.
         """
+
+        if payload.source_item is not None:
+            item = payload.source_item
+            return (
+                item.container.uri,
+                item.selector.digest,
+                item.reader.adapter_id,
+                item.reader.implementation,
+                item.reader.version,
+                item.resolved.analysis_level,
+            )
 
         metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
         source_path = metadata.get("vipp_source_path")
@@ -13081,15 +14104,22 @@ class VippWidget(QWidget):
                 continue
             seen.add(key)
             resolved_path = str(key[0])
+            expected_source_item = self._file_source_item_for_node(node)
             specs.append(
                 SourceFileLoadSpec(
                     node_id=node_id,
                     path=resolved_path,
                     series_index=self._file_source_series_index_for_node(node),
                     cache_key=key,
+                    item_key=(
+                        expected_source_item.selector.key
+                        if expected_source_item is not None
+                        else ""
+                    ),
                     expected_identity=self._file_source_path_identities.get(
                         resolved_path
                     ),
+                    expected_source_item=expected_source_item,
                 )
             )
         return tuple(specs)
@@ -13110,10 +14140,29 @@ class VippWidget(QWidget):
         source_path = self._file_source_path_for_node(node)
         if source_path is None:
             return None
-        return (
-            str(source_path),
-            self._file_source_series_index_for_node(node),
+        source_item = self._file_source_item_for_node(node)
+        selector = (
+            ("source-item", source_item.digest)
+            if source_item is not None
+            else ("legacy-series", self._file_source_series_index_for_node(node))
         )
+        return (str(source_path), selector)
+
+    def _file_source_item_for_node(self, node):
+        if node.id in self._interactive_collection_source_refresh_node_ids:
+            # Explicit Refresh is the sole authority to bind a changed
+            # representative revision.  The reviewed batch plan remains stale
+            # until this replacement has been inspected and materialized.
+            return source_item_from_params(node.params)
+        items = self._interactive_collection_batch_items
+        index = self._interactive_collection_batch_requested_index
+        if not 0 <= index < len(items):
+            index = self._interactive_collection_batch_index
+        if items and 0 <= index < len(items):
+            planned = items[index].source_items.get(node.id)
+            if planned is not None:
+                return planned
+        return source_item_from_params(node.params)
 
     def _file_source_series_index_for_node(self, node) -> int:
         return self._interactive_collection_source_series_indices.get(
@@ -13140,7 +14189,72 @@ class VippWidget(QWidget):
         snapshot = self._file_source_payload_cache.get(key)
         if snapshot is None:
             return None
+        self._persist_source_item_for_node(node, snapshot)
+        canonical_key = self._file_source_cache_key(node)
+        if canonical_key is not None and canonical_key != key:
+            self._file_source_payload_cache.pop(key, None)
+            self._file_source_payload_cache[canonical_key] = snapshot
         return self._viewer_aligned_source_payload(snapshot.payload)
+
+    def _persist_source_item_for_node(
+        self,
+        node,
+        snapshot: SourceFileSnapshot,
+    ) -> None:
+        if node.id in self._interactive_collection_source_paths:
+            self._rebind_refreshed_representative_source_item(
+                node.id,
+                snapshot,
+            )
+            return
+        metadata = snapshot.payload.metadata or {}
+        series_index = int(
+            metadata.get(
+                "vipp_source_series_index",
+                self._file_source_series_index_for_node(node),
+            )
+        )
+        node.params = params_with_source_item(
+            node.params,
+            snapshot.source_item,
+            legacy_series_index=series_index,
+        )
+
+    def _rebind_refreshed_representative_source_item(
+        self,
+        node_id: str,
+        snapshot: SourceFileSnapshot,
+    ) -> None:
+        if node_id not in self._interactive_collection_source_refresh_node_ids:
+            return
+        items = self._interactive_collection_batch_items
+        index = self._interactive_collection_batch_requested_index
+        if not 0 <= index < len(items):
+            index = self._interactive_collection_batch_index
+        if not 0 <= index < len(items):
+            return
+        item = items[index]
+        source_items = dict(item.source_items)
+        source_items[node_id] = snapshot.source_item
+        series_indices = dict(item.source_series_indices)
+        series_indices[node_id] = int(
+            snapshot.payload.metadata.get(
+                "vipp_source_series_index",
+                series_indices.get(node_id, 0),
+            )
+        )
+        replacement = replace(
+            item,
+            source_items=source_items,
+            source_series_indices=series_indices,
+        )
+        mutable = list(items)
+        mutable[index] = replacement
+        self._interactive_collection_batch_items = tuple(mutable)
+        self._interactive_collection_source_series_indices[node_id] = series_indices[
+            node_id
+        ]
+        self._interactive_collection_source_refresh_node_ids.discard(node_id)
 
     def _cache_file_source_snapshot(
         self,
@@ -13170,6 +14284,7 @@ class VippWidget(QWidget):
         self._source_inspection_cache[resolved_path] = VerifiedSourceInspection(
             snapshot.inspection,
             snapshot.identity,
+            snapshot.source_item.container,
         )
 
     def _prune_file_source_payload_cache(self) -> None:
@@ -13240,6 +14355,11 @@ class VippWidget(QWidget):
                 defer_statistics=defer_statistics,
             )
             if payload is not None:
+                payload = self._workflow_declared_source_payload(
+                    node,
+                    payload,
+                    defer_statistics=defer_statistics,
+                )
                 payloads[node_id] = payload
             if layer is not None:
                 layers.append(layer)
@@ -13249,6 +14369,65 @@ class VippWidget(QWidget):
             self._live_source_node_layers = live_bindings
             self._reuse_cached_source_statistics(payloads)
         return payloads, layers
+
+    def _workflow_declared_source_payload(
+        self,
+        node,
+        payload: SourcePayload,
+        *,
+        defer_statistics: bool,
+    ) -> SourcePayload:
+        """Bind an Image Source axis declaration into its SourceItem evidence."""
+
+        if payload.axis_semantics_resolved or payload.source_item is None:
+            return payload
+        declaration = AxisDeclaration.from_value(node.params.get("axis_declaration"))
+        if declaration is None:
+            return payload
+        raw_state = payload.image_state or image_state_from_array(
+            payload.data,
+            layer_metadata=payload.metadata,
+            source_name=payload.name,
+            defer_statistics=defer_statistics,
+        )
+        effective_state = apply_axis_declaration(
+            raw_state,
+            declaration,
+            declaration_source="Image Source",
+        )
+        source_item = source_item_with_axis_declaration(
+            payload.source_item,
+            raw_state,
+            effective_state,
+        )
+        metadata = dict(payload.metadata or {})
+        metadata["vipp_axis_semantics"] = {
+            "raw_axes": raw_state.axis_order,
+            "effective_axes": effective_state.axis_order,
+            "declaration": {
+                **declaration.to_dict(),
+                "source": "Image Source",
+                "applied": True,
+                "data_order_changed": False,
+            },
+        }
+        metadata["vipp_source_item_digest"] = source_item.digest
+        metadata["vipp_source_item"] = source_item.to_public_dict()
+        if node.id not in self._interactive_collection_source_paths:
+            node.params = params_with_source_item(
+                node.params,
+                source_item,
+                legacy_series_index=self._file_source_series_index_for_node(node),
+            )
+        return SourcePayload(
+            payload.data,
+            metadata,
+            payload.name,
+            effective_state,
+            payload.revision_token,
+            True,
+            source_item,
+        )
 
     def _reuse_cached_source_statistics(
         self,
@@ -13298,6 +14477,7 @@ class VippWidget(QWidget):
                 ),
                 payload.revision_token,
                 payload.axis_semantics_resolved,
+                payload.source_item,
             )
 
     def _resolve_source_payload(
@@ -13327,13 +14507,22 @@ class VippWidget(QWidget):
             if self._file_source_should_load_async(node):
                 return None, None
             resolved_path = str(source_path)
+            expected_source_item = self._file_source_item_for_node(node)
             snapshot = load_frozen_file_source_snapshot(
                 source_path,
                 self._file_source_series_index_for_node(node),
+                item_key=(
+                    expected_source_item.selector.key
+                    if expected_source_item is not None
+                    else None
+                ),
                 expected_identity=self._file_source_path_identities.get(resolved_path),
+                expected_source_item=expected_source_item,
                 reader=read_image,
             )
-            self._cache_file_source_snapshot(key, snapshot)
+            self._persist_source_item_for_node(node, snapshot)
+            canonical_key = self._file_source_cache_key(node) or key
+            self._cache_file_source_snapshot(canonical_key, snapshot)
             self._prune_file_source_payload_cache()
             payload = self._viewer_aligned_source_payload(
                 snapshot.payload,
@@ -13414,6 +14603,60 @@ class VippWidget(QWidget):
             source_name=payload.name,
             defer_statistics=defer_statistics,
         )
+        if payload.axis_semantics_resolved:
+            declaration = binding.axis_declaration
+            source_item = payload.source_item
+            if declaration is None or source_item is None:
+                raise ValueError(
+                    "Representative preview axes were already resolved, but "
+                    "they do not have the active batch declaration evidence. "
+                    "Refresh the batch preview."
+                )
+            expected_source = tuple(
+                name.casefold() for name in declaration.source_axis_names
+            )
+            expected_effective = tuple(
+                name.casefold() for name in declaration.effective_axis_names
+            )
+            observed_source = tuple(
+                name.casefold() for name in source_item.selector.source_axes
+            )
+            observed_effective = tuple(
+                name.casefold() for name in source_item.selector.effective_axes
+            )
+            state_axes = tuple(axis.name.casefold() for axis in raw_state.axes)
+            if (
+                observed_source != expected_source
+                or observed_effective != expected_effective
+                or state_axes != expected_effective
+            ):
+                raise ValueError(
+                    "Representative preview axis evidence does not match the "
+                    "active batch declaration. Refresh the batch preview."
+                )
+            declaration_record = {
+                **declaration.to_dict(),
+                "source": "batch config",
+                "applied": True,
+                "data_order_changed": False,
+            }
+            metadata = dict(payload.metadata or {})
+            metadata["vipp_axis_semantics"] = {
+                "raw_axes": declaration.source_axes,
+                "effective_axes": raw_state.axis_order,
+                "declaration": declaration_record,
+            }
+            metadata["vipp_source_item_digest"] = source_item.digest
+            metadata["vipp_source_item"] = source_item.to_public_dict()
+            return SourcePayload(
+                payload.data,
+                metadata,
+                payload.name,
+                raw_state,
+                payload.revision_token,
+                True,
+                source_item,
+            )
         effective_state = (
             raw_state
             if binding.axis_declaration is None
@@ -13439,6 +14682,15 @@ class VippWidget(QWidget):
             "effective_axes": effective_state.axis_order,
             "declaration": declaration,
         }
+        source_item = payload.source_item
+        if source_item is not None and binding.axis_declaration is not None:
+            source_item = source_item_with_axis_declaration(
+                source_item,
+                raw_state,
+                effective_state,
+            )
+            metadata["vipp_source_item_digest"] = source_item.digest
+            metadata["vipp_source_item"] = source_item.to_public_dict()
         return SourcePayload(
             payload.data,
             metadata,
@@ -13446,6 +14698,7 @@ class VippWidget(QWidget):
             effective_state,
             payload.revision_token,
             True,
+            source_item,
         )
 
     @contextmanager
@@ -13488,6 +14741,7 @@ class VippWidget(QWidget):
             self._viewer_aligned_state(state),
             payload.revision_token,
             payload.axis_semantics_resolved,
+            payload.source_item,
         )
 
     def _viewer_aligned_image_state(
@@ -13545,7 +14799,8 @@ class VippWidget(QWidget):
             return cached.inspection
         if not source_path.exists():
             return None
-        identity = capture_local_source_identity(source_path)
+        bundle = capture_local_source_bundle(source_path)
+        identity = local_source_identity_from_bundle(bundle)
         inspection = inspect_image_source(source_path)
         verify_local_source_identity(source_path, identity)
         pinned_identity = self._file_source_path_identities.get(cache_key)
@@ -13558,6 +14813,7 @@ class VippWidget(QWidget):
         self._source_inspection_cache[cache_key] = VerifiedSourceInspection(
             inspection,
             identity,
+            bundle,
         )
         return inspection
 
@@ -13652,14 +14908,16 @@ class VippWidget(QWidget):
         note = self._graph_notes.get(note_id)
         if note is None:
             return
-        text, ok = QInputDialog.getMultiLineText(
-            self,
-            "Edit Graph Note",
-            "Note:",
-            note.text,
-        )
-        if ok:
-            self._set_graph_note_text(note_id, str(text))
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Edit Graph Note")
+        dialog.setLabelText("Note:")
+        dialog.setOption(QInputDialog.UsePlainTextEditForTextInput)
+        dialog.setTextValue(note.text)
+        editor = dialog.findChild(QPlainTextEdit)
+        if editor is not None:
+            editor.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        if dialog.exec() == QDialog.Accepted:
+            self._set_graph_note_text(note_id, str(dialog.textValue()))
 
     def _set_graph_note_text(self, note_id: str, text: str) -> None:
         note = self._graph_notes.get(note_id)
@@ -14203,6 +15461,12 @@ class VippWidget(QWidget):
             self.pipeline.nodes[node_id].operation_id == "input"
             for node_id in ordered_ids
         )
+        if deleted_input:
+            self._cancel_active_source_io(invalidate_generation=True)
+            self._invalidate_source_preview(remove_layer=True)
+            self._interactive_collection_source_refresh_node_ids.difference_update(
+                deleted
+            )
         for node_id in ordered_ids:
             if not self.pipeline.remove_node(node_id):
                 continue
@@ -14213,6 +15477,8 @@ class VippWidget(QWidget):
             self._compute_decision_environments.pop(node_id, None)
             self._stale_compute_badge_node_ids.discard(node_id)
             self._preview_disabled_node_ids.discard(node_id)
+            self._source_preview_errors.pop(node_id, None)
+            self._source_view_modes.pop(node_id, None)
             self._rescale_auto_output_ranges.pop(node_id, None)
             self._discard_background_node_result_overrides({node_id})
         if deleted_input and (
@@ -14311,6 +15577,7 @@ class VippWidget(QWidget):
         self._selected_node_id = ""
         self.selected_title.setText("No node selected")
         self._clear_parameter_form()
+        self._refresh_batch_effective_parameter_panel()
         self.parameter_group.setHidden(True)
         self.auto_contrast_group.setHidden(True)
         self.pin_button.setHidden(True)
@@ -14361,10 +15628,11 @@ class VippWidget(QWidget):
         self._sync_preview_ui()
         self._sync_keep_cached_ui()
         self._render_parameters(node_id)
+        self._refresh_batch_effective_parameter_panel()
         self._sync_auto_contrast_ui()
         self._sync_pin_ui()
         self._inspect_selected_node()
-        self._keep_active_pin_on_top()
+        self._apply_selected_viewer_surface(select_layer=True)
         self._sync_view_dims_bar()
         self._update_metadata_panel()
         self._restore_selected_output_for_interactive_cache(node_id)
@@ -16437,11 +17705,46 @@ class VippWidget(QWidget):
             series_options=self._source_series_options(inspection),
             source_summary=self._source_summary(inspection, node),
         )
+        control.set_resolution_presentation(self._source_resolution_presentation(node))
         self._apply_image_source_params(node_id, control.value())
         control.valueChanged.connect(self._on_image_source_changed)
+        control.sourceLoadCancelRequested.connect(self._cancel_source_file_load)
+        control.viewerDisplayChanged.connect(
+            lambda mode, node_id=node_id: self._on_source_viewer_display_changed(
+                node_id,
+                mode,
+            )
+        )
+        control.previewReloadRequested.connect(
+            lambda node_id=node_id: self._reload_source_preview(node_id)
+        )
+        worker = self._active_source_load_worker
+        if (
+            self._active_source_load_id is not None
+            and worker is not None
+            and any(spec.node_id == node_id for spec in worker.specs)
+        ):
+            control.begin_source_load(
+                self._active_source_load_id,
+                "Loading and verifying this source in the background.",
+            )
+        inspection_worker = self._active_source_inspection_worker
+        if (
+            self._active_source_load_id is not None
+            and inspection_worker is not None
+            and inspection_worker.spec.node_id == node_id
+        ):
+            control.begin_source_load(
+                self._active_source_load_id,
+                "Inspecting and verifying this source in the background.",
+            )
         self.parameter_form.addRow(control)
         self._parameter_widgets["image_source"] = control
         self._render_channel_color_controls(node_id)
+        QTimer.singleShot(
+            0,
+            lambda node_id=node_id: self._ensure_selected_source_preview(node_id),
+        )
 
     def _render_assign_channel_colors_parameters(self, node_id: str) -> None:
         self.parameter_group.setHidden(False)
@@ -16704,9 +18007,26 @@ class VippWidget(QWidget):
         if self._image_source_value(node) == value:
             return
         self._record_parameter_undo(self._selected_node_id, "image_source")
+        previous_mode = str(node.params.get("source_mode", ""))
         previous_path = str(node.params.get("file_path", ""))
+        previous_series = int(node.params.get("series_index", 0) or 0)
+        previous_axes = str(node.params.get("axis_declaration", ""))
         previous_binding = str(node.params.get("binding_mode", "single item"))
         self._apply_image_source_params(self._selected_node_id, value)
+        if (
+            str(value.get("source_mode", "")) != previous_mode
+            or str(value.get("file_path", "")) != previous_path
+            or int(value.get("series_index", 0) or 0) != previous_series
+            or str(value.get("axis_declaration", "")) != previous_axes
+            or str(value.get("binding_mode", "single item")) != previous_binding
+        ):
+            self._cancel_active_source_io(invalidate_generation=True)
+            self._invalidate_source_preview(remove_layer=True)
+            self._source_view_modes[node.id] = "analysis"
+            node.params.pop(SOURCE_ITEM_PARAMETER, None)
+            self._source_inspection_errors.pop(node.id, None)
+            self._apply_selected_viewer_surface(select_layer=True)
+            self._refresh_source_resolution_control(node.id)
         if not (
             str(value.get("source_mode", "")) == "file path"
             and str(value.get("binding_mode", "")) == "collection"
@@ -16737,6 +18057,7 @@ class VippWidget(QWidget):
             value=self._image_source_value(node),
             emit=False,
         )
+        control.set_resolution_presentation(self._source_resolution_presentation(node))
         self._apply_image_source_params(self._selected_node_id, control.value())
 
     def _source_inspection_for_node(self, node) -> SourceInspection | None:
@@ -16748,10 +18069,1002 @@ class VippWidget(QWidget):
         path = self._file_source_path_for_node(node)
         if path is None:
             return None
+        cache_key = str(path.expanduser().resolve(strict=False))
+        cached = self._source_inspection_cache.get(cache_key)
+        if cached is not None:
+            try:
+                self._bind_inspected_source_item(node, path, cached.inspection)
+                self._source_inspection_errors.pop(node.id, None)
+                return cached.inspection
+            except Exception as exc:
+                return self._handle_source_inspection_error(node, path, exc)
+        if self._file_source_should_load_async(node):
+            try:
+                self._start_source_inspection(node, path)
+            except Exception as exc:
+                return self._handle_source_inspection_error(node, path, exc)
+            return None
         try:
-            return self._inspect_source_file(path)
+            inspection = self._inspect_source_file(path)
+            if inspection is not None:
+                self._bind_inspected_source_item(node, path, inspection)
+                self._source_inspection_errors.pop(node.id, None)
+            return inspection
+        except Exception as exc:
+            return self._handle_source_inspection_error(node, path, exc)
+
+    def _handle_source_inspection_error(self, node, path: Path, exc):
+        error = as_image_source_error(
+            exc,
+            stage="metadata-inspection",
+            path=path,
+            item=self._file_source_series_index_for_node(node),
+        )
+        self._source_inspection_errors[node.id] = error.display_text
+        self.pipeline.set_node_execution_error(node.id, error.display_text)
+        self._set_status(
+            f"Image source inspection error: {error.display_text}",
+            severity=MessageSeverity.ERROR,
+            actionable=True,
+        )
+        return None
+
+    def _source_inspection_worker_spec(
+        self,
+        node,
+        path: Path,
+        generation: int,
+    ) -> SourceInspectionWorkerSpec:
+        saved = self._file_source_item_for_node(node)
+        return SourceInspectionWorkerSpec(
+            generation=generation,
+            path=str(path),
+            node_id=node.id,
+            series_index_hint=self._file_source_series_index_for_node(node),
+            item_key=(saved.selector.key if saved is not None else ""),
+            expected_identity=self._file_source_path_identities.get(str(path)),
+            expected_source_item=saved,
+            axis_declaration=AxisDeclaration.from_value(
+                node.params.get("axis_declaration")
+            ),
+        )
+
+    def _start_source_inspection(self, node, path: Path) -> None:
+        """Inspect large/container sources without blocking Qt's GUI thread."""
+
+        full_worker = self._active_source_load_worker
+        if full_worker is not None and any(
+            spec.node_id == node.id
+            and spec.path == str(path)
+            and spec.item_key
+            == (
+                saved.selector.key
+                if (saved := self._file_source_item_for_node(node)) is not None
+                else ""
+            )
+            for spec in full_worker.specs
+        ):
+            # The full loader already performs the same verified inspection and
+            # will publish its metadata when it completes.  Rendering the
+            # controls must never supersede that identical scientific read.
+            return
+        active = self._active_source_inspection_worker
+        if active is not None:
+            candidate = self._source_inspection_worker_spec(
+                node,
+                path,
+                active.spec.generation,
+            )
+            if active.spec == candidate:
+                return
+        if self._active_source_load_id is not None:
+            self._source_load_pending = True
+            if self._active_source_load_worker is not None:
+                self._active_source_load_worker.cancel()
+            if active is not None:
+                active.cancel()
+            self.status_label.setText(
+                "Finishing the superseded source task before inspecting the "
+                "latest selection..."
+            )
+            return
+
+        self._source_load_serial += 1
+        generation = self._source_load_serial
+        spec = self._source_inspection_worker_spec(node, path, generation)
+        worker = SourceInspectionWorker(
+            spec,
+            current_generation=lambda: self._source_load_serial,
+        )
+        self._active_source_load_id = generation
+        self._active_source_inspection_worker = worker
+        self._source_load_pending = False
+        self._set_pipeline_busy(True, node.id, cancelable=False)
+        self.status_label.setText(
+            f"Inspecting and verifying image source '{path.name}'..."
+        )
+        control = self._source_load_control_for_node(node.id)
+        if control is not None:
+            control.begin_source_load(
+                generation,
+                f"Inspecting and verifying '{path.name}' before reading pixels.",
+            )
+        worker.signals.progress.connect(self._on_source_inspection_progress)
+        worker.signals.finished.connect(self._on_source_inspection_finished)
+        self._pipeline_thread_pool.start(worker)
+
+    def _on_source_inspection_progress(
+        self,
+        progress: SourceInspectionWorkerProgress,
+    ) -> None:
+        if progress.generation != self._active_source_load_id:
+            return
+        phase = {
+            "normalize": SourceLoadPhase.NORMALIZE,
+            "verify": SourceLoadPhase.VERIFY,
+        }.get(str(progress.phase.value), SourceLoadPhase.INSPECT)
+        unit = {
+            "bytes": SourceLoadProgressUnit.BYTES,
+            "steps": SourceLoadProgressUnit.STEPS,
+        }.get(
+            str(progress.unit.value),
+            SourceLoadProgressUnit.INDETERMINATE,
+        )
+        publication = SourceLoadProgress(
+            run_id=progress.generation,
+            phase=phase,
+            node_id=progress.node_id,
+            item_index=1,
+            item_total=1,
+            current=progress.current,
+            total=progress.total,
+            unit=unit,
+            message=progress.message,
+        )
+        control = self._source_load_control_for_node(progress.node_id)
+        if control is not None:
+            control.update_source_load_progress(publication)
+        if progress.message:
+            self.status_label.setText(f"Inspecting image source — {progress.message}")
+
+    def _on_source_inspection_finished(
+        self,
+        result: SourceInspectionWorkerResult,
+    ) -> None:
+        if result.generation != self._active_source_load_id:
+            return
+        worker = self._active_source_inspection_worker
+        if worker is None or worker.spec.generation != result.generation:
+            return
+        self._active_source_load_id = None
+        self._active_source_inspection_worker = None
+        control = self._source_load_control_for_node(result.node_id)
+        if control is None:
+            control = self._source_load_control_for_node()
+        continue_pending = bool(self._source_load_pending)
+        self._source_load_pending = False
+
+        if result.cancelled:
+            if control is not None:
+                control.finish_source_load(result.generation, cancelled=True)
+            self._set_pipeline_busy(False)
+            if continue_pending:
+                QTimer.singleShot(0, self._resume_pending_source_work)
+            else:
+                self._set_status(
+                    "Image-source inspection cancelled; the previous pinned "
+                    "result was kept.",
+                    severity=MessageSeverity.INFO,
+                )
+            return
+        if result.source_error is not None:
+            message = result.source_error.display_text
+            self._source_inspection_errors[result.node_id] = message
+            if result.node_id:
+                self.pipeline.set_node_execution_error(result.node_id, message)
+            if control is not None:
+                control.finish_source_load(result.generation, error=message)
+            self._sync_execution_ui()
+            self._set_pipeline_busy(False)
+            if continue_pending:
+                QTimer.singleShot(0, self._resume_pending_source_work)
+            else:
+                self._set_status(
+                    f"Image source inspection error: {message}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+            return
+
+        resolved = result.resolved
+        if resolved is None:
+            return
+        node = self.pipeline.nodes.get(result.node_id)
+        current_path = None if node is None else self._file_source_path_for_node(node)
+        if node is None or current_path is None or str(current_path) != result.path:
+            self._set_pipeline_busy(False)
+            return
+        cache_key = str(current_path)
+        self._source_inspection_cache[cache_key] = resolved.verified
+        self._file_source_path_identities[cache_key] = resolved.identity
+        self._source_inspection_errors.pop(node.id, None)
+        if node.id not in self._interactive_collection_source_paths:
+            node.params = params_with_source_item(
+                node.params,
+                resolved.source_item,
+                legacy_series_index=resolved.selected_series.index,
+            )
+        self._mark_pipeline_dirty(node.id)
+        self._set_pipeline_busy(False)
+        self._refresh_image_source_options()
+        self._start_source_preview(node, current_path, resolved.source_item)
+        self._sync_current_workflow_tab_state()
+        QTimer.singleShot(0, self.run_pipeline)
+
+    def _resume_pending_source_work(self) -> None:
+        self._refresh_image_source_options()
+        if self._active_source_load_id is None:
+            self.run_pipeline()
+
+    def _source_preview_layer(self, node_id: str, item_key: str = ""):
+        for layer in self.viewer.layers:
+            metadata = getattr(layer, "metadata", None)
+            if not isinstance(metadata, Mapping):
+                continue
+            if str(metadata.get("napari_vipp_kind", "")) != "source_preview":
+                continue
+            if str(metadata.get("node_id", "")) != str(node_id):
+                continue
+            if item_key and str(metadata.get("source_item_key", "")) != item_key:
+                continue
+            return layer
+        return None
+
+    def _owned_source_preview_layers(self) -> list:
+        return [
+            layer
+            for layer in self.viewer.layers
+            if isinstance((metadata := getattr(layer, "metadata", None)), Mapping)
+            and str(metadata.get("napari_vipp_kind", "")) == "source_preview"
+        ]
+
+    def _select_only_viewer_layer(self, layer) -> None:
+        try:
+            selection = self.viewer.layers.selection
+            if hasattr(selection, "select_only"):
+                selection.select_only(layer)
+            else:
+                selection.active = layer
+        except Exception:
+            pass
+
+    def _active_viewer_layer(self):
+        try:
+            return self.viewer.layers.selection.active
         except Exception:
             return None
+
+    @staticmethod
+    def _normalized_source_view_choice(
+        value: object,
+        *,
+        level_count: int | None = None,
+    ) -> str:
+        choice = str(value or "analysis").strip().casefold()
+        if choice == "analysis":
+            return choice
+        if choice in {"preview", "preview:auto"}:
+            return "preview:auto"
+        prefix, separator, raw_level = choice.partition(":")
+        if prefix != "preview" or not separator:
+            return "analysis"
+        try:
+            level = int(raw_level)
+        except ValueError:
+            return "analysis"
+        if level < 1 or (level_count is not None and level >= level_count):
+            return "analysis"
+        return f"preview:{level}"
+
+    @classmethod
+    def _source_view_choice_is_preview(cls, value: object) -> bool:
+        return cls._normalized_source_view_choice(value) != "analysis"
+
+    @classmethod
+    def _source_view_choice_level(cls, value: object) -> int | None:
+        choice = cls._normalized_source_view_choice(value)
+        if choice in {"analysis", "preview:auto"}:
+            return None
+        return int(choice.partition(":")[2])
+
+    def _apply_selected_viewer_surface(self, *, select_layer: bool) -> None:
+        """Keep analysis primary unless the selected source requests preview."""
+
+        selected = self.pipeline.nodes.get(self._selected_node_id)
+        preview_requested = bool(
+            selected is not None
+            and selected.operation_id == "input"
+            and self._source_view_choice_is_preview(
+                self._source_view_modes.get(selected.id, "analysis")
+            )
+        )
+        selected_preview = (
+            self._source_preview_layer(selected.id)
+            if preview_requested and selected is not None
+            else None
+        )
+        show_preview = selected_preview is not None
+
+        for layer in self._owned_source_preview_layers():
+            try:
+                layer.visible = bool(show_preview and layer is selected_preview)
+            except Exception:
+                pass
+            if not (show_preview and layer is selected_preview):
+                self._move_layer_to_bottom(layer)
+
+        inspect_layers = self._generated_layers_for_name(self._inspect_layer_name)
+        for layer in inspect_layers:
+            try:
+                layer.visible = not show_preview
+            except Exception:
+                pass
+
+        target = selected_preview if show_preview else None
+        if show_preview and selected_preview is not None:
+            self._move_layer_to_top(selected_preview)
+        elif inspect_layers:
+            self._move_generated_layers_to_top(self._inspect_layer_name)
+            target = inspect_layers[-1]
+        self._keep_active_pin_on_top()
+        if select_layer and target is not None:
+            self._select_only_viewer_layer(target)
+
+    def _source_resolution_presentation(
+        self,
+        node,
+    ) -> ImageSourceResolutionPresentation:
+        source_item = self._file_source_item_for_node(node)
+        if source_item is None:
+            return ImageSourceResolutionPresentation()
+        level_shapes = tuple(
+            tuple(int(size) for size in shape)
+            for shape in source_item.resolved.level_shapes
+        )
+        if not level_shapes:
+            level_shapes = (tuple(int(size) for size in source_item.resolved.shape),)
+        axes = (
+            source_item.selector.effective_axes
+            if source_item.selector.source_axes
+            else source_item.resolved.axes
+        )
+        item_key = source_item.selector.key
+        layer = self._source_preview_layer(node.id, item_key)
+        active = self._active_source_preview_worker
+        preview_level = None
+        preview_shape: tuple[int, ...] = ()
+        if layer is not None:
+            metadata = getattr(layer, "metadata", {})
+            try:
+                preview_level = int(metadata.get("preview_level", 0))
+            except (TypeError, ValueError):
+                preview_level = 0
+            try:
+                preview_shape = tuple(int(size) for size in np.shape(layer.data))
+            except Exception:
+                preview_shape = ()
+        if active is not None and active.spec.node_id == node.id:
+            preview_state = "loading"
+            detail = (
+                "The current preview remains available while its plane updates."
+                if layer is not None
+                else ""
+            )
+        elif node.id in self._source_preview_errors:
+            preview_state = "failed"
+            detail = self._source_preview_errors[node.id]
+            if layer is not None:
+                detail = f"{detail} The previous preview remains available."
+        elif layer is not None:
+            preview_state = "ready"
+            detail = ""
+        else:
+            preview_state = "idle"
+            detail = ""
+        path = self._file_source_path_for_node(node)
+        can_select_preview = bool(
+            path is not None
+            and str(path) in self._file_source_path_identities
+            and path.suffix.casefold() == ".zarr"
+            and str(source_item.container.format).startswith("ome-zarr")
+            and source_item.capabilities.preview_level_read
+            and len(level_shapes) > 1
+        )
+        viewer_choice = self._normalized_source_view_choice(
+            self._source_view_modes.get(node.id, "analysis"),
+            level_count=len(level_shapes),
+        )
+        if not can_select_preview:
+            viewer_choice = "analysis"
+        self._source_view_modes[node.id] = viewer_choice
+        can_retry = bool(preview_state != "loading" and can_select_preview)
+        return ImageSourceResolutionPresentation(
+            analysis_axes="".join(str(axis).upper() for axis in axes),
+            analysis_shape=tuple(int(size) for size in source_item.resolved.shape),
+            level_shapes=level_shapes,
+            preview_state=preview_state,
+            preview_level=preview_level,
+            preview_shape=preview_shape,
+            preview_detail=detail,
+            viewer_choice=viewer_choice,
+            can_select_preview=can_select_preview,
+            can_retry=can_retry,
+        )
+
+    def _refresh_source_resolution_control(self, node_id: str) -> None:
+        if node_id != self._selected_node_id:
+            return
+        node = self.pipeline.nodes.get(node_id)
+        control = self._parameter_widgets.get("image_source")
+        if node is None or not isinstance(control, ImageSourceControl):
+            return
+        control.set_resolution_presentation(self._source_resolution_presentation(node))
+
+    def _ensure_selected_source_preview(self, node_id: str) -> None:
+        """Start an absent preview after its Image Source becomes selected."""
+
+        if self._closing or node_id != self._selected_node_id:
+            return
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "input":
+            return
+        source_item = self._file_source_item_for_node(node)
+        path = self._file_source_path_for_node(node)
+        if source_item is None or path is None:
+            return
+        if self._source_preview_layer(node_id, source_item.selector.key) is not None:
+            self._refresh_source_resolution_control(node_id)
+            return
+        active = self._active_source_preview_worker
+        if active is not None and active.spec.node_id == node_id:
+            self._refresh_source_resolution_control(node_id)
+            return
+        if node_id in self._source_preview_errors:
+            self._refresh_source_resolution_control(node_id)
+            return
+        self._start_source_preview(node, path, source_item)
+        self._refresh_source_resolution_control(node_id)
+
+    def _reload_source_preview(self, node_id: str) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "input":
+            return
+        path = self._file_source_path_for_node(node)
+        source_item = self._file_source_item_for_node(node)
+        if path is None or source_item is None:
+            self._set_status(
+                "Preview cannot start until the image source has been verified.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+        self._source_preview_errors.pop(node_id, None)
+        self._start_source_preview(node, path, source_item)
+        self._refresh_source_resolution_control(node_id)
+
+    def _on_source_viewer_display_changed(self, node_id: str, choice: str) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "input":
+            return
+        presentation = self._source_resolution_presentation(node)
+        normalized = self._normalized_source_view_choice(
+            choice,
+            level_count=len(presentation.level_shapes),
+        )
+        preview_requested = self._source_view_choice_is_preview(normalized)
+        if preview_requested and not presentation.can_select_preview:
+            self._source_view_modes[node_id] = "analysis"
+            self._apply_selected_viewer_surface(select_layer=True)
+            self._refresh_source_resolution_control(node_id)
+            self._set_status(
+                "This source reader cannot provide a safe lower-resolution "
+                "viewer preview; the full analysis output remains selected.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+        self._source_view_modes[node_id] = normalized
+        if preview_requested:
+            self._reload_source_preview(node_id)
+        self._apply_selected_viewer_surface(select_layer=True)
+        self._refresh_source_resolution_control(node_id)
+        if preview_requested and self._source_preview_layer(node_id) is not None:
+            message = (
+                "Showing the lower-resolution source preview in napari; "
+                "processing and export still use level 0."
+            )
+        elif preview_requested:
+            message = (
+                "Loading the presentation preview; the full analysis output "
+                "remains visible until it is ready."
+            )
+        else:
+            message = "Showing the selected node's full scientific output in napari."
+        self._set_status(message, severity=MessageSeverity.INFO)
+
+    def _invalidate_source_preview(self, *, remove_layer: bool) -> None:
+        """Supersede presentation-only work without touching scientific caches."""
+
+        previous_node_id = self._source_preview_node_id
+        self._source_preview_dims_timer.stop()
+        status_run_id = self._source_preview_status_run_id
+        self._source_preview_status_run_id = None
+        self._source_preview_generation += 1
+        worker = self._active_source_preview_worker
+        if worker is not None:
+            worker.cancel()
+        self._active_source_preview_worker = None
+        self._source_preview_node_id = ""
+        self._source_preview_path = ""
+        self._source_preview_item_key = ""
+        if previous_node_id:
+            self._source_preview_errors.pop(previous_node_id, None)
+        if status_run_id is not None:
+            control = self._source_load_control_for_node()
+            if control is not None:
+                control.finish_source_load(status_run_id, cancelled=True)
+        if remove_layer:
+            self._remove_owned_source_preview_layers()
+        if previous_node_id:
+            self._refresh_source_resolution_control(previous_node_id)
+
+    def _remove_owned_source_preview_layers(self, node_id: str = "") -> None:
+        for layer in tuple(self.viewer.layers):
+            metadata = getattr(layer, "metadata", None)
+            if not isinstance(metadata, Mapping):
+                continue
+            if str(metadata.get("napari_vipp_kind", "")) != "source_preview":
+                continue
+            if node_id and str(metadata.get("node_id", "")) != node_id:
+                continue
+            self._remove_layer(layer)
+
+    def _start_source_preview(self, node, path: Path, source_item) -> None:
+        """Start a verified OME-Zarr preview that cannot enter graph execution."""
+
+        viewer_choice = self._normalized_source_view_choice(
+            self._source_view_modes.get(node.id, "analysis"),
+            level_count=len(source_item.resolved.level_shapes),
+        )
+        self._source_view_modes[node.id] = viewer_choice
+        requested_level = self._source_view_choice_level(viewer_choice)
+        request = self._source_preview_request(
+            source_item,
+            level=requested_level,
+        )
+        expected_identity = self._file_source_path_identities.get(str(path))
+        request_record = self._source_preview_request_record(request)
+        active = self._active_source_preview_worker
+        if (
+            active is not None
+            and active.spec.node_id == node.id
+            and active.spec.path == str(path)
+            and active.spec.selection.item_key == source_item.selector.key
+            and active.spec.request == request
+            and active.spec.expected_identity == expected_identity
+        ):
+            return
+        matching_layer = next(
+            (
+                layer
+                for layer in self.viewer.layers
+                if isinstance(
+                    (metadata := getattr(layer, "metadata", None)),
+                    Mapping,
+                )
+                and str(metadata.get("napari_vipp_kind", "")) == "source_preview"
+                and str(metadata.get("node_id", "")) == node.id
+                and str(metadata.get("source_item_key", "")) == source_item.selector.key
+                and str(metadata.get("source_revision_sha256", ""))
+                == ("" if expected_identity is None else expected_identity.sha256)
+                and metadata.get("source_preview_request") == request_record
+            ),
+            None,
+        )
+        if matching_layer is not None:
+            if active is not None:
+                # A rapid plane reversal can return to the retained layer while
+                # a different request is still running. Supersede that worker
+                # or it could publish the now-stale plane over this match.
+                self._invalidate_source_preview(remove_layer=False)
+            self._refresh_source_resolution_control(node.id)
+            return
+        existing = self._source_preview_layer(node.id, source_item.selector.key)
+        existing_request = (
+            getattr(existing, "metadata", {}).get("source_preview_request", {})
+            if existing is not None
+            else {}
+        )
+        preserve_existing = bool(
+            existing is not None
+            and expected_identity is not None
+            and str(
+                getattr(existing, "metadata", {}).get(
+                    "source_revision_sha256",
+                    "",
+                )
+            )
+            == expected_identity.sha256
+            and isinstance(existing_request, Mapping)
+            and existing_request.get("level") == request.level
+        )
+        self._invalidate_source_preview(remove_layer=not preserve_existing)
+        if (
+            path.suffix.casefold() != ".zarr"
+            or not str(source_item.container.format).startswith("ome-zarr")
+            or not source_item.capabilities.preview_level_read
+            or len(source_item.resolved.level_shapes) <= 1
+        ):
+            return
+        if expected_identity is None:
+            return
+        generation = self._source_preview_generation
+        spec = SourcePreviewWorkerSpec(
+            generation=generation,
+            path=str(path),
+            selection=SourcePreviewSeriesSelection(
+                item_key=source_item.selector.key,
+                series_index_hint=self._file_source_series_index_for_node(node),
+            ),
+            request=request,
+            node_id=node.id,
+            expected_identity=expected_identity,
+        )
+        worker = SourcePreviewWorker(
+            spec,
+            current_generation=lambda: self._source_preview_generation,
+        )
+        self._active_source_preview_worker = worker
+        self._source_preview_node_id = node.id
+        self._source_preview_path = str(path)
+        self._source_preview_item_key = source_item.selector.key
+        worker.signals.progress.connect(self._on_source_preview_progress)
+        worker.signals.finished.connect(self._on_source_preview_finished)
+        self._source_preview_errors.pop(node.id, None)
+        if self._active_source_load_id is None:
+            self._source_load_serial += 1
+            self._source_preview_status_run_id = self._source_load_serial
+            control = self._source_load_control_for_node(node.id)
+            if control is not None:
+                control.begin_source_load(
+                    self._source_preview_status_run_id,
+                    "Loading a presentation-only lower-resolution preview.",
+                )
+        self._refresh_source_resolution_control(node.id)
+        self._source_preview_thread_pool.start(worker)
+
+    def _source_preview_request(
+        self,
+        source_item,
+        *,
+        level: int | None = None,
+    ) -> SourcePreviewRequest:
+        raw_axes = source_item.resolved.raw_axes or source_item.resolved.axes
+        selection_axes = (
+            source_item.selector.effective_axes
+            if source_item.selector.source_axes
+            else raw_axes
+        )
+        shape = source_item.resolved.shape
+        step = tuple(self._current_step() or ())
+        offset = max(len(step) - len(shape), 0)
+        indices: dict[str, int] = {}
+        semantic_names = {
+            "t": "t_index",
+            "time": "t_index",
+            "z": "z_index",
+            "depth": "z_index",
+            "c": "c_index",
+            "channel": "c_index",
+        }
+        for axis_index, axis_name in enumerate(selection_axes):
+            target = semantic_names.get(str(axis_name).casefold())
+            if target is None:
+                continue
+            viewer_axis = axis_index + offset
+            current = step[viewer_axis] if viewer_axis < len(step) else 0
+            indices[target] = int(
+                np.clip(int(current), 0, max(int(shape[axis_index]) - 1, 0))
+            )
+        declaration = None
+        if source_item.selector.source_axes:
+            declaration = AxisDeclaration(
+                ",".join(source_item.selector.source_axes),
+                ",".join(source_item.selector.effective_axes),
+            )
+        return SourcePreviewRequest(
+            display_shape_yx=(512, 512),
+            level=level,
+            axis_declaration=declaration,
+            **indices,
+        )
+
+    @staticmethod
+    def _source_preview_request_record(request: SourcePreviewRequest) -> dict:
+        return {
+            "display_shape_yx": list(request.display_shape_yx),
+            "t_index": request.t_index,
+            "z_index": request.z_index,
+            "c_index": request.c_index,
+            "yx_region": (
+                None if request.yx_region is None else list(request.yx_region)
+            ),
+            "level": request.level,
+            "axis_declaration": (
+                None
+                if request.axis_declaration is None
+                else request.axis_declaration.to_dict()
+            ),
+        }
+
+    def _on_source_preview_progress(self, progress: SourcePreviewProgress) -> None:
+        if progress.generation != self._source_preview_generation:
+            return
+        if self._active_source_preview_worker is None:
+            return
+        status_run_id = self._source_preview_status_run_id
+        if status_run_id is not None:
+            control = self._source_load_control_for_node(self._source_preview_node_id)
+            if control is not None:
+                control.update_source_load_progress(
+                    SourceLoadProgress(
+                        run_id=status_run_id,
+                        phase=SourceLoadPhase.PREVIEW,
+                        node_id=self._source_preview_node_id,
+                        item_index=1,
+                        item_total=1,
+                        current=progress.current,
+                        total=progress.total,
+                        unit=SourceLoadProgressUnit.STEPS,
+                        message=progress.message,
+                    )
+                )
+        if (
+            self._active_source_load_id is None
+            and self._active_pipeline_run_id is None
+            and not self._pipeline_run_pending
+            and progress.message
+        ):
+            self.status_label.setText(
+                f"Loading presentation preview — {progress.message}"
+            )
+
+    def _on_source_preview_finished(self, result: SourcePreviewWorkerResult) -> None:
+        if result.generation != self._source_preview_generation:
+            return
+        worker = self._active_source_preview_worker
+        if worker is None or worker.spec.generation != result.generation:
+            return
+        if (
+            result.node_id != self._source_preview_node_id
+            or result.path != self._source_preview_path
+            or result.item_key != self._source_preview_item_key
+        ):
+            return
+        self._active_source_preview_worker = None
+        status_run_id = self._source_preview_status_run_id
+        self._source_preview_status_run_id = None
+        control = self._source_load_control_for_node(result.node_id)
+        if result.cancelled:
+            if control is not None and status_run_id is not None:
+                control.finish_source_load(status_run_id, cancelled=True)
+            self._refresh_source_resolution_control(result.node_id)
+            return
+        if result.source_error is not None:
+            self._source_preview_errors[result.node_id] = (
+                result.source_error.display_text
+            )
+            if self._source_preview_layer(result.node_id, result.item_key) is None:
+                self._source_view_modes[result.node_id] = "analysis"
+                if self._selected_node_id == result.node_id:
+                    self._apply_selected_viewer_surface(select_layer=True)
+            if control is not None and status_run_id is not None:
+                control.finish_source_load(
+                    status_run_id,
+                    error=result.source_error.display_text,
+                )
+            if (
+                self._active_source_load_id is None
+                and self._active_pipeline_run_id is None
+                and not self._pipeline_run_pending
+            ):
+                self._set_status(
+                    "Presentation preview unavailable; full-resolution analysis "
+                    f"continues. {result.source_error.display_text}",
+                    severity=MessageSeverity.WARNING,
+                )
+            self._refresh_source_resolution_control(result.node_id)
+            return
+        preview = result.preview
+        node = self.pipeline.nodes.get(result.node_id)
+        if preview is None or node is None or self._closing:
+            return
+        path = self._file_source_path_for_node(node)
+        source_item = self._file_source_item_for_node(node)
+        if (
+            path is None
+            or str(path) != result.path
+            or source_item is None
+            or source_item.selector.key != result.item_key
+        ):
+            return
+        self._publish_source_preview(
+            node.id,
+            result.item_key,
+            preview,
+            request=worker.spec.request,
+            expected_identity=worker.spec.expected_identity,
+        )
+        self._source_preview_errors.pop(result.node_id, None)
+        if control is not None and status_run_id is not None:
+            control.finish_source_load(status_run_id)
+        self._refresh_source_resolution_control(result.node_id)
+
+    def _publish_source_preview(
+        self,
+        node_id: str,
+        item_key: str,
+        preview,
+        *,
+        request: SourcePreviewRequest | None = None,
+        expected_identity: LocalSourceIdentity | None = None,
+    ) -> None:
+        """Publish one owned napari layer, never a SourcePayload or graph cache."""
+
+        previous_active = self._active_viewer_layer()
+        previous_active_was_preview = any(
+            previous_active is layer for layer in self._owned_source_preview_layers()
+        )
+        self._remove_owned_source_preview_layers(node_id)
+        metrics = preview.metrics
+        metadata = {
+            "napari_vipp_kind": "source_preview",
+            "presentation_only": True,
+            "analysis_level": 0,
+            "preview_level": preview.preview_level,
+            "level_count": preview.level_count,
+            "node_id": node_id,
+            "source_item_key": item_key,
+            "source_revision_sha256": (
+                "" if expected_identity is None else expected_identity.sha256
+            ),
+            "source_preview_request": self._source_preview_request_record(
+                request or SourcePreviewRequest()
+            ),
+            "vipp_image_state": preview.image_state.to_dict(),
+            "source_preview_read_metrics": {
+                "requested_decoded_bytes": metrics.requested_decoded_bytes,
+                "estimated_decoded_bytes_read": metrics.estimated_decoded_bytes_read,
+                "estimated_objects_read": metrics.estimated_objects_read,
+                "basis": metrics.basis,
+            },
+        }
+        scale = tuple(float(axis.scale) for axis in preview.image_state.axes)
+        translate = tuple(float(axis.translation) for axis in preview.image_state.axes)
+        kwargs = {
+            "name": preview.message,
+            "metadata": metadata,
+            "scale": scale,
+            "translate": translate,
+        }
+        data = _read_only_presentation_array(preview.data)
+        if preview.preserves_label_semantics and hasattr(self.viewer, "add_labels"):
+            layer = self.viewer.add_labels(data, **kwargs)
+        else:
+            layer = self.viewer.add_image(data, colormap="gray", **kwargs)
+        self._make_generated_layer_noneditable(layer)
+        selected = self.pipeline.nodes.get(self._selected_node_id)
+        explicit_preview = bool(
+            selected is not None
+            and selected.id == node_id
+            and selected.operation_id == "input"
+            and self._source_view_choice_is_preview(
+                self._source_view_modes.get(node_id, "analysis")
+            )
+        )
+        if explicit_preview:
+            self._apply_selected_viewer_surface(select_layer=True)
+        else:
+            # napari activates every newly added layer. A hidden background
+            # preview must not reorder analysis/user layers or steal their
+            # deliberate selection when it completes.
+            for preview_layer in self._owned_source_preview_layers():
+                try:
+                    preview_layer.visible = False
+                except Exception:
+                    pass
+                self._move_layer_to_bottom(preview_layer)
+            if (
+                previous_active is not None
+                and not previous_active_was_preview
+                and any(previous_active is current for current in self.viewer.layers)
+            ):
+                self._select_only_viewer_layer(previous_active)
+            else:
+                inspect_layers = self._generated_layers_for_name(
+                    self._inspect_layer_name
+                )
+                if inspect_layers:
+                    self._select_only_viewer_layer(inspect_layers[-1])
+        self._refresh_source_resolution_control(node_id)
+        if (
+            self._active_source_load_id is None
+            and self._active_pipeline_run_id is None
+            and not self._pipeline_run_pending
+        ):
+            status = (
+                f"Showing presentation preview level {preview.preview_level}; "
+                "processing and export still use level 0."
+                if explicit_preview
+                else f"Presentation preview level {preview.preview_level} is ready; "
+                "Analysis output remains selected."
+            )
+            self._set_status(status, severity=MessageSeverity.INFO)
+
+    def _bind_inspected_source_item(
+        self,
+        node,
+        path: Path,
+        inspection: SourceInspection,
+    ) -> None:
+        """Migrate or verify the selected item from metadata-only inspection."""
+
+        if node.id in self._interactive_collection_source_paths:
+            return
+        cache_key = str(path.expanduser().resolve(strict=False))
+        verified = self._source_inspection_cache.get(cache_key)
+        if verified is None:
+            return
+        bundle = verified.bundle or capture_local_source_bundle(path)
+        saved = source_item_from_params(node.params)
+        selected = select_inspected_item(
+            inspection,
+            series_index=self._file_source_series_index_for_node(node),
+            item_key=(saved.selector.key if saved is not None else None),
+        )
+        raw_state = inspect_image_state(
+            path,
+            inspection=inspection,
+            series_index=selected.index,
+        )
+        declaration = AxisDeclaration.from_value(node.params.get("axis_declaration"))
+        effective_state = (
+            raw_state
+            if declaration is None
+            else apply_axis_declaration(
+                raw_state,
+                declaration,
+                declaration_source="Image Source",
+            )
+        )
+        if saved is None:
+            source_item = resolve_source_item(
+                bundle,
+                inspection,
+                item_key=selected.key,
+                image_state=effective_state,
+                axis_declaration=declaration,
+            )
+        else:
+            source_item = verify_saved_source_item(
+                saved,
+                bundle,
+                inspection,
+                image_state=effective_state,
+            )
+        node.params = params_with_source_item(
+            node.params,
+            source_item,
+            legacy_series_index=selected.index,
+        )
 
     @staticmethod
     def _source_series_options(
@@ -16764,29 +19077,11 @@ class VippWidget(QWidget):
     def _source_summary(self, inspection: SourceInspection | None, node) -> str:
         batch_prefix = self._interactive_collection_source_summary(node.id)
         if inspection is None:
-            return batch_prefix
-        mode = str(node.params.get("binding_mode", "single item"))
-        prefix = (
-            "Collection binding; the selected series is the interactive "
-            "representative. "
-            if mode == "collection"
-            else ""
-        )
-        summary = (
-            f"{prefix}{inspection.format}; "
-            f"{len(inspection.series)} image series discovered."
-        )
-        deconvolved, method = detect_deconvolution_metadata(
-            inspection.original_metadata
-        )
-        if deconvolved is True:
-            detail = f" ({method})" if method else ""
-            summary += f" Source metadata mentions deconvolution{detail}."
-        summary += (
-            " File data is loaded as a frozen snapshot and remains pinned "
-            "until Refresh."
-        )
-        return f"{batch_prefix} {summary}".strip()
+            error = self._source_inspection_errors.get(node.id, "")
+            if error:
+                detail = f"Inspection failed: {error}"
+                return f"{batch_prefix} {detail}".strip()
+        return batch_prefix
 
     def _interactive_collection_source_summary(self, node_id: str) -> str:
         items = self._interactive_collection_batch_items
@@ -17075,8 +19370,7 @@ class VippWidget(QWidget):
             actual = {
                 name
                 for name in self._parameter_widgets
-                if not name.endswith("_reset")
-                and name != "rescale_axes_axis_notice"
+                if not name.endswith("_reset") and name != "rescale_axes_axis_notice"
             }
             expected_notice = bool(self._rescale_axes_inferred_axis_warning(node_id))
             actual_notice = "rescale_axes_axis_notice" in self._parameter_widgets
@@ -17252,22 +19546,16 @@ class VippWidget(QWidget):
         context: ParameterVisibilityContext | None = None,
     ):
         node = self.pipeline.nodes.get(node_id)
-        if (
-            node is not None
-            and (
-                (
-                    node.operation_id == "clip_intensity"
-                    and spec.name in CLIP_CUTOFF_PARAMETERS
-                )
-                or (
-                    node.operation_id == "rescale_intensity"
-                    and spec.name in {"out_min", "out_max"}
-                )
-                or (
-                    node.operation_id == "mask_image"
-                    and spec.name == "outside_value"
-                )
+        if node is not None and (
+            (
+                node.operation_id == "clip_intensity"
+                and spec.name in CLIP_CUTOFF_PARAMETERS
             )
+            or (
+                node.operation_id == "rescale_intensity"
+                and spec.name in {"out_min", "out_max"}
+            )
+            or (node.operation_id == "mask_image" and spec.name == "outside_value")
         ):
             dtype = self._numeric_control_input_dtype(node_id)
             if dtype is not None and np.issubdtype(dtype, np.integer):
@@ -17290,9 +19578,7 @@ class VippWidget(QWidget):
                         "valid whole number to use this workflow."
                     )
                     tooltip = " ".join(
-                        part
-                        for part in (str(spec.tooltip).strip(), warning)
-                        if part
+                        part for part in (str(spec.tooltip).strip(), warning) if part
                     )
                     return replace(
                         spec,
@@ -17645,9 +19931,7 @@ class VippWidget(QWidget):
             # never present Q as an editable Z axis.
             if bool(getattr(state, "spatial_axes_explicit", False)):
                 spatial_options = [
-                    option
-                    for option in options
-                    if option.axis_type.lower() == "space"
+                    option for option in options if option.axis_type.lower() == "space"
                 ]
                 if spatial_options:
                     role_map.setdefault("x", spatial_options[-1])
@@ -17687,8 +19971,7 @@ class VippWidget(QWidget):
         if not any(not _axis_is_explicit(axis) for axis in xy_axes):
             return ""
         if any(
-            str(getattr(axis, "type", "")).casefold() != "space"
-            for axis in xy_axes
+            str(getattr(axis, "type", "")).casefold() != "space" for axis in xy_axes
         ):
             return ""
 
@@ -17699,9 +19982,7 @@ class VippWidget(QWidget):
             "unchanged."
         ]
         if "q" in names and "z" not in names:
-            parts.append(
-                "Q is not treated as Z; declare QYX → ZYX before changing Z."
-            )
+            parts.append("Q is not treated as Z; declare QYX → ZYX before changing Z.")
         elif "z" in names:
             z_axis = axes[names.index("z")]
             if not _axis_is_explicit(z_axis):
@@ -20389,9 +22670,7 @@ class VippWidget(QWidget):
         if dtype is None:
             return False
 
-        default_min, default_max, _step, _decimals = _rescale_dtype_output_range(
-            dtype
-        )
+        default_min, default_max, _step, _decimals = _rescale_dtype_output_range(dtype)
         current = (
             _safe_float(node.params.get("out_min"), 0.0),
             _safe_float(node.params.get("out_max"), 1.0),
@@ -20461,9 +22740,7 @@ class VippWidget(QWidget):
         current_is_valid = _numeric_value_is_whole(current)
         if current_is_valid:
             current_integer = int(current)
-            current_is_valid = (
-                native_minimum <= current_integer <= native_maximum
-            )
+            current_is_valid = native_minimum <= current_integer <= native_maximum
 
         if current_is_valid:
             entry_minimum = native_minimum
@@ -20796,18 +23073,12 @@ class VippWidget(QWidget):
         if node is None:
             return
         if (
-            (
-                node.operation_id == "clip_intensity"
-                and name in CLIP_CUTOFF_PARAMETERS
-            )
+            (node.operation_id == "clip_intensity" and name in CLIP_CUTOFF_PARAMETERS)
             or (
                 node.operation_id == "rescale_intensity"
                 and name in {"out_min", "out_max"}
             )
-            or (
-                node.operation_id == "mask_image"
-                and name == "outside_value"
-            )
+            or (node.operation_id == "mask_image" and name == "outside_value")
         ):
             dtype = self._numeric_control_input_dtype(node.id)
             if (
@@ -20846,18 +23117,12 @@ class VippWidget(QWidget):
         if self._parameter_visibility_controls_changed(self._selected_node_id):
             self._render_parameters(self._selected_node_id)
         if (
-            (
-                node.operation_id == "clip_intensity"
-                and name in CLIP_CUTOFF_PARAMETERS
-            )
+            (node.operation_id == "clip_intensity" and name in CLIP_CUTOFF_PARAMETERS)
             or (
                 node.operation_id == "rescale_intensity"
                 and name in {"out_min", "out_max"}
             )
-            or (
-                node.operation_id == "mask_image"
-                and name == "outside_value"
-            )
+            or (node.operation_id == "mask_image" and name == "outside_value")
         ):
             self._refresh_selected_parameter_controls()
         if (
@@ -21462,6 +23727,20 @@ class VippWidget(QWidget):
             input_name,
             source_payloads,
         )
+        representative_item = self._interactive_collection_batch_target_item()
+        workflow_parameter_overrides = (
+            ()
+            if representative_item is None
+            else representative_item.parameter_overrides
+        )
+        if workflow_parameter_overrides:
+            source_signature = (
+                *source_signature,
+                (
+                    "batch-parameter-overrides-v1",
+                    self._batch_item_parameter_override_signature(representative_item),
+                ),
+            )
         source_unchanged = source_signature == self._last_pipeline_source_signature
         if self._isolated_tuning_node_id is not None and not source_unchanged:
             self._apply_isolated_tuning(run=False, announce=False)
@@ -21492,6 +23771,28 @@ class VippWidget(QWidget):
             else:
                 dirty_node_ids.update(manual_node_ids)
         compute_request = self._current_compute_request()
+        if workflow_parameter_overrides:
+            # A per-item workflow is deliberately never installed into the live
+            # graph. The shared worker reconstructs this immutable variant and
+            # publishes only its outputs/provenance, while base controls retain
+            # their authored values.
+            self._start_background_pipeline_run(
+                input_data,
+                input_metadata,
+                input_name,
+                source_payloads,
+                primary_layer,
+                source_label,
+                source_signature,
+                dirty_node_ids,
+                manual_node_ids,
+                target_node_ids,
+                execute_synchronously=(
+                    force_sync or compute_request.mode is ComputeMode.AUTO
+                ),
+                workflow_parameter_overrides=workflow_parameter_overrides,
+            )
+            return
         if self._active_pipeline_run_id is not None or (
             not force_sync
             and self._should_run_pipeline_in_background(
@@ -21825,6 +24126,19 @@ class VippWidget(QWidget):
             self._discard_pending_thumbnail_contrast_limit_requests()
         if self._active_source_load_id is not None:
             self._source_load_pending = True
+            worker = self._active_source_load_worker
+            if worker is not None:
+                worker.cancel()
+            inspection_worker = self._active_source_inspection_worker
+            if inspection_worker is not None:
+                still_current = any(
+                    spec.node_id == inspection_worker.spec.node_id
+                    and spec.path == inspection_worker.spec.path
+                    and spec.item_key == inspection_worker.spec.item_key
+                    for spec in specs
+                )
+                if not still_current:
+                    inspection_worker.cancel()
             self._set_pipeline_busy(
                 True,
                 specs[0].node_id,
@@ -21845,14 +24159,102 @@ class VippWidget(QWidget):
         suffix = f" ({len(specs)} source(s))" if len(specs) > 1 else ""
         self.status_label.setText(f"Loading image source '{path_name}'{suffix}...")
         worker = SourceFileLoadWorker(run_id, specs, reader=read_image)
+        self._active_source_load_worker = worker
+        worker.signals.progress.connect(self._on_source_file_load_progress)
         worker.signals.finished.connect(self._on_source_file_load_finished)
+        control = self._source_load_control_for_node(node_id)
+        if control is not None:
+            control.begin_source_load(
+                run_id,
+                f"Loading and verifying '{path_name}'.",
+            )
         self._pipeline_thread_pool.start(worker)
+
+    def _source_load_control_for_node(
+        self,
+        node_id: str = "",
+    ) -> ImageSourceControl | None:
+        control = self._parameter_widgets.get("image_source")
+        if not isinstance(control, ImageSourceControl):
+            return None
+        if node_id and self._selected_node_id != node_id:
+            return None
+        return control
+
+    def _on_source_file_load_progress(self, progress: SourceLoadProgress) -> None:
+        if progress.run_id != self._active_source_load_id:
+            return
+        control = self._source_load_control_for_node(progress.node_id)
+        if control is not None:
+            control.update_source_load_progress(progress)
+        message = str(progress.message).strip()
+        if message:
+            self.status_label.setText(f"Loading image source — {message}")
+
+    def _cancel_source_file_load(self, run_id: int) -> None:
+        if int(run_id) == self._source_preview_status_run_id:
+            node_id = self._source_preview_node_id
+            self._invalidate_source_preview(remove_layer=True)
+            if node_id:
+                self._source_view_modes[node_id] = "analysis"
+                if self._selected_node_id == node_id:
+                    self._apply_selected_viewer_surface(select_layer=True)
+                self._refresh_source_resolution_control(node_id)
+            self._set_status(
+                "Image-source presentation preview cancelled.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+        if int(run_id) != self._active_source_load_id:
+            return
+        # Cancel is explicit user intent, so it consumes any automatically
+        # queued retry instead of allowing the terminal worker signal to start
+        # the same load again.
+        self._source_load_pending = False
+        worker = self._active_source_load_worker
+        inspection_worker = self._active_source_inspection_worker
+        if worker is not None:
+            worker.cancel()
+        if inspection_worker is not None:
+            inspection_worker.cancel()
+        if worker is None and inspection_worker is None:
+            return
+        self._invalidate_source_preview(remove_layer=True)
+        self.status_label.setText(
+            "Cancelling image-source loading at the next safe I/O checkpoint..."
+        )
 
     def _on_source_file_load_finished(self, result: SourceFileLoadResult) -> None:
         if result.run_id != self._active_source_load_id:
             return
+        completed_worker = self._active_source_load_worker
         self._active_source_load_id = None
+        self._active_source_load_worker = None
+        self._active_source_inspection_worker = None
+        control = self._source_load_control_for_node(result.node_id)
+        if control is None:
+            control = self._source_load_control_for_node()
+        if result.cancelled:
+            if control is not None:
+                control.finish_source_load(result.run_id, cancelled=True)
+            self._set_pipeline_busy(False)
+            continue_pending = bool(self._source_load_pending)
+            self._source_load_pending = False
+            if continue_pending:
+                self.status_label.setText(
+                    "Previous source load cancelled; loading the latest source edit."
+                )
+                QTimer.singleShot(0, self._resume_pending_source_work)
+            else:
+                self._set_status(
+                    "Image-source loading cancelled; the previous pinned result "
+                    "was kept.",
+                    severity=MessageSeverity.INFO,
+                )
+            return
         if result.error:
+            if control is not None:
+                control.finish_source_load(result.run_id, error=result.error)
             if result.node_id:
                 self.pipeline.set_node_execution_error(result.node_id, result.error)
             self._sync_execution_ui()
@@ -21866,7 +24268,7 @@ class VippWidget(QWidget):
                 actionable=not continue_pending,
             )
             if continue_pending:
-                QTimer.singleShot(0, self.run_pipeline)
+                QTimer.singleShot(0, self._resume_pending_source_work)
             else:
                 self._finish_interaction_generation(
                     self._interaction_current_generation(),
@@ -21882,6 +24284,8 @@ class VippWidget(QWidget):
             for key, snapshot in result.snapshots.items():
                 self._cache_file_source_snapshot(key, snapshot)
         except Exception as exc:
+            if control is not None:
+                control.finish_source_load(result.run_id, error=str(exc))
             self._sync_execution_ui()
             self._set_pipeline_busy(False)
             continue_pending = bool(self._source_load_pending)
@@ -21893,7 +24297,7 @@ class VippWidget(QWidget):
                 actionable=not continue_pending,
             )
             if continue_pending:
-                QTimer.singleShot(0, self.run_pipeline)
+                QTimer.singleShot(0, self._resume_pending_source_work)
             else:
                 self._finish_interaction_generation(
                     self._interaction_current_generation(),
@@ -21906,8 +24310,24 @@ class VippWidget(QWidget):
                 )
             return
         self._prune_file_source_payload_cache()
+        if completed_worker is not None:
+            for spec in completed_worker.specs:
+                if spec.node_id != self._selected_node_id:
+                    continue
+                snapshot = result.snapshots.get(spec.cache_key)
+                node = self.pipeline.nodes.get(spec.node_id)
+                if snapshot is not None and node is not None:
+                    self._start_source_preview(
+                        node,
+                        Path(spec.path),
+                        snapshot.source_item,
+                    )
+                break
+        if control is not None:
+            control.finish_source_load(result.run_id)
         self._set_pipeline_busy(False)
         self._source_load_pending = False
+        self._refresh_image_source_options()
         QTimer.singleShot(0, self.run_pipeline)
 
     def _should_run_pipeline_in_background(
@@ -22010,6 +24430,7 @@ class VippWidget(QWidget):
         target_node_ids: set[str] | None = None,
         *,
         execute_synchronously: bool = False,
+        workflow_parameter_overrides: tuple[BatchParameterOverride, ...] = (),
     ) -> None:
         manual_node_ids = set(manual_node_ids or set())
         processing_node_id = self._background_processing_node_id(
@@ -22074,11 +24495,22 @@ class VippWidget(QWidget):
         run_id = self._pipeline_run_serial
         interaction_generation = self._interaction_current_generation()
         compute_request = self._current_compute_request()
-        workflow = deepcopy(
+        workflow_guard = deepcopy(
             serialize_workflow(
                 self.pipeline,
                 compute_request=compute_request,
             )
+        )
+        workflow = workflow_with_parameter_overrides(
+            workflow_guard,
+            tuple(workflow_parameter_overrides),
+        )
+        parameter_override_signature = (
+            self._batch_item_parameter_override_signature(
+                self._interactive_collection_batch_target_item()
+            )
+            if workflow_parameter_overrides
+            else ""
         )
         (
             exact_workload_qualifications,
@@ -22177,6 +24609,9 @@ class VippWidget(QWidget):
             dirty_node_ids,
             compute_request,
             runnable_node_ids,
+            workflow_guard,
+            bool(workflow_parameter_overrides),
+            parameter_override_signature,
         )
         self._pipeline_run_manual_node_ids[run_id] = frozenset(manual_node_ids)
         self._set_pipeline_busy(True, processing_node_id)
@@ -22297,6 +24732,8 @@ class VippWidget(QWidget):
             return
         if self._pipeline_user_cancel_requested_run_id == run_id:
             return
+        if not self._background_batch_parameter_override_is_current(run_id):
+            return
         node_id = str(node_id)
         cleared_overrides = self._discard_background_node_result_overrides({node_id})
         self._refresh_node_presentation_surfaces(cleared_overrides)
@@ -22313,6 +24750,8 @@ class VippWidget(QWidget):
         if run_id != self._active_pipeline_run_id:
             return
         if self._pipeline_user_cancel_requested_run_id == run_id:
+            return
+        if not self._background_batch_parameter_override_is_current(run_id):
             return
         node_id = str(node_id)
         title = self._node_title(node_id) if node_id in self.pipeline.nodes else "graph"
@@ -22339,6 +24778,8 @@ class VippWidget(QWidget):
         if result.run_id != self._active_pipeline_run_id:
             return
         if self._pipeline_user_cancel_requested_run_id == result.run_id:
+            return
+        if not self._background_batch_parameter_override_is_current(result.run_id):
             return
         if result.source_revisions and not self._live_source_adapter.tokens_are_current(
             result.source_revisions
@@ -22481,6 +24922,13 @@ class VippWidget(QWidget):
         ) = run_context[:5]
         compute_request = run_context[5] if len(run_context) > 5 else ComputeRequest()
         runnable_node_ids = run_context[6] if len(run_context) > 6 else frozenset()
+        workflow_guard = run_context[7] if len(run_context) > 7 else result.workflow
+        preserve_workflow_params = (
+            bool(run_context[8]) if len(run_context) > 8 else False
+        )
+        parameter_override_signature = (
+            str(run_context[9]) if len(run_context) > 9 else ""
+        )
         cleanup_failed = bool(
             (result.failure is not None and result.failure.cleanup_succeeded is False)
             or (
@@ -22627,6 +25075,34 @@ class VippWidget(QWidget):
                     ),
                 )
             return
+        if parameter_override_signature and (
+            parameter_override_signature
+            != self._batch_item_parameter_override_signature(
+                self._interactive_collection_batch_target_item()
+            )
+        ):
+            self._pipeline_run_pending = False
+            self._requeue_inflight_dirty_nodes()
+            self._pending_manual_node_ids.update(
+                node_id
+                for node_id in inflight_manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
+            if inflight_manual_node_ids:
+                self.pipeline.mark_manual_descendants_stale(inflight_manual_node_ids)
+            cleared_overrides = self._discard_background_node_result_overrides()
+            self._refresh_node_presentation_surfaces(cleared_overrides)
+            self._set_pipeline_busy(False)
+            self.status_label.setText(
+                "Discarded a superseded per-sample representative result. "
+                "Preview the current batch parameters to calculate fresh pixels."
+            )
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.CANCELLED,
+                detail="The per-sample parameter override generation changed.",
+            )
+            return
         if result.source_revisions and not self._live_source_adapter.tokens_are_current(
             result.source_revisions
         ):
@@ -22724,10 +25200,12 @@ class VippWidget(QWidget):
             completed = self._merge_completed_pipeline_run_result(
                 result.pipeline,
                 include_processing=can_publish_cpu_partial,
-                update_params=can_publish_cpu_partial,
+                update_params=(
+                    can_publish_cpu_partial and not preserve_workflow_params
+                ),
             )
             if can_publish_cpu_partial:
-                if result.pipeline is not None:
+                if result.pipeline is not None and not preserve_workflow_params:
                     for node_id in failure_messages:
                         live_node = self.pipeline.nodes.get(node_id)
                         result_node = result.pipeline.nodes.get(node_id)
@@ -22835,7 +25313,7 @@ class VippWidget(QWidget):
                     "no pipeline result was returned",
                 )
             return
-        if not self._workflow_matches_current_pipeline(result.workflow):
+        if not self._workflow_matches_current_pipeline(workflow_guard):
             if not can_apply_before_pending:
                 self._requeue_inflight_dirty_nodes()
                 self._pending_manual_node_ids.update(
@@ -22853,6 +25331,7 @@ class VippWidget(QWidget):
             result.pipeline,
             update_params=(
                 not can_apply_before_pending
+                and not preserve_workflow_params
                 and not self._interactive_collection_source_paths
             ),
         )
@@ -23336,6 +25815,7 @@ class VippWidget(QWidget):
             self._update_metadata_panel()
             self._update_histogram()
         self._sync_view_dims_bar()
+        self._source_preview_dims_timer.start()
 
     def _set_raw_current_step(self, axis: int, value: int) -> None:
         try:
@@ -23445,6 +25925,7 @@ class VippWidget(QWidget):
         self._update_thumbnails()
         self._update_metadata_panel()
         self._update_histogram()
+        self._source_preview_dims_timer.start()
 
     def _thumbnail_render_size(self) -> tuple[int, int]:
         return tuple(self._thumbnail_resolution.size)
@@ -24166,6 +26647,13 @@ class VippWidget(QWidget):
             return
         _data, state, _output_port = self._node_display_payload(self._selected_node_id)
         rows = metadata_table_rows(state)
+        node = self.pipeline.nodes[self._selected_node_id]
+        if node.operation_id == "input" and self._file_source_path_for_node(node):
+            source_item = self._file_source_item_for_node(node)
+            if source_item is None:
+                rows.append(MetadataRow("Source reader metadata", "Not resolved yet"))
+            else:
+                rows.extend(source_item_metadata_rows(source_item))
         current_view = self._current_view_label(state)
         if current_view:
             rows.insert(4, MetadataRow("Current view", current_view))
@@ -26201,7 +28689,7 @@ class VippWidget(QWidget):
             },
             role="inspect",
         )
-        self._keep_active_pin_on_top()
+        self._apply_selected_viewer_surface(select_layer=True)
         self._sync_inspect_display_reset_ui()
         self.status_label.setText(f"Inspecting '{title}' in napari.")
 
@@ -26334,7 +28822,7 @@ class VippWidget(QWidget):
                 },
                 role="inspect",
             )
-            self._keep_active_pin_on_top()
+            self._apply_selected_viewer_surface(select_layer=True)
 
     def _refresh_pinned_layer_if_active(self) -> None:
         if self._active_pinned_node_id is None:
@@ -27546,6 +30034,20 @@ class VippWidget(QWidget):
         except Exception:
             pass
 
+    def _move_layer_to_bottom(self, layer) -> None:
+        layers = self.viewer.layers
+        try:
+            index = list(layers).index(layer)
+            layers.move(index, 0)
+            return
+        except Exception:
+            pass
+        try:
+            layers.remove(layer)
+            layers.insert(0, layer)
+        except Exception:
+            pass
+
     def _keep_active_pin_on_top(self) -> None:
         for layer in self._active_pinned_layers():
             self._move_layer_to_top(layer)
@@ -27975,6 +30477,7 @@ class VippWidget(QWidget):
             return str(layer.metadata.get("napari_vipp_kind", "")) in {
                 "inspect",
                 "pinned",
+                "source_preview",
             }
         except Exception:
             return False

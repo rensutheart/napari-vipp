@@ -985,7 +985,7 @@ summarizes the demonstrated features and the next step is explicit: click `Run
 demo batch` to write nine outputs and validate the scientific results and
 provenance. The workspace retains item progress, final statuses, validation,
 and the manifest path and can be reopened with `Batch workspace...`. The same
-example remains available there through `Open batch demo...`.
+example remains available there through `Demo...`.
 
 The graph commits a new representative label only after its matching source
 load and calculation succeed. If batch settings or scientific graph parameters
@@ -1059,14 +1059,14 @@ the run as a deterministic configuration error. A deterministic axis-contract
 failure likewise blocks the run even when `Continue on error` is selected.
 
 The single `Batch workspace...` action is visually separated between workflow
-loading and the export actions in the main toolbar. `Save config...` writes a
+loading and the export actions in the main toolbar. `Save...` writes a
 versioned `vipp_batch_config.json`. Current config version 3 records the
 complete effective compute request and any guarded source-axis declarations.
 Version 1 loads as explicit CPU because it predates accelerator execution;
 version 2 retains its saved compute request. Both older versions load without
 axis declarations and become version 3 only when reviewed and saved. Their blank
 declarations are shown as `Use the file's labels unchanged`, not the
-automatic policy used for a new unsaved row. `Load config...` restores source
+automatic policy used for a new unsaved row. `Load...` restores source
 bindings, output folder, default format, existing-file policy, continuation
 behavior, required workflow companion, and optional runner choice, and validates
 the resolved output declarations against the current graph. The saved workflow
@@ -1091,12 +1091,14 @@ Choose the existing-file policy deliberately:
 
 | Policy | Behavior |
 | --- | --- |
-| `Error` | Treat a planned path that already exists as a collision and require it to be resolved before the batch proceeds. |
-| `Skip` | Leave the existing file unchanged and record the output as skipped. |
-| `Overwrite` | Replace the existing destination. |
+| `Ask before overwrite (recommended)` | The Batch workspace lists the exact existing outputs and asks whether to replace them for this run. Cancel is the safe default. Headless runs retain the corresponding fail-closed `error` policy. |
+| `Skip existing` | Leave the existing file unchanged and record the output as skipped. |
+| `Overwrite without asking` | Replace the existing destination without a per-run question. |
 
 An explicit overwrite choice on a `Batch Output` node takes precedence over
-the batch default. `Preview batch` uses the same deterministic pairing and
+the batch default. Duplicate destinations, source overlaps, and explicitly
+protected outputs remain hard errors and are never offered as safe overwrite
+choices. `Preview batch` uses the same deterministic pairing and
 output-planning rules as execution and shows existing-path collisions before
 expensive processing starts. `Run` performs planning and its representative
 scientific preflight itself, so Preview is not a prerequisite. If a displayed

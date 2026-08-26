@@ -144,17 +144,19 @@ pointwise clamp and does not allocate a whole-stack float copy.
 
 ## Large-Data Direction
 
-The current policy is pragmatic rather than fully lazy. Before VIPP can be
-comfortable on very large OME-Zarr datasets, the next scale work should add:
+The current policy is pragmatic rather than fully lazy. The 0.14.0a1 candidate
+can slice a declared lower local OME-Zarr 0.4/0.5 level for presentation while
+keeping analysis at level 0. Before VIPP can be comfortable on very large
+scientific graphs, the next scale work should add:
 
 - operation capability declarations for eager, lazy-safe, memory-heavy, and
   scale-aware nodes;
-- pyramid-aware thumbnail source selection beyond the current Low (90 × 55),
-  Standard (180 × 110), High (360 × 220), and Very High (720 × 440)
-  backing-detail controls;
+- richer pyramid-aware thumbnail controls beyond automatic lower-level source
+  preview and the current Low (90 × 55), Standard (180 × 110), High
+  (360 × 220), and Very High (720 × 440) backing-detail controls;
 - broader chunked execution beyond the bounded global-threshold and inspector
   histogram paths;
-- OME-Zarr pyramid generation and preview-level selection;
+- remote-store and non-OME-Zarr pyramid preview plus pyramid generation;
 - confirmation before eager-only nodes materialize very large lazy arrays.
 
 Thumbnail render detail and contrast work are separate budgets. Low, Standard,

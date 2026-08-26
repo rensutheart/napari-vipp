@@ -1,0 +1,166 @@
+{
+  "artifacts": {
+    "sourceitem-mixed-members-v1.npz": {
+      "byte_contract": "exact-v1",
+      "bytes": 8284,
+      "member_order": [
+        "outline_bool",
+        "thumbnail_uint8",
+        "primary_uint16",
+        "normalized_float32"
+      ],
+      "members": [
+        {
+          "axes": "YX",
+          "dtype": "bool",
+          "maximum": true,
+          "minimum": false,
+          "name": "outline_bool",
+          "sha256": "b22858a6c63b1183e717b2ed714211003185b714adf7ba25c79f33b9c78f0981",
+          "shape": [
+            24,
+            24
+          ]
+        },
+        {
+          "axes": "YX",
+          "dtype": "uint8",
+          "maximum": 234,
+          "minimum": 4,
+          "name": "thumbnail_uint8",
+          "sha256": "4a4d448c44d621c1c395caa0eb5ecab899ca17b196c044b43f5471a79182c3ae",
+          "shape": [
+            24,
+            24
+          ]
+        },
+        {
+          "axes": "YX",
+          "dtype": "uint16",
+          "maximum": 39690,
+          "minimum": 3,
+          "name": "primary_uint16",
+          "sha256": "0222334ceb8b8e76ea61c365b9756840acfb28f6ac811f9c914c89ff7dca68e1",
+          "shape": [
+            32,
+            32
+          ]
+        },
+        {
+          "axes": "YX",
+          "dtype": "float32",
+          "maximum": 0.6056305766105652,
+          "minimum": 4.577706567943096e-05,
+          "name": "normalized_float32",
+          "sha256": "919902def48f090690f859927f205e79cdf469edfd2c2c9815aab072bc722397",
+          "shape": [
+            32,
+            32
+          ]
+        }
+      ],
+      "sha256": "7872e1e288079ed769224d9c351ae4418976325869759230e4fccfb34fb47c13"
+    },
+    "sourceitem-two-series-reversed-v1.ome.tiff": {
+      "byte_contract": "exact-for-recorded-generator;semantic-hash-is-portable",
+      "bytes": 3944,
+      "physical_series_order": [
+        "associated-uint8",
+        "primary-uint16"
+      ],
+      "semantic_set_sha256": "a6fe33d757c9d50378a0c20d91c9bde859237ce25036d7907d4fba1890a31823",
+      "series": [
+        {
+          "axes": "YX",
+          "dtype": "uint8",
+          "maximum": 234,
+          "minimum": 4,
+          "name": "associated-uint8",
+          "sha256": "bd54761a5c0e322afb0921c1f058e196c738df6518a9e674dc7620c483d29032",
+          "shape": [
+            24,
+            24
+          ]
+        },
+        {
+          "axes": "YX",
+          "dtype": "uint16",
+          "maximum": 39690,
+          "minimum": 3,
+          "name": "primary-uint16",
+          "sha256": "4b61ef24287bb181adba4b42337a117e4396d9223836c170117971bfc445200c",
+          "shape": [
+            32,
+            32
+          ]
+        }
+      ],
+      "sha256": "6dd05f1ebdbcbaf9f7adaa5ca24ecfef3c1b7f40cc34152c2bdc62f73594e720"
+    },
+    "sourceitem-two-series-v1.ome.tiff": {
+      "byte_contract": "exact-for-recorded-generator;semantic-hash-is-portable",
+      "bytes": 3944,
+      "physical_series_order": [
+        "primary-uint16",
+        "associated-uint8"
+      ],
+      "semantic_set_sha256": "a6fe33d757c9d50378a0c20d91c9bde859237ce25036d7907d4fba1890a31823",
+      "series": [
+        {
+          "axes": "YX",
+          "dtype": "uint16",
+          "maximum": 39690,
+          "minimum": 3,
+          "name": "primary-uint16",
+          "sha256": "4b61ef24287bb181adba4b42337a117e4396d9223836c170117971bfc445200c",
+          "shape": [
+            32,
+            32
+          ]
+        },
+        {
+          "axes": "YX",
+          "dtype": "uint8",
+          "maximum": 234,
+          "minimum": 4,
+          "name": "associated-uint8",
+          "sha256": "bd54761a5c0e322afb0921c1f058e196c738df6518a9e674dc7620c483d29032",
+          "shape": [
+            24,
+            24
+          ]
+        }
+      ],
+      "sha256": "2be71d5eea0c48344c40c5ebf2e6f42c883c4640a6d80a20c5eb5cce9d0b8410"
+    }
+  },
+  "generator": {
+    "id": "napari-vipp-sourceitem-contract-fixture-generator-v1",
+    "numpy": "2.5.1",
+    "tifffile": "2026.7.14"
+  },
+  "recipe": {
+    "associated_series_index": 1,
+    "associated_window": "S=0,Y=48:72,X=48:72",
+    "bool_rule": "associated uint8 >= 96",
+    "float32_rule": "primary uint16 / float32(65535)",
+    "npy_version": "1.0",
+    "ome_series_semantics": "name+axes+shape+dtype+C-order pixels",
+    "primary_series_index": 0,
+    "primary_window": "C=0,Y=496:528,X=496:528",
+    "zip_compression": "stored",
+    "zip_timestamp": "1980-01-01T00:00:00"
+  },
+  "schema": "napari-vipp-sourceitem-contract-fixtures",
+  "schema_version": 1,
+  "source": {
+    "artifact_bytes": 8632357,
+    "artifact_sha256": "345a055da8594a9cc75a8f83f004943cd556ea8c7ebe6061f2e77c8070dbd7e0",
+    "attribution": "Salama Lab FHCC via Zenodo record 14510432.",
+    "dataset_id": "zenodo-14510432-zeiss-lsm",
+    "landing_page": "https://zenodo.org/records/14510432",
+    "license": "CC-BY-4.0",
+    "manifest": "corpus-v3.json",
+    "manifest_sha256": "39f1771abc2405f696b8d8558d412df10b34f86709e8e6f8655329582efb4502"
+  }
+}

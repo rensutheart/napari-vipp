@@ -1,6 +1,6 @@
 # VIPP Product Ideas
 
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-26
 
 This page preserves promising product concepts that are not committed to an
 active release. An idea moves into the [active roadmap](planning.md) only after
@@ -91,6 +91,22 @@ Before adoption it would need:
 
 Presentation may refine progressively; scientific results must not silently
 change resolution or population while appearing complete.
+
+## Workspace Density And Action Hierarchy
+
+A future 0.14 UI pass may reduce visual chrome in the main toolbars, selected-
+node inspector, and retained Batch workspace so common scientific controls and
+results remain visible on ordinary laptop screens. This is exploratory cleanup,
+not a committed layout or release gate.
+
+Candidate directions include tighter spacing and grouping, a denser inspector
+and Batch workspace, and moving infrequent demo/example actions out of the
+primary Batch action row. The demo entry could become a subtler secondary
+control, possibly near the top-right corner, without making onboarding examples
+hard to discover. Any later design should preserve accessibility, keyboard
+navigation, narrow-window behavior, and the clear separation between preview,
+edit, and run actions, and should be validated with representative workflows
+before implementation.
 
 ## Longer-Horizon Product Concepts
 

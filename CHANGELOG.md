@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.14.0a1 - Unreleased
+
+### Features
+
+- Added a durable SourceItem v1 record for selecting scientific images inside
+  multi-item containers. Workflow schema 5 and batch config/manifest schema 4
+  carry the same stable selector, reader evidence, source revision, axes, and
+  metadata through interactive, batch, generated, replay, export, checkpoint,
+  and provenance paths while retaining deterministic legacy migrations.
+- Added truthful reader inspection and typed source failures for the frozen
+  public microscope corpus. Inspection/read metadata now agree for the claimed
+  ND2, LIF, CZI, OIR/OIB, VSI/IMS, and LSM routes; OIB pixels and ImageState
+  agree on CZYX; multifile VSI/ETS and OIF companion trees participate in the
+  exact source revision; and optional Java/Bio-Formats failures are actionable.
+- Added a local OME-Zarr 0.4/0.5 presentation preview that enumerates declared
+  levels and transforms, slices requested axes and regions before computing,
+  preserves label semantics, reports observable I/O where available, and keeps
+  scientific analysis fixed to level 0.
+- Added reviewed numeric per-SourceItem batch overrides. Blank cells visibly
+  inherit the saved workflow value, typed preflight rejects stale or ambiguous
+  rows, and effective values/hashes are consistent across preview, batch,
+  generated execution, checkpoints, manifests, and provenance without
+  modifying the base workflow.
+- Added source-load memory preflight, truthful progress, cooperative
+  cancellation, and stale-generation protection for large local reads.
+- Improved the retained Batch workspace: attached configurations redetect their
+  samples in the background, effective per-sample values appear only where an
+  override applies, compact activity remains visible beside the toolbar, and
+  ordinary existing-output collisions offer a safe one-run overwrite prompt.
+  Cancel is the default; duplicate destinations, input overlaps, and explicitly
+  protected outputs remain hard errors.
+
+### Remaining limitations
+
+- Scientific graph execution still materializes the selected full-resolution
+  level-0 image; the OME-Zarr lower level is presentation-only.
+- Preview support is limited to local OME-Zarr 0.4/0.5 image and label groups.
+  Remote stores, HCS plate/well/field traversal, IMS pyramid claims, and
+  operation-level lazy/chunked execution remain deferred.
+- Native LIF, CZI, OIR, OIB, and LSM pixel access is eager. VIPP records that
+  capability rather than presenting it as lazy.
+- VIPP pins the selected reader/backend and refuses an unreviewed topology
+  change; it does not infer equivalence between `liffile`'s combined PR2729
+  view and Bio-Formats' four logical views.
+
 ## 0.13.0a9 - 2026-08-25
 
 ### Features

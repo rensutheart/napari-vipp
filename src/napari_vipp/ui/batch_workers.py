@@ -15,6 +15,82 @@ from napari_vipp.core.batch import (
     BatchRunResult,
     run_batch,
 )
+from napari_vipp.ui.batch import BatchPreviewResult
+from napari_vipp.ui.batch_controller import (
+    PreparedCollectionBatchPreview,
+    execute_prepared_collection_batch_preview,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BatchWorkspacePreviewWorkerSpec:
+    """Generation-owned immutable inputs for restoring one saved workspace."""
+
+    request_id: int
+    origin_session_id: str
+    prepared: PreparedCollectionBatchPreview
+
+
+@dataclass(frozen=True, slots=True)
+class BatchWorkspacePreviewWorkerOutcome:
+    """Terminal metadata-only verification result returned to the GUI thread."""
+
+    request_id: int
+    origin_session_id: str
+    result: BatchPreviewResult | None = None
+    error: Exception | None = None
+    cancelled: bool = False
+
+
+class _BatchWorkspacePreviewWorkerSignals(QObject):
+    finished = Signal(object)
+
+
+class BatchWorkspacePreviewWorker(QRunnable):
+    """Verify an attached batch workspace without reading scientific pixels."""
+
+    def __init__(self, spec: BatchWorkspacePreviewWorkerSpec) -> None:
+        super().__init__()
+        self.spec = spec
+        self.signals = _BatchWorkspacePreviewWorkerSignals()
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        """Suppress publication of a queued or superseded verification."""
+
+        self._cancel_event.set()
+
+    @property
+    def cancellation_requested(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def run(self) -> None:
+        spec = self.spec
+        if self._cancel_event.is_set():
+            self.signals.finished.emit(
+                BatchWorkspacePreviewWorkerOutcome(
+                    spec.request_id,
+                    spec.origin_session_id,
+                    cancelled=True,
+                )
+            )
+            return
+        try:
+            result = execute_prepared_collection_batch_preview(spec.prepared)
+        except Exception as exc:
+            outcome = BatchWorkspacePreviewWorkerOutcome(
+                spec.request_id,
+                spec.origin_session_id,
+                error=exc,
+            )
+        else:
+            outcome = BatchWorkspacePreviewWorkerOutcome(
+                spec.request_id,
+                spec.origin_session_id,
+                result=result,
+                cancelled=self._cancel_event.is_set(),
+            )
+        self.signals.finished.emit(outcome)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +218,9 @@ class CollectionBatchWorker(QRunnable):
 
 
 __all__ = [
+    "BatchWorkspacePreviewWorker",
+    "BatchWorkspacePreviewWorkerOutcome",
+    "BatchWorkspacePreviewWorkerSpec",
     "CollectionBatchProgress",
     "CollectionBatchOperationProgress",
     "CollectionBatchWorker",

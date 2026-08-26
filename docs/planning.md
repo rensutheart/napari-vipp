@@ -46,8 +46,8 @@ checksum sidecars,
 [PyPI package](https://pypi.org/project/napari-vipp/0.13.0a9/), and
 [numbered](https://rensutheart.github.io/vipp-mkdocs/0.13.0a9/) and
 [stable](https://rensutheart.github.io/vipp-mkdocs/stable/) documentation are
-public. Development is now on `0.14.0a1`, beginning with immutable SourceItem
-identity. The 0.13 line provides:
+public. Development is now on the unreleased `0.14.0a1` candidate. The 0.13
+line provides:
 
 - workflow schema 4 and batch schema 3 with portable compute intent, explicit
   outputs, checkpoints, manifests, and exact implementation provenance;
@@ -84,9 +84,10 @@ Important remaining limits are:
 
 ## Active Release Order
 
-The current development line is `0.14.0a1` Source-Aware Loading And Per-Sample
-Batch Alpha, beginning with immutable SourceItem identity. The detailed 0.13
-sections below remain delivered contract records.
+The current development line is the `0.14.0a1` Source-Aware Loading And
+Per-Sample Batch Alpha candidate. Its intended feature packages are implemented
+and undergoing integrated release qualification. The detailed 0.13 sections
+below remain delivered contract records.
 
 ### Delivered Record: `0.13.0a9` Correctness Rollup
 
@@ -478,6 +479,48 @@ The first 0.14 alpha targets three connected source-aware outcomes:
 2. pyramid-aware source loading and presentation preview;
 3. typed per-sample batch parameters.
 
+Candidate status on 2026-08-25:
+
+- SourceItem v1 is implemented across interactive persistence, workflow schema
+  5, batch config/manifest schema 4, generated execution, replay, export,
+  checkpoints, and provenance, with legacy-read and deterministic migration
+  coverage;
+- claimed microscope readers share their bounded inspection/read metadata,
+  Olympus OIB now passes its authoritative CZYX contract, multifile VSI/ETS and
+  OIF companion trees participate in source revision, and optional Java/
+  Bio-Formats failures are actionable;
+- local OME-Zarr 0.4/0.5 lower-level presentation preview is implemented with
+  exact level labelling, label semantics, requested-axis/region slicing,
+  observable I/O, cancellation, and unchanged level-0 analysis;
+- typed numeric per-SourceItem batch overrides are implemented with visible
+  inheritance, detached effective workflows, strict preflight, and shared
+  execution/provenance resolution; and
+- source loads have decoded-memory preflight, truthful progress, cooperative
+  cancellation, and stale-generation protection.
+
+These are candidate implementation claims, not publication claims. Remaining
+release gates are the integrated suite, the strict verified-cache corpus profile
+in the qualified optional-reader environment, final version/documentation
+consistency, and exact-tag packages plus the release-specific installer.
+
+The shared acceptance inputs are frozen in the
+[public data corpus](public-data-corpus.md). Its manifest predeclares the
+formats, dtypes, axes, item structures, licences, hashes, and objective
+per-sample cases used below; ordinary CI remains network-free.
+
+Corpus revision `0.14.0a1-v3` extends the focused vendor tier across Nikon ND2,
+Leica LIF, Zeiss CZI/LSM, Olympus OIR/OIB/VSI, and Imaris IMS. Every original is
+explicitly licensed, hash-pinned, and opened through VIPP only from a verified
+opt-in cache. The new files reach native `oirfile`, `oiffile`, and `tifffile`
+paths as well as the Java/Bio-Formats fallback and a multifile VSI/ETS layout.
+The audit exposed requirements beyond metadata. The candidate preserves the
+bounded scientific subset, preflights Bio-Formats/Java failures, keeps OIB
+pixels and ImageState on authoritative CZYX, binds multifile companions into
+source revision, records eager/large-reader capabilities truthfully, and
+resolves the same item across execution surfaces. The detailed implementation,
+format matrix, qualification gates, and deferrals are in the
+[`0.14.0a1` Source-Aware Loading Record](source-aware-loading-0.14.0a1.md).
+
 The source-aware outcomes form one coherent user story: select a scientific item
 once, see a useful preview before the exact full-resolution snapshot is ready,
 and apply reviewed item-specific batch parameters. The a1 preview improves time
@@ -485,7 +528,7 @@ to first display; exact background
 verification and level-0 materialization still complete before scientific
 execution.
 
-Implementation order and pull-request boundaries:
+Delivered implementation sequence:
 
 1. define SourceItem v1, canonical identity, reader adapters, legacy migration,
    and compatibility goldens;
@@ -663,19 +706,20 @@ wording, and unchanged transactional behavior.
 
 #### 0.14.0a1 Release Boundary And Non-Goals
 
-The source-aware core of the alpha is complete when SourceItem identity,
-pyramid-aware presentation, and per-sample scalar parameters agree across their
-documented surfaces and compatibility gates. Every work package must pass its
-own acceptance before it ships; an unfinished independent package moves
-visibly to the next alpha rather than holding a coherent release. The milestone
-does not imply completion of:
+The candidate contains the truthful reader contract, SourceItem identity,
+pyramid-aware OME-Zarr presentation, and numeric per-sample parameters. Each
+package has focused acceptance coverage; the alpha becomes releasable only when
+their integrated compatibility and strict cached-corpus gates pass. This
+milestone does not imply completion of:
 
 - arbitrary conditional branches or filename expressions;
 - full operation-level lazy/chunked execution;
 - remote stores, plate/well/field traversal, or semantic-axis batch iteration;
 - scientific progressive outputs;
 - arbitrary per-node or per-item topology changes; or
-- general branch-aware ROI-union planning.
+- general branch-aware ROI-union planning; or
+- a general toolbar, inspector, or Batch-workspace density redesign, retained
+  as an exploratory [product idea](product-ideas.md#workspace-density-and-action-hierarchy).
 
 Those items require later evidence or remain in [product ideas](product-ideas.md).
 
@@ -685,7 +729,7 @@ Those items require later evidence or remain in [product ideas](product-ideas.md
 
 Goal: make Crop Stack a discoverable volume ROI tool without recalculating on
 every drag event. This optional work did not ship in `0.13.0a8`, is not part of
-the current `0.14.0a1` scope, and must not delay SourceItem work. Create a
+the `0.14.0a1` candidate, and must not delay its qualification. Create a
 separate feature issue before implementation; it remains independent of `#33`.
 
 - preserve the existing operation and old workflows while adding persisted

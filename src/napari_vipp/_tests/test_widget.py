@@ -94,10 +94,13 @@ from napari_vipp.core.batch import (
     BatchConfig,
     BatchExecutionProgress,
     BatchOutputConfig,
+    BatchParameterOverride,
     BatchScientificPreflightError,
     BatchSourceConfig,
+    BatchSourceParameterOverrides,
     BatchStatus,
     ExistingFilePolicy,
+    batch_source_item_override_key,
     load_batch_config,
     plan_batch,
     scientific_workflow_hash,
@@ -188,6 +191,10 @@ from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.source_identity import (
     BundledSampleRevisionToken,
     LocalSourceIdentity,
+)
+from napari_vipp.core.source_preview import (
+    SourcePreviewReadMetrics,
+    SourcePreviewResult,
 )
 from napari_vipp.core.tables import TableData, TableState
 from napari_vipp.core.thumbnail_statistics import (
@@ -364,10 +371,22 @@ class _Layer:
         self.events = _SourceEvents()
 
 
+class _LayerSelection:
+    def __init__(self, layers):
+        self._layers = layers
+        self.active = layers[-1] if layers else None
+        self._selected = {self.active} if self.active is not None else set()
+
+    def select_only(self, layer):
+        self.active = layer
+        self._selected = {layer}
+
+
 class _LayerList(list):
     def __init__(self, layers):
         super().__init__(layers)
         self.events = _LayerEvents()
+        self.selection = _LayerSelection(self)
 
     def __getitem__(self, item):
         if isinstance(item, str):
@@ -406,7 +425,9 @@ class _Viewer:
         layer.contrast_limits = kwargs.get("contrast_limits")
         layer.rgb = bool(kwargs.get("rgb", False))
         layer.scale = kwargs.get("scale")
+        layer.translate = kwargs.get("translate")
         self.layers.append(layer)
+        self.layers.selection.select_only(layer)
         return layer
 
     def add_labels(self, data, **kwargs):
@@ -417,7 +438,9 @@ class _Viewer:
             layer_type="labels",
         )
         layer.scale = kwargs.get("scale")
+        layer.translate = kwargs.get("translate")
         self.layers.append(layer)
+        self.layers.selection.select_only(layer)
         return layer
 
 
@@ -4340,9 +4363,7 @@ def test_image_source_axis_declaration_enables_rescale_z_and_undo(qtbot):
     widget._debounce_timer.stop()
     widget.run_pipeline(force_sync=True)
 
-    assert widget.pipeline.nodes["input"].params["axis_declaration"] == (
-        "QYX -> ZYX"
-    )
+    assert widget.pipeline.nodes["input"].params["axis_declaration"] == ("QYX -> ZYX")
     assert widget.pipeline.output_states["input"].axis_order == "ZYX"
     assert "saved with the workflow" in source_control.axis_control.notice_label.text()
 
@@ -4536,9 +4557,7 @@ def test_qyx_gaussian_visibility_survives_workflow_save_and_reopen_without_run(
 
     assert run_calls == [True]
     assert restored._selected_node_id == gaussian.id
-    assert restored.pipeline.nodes["input"].params["axis_declaration"] == (
-        "QYX -> ZYX"
-    )
+    assert restored.pipeline.nodes["input"].params["axis_declaration"] == ("QYX -> ZYX")
     assert "sigma_z" in restored._parameter_widgets
     assert restored._parameter_widgets["sigma_z"].value() == pytest.approx(3.25)
     assert restored.pipeline.output_states[rescale.id] is None
@@ -4752,6 +4771,728 @@ def test_image_source_node_can_use_sample_mode(qtbot):
     assert widget.pipeline.outputs["input"].shape == (12, 96, 128)
 
 
+def test_large_source_metadata_inspection_runs_outside_gui_thread(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "source.npy"
+    np.save(path, np.arange(20, dtype=np.uint16).reshape(4, 5))
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    queued_pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = queued_pool
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        source_mode="file path",
+        file_path=str(path),
+        series_index=0,
+    )
+    monkeypatch.setattr(widget, "_file_source_should_load_async", lambda _node: True)
+
+    assert widget._source_inspection_for_node(node) is None
+    assert widget._active_source_load_id is not None
+    assert len(queued_pool.workers) == 1
+    inspection_worker = queued_pool.workers[0]
+
+    inspection_worker.run()
+
+    resolved_path = str(path.resolve())
+    assert resolved_path in widget._source_inspection_cache
+    assert node.params["_vipp_source_item"]["selector"]["key"] == "source"
+    assert widget._active_source_inspection_worker is None
+    assert widget._active_source_load_id is None
+
+
+def test_source_preview_layer_is_owned_read_only_and_never_an_input(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    data = np.array([[0, 1], [2, 2]], dtype=np.uint16)
+    state = replace(
+        image_state_from_array(
+            data,
+            layer_metadata={"axes": "YX"},
+            source_name="Label preview",
+        ),
+        kind="label image",
+    )
+    state = replace(
+        state,
+        axes=(
+            replace(state.axes[0], translation=1.5),
+            replace(state.axes[1], translation=2.5),
+        ),
+    )
+    preview = SourcePreviewResult(
+        data=data,
+        image_state=state,
+        preview_level=2,
+        level_count=3,
+        message="Preview level 2 - analysis remains full resolution",
+        metrics=SourcePreviewReadMetrics(
+            requested_decoded_bytes=data.nbytes,
+            estimated_decoded_bytes_read=data.nbytes,
+            estimated_objects_read=1,
+            basis="test chunk grid",
+        ),
+        generation=1,
+    )
+
+    widget._publish_source_preview("input", "labels/cells", preview)
+
+    layer = next(
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "source_preview"
+    )
+    assert layer.name == "Preview level 2 - analysis remains full resolution"
+    assert layer.layer_type == "labels"
+    assert layer.metadata["napari_vipp_kind"] == "source_preview"
+    assert layer.metadata["presentation_only"] is True
+    assert layer.metadata["analysis_level"] == 0
+    assert layer.editable is False
+    assert layer.translate == (1.5, 2.5)
+    assert np.asarray(layer.data).flags.writeable is False
+    assert widget._is_vipp_generated_layer(layer)
+    assert layer.name not in widget._available_layer_names()
+    assert layer.visible is False
+    assert viewer.layers[0] is layer
+
+
+def test_source_preview_never_masks_selected_analysis_output(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    inspect_layers = widget._generated_layers_for_name("VIPP Inspect")
+    inspect = (
+        inspect_layers[0]
+        if inspect_layers
+        else viewer.add_image(
+            np.full((2, 2), 7, dtype=np.uint8),
+            name="VIPP Inspect",
+            metadata={
+                "napari_vipp_kind": "inspect",
+                "node_id": "gaussian",
+                "output_port": 0,
+            },
+        )
+    )
+    user_layer = viewer.add_image(
+        np.full((2, 2), 9, dtype=np.uint8),
+        name="Researcher annotation",
+        metadata={},
+    )
+    data = np.arange(4, dtype=np.uint8).reshape(2, 2)
+    preview = SourcePreviewResult(
+        data=data,
+        image_state=image_state_from_array(
+            data,
+            layer_metadata={"axes": "YX"},
+        ),
+        preview_level=2,
+        level_count=3,
+        message="Preview level 2 - analysis remains full resolution",
+        metrics=SourcePreviewReadMetrics(requested_decoded_bytes=data.nbytes),
+        generation=1,
+    )
+
+    widget._selected_node_id = "gaussian"
+    widget._publish_source_preview("input", ".", preview)
+    preview_layer = widget._source_preview_layer("input")
+
+    assert preview_layer is not None
+    assert preview_layer.visible is False
+    assert inspect.visible is True
+    assert viewer.layers[0] is preview_layer
+    assert viewer.layers.selection.active is user_layer
+
+    widget._selected_node_id = "input"
+    monkeypatch.setattr(
+        widget,
+        "_source_resolution_presentation",
+        lambda _node: SimpleNamespace(
+            can_select_preview=True,
+            level_shapes=((4, 16, 18), (4, 8, 9), (4, 4, 5)),
+        ),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_refresh_source_resolution_control",
+        lambda _node_id: None,
+    )
+    widget._on_source_viewer_display_changed("input", "preview:auto")
+
+    assert preview_layer.visible is True
+    assert inspect.visible is False
+    assert viewer.layers.selection.active is preview_layer
+    assert viewer.layers[-1] is preview_layer
+
+    pinned = viewer.add_image(
+        np.full((2, 2), 11, dtype=np.uint8),
+        name="VIPP Pinned: Threshold",
+        metadata={"napari_vipp_kind": "pinned", "node_id": "threshold"},
+    )
+    widget._apply_selected_viewer_surface(select_layer=True)
+
+    assert viewer.layers[-2] is preview_layer
+    assert viewer.layers[-1] is pinned
+    assert viewer.layers.selection.active is preview_layer
+
+    widget._select_node("gaussian")
+    inspect = widget._generated_layers_for_name("VIPP Inspect")[0]
+
+    assert preview_layer.visible is False
+    assert inspect.visible is True
+    assert viewer.layers.selection.active is inspect
+    assert viewer.layers[-1] is pinned
+
+
+def test_unsupported_multilevel_source_cannot_enter_preview_mode(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    path = tmp_path / "unsupported.zarr"
+    source_item = SimpleNamespace(
+        selector=SimpleNamespace(key=".", source_axes=(), effective_axes=()),
+        resolved=SimpleNamespace(
+            axes=("Z", "Y", "X"),
+            shape=(12, 128, 160),
+            level_shapes=((12, 128, 160), (6, 64, 80)),
+        ),
+        capabilities=SimpleNamespace(preview_level_read=False),
+        container=SimpleNamespace(format="ome-zarr-0.5"),
+    )
+    widget._file_source_path_identities[str(path)] = LocalSourceIdentity(
+        "directory",
+        "a" * 64,
+        1,
+        1,
+    )
+    monkeypatch.setattr(widget, "_file_source_path_for_node", lambda _node: path)
+    monkeypatch.setattr(
+        widget,
+        "_file_source_item_for_node",
+        lambda _node: source_item,
+    )
+    reloads = []
+    monkeypatch.setattr(
+        widget,
+        "_reload_source_preview",
+        lambda node_id: reloads.append(node_id),
+    )
+    widget._selected_node_id = node.id
+    widget._source_view_modes[node.id] = "preview:auto"
+
+    presentation = widget._source_resolution_presentation(node)
+    widget._on_source_viewer_display_changed(node.id, "preview:auto")
+
+    assert not presentation.can_select_preview
+    assert widget._source_view_modes[node.id] == "analysis"
+    assert reloads == []
+
+
+def test_binding_change_restores_analysis_after_visible_source_preview(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget._select_node("input")
+    inspect = widget._generated_layers_for_name("VIPP Inspect")[0]
+    data = np.zeros((2, 2), dtype=np.uint8)
+    widget._publish_source_preview(
+        "input",
+        ".",
+        SourcePreviewResult(
+            data=data,
+            image_state=image_state_from_array(
+                data,
+                layer_metadata={"axes": "YX"},
+            ),
+            preview_level=1,
+            level_count=2,
+            message="Presentation preview",
+            metrics=SourcePreviewReadMetrics(requested_decoded_bytes=data.nbytes),
+            generation=1,
+        ),
+    )
+    preview = widget._source_preview_layer("input", ".")
+    widget._source_view_modes["input"] = "preview:auto"
+    widget._apply_selected_viewer_surface(select_layer=True)
+    assert preview is not None and preview.visible
+    assert not inspect.visible
+
+    refreshes = []
+    original_refresh = widget._refresh_source_resolution_control
+
+    def tracked_refresh(node_id):
+        refreshes.append(node_id)
+        original_refresh(node_id)
+
+    monkeypatch.setattr(widget, "_refresh_source_resolution_control", tracked_refresh)
+    value = widget._image_source_value(widget.pipeline.nodes["input"])
+    value["binding_mode"] = "collection"
+
+    widget._on_image_source_changed(value)
+    widget._debounce_timer.stop()
+
+    assert widget._source_preview_layer("input", ".") is None
+    assert widget._source_view_modes["input"] == "analysis"
+    assert inspect.visible
+    assert viewer.layers.selection.active is inspect
+    assert refreshes
+
+
+def test_direct_workflow_tab_switch_cancels_and_removes_source_preview(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer, defer_initial_run=True)
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    first = widget._workflow_tabs.current
+    assert first is not None
+    cancelled = []
+    widget._active_source_preview_worker = SimpleNamespace(
+        cancel=lambda: cancelled.append(True)
+    )
+    widget._source_preview_node_id = "input"
+    widget._source_preview_path = "first.zarr"
+    widget._source_preview_item_key = "."
+    widget._source_view_modes["input"] = "preview:auto"
+    viewer.add_image(
+        np.zeros((2, 2), dtype=np.uint8),
+        name="First workflow preview",
+        metadata={
+            "napari_vipp_kind": "source_preview",
+            "node_id": "input",
+            "source_item_key": ".",
+        },
+    )
+    second = widget._workflow_tabs.create_blank(make_current=False)
+    second_index = widget._workflow_tabs.index_of(second.session_id)
+
+    assert widget._activate_workflow_tab(second_index, check_safety=False)
+
+    assert cancelled == [True]
+    assert widget._active_source_preview_worker is None
+    assert widget._source_view_modes == {}
+    assert widget._source_preview_layer("input", ".") is None
+
+    first_index = widget._workflow_tabs.index_of(first.session_id)
+    assert widget._activate_workflow_tab(first_index, check_safety=False)
+    assert widget._source_view_modes == {"input": "preview:auto"}
+
+
+def test_explicit_source_cancel_consumes_queued_retry(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    cancelled = []
+    worker = SimpleNamespace(cancel=lambda: cancelled.append(True))
+    widget._active_source_load_id = 17
+    widget._active_source_load_worker = worker
+    widget._source_load_pending = True
+    reruns = []
+    monkeypatch.setattr(widget, "run_pipeline", lambda: reruns.append(True))
+
+    widget._cancel_source_file_load(17)
+    widget._on_source_file_load_finished(SourceFileLoadResult(17, {}, cancelled=True))
+    QApplication.processEvents()
+
+    assert cancelled == [True]
+    assert widget._source_load_pending is False
+    assert reruns == []
+
+
+def test_rendering_matching_source_does_not_cancel_full_loader(qtbot, tmp_path):
+    path = tmp_path / "source.zarr"
+    path.mkdir()
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        source_mode="file path",
+        file_path=str(path),
+        series_index=0,
+    )
+    cancelled = []
+    spec = SourceFileLoadSpec(
+        node_id="input",
+        path=str(path.resolve()),
+        series_index=0,
+        cache_key=(str(path.resolve()), ("legacy-series", 0)),
+    )
+    widget._active_source_load_id = 22
+    widget._active_source_load_worker = SimpleNamespace(
+        specs=(spec,),
+        cancel=lambda: cancelled.append(True),
+    )
+
+    widget._start_source_inspection(node, path.resolve())
+
+    assert cancelled == []
+    assert widget._active_source_inspection_worker is None
+    assert widget._source_load_pending is False
+
+
+def test_changed_preview_plane_supersedes_previous_request(qtbot, tmp_path):
+    path = tmp_path / "source.zarr"
+    path.mkdir()
+    member = path / "chunk"
+    member.write_bytes(b"stable")
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    queued_pool = _QueuedThreadPool()
+    widget._source_preview_thread_pool = queued_pool
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        source_mode="file path",
+        file_path=str(path),
+        series_index=0,
+    )
+    identity = LocalSourceIdentity(
+        "directory",
+        "a" * 64,
+        1,
+        member.stat().st_size,
+    )
+    widget._file_source_path_identities[str(path.resolve())] = identity
+    source_item = SimpleNamespace(
+        selector=SimpleNamespace(
+            key=".",
+            source_axes=(),
+            effective_axes=(),
+        ),
+        resolved=SimpleNamespace(
+            raw_axes=("T", "C", "Z", "Y", "X"),
+            axes=("T", "C", "Z", "Y", "X"),
+            shape=(2, 3, 4, 64, 80),
+            level_shapes=((2, 3, 4, 64, 80), (2, 3, 4, 32, 40)),
+        ),
+        capabilities=SimpleNamespace(preview_level_read=True),
+        container=SimpleNamespace(format="ome-zarr-0.5"),
+    )
+
+    widget._start_source_preview(node, path.resolve(), source_item)
+    first = queued_pool.workers[-1]
+    widget.viewer.dims.current_step = (1, 2, 3)
+    widget._start_source_preview(node, path.resolve(), source_item)
+    second = queued_pool.workers[-1]
+
+    assert first is not second
+    assert first.cancellation_requested
+    assert first.spec.request.t_index == 0
+    assert second.spec.request.t_index == 1
+    assert second.spec.request.c_index == 2
+    assert second.spec.request.z_index == 3
+
+
+def test_dynamic_preview_level_choice_replaces_only_matching_level(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "levels.zarr"
+    path.mkdir()
+    member = path / "chunk"
+    member.write_bytes(b"stable")
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget._source_preview_thread_pool = _QueuedThreadPool()
+    widget._select_node("input")
+    node = widget.pipeline.nodes["input"]
+    identity = LocalSourceIdentity(
+        "directory",
+        "c" * 64,
+        1,
+        member.stat().st_size,
+    )
+    source_item = SimpleNamespace(
+        selector=SimpleNamespace(key=".", source_axes=(), effective_axes=()),
+        resolved=SimpleNamespace(
+            raw_axes=("T", "C", "Z", "Y", "X"),
+            axes=("T", "C", "Z", "Y", "X"),
+            shape=(2, 3, 4, 64, 80),
+            level_shapes=(
+                (2, 3, 4, 64, 80),
+                (2, 3, 4, 32, 40),
+                (2, 3, 4, 16, 20),
+            ),
+        ),
+        capabilities=SimpleNamespace(preview_level_read=True),
+        container=SimpleNamespace(format="ome-zarr-0.5"),
+    )
+    resolved_path = path.resolve()
+    widget._file_source_path_identities[str(resolved_path)] = identity
+    monkeypatch.setattr(
+        widget,
+        "_file_source_path_for_node",
+        lambda _node: resolved_path,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_file_source_item_for_node",
+        lambda _node: source_item,
+    )
+    data = np.zeros((32, 40), dtype=np.uint8)
+    widget._source_view_modes[node.id] = "preview:1"
+    widget._publish_source_preview(
+        node.id,
+        ".",
+        SourcePreviewResult(
+            data=data,
+            image_state=image_state_from_array(
+                data,
+                layer_metadata={"axes": "YX"},
+            ),
+            preview_level=1,
+            level_count=3,
+            message="Level 1 preview",
+            metrics=SourcePreviewReadMetrics(requested_decoded_bytes=data.nbytes),
+            generation=1,
+        ),
+        request=widget._source_preview_request(source_item, level=1),
+        expected_identity=identity,
+    )
+    old_level = widget._source_preview_layer(node.id, ".")
+    inspect = widget._generated_layers_for_name("VIPP Inspect")[0]
+    assert old_level is not None and old_level.visible
+    assert not inspect.visible
+
+    widget._on_source_viewer_display_changed(node.id, "preview:2")
+    explicit_worker = widget._source_preview_thread_pool.workers[-1]
+
+    assert explicit_worker.spec.request.level == 2
+    assert widget._source_preview_layer(node.id, ".") is None
+    assert inspect.visible
+    assert viewer.layers.selection.active is inspect
+
+    widget._on_source_viewer_display_changed(node.id, "preview:auto")
+    automatic_worker = widget._source_preview_thread_pool.workers[-1]
+
+    assert automatic_worker is not explicit_worker
+    assert explicit_worker.cancellation_requested
+    assert automatic_worker.spec.request.level is None
+
+
+def test_returning_to_retained_preview_cancels_stale_plane_worker(
+    qtbot,
+    tmp_path,
+):
+    path = tmp_path / "source.zarr"
+    path.mkdir()
+    member = path / "chunk"
+    member.write_bytes(b"stable")
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    queued_pool = _QueuedThreadPool()
+    widget._source_preview_thread_pool = queued_pool
+    node = widget.pipeline.nodes["input"]
+    identity = LocalSourceIdentity(
+        "directory",
+        "b" * 64,
+        1,
+        member.stat().st_size,
+    )
+    widget._file_source_path_identities[str(path.resolve())] = identity
+    source_item = SimpleNamespace(
+        selector=SimpleNamespace(key=".", source_axes=(), effective_axes=()),
+        resolved=SimpleNamespace(
+            raw_axes=("T", "C", "Z", "Y", "X"),
+            axes=("T", "C", "Z", "Y", "X"),
+            shape=(2, 3, 4, 64, 80),
+            level_shapes=((2, 3, 4, 64, 80), (2, 3, 4, 32, 40)),
+        ),
+        capabilities=SimpleNamespace(preview_level_read=True),
+        container=SimpleNamespace(format="ome-zarr-0.5"),
+    )
+    initial_request = widget._source_preview_request(source_item)
+    data = np.zeros((32, 40), dtype=np.uint8)
+    widget._publish_source_preview(
+        node.id,
+        ".",
+        SourcePreviewResult(
+            data=data,
+            image_state=image_state_from_array(
+                data,
+                layer_metadata={"axes": "YX"},
+            ),
+            preview_level=1,
+            level_count=2,
+            message="Initial retained preview",
+            metrics=SourcePreviewReadMetrics(requested_decoded_bytes=data.nbytes),
+            generation=1,
+        ),
+        request=initial_request,
+        expected_identity=identity,
+    )
+    retained = widget._source_preview_layer(node.id, ".")
+
+    widget.viewer.dims.current_step = (0, 0, 1)
+    widget._start_source_preview(node, path.resolve(), source_item)
+    stale_worker = queued_pool.workers[-1]
+    widget.viewer.dims.current_step = (0, 0, 0)
+    widget._start_source_preview(node, path.resolve(), source_item)
+
+    assert stale_worker.spec.request.z_index == 1
+    assert stale_worker.cancellation_requested
+    assert widget._active_source_preview_worker is None
+    assert len(queued_pool.workers) == 1
+    assert widget._source_preview_layer(node.id, ".") is retained
+
+
+def test_selecting_verified_image_source_recovers_absent_preview(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._selected_node_id = "input"
+    node = widget.pipeline.nodes["input"]
+    path = tmp_path / "source.zarr"
+    source_item = SimpleNamespace(selector=SimpleNamespace(key="."))
+    starts = []
+    monkeypatch.setattr(
+        widget,
+        "_file_source_path_for_node",
+        lambda _node: path,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_file_source_item_for_node",
+        lambda _node: source_item,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_start_source_preview",
+        lambda started_node, started_path, started_item: starts.append(
+            (started_node, started_path, started_item)
+        ),
+    )
+    monkeypatch.setattr(widget, "_refresh_source_resolution_control", lambda _id: None)
+
+    widget._ensure_selected_source_preview("input")
+
+    assert starts == [(node, path, source_item)]
+
+
+def test_linked_and_unlinked_z_changes_schedule_source_preview_refresh(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    for method_name in (
+        "_capture_vipp_dims_from_viewer",
+        "_sync_view_dims_bar",
+        "_update_thumbnails",
+        "_update_metadata_panel",
+        "_update_histogram",
+    ):
+        monkeypatch.setattr(widget, method_name, lambda: None)
+
+    widget._source_preview_dims_timer.stop()
+    widget._on_dims_changed()
+    assert widget._source_preview_dims_timer.isActive()
+
+    widget._source_preview_dims_timer.stop()
+    widget.follow_dims_checkbox.setChecked(False)
+    monkeypatch.setattr(
+        widget,
+        "_view_dim_axes",
+        lambda: (SimpleNamespace(step_axis=0, size=12),),
+    )
+    monkeypatch.setattr(widget, "_current_step_nsteps", lambda: (12,))
+    changed = []
+    monkeypatch.setattr(
+        widget,
+        "_set_vipp_current_step_axis",
+        lambda axis, value: changed.append((axis, value)),
+    )
+
+    widget._on_view_dim_changed(0, 7)
+
+    assert changed == [(0, 7)]
+    assert widget._source_preview_dims_timer.isActive()
+    widget._source_preview_dims_timer.stop()
+
+
+def test_file_source_details_use_metadata_rows_not_summary_prose(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    from napari_vipp._tests.test_source_items import _source_item
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        source_mode="file path",
+        file_path=str(tmp_path / "sample.ome.zarr"),
+    )
+    source_item = _source_item()
+    monkeypatch.setattr(
+        widget,
+        "_file_source_path_for_node",
+        lambda _node: tmp_path / "sample.ome.zarr",
+    )
+    monkeypatch.setattr(
+        widget,
+        "_file_source_item_for_node",
+        lambda _node: source_item,
+    )
+    original_params = deepcopy(node.params)
+    widget._selected_node_id = "input"
+
+    widget._update_metadata_panel()
+
+    assert _metadata_value(widget, "Source reader") == "ome-zarr-py 1.2.3"
+    assert _metadata_value(widget, "Pixel access") == "Lazy reader"
+    assert _metadata_value(widget, "Not exposed by reader") == "1"
+    assert widget._source_summary(SimpleNamespace(), node) == ""
+    assert node.params == original_params
+
+
+def test_deleting_input_cancels_source_work_and_removes_preview(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    cancelled = []
+    widget._active_source_load_id = 31
+    widget._active_source_load_worker = SimpleNamespace(
+        cancel=lambda: cancelled.append(True)
+    )
+    state = image_state_from_array(
+        np.ones((2, 2), dtype=np.uint8),
+        layer_metadata={"axes": "YX"},
+    )
+    preview = SourcePreviewResult(
+        data=np.ones((2, 2), dtype=np.uint8),
+        image_state=state,
+        preview_level=1,
+        level_count=2,
+        message="Preview level 1 - analysis remains full resolution",
+        metrics=SourcePreviewReadMetrics(requested_decoded_bytes=4),
+        generation=1,
+    )
+    widget._publish_source_preview("input", ".", preview)
+
+    widget._delete_node("input")
+
+    assert cancelled == [True]
+    assert not any(
+        layer.metadata.get("napari_vipp_kind") == "source_preview"
+        for layer in viewer.layers
+    )
+
+
 def test_image_source_node_inspects_and_selects_tiff_series(qtbot, tmp_path):
     first = np.zeros((5, 6), dtype=np.uint8)
     second = np.ones((7, 8), dtype=np.uint16)
@@ -4794,7 +5535,7 @@ def test_image_source_node_loads_common_raster_file(qtbot, tmp_path):
     widget._refresh_image_source_options()
 
     assert control.series_combo.count() == 1
-    assert "png" in control.source_summary.text()
+    assert control.source_summary.text() == ""
     widget.run_pipeline()
 
     assert widget.pipeline.outputs["input"].shape == data.shape
@@ -4919,6 +5660,128 @@ def test_interactive_batch_payload_uses_same_explicit_axis_declaration(qtbot):
         },
     }
     np.testing.assert_array_equal(effective.data, data)
+
+
+def test_interactive_batch_payload_keeps_matching_resolved_axis_evidence(qtbot):
+    from napari_vipp._tests.test_source_items import _source_item
+
+    data = np.zeros((4, 64, 80), dtype=np.uint16)
+    effective_state = image_state_from_array(
+        data,
+        layer_metadata={"axes": "ZYX"},
+        source_name="OME-Zarr stack",
+    )
+    assert effective_state is not None
+    source_item = _source_item()
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._interactive_collection_batch_config = BatchConfig(
+        workflow_file=Path("workflow.json"),
+        workflow_sha256="a" * 64,
+        output_dir=Path("outputs"),
+        sources=(
+            BatchSourceConfig(
+                "input",
+                "Image Source",
+                Path("inputs"),
+                "*",
+                AxisDeclaration("QYX", "ZYX"),
+            ),
+        ),
+        outputs=(
+            BatchOutputConfig(
+                "output",
+                "Batch Output",
+                "result",
+                "image",
+                "npy",
+                "",
+                "{source_stem}__{tag}",
+            ),
+        ),
+        save_python_script=False,
+    )
+    resolved_payload = SourcePayload(
+        data,
+        {"existing": "metadata"},
+        "OME-Zarr stack",
+        effective_state,
+        revision_token="revision",
+        axis_semantics_resolved=True,
+        source_item=source_item,
+    )
+
+    effective = widget._declared_interactive_batch_payload(
+        "input",
+        resolved_payload,
+    )
+
+    assert effective.image_state is effective_state
+    assert effective.source_item is source_item
+    assert effective.metadata["existing"] == "metadata"
+    assert effective.metadata["vipp_axis_semantics"] == {
+        "raw_axes": "QYX",
+        "effective_axes": "ZYX",
+        "declaration": {
+            "source_axes": "QYX",
+            "effective_axes": "ZYX",
+            "source": "batch config",
+            "applied": True,
+            "data_order_changed": False,
+        },
+    }
+    assert effective.metadata["vipp_source_item_digest"] == source_item.digest
+
+
+def test_interactive_batch_payload_rejects_conflicting_resolved_axis_evidence(qtbot):
+    from napari_vipp._tests.test_source_items import _source_item
+
+    data = np.zeros((4, 64, 80), dtype=np.uint16)
+    effective_state = image_state_from_array(
+        data,
+        layer_metadata={"axes": "ZYX"},
+        source_name="OME-Zarr stack",
+    )
+    assert effective_state is not None
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._interactive_collection_batch_config = BatchConfig(
+        workflow_file=Path("workflow.json"),
+        workflow_sha256="a" * 64,
+        output_dir=Path("outputs"),
+        sources=(
+            BatchSourceConfig(
+                "input",
+                "Image Source",
+                Path("inputs"),
+                "*",
+                AxisDeclaration("QYX", "TYX"),
+            ),
+        ),
+        outputs=(
+            BatchOutputConfig(
+                "output",
+                "Batch Output",
+                "result",
+                "image",
+                "npy",
+                "",
+                "{source_stem}__{tag}",
+            ),
+        ),
+        save_python_script=False,
+    )
+    resolved_payload = SourcePayload(
+        data,
+        {},
+        "OME-Zarr stack",
+        effective_state,
+        axis_semantics_resolved=True,
+        source_item=_source_item(),
+    )
+
+    with pytest.raises(ValueError, match="does not match the active batch"):
+        widget._declared_interactive_batch_payload("input", resolved_payload)
 
 
 def test_interactive_batch_recalculates_when_axis_declaration_changes(
@@ -7528,7 +8391,7 @@ def test_hidden_parameter_round_trips_through_current_workflow_schema(qtbot):
         restored_graph.get("output_tunnels", ()),
     )
 
-    assert document["version"] == 4
+    assert document["version"] == 5
     assert restored.nodes[node.id].params["histogram_bins"] == 8_192
     assert "histogram_bins=8192" in widget._node_code_text(node.id)
     exported = export_pipeline_to_python(widget.pipeline)
@@ -7579,17 +8442,13 @@ def test_skeletonize_inspector_marks_qyx_auto_as_unavailable(qtbot):
     widget.graph_view.select_node(node.id)
 
     control = widget._parameter_widgets["spatial_mode"]
-    choices = [
-        control.combo.itemText(index) for index in range(control.combo.count())
-    ]
+    choices = [control.combo.itemText(index) for index in range(control.combo.count())]
 
     assert choices == [
         "Auto from axes - unavailable (declare QYX -> ZYX or choose 2D YX)",
         "2D YX",
     ]
-    assert widget.pipeline.nodes[node.id].params["spatial_mode"] == (
-        "Auto from axes"
-    )
+    assert widget.pipeline.nodes[node.id].params["spatial_mode"] == ("Auto from axes")
 
 
 def test_skeletonize_inspector_projects_qyx_declaration_before_recalculation(
@@ -7607,8 +8466,7 @@ def test_skeletonize_inspector_projects_qyx_declaration_before_recalculation(
     widget.graph_view.select_node(node.id)
     control = widget._parameter_widgets["spatial_mode"]
     assert [
-        control.combo.itemText(index)
-        for index in range(control.combo.count())
+        control.combo.itemText(index) for index in range(control.combo.count())
     ] == [
         "Auto from axes - unavailable (declare QYX -> ZYX or choose 2D YX)",
         "2D YX",
@@ -7623,31 +8481,25 @@ def test_skeletonize_inspector_projects_qyx_declaration_before_recalculation(
     # The live carried state deliberately remains paired with the old cached
     # pixels until execution succeeds. Inspector choices must use the detached
     # metadata projection of the newly authored source declaration instead.
-    assert widget.pipeline.nodes["input"].params["axis_declaration"] == (
-        "QYX -> ZYX"
-    )
+    assert widget.pipeline.nodes["input"].params["axis_declaration"] == ("QYX -> ZYX")
     assert widget.pipeline.input_state_for_node(node.id).axis_order == "QYX"
 
     widget.graph_view.select_node(node.id)
     control = widget._parameter_widgets["spatial_mode"]
     assert [
-        control.combo.itemText(index)
-        for index in range(control.combo.count())
+        control.combo.itemText(index) for index in range(control.combo.count())
     ] == [
         "Auto from axes - using 3D ZYX",
         "2D YX",
         "3D ZYX",
     ]
-    assert widget.pipeline.nodes[node.id].params["spatial_mode"] == (
-        "Auto from axes"
-    )
+    assert widget.pipeline.nodes[node.id].params["spatial_mode"] == ("Auto from axes")
     assert widget.pipeline.input_state_for_node(node.id).axis_order == "QYX"
 
     assert widget._refresh_selected_parameter_controls() is False
     control = widget._parameter_widgets["spatial_mode"]
     assert [
-        control.combo.itemText(index)
-        for index in range(control.combo.count())
+        control.combo.itemText(index) for index in range(control.combo.count())
     ] == [
         "Auto from axes - using 3D ZYX",
         "2D YX",
@@ -7668,17 +8520,13 @@ def test_skeletonize_inspector_marks_trailing_qyx_as_unavailable(qtbot):
     widget.graph_view.select_node(node.id)
 
     control = widget._parameter_widgets["spatial_mode"]
-    choices = [
-        control.combo.itemText(index) for index in range(control.combo.count())
-    ]
+    choices = [control.combo.itemText(index) for index in range(control.combo.count())]
 
     assert choices == [
         "Auto from axes - unavailable (declare TQYX -> TZYX or choose 2D YX)",
         "2D YX",
     ]
-    assert widget.pipeline.nodes[node.id].params["spatial_mode"] == (
-        "Auto from axes"
-    )
+    assert widget.pipeline.nodes[node.id].params["spatial_mode"] == ("Auto from axes")
 
 
 def test_auto_watershed_hides_spatial_mode_for_2d_input(qtbot):
@@ -14946,6 +15794,12 @@ def test_full_batch_preempts_thumbnail_statistics_then_resumes_once(
     assert widget.pipeline_cancel_button.text() == "Cancel queued batch"
     assert widget.pipeline_cancel_button.isEnabled()
     assert "input" not in widget._thumbnail_statistics_presentations
+    assert "releasing thumbnail resources" in (
+        dialog.batch_activity_status.text().lower()
+    )
+    assert not dialog.batch_activity_progress.isHidden()
+    assert dialog.batch_activity_progress.minimum() == 0
+    assert dialog.batch_activity_progress.maximum() == 0
 
     latest_values = {"collection": "edited while queued"}
     monkeypatch.setattr(dialog, "values", lambda: latest_values)
@@ -14969,6 +15823,7 @@ def test_full_batch_preempts_thumbnail_statistics_then_resumes_once(
     qtbot.waitUntil(lambda: bool(resumed), timeout=5_000)
     assert resumed == [(dialog, latest_values)]
     assert widget._pending_collection_batch_start is None
+    assert "checking current inputs" in dialog.batch_activity_status.text().lower()
 
 
 def test_cancel_queued_batch_does_not_resurrect_after_thumbnail_cleanup(
@@ -15002,6 +15857,10 @@ def test_cancel_queued_batch_does_not_resurrect_after_thumbnail_cleanup(
     assert widget._active_thumbnail_contrast_run_id == run_id
     assert widget.pipeline_cancel_button.isHidden()
     assert "queued full batch cancelled" in widget.status_label.text().lower()
+    assert "queued full batch cancelled" in (
+        dialog.batch_activity_status.text().lower()
+    )
+    assert dialog.batch_activity_progress.isHidden()
     widget._on_thumbnail_contrast_limit_finished(
         ThumbnailContrastLimitResult(
             run_id,
@@ -17011,6 +17870,25 @@ def test_graph_notes_are_undoable_and_restored(qtbot):
     assert note_id in widget.graph_view._notes
 
 
+def test_graph_note_editor_wraps_text_to_dialog_width(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    note_id = widget._add_graph_note("A long graph note " * 20)
+    captured = {}
+
+    def reject_dialog(dialog):
+        captured["dialog"] = dialog
+        return 0
+
+    monkeypatch.setattr("napari_vipp._widget.QInputDialog.exec", reject_dialog)
+
+    widget._edit_graph_note(note_id)
+
+    editor = captured["dialog"].findChild(QPlainTextEdit)
+    assert editor is not None
+    assert editor.lineWrapMode() == QPlainTextEdit.WidgetWidth
+
+
 def test_delete_node_removes_attached_graph_notes_with_undo(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -18027,8 +18905,11 @@ def test_load_precedes_save_and_batch_is_separated_from_exports(
     dialog = CollectionBatchDialog()
     qtbot.addWidget(dialog)
     config_layout = dialog.load_config_button.parentWidget().layout()
-    assert config_layout.indexOf(dialog.load_config_button) < config_layout.indexOf(
-        dialog.save_config_button
+    assert (
+        config_layout.indexOf(dialog.load_config_button)
+        < config_layout.indexOf(dialog.save_config_button)
+        < config_layout.indexOf(dialog.demo_config_button)
+        < config_layout.indexOf(dialog.batch_activity_strip)
     )
 
 
@@ -19126,6 +20007,25 @@ def _configure_workflow_attached_batch(widget, tmp_path):
     return dialog, input_dir, output_dir
 
 
+def _configure_attached_gaussian_override(widget, dialog, value=3.0):
+    preview = widget._collection_batch_controller.preview(
+        **dialog.values(),
+        preview_limit=25,
+    )
+    assert widget._configure_batch_parameter_overrides(dialog, preview)
+    source_item = preview.items[0].source_items["input"]
+    editor = dialog.parameter_override_editor.editor_for(
+        "input",
+        source_item,
+        "gaussian",
+        "sigma",
+    )
+    editor.setText(str(value))
+    overrides = dialog.parameter_overrides()
+    assert len(overrides) == 1
+    return overrides
+
+
 def test_save_workflow_can_include_active_batch_workspace(
     qtbot,
     monkeypatch,
@@ -19159,6 +20059,7 @@ def test_save_workflow_can_include_active_batch_workspace(
     assert attached.resolve_path(attached.output_dir) == output_dir.resolve()
     assert attached.resolve_path(attached.sources[0].input_dir) == input_dir.resolve()
     assert attached.sources[0].pattern == "*.npy"
+    assert attached.sources[0].source_items == ()
     assert attached.default_image_format == "npy"
     assert attached.existing_file_policy == ExistingFilePolicy.SKIP
     assert attached.continue_on_error is False
@@ -19425,7 +20326,7 @@ def test_invalid_included_batch_workspace_aborts_workflow_save(
     assert widget.status_label.text().startswith("Save failed:")
 
 
-def test_workflow_load_restores_attached_batch_without_previewing(
+def test_workflow_load_detects_attached_batch_samples_without_previewing_pixels(
     qtbot,
     monkeypatch,
     tmp_path,
@@ -19454,11 +20355,26 @@ def test_workflow_load_restores_attached_batch_without_previewing(
     )
 
     restored.load_workflow_file(target)
+    loading_dialog = restored._active_collection_batch_dialog
+    assert loading_dialog is not None
+    assert not loading_dialog.source_detection_progress.isHidden()
+    assert "detecting batch items" in (
+        loading_dialog.batch_activity_status.text().lower()
+    )
+    assert loading_dialog.preview_table.rowCount() == 0
+    qtbot.waitUntil(
+        lambda: not restored._batch_workspace_preview_workers,
+        timeout=10_000,
+    )
 
     dialog = restored._active_collection_batch_dialog
     assert dialog is not None
     assert dialog.isVisible()
-    assert dialog._preview_result is None
+    assert dialog._preview_result is not None
+    assert dialog._preview_result.total_items == 1
+    assert dialog.preview_table.rowCount() == 1
+    assert dialog.source_detection_progress.isHidden()
+    assert dialog.batch_activity_status.text() == "Ready · 1 batch item."
     assert dialog._loaded_config_path is None
     assert restored._interactive_collection_batch_items == ()
     assert restored._interactive_collection_batch_config_path is None
@@ -19468,8 +20384,369 @@ def test_workflow_load_restores_attached_batch_without_previewing(
     assert dialog.format_combo.currentText() == "npy"
     assert dialog.values()["existing_file_policy"] == ExistingFilePolicy.SKIP.value
     assert dialog.continue_checkbox.isChecked() is False
-    assert "restored from this workflow" in dialog.preview_status.text()
-    assert "settings were restored" in restored._last_workflow_load_detail
+    assert "Restored and detected 1 current batch item" in (
+        dialog.preview_status.text()
+    )
+    assert "No representative image was calculated" in (
+        dialog.graph_preview_status.text()
+    )
+    assert "samples and source revisions" in restored._last_workflow_load_detail
+    assert not output_dir.exists()
+
+
+def test_workflow_load_detects_samples_without_override_eligible_parameters(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    source = VippWidget(_Viewer())
+    qtbot.addWidget(source)
+    _dialog, _input_dir, output_dir = _configure_workflow_attached_batch(
+        source,
+        tmp_path,
+    )
+    target = tmp_path / "restorable-batch-workflow-no-overrides.json"
+    document = source._workflow_document_with_batch_config(
+        target,
+        source.graph_view.node_positions(),
+    )
+    target.write_text(json.dumps(document), encoding="utf-8")
+
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+    monkeypatch.setattr(
+        "napari_vipp._widget.is_batch_parameter_override_eligible",
+        lambda *_args, **_kwargs: False,
+    )
+
+    restored.load_workflow_file(target)
+    qtbot.waitUntil(
+        lambda: not restored._batch_workspace_preview_workers,
+        timeout=10_000,
+    )
+
+    restored_dialog = restored._active_collection_batch_dialog
+    assert restored_dialog is not None
+    assert restored_dialog._preview_result is not None
+    assert restored_dialog.preview_table.rowCount() == 1
+    assert restored_dialog.parameter_override_group.isHidden()
+    assert restored_dialog.run_button.isEnabled()
+    assert not output_dir.exists()
+
+
+def test_workflow_load_surfaces_zero_override_sample_detection_failure(
+    qtbot,
+    tmp_path,
+):
+    source = VippWidget(_Viewer())
+    qtbot.addWidget(source)
+    _dialog, input_dir, output_dir = _configure_workflow_attached_batch(
+        source,
+        tmp_path,
+    )
+    target = tmp_path / "restorable-batch-workflow-missing-samples.json"
+    document = source._workflow_document_with_batch_config(
+        target,
+        source.graph_view.node_positions(),
+    )
+    target.write_text(json.dumps(document), encoding="utf-8")
+    (input_dir / "field.npy").unlink()
+
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+    restored.load_workflow_file(target)
+    qtbot.waitUntil(
+        lambda: not restored._batch_workspace_preview_workers,
+        timeout=10_000,
+    )
+
+    restored_dialog = restored._active_collection_batch_dialog
+    assert restored_dialog is not None
+    assert restored_dialog._preview_result is None
+    assert restored_dialog.preview_table.rowCount() == 0
+    assert restored_dialog.source_detection_progress.isHidden()
+    assert restored_dialog.parameter_override_group.isHidden()
+    assert "needs attention" in restored_dialog.batch_activity_status.text().lower()
+    assert restored_dialog.preview_button.isEnabled()
+    assert not restored_dialog.run_button.isEnabled()
+    assert "source" in restored_dialog.preview_status.text().lower()
+    assert restored_dialog.preview_status.toolTip()
+    assert not output_dir.exists()
+
+
+def test_batch_setting_edit_cancels_zero_override_sample_detection(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    source = VippWidget(_Viewer())
+    qtbot.addWidget(source)
+    _dialog, _input_dir, _output_dir = _configure_workflow_attached_batch(
+        source,
+        tmp_path,
+    )
+    target = tmp_path / "restorable-batch-workflow-cancelled-detection.json"
+    document = source._workflow_document_with_batch_config(
+        target,
+        source.graph_view.node_positions(),
+    )
+    target.write_text(json.dumps(document), encoding="utf-8")
+
+    from napari_vipp.ui import batch_workers
+
+    original_execute = batch_workers.execute_prepared_collection_batch_preview
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_execute(prepared):
+        started.set()
+        release.wait(timeout=5)
+        return original_execute(prepared)
+
+    monkeypatch.setattr(
+        batch_workers,
+        "execute_prepared_collection_batch_preview",
+        delayed_execute,
+    )
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+
+    restored.load_workflow_file(target)
+    restored_dialog = restored._active_collection_batch_dialog
+    assert restored_dialog is not None
+    assert started.wait(timeout=5)
+    try:
+        assert not restored_dialog.source_detection_progress.isHidden()
+        restored_dialog.pattern_edit.setText("*.tif")
+
+        assert not restored._batch_workspace_preview_contexts
+        assert restored_dialog.source_detection_progress.isHidden()
+        assert restored_dialog.preview_button.isEnabled()
+        assert restored_dialog.run_button.isEnabled()
+        assert "not checked" in restored_dialog.batch_activity_status.text().lower()
+        assert "settings changed" in restored_dialog.preview_status.text().lower()
+    finally:
+        release.set()
+    qtbot.waitUntil(
+        lambda: not restored._batch_workspace_preview_workers,
+        timeout=10_000,
+    )
+
+
+def test_workflow_load_rebinds_saved_overrides_to_unchanged_sources(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    source = VippWidget(_Viewer())
+    qtbot.addWidget(source)
+    dialog, _input_dir, output_dir = _configure_workflow_attached_batch(
+        source,
+        tmp_path,
+    )
+    saved_overrides = _configure_attached_gaussian_override(source, dialog)
+    target = tmp_path / "workflow-with-override.json"
+    document = source._workflow_document_with_batch_config(
+        target,
+        source.graph_view.node_positions(),
+    )
+    assert len(document["batch_config"]["sources"][0]["source_items"]) == 1
+    target.write_text(json.dumps(document), encoding="utf-8")
+
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+    monkeypatch.setattr(
+        restored,
+        "_activate_interactive_collection_batch",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Automatic restore must not calculate representative pixels."
+        ),
+    )
+
+    restored.load_workflow_file(target)
+    qtbot.waitUntil(
+        lambda: not restored._batch_workspace_preview_workers,
+        timeout=10_000,
+    )
+
+    restored_dialog = restored._active_collection_batch_dialog
+    assert restored_dialog is not None
+    assert restored_dialog.parameter_override_editor.configured
+    assert restored_dialog.source_detection_progress.isHidden()
+    assert restored_dialog._pending_parameter_overrides == ()
+    assert restored_dialog.parameter_overrides() == saved_overrides
+    assert restored_dialog.parameter_override_editor.table.rowCount() == 1
+    assert restored_dialog._preview_result is not None
+    current_item = restored_dialog._preview_result.items[0].source_items["input"]
+    editor = restored_dialog.parameter_override_editor.editor_for(
+        "input",
+        current_item,
+        "gaussian",
+        "sigma",
+    )
+    assert editor.text() == "3"
+    assert restored.pipeline.nodes["gaussian"].params["sigma"] != 3.0
+    assert restored._interactive_collection_batch_items == ()
+    assert "Restored and verified" in restored_dialog.preview_status.text()
+    assert "No representative image was calculated" in (
+        restored_dialog.graph_preview_status.text()
+    )
+    assert restored_dialog.run_button.isEnabled()
+    assert not output_dir.exists()
+
+    starts = []
+    monkeypatch.setattr(
+        restored,
+        "_start_collection_batch_worker",
+        lambda active, **values: starts.append((active, values)),
+    )
+    qtbot.waitUntil(
+        lambda: (
+            restored._active_pipeline_run_id is None
+            and restored._active_source_load_id is None
+            and not restored._pipeline_run_pending
+        ),
+        timeout=10_000,
+    )
+    qtbot.mouseClick(restored_dialog.run_button, Qt.LeftButton)
+    assert len(starts) == 1
+    assert starts[0][0] is restored_dialog
+    assert starts[0][1]["expected_items"] == restored_dialog._preview_result.items
+
+    activated = []
+    monkeypatch.setattr(
+        restored,
+        "_activate_interactive_collection_batch",
+        lambda items, config, **kwargs: activated.append((items, config, kwargs)),
+    )
+    assert restored._preview_collection_batch_plan_item(0)
+    assert activated[0][0] == restored_dialog._preview_result.items
+    assert activated[0][2]["initial_index"] == 0
+
+
+def test_workflow_load_keeps_changed_source_override_pending_and_actionable(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    source = VippWidget(_Viewer())
+    qtbot.addWidget(source)
+    dialog, input_dir, output_dir = _configure_workflow_attached_batch(
+        source,
+        tmp_path,
+    )
+    saved_overrides = _configure_attached_gaussian_override(source, dialog)
+    target = tmp_path / "workflow-with-stale-override.json"
+    document = source._workflow_document_with_batch_config(
+        target,
+        source.graph_view.node_positions(),
+    )
+    # Reproduce the user's existing pre-inventory workflow attachment.
+    document["batch_config"]["sources"][0].pop("source_items", None)
+    target.write_text(json.dumps(document), encoding="utf-8")
+    np.save(
+        input_dir / "field.npy",
+        np.full((4, 5), 65535, dtype=np.uint16),
+    )
+
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+    monkeypatch.setattr(
+        restored,
+        "_activate_interactive_collection_batch",
+        lambda *_args, **_kwargs: pytest.fail(
+            "A stale saved override must not load representative pixels."
+        ),
+    )
+
+    restored.load_workflow_file(target)
+    qtbot.waitUntil(
+        lambda: not restored._batch_workspace_preview_workers,
+        timeout=10_000,
+    )
+
+    restored_dialog = restored._active_collection_batch_dialog
+    assert restored_dialog is not None
+    assert not restored_dialog.parameter_override_editor.configured
+    assert restored_dialog.source_detection_progress.isHidden()
+    assert restored_dialog._pending_parameter_overrides == saved_overrides
+    assert restored_dialog._preview_result is None
+    assert restored_dialog.parameter_override_editor.table.rowCount() == 0
+    assert not restored_dialog.run_button.isEnabled()
+    assert "no longer matches an exact source revision" in (
+        restored_dialog.parameter_override_editor.status_label.text()
+    )
+    assert "were kept and were not reassigned" in (
+        restored_dialog.preview_status.text()
+    )
+    assert "source content" in restored_dialog.preview_status.toolTip()
+    assert restored._interactive_collection_batch_items == ()
+    assert not output_dir.exists()
+
+
+def test_workflow_load_alerts_when_an_unoverridden_saved_source_changed(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    source = VippWidget(_Viewer())
+    qtbot.addWidget(source)
+    dialog, input_dir, output_dir = _configure_workflow_attached_batch(
+        source,
+        tmp_path,
+    )
+    unchanged_override_source = input_dir / "field.npy"
+    unoverridden_source = input_dir / "unoverridden.npy"
+    np.save(
+        unoverridden_source,
+        np.arange(20, dtype=np.uint16).reshape(4, 5) + 100,
+    )
+    saved_overrides = _configure_attached_gaussian_override(source, dialog)
+    target = tmp_path / "workflow-with-frozen-collection.json"
+    document = source._workflow_document_with_batch_config(
+        target,
+        source.graph_view.node_positions(),
+    )
+    assert len(document["batch_config"]["sources"][0]["source_items"]) == 2
+    target.write_text(json.dumps(document), encoding="utf-8")
+    np.save(
+        unoverridden_source,
+        np.full((4, 5), 65535, dtype=np.uint16),
+    )
+    assert unchanged_override_source.is_file()
+
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+    monkeypatch.setattr(
+        restored,
+        "_activate_interactive_collection_batch",
+        lambda *_args, **_kwargs: pytest.fail(
+            "A changed saved collection must not load representative pixels."
+        ),
+    )
+
+    restored.load_workflow_file(target)
+    qtbot.waitUntil(
+        lambda: not restored._batch_workspace_preview_workers,
+        timeout=10_000,
+    )
+
+    restored_dialog = restored._active_collection_batch_dialog
+    assert restored_dialog is not None
+    assert restored_dialog._pending_parameter_overrides == saved_overrides
+    assert restored_dialog.source_detection_progress.isHidden()
+    assert not restored_dialog.parameter_override_editor.configured
+    assert restored_dialog._preview_result is None
+    assert not restored_dialog.run_button.isEnabled()
+    assert "saved source collection changed" in (
+        restored_dialog.parameter_override_editor.status_label.text()
+    )
+    assert "were kept and were not reassigned" in (
+        restored_dialog.preview_status.text()
+    )
+    assert "SourceItem revisions" in restored_dialog.preview_status.toolTip()
+    assert restored._interactive_collection_batch_items == ()
+    assert not output_dir.exists()
 
 
 def test_invalid_attached_batch_config_does_not_block_workflow_load(
@@ -19529,20 +20806,23 @@ def test_collection_batch_dialog_defaults(qtbot):
 
     values = dialog.values()
 
-    assert "*.ome.tif" in values["pattern"]
+    assert values["pattern"] == "*"
     assert values["source_bindings"][0]["node_id"] == "input"
-    assert "*.ome.tif" in values["source_bindings"][0]["pattern"]
+    assert values["source_bindings"][0]["pattern"] == "*"
     assert values["image_format"] == "ome-tiff"
     assert values["existing_file_policy"] == ExistingFilePolicy.ERROR.value
+    assert dialog.existing_policy_combo.currentText() == (
+        "Ask before overwrite (recommended)"
+    )
     assert values["save_workflow_snapshot"] is True
     assert not dialog.workflow_checkbox.isEnabled()
     assert values["save_python_script"] is True
     assert values["continue_on_error"] is True
-    assert dialog.load_config_button.text() == "Load config..."
+    assert dialog.load_config_button.text() == "Load..."
     assert not dialog.load_config_button.isEnabled()
-    assert dialog.save_config_button.text() == "Save config..."
+    assert dialog.save_config_button.text() == "Save..."
     assert not dialog.save_config_button.isEnabled()
-    assert dialog.demo_config_button.text() == "Open batch demo..."
+    assert dialog.demo_config_button.text() == "Demo..."
     assert not dialog.demo_config_button.isEnabled()
     assert not dialog.preview_button.isEnabled()
 
@@ -19743,22 +21023,22 @@ def test_collection_batch_navigator_browses_series_inside_one_container(
 
     assert len(preview.items) == 2
     assert [item.source_series_indices["input"] for item in preview.items] == [
-        0,
         1,
+        0,
     ]
-    np.testing.assert_array_equal(widget.pipeline.outputs["input"], first)
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], second)
     assert "multi_series.npz" in widget.batch_navigator.sources_label.text()
-    assert "upper" in widget.batch_navigator.sources_label.text()
+    assert "lower" in widget.batch_navigator.sources_label.text()
 
     widget.batch_navigator.next_button.click()
     qtbot.waitUntil(
-        lambda: np.array_equal(widget.pipeline.outputs.get("input"), second),
+        lambda: np.array_equal(widget.pipeline.outputs.get("input"), first),
         timeout=5000,
     )
 
     assert widget.batch_navigator.current_index == 1
-    assert widget._interactive_collection_source_series_indices == {"input": 1}
-    assert "lower" in widget.batch_navigator.sources_label.text()
+    assert widget._interactive_collection_source_series_indices == {"input": 0}
+    assert "upper" in widget.batch_navigator.sources_label.text()
     assert widget.pipeline.nodes["input"].params == original_params
 
 
@@ -19846,6 +21126,297 @@ def test_batch_representative_does_not_commit_dtype_autodefaults(qtbot, tmp_path
     assert scientific_workflow_hash(widget._batch_workflow_document()) == (
         preview.config.workflow_sha256
     )
+
+
+def test_batch_parameter_override_preview_uses_detached_item_workflow(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    source = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    np.save(input_dir / "field.npy", source)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._compute_mode = ComputeMode.CPU
+    scale = widget.add_node_from_palette("linear_scale_offset")
+    output = widget.add_node_from_palette("batch_output")
+    widget.pipeline.set_param(output.id, "format", "npy")
+    widget._connect_nodes("input", scale.id)
+    widget._connect_nodes(scale.id, output.id)
+    widget._debounce_timer.stop()
+    original_params = dict(widget.pipeline.nodes[scale.id].params)
+    values = {
+        "input_dir": "",
+        "output_dir": tmp_path / "outputs",
+        "pattern": "*.npy",
+        "image_format": "npy",
+        "source_bindings": [
+            {
+                "node_id": "input",
+                "title": "Batch input",
+                "input_dir": str(input_dir),
+                "pattern": "*.npy",
+            }
+        ],
+    }
+    preliminary = widget._collection_batch_controller.preview(
+        **values,
+        preview_limit=25,
+    )
+    source_item = preliminary.items[0].source_items["input"]
+    overrides = (
+        BatchSourceParameterOverrides(
+            batch_source_item_override_key("input", source_item),
+            (
+                BatchParameterOverride(scale.id, "alpha", 2.0),
+                BatchParameterOverride(scale.id, "beta", 5.0),
+            ),
+        ),
+    )
+    background_calls = []
+    original_background = widget._start_background_pipeline_run
+
+    def tracked_background(*args, **kwargs):
+        background_calls.append(tuple(kwargs.get("workflow_parameter_overrides", ())))
+        return original_background(*args, **kwargs)
+
+    monkeypatch.setattr(widget, "_start_background_pipeline_run", tracked_background)
+
+    preview = widget._preview_collection_batch(
+        **values,
+        parameter_overrides=overrides,
+    )
+    qtbot.waitUntil(
+        lambda: (
+            widget._interactive_collection_batch_index == 0
+            and widget._active_pipeline_run_id is None
+        ),
+        timeout=10_000,
+    )
+
+    assert background_calls
+    assert background_calls[-1] == overrides[0].values
+    np.testing.assert_array_equal(
+        widget.pipeline.outputs[scale.id],
+        source.astype(np.float32) * 2.0 + 5.0,
+    )
+    assert widget.pipeline.nodes[scale.id].params == original_params
+    assert preview.items[0].parameter_overrides == overrides[0].values
+    assert scientific_workflow_hash(widget._batch_workflow_document()) == (
+        preview.config.workflow_sha256
+    )
+    widget._select_node(scale.id)
+    assert not widget.batch_effective_parameter_group.isHidden()
+    assert widget.parameter_group.title() == "Workflow parameters"
+    effective_text = widget.batch_effective_parameter_label.text()
+    assert "Scale: 2" in effective_text
+    assert (
+        "workflow value: "
+        + widget._batch_parameter_value_text(original_params["alpha"])
+    ) in effective_text
+    assert "Offset: 5" in effective_text
+    assert (
+        "workflow value: " + widget._batch_parameter_value_text(original_params["beta"])
+    ) in effective_text
+
+
+def test_batch_representative_navigation_shows_and_uses_exact_threshold_override(
+    qtbot,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    dim = np.array([[4_000, 5_001], [8_000, 12_000]], dtype=np.uint16)
+    bright = np.array([[4_000, 6_000], [12_000, 14_000]], dtype=np.uint16)
+    np.save(input_dir / "01_dim.npy", dim)
+    np.save(input_dir / "02_bright.npy", bright)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._compute_mode = ComputeMode.CPU
+    threshold = widget.add_node_from_palette("binary_threshold")
+    output = widget.add_node_from_palette("batch_output")
+    widget.pipeline.set_param(threshold.id, "threshold", 5_000.0)
+    widget.pipeline.set_param(output.id, "format", "npy")
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, output.id)
+    widget._debounce_timer.stop()
+    values = {
+        "input_dir": "",
+        "output_dir": tmp_path / "outputs",
+        "pattern": "*.npy",
+        "image_format": "npy",
+        "source_bindings": [
+            {
+                "node_id": "input",
+                "title": "Batch input",
+                "input_dir": str(input_dir),
+                "pattern": "*.npy",
+            }
+        ],
+    }
+    preliminary = widget._collection_batch_controller.preview(
+        **values,
+        preview_limit=25,
+    )
+    bright_item = preliminary.items[1].source_items["input"]
+    overrides = (
+        BatchSourceParameterOverrides(
+            batch_source_item_override_key("input", bright_item),
+            (
+                BatchParameterOverride(
+                    threshold.id,
+                    "threshold",
+                    13_000.0,
+                ),
+            ),
+        ),
+    )
+
+    preview = widget._preview_collection_batch(
+        **values,
+        parameter_overrides=overrides,
+    )
+    qtbot.waitUntil(
+        lambda: (
+            widget._interactive_collection_batch_index == 0
+            and widget._active_pipeline_run_id is None
+        ),
+        timeout=10_000,
+    )
+    widget._select_node(threshold.id)
+
+    np.testing.assert_array_equal(widget.pipeline.outputs[threshold.id], dim > 5_000)
+    assert widget.pipeline.nodes[threshold.id].params["threshold"] == 5_000.0
+    assert widget.batch_effective_parameter_group.isHidden()
+    assert widget.batch_effective_parameter_label.text() == ""
+    assert widget.parameter_group.title() == "Parameters"
+    assert widget.batch_navigator.effective_overrides_label.isHidden()
+
+    widget.batch_navigator.slider.setValue(1)
+    qtbot.waitUntil(
+        lambda: (
+            widget._interactive_collection_batch_index == 1
+            and widget._active_pipeline_run_id is None
+        ),
+        timeout=10_000,
+    )
+
+    np.testing.assert_array_equal(
+        widget.pipeline.outputs[threshold.id],
+        bright > 13_000,
+    )
+    assert not np.array_equal(bright > 13_000, bright > 5_000)
+    assert widget.pipeline.nodes[threshold.id].params["threshold"] == 5_000.0
+    effective_text = widget.batch_effective_parameter_label.text()
+    assert "Threshold: 13,000" in effective_text
+    assert "workflow value: 5,000" in effective_text
+    assert not widget.batch_navigator.effective_overrides_label.isHidden()
+    assert "Threshold = 13,000" in (
+        widget.batch_navigator.effective_overrides_label.text()
+    )
+
+    # The selected item has an override elsewhere in the graph, but the
+    # inspector stays ordinary on a node that has no exception of its own.
+    widget._select_node("gaussian")
+    assert widget.batch_effective_parameter_group.isHidden()
+    assert widget.batch_effective_parameter_label.text() == ""
+    assert widget.parameter_group.title() == "Parameters"
+    widget._select_node(threshold.id)
+    assert not widget.batch_effective_parameter_group.isHidden()
+    assert widget.parameter_group.title() == "Workflow parameters"
+
+    widget.batch_navigator.slider.setValue(0)
+    qtbot.waitUntil(
+        lambda: (
+            widget._interactive_collection_batch_index == 0
+            and widget._active_pipeline_run_id is None
+        ),
+        timeout=10_000,
+    )
+
+    np.testing.assert_array_equal(widget.pipeline.outputs[threshold.id], dim > 5_000)
+    assert widget.batch_effective_parameter_group.isHidden()
+    assert widget.batch_effective_parameter_label.text() == ""
+    assert widget.parameter_group.title() == "Parameters"
+    assert scientific_workflow_hash(widget._batch_workflow_document()) == (
+        preview.config.workflow_sha256
+    )
+
+
+def test_editing_batch_override_invalidates_reuse_until_fresh_preview(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    source = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    np.save(input_dir / "field.npy", source)
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._compute_mode = ComputeMode.CPU
+    output = widget.add_node_from_palette("batch_output")
+    widget.pipeline.set_param(output.id, "format", "npy")
+    widget._connect_nodes("gaussian", output.id)
+    widget._debounce_timer.stop()
+    base_sigma = widget.pipeline.nodes["gaussian"].params["sigma"]
+    dialog = widget._batch_collection_dialog()
+    assert dialog is not None
+    row = dialog._source_rows[0]
+    row["folder"].setText(str(input_dir))
+    row["pattern"].setText("*.npy")
+    dialog.output_edit.setText(str(tmp_path / "outputs"))
+    dialog.format_combo.setCurrentText("npy")
+    assert dialog._preview_batch()
+    qtbot.waitUntil(
+        lambda: widget._interactive_collection_batch_index == 0,
+        timeout=5_000,
+    )
+    baseline = np.array(widget.pipeline.outputs["gaussian"], copy=True)
+    assert dialog._preview_result is not None
+    source_item = dialog._preview_result.items[0].source_items["input"]
+    editor = dialog.parameter_override_editor.editor_for(
+        "input",
+        source_item,
+        "gaussian",
+        "sigma",
+    )
+    background_calls = []
+    original_background = widget._start_background_pipeline_run
+
+    def tracked_background(*args, **kwargs):
+        background_calls.append(tuple(kwargs.get("workflow_parameter_overrides", ())))
+        return original_background(*args, **kwargs)
+
+    monkeypatch.setattr(widget, "_start_background_pipeline_run", tracked_background)
+
+    editor.setText("3.0")
+
+    assert widget._interactive_collection_batch_index == -1
+    assert widget._interactive_collection_batch_plan_stale
+    assert dialog._preview_result is None
+    assert not dialog.run_button.isEnabled()
+    assert widget.pipeline.nodes["gaussian"].params["sigma"] == base_sigma
+    np.testing.assert_array_equal(widget.pipeline.outputs["gaussian"], baseline)
+
+    assert dialog._preview_batch()
+    qtbot.waitUntil(
+        lambda: (
+            widget._interactive_collection_batch_index == 0
+            and widget._active_pipeline_run_id is None
+        ),
+        timeout=10_000,
+    )
+
+    assert background_calls
+    assert background_calls[-1] == (BatchParameterOverride("gaussian", "sigma", 3.0),)
+    assert widget.pipeline.nodes["gaussian"].params["sigma"] == base_sigma
+    assert not np.array_equal(widget.pipeline.outputs["gaussian"], baseline)
+    assert dialog.run_button.isEnabled()
 
 
 def test_batch_slider_bounds_materialized_source_cache_but_pins_identities(
@@ -20116,8 +21687,8 @@ def test_direct_run_applies_qyx_z_stack_suggestion_and_retries_once(
         "raw QYX, effective QYX. Subtract Background, Gaussian Blur 3D, and "
         "Reorder Axes cannot continue.",
         user_message=(
-            "This TIFF looks like a Z stack, but its first dimension is "
-            "labelled Q. VIPP can treat it as Z for this batch."
+            "This source has an unknown leading Q axis. Because the workflow "
+            "requires 3D processing, VIPP can treat Q as depth Z."
         ),
         axis_suggestion=BatchAxisSuggestion(
             source_node_id=source_id,
@@ -20190,7 +21761,7 @@ def test_direct_run_applies_qyx_z_stack_suggestion_and_retries_once(
     assert control.mode_combo.currentData() == "z_stack"
     assert control.text() == "QYX -> ZYX"
     assert not control.notice_label.isHidden()
-    assert "VIPP selected Z stack" in control.notice_label.text()
+    assert "Automatic choice: QYX -> ZYX" in control.notice_label.text()
     assert len(started) == 1
     active_dialog, run_values = started[0]
     assert active_dialog is dialog
@@ -20814,7 +22385,11 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
     assert "4 completed" in dialog.run_progress_label.text()
 
 
-def test_preflight_failure_does_not_fill_batch_progress(qtbot, tmp_path):
+def test_error_policy_collision_cancel_preserves_existing_output(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     demo = widget._create_collection_batch_demo(tmp_path / "demo")
@@ -20825,17 +22400,187 @@ def test_preflight_failure_does_not_fill_batch_progress(qtbot, tmp_path):
     collision_path = Path(dialog.preview_table.item(0, 2).toolTip().splitlines()[0])
     collision_path.parent.mkdir(parents=True, exist_ok=True)
     collision_path.write_bytes(b"collision")
+    prompts: list[tuple[tuple[Path, ...], Path]] = []
+    monkeypatch.setattr(
+        widget,
+        "_confirm_collection_batch_overwrite",
+        lambda _dialog, paths, *, output_dir: (
+            prompts.append((paths, output_dir)) or False
+        ),
+    )
 
-    # First click refreshes the changed preflight for review; the second tries
-    # the reviewed Error-policy plan and fails before item one.
+    # The first click safely refreshes a newly changed destination plan. The
+    # second asks about the now-reviewed collision instead of reporting a run
+    # failure.
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    assert prompts == []
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
 
-    assert widget.batch_navigator.progress_bar.value() == 0
-    assert widget.batch_navigator.progress_bar.format().startswith("Failed")
+    assert len(prompts) == 1
+    assert collision_path.resolve() in {path.resolve() for path in prompts[0][0]}
+    assert prompts[0][1] == demo.root / "results"
+    assert collision_path.read_bytes() == b"collision"
+    assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
+    assert not widget._collection_batch_running
     assert dialog.run_progress_bar.value() == 0
-    assert dialog.run_progress_bar.format() == "Failed"
+    assert dialog.run_progress_bar.format() == "Not run"
+    assert "left unchanged" in dialog.batch_activity_status.text().lower()
+    assert dialog.run_button.isEnabled()
+    assert dialog.values()["existing_file_policy"] == ExistingFilePolicy.ERROR.value
+
+
+def test_error_policy_collision_confirmation_overwrites_for_one_run(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    collision_path = Path(dialog.preview_table.item(0, 2).toolTip().splitlines()[0])
+    collision_path.parent.mkdir(parents=True, exist_ok=True)
+    collision_path.write_bytes(b"collision")
+    prompts: list[tuple[tuple[Path, ...], Path]] = []
+    monkeypatch.setattr(
+        widget,
+        "_confirm_collection_batch_overwrite",
+        lambda _dialog, paths, *, output_dir: (
+            prompts.append((paths, output_dir)) or True
+        ),
+    )
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    assert prompts == []
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
+    qtbot.waitUntil(
+        lambda: not widget._collection_batch_running and manifest_path.is_file(),
+        timeout=15_000,
+    )
+
+    assert len(prompts) == 1
+    assert collision_path.resolve() in {path.resolve() for path in prompts[0][0]}
+    assert collision_path.read_bytes() != b"collision"
+    assert dialog.values()["existing_file_policy"] == ExistingFilePolicy.ERROR.value
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert (
+        manifest["config"]["document"]["defaults"]["existing_file_policy"]
+        == ExistingFilePolicy.OVERWRITE.value
+    )
+    replaced_records = [
+        output
+        for item in manifest["items"]
+        for output in item["outputs"]
+        if Path(output["path"]).resolve() == collision_path.resolve()
+    ]
+    assert len(replaced_records) == 1
+    assert replaced_records[0]["existing_file_policy"] == "overwrite"
+    assert replaced_records[0]["overwrote_existing"] is True
+
+
+def test_batch_overwrite_prompt_lists_scope_and_defaults_to_cancel(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    owner = QWidget()
+    qtbot.addWidget(owner)
+    output_dir = tmp_path / "outputs"
+    paths = tuple(output_dir / f"nested/result-{index}.npy" for index in range(4))
+
+    class FakeMessageBox:
+        Warning = QMessageBox.Warning
+        DestructiveRole = QMessageBox.DestructiveRole
+        RejectRole = QMessageBox.RejectRole
+        next_click = "Cancel"
+        instances: list[FakeMessageBox] = []
+
+        def __init__(self, parent):
+            self.parent = parent
+            self.icon = None
+            self.title = ""
+            self.text_format = None
+            self.text = ""
+            self.informative = ""
+            self.details = ""
+            self.buttons: dict[str, object] = {}
+            self.roles: dict[str, object] = {}
+            self.default_button = None
+            self.escape_button = None
+            self.clicked = None
+            self.instances.append(self)
+
+        def setIcon(self, icon):
+            self.icon = icon
+
+        def setWindowTitle(self, title):
+            self.title = title
+
+        def setTextFormat(self, text_format):
+            self.text_format = text_format
+
+        def setText(self, text):
+            self.text = text
+
+        def setInformativeText(self, text):
+            self.informative = text
+
+        def setDetailedText(self, text):
+            self.details = text
+
+        def addButton(self, text, role):
+            button = object()
+            self.buttons[text] = button
+            self.roles[text] = role
+            return button
+
+        def setDefaultButton(self, button):
+            self.default_button = button
+
+        def setEscapeButton(self, button):
+            self.escape_button = button
+
+        def exec(self):
+            self.clicked = self.buttons[self.next_click]
+
+        def clickedButton(self):
+            return self.clicked
+
+    monkeypatch.setattr("napari_vipp._widget.QMessageBox", FakeMessageBox)
+
+    accepted = widget._confirm_collection_batch_overwrite(
+        owner,
+        paths + (paths[0],),
+        output_dir=output_dir,
+    )
+
+    assert accepted is False
+    box = FakeMessageBox.instances[-1]
+    assert box.parent is owner
+    assert box.icon == QMessageBox.Warning
+    assert box.title == "Overwrite existing batch outputs?"
+    assert box.text_format == Qt.PlainText
+    assert "4 existing output files" in box.text
+    assert "nested" in box.informative
+    assert "… and 1 more" in box.informative
+    assert box.details.splitlines() == [str(path.resolve()) for path in paths]
+    assert box.roles["Overwrite and run"] == QMessageBox.DestructiveRole
+    assert box.roles["Cancel"] == QMessageBox.RejectRole
+    assert box.default_button is box.buttons["Cancel"]
+    assert box.escape_button is box.buttons["Cancel"]
+
+    FakeMessageBox.next_click = "Overwrite and run"
+    assert widget._confirm_collection_batch_overwrite(
+        owner,
+        paths,
+        output_dir=output_dir,
+    )
 
 
 def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
@@ -21391,8 +23136,14 @@ def test_collection_batch_config_roundtrip_maps_sources_by_node_id(
     output_dir = tmp_path / "outputs"
     primary_dir.mkdir()
     secondary_dir.mkdir()
-    (primary_dir / "primary-a.tif").write_bytes(b"primary")
-    (secondary_dir / "secondary-a.tif").write_bytes(b"secondary")
+    tifffile.imwrite(
+        primary_dir / "primary-a.tif",
+        np.arange(20, dtype=np.uint16).reshape(4, 5),
+    )
+    tifffile.imwrite(
+        secondary_dir / "secondary-a.tif",
+        np.ones((4, 5), dtype=np.uint8),
+    )
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     secondary = widget.add_node_from_palette("input")

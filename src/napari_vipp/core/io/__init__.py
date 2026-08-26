@@ -1,5 +1,10 @@
 """Shared headless image import and export API."""
 
+from napari_vipp.core.io.errors import (
+    ImageSourceError,
+    ImageSourceErrorCode,
+    as_image_source_error,
+)
 from napari_vipp.core.io.microscope import (
     MICROSCOPE_FILE_FILTER,
     MICROSCOPE_SUFFIXES,
@@ -26,11 +31,14 @@ __all__ = [
     "AnalysisLabel",
     "ImageDataset",
     "ImageSeriesInfo",
+    "ImageSourceError",
+    "ImageSourceErrorCode",
     "MICROSCOPE_FILE_FILTER",
     "MICROSCOPE_SUFFIXES",
     "OptionalMicroscopeReaderError",
     "SourceInspection",
     "detect_deconvolution_metadata",
+    "as_image_source_error",
     "inspect_image_state",
     "inspect_image_source",
     "read_image",

@@ -213,7 +213,7 @@ def test_batch_config_roundtrip_preserves_segmentation_bridge_compute_intent(
     loaded = load_batch_config(config_path)
 
     assert loaded.compute_request == request
-    assert workflow["version"] == 4
+    assert workflow["version"] == 5
     assert loaded.workflow_sha256 == scientific_workflow_hash(workflow)
     assert {
         node["id"]: node["operation_id"] for node in workflow["nodes"]

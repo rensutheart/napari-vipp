@@ -31,7 +31,9 @@ def test_batch_navigator_starts_hidden_and_presents_a_session(qtbot):
     assert navigator.batch_id_label.text() == "Batch ID: 0002_field_b"
     assert "Primary signal: 02_field_b.npy" in navigator.sources_label.text()
     assert "Reference: beta_reference.npy" in navigator.sources_label.text()
-    assert "does not run or save the batch" in navigator.representative_label.text()
+    assert "per-sample overrides" in navigator.representative_label.text()
+    assert "processes and saves all items" in navigator.representative_label.text()
+    assert navigator.effective_overrides_label.isHidden()
     assert navigator.slider.minimum() == 0
     assert navigator.slider.maximum() == 2
     assert navigator.slider.value() == 1
@@ -65,6 +67,34 @@ def test_batch_navigator_emits_zero_based_navigation(qtbot):
     assert navigator.current_index == 2
 
 
+def test_batch_navigator_can_show_committed_effective_overrides(qtbot):
+    navigator = BatchNavigator()
+    qtbot.addWidget(navigator)
+
+    navigator.set_session(
+        2,
+        1,
+        "0002_bright",
+        ["02_bright.ome.zarr"],
+        effective_overrides_summary=(
+            "Binary Threshold / Threshold = 13000 "
+            "(workflow value 5000)"
+        ),
+    )
+
+    assert not navigator.effective_overrides_label.isHidden()
+    assert "Threshold = 13000" in navigator.effective_overrides_label.text()
+    assert "workflow value 5000" in navigator.effective_overrides_label.text()
+
+    # Once a different item is requested, do not leave the prior item's values
+    # visible while the replacement representative is still loading.
+    qtbot.mouseClick(navigator.previous_button, Qt.LeftButton)
+    assert navigator.effective_overrides_label.isHidden()
+
+    navigator.set_session(2, 0, "0001_dim", ["01_dim.ome.zarr"])
+    assert navigator.effective_overrides_label.isHidden()
+
+
 def test_batch_navigator_clear_session_resets_and_hides_everything(qtbot):
     navigator = BatchNavigator()
     qtbot.addWidget(navigator)
@@ -81,6 +111,7 @@ def test_batch_navigator_clear_session_resets_and_hides_everything(qtbot):
     assert not navigator.previous_button.isEnabled()
     assert not navigator.next_button.isEnabled()
     assert navigator.progress_frame.isHidden()
+    assert navigator.effective_overrides_label.isHidden()
 
     navigator.set_session(0, 0, "", [])
     assert navigator.isHidden()

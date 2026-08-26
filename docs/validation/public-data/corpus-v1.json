@@ -1,0 +1,587 @@
+{
+  "schema": "napari-vipp-public-data-corpus",
+  "schema_version": 1,
+  "corpus_version": "0.14.0a1-v1",
+  "curated_on": "2026-08-25",
+  "policy": {
+    "cache_environment_variable": "VIPP_PUBLIC_DATA_ROOT",
+    "ordinary_ci_network_access": false,
+    "source_drift": "fail-closed-and-bump-corpus-version",
+    "zarr_identity": "napari-vipp-local-source-v1",
+    "zarr_etags_are_content_hashes": false
+  },
+  "tier_totals": {
+    "acceptance": {
+      "artifact_count": 10,
+      "download_bytes": 135282079,
+      "download_mib": 129.02
+    }
+  },
+  "required_coverage": [
+    "bool",
+    "int8",
+    "uint8",
+    "uint16",
+    "float32",
+    "YX",
+    "CYX",
+    "CZYX",
+    "TCZYX",
+    "semantic-axis-negative-control",
+    "multi-item-container",
+    "npz-members",
+    "ome-zarr-0.4",
+    "ome-zarr-0.5",
+    "multiscale",
+    "image-group",
+    "label-group",
+    "calibrated-axes",
+    "per-sample-parameters"
+  ],
+  "datasets": [
+    {
+      "id": "idr0062-6001240-ngff-v05",
+      "tier": "acceptance",
+      "coverage": [
+        "int8",
+        "uint16",
+        "CZYX",
+        "ome-zarr-0.5",
+        "zarr-3",
+        "directory-store",
+        "multiscale",
+        "image-group",
+        "label-group",
+        "calibrated-axes",
+        "preview-level",
+        "analysis-level-0"
+      ],
+      "source": {
+        "provider": "Image Data Resource and Open Microscopy Environment",
+        "accession": "idr0062",
+        "landing_page": "https://idr.openmicroscopy.org/study/idr0062/",
+        "catalog": "https://idr.github.io/ome-ngff-samples/",
+        "doi": "https://doi.org/10.17867/10000125"
+      },
+      "license": {
+        "spdx": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "IDR study idr0062 / NesSys; see the study record and DOI.",
+        "redistribution": "allowed-with-attribution"
+      },
+      "artifact": {
+        "kind": "zarr-store",
+        "url": "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.5/idr0062A/6001240_labels.zarr",
+        "relative_path": "acceptance/idr0062/6001240_labels.zarr",
+        "bytes": 34323650,
+        "object_count": 286,
+        "content_identity": {
+          "kind": "directory",
+          "regular_file_count": 286,
+          "size_bytes": 34323650,
+          "sha256": "19e97a28e794786725d79188b29fd184aa0f39d3c504a6eb11b6bd2ce2383e30"
+        },
+        "object_inventory": {
+          "path": "idr0062-6001240-ngff-v05-objects-v1.json",
+          "sha256": "4d1d633464d3081ab0c9528197289ac387124a76ab4fc8114d3d672f194d1155"
+        }
+      },
+      "expected": {
+        "format": "OME-NGFF 0.5 / Zarr 3",
+        "items": [
+          {
+            "key": ".",
+            "kind": "image",
+            "axes": "CZYX",
+            "dtype": "uint16",
+            "axis_units": [null, "micrometer", "micrometer", "micrometer"],
+            "channel_names": [
+              "LaminB1",
+              "Dapi"
+            ],
+            "levels": [
+              {
+                "level": 0,
+                "shape": [2, 236, 275, 271],
+                "scale": [1.0, 0.5002025531914894, 0.3603981534640209, 0.3603981534640209]
+              },
+              {
+                "level": 1,
+                "shape": [2, 236, 137, 135],
+                "scale": [1.0, 0.5002025531914894, 0.7207963069280418, 0.7207963069280418]
+              },
+              {
+                "level": 2,
+                "shape": [2, 236, 68, 67],
+                "scale": [1.0, 0.5002025531914894, 1.4415926138560835, 1.4415926138560835]
+              }
+            ]
+          },
+          {
+            "key": "labels/0",
+            "kind": "labels",
+            "axes": "CZYX",
+            "dtype": "int8",
+            "axis_units": [null, "micrometer", "micrometer", "micrometer"],
+            "levels": [
+              {"level": 0, "shape": [1, 236, 275, 271], "scale": [1.0, 0.5002025531914894, 0.3603981534640209, 0.3603981534640209]},
+              {"level": 1, "shape": [1, 236, 137, 135], "scale": [1.0, 0.5002025531914894, 0.7207963069280418, 0.7207963069280418]},
+              {"level": 2, "shape": [1, 236, 68, 67], "scale": [1.0, 0.5002025531914894, 1.4415926138560835, 1.4415926138560835]}
+            ]
+          }
+        ]
+      },
+      "acceptance_cases": [
+        "discover-image-and-label-as-distinct-source-items",
+        "read-lower-level-for-preview-without-reading-level-0",
+        "preserve-label-semantics-in-preview",
+        "apply-level-transform-and-keep-level-0-for-analysis",
+        "cancel-and-suppress-stale-preview"
+      ]
+    },
+    {
+      "id": "idr0062-6001240-ngff-v04",
+      "tier": "acceptance",
+      "coverage": [
+        "int8",
+        "uint16",
+        "CZYX",
+        "ome-zarr-0.4",
+        "zarr-2",
+        "directory-store",
+        "multiscale",
+        "image-group",
+        "label-group",
+        "calibrated-axes"
+      ],
+      "source": {
+        "provider": "Image Data Resource and Open Microscopy Environment",
+        "accession": "idr0062",
+        "landing_page": "https://idr.openmicroscopy.org/study/idr0062/",
+        "catalog": "https://idr.github.io/ome-ngff-samples/",
+        "doi": "https://doi.org/10.17867/10000125"
+      },
+      "license": {
+        "spdx": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "IDR study idr0062 / NesSys; see the study record and DOI.",
+        "redistribution": "allowed-with-attribution"
+      },
+      "artifact": {
+        "kind": "zarr-store",
+        "url": "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr",
+        "relative_path": "acceptance/idr0062/6001240-v04.zarr",
+        "bytes": 46162906,
+        "object_count": 1475,
+        "content_identity": {
+          "kind": "directory",
+          "regular_file_count": 1475,
+          "size_bytes": 46162906,
+          "sha256": "c667c40470d695d62724018d76e14f1571bf5ed3e60cb66ebbc827d8740c55cb"
+        },
+        "object_inventory": {
+          "path": "idr0062-6001240-ngff-v04-objects-v1.json",
+          "sha256": "7c31a8ed5b47b3e4db6b89fc4eebac94c53cce9fa1c3b856dbd2cb432ce6b463"
+        }
+      },
+      "expected": {
+        "format": "OME-NGFF 0.4 / Zarr 2",
+        "items": [
+          {
+            "key": ".",
+            "kind": "image",
+            "axes": "CZYX",
+            "dtype": "uint16",
+            "axis_units": [null, "micrometer", "micrometer", "micrometer"],
+            "levels": [
+              {"level": 0, "shape": [2, 236, 275, 271], "scale": [1.0, 0.5002025531914894, 0.3603981534640209, 0.3603981534640209]},
+              {"level": 1, "shape": [2, 236, 137, 135], "scale": [1.0, 0.5002025531914894, 0.7207963069280418, 0.7207963069280418]},
+              {"level": 2, "shape": [2, 236, 68, 67], "scale": [1.0, 0.5002025531914894, 1.4415926138560835, 1.4415926138560835]}
+            ]
+          },
+          {
+            "key": "labels/0",
+            "kind": "labels",
+            "axes": "CZYX",
+            "dtype": "int8",
+            "axis_units": [null, "micrometer", "micrometer", "micrometer"],
+            "levels": [
+              {"level": 0, "shape": [1, 236, 275, 271], "scale": [1.0, 0.5002025531914894, 0.3603981534640209, 0.3603981534640209]},
+              {"level": 1, "shape": [1, 236, 137, 135], "scale": [1.0, 0.5002025531914894, 0.7207963069280418, 0.7207963069280418]},
+              {"level": 2, "shape": [1, 236, 68, 67], "scale": [1.0, 0.5002025531914894, 1.4415926138560835, 1.4415926138560835]}
+            ]
+          }
+        ]
+      },
+      "acceptance_cases": [
+        "preserve-v04-and-v05-source-item-meaning",
+        "keep-format-version-in-container-identity",
+        "apply-equivalent-multiscale-transforms"
+      ]
+    },
+    {
+      "id": "ome-pr2729-leica-lif",
+      "tier": "acceptance",
+      "coverage": [
+        "uint8",
+        "multi-item-container",
+        "optional-reader",
+        "reader-representation-difference",
+        "TMZCYX"
+      ],
+      "source": {
+        "provider": "Open Microscopy Environment sample archive",
+        "landing_page": "https://downloads.openmicroscopy.org/images/Leica-LIF/michael/",
+        "readme": "https://downloads.openmicroscopy.org/images/Leica-LIF/michael/readme.txt"
+      },
+      "license": {
+        "spdx": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "Michael Goelzer via the OME sample archive.",
+        "redistribution": "allowed-with-attribution"
+      },
+      "artifact": {
+        "kind": "file",
+        "url": "https://downloads.openmicroscopy.org/images/Leica-LIF/michael/PR2729_frameOrderCombinedScanTypes.lif",
+        "relative_path": "acceptance/ome/PR2729_frameOrderCombinedScanTypes.lif",
+        "bytes": 227429,
+        "sha256": "17994bb1bdf93dd1a34a19ed53e5a3d7f672470a8057e2998e25d2474437a052"
+      },
+      "expected": {
+        "format": "Leica LIF",
+        "dtype": "uint8",
+        "reader_views": [
+          {
+            "reader": "Bio-Formats",
+            "item_count": 4,
+            "planes_per_item": 12
+          },
+          {
+            "reader": "liffile",
+            "item_count": 1,
+            "axes": "TMZCYX",
+            "shape": [2, 4, 3, 2, 64, 64]
+          }
+        ]
+      },
+      "acceptance_cases": [
+        "distinguish-four-logical-items",
+        "survive-reader-order-change",
+        "do-not-equate-reader-layout-with-logical-identity",
+        "optional-reader-remains-optional"
+      ]
+    },
+    {
+      "id": "ome-artificial-multichannel-4d",
+      "tier": "acceptance",
+      "coverage": [
+        "int8",
+        "TCZYX",
+        "ome-tiff",
+        "five-dimensional"
+      ],
+      "source": {
+        "provider": "Open Microscopy Environment sample archive",
+        "landing_page": "https://downloads.openmicroscopy.org/images/OME-TIFF/2016-06/bioformats-artificial/",
+        "readme": "https://downloads.openmicroscopy.org/images/OME-TIFF/2016-06/bioformats-artificial/readme.txt"
+      },
+      "license": {
+        "spdx": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "OME Consortium.",
+        "redistribution": "allowed-with-attribution"
+      },
+      "artifact": {
+        "kind": "file",
+        "url": "https://downloads.openmicroscopy.org/images/OME-TIFF/2016-06/bioformats-artificial/multi-channel-4D-series.ome.tiff",
+        "relative_path": "acceptance/ome/multi-channel-4D-series.ome.tiff",
+        "bytes": 7889665,
+        "sha256": "23ec5b84154850360800b299e6c088b8f60c5e81b6c990ac1e9b15496fa9549d"
+      },
+      "expected": {
+        "format": "OME-TIFF",
+        "item_count": 1,
+        "axes": "TCZYX",
+        "shape": [7, 3, 5, 167, 439],
+        "dtype": "int8",
+        "level_count": 1
+      },
+      "acceptance_cases": [
+        "preserve-five-dimensional-axes-and-signed-dtype",
+        "single-level-reader-makes-no-pyramid-claim"
+      ]
+    },
+    {
+      "id": "ome-flim-modulo-along-c",
+      "tier": "acceptance",
+      "coverage": [
+        "int8",
+        "CYX",
+        "ome-tiff",
+        "semantic-axis-negative-control"
+      ],
+      "source": {
+        "provider": "Open Microscopy Environment sample archive",
+        "landing_page": "https://downloads.openmicroscopy.org/images/OME-TIFF/2016-06/modulo/",
+        "readme": "https://downloads.openmicroscopy.org/images/OME-TIFF/2016-06/modulo/readme.txt"
+      },
+      "license": {
+        "spdx": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "OME Consortium.",
+        "redistribution": "allowed-with-attribution"
+      },
+      "artifact": {
+        "kind": "file",
+        "url": "https://downloads.openmicroscopy.org/images/OME-TIFF/2016-06/modulo/FLIM-ModuloAlongC.ome.tiff",
+        "relative_path": "acceptance/ome/FLIM-ModuloAlongC.ome.tiff",
+        "bytes": 461842,
+        "sha256": "d208ed92f4be0409dbb858f6006fe70eea97561ec9abed316a639ee9821bfcd9"
+      },
+      "expected": {
+        "format": "OME-TIFF modulo",
+        "ome_pixels_size_c": 16,
+        "normalized_axes": "CHYX",
+        "normalized_shape": [2, 8, 150, 180],
+        "dtype": "int8",
+        "semantic_axis": {
+          "name": "H",
+          "meaning": "lifetime-bin",
+          "size": 8,
+          "must_not_default_to": "Z"
+        }
+      },
+      "acceptance_cases": [
+        "do-not-silently-map-known-semantic-axis-to-z",
+        "persist-explicit-axis-choice"
+      ]
+    },
+    {
+      "id": "bioimageio-stardist-float32",
+      "tier": "acceptance",
+      "coverage": [
+        "float32",
+        "CYX",
+        "tiff",
+        "integer-controls-must-not-apply"
+      ],
+      "source": {
+        "provider": "BioImage.IO model resource on Zenodo",
+        "accession": "Zenodo 6326367",
+        "landing_page": "https://zenodo.org/records/6326367",
+        "doi": "https://doi.org/10.5281/zenodo.6326367"
+      },
+      "license": {
+        "spdx": "BSD-3-Clause",
+        "url": "https://opensource.org/license/bsd-3-clause",
+        "attribution": "BioImage.IO StarDist sample resource; see Zenodo record 6326367.",
+        "redistribution": "allowed-with-notice"
+      },
+      "artifact": {
+        "kind": "file",
+        "url": "https://zenodo.org/api/records/6326367/files/sample_input_0.tif/content",
+        "relative_path": "acceptance/bioimageio/sample_input_0.tif",
+        "bytes": 12193476,
+        "sha256": "731edaa533507a385dd53ec1ff5c8ddc2330a42747df66767bc8627c3929a81c"
+      },
+      "expected": {
+        "format": "ImageJ TIFF",
+        "axes": "CYX",
+        "shape": [3, 1008, 1008],
+        "dtype": "float32",
+        "value_range": [0.0, 255.0]
+      },
+      "acceptance_cases": [
+        "preserve-native-float32",
+        "keep-fractional-intensity-controls",
+        "do-not-infer-integer-spinner-semantics"
+      ]
+    },
+    {
+      "id": "bbbc007-v1-image-outline",
+      "tier": "acceptance",
+      "coverage": [
+        "bool",
+        "uint8",
+        "YX",
+        "tiff",
+        "heterogeneous-shapes",
+        "real-image-mask-pair"
+      ],
+      "source": {
+        "provider": "Broad Bioimage Benchmark Collection",
+        "accession": "BBBC007v1",
+        "landing_page": "https://bbbc.broadinstitute.org/BBBC007"
+      },
+      "license": {
+        "spdx": "CC0-1.0",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "attribution": "BBBC007v1; Jones et al. and the Broad Bioimage Benchmark Collection.",
+        "redistribution": "public-domain-waiver"
+      },
+      "artifacts": [
+        {
+          "kind": "archive",
+          "url": "https://data.broadinstitute.org/bbbc/BBBC007/BBBC007_v1_images.zip",
+          "relative_path": "acceptance/bbbc/BBBC007_v1_images.zip",
+          "bytes": 6435776,
+          "sha256": "b7009e2fce0a3152a5c9adda916eaa699d09696f4bd02a7d05d12d041e30c6d1"
+        },
+        {
+          "kind": "archive",
+          "url": "https://data.broadinstitute.org/bbbc/BBBC007/BBBC007_v1_outlines.zip",
+          "relative_path": "acceptance/bbbc/BBBC007_v1_outlines.zip",
+          "bytes": 652531,
+          "sha256": "6a5246f9a9d743d22eafdb409fae638a8461af97e9ff9c4a92f25eba236224d3"
+        }
+      ],
+      "expected": {
+        "image_count": 32,
+        "outline_count": 32,
+        "image_dtype": "uint8",
+        "outline_dtype": "bool",
+        "observed_xy_sizes": [[400, 400], [450, 450], [512, 512]],
+        "selected_pair": {
+          "image_member": "BBBC007_v1_images/f96 (17)/17P1_POS0011_F_2UL.tif",
+          "image_sha256": "c0bca0b97997de8dccdcb5e188fef3ddc6675389cb5667c026a0de6f2fe19fef",
+          "outline_member": "BBBC007_v1_outlines/f96 (17)/17P1_POS0011_F_2UL.tif",
+          "outline_sha256": "06a41375007cbd6ad9a926a1e5a11123b1466cc3ae5366438c91fccf5565896f",
+          "shape": [400, 400]
+        },
+        "reader_edge_case": "Some archive TIFFs decode as RGB even though the landing page describes separate grayscale channels; use the frozen grayscale pair for normative tests and retain the others only as edge cases."
+      },
+      "acceptance_cases": [
+        "preserve-image-versus-mask-dtype",
+        "pair-items-by-stable-source-item-not-order",
+        "batch-heterogeneous-shapes"
+      ]
+    },
+    {
+      "id": "bbbc016-v1-dose-series",
+      "tier": "acceptance",
+      "coverage": [
+        "uint8",
+        "YX",
+        "tiff",
+        "per-sample-parameters",
+        "multi-file-batch",
+        "paired-channels"
+      ],
+      "source": {
+        "provider": "Broad Bioimage Benchmark Collection",
+        "accession": "BBBC016v1",
+        "landing_page": "https://bbbc.broadinstitute.org/BBBC016"
+      },
+      "license": {
+        "spdx": "CC-BY-3.0",
+        "url": "https://creativecommons.org/licenses/by/3.0/",
+        "attribution": "BBBC016v1, provided by Ilya Ravkin via the Broad Bioimage Benchmark Collection.",
+        "redistribution": "allowed-with-attribution"
+      },
+      "artifacts": [
+        {
+          "kind": "archive",
+          "url": "https://data.broadinstitute.org/bbbc/BBBC016/BBBC016_v1_images.zip",
+          "relative_path": "acceptance/bbbc/BBBC016_v1_images.zip",
+          "bytes": 26934480,
+          "sha256": "866ea3e6229a0f6fa2c9a18852b3274f7617326ecfae15d40f7f5e1123df7dd1"
+        },
+        {
+          "kind": "file",
+          "url": "https://data.broadinstitute.org/bbbc/BBBC016/BBBC016_v1_platemap.txt",
+          "relative_path": "acceptance/bbbc/BBBC016_v1_platemap.txt",
+          "bytes": 324,
+          "sha256": "5324f1958d264d2f9a732dbad554a851b7e77a3cc6dd8719973dce0f46e44076"
+        }
+      ],
+      "expected": {
+        "image_count": 144,
+        "axes": "YX",
+        "shape": [512, 512],
+        "dtype": "uint8",
+        "layout": "24 wells x 3 fields x 2 separately stored channels",
+        "official_design": "11 dose points plus control, duplicated in adjacent wells",
+        "predeclared_override_pair": [
+          {
+            "member": "BBBC016_v1_images/AS_09047_050428030001_O01f00d0.TIF",
+            "member_sha256": "541eea810ee93a6b60feb79b0526502ce77b603d538dfee31c1f4677aafe8cd2",
+            "threshold": 85
+          },
+          {
+            "member": "BBBC016_v1_images/AS_09047_050428030001_O24f00d0.TIF",
+            "member_sha256": "2f3f758625e9efcb2b6dc70ef158c6f9978c550fa282460858776868b048dc31",
+            "threshold": 170
+          }
+        ],
+        "threshold_rule": "One-third and two-thirds of the uint8 inclusive maximum, fixed before implementation and not chosen from VIPP output."
+      },
+      "acceptance_cases": [
+        "two-stable-items-resolve-two-typed-thresholds",
+        "blank-row-inherits-base-workflow",
+        "base-workflow-remains-unchanged",
+        "preview-batch-runner-cli-and-provenance-agree"
+      ]
+    }
+  ],
+  "contract_fixtures": [
+    {
+      "id": "sourceitem-mixed-members-v1.npz",
+      "status": "required-before-sourceitem-merge",
+      "coverage": ["npz-members", "bool", "uint8", "uint16", "float32"],
+      "rule": "Generate deterministically from frozen public inputs with canonical member order, fixed ZIP timestamps and a recorded derivation hash; do not use ordinary np.savez container bytes as a golden."
+    },
+    {
+      "id": "sourceitem-two-series-v1.ome.tiff",
+      "status": "required-before-sourceitem-merge",
+      "coverage": ["multi-item-container", "ome-tiff", "series-reordering"],
+      "rule": "Create two deterministic series from frozen public members and record every transformation and output SHA-256."
+    },
+    {
+      "id": "dtype-boundaries-v1",
+      "status": "generated-in-test",
+      "coverage": ["bool", "signed-integers", "unsigned-integers", "float32", "float64"],
+      "rule": "Use tiny generated arrays for exhaustive dtype and numeric-boundary contracts; public data supplies external validity, not exhaustive type enumeration."
+    }
+  ],
+  "extended_candidates": [
+    {
+      "id": "ome-fret-eight-series-lif",
+      "reason": "Eight mixed-shape series provide a stronger optional-reader identity test.",
+      "status": "freeze-only-if-core-lif-is-insufficient"
+    },
+    {
+      "id": "idr0033-br00109990-c2-ngff-v05",
+      "reason": "Nine sibling image groups with per-image translations provide a stronger OME-Zarr group-identity test.",
+      "status": "download-on-demand-and-freeze-before-use"
+    },
+    {
+      "id": "scikit-image-kidney",
+      "reason": "CC0 uint16 ZYXC data adds channel-last and calibrated-volume coverage.",
+      "status": "reserve"
+    },
+    {
+      "id": "ome-nd2-bf007",
+      "reason": "A 270336-byte calibrated uint16 Nikon file is a cheap second optional-reader smoke.",
+      "status": "reserve",
+      "sha256": "e3f449796ac2ce82d5734a607d8899a3ec5a9a575161a3eded2e22eedc1dce92"
+    },
+    {
+      "id": "bbbc024-volumetric-labels",
+      "reason": "Real uint16 volumetric labels exercise bounded-memory warnings and later 3D measurement paths.",
+      "status": "stress-only",
+      "archive_sha256": "c20788375a08ec2ff6f2e2ccbd0a525cc97bc79276b329c93a19d17071841d33"
+    },
+    {
+      "id": "bbbc005-blur-series",
+      "reason": "A large CC0 factorial blur/cell-count corpus is useful for later stress and sensitivity work.",
+      "status": "stress-only-do-not-download-by-default"
+    }
+  ],
+  "excluded": [
+    {
+      "id": "cell-tracking-challenge-fluo-n3dh-cho",
+      "reason": "Technically useful but the provider terms require permission for public non-challenge scientific use and prohibit cloning datasets or subsets. Do not mirror or derive fixtures without written permission.",
+      "terms": "https://celltrackingchallenge.net/datasets/"
+    }
+  ]
+}

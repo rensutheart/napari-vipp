@@ -232,6 +232,14 @@ class AxisDeclaration:
     def display_text(self) -> str:
         return f"{self.source_axes} -> {self.effective_axes}"
 
+    @property
+    def source_axis_names(self) -> tuple[str, ...]:
+        return tuple(_split_axis_order(self.source_axes))
+
+    @property
+    def effective_axis_names(self) -> tuple[str, ...]:
+        return tuple(_split_axis_order(self.effective_axes))
+
 
 @dataclass(frozen=True)
 class ChannelMetadata:
@@ -818,6 +826,15 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
         names = [channel.name for channel in state.channels if channel.name]
         if names:
             rows.append(MetadataRow("Channel names", ", ".join(names)))
+    for label, value in (
+        ("Acquisition description", state.acquisition.description),
+        ("Acquisition date", state.acquisition.acquisition_date),
+        ("Objective", state.acquisition.objective),
+        ("Instrument", state.acquisition.instrument),
+        ("Detector", state.acquisition.detector),
+    ):
+        if value:
+            rows.append(MetadataRow(label, value))
     if state.acquisition.objective_na:
         rows.append(
             MetadataRow("Objective NA", _format_number(state.acquisition.objective_na))
@@ -955,8 +972,7 @@ def normalize_axis_declaration(value: object) -> str:
         re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name) is None for name in names
     ):
         raise ValueError(
-            "An axis declaration must contain axis names such as ZYX or "
-            "time,z,y,x."
+            "An axis declaration must contain axis names such as ZYX or time,z,y,x."
         )
     normalized = tuple(name.casefold() for name in names)
     if len(set(normalized)) != len(normalized):
@@ -1962,9 +1978,7 @@ def _rescaled_axes(
         output_size = max(int(output_shape[axis_index]), 1)
         axis_scale_factors[axis_index] = output_size / input_size
     xy_changed = any(
-        (
-            axis_index := axis_map.get(role)
-        ) is not None
+        (axis_index := axis_map.get(role)) is not None
         and axis_index < len(input_shape)
         and axis_index < len(output_shape)
         and int(input_shape[axis_index]) != int(output_shape[axis_index])

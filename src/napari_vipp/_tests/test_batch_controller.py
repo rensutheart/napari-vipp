@@ -9,6 +9,7 @@ import tifffile
 from napari_vipp.core.batch import (
     BATCH_WORKFLOW_FILENAME,
     BatchScientificPreflightError,
+    build_batch_plan,
 )
 from napari_vipp.core.compute import ComputeMode, ComputeRequest
 from napari_vipp.core.pipeline import PrototypePipeline
@@ -146,6 +147,8 @@ def test_controller_saves_companion_and_rejects_a_different_workflow(
     )
     input_dir = tmp_path / "inputs"
     input_dir.mkdir()
+    source_path = input_dir / "field.npy"
+    np.save(source_path, np.ones((3, 4), dtype=np.uint8))
     config_path = tmp_path / "batch.json"
 
     saved_config, saved_workflow = controller.save_config(
@@ -158,7 +161,14 @@ def test_controller_saves_companion_and_rejects_a_different_workflow(
 
     assert saved_config == config_path
     assert saved_workflow == tmp_path / BATCH_WORKFLOW_FILENAME
-    assert controller.load_config(saved_config).workflow_sha256
+    loaded = controller.load_config(saved_config)
+    assert loaded.workflow_sha256
+    assert [item.selector.key for item in loaded.sources[0].source_items] == [
+        "field"
+    ]
+    np.save(source_path, np.full((3, 4), 2, dtype=np.uint8))
+    with pytest.raises(ValueError, match="no longer matches.*SourceItem"):
+        build_batch_plan(loaded)
 
     pipeline.nodes[output_id].params["tag"] = "changed-scientific-output"
     current_workflow[0] = serialize_workflow(pipeline)

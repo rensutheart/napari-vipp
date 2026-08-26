@@ -12,7 +12,7 @@ The governing rule is:
 > release-maturity gate
 
 The current reusable qualification baseline is
-[`v0.13.0a7`](release-qualification-baseline.md). The large qualification
+[`v0.13.0a8`](release-qualification-baseline.md). The large qualification
 procedures remain available as conditional tools; they are not a checklist to
 repeat for every alpha.
 

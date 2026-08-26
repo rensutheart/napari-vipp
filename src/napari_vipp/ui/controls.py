@@ -18,6 +18,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QProgressBar,
     QPushButton,
     QSlider,
     QSpinBox,
@@ -27,6 +28,11 @@ from qtpy.QtWidgets import (
 from napari_vipp.core.io import MICROSCOPE_FILE_FILTER
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_interpretation import AxisInterpretationControl
+from napari_vipp.ui.file_sources import (
+    SourceLoadPhase,
+    SourceLoadProgress,
+    SourceLoadProgressUnit,
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +45,26 @@ class ParameterBounds:
     logarithmic: bool = False
     entry_minimum: float | int | None = None
     entry_maximum: float | int | None = None
+
+
+@dataclass(frozen=True)
+class ImageSourceResolutionPresentation:
+    """Read-only pyramid state that never enters Image Source parameters."""
+
+    analysis_axes: str = ""
+    analysis_shape: tuple[int, ...] = ()
+    level_shapes: tuple[tuple[int, ...], ...] = ()
+    preview_state: str = "idle"
+    preview_level: int | None = None
+    preview_shape: tuple[int, ...] = ()
+    preview_detail: str = ""
+    viewer_choice: str = "analysis"
+    can_select_preview: bool = False
+    can_retry: bool = False
+
+    @property
+    def visible(self) -> bool:
+        return bool(self.analysis_shape) and len(self.level_shapes) > 1
 
 
 def _slider_safe_bounds(
@@ -616,10 +642,183 @@ class BoolControl(QWidget):
             self.valueChanged.emit(self.value())
 
 
+class SourceLoadStatusControl(QWidget):
+    """Generation-gated source progress with one-shot cancellation."""
+
+    cancelRequested = Signal(int)
+
+    _PHASE_LABELS = {
+        SourceLoadPhase.INSPECT: "Inspecting source",
+        SourceLoadPhase.DOWNLOAD: "Downloading source",
+        SourceLoadPhase.READ: "Reading image item",
+        SourceLoadPhase.DECODE: "Decoding image data",
+        SourceLoadPhase.NORMALIZE: "Normalizing metadata",
+        SourceLoadPhase.PREVIEW: "Loading presentation preview",
+        SourceLoadPhase.VERIFY: "Verifying source revision",
+    }
+    _QT_PROGRESS_MAXIMUM = 1_000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._active_run_id: int | None = None
+        self._latest_run_id = -1
+        self._cancel_requested_for: int | None = None
+        self._has_status = False
+
+        self.label = QLabel()
+        self.label.setWordWrap(True)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(True)
+        self.cancel_button = QPushButton("Cancel load")
+        self.cancel_button.setMaximumWidth(104)
+
+        progress_row = QHBoxLayout()
+        progress_row.setContentsMargins(0, 0, 0, 0)
+        progress_row.addWidget(self.progress_bar, 1)
+        progress_row.addWidget(self.cancel_button)
+        layout = QFormLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addRow(self.label)
+        layout.addRow(progress_row)
+
+        self.cancel_button.clicked.connect(self._request_cancel)
+        self.hide()
+
+    @property
+    def active_run_id(self) -> int | None:
+        return self._active_run_id
+
+    @property
+    def has_status(self) -> bool:
+        return self._has_status
+
+    def begin(self, run_id: int, message: str = "Inspecting source.") -> bool:
+        """Activate a newer load generation and reject stale starts."""
+
+        run_id = int(run_id)
+        if run_id <= self._latest_run_id:
+            return False
+        self._latest_run_id = run_id
+        self._active_run_id = run_id
+        self._cancel_requested_for = None
+        self._has_status = True
+        self.label.setText(str(message))
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat("Inspecting")
+        self.cancel_button.setText("Cancel load")
+        self.cancel_button.setEnabled(True)
+        self.show()
+        return True
+
+    def update_progress(self, progress: SourceLoadProgress) -> bool:
+        """Apply only an update owned by the currently active generation."""
+
+        if progress.run_id != self._active_run_id:
+            return False
+        if self._cancel_requested_for == progress.run_id:
+            return False
+        phase_label = self._PHASE_LABELS[progress.phase]
+        message = str(progress.message).strip()
+        item_suffix = (
+            f" ({progress.item_index}/{progress.item_total})"
+            if progress.item_total > 1
+            else ""
+        )
+        self.label.setText(f"{phase_label}{item_suffix}. {message}".strip())
+        self._set_progress_bar(progress, phase_label)
+        self._has_status = True
+        self.show()
+        return True
+
+    def finish(
+        self,
+        run_id: int,
+        *,
+        cancelled: bool = False,
+        error: str = "",
+    ) -> bool:
+        """Finish the active generation; stale terminal signals are ignored."""
+
+        run_id = int(run_id)
+        if run_id != self._active_run_id:
+            return False
+        self._active_run_id = None
+        self.cancel_button.setEnabled(False)
+        if cancelled:
+            self.label.setText("Source load cancelled at a safe checkpoint.")
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("Cancelled")
+        elif error:
+            self.label.setText(f"Source load failed: {error}")
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("Failed")
+        else:
+            self.label.setText("Source loaded and verified.")
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(1)
+            self.progress_bar.setFormat("Complete")
+        self._has_status = True
+        self.show()
+        return True
+
+    def clear(self) -> None:
+        """Hide presentation state without making an old generation current."""
+
+        self._active_run_id = None
+        self._cancel_requested_for = None
+        self._has_status = False
+        self.label.clear()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.cancel_button.setEnabled(False)
+        self.hide()
+
+    def _request_cancel(self) -> None:
+        run_id = self._active_run_id
+        if run_id is None or self._cancel_requested_for == run_id:
+            return
+        self._cancel_requested_for = run_id
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("Cancelling…")
+        self.label.setText(
+            "Cancelling source load at the next safe I/O checkpoint…"
+        )
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat("Cancelling")
+        self.cancelRequested.emit(run_id)
+
+    def _set_progress_bar(
+        self,
+        progress: SourceLoadProgress,
+        phase_label: str,
+    ) -> None:
+        if not progress.determinate:
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.setFormat(phase_label)
+            return
+        total = max(int(progress.total), 1)
+        current = min(max(int(progress.current), 0), total)
+        maximum = min(total, self._QT_PROGRESS_MAXIMUM)
+        scaled = int(round((current / total) * maximum))
+        self.progress_bar.setRange(0, maximum)
+        self.progress_bar.setValue(scaled)
+        if progress.unit is SourceLoadProgressUnit.BYTES:
+            self.progress_bar.setFormat(
+                f"{_human_bytes(current)} / {_human_bytes(total)}"
+            )
+        else:
+            self.progress_bar.setFormat(f"{current} / {total}")
+
+
 class ImageSourceControl(QWidget):
     """Source selector for explicit graph input nodes."""
 
     valueChanged = Signal(object)
+    sourceLoadCancelRequested = Signal(int)
+    viewerDisplayChanged = Signal(str)
+    previewReloadRequested = Signal()
 
     def __init__(
         self,
@@ -651,6 +850,41 @@ class ImageSourceControl(QWidget):
         self.source_summary = QLabel()
         self.source_summary.setWordWrap(True)
         self.source_summary.setStyleSheet("color: #94a3b8;")
+        self.source_load_status = SourceLoadStatusControl()
+        self.source_load_status.cancelRequested.connect(
+            self.sourceLoadCancelRequested.emit
+        )
+        self._resolution_presentation = ImageSourceResolutionPresentation()
+        self.resolution_panel = QWidget()
+        resolution_layout = QFormLayout(self.resolution_panel)
+        resolution_layout.setContentsMargins(0, 0, 0, 0)
+        resolution_layout.setSpacing(4)
+        self.analysis_resolution_label = QLabel()
+        self.analysis_resolution_label.setWordWrap(True)
+        self.pyramid_levels_label = QLabel()
+        self.pyramid_levels_label.setWordWrap(True)
+        self.pyramid_levels_label.setStyleSheet("color: #94a3b8;")
+        self.preview_resolution_label = QLabel()
+        self.preview_resolution_label.setWordWrap(True)
+        self.viewer_display_combo = QComboBox()
+        self.viewer_display_combo.setToolTip(
+            "Choose what napari displays. Every preview choice is presentation "
+            "only; processing and export always use analysis level 0."
+        )
+        self.preview_reload_button = QPushButton("Try loading preview again")
+        self.preview_reload_button.setToolTip(
+            "Retry the lower-resolution presentation layer. Scientific "
+            "analysis remains unchanged."
+        )
+        resolution_layout.addRow("Analysis", self.analysis_resolution_label)
+        resolution_layout.addRow("Pyramid", self.pyramid_levels_label)
+        resolution_layout.addRow("Preview", self.preview_resolution_label)
+        resolution_layout.addRow("Show in napari", self.viewer_display_combo)
+        resolution_layout.addRow(self.preview_reload_button)
+        self.resolution_panel.setToolTip(
+            "The scientific graph always reads level 0. A lower level may be "
+            "shown in napari for presentation only."
+        )
 
         self.layer_row = QWidget()
         layer_layout = QHBoxLayout(self.layer_row)
@@ -674,16 +908,18 @@ class ImageSourceControl(QWidget):
         series_layout.setContentsMargins(0, 0, 0, 0)
         series_layout.addWidget(self.series_combo, 1)
 
-        layout = QFormLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addRow("Source", self.mode_combo)
-        layout.addRow("Layer", self.layer_row)
-        layout.addRow("File", self.file_row)
-        layout.addRow("Series / image", self.series_row)
-        layout.addRow("Binding", self.binding_combo)
-        layout.addRow("Image stack", self.axis_control)
-        layout.addRow("Sample", self.sample_row)
-        layout.addRow(self.source_summary)
+        self.form_layout = QFormLayout(self)
+        self.form_layout.setContentsMargins(0, 0, 0, 0)
+        self.form_layout.addRow("Source", self.mode_combo)
+        self.form_layout.addRow("Layer", self.layer_row)
+        self.form_layout.addRow("File", self.file_row)
+        self.form_layout.addRow("Series / image", self.series_row)
+        self.form_layout.addRow("Binding", self.binding_combo)
+        self.form_layout.addRow("Image stack", self.axis_control)
+        self.form_layout.addRow("Sample", self.sample_row)
+        self.form_layout.addRow(self.source_summary)
+        self.form_layout.addRow("Resolution", self.resolution_panel)
+        self.form_layout.addRow(self.source_load_status)
 
         self.set_options(
             layer_names,
@@ -703,6 +939,12 @@ class ImageSourceControl(QWidget):
         self.axis_control.textChanged.connect(self._on_changed)
         self.path_button.clicked.connect(self._browse_path)
         self.zarr_button.clicked.connect(self._browse_zarr_path)
+        self.viewer_display_combo.currentIndexChanged.connect(
+            self._on_viewer_display_changed
+        )
+        self.preview_reload_button.clicked.connect(
+            self.previewReloadRequested.emit
+        )
 
     def value(self) -> dict[str, object]:
         return {
@@ -833,15 +1075,179 @@ class ImageSourceControl(QWidget):
         self._sync_rows()
         self.valueChanged.emit(self.value())
 
+    def begin_source_load(
+        self,
+        run_id: int,
+        message: str = "Inspecting source.",
+    ) -> bool:
+        """Begin progress for a new source-load generation."""
+
+        accepted = self.source_load_status.begin(run_id, message)
+        self._sync_rows()
+        return accepted
+
+    def update_source_load_progress(self, progress: SourceLoadProgress) -> bool:
+        """Apply a typed progress event if it belongs to the active load."""
+
+        accepted = self.source_load_status.update_progress(progress)
+        self._sync_rows()
+        return accepted
+
+    def finish_source_load(
+        self,
+        run_id: int,
+        *,
+        cancelled: bool = False,
+        error: str = "",
+    ) -> bool:
+        """Apply a terminal state if it belongs to the active load."""
+
+        accepted = self.source_load_status.finish(
+            run_id,
+            cancelled=cancelled,
+            error=error,
+        )
+        self._sync_rows()
+        return accepted
+
+    def clear_source_load_status(self) -> None:
+        self.source_load_status.clear()
+        self._sync_rows()
+
+    def set_resolution_presentation(
+        self,
+        presentation: ImageSourceResolutionPresentation,
+    ) -> None:
+        """Show derived resolution facts without changing ``value()``."""
+
+        if not isinstance(presentation, ImageSourceResolutionPresentation):
+            raise TypeError(
+                "presentation must be an ImageSourceResolutionPresentation"
+            )
+        self._resolution_presentation = presentation
+        shape = _shape_text(presentation.analysis_shape)
+        axes = str(presentation.analysis_axes).strip()
+        axis_prefix = f"{axes} " if axes else ""
+        self.analysis_resolution_label.setText(
+            f"Level 0 · {axis_prefix}{shape} · fixed scientific analysis"
+        )
+        self.pyramid_levels_label.setText(
+            "; ".join(
+                f"L{index} {_shape_text(level_shape)}"
+                for index, level_shape in enumerate(presentation.level_shapes)
+            )
+        )
+        viewer_choice = str(presentation.viewer_choice).strip().casefold()
+        requested_level = (
+            viewer_choice.partition(":")[2]
+            if viewer_choice.startswith("preview:")
+            and viewer_choice != "preview:auto"
+            else ""
+        )
+        detail = str(presentation.preview_detail).strip()
+        if presentation.preview_state == "ready":
+            preview = (
+                f"Level {int(presentation.preview_level or 0)} · "
+                f"{_shape_text(presentation.preview_shape)} · presentation only"
+            )
+        elif presentation.preview_state == "loading":
+            preview = (
+                f"Loading requested level {requested_level} preview…"
+                if requested_level
+                else "Loading automatic lower-resolution preview…"
+            )
+        elif presentation.preview_state == "failed":
+            preview = "Preview unavailable; level-0 analysis is unaffected."
+        else:
+            preview = (
+                f"Level {requested_level} not loaded yet · presentation only"
+                if requested_level
+                else "Not loaded yet · automatic and presentation only"
+            )
+        if detail:
+            preview = f"{preview} {detail}"
+        self.preview_resolution_label.setText(preview)
+        with QSignalBlocker(self.viewer_display_combo):
+            self.viewer_display_combo.clear()
+            self.viewer_display_combo.addItem(
+                f"Analysis output — L0 · {_shape_text(presentation.analysis_shape)}",
+                "analysis",
+            )
+            if presentation.can_select_preview:
+                self.viewer_display_combo.addItem(
+                    "Presentation preview — Auto (best fit)",
+                    "preview:auto",
+                )
+                for level, level_shape in enumerate(
+                    presentation.level_shapes[1:],
+                    start=1,
+                ):
+                    self.viewer_display_combo.addItem(
+                        f"Presentation preview — L{level} · "
+                        f"{_shape_text(level_shape)}",
+                        f"preview:{level}",
+                    )
+            selected = self.viewer_display_combo.findData(viewer_choice)
+            self.viewer_display_combo.setCurrentIndex(max(selected, 0))
+        self.preview_reload_button.setEnabled(bool(presentation.can_retry))
+        self.preview_reload_button.setVisible(
+            presentation.preview_state == "failed" and presentation.can_retry
+        )
+        self._sync_rows()
+
+    def _on_viewer_display_changed(self, _index: int) -> None:
+        choice = str(self.viewer_display_combo.currentData() or "analysis")
+        self.viewerDisplayChanged.emit(choice)
+
     def _sync_rows(self) -> None:
         mode = self.mode_combo.currentText()
-        self.layer_row.setVisible(mode == "napari layer")
-        self.file_row.setVisible(mode == "file path")
         file_mode = mode == "file path"
-        self.series_row.setVisible(file_mode and self.series_combo.count() > 1)
-        self.binding_combo.setVisible(file_mode)
-        self.source_summary.setVisible(file_mode and bool(self.source_summary.text()))
-        self.sample_row.setVisible(mode == "sample")
+        self._set_form_row_visible(self.layer_row, mode == "napari layer")
+        self._set_form_row_visible(self.file_row, file_mode)
+        self._set_form_row_visible(
+            self.series_row,
+            file_mode and self.series_combo.count() > 1,
+        )
+        self._set_form_row_visible(self.binding_combo, file_mode)
+        self._set_form_row_visible(
+            self.source_summary,
+            file_mode and bool(self.source_summary.text()),
+        )
+        self._set_form_row_visible(
+            self.resolution_panel,
+            file_mode and self._resolution_presentation.visible
+        )
+        self._set_form_row_visible(
+            self.source_load_status,
+            file_mode and self.source_load_status.has_status,
+        )
+        self._set_form_row_visible(self.sample_row, mode == "sample")
+
+    def _set_form_row_visible(self, field: QWidget, visible: bool) -> None:
+        """Hide both a dynamic field and its QFormLayout label."""
+
+        if hasattr(self.form_layout, "setRowVisible"):
+            self.form_layout.setRowVisible(field, bool(visible))
+            return
+        field.setVisible(bool(visible))
+        label = self.form_layout.labelForField(field)
+        if label is not None:
+            label.setVisible(bool(visible))
+
+
+def _human_bytes(value: int) -> str:
+    amount = float(max(int(value), 0))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024.0 or unit == "TiB":
+            if unit == "B":
+                return f"{int(amount)} {unit}"
+            return f"{amount:.1f} {unit}"
+        amount /= 1024.0
+    raise AssertionError("unreachable")
+
+
+def _shape_text(shape: tuple[int, ...]) -> str:
+    return " × ".join(str(int(size)) for size in shape)
 
 
 __all__ = [
@@ -849,10 +1255,12 @@ __all__ = [
     "ChoiceControl",
     "FlexibleDoubleSpinBox",
     "ImageSourceControl",
+    "ImageSourceResolutionPresentation",
     "NumericEntryControl",
     "ParameterBounds",
     "ParameterControl",
     "ResettableSpinBox",
+    "SourceLoadStatusControl",
     "TextControl",
     "_configure_numeric_spin_box",
     "_slider_safe_bounds",

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from napari_vipp.core.batch import (
     BATCH_WORKFLOW_FILENAME,
+    DEFAULT_BATCH_SOURCE_PATTERN,
     BatchConfig,
     BatchOutputConfig,
     BatchSourceConfig,
@@ -21,6 +22,7 @@ from napari_vipp.core.batch import (
     scientific_workflow_hash,
     validate_batch_config,
 )
+from napari_vipp.core.batch_parameters import BatchSourceParameterOverrides
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.metadata import AxisDeclaration
 from napari_vipp.core.pipeline import PrototypePipeline
@@ -32,13 +34,14 @@ def build_collection_batch_config(
     *,
     input_dir: str | Path,
     output_dir: str | Path,
-    pattern: str = "*.tif",
+    pattern: str = DEFAULT_BATCH_SOURCE_PATTERN,
     image_format: str = "ome-tiff",
     save_python_script: bool = True,
     source_bindings: Sequence[Mapping[str, object]] | None = None,
     existing_file_policy: str = ExistingFilePolicy.ERROR.value,
     continue_on_error: bool = True,
     compute_request: ComputeRequest | None = None,
+    parameter_overrides: Sequence[BatchSourceParameterOverrides] | None = None,
 ) -> BatchConfig:
     """Translate one workflow and collection form into a validated config."""
     output_text = str(output_dir).strip()
@@ -87,6 +90,7 @@ def build_collection_batch_config(
         save_python_script=save_python_script,
         continue_on_error=continue_on_error,
         compute_request=effective_compute_request,
+        parameter_overrides=tuple(parameter_overrides or ()),
     )
     validate_batch_config(
         workflow,
@@ -184,7 +188,11 @@ def _batch_source_configs(
                     node_id=node_id,
                     title=str(row.get("title", node.title) or node.title),
                     input_dir=Path(raw_dir).expanduser().resolve(),
-                    pattern=str(row.get("pattern", "") or pattern or "*.tif"),
+                    pattern=str(
+                        row.get("pattern", "")
+                        or pattern
+                        or DEFAULT_BATCH_SOURCE_PATTERN
+                    ),
                     axis_declaration=AxisDeclaration.from_value(
                         row.get("axis_declaration")
                     ),
@@ -201,7 +209,7 @@ def _batch_source_configs(
             node_id=node_id,
             title=pipeline.nodes[node_id].title,
             input_dir=input_dir.resolve(),
-            pattern=pattern or "*.tif",
+            pattern=pattern or DEFAULT_BATCH_SOURCE_PATTERN,
         )
         for node_id in _collection_source_node_ids(pipeline)
     )

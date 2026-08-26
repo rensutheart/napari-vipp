@@ -16,23 +16,41 @@ from typing import Protocol
 
 import numpy as np
 
+from napari_vipp.core.host_memory import (
+    capture_host_memory,
+    preflight_host_allocation,
+)
 from napari_vipp.core.io import (
     ImageDataset,
     SourceInspection,
+    inspect_image_source,
     read_image,
 )
-from napari_vipp.core.metadata import image_state_from_array
+from napari_vipp.core.io.errors import annotate_image_source_exception
+from napari_vipp.core.metadata import (
+    AxisDeclaration,
+    apply_axis_declaration,
+    image_state_from_array,
+)
 from napari_vipp.core.pipeline import SourcePayload
 from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import (
     LocalSourceIdentity,
     SourceChangedError,
-    capture_local_source_identity,
+    capture_local_source_bundle,
+    local_source_identity_from_bundle,
     verify_local_source_identity,
+)
+from napari_vipp.core.source_items import SourceContainerBundle, SourceItem
+from napari_vipp.core.source_resolution import (
+    resolve_source_item,
+    select_inspected_item,
+    verify_saved_source_item,
 )
 
 FILE_SOURCE_SNAPSHOT_POLICY = "pinned until Refresh"
 _MATERIALIZE_CHUNK_BYTES = 16 * 1024 * 1024
+_MEMORY_PREFLIGHT_MIN_BYTES = 256 * 1024 * 1024
 
 CancelCallback = Callable[[], bool]
 SourceLoadProgressCallback = Callable[[int, int, str], None]
@@ -49,6 +67,10 @@ class ImageReader(Protocol):
     ) -> ImageDataset: ...
 
 
+class ImageInspector(Protocol):
+    def __call__(self, path: str | Path) -> SourceInspection: ...
+
+
 @dataclass(frozen=True, slots=True)
 class SourceFileSnapshot:
     """One exact local source revision detached for pipeline ownership."""
@@ -56,6 +78,7 @@ class SourceFileSnapshot:
     payload: SourcePayload
     inspection: SourceInspection
     identity: LocalSourceIdentity
+    source_item: SourceItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,14 +87,19 @@ class VerifiedSourceInspection:
 
     inspection: SourceInspection
     identity: LocalSourceIdentity
+    bundle: SourceContainerBundle | None = None
 
 
 def load_frozen_file_source_snapshot(
     path: str | Path,
-    series_index: int,
+    series_index: int = 0,
     *,
+    item_key: str | None = None,
+    axis_declaration: AxisDeclaration | str | dict[str, object] | None = None,
     expected_identity: LocalSourceIdentity | None = None,
+    expected_source_item: SourceItem | None = None,
     reader: ImageReader | None = None,
+    inspector: ImageInspector | None = None,
     cancel_callback: CancelCallback | None = None,
     progress_callback: SourceLoadProgressCallback | None = None,
 ) -> SourceFileSnapshot:
@@ -82,75 +110,323 @@ def load_frozen_file_source_snapshot(
     caller may inject its reader; this keeps UI monkeypatching and alternate
     reader dispatch outside the core scientific boundary.
     """
+    requested_declaration = AxisDeclaration.from_value(axis_declaration)
+    saved_declaration = None
+    if expected_source_item is not None and expected_source_item.selector.source_axes:
+        saved_declaration = AxisDeclaration(
+            ",".join(expected_source_item.selector.source_axes),
+            ",".join(expected_source_item.selector.effective_axes),
+        )
+    if (
+        requested_declaration is not None
+        and saved_declaration is not None
+        and requested_declaration != saved_declaration
+    ):
+        raise ValueError(
+            "The requested source-axis declaration conflicts with the saved "
+            "canonical SourceItem."
+        )
+    effective_declaration = saved_declaration or requested_declaration
     source = Path(path).expanduser().resolve(strict=False)
-    _check_cancelled(cancel_callback, "before validating the source")
-    identity = capture_local_source_identity(
-        source,
-        cancel_callback=cancel_callback,
-        progress_callback=_phase_progress_callback(
-            progress_callback,
-            "Source validation 1/3",
-        ),
+    _check_boundary_cancelled(
+        cancel_callback,
+        "before validating the source",
+        stage="source-validation",
+        source=source,
+        item=series_index,
     )
+    try:
+        container = capture_local_source_bundle(
+            source,
+            cancel_callback=cancel_callback,
+            progress_callback=_phase_progress_callback(
+                progress_callback,
+                "Source validation 1/3",
+            ),
+        )
+        identity = local_source_identity_from_bundle(container)
+    except Exception as exc:
+        annotate_image_source_exception(
+            exc,
+            stage="source-validation",
+            path=source,
+            item=series_index,
+        )
+        raise
     if expected_identity is not None and identity != expected_identity:
-        raise SourceChangedError(
+        error = SourceChangedError(
             "Local scientific source changed after its interactive snapshot "
             f"was pinned: {source}. Press Refresh to load the new revision."
         )
+        annotate_image_source_exception(
+            error,
+            stage="source-validation",
+            path=source,
+            item=series_index,
+        )
+        raise error
+
+    if (
+        expected_source_item is not None
+        and container.revision != expected_source_item.container.revision
+    ):
+        error = SourceChangedError(
+            "Local scientific source changed after its SourceItem was saved: "
+            f"{source}. Press Refresh and explicitly review the new revision."
+        )
+        annotate_image_source_exception(
+            error,
+            stage="source-validation",
+            path=source,
+            item=expected_source_item.selector.key,
+        )
+        raise error
+
+    requested_key = (
+        expected_source_item.selector.key
+        if expected_source_item is not None
+        else str(item_key or "").strip()
+    )
+    effective_series_index = int(series_index)
+    preinspected: SourceInspection | None = None
+    preinspected_item = None
+    if inspector is not None or reader is None:
+        selected_inspector = inspect_image_source if inspector is None else inspector
+        try:
+            preinspected = selected_inspector(source)
+            preinspected_item = select_inspected_item(
+                preinspected,
+                series_index=(None if requested_key else effective_series_index),
+                item_key=(requested_key or None),
+            )
+        except Exception as exc:
+            annotate_image_source_exception(
+                exc,
+                stage="item-selection",
+                path=source,
+                item=requested_key,
+            )
+            raise
+        effective_series_index = preinspected_item.index
+        _preflight_source_memory(
+            preinspected_item,
+            source=source,
+            progress_callback=progress_callback,
+        )
+    elif expected_source_item is not None:
+        # A UI worker may inject the reader to preserve one deterministic read
+        # boundary.  The already verified SourceItem still carries the exact
+        # decoded-size and lazy/eager contract needed for a pre-decode memory
+        # decision, so do not silently skip preflight in that route.
+        _preflight_source_memory(
+            expected_source_item,
+            source=source,
+            progress_callback=progress_callback,
+        )
 
     selected_reader = read_image if reader is None else reader
-    _check_cancelled(cancel_callback, "before opening the source")
-    dataset = selected_reader(source, series_index=int(series_index))
-    _check_cancelled(cancel_callback, "before materializing image data")
-    data = _materialize_owned_array(
-        dataset.data,
+    _check_boundary_cancelled(
+        cancel_callback,
+        "before opening the source",
+        stage="open",
         source=source,
-        cancel_callback=cancel_callback,
-        progress_callback=_phase_progress_callback(
-            progress_callback,
-            "Source materialization 2/3",
-        ),
+        item=series_index,
     )
+    try:
+        dataset = selected_reader(source, series_index=effective_series_index)
+    except Exception as exc:
+        annotate_image_source_exception(
+            exc,
+            stage="open",
+            path=source,
+            item=series_index,
+        )
+        raise
+    if requested_key and dataset.selected_series.key != requested_key:
+        error = RuntimeError(
+            "Reader contract mismatch: requested item key "
+            f"{requested_key!r} but the reader returned "
+            f"{dataset.selected_series.key!r}."
+        )
+        annotate_image_source_exception(
+            error,
+            stage="item-selection",
+            path=source,
+            format=dataset.inspection.format,
+            backend=_dataset_reader_backend(dataset),
+            item=requested_key,
+        )
+        raise error
+    if (
+        preinspected_item is not None
+        and dataset.selected_series.key != preinspected_item.key
+    ):
+        error = RuntimeError(
+            "Reader contract mismatch: inspection selected item key "
+            f"{preinspected_item.key!r} but read returned "
+            f"{dataset.selected_series.key!r}."
+        )
+        annotate_image_source_exception(
+            error,
+            stage="item-selection",
+            path=source,
+            format=dataset.inspection.format,
+            backend=_dataset_reader_backend(dataset),
+            item=preinspected_item.key,
+        )
+        raise error
+    backend = _dataset_reader_backend(dataset)
+    _check_boundary_cancelled(
+        cancel_callback,
+        "before materializing image data",
+        stage="materialization",
+        source=source,
+        format=dataset.inspection.format,
+        backend=backend,
+        item=dataset.selected_series.key,
+    )
+    try:
+        data = _materialize_owned_array(
+            dataset.data,
+            source=source,
+            cancel_callback=cancel_callback,
+            progress_callback=_phase_progress_callback(
+                progress_callback,
+                "Source materialization 2/3",
+            ),
+        )
+    except Exception as exc:
+        annotate_image_source_exception(
+            exc,
+            stage="materialization",
+            path=source,
+            format=dataset.inspection.format,
+            backend=backend,
+            item=dataset.selected_series.key,
+        )
+        raise
     data.setflags(write=False)
-    _check_cancelled(cancel_callback, "before reverifying the source")
-    verify_local_source_identity(
-        source,
-        identity,
-        cancel_callback=cancel_callback,
-        progress_callback=_phase_progress_callback(
-            progress_callback,
-            "Source reverification 3/3",
-        ),
+    _check_boundary_cancelled(
+        cancel_callback,
+        "before reverifying the source",
+        stage="source-reverification",
+        source=source,
+        format=dataset.inspection.format,
+        backend=backend,
+        item=dataset.selected_series.key,
     )
-    _check_cancelled(cancel_callback, "after reverifying the source")
+    try:
+        verify_local_source_identity(
+            source,
+            identity,
+            cancel_callback=cancel_callback,
+            progress_callback=_phase_progress_callback(
+                progress_callback,
+                "Source reverification 3/3",
+            ),
+        )
+    except Exception as exc:
+        annotate_image_source_exception(
+            exc,
+            stage="source-reverification",
+            path=source,
+            format=dataset.inspection.format,
+            backend=backend,
+            item=dataset.selected_series.key,
+        )
+        raise
+    _check_boundary_cancelled(
+        cancel_callback,
+        "after reverifying the source",
+        stage="source-reverification",
+        source=source,
+        format=dataset.inspection.format,
+        backend=backend,
+        item=dataset.selected_series.key,
+    )
 
     source_state = dataset.image_state
-    snapshot_state = image_state_from_array(
-        data,
-        axes=source_state.axes,
-        metadata_source=source_state.metadata_source,
-        source_name=source_state.source_name,
-        history=source_state.history,
-        channels=source_state.channels,
-        acquisition=source_state.acquisition,
-        source=source_state.source,
-    )
+    try:
+        snapshot_state = image_state_from_array(
+            data,
+            axes=source_state.axes,
+            metadata_source=source_state.metadata_source,
+            source_name=source_state.source_name,
+            history=source_state.history,
+            channels=source_state.channels,
+            acquisition=source_state.acquisition,
+            source=source_state.source,
+        )
+    except Exception as exc:
+        annotate_image_source_exception(
+            exc,
+            stage="metadata-normalization",
+            path=source,
+            format=dataset.inspection.format,
+            backend=backend,
+            item=dataset.selected_series.key,
+        )
+        raise
     if snapshot_state is not None:
         snapshot_state = replace(snapshot_state, kind=source_state.kind)
+
+    axis_semantics_resolved = effective_declaration is not None
+    if effective_declaration is not None:
+        snapshot_state = apply_axis_declaration(
+            snapshot_state,
+            effective_declaration,
+            declaration_source=(
+                "saved SourceItem"
+                if saved_declaration is not None
+                else "Image Source"
+            ),
+        )
+
+    try:
+        if expected_source_item is None:
+            source_item = resolve_source_item(
+                container,
+                dataset.inspection,
+                item_key=dataset.selected_series.key,
+                image_state=snapshot_state,
+                axis_declaration=effective_declaration,
+            )
+        else:
+            source_item = verify_saved_source_item(
+                expected_source_item,
+                container,
+                dataset.inspection,
+                image_state=snapshot_state,
+            )
+    except Exception as exc:
+        annotate_image_source_exception(
+            exc,
+            stage="source-item-resolution",
+            path=source,
+            format=dataset.inspection.format,
+            backend=backend,
+            item=dataset.selected_series.key,
+        )
+        raise
 
     payload = SourcePayload(
         data,
         {
             "vipp_source_path": str(source),
             "vipp_source_identity": identity.to_dict(),
-            "vipp_source_series_index": int(series_index),
+            "vipp_source_series_index": effective_series_index,
+            "vipp_source_item_key": source_item.selector.key,
             "vipp_source_snapshot_policy": FILE_SOURCE_SNAPSHOT_POLICY,
+            "vipp_source_item_digest": source_item.digest,
+            "vipp_source_item": source_item.to_public_dict(),
         },
         dataset.selected_series.name,
         snapshot_state,
         identity,
+        axis_semantics_resolved,
+        source_item=source_item,
     )
-    return SourceFileSnapshot(payload, dataset.inspection, identity)
+    return SourceFileSnapshot(payload, dataset.inspection, identity, source_item)
 
 
 def _materialize_owned_array(
@@ -243,6 +519,52 @@ def _materialize_owned_array(
     return result
 
 
+def _preflight_source_memory(
+    selected,
+    *,
+    source: Path,
+    progress_callback: SourceLoadProgressCallback | None,
+) -> None:
+    if isinstance(selected, SourceItem):
+        estimated = selected.resolved.estimated_decoded_bytes
+        lazy_data = selected.capabilities.lazy_data
+        name = selected.resolved.name
+        key = selected.selector.key
+        backend = selected.reader.implementation
+    else:
+        estimated = selected.estimated_decoded_bytes
+        lazy_data = "lazy_data" in set(selected.capabilities)
+        name = selected.name
+        key = selected.key
+        backend = selected.reader_key
+    if estimated is None or estimated < _MEMORY_PREFLIGHT_MIN_BYTES:
+        return
+    required = int(estimated) * (1 if lazy_data else 2)
+    decision = preflight_host_allocation(
+        capture_host_memory(),
+        required_bytes=required,
+        purpose=f"loading {name or key}",
+    )
+    _report_progress(
+        progress_callback,
+        0,
+        required,
+        "Source memory preflight: " + decision.reason,
+    )
+    if decision.allowed:
+        return
+    error = MemoryError("Source memory preflight refused the load. " + decision.reason)
+    annotate_image_source_exception(
+        error,
+        stage="memory-preflight",
+        path=source,
+        format="",
+        backend=backend,
+        item=key,
+    )
+    raise error
+
+
 def _declared_array_shape(value) -> tuple[int, ...] | None:
     try:
         shape = tuple(int(size) for size in value.shape)
@@ -307,6 +629,40 @@ def _check_cancelled(
         raise OperationCancelled(f"Source loading cancelled {stage}.")
 
 
+def _check_boundary_cancelled(
+    callback: CancelCallback | None,
+    message_stage: str,
+    *,
+    stage: str,
+    source: Path,
+    format: str = "",
+    backend: str = "",
+    item: str | int = "",
+) -> None:
+    try:
+        _check_cancelled(callback, message_stage)
+    except OperationCancelled as exc:
+        annotate_image_source_exception(
+            exc,
+            stage=stage,
+            path=source,
+            format=format,
+            backend=backend,
+            item=item,
+        )
+        raise
+
+
+def _dataset_reader_backend(dataset: ImageDataset) -> str:
+    selected_backend = str(getattr(dataset.selected_series, "reader_key", "") or "")
+    if selected_backend:
+        return selected_backend
+    provenance = dataset.provenance
+    if not isinstance(provenance, dict):
+        return ""
+    return str(provenance.get("reader", "") or "")
+
+
 def _report_progress(
     callback: SourceLoadProgressCallback | None,
     current: int,
@@ -325,6 +681,7 @@ def _report_progress(
 __all__ = [
     "FILE_SOURCE_SNAPSHOT_POLICY",
     "ImageReader",
+    "ImageInspector",
     "SourceFileSnapshot",
     "VerifiedSourceInspection",
     "load_frozen_file_source_snapshot",

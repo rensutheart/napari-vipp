@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -8,6 +10,7 @@ from napari_vipp.core.metadata import (
     AXIS_CONFIDENCE_INFERRED,
     AXIS_CONFIDENCE_MIXED,
     DEFERRED_VALUE_RANGE,
+    AcquisitionMetadata,
     AxisDeclaration,
     AxisMetadata,
     ChannelMetadata,
@@ -15,11 +18,33 @@ from napari_vipp.core.metadata import (
     apply_axis_declaration,
     image_state_from_array,
     infer_axis_metadata_from_shape,
+    metadata_table_rows,
     transform_image_state,
     transform_multi_input_image_state,
     transform_split_output_state,
     with_channel_colors,
 )
+
+
+def test_metadata_table_exposes_text_acquisition_fields() -> None:
+    state = replace(
+        image_state_from_array(np.zeros((4, 5), dtype=np.uint16)),
+        acquisition=AcquisitionMetadata(
+            description="live-cell acquisition",
+            acquisition_date="2026-08-25",
+            objective="Plan Apo 60x",
+            instrument="Example scope",
+            detector="Example camera",
+        ),
+    )
+
+    rows = {row.label: row.value for row in metadata_table_rows(state)}
+
+    assert rows["Acquisition description"] == "live-cell acquisition"
+    assert rows["Acquisition date"] == "2026-08-25"
+    assert rows["Objective"] == "Plan Apo 60x"
+    assert rows["Instrument"] == "Example scope"
+    assert rows["Detector"] == "Example camera"
 
 
 def test_shape_only_channel_guess_is_marked_inferred_not_explicit():

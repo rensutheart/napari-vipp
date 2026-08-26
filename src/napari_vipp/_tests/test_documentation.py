@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+import tomllib
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -15,6 +16,22 @@ ABSOLUTE_HOME_PATHS = (
 RELEASE_TEXT_SUFFIXES = frozenset(
     {".csv", ".json", ".md", ".svg", ".txt", ".yaml", ".yml"}
 )
+
+
+def test_014a1_candidate_version_contract_is_consistent() -> None:
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    citation = (REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8")
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    release_notes = (REPO_ROOT / "release-notes.md").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert project["project"]["version"] == "0.14.0a1"
+    assert 'version: "0.14.0a1"' in citation
+    assert "date-released:" not in citation
+    assert changelog.startswith("# Changelog\n\n## 0.14.0a1 - Unreleased")
+    assert release_notes.startswith("# VIPP 0.14.0a1 (release candidate)")
+    assert "0.13.0a9 remains the current\npublished alpha" in release_notes
+    assert "VIPP `0.13.0a9` is published" in readme
 
 
 def test_local_markdown_links_resolve():

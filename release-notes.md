@@ -1,98 +1,141 @@
-# VIPP 0.13.0a9
+# VIPP 0.14.0a1 (release candidate)
 
-VIPP 0.13.0a9 is a focused correctness release for workflows that combine
-declared 3D image axes, CPU-only processing steps, reviewed GPU providers, and
-multiple downstream measurements. It packages the recent fixes found while
-testing real microscopy workflows rather than waiting for the broader 0.14
-feature line.
+VIPP 0.14.0a1 makes scientific image selection explicit and durable. The same
+selected item, reader evidence, source revision, axes, metadata, and effective
+per-sample parameters now travel through interactive calculation, batch,
+generated execution, replay, export, checkpoints, manifests, and provenance.
 
-This remains alpha software. Keep the original data and workflow, test
-representative images, and review important outputs before using them for
-scientific conclusions or publication.
+This file describes the unreleased candidate. VIPP 0.13.0a9 remains the current
+published alpha until the 0.14.0a1 release gates, tag, packages, installer, and
+documentation deployment are complete.
 
-## Prefer GPU planning preserves eligibility across CPU-only nodes
+This remains alpha software. Keep original data and workflows, test
+representative sources through the intended reader, and review important
+outputs before using them for scientific conclusions or publication.
 
-- **Prefer GPU** planning now preserves exact shape, dtype, and axis facts
-  through CPU-only operations including Rescale Axes, Rescale Intensity, and
-  Unsharp Mask.
-- A reviewed downstream CuPy or CuPyX provider is no longer deferred to CPU
-  merely because an earlier node must execute on the host.
-- The requested global compute intent remains distinct from saved per-node
-  preferences, and CPU-only nodes continue to execute on CPU as intended.
-- GPU execution still requires a healthy, compatible runtime and installed
-  provider. Compute details report the exact eligibility or fallback reason
-  when a machine cannot use an otherwise reviewed GPU implementation.
+## SourceItem identity and compatibility
 
-## More reliable 3D workflows
+- Added the frozen SourceItem v1 contract. A logical selector is distinct from
+  the observed container revision and the resolved reader/backend evidence, so
+  changed bytes or an unexpected item topology fail visibly instead of silently
+  selecting something else.
+- Workflow schema 5 and batch config/manifest schema 4 write the canonical
+  SourceItem representation. Existing workflow v3/v4 and batch v1-v3 records
+  retain deterministic compatibility and migration paths.
+- Stable item keys replace order-dependent series selection where the reader can
+  provide them. Public identities remain privacy-safe; exact local paths are not
+  added to portable provenance.
+- Multifile `.vsi`/ETS and `.oif` companion trees are treated as one source
+  container. Missing, empty, or changed companions invalidate the revision.
 
-- Changing Image Source from `QYX` to `ZYX` immediately propagates the effective
-  axes through the active branch, allowing Gaussian Blur 3D to expose and retain
-  Sigma Z without waiting for a successful full pixel run.
-- Skeletonize now treats declared ZYX data as a real volume. Auto selects Lee
-  thinning, leading dimensions are processed as independent ZYX blocks, and the
-  resolved method and dimensionality are retained in provenance. Zhang remains
-  explicitly limited to 2D.
-- Ambiguous page axes continue to fail closed until their spatial meaning is
-  declared; VIPP does not silently reinterpret an unknown page axis as depth.
+## Truthful microscope-reader contracts
 
-## Measurements remain usable together
+- Reader inspection and full read now share normalized metadata for the claimed
+  ND2, LIF, CZI, OIR/OIB, VSI/IMS, and LSM routes in the frozen corpus.
+- Olympus OIB inspection, returned pixels, and ImageState now agree on the
+  authoritative CZYX shape. Its Z/Y/X calibration and channel wavelengths are
+  retained.
+- Optional-reader and Bio-Formats/Java readiness failures preserve a structured
+  stage, backend, and remediation instead of becoming a generic import error.
+- Readers declare whether inspection/data access is lazy, whether region or
+  level reads are supported, and an estimated decoded size where available.
+  Native LIF, CZI, OIR, OIB, and LSM pixel access remains truthfully eager.
 
-- Re-materializing the same unchanged file no longer creates a different source
-  identity simply because its array wrapper is new.
-- Sequential sibling measurements can therefore remain ready together and feed
-  Merge Tables in either execution order, including after low-memory cache
-  pruning. Genuine upstream changes still invalidate affected descendants.
+The PR2729 Leica source deliberately has different reader presentations:
+`liffile` exposes one combined TMZCYX item while Bio-Formats exposes four
+logical items. VIPP pins the selected backend and version and refuses an
+unreviewed topology change; it does not claim that those views are equivalent.
 
-## Actionable GPU-memory errors
+## Presentation preview without changing analysis
 
-- GPU admission failures identify the CUDA device and every affected graph
-  node.
-- Estimated peak use, available memory, and the shortfall are displayed in
-  readable MiB or GiB while exact byte counts remain available in structured
-  diagnostics.
-- The message distinguishes free-VRAM reserve from a configured limit and
-  suggests concrete ways to make the graph fit.
+- Local OME-Zarr 0.4 and 0.5 image and label groups expose declared levels and
+  coordinate transforms.
+- VIPP can choose a lower declared level for display and slices requested T/Z/C
+  positions plus the Y/X region before computing. Observable object and byte
+  reads are reported where the store permits it.
+- Every lower-level result is labelled
+  `Preview level N - analysis remains full resolution`. The canonical
+  SourceItem and scientific graph input stay at level 0.
+- Cooperative cancellation and generation checks prevent a superseded preview
+  from publishing. Label previews preserve label semantics and do not use
+  intensity-image presentation rules.
+- A single-level source truthfully reports that no lower-level preview exists.
 
-## Windows installer and compatibility
+## Reviewed per-sample numeric parameters
 
-VIPP 0.13.0a9 includes its own Windows installer:
-`VIPP-Setup-0.13.0a9-Windows-x86_64-UNSIGNED.exe`. It offers CPU and managed
-NVIDIA CUDA 13 routes from one executable. The CUDA route includes the complete
-pinned CuPy, CUDA runtime, cuBLAS, cuFFT, and related dependency set; no
-separate GPU add-on is required.
+- Batch rows can override explicitly selected numeric scientific parameters for
+  one stable SourceItem while a blank cell visibly inherits the saved workflow
+  value.
+- Values pass through the normal parameter contract. Duplicate, stale,
+  zero-match, multi-match, and invalid typed rows stop preflight before output
+  publication.
+- The base workflow is never mutated. Effective values and workflow hashes are
+  shared by representative preview, batch, generated runner/CLI, checkpoints,
+  manifests, and item provenance.
 
-The published `0.13.0a9` installer is the release-specific build created from
-the clean immutable `v0.13.0a9` tag. It is intentionally unsigned, so Windows
-displays **Unknown publisher**; its SHA-256 checksum and release manifest are
-supplied alongside it.
+## Clearer retained Batch workspace
 
-Workflow schema remains version 4, and batch configuration and manifest schema
-remain version 3. Existing 0.13 workflows remain supported. Preserve copies of
-important workflows before updating a managed installation.
+- Reopening a workflow with an attached Batch workspace performs metadata-only
+  sample detection in the background and restores exact per-sample overrides
+  without requiring a manual Preview click. Changed or missing sources remain
+  quarantined for review.
+- A compact status and activity indicator stays beside the Batch toolbar while
+  the lower run section retains detailed per-item and per-operation progress.
+- `Ask before overwrite (recommended)` lists the exact existing outputs and
+  requires one-run consent before replacing them. Cancel is the safe default
+  and leaves files untouched. Duplicate destinations, source overlaps, and
+  explicitly protected outputs remain hard errors; headless execution retains
+  the fail-closed `error` policy.
 
-## Qualification scope
+## Large-source loading
 
-This alpha changes core/UI, workflow-planning, and GPU/scientific behavior. Its
-acceptance focuses on the four reported workflow regressions, exact metadata
-propagation through CPU-only boundaries, real-device execution of the affected
-CuPy/CuPyX nodes, and exact-tag Windows installer integrity. The unchanged
-installer transaction model and dependency pins carry forward from the
-qualified 0.13.0a8 baseline.
+- Local source reads provide decoded-memory preflight, truthful progress,
+  cooperative cancellation, and stale-generation protection.
+- Progress reports only work the reader can observe; a monolithic eager reader
+  is never given an invented internal percentage.
 
-The release-domain declaration is:
+## Remaining limitations
 
-- changed: core/UI, workflow/provenance, GPU/scientific planning, and
-  documentation;
-- unchanged: installer transaction behavior, dependency/toolchain pins, and
-  package/release infrastructure; and
-- carried forward: the 0.13.0a8 installer lifecycle, dependency, and packaging
-  baselines, while exact a9 tag, artifact, checksum, and publication facts are
-  regenerated.
+- Scientific graph execution still materializes the complete selected level-0
+  image. The lower OME-Zarr level is display-only; arbitrary operation-level
+  lazy or chunked graph execution is not included.
+- Presentation preview is limited to local OME-Zarr 0.4/0.5. Remote stores,
+  HCS plate/well/field traversal, and IMS pyramid support are not claimed.
+- Native LIF, CZI, OIR, OIB, and LSM pixel access is eager. Large eager readers
+  can warn/refuse before decode, but cannot provide chunk-level progress.
+- Bio-Formats-backed VSI/IMS requires the optional reader stack, Java, and the
+  required codecs. VIPP reports missing prerequisites but does not bundle them
+  into the base Python package.
+- Per-sample overrides are numeric scalar parameters only. Expressions,
+  filename rules, source selectors, topology changes, CSV import/export, and
+  semantic-axis iteration remain deferred.
 
-On the release workstation, the original student workflow completed under
-global Prefer GPU across CPU-only Rescale Axes, Rescale Intensity, and Unsharp
-Mask boundaries. Subtract Background, Convert Dtype, Gaussian Blur, Otsu,
-Remove Outliers, and Remove Small Objects executed on `cuda-cupy` with no
-fallback. This bounded result verifies the planner and reviewed providers on
-that environment; it is not a claim that every separate installation has a
-healthy CUDA runtime.
+## Qualification status
+
+Focused core, reader-contract, schema/migration, preview, and override tests are
+part of the candidate. Publication still requires the integrated release suite,
+the strict verified-cache corpus profile in its qualified optional-reader
+environment, exact-tag artifacts, and the release-specific Windows installer.
+
+The release-domain declaration for the complete change from `v0.13.0a9` is:
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  workflow_schema_provenance: true
+  gpu_scientific_shared_axes_metadata: true
+  windows_installer: false
+  dependencies_toolchain: false
+  packaging_release_metadata: true
+  documentation: true
+carried_forward:
+  full_gpu_catalogue: v0.13.0a8
+  windows_installer_lifecycle: v0.13.0a8
+  dependencies_toolchain: v0.13.0a8
+```
+
+Focused real-GPU parity is still required for the changed shared axis/metadata
+boundary. The unchanged full GPU catalogue and Windows installer transaction
+model are carried forward; exact `0.14.0a1` package, installer, hash, and public
+URL facts are regenerated for the immutable release tag.

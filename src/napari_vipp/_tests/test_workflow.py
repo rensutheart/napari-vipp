@@ -108,7 +108,7 @@ def test_serialize_roundtrip_preserves_graph(tmp_path):
     assert workflow["positions"]["gaussian"] == (330.0, 20.0)
 
 
-def test_workflow_v4_persists_only_portable_compute_intent(tmp_path):
+def test_current_workflow_persists_only_portable_compute_intent(tmp_path):
     pipeline = _build_pipeline()
     request = ComputeRequest(
         mode="custom",
@@ -128,7 +128,7 @@ def test_workflow_v4_persists_only_portable_compute_intent(tmp_path):
 
     document = serialize_workflow(pipeline, compute_request=request)
 
-    assert document["version"] == 4
+    assert document["version"] == WORKFLOW_VERSION
     assert document["execution"] == {
         "compute": {
             "mode": "custom",
@@ -164,7 +164,7 @@ def test_workflow_v4_persists_only_portable_compute_intent(tmp_path):
     assert restored.allow_experimental is False
 
 
-def test_workflow_v4_roundtrip_preserves_prefer_gpu_intent():
+def test_current_workflow_roundtrip_preserves_prefer_gpu_intent():
     pipeline = _build_pipeline()
     request = ComputeRequest(
         mode="prefer_gpu",
@@ -198,7 +198,7 @@ def test_schema_v3_migrates_to_explicit_cpu_intent():
     )
 
     assert restored["compute_request"] == ComputeRequest(mode="cpu")
-    assert migrated["version"] == 4
+    assert migrated["version"] == WORKFLOW_VERSION
     assert migrated["execution"]["compute"] == {
         "mode": "cpu",
         "fallback_policy": "visible",
@@ -206,6 +206,23 @@ def test_schema_v3_migrates_to_explicit_cpu_intent():
         "precision_policy": "scientific-default-v1",
         "workload_policy": "vipp-best-available-v1",
     }
+
+
+@pytest.mark.parametrize("legacy_version", (3, 4))
+def test_saving_legacy_workflow_writes_only_schema_v5(tmp_path, legacy_version):
+    from napari_vipp.core.batch import scientific_workflow_hash
+
+    legacy = serialize_workflow(_build_pipeline())
+    legacy["version"] = legacy_version
+    if legacy_version == 3:
+        legacy.pop("execution")
+    expected_hash = scientific_workflow_hash(legacy)
+
+    saved = save_workflow_document(tmp_path / "migrated.json", legacy)
+    migrated = json.loads(saved.read_text(encoding="utf-8"))
+
+    assert migrated["version"] == WORKFLOW_VERSION
+    assert scientific_workflow_hash(migrated) == expected_hash
 
 
 def test_workflow_preserves_unavailable_exact_preference_without_provider_import(
@@ -273,7 +290,7 @@ def test_workflow_preserves_unavailable_exact_preference_without_provider_import
         ),
     ],
 )
-def test_workflow_v4_rejects_nonportable_or_dangling_compute_intent(
+def test_current_workflow_rejects_nonportable_or_dangling_compute_intent(
     mutation,
     message,
 ):
@@ -284,7 +301,7 @@ def test_workflow_v4_rejects_nonportable_or_dangling_compute_intent(
         deserialize_workflow(document)
 
 
-def test_workflow_v4_rejects_duplicate_normalized_preference_node_ids():
+def test_current_workflow_rejects_duplicate_normalized_preference_node_ids():
     document = serialize_workflow(_build_pipeline())
     document["execution"]["compute"]["node_preferences"] = {
         "gaussian": "cpu",
@@ -1422,9 +1439,10 @@ def test_unknown_operation_is_rejected():
         deserialize_workflow(document)
 
 
-def test_wrong_workflow_version_is_rejected():
+@pytest.mark.parametrize("unsupported_version", (1, WORKFLOW_VERSION + 1))
+def test_wrong_workflow_version_is_rejected(unsupported_version):
     document = serialize_workflow(_build_pipeline())
-    document["version"] = 1
+    document["version"] = unsupported_version
 
     with pytest.raises(ValueError, match="Unsupported workflow version"):
         deserialize_workflow(document)

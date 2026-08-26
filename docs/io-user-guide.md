@@ -1,6 +1,6 @@
 # Image Import And Export
 
-Last reviewed: 2026-08-09
+Last reviewed: 2026-08-25
 
 VIPP uses one headless I/O layer for interactive sources, quick saves, Save
 Image nodes, and exported Python scripts. The explicit format choice matters:
@@ -19,7 +19,7 @@ Supported file sources:
 | OME-TIFF | Reads image series, semantic axes, physical scale, channel names and selected acquisition metadata. |
 | ImageJ TIFF | Reads hyperstack axes, Z spacing, frame interval, unit, and XY resolution where present. |
 | TIFF | Reads independent TIFF series and basic axes. |
-| OME-Zarr 0.4/0.5 | Discovers image groups and label groups, reads multiscale levels lazily, and marks label groups as label images. Level 0 is the analysis image. |
+| OME-Zarr 0.4/0.5 | Discovers image and label groups plus declared levels/transforms. A lower local level can be used for presentation while level 0 remains the analysis image; label previews retain label semantics. |
 | NPY/NPZ | Reads one NPY array or a selected NPZ member. |
 | PNG/JPEG/BMP/GIF/WebP/TGA/PNM | Reads ordinary raster images through imageio/Pillow. RGB/RGBA files are treated as rendered color images; grayscale files are treated as intensity images. Animated raster files use a leading time axis. |
 
@@ -30,37 +30,68 @@ dialog with the required extra and a generic pip suggestion. Use the safer
 environment-bound commands below with the Python interpreter from the
 environment that launches VIPP, never a global/base Python. Keep the VIPP
 release pinned, restart napari after installing a new reader, then reopen the
-file. A future installer should expose these as Add/Repair
+file. The commands below install the current published `0.13.0a9` baseline; a
+source checkout of the unreleased 0.14.0a1 candidate should use its managed
+development environment. A future installer should expose these as Add/Repair
 components rather than terminal steps.
 
 | Format family | Extensions | Install command |
 | --- | --- | --- |
-| Zeiss CZI | `.czi` | `python -m pip install "napari-vipp[czi]==0.13.0a8"` |
-| Nikon ND2 | `.nd2` | `python -m pip install "napari-vipp[nd2]==0.13.0a8"` |
-| Broad microscope reader set | `.czi`, `.nd2`, `.ims`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `python -m pip install "napari-vipp[microscope]==0.13.0a8"` |
-| BioIO/Bio-Formats fallback | `.ims` and Leica/Olympus/Bio-Formats-backed sources | `python -m pip install "napari-vipp[bioformats]==0.13.0a8"` |
+| Zeiss CZI | `.czi` | `python -m pip install "napari-vipp[czi]==0.13.0a9"` |
+| Nikon ND2 | `.nd2` | `python -m pip install "napari-vipp[nd2]==0.13.0a9"` |
+| Broad microscope reader set | `.czi`, `.nd2`, `.ims`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `python -m pip install "napari-vipp[microscope]==0.13.0a9"` |
+| BioIO/Bio-Formats fallback | `.ims` and Leica/Olympus/Bio-Formats-backed sources | `python -m pip install "napari-vipp[bioformats]==0.13.0a9"` |
 
 Use the format-specific extra when you know what you need. Use
 `napari-vipp[microscope]` on a workstation intended to open mixed acquisition
 formats.
 
+The 0.14.0a1 candidate's qualified reader contract is intentionally narrower
+than the list of advertised extensions:
+
+| Reader route | Candidate evidence | Important limit |
+| --- | --- | --- |
+| Nikon ND2 | Lazy inspection/data, decoded-size estimate, stable items, calibration, channels, and objective metadata | Optional `nd2` dependency |
+| Leica LIF | Inspection/read calibration, channels, objective metadata | Eager pixels; `liffile` and Bio-Formats may expose different item topology, so recorded backend changes are refused for review |
+| Zeiss CZI / LSM | Stable CZI scenes and LSM main/RGB-thumbnail items with metadata parity | Native pixels are eager; no CZI pyramid claim |
+| Olympus OIR / OIB | Authoritative TCYX/CZYX contracts with calibration, channels, and objective/acquisition facts | Native pixels are eager |
+| Olympus OIF / VSI | Companion trees are part of exact source revision; VSI primary/macro items and metadata are retained | VSI needs optional Java/codecs and its large decode remains cache-gated |
+| Imaris IMS | Logical TCZYX shape, metadata parity, decoded-size reporting, actionable Java readiness errors | IMS pyramid enumeration and cheap lower-level reads are not claimed |
+
+LOF/XLIF and broad Bio-Formats extensions remain capability-advertised, not
+qualified scientific claims, until a licensed hash-frozen acceptance source is
+added.
+
 For multi-series TIFF, NPZ, microscope containers such as LIF/IMS, or
-multi-image OME-Zarr, select the required item in
-`Series / image`. Time, channel, and Z remain axes inside that item. Use graph
-nodes such as Select Axis Slice to subset them reproducibly.
+multi-image OME-Zarr, select the required item in `Series / image`. VIPP records
+a SourceItem v1 stable selector, reader key/version, normalized axes and shape,
+and exact container revision. A saved item resolves by stable key; changed
+bytes, missing companions, ambiguous legacy indices, or an unexpected reader
+topology fail visibly instead of selecting another image. Time, channel, and Z
+remain axes inside that item. Use graph nodes such as Select Axis Slice to
+subset them reproducibly.
 
 Ordinary raster formats are also available as export targets only for 2D
 intensity images and 2D RGB/RGBA images. Use OME-TIFF, ImageJ TIFF, TIFF,
 OME-Zarr, or NPY for stacks, metadata-rich outputs, and exact numeric exchange.
 
 Interactive file-path sources use a pinned scientific snapshot. VIPP verifies
-the exact file or directory-store contents before and after both inspection and
-loading, fully materializes the selected series into an owned read-only NumPy
-array, and reuses that array for the resolved path and series. An external file
-or store change is therefore not silently mixed into a running graph. Press
+the exact file or complete directory/companion bundle before and after
+inspection and analysis loading, then materializes the selected level-0 series
+into an owned read-only NumPy array and reuses it for that SourceItem revision.
+An external change is therefore not silently mixed into a running graph. Press
 `Refresh` to discard the pinned snapshot, inspect the new revision, and load it
-explicitly. OME-Zarr, microscope formats, and large files are materialized on
-the background queue; small files normally retain synchronous loading.
+explicitly.
+
+For a local multiscale OME-Zarr image or label, VIPP may first display a sliced
+lower level labelled `Preview level N - analysis remains full resolution`.
+That result is presentation-only: it never replaces SourceItem analysis level
+0, scientific cache data, or output provenance. Superseded preview/load work is
+cooperatively cancelled and generation-checked before publication. A
+single-level source reports that no lower-level preview exists. OME-Zarr,
+microscope formats, and large files use the background queue with decoded-memory
+preflight and truthful progress; a monolithic eager reader does not invent an
+internal percentage.
 
 `Binding: collection` marks an Image Source node as a per-item source for
 `Batch workspace...`. The graph still represents one scientific item at a
@@ -101,6 +132,34 @@ separate export actions. It is the single entry point for opening or returning
 to the retained workspace; the representative strip only navigates samples and
 reports batch progress.
 
+After a fresh plan resolves stable SourceItems, `Per-sample parameters
+(optional)` shows eligible authored numeric scientific controls as columns and
+primary source items as rows. Enter only values that differ for an item; a blank
+cell visibly inherits the saved workflow value. Source paths/selectors,
+destinations, compute/cache controls, derived fields, expressions, and topology
+cannot be overridden. Every value uses the node's normal integer/float contract,
+and duplicate, stale, zero-match, multi-match, or invalid rows stop preflight.
+Preview and execution apply overrides to a detached effective workflow, so the
+live and saved base workflow remain unchanged. The effective values and hashes
+are retained in config, checkpoint, manifest, and item provenance.
+
+When a workflow includes its Batch workspace, reopening it automatically detects
+the current samples in a background, metadata-only preflight and restores the
+table without requiring `Preview batch`. A compact status and activity indicator
+sit at the right of the fixed Batch toolbar, labelling that source-discovery work
+separately from the main VIPP graph-calculation bar; the two jobs may run
+concurrently. The status remains visible after fast operations as
+`Ready - N batch items`, the adjacent indicator becomes indeterminate for
+discovery and preflight, and it mirrors overall item progress during a full run.
+The detailed per-item and per-operation bars remain in the Batch run section. No
+representative pixels are calculated until explicitly requested.
+If the workspace includes per-sample values, the same preflight also checks
+their keys against the current exact source revisions.
+Saving those values freezes the reviewed collection inventory, so changing an
+inherited row is not silently overlooked. A changed or missing source keeps the
+saved values quarantined, disables Run, and explains that no value was reassigned
+by filename or collection order.
+
 The easiest way to explore batching is `Open example...` -> `Deterministic
 Batch & Provenance` -> `Open batch demo...`. Choose where to save the demo's
 small working copy; VIPP then opens the batch workspace with its two-source
@@ -112,7 +171,7 @@ double-clicking the row) performs the same representative calculation. The
 highlighted demo guide points to `Run demo batch` and describes
 the nine planned NPY/TIFF/TSV outputs, saved config and runner, manifests,
 archive, per-item provenance, and exact ground-truth validation. The same
-action is available as `Open batch demo...` inside this dialog.
+action is available as `Demo...` inside this dialog.
 
 Existing demo directories are never replaced. Loading is confirmed because it
 replaces the current graph. After execution, the app validates the bundle
@@ -213,21 +272,21 @@ Supported filename-template fields are `{batch_id}`, `{batch_index}`,
 `{node_id}`, and `{node_title}`. VIPP appends the appropriate extension unless
 the template already includes a known image or table extension.
 
-Use `Save config...` to write a versioned `vipp_batch_config.json`, and `Load
-config...` to restore it. The configuration records the source-node bindings,
+Use `Save...` to write a versioned `vipp_batch_config.json`, and `Load...` to
+restore it. The configuration records the source-node bindings,
 folders and patterns, output folder, default image format, existing-file
 policy, required workflow companion, optional runner choice, workflow hash, and
-resolved declarations for the selected outputs. Config schema version 3 also
-stores guarded source-axis declarations and the full effective compute request,
-including
-CPU/Auto/Prefer-GPU/Custom mode,
-fallback policy, per-node preferences, runtime/device, memory cap/reserve,
-policy IDs, and experimental admission. Version-1 configs migrate to explicit
-CPU because they had no accelerator intent; version-2 configs retain their
-saved compute request. Both older versions load without source-axis
-declarations and become version 3 when reviewed and saved. Loading a config
-against a different workflow reports the hash mismatch instead of silently
-using stale output selections.
+resolved declarations for the selected outputs. Config schema version 4 adds
+canonical SourceItem records and typed per-sample parameter overrides to the
+version-3 guarded source-axis declarations and full compute request, including
+CPU/Auto/Prefer-GPU/Custom mode, fallback policy, per-node preferences,
+runtime/device, memory cap/reserve, policy IDs, and experimental admission.
+Version-1 configs migrate to explicit CPU because they had no accelerator
+intent; version-2 configs retain their saved compute request; version-3 configs
+retain their source declarations and acquire SourceItems when resolved. Older
+versions contain no parameter overrides and become version 4 when reviewed and
+saved. Loading against a different workflow reports the hash mismatch instead
+of silently using stale output selections.
 
 The friendly GUI choice is saved as the same explicit declaration used by
 headless runs. Code that constructs a source binding directly can use
@@ -255,7 +314,7 @@ loading it restores and opens the workspace without planning or calculating a
 representative. `No` saves the ordinary graph-only workflow, and `Cancel` saves
 nothing. The attached config contains local input/output paths but not input
 pixels, so review those paths before sharing or moving the file. Keep using
-standalone `Save config...` when a separate config and headless runner are
+standalone `Save...` when a separate config and headless runner are
 needed.
 
 `Continue after item failures` is enabled by default. Clear it only when a
@@ -268,12 +327,14 @@ default`:
 
 | Policy | Existing planned destination |
 | --- | --- |
-| `Error` | Report a collision and require it to be resolved before execution. |
-| `Skip` | Preserve the file and record the planned output as `skipped`. |
-| `Overwrite` | Replace the file and record the new write normally. |
+| `Ask before overwrite (recommended)` | In the Batch workspace, list the exact existing outputs and ask before replacing them for this run. Cancel preserves every file. Headless execution retains the underlying fail-closed `error` policy because it cannot ask. |
+| `Skip existing` | Preserve the file and record the planned output as `skipped`. |
+| `Overwrite without asking` | Replace the file and record the new write normally. |
 
 An explicit `yes` or `no` overwrite value on a `Batch Output` node overrides
-that default. Preview the batch again after changing either policy.
+that default. Duplicate output destinations, outputs overlapping inputs, and
+explicitly protected outputs are never made replaceable by the confirmation.
+Preview the batch again after changing either policy.
 
 A run started from the dialog writes the resolved configuration into the output
 folder:
@@ -291,15 +352,14 @@ locations rather than copying them into the output folder.
 The manifest identifies the workflow/config hashes, embeds the canonical config
 and scientific graph, records VIPP and relevant runtime package versions, each
 input and available source metadata, every planned output policy/path, and
-errors. Manifest schema version 3 additionally records raw axes, effective
-axes, and the applied declaration for each source successfully read during item
-execution; the embedded config retains intended declarations for sources
-skipped or failed before reading. It also records the effective compute
-request/environment, exact actual implementation identity for every completed
-computed node, decision and fallback reasons, structured OOM retry/memory
-records, warnings, and cleanup proof. A run-id manifest preserves each finished
-run. During execution, a run-id sidecar directory checkpoints each item and its
-outputs. There is a
+errors. Manifest schema version 4 adds canonical SourceItem/source-revision
+evidence plus requested/effective parameter overrides and effective workflow
+hashes to the version-3 raw/effective axes, source declarations, compute
+request/environment, exact implementation identities, fallback reasons,
+structured OOM retry/memory records, warnings, and cleanup proof. The embedded
+config retains intended declarations for sources skipped or failed before
+reading. A run-id manifest preserves each finished run. During execution, a
+run-id sidecar directory checkpoints each item and its outputs. There is a
 small interruption window between promoting an output and updating its
 sidecar, so the sidecars are a recovery trail rather than a transaction log.
 After a process interruption, inspect that run-id sidecar directory for the
@@ -385,8 +445,14 @@ presented as editable output metadata.
 
 ## Current Limitations
 
-- OME-Zarr pyramid generation and preview-level selection are not exposed.
-- The graph still materializes lazy arrays when an eager processing node or
-  preview requires NumPy data.
-- Plate/well/field browsing, HCS traversal, remote URIs, and semantic-axis
-  batch iteration remain planned work.
+- Lower-level presentation preview is limited to local OME-Zarr 0.4/0.5. The
+  graph still materializes the complete selected level-0 analysis array.
+- Remote stores, IMS pyramid enumeration/cheap reads, and general
+  operation-level lazy or chunked graph execution are not included.
+- Native LIF, CZI, OIR, OIB, and LSM pixel reads remain eager even though their
+  inspection metadata and capabilities are explicit.
+- Per-sample overrides are numeric scalar parameters only; expressions,
+  filename rules, CSV import/export, source selectors, and topology changes are
+  deferred.
+- Plate/well/field browsing, HCS traversal, and semantic-axis batch iteration
+  remain planned work.

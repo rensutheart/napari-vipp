@@ -59,7 +59,10 @@ class AxisInterpretationControl(QWidget):
             "Use the file's labels unchanged",
             self.FILE_METADATA,
         )
-        self.mode_combo.addItem("Pages are depth slices (Z stack)", self.Z_STACK)
+        self.mode_combo.addItem(
+            "Stack planes are depth slices (Z stack)",
+            self.Z_STACK,
+        )
         self.mode_combo.addItem("Something else (advanced)...", self.CUSTOM)
         self.mode_combo.setAccessibleName("How VIPP should interpret the image stack")
 
@@ -85,8 +88,8 @@ class AxisInterpretationControl(QWidget):
         layout.addWidget(self.notice_label)
 
         guidance = (
-            "VIPP normally trusts the file. For an ordinary TIFF whose pages "
-            "are depth slices, choose Z stack. This changes axis labels only; "
+            "VIPP normally trusts the file. If the leading stack dimension "
+            "really represents depth, choose Z. This changes axis labels only; "
             "it does not transpose pixels."
         )
         self.setToolTip(guidance)
@@ -143,7 +146,7 @@ class AxisInterpretationControl(QWidget):
         self._auto_suggestion_active = False
         if is_z_stack:
             self._show_notice(
-                "Saved choice: treat these TIFF pages as depth slices (Z). "
+                "Saved choice: treat the leading stack dimension as depth (Z). "
                 "Pixel order is unchanged, and this choice is saved with the "
                 f"{self._save_target}."
             )
@@ -175,9 +178,9 @@ class AxisInterpretationControl(QWidget):
         finally:
             self._updating = False
         self._show_notice(
-            "VIPP selected Z stack because this workflow uses 3D processing. "
-            "Pixel order is unchanged, and this choice will be saved with the "
-            f"{self._save_target}."
+            "Automatic choice: QYX -> ZYX because this workflow requires 3D "
+            "spatial processing. Pixel order is unchanged; verify that the "
+            f"leading dimension is depth. This is saved with the {self._save_target}."
         )
         self.notice_label.setToolTip(
             "File labels: QYX; VIPP labels for this batch: ZYX. Verify the Z "
@@ -230,7 +233,7 @@ class AxisInterpretationControl(QWidget):
         elif mode == self.Z_STACK:
             self._suggestion_declined = False
             self._show_notice(
-                "Treating these TIFF pages as depth slices (Z). Pixel order is "
+                "Treating the leading stack dimension as depth (Z). Pixel order is "
                 "unchanged, and this choice will be saved with the "
                 f"{self._save_target}."
             )

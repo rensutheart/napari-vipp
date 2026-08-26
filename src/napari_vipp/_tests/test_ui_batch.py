@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QFormLayout, QScrollArea, QSizePolicy
+from qtpy.QtWidgets import QApplication, QFormLayout, QScrollArea, QSizePolicy
 
 from napari_vipp.core.batch import (
+    DEFAULT_BATCH_SOURCE_PATTERN,
     BatchAxisSuggestion,
     BatchConfig,
     BatchItemPlan,
@@ -15,6 +16,10 @@ from napari_vipp.core.batch import (
     BatchScientificPreflightError,
     BatchSourceConfig,
     BatchStatus,
+)
+from napari_vipp.core.batch_parameters import (
+    BatchParameterOverride,
+    BatchSourceParameterOverrides,
 )
 from napari_vipp.core.metadata import AxisDeclaration
 from napari_vipp.ui import recent_paths
@@ -93,6 +98,201 @@ def _actions(result, previewed: list[int]) -> CollectionBatchActions:
     )
 
 
+def test_saved_workspace_discovery_has_distinct_indeterminate_progress(
+    qtbot,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+
+    assert not dialog.batch_activity_strip.isHidden()
+    assert "not checked" in dialog.batch_activity_status.text().lower()
+    assert dialog.source_detection_progress.isHidden()
+
+    dialog.begin_saved_workspace_discovery()
+
+    assert not dialog.source_detection_progress.isHidden()
+    assert dialog.source_detection_progress.minimum() == 0
+    assert dialog.source_detection_progress.maximum() == 0
+    assert "detecting batch items" in dialog.batch_activity_status.text().lower()
+    assert dialog.source_detection_progress.format() == "Checking"
+    assert "main vipp progress bar" in (
+        dialog.source_detection_progress.toolTip().lower()
+    )
+    assert "no representative image" in dialog.preview_status.text().lower()
+    assert not dialog.preview_button.isEnabled()
+    assert not dialog.run_button.isEnabled()
+    assert dialog.parameter_override_group.isHidden()
+
+    dialog.show_saved_workspace_discovery_success(
+        item_count=3,
+        override_count=0,
+    )
+
+    assert dialog.source_detection_progress.isHidden()
+    assert dialog.source_detection_progress.minimum() == 0
+    assert dialog.source_detection_progress.maximum() == 1
+    assert dialog.preview_button.isEnabled()
+    assert dialog.batch_activity_status.text() == "Ready · 3 batch items."
+    assert "restored and detected 3" in dialog.preview_status.text().lower()
+
+
+def test_saved_workspace_discovery_progress_ends_on_failure_and_invalidation(
+    qtbot,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+
+    dialog.begin_saved_workspace_discovery()
+    dialog.show_saved_workspace_discovery_failure(
+        "The source folder is missing.",
+        technical_detail="missing path",
+    )
+
+    assert dialog.source_detection_progress.isHidden()
+    assert "needs attention" in dialog.batch_activity_status.text().lower()
+    assert dialog.preview_button.isEnabled()
+    assert not dialog.run_button.isEnabled()
+    assert dialog.parameter_override_group.isHidden()
+    assert "source folder is missing" in dialog.preview_status.text().lower()
+    assert dialog.preview_status.toolTip() == "missing path"
+
+    dialog.begin_saved_workspace_discovery()
+    dialog._invalidate_preview_plan()
+
+    assert dialog.source_detection_progress.isHidden()
+    assert dialog.preview_button.isEnabled()
+    assert "not checked" in dialog.batch_activity_status.text().lower()
+    assert "settings changed" in dialog.preview_status.text().lower()
+
+
+def test_fixed_activity_strip_summarizes_preview_and_run_lifecycle(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    planning_states: list[str] = []
+    dialog: CollectionBatchDialog
+
+    def preview(_values, _limit):
+        planning_states.append(dialog.batch_activity_status.text())
+        return result
+
+    actions = replace(_actions(result, []), preview_batch=preview)
+    dialog = CollectionBatchDialog(actions=actions)
+    qtbot.addWidget(dialog)
+
+    assert dialog._preview_batch()
+    assert planning_states == ["Checking batch inputs, outputs, and parameters…"]
+    assert dialog.batch_activity_status.text() == (
+        "Ready · item 1 of 3 shown in main VIPP."
+    )
+    assert dialog.source_detection_progress.isHidden()
+
+    emitted_states: list[str] = []
+    dialog.runRequested.connect(
+        lambda _values: emitted_states.append(dialog.batch_activity_status.text())
+    )
+    dialog._request_run()
+    assert emitted_states == ["Checking current inputs, destinations, and parameters…"]
+    assert dialog.source_detection_progress.maximum() == 0
+
+    dialog.begin_run(3)
+    assert dialog.source_detection_progress.maximum() == 3
+    assert dialog.source_detection_progress.value() == 0
+    dialog.update_run_progress(2, 3, result.items[1].batch_id, "running")
+    assert dialog.batch_activity_status.text() == "Running batch · item 2 of 3."
+    assert dialog.source_detection_progress.value() == 1
+
+    dialog._request_cancel()
+    assert "cancelling safely" in dialog.batch_activity_status.text().lower()
+    assert dialog.source_detection_progress.maximum() == 3
+    assert dialog.source_detection_progress.value() == 1
+
+
+def test_fixed_activity_strip_ends_when_preview_returns_no_plan(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    actions = replace(_actions(result, []), preview_batch=lambda *_args: None)
+    dialog = CollectionBatchDialog(actions=actions)
+    qtbot.addWidget(dialog)
+
+    assert not dialog._preview_batch()
+
+    assert dialog.source_detection_progress.isHidden()
+    assert "needs attention" in dialog.batch_activity_status.text().lower()
+    assert "no batch plan" in dialog.preview_status.text().lower()
+
+
+def test_saved_workspace_discovery_cancel_and_override_aliases(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+
+    dialog.begin_saved_workspace_discovery()
+
+    assert not dialog.source_detection_progress.isHidden()
+    assert dialog.parameter_override_group.isHidden()
+
+    dialog.cancel_saved_workspace_discovery("The Batch settings changed.")
+
+    assert dialog.source_detection_progress.isHidden()
+    assert dialog.preview_button.isEnabled()
+    assert dialog.run_button.isEnabled()
+    assert dialog.preview_status.text() == "The Batch settings changed."
+
+    dialog.begin_saved_override_verification(1)
+
+    assert not dialog.parameter_override_group.isHidden()
+    assert "1 saved source override entry" in (
+        dialog.parameter_override_editor.status_label.text().lower()
+    )
+
+    dialog.show_saved_override_verification_success(
+        item_count=3,
+        override_count=1,
+    )
+
+    assert dialog.source_detection_progress.isHidden()
+    assert "1 saved per-sample override entry" in dialog.preview_status.text()
+
+
+def test_saved_workspace_discovery_cancel_keeps_overrides_quarantined(
+    qtbot,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    dialog._pending_parameter_overrides = (
+        BatchSourceParameterOverrides(
+            "a" * 64,
+            (BatchParameterOverride("threshold", "threshold", 5_000.0),),
+        ),
+    )
+
+    dialog.begin_saved_workspace_discovery(override_count=1)
+    dialog.cancel_saved_workspace_discovery("The Batch settings changed.")
+
+    assert dialog.source_detection_progress.isHidden()
+    assert not dialog.run_button.isEnabled()
+    assert not dialog.parameter_override_group.isHidden()
+    assert "batch settings changed" in (
+        dialog.parameter_override_editor.status_label.text().lower()
+    )
+
+
+def test_batch_source_row_defaults_to_supported_image_discovery(qtbot):
+    dialog = CollectionBatchDialog()
+    qtbot.addWidget(dialog)
+
+    pattern_edit = dialog._source_rows[0]["pattern"]
+
+    assert pattern_edit.text() == DEFAULT_BATCH_SOURCE_PATTERN
+    tooltip = pattern_edit.toolTip()
+    assert "supported image" in tooltip
+    assert "top-level OME-Zarr" in tooltip
+
+
 def test_batch_output_defaults_to_primary_source_output_and_tracks_it(
     qtbot,
     tmp_path,
@@ -136,9 +336,7 @@ def test_batch_output_path_expands_with_dialog(qtbot, tmp_path):
     qtbot.waitUntil(dialog.isVisible)
     qtbot.waitUntil(lambda: dialog.output_edit.width() > 0)
 
-    assert dialog.output_edit.sizePolicy().horizontalPolicy() == (
-        QSizePolicy.Expanding
-    )
+    assert dialog.output_edit.sizePolicy().horizontalPolicy() == (QSizePolicy.Expanding)
     output_row = dialog.output_edit.parentWidget()
     assert output_row.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
     content_layout = dialog.content_widget.layout()
@@ -314,9 +512,7 @@ def test_batch_source_axis_declaration_roundtrips_through_dialog_values(
     assert control.mode_combo.currentData() == "z_stack"
     assert "Z stack" in control.mode_combo.currentText()
     assert control.text() == "QYX -> ZYX"
-    assert dialog.values()["source_bindings"][0]["axis_declaration"] == (
-        "QYX -> ZYX"
-    )
+    assert dialog.values()["source_bindings"][0]["axis_declaration"] == ("QYX -> ZYX")
     assert "does not transpose pixels" in control.toolTip()
 
     dialog._apply_config(result.config)
@@ -344,9 +540,7 @@ def test_batch_source_row_inherits_workflow_axis_choice_and_allows_blank_opt_out
     control = dialog._source_rows[0]["axis_declaration"]
 
     assert control.mode_combo.currentData() == AxisInterpretationControl.Z_STACK
-    assert dialog.values()["source_bindings"][0]["axis_declaration"] == (
-        "QYX -> ZYX"
-    )
+    assert dialog.values()["source_bindings"][0]["axis_declaration"] == ("QYX -> ZYX")
 
     file_index = control.mode_combo.findData(AxisInterpretationControl.FILE_METADATA)
     control.mode_combo.setCurrentIndex(file_index)
@@ -459,8 +653,8 @@ def _qyx_preflight_error() -> BatchScientificPreflightError:
         "Image Source: raw QYX, effective QYX (no declaration). Subtract "
         "Background, Gaussian Blur 3D, and Reorder Axes cannot continue.",
         user_message=(
-            "This TIFF looks like a Z stack, but its first dimension is "
-            "labelled Q. VIPP can treat it as Z for this batch."
+            "This source has an unknown leading Q axis. Because the workflow "
+            "requires 3D processing, VIPP can treat Q as depth Z."
         ),
         axis_suggestion=_qyx_z_stack_suggestion(),
     )
@@ -498,12 +692,11 @@ def test_qyx_preview_applies_visible_z_stack_default_without_typing(qtbot, tmp_p
     assert control.mode_combo.currentData() == "z_stack"
     assert "Z stack" in control.mode_combo.currentText()
     assert control.text() == "QYX -> ZYX"
-    assert dialog.values()["source_bindings"][0]["axis_declaration"] == (
-        "QYX -> ZYX"
-    )
+    assert dialog.values()["source_bindings"][0]["axis_declaration"] == ("QYX -> ZYX")
     assert not control.notice_label.isHidden()
     notice = control.notice_label.text().lower()
-    assert "z stack" in notice
+    assert "qyx -> zyx" in notice
+    assert "automatic choice" in notice
     assert "pixel" in notice
     assert "unchanged" in notice or "not" in notice
 
@@ -788,6 +981,8 @@ def test_batch_dialog_retains_determinate_progress_and_restores_controls(
     assert dialog.preview_table.item(2, 4).text() == "Skipped"
     assert dialog.preview_table.item(0, 3).text() == "new"
     assert "1 completed" in dialog.run_progress_label.text()
+    assert dialog.batch_activity_status.text() == ("Completed with 1 issue · 3 items.")
+    assert dialog.source_detection_progress.value() == 3
     assert "vipp_batch_manifest.json" in dialog.run_result_label.text()
     assert "Ground truth passed" in dialog.run_result_label.text()
     assert dialog.run_button.isEnabled()
@@ -821,6 +1016,7 @@ def test_batch_dialog_cancel_is_single_shot_and_waits_for_safe_checkpoint(
     assert not dialog.cancel_run_button.isEnabled()
     assert dialog.cancel_run_button.text() == "Cancelling..."
     assert "safe checkpoint" in dialog.operation_progress_label.text()
+    assert "cancelling safely" in dialog.batch_activity_status.text().lower()
 
 
 def test_batch_dialog_error_restores_exact_control_state(qtbot, tmp_path):
@@ -836,6 +1032,7 @@ def test_batch_dialog_error_restores_exact_control_state(qtbot, tmp_path):
 
     assert dialog.preview_table.item(0, 4).text() == "Failed"
     assert dialog.run_progress_bar.format() == "Failed"
+    assert dialog.batch_activity_status.text() == "Failed · item 1 of 3."
     assert "source changed" in dialog.run_result_label.text()
     assert dialog.run_button.isEnabled()
     assert not dialog.save_config_button.isEnabled()
@@ -872,23 +1069,59 @@ def test_batch_dialog_scrolls_compact_content_and_keeps_footer_fixed(
     assert dialog.content_scroll.widget() is dialog.content_widget
     assert dialog.content_widget.isAncestorOf(dialog.source_group)
     assert dialog.content_widget.isAncestorOf(dialog.preview_table)
+    assert not dialog.content_widget.isAncestorOf(dialog.config_row)
+    assert dialog.config_row.isAncestorOf(dialog.load_config_button)
+    assert dialog.config_row.isAncestorOf(dialog.batch_activity_strip)
+    assert not dialog.content_widget.isAncestorOf(dialog.batch_activity_strip)
+    assert dialog.isAncestorOf(dialog.batch_activity_strip)
     assert not dialog.content_widget.isAncestorOf(dialog.button_box)
-    assert (
-        dialog.content_scroll.verticalScrollBarPolicy()
-        == Qt.ScrollBarAsNeeded
-    )
+    assert dialog.content_scroll.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
 
     dialog.resize(640, dialog.minimumHeight())
     dialog.show()
     qtbot.waitUntil(dialog.isVisible)
-    qtbot.waitUntil(
-        lambda: dialog.content_scroll.verticalScrollBar().maximum() > 0
-    )
+    qtbot.waitUntil(lambda: dialog.content_scroll.verticalScrollBar().maximum() > 0)
 
     assert dialog.width() <= 640
+    toolbar_layout = dialog.config_row.layout()
+    assert (
+        toolbar_layout.indexOf(dialog.load_config_button)
+        < toolbar_layout.indexOf(dialog.save_config_button)
+        < toolbar_layout.indexOf(dialog.demo_config_button)
+        < toolbar_layout.indexOf(dialog.batch_activity_strip)
+    )
+    assert dialog.batch_activity_status.width() > 0
+    toolbar_button_center = dialog.load_config_button.mapTo(
+        dialog,
+        dialog.load_config_button.rect().center(),
+    )
+    activity_center = dialog.batch_activity_strip.mapTo(
+        dialog,
+        dialog.batch_activity_strip.rect().center(),
+    )
+    assert abs(toolbar_button_center.y() - activity_center.y()) <= 2
+    dialog.show_workspace_activity(
+        "Detecting batch items and checking saved sources...",
+        state="working",
+        indeterminate=True,
+        progress_text="Checking",
+    )
+    QApplication.processEvents()
+    assert dialog.batch_activity_status.width() >= 96
+    assert dialog.source_detection_progress.isVisibleTo(dialog.config_row)
+    for widget in (
+        dialog.batch_activity_status,
+        dialog.source_detection_progress,
+    ):
+        widget_right = widget.mapTo(
+            dialog.config_row,
+            widget.rect().topRight(),
+        ).x()
+        assert widget_right <= dialog.config_row.rect().right()
     scroll_bar = dialog.content_scroll.verticalScrollBar()
     for position in (scroll_bar.minimum(), scroll_bar.maximum()):
         scroll_bar.setValue(position)
+        assert dialog.batch_activity_strip.isVisibleTo(dialog)
         assert dialog.run_button.isVisibleTo(dialog)
         assert dialog.close_button.isVisibleTo(dialog)
 
