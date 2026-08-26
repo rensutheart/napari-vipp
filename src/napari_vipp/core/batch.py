@@ -39,6 +39,18 @@ from napari_vipp.core.atomic_io import (
 from napari_vipp.core.atomic_io import (
     atomic_write_text,
 )
+from napari_vipp.core.batch_parameters import (
+    BATCH_PARAMETER_OVERRIDE_IDENTITY,
+    BatchParameterOverride,
+    BatchSourceParameterOverrides,
+    batch_parameter_overrides_document,
+    batch_source_item_override_key,
+    normalize_batch_parameter_overrides,
+    parameter_override_provenance,
+    parse_batch_parameter_overrides,
+    validate_batch_parameter_overrides,
+    workflow_with_parameter_overrides,
+)
 from napari_vipp.core.compute import ComputeMode, ComputeRequest
 from napari_vipp.core.execution import (
     PipelineExecutionFailure,
@@ -51,10 +63,12 @@ from napari_vipp.core.execution_provenance import (
 )
 from napari_vipp.core.io import (
     MICROSCOPE_SUFFIXES,
+    SourceInspection,
     inspect_image_source,
     inspect_image_state,
     read_image,
 )
+from napari_vipp.core.io.raster import RASTER_SUFFIXES
 from napari_vipp.core.metadata import (
     AmbiguousAxisError,
     AxisDeclaration,
@@ -66,8 +80,20 @@ from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import (
     LocalSourceIdentity,
     SourceChangedError,
+    capture_local_source_bundle,
     capture_local_source_identity,
+    local_source_identity_from_bundle,
     verify_local_source_identity,
+)
+from napari_vipp.core.source_item_persistence import (
+    SOURCE_ITEM_PARAMETER,
+    source_item_from_params,
+)
+from napari_vipp.core.source_items import SourceContainerBundle, SourceItem
+from napari_vipp.core.source_resolution import (
+    resolve_source_item,
+    select_inspected_item,
+    verify_saved_source_item,
 )
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import deserialize_workflow
@@ -77,9 +103,9 @@ if TYPE_CHECKING:
     from napari_vipp.core.execution import ComputePlanner
 
 BATCH_CONFIG_TYPE = "napari-vipp-batch-config"
-BATCH_CONFIG_VERSION = 3
+BATCH_CONFIG_VERSION = 4
 BATCH_MANIFEST_TYPE = "napari-vipp-batch-manifest"
-BATCH_MANIFEST_VERSION = 3
+BATCH_MANIFEST_VERSION = 4
 
 BATCH_CONFIG_FILENAME = "vipp_batch_config.json"
 BATCH_MANIFEST_FILENAME = "vipp_batch_manifest.json"
@@ -87,6 +113,7 @@ BATCH_WORKFLOW_FILENAME = "vipp_batch_workflow.json"
 BATCH_SCRIPT_FILENAME = "vipp_batch_pipeline.py"
 
 PAIRING_POLICY = "sorted-position"
+DEFAULT_BATCH_SOURCE_PATTERN = "*"
 _PATTERN_SEPARATORS = re.compile(r"[;,\n]+")
 _KNOWN_SUFFIXES = (
     ".ome.tif",
@@ -196,6 +223,7 @@ class BatchSourceConfig:
     input_dir: Path
     pattern: str
     axis_declaration: AxisDeclaration | None = None
+    source_items: tuple[SourceItem, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text(self.node_id, "Batch source node_id")
@@ -207,6 +235,25 @@ class BatchSourceConfig:
             "axis_declaration",
             AxisDeclaration.from_value(self.axis_declaration),
         )
+        items = tuple(self.source_items)
+        if any(not isinstance(item, SourceItem) for item in items):
+            raise TypeError(
+                "Batch source source_items must contain only SourceItem records."
+            )
+        digests = [item.digest for item in items]
+        if len(digests) != len(set(digests)):
+            raise ValueError("Batch source source_items must be unique.")
+        items = tuple(
+            sorted(
+                items,
+                key=lambda item: (
+                    item.container.uri,
+                    item.selector.key,
+                    item.digest,
+                ),
+            )
+        )
+        object.__setattr__(self, "source_items", items)
 
     def to_dict(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -217,7 +264,15 @@ class BatchSourceConfig:
         }
         if self.axis_declaration is not None:
             result["axis_declaration"] = self.axis_declaration.to_dict()
+        if self.source_items:
+            result["source_items"] = [item.to_dict() for item in self.source_items]
         return result
+
+    @property
+    def source_item_documents(self) -> tuple[dict[str, object], ...]:
+        """Detached canonical documents retained for transition callers."""
+
+        return tuple(item.to_dict() for item in self.source_items)
 
     @classmethod
     def from_dict(
@@ -231,6 +286,8 @@ class BatchSourceConfig:
         allowed = {"node_id", "title", "input_dir", "pattern"}
         if config_version >= 3:
             allowed.add("axis_declaration")
+        if config_version >= 4:
+            allowed.add("source_items")
         _reject_unknown_keys(
             data,
             allowed,
@@ -245,6 +302,11 @@ class BatchSourceConfig:
                 AxisDeclaration.from_value(data.get("axis_declaration"))
                 if config_version >= 3
                 else None
+            ),
+            source_items=(
+                _source_items_from_batch_source(data, index=index)
+                if config_version >= 4
+                else ()
             ),
         )
 
@@ -342,6 +404,7 @@ class BatchConfig:
     pairing_policy: str = PAIRING_POLICY
     compute_request: ComputeRequest = field(default_factory=ComputeRequest)
     base_dir: Path | None = field(default=None, compare=False, repr=False)
+    parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text(str(self.workflow_file), "Batch config workflow_file")
@@ -370,6 +433,11 @@ class BatchConfig:
             )
         if not isinstance(self.compute_request, ComputeRequest):
             raise TypeError("Batch config compute_request must be a ComputeRequest.")
+        object.__setattr__(
+            self,
+            "parameter_overrides",
+            normalize_batch_parameter_overrides(self.parameter_overrides),
+        )
         for name in (
             "save_workflow_snapshot",
             "save_python_script",
@@ -383,7 +451,7 @@ class BatchConfig:
             )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "type": BATCH_CONFIG_TYPE,
             "version": BATCH_CONFIG_VERSION,
             "workflow": {
@@ -405,6 +473,13 @@ class BatchConfig:
             "continue_on_error": self.continue_on_error,
             "compute": self.compute_request.as_dict(),
         }
+        # Keep the established document and hash byte-for-byte equivalent when
+        # the explicit opt-in feature is unused.
+        if self.parameter_overrides:
+            document["parameter_overrides"] = batch_parameter_overrides_document(
+                self.parameter_overrides
+            )
+        return document
 
     @classmethod
     def from_dict(
@@ -430,14 +505,17 @@ class BatchConfig:
         if type(raw_version) is not int or raw_version not in {
             1,
             2,
+            3,
             BATCH_CONFIG_VERSION,
         }:
             raise ValueError(
                 f"Unsupported batch config version: {raw_version!r}. "
-                f"Expected version 1, 2, or {BATCH_CONFIG_VERSION}."
+                f"Expected version 1, 2, 3, or {BATCH_CONFIG_VERSION}."
             )
         if raw_version == 1:
             allowed.remove("compute")
+        if raw_version == BATCH_CONFIG_VERSION:
+            allowed.add("parameter_overrides")
         _reject_unknown_keys(data, allowed, "Batch config")
         workflow = _require_object(data.get("workflow"), "Batch config workflow")
         _reject_unknown_keys(workflow, {"file", "sha256"}, "Batch config workflow")
@@ -510,6 +588,11 @@ class BatchConfig:
             continue_on_error=_required_bool(data, "continue_on_error", "batch config"),
             pairing_policy=_required_text(data, "pairing_policy", "batch config"),
             compute_request=compute_request,
+            parameter_overrides=(
+                parse_batch_parameter_overrides(data["parameter_overrides"])
+                if "parameter_overrides" in data
+                else ()
+            ),
             base_dir=(
                 Path(base_dir).expanduser().resolve() if base_dir is not None else None
             ),
@@ -564,6 +647,7 @@ class _BatchSourceItem:
     path: Path
     series_index: int | None = None
     series_name: str = ""
+    source_item: SourceItem | None = None
 
 
 @dataclass(frozen=True)
@@ -575,6 +659,18 @@ class BatchItemPlan:
     outputs: tuple[BatchOutputPlan, ...]
     source_series_indices: dict[str, int] = field(default_factory=dict)
     source_series_names: dict[str, str] = field(default_factory=dict)
+    source_items: dict[str, SourceItem] = field(default_factory=dict)
+    parameter_override_source_item_key: str = ""
+    parameter_overrides: tuple[BatchParameterOverride, ...] = ()
+
+    @property
+    def source_item_documents(self) -> dict[str, dict[str, object]]:
+        """Canonical SourceItem records keyed by Image Source node id."""
+
+        return {
+            node_id: source_item.to_dict()
+            for node_id, source_item in self.source_items.items()
+        }
 
     def source_label(self, node_id: str) -> str:
         path = self.source_paths[node_id]
@@ -649,9 +745,7 @@ class BatchOutputRecord:
         if self.size_bytes is not None:
             result["size_bytes"] = self.size_bytes
         if self.execution_provenance_sha256:
-            result["execution_provenance_sha256"] = (
-                self.execution_provenance_sha256
-            )
+            result["execution_provenance_sha256"] = self.execution_provenance_sha256
         if self.error_type:
             result["error"] = {
                 "type": self.error_type,
@@ -672,6 +766,7 @@ class BatchItemRecord:
     started_at: str = ""
     finished_at: str = ""
     execution: dict[str, object] = field(default_factory=dict)
+    parameter_overrides: dict[str, object] = field(default_factory=dict)
     execution_provenance_sha256: str = ""
     error_type: str = ""
     error_message: str = ""
@@ -690,10 +785,10 @@ class BatchItemRecord:
             result["finished_at"] = self.finished_at
         if self.execution:
             result["execution"] = _json_safe(self.execution)
+        if self.parameter_overrides:
+            result["parameter_overrides"] = _json_safe(self.parameter_overrides)
         if self.execution_provenance_sha256:
-            result["execution_provenance_sha256"] = (
-                self.execution_provenance_sha256
-            )
+            result["execution_provenance_sha256"] = self.execution_provenance_sha256
         if self.error_type:
             result["error"] = {
                 "type": self.error_type,
@@ -797,10 +892,7 @@ class BatchRunResult:
 
     @property
     def cancelled(self) -> bool:
-        return any(
-            item.status is BatchStatus.CANCELLED
-            for item in self.manifest.items
-        )
+        return any(item.status is BatchStatus.CANCELLED for item in self.manifest.items)
 
     @property
     def all_paths(self) -> tuple[Path, ...]:
@@ -847,17 +939,29 @@ def scientific_workflow_document(workflow: object) -> dict[str, object]:
         "connections": connections,
         "tunnels": tunnels,
     }
-    if data.get("version") == 4:
+    source_item_bound = any(
+        SOURCE_ITEM_PARAMETER
+        in _require_object(node.get("params", {}), "Workflow node parameters")
+        for node in nodes
+        if node.get("operation_id") == "input"
+    )
+    if data.get("version") in {4, 5}:
         # Authored compute intent changes reproducibility and therefore belongs
         # in the scientific workflow hash. Machine-local benchmark evidence and
-        # resolved devices are excluded by the workflow-v4 schema itself.
+        # resolved devices are excluded by the portable workflow schema itself.
         execution = _canonical_compute_execution(restored["compute_request"])
-        if execution == _implicit_v3_cpu_execution():
+        if source_item_bound:
+            document["version"] = 5
+            document["execution"] = execution
+        elif execution == _implicit_v3_cpu_execution():
             # v3 already meant this exact CPU request. Preserve its established
-            # scientific hash so attached batch configs remain valid after a
-            # lossless v3 -> v4 save migration.
+            # scientific hash so attached batch configs remain valid after
+            # lossless v3 -> v4 -> v5 save migrations.
             document["version"] = 3
         else:
+            # A v5 document without SourceItem evidence has the same scientific
+            # meaning as its v4 portable-compute representation.
+            document["version"] = 4
             document["execution"] = execution
     return document
 
@@ -914,16 +1018,12 @@ def save_batch_config(path: str | Path, config: BatchConfig) -> Path:
         config.base_dir is not None
         and target.parent.resolve() != config.base_dir.resolve()
     ):
-        document["workflow"]["file"] = str(
-            config.resolve_path(config.workflow_file)
-        )
+        document["workflow"]["file"] = str(config.resolve_path(config.workflow_file))
         document["output_dir"] = str(config.resolve_path(config.output_dir))
         for source_document, source in zip(
             document["sources"], config.sources, strict=True
         ):
-            source_document["input_dir"] = str(
-                config.resolve_path(source.input_dir)
-            )
+            source_document["input_dir"] = str(config.resolve_path(source.input_dir))
     return atomic_write_json(target, document)
 
 
@@ -963,8 +1063,7 @@ def _fully_skipped_item_record(
 ) -> BatchItemRecord | None:
     """Return a terminal no-op record when every destination should be skipped."""
     if not plan.outputs or not all(
-        output.existing_file_policy == ExistingFilePolicy.SKIP
-        and output.path.exists()
+        output.existing_file_policy == ExistingFilePolicy.SKIP and output.path.exists()
         for output in plan.outputs
     ):
         return None
@@ -975,9 +1074,7 @@ def _fully_skipped_item_record(
             status=BatchStatus.SKIPPED,
             existing_identity=_path_identity(output.path),
             error_type="",
-            error_message=(
-                f"Existing destination was left unchanged: {output.path}"
-            ),
+            error_message=(f"Existing destination was left unchanged: {output.path}"),
         )
         for record, output in zip(item.outputs, plan.outputs, strict=True)
     )
@@ -1000,9 +1097,7 @@ def _with_item_record_write_failure(
         f"({type(error).__name__}): {error}"
     )
     message = (
-        f"{item.error_message} Additionally, {detail}"
-        if item.error_message
-        else detail
+        f"{item.error_message} Additionally, {detail}" if item.error_message else detail
     )
     status = (
         item.status
@@ -1134,7 +1229,11 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
                 f"No files matched '{source.pattern}' for "
                 f"batch source '{source.title}'."
             )
-        source_items = _expand_source_items(paths)
+        source_items = _expand_source_items(
+            paths,
+            axis_declaration=source.axis_declaration,
+        )
+        _verify_configured_source_items(source, source_items)
         source_lists[source.node_id] = source_items
         counts[source.title] = len(source_items)
     expected = len(next(iter(source_lists.values())))
@@ -1154,8 +1253,7 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
             for source in config.sources
         }
         source_paths = {
-            node_id: source_item.path
-            for node_id, source_item in source_items.items()
+            node_id: source_item.path for node_id, source_item in source_items.items()
         }
         source_series_indices = {
             node_id: source_item.series_index
@@ -1167,17 +1265,18 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
             for node_id, source_item in source_items.items()
             if source_item.series_index is not None
         }
+        resolved_source_items = {
+            node_id: source_item.source_item
+            for node_id, source_item in source_items.items()
+            if source_item.source_item is not None
+        }
         primary_source = source_paths[primary_id]
         primary_item = source_items[primary_id]
         source_stem = _batch_source_item_stem(primary_item)
         source_name = (
-            primary_source.name
-            if primary_item.series_index is None
-            else source_stem
+            primary_source.name if primary_item.series_index is None else source_stem
         )
-        batch_id = safe_batch_filename(
-            f"{item_index + 1:04d}_{source_stem}"
-        )
+        batch_id = safe_batch_filename(f"{item_index + 1:04d}_{source_stem}")
         outputs = tuple(
             _plan_output(
                 config,
@@ -1199,8 +1298,15 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
                 outputs=outputs,
                 source_series_indices=source_series_indices,
                 source_series_names=source_series_names,
+                source_items=resolved_source_items,
             )
         )
+
+    items = _bind_batch_parameter_overrides(
+        config,
+        items,
+        primary_source_node_id=primary_id,
+    )
 
     target_counts: dict[str, int] = {}
     for item in items:
@@ -1208,9 +1314,7 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
             key = os.path.normcase(str(output.path.resolve(strict=False)))
             target_counts[key] = target_counts.get(key, 0) + 1
     all_source_paths = tuple(
-        path
-        for item in items
-        for path in item.source_paths.values()
+        path for item in items for path in item.source_paths.values()
     )
     resolved_items = []
     for item in items:
@@ -1229,6 +1333,88 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
             )
         resolved_items.append(replace(item, outputs=tuple(resolved_outputs)))
     return BatchPlan(config, tuple(resolved_items), output_dir)
+
+
+def bind_batch_plan_source_items(
+    config: BatchConfig,
+    plan: BatchPlan,
+) -> BatchConfig:
+    """Freeze every resolved collection item into a replay-safe config."""
+
+    if plan.config is not config:
+        raise ValueError(
+            "A batch plan can bind SourceItems only to the exact config used "
+            "to create it."
+        )
+    bound_sources: list[BatchSourceConfig] = []
+    for source in config.sources:
+        source_items: list[SourceItem] = []
+        for item in plan.items:
+            source_item = item.source_items.get(source.node_id)
+            if source_item is None:
+                # Unreadable items have no scientific identity VIPP can invent.
+                # A later readable replacement becomes an extra observed item
+                # and is rejected by configured-set verification.
+                continue
+            source_items.append(source_item)
+        bound_sources.append(replace(source, source_items=tuple(source_items)))
+    return replace(config, sources=tuple(bound_sources))
+
+
+def _bind_batch_parameter_overrides(
+    config: BatchConfig,
+    items: list[BatchItemPlan],
+    *,
+    primary_source_node_id: str,
+) -> list[BatchItemPlan]:
+    """Resolve opt-in override keys against exact planned SourceItems."""
+
+    if not config.parameter_overrides:
+        return items
+    configured = {item.source_item_key: item for item in config.parameter_overrides}
+    observed: dict[str, int] = {}
+    resolved: list[BatchItemPlan] = []
+    for item in items:
+        source_item = item.source_items.get(primary_source_node_id)
+        if source_item is None:
+            raise ValueError(
+                "Batch parameter overrides require canonical SourceItem "
+                "evidence for every primary collection item. Refresh the "
+                "collection before configuring per-sample values."
+            )
+        source_item_key = batch_source_item_override_key(
+            primary_source_node_id,
+            source_item,
+        )
+        if source_item_key in observed:
+            first = observed[source_item_key]
+            raise ValueError(
+                "Batch primary SourceItem identity is not unique: items "
+                f"{first} and {item.index} both resolve to {source_item_key}."
+            )
+        observed[source_item_key] = item.index
+        override = configured.get(source_item_key)
+        if override is None:
+            resolved.append(item)
+            continue
+        resolved.append(
+            replace(
+                item,
+                parameter_override_source_item_key=source_item_key,
+                parameter_overrides=override.values,
+            )
+        )
+    unmatched = sorted(set(configured) - set(observed))
+    if unmatched:
+        preview = ", ".join(unmatched[:3])
+        suffix = "" if len(unmatched) <= 3 else f" (+{len(unmatched) - 3} more)"
+        raise ValueError(
+            "Batch parameter overrides reference source items that are not in "
+            "the current primary collection: " + preview + suffix + ". "
+            "The source content, logical item selection, or collection may "
+            "have changed; refresh and review the mappings."
+        )
+    return resolved
 
 
 def _with_fixed_source_collisions(
@@ -1275,9 +1461,13 @@ def _collision_paths(plan: BatchPlan) -> list[str]:
     seen: set[str] = set()
     for item in plan.items:
         for output in item.outputs:
-            collision = output.duplicate or output.input_collision or (
-                output.exists
-                and output.existing_file_policy == ExistingFilePolicy.ERROR
+            collision = (
+                output.duplicate
+                or output.input_collision
+                or (
+                    output.exists
+                    and output.existing_file_policy == ExistingFilePolicy.ERROR
+                )
             )
             text = str(output.path)
             if collision and text not in seen:
@@ -1358,6 +1548,23 @@ def run_batch(
         raise ValueError(
             "A supplied batch plan must use the exact validated config instance."
         )
+    plan = replace(
+        plan,
+        items=tuple(
+            _bind_batch_parameter_overrides(
+                config,
+                [
+                    replace(
+                        item,
+                        parameter_override_source_item_key="",
+                        parameter_overrides=(),
+                    )
+                    for item in plan.items
+                ],
+                primary_source_node_id=config.sources[0].node_id,
+            )
+        ),
+    )
     plan = _with_fixed_source_collisions(plan, fixed_source_paths.values())
     if plan.has_collisions:
         collisions = _collision_paths(plan)
@@ -1366,12 +1573,22 @@ def run_batch(
         raise FileExistsError(
             "Batch preflight found output collisions: " + preview + suffix
         )
-    _preflight_representative_scientific_contract(
+    fixed_source_items = _preflight_representative_scientific_contract(
         pipeline,
         plan,
         config,
         fixed_source_paths,
     )
+    # Resolve and deserialize every item-specific graph before creating any
+    # run artifacts. Invalid substitutions therefore fail closed before the
+    # first item can start or publish output.
+    item_workflows = {
+        item.index: workflow_with_parameter_overrides(
+            workflow,
+            item.parameter_overrides,
+        )
+        for item in plan.items
+    }
     plan.output_dir.mkdir(parents=True, exist_ok=True)
 
     workflow_label = str(workflow_path or config.workflow_file)
@@ -1387,6 +1604,7 @@ def run_batch(
         scientific_workflow_document(workflow),
         config.to_dict(),
         fixed_source_paths,
+        fixed_source_items,
         effective_request,
         override_used=compute_request is not None,
     )
@@ -1507,6 +1725,7 @@ def run_batch(
                     config,
                     source_paths,
                     source_identities,
+                    fixed_source_items,
                 )
                 if (
                     effective_request.mode is not ComputeMode.CPU
@@ -1520,7 +1739,7 @@ def run_batch(
                 execution_result = execute_pipeline_request(
                     PipelineRunRequest(
                         run_id=item_plan.index,
-                        workflow=workflow,
+                        workflow=item_workflows[item_plan.index],
                         input_data=None,
                         input_metadata=None,
                         input_name="",
@@ -1552,6 +1771,10 @@ def run_batch(
                     ),
                     failure=execution_result.failure,
                 )
+                if item_record.parameter_overrides:
+                    execution["parameter_overrides"] = _json_safe(
+                        item_record.parameter_overrides
+                    )
                 execution["status"] = execution["outcome"]
                 provenance_sha256 = execution_provenance_digest(execution)
                 item_record = replace(
@@ -1724,11 +1947,7 @@ def run_batch(
                     ]
 
                 source_change_error: SourceChangedError | None = None
-                if (
-                    not item_cancelled
-                    and not publication_blocked
-                    and source_identities
-                ):
+                if not item_cancelled and not publication_blocked and source_identities:
                     try:
                         _verify_item_source_identities(
                             source_paths,
@@ -1828,9 +2047,7 @@ def run_batch(
                         else:
                             saved_paths.append(saved)
                             try:
-                                size = (
-                                    saved.stat().st_size if saved.is_file() else None
-                                )
+                                size = saved.stat().st_size if saved.is_file() else None
                             except OSError:
                                 size = None
                             output_record = replace(
@@ -2246,6 +2463,7 @@ def _validated_batch_pipeline(
         config.compute_request,
         label="Batch config compute request",
     )
+    validate_batch_parameter_overrides(config.parameter_overrides, pipeline)
     fixed_source_paths = _validate_pipeline_config(
         pipeline,
         config,
@@ -2263,9 +2481,7 @@ def _validate_compute_request_node_ids(
     unknown = set(request.node_preferences) - set(pipeline.nodes)
     if unknown:
         raise ValueError(
-            f"{label} references missing node IDs: "
-            + ", ".join(sorted(unknown))
-            + "."
+            f"{label} references missing node IDs: " + ", ".join(sorted(unknown)) + "."
         )
 
 
@@ -2407,9 +2623,7 @@ def _validate_pipeline_config(
         raise ValueError(
             "Batch workflows cannot run enabled Save Image nodes because they "
             "publish before batch source verification. Disable them and use "
-            "Batch Output nodes instead: "
-            + ", ".join(enabled_save_nodes)
-            + "."
+            "Batch Output nodes instead: " + ", ".join(enabled_save_nodes) + "."
         )
 
     explicit = [
@@ -2433,9 +2647,7 @@ def _validate_pipeline_config(
             raise ValueError(
                 "Terminal-output compatibility fallback cannot save all ports "
                 "from multi-output nodes. Add one Batch Output node for each "
-                "desired port: "
-                + ", ".join(multi_output_terminals)
-                + "."
+                "desired port: " + ", ".join(multi_output_terminals) + "."
             )
     configured_outputs = [output.node_id for output in config.outputs]
     if configured_outputs != expected_outputs:
@@ -2511,10 +2723,10 @@ def _preflight_representative_scientific_contract(
     plan: BatchPlan,
     config: BatchConfig,
     fixed_source_paths: dict[str, Path],
-) -> None:
+) -> dict[str, SourceItem]:
     """Validate one representative's axis contract before any run artifacts."""
     if not plan.items:
-        return
+        return {}
     item = next(
         (
             planned_item
@@ -2528,12 +2740,13 @@ def _preflight_representative_scientific_contract(
         None,
     )
     if item is None:
-        return
+        return {}
     source_paths = _item_source_paths(pipeline, item, fixed_source_paths)
     bindings = {source.node_id: source for source in config.sources}
     payloads: dict[str, SourcePayload] = {}
     summaries: list[str] = []
     generic_undeclared: list[tuple[str, str, str, str]] = []
+    fixed_source_items: dict[str, SourceItem] = {}
     contract_pipeline = PrototypePipeline()
     contract_pipeline.restore_graph(
         pipeline.nodes.values(),
@@ -2551,19 +2764,32 @@ def _preflight_representative_scientific_contract(
         except Exception:
             # A source that cannot be inspected at all remains an item-specific
             # read failure governed by continue_on_error.
-            return
+            return fixed_source_items
         try:
-            series_index = int(node.params.get("series_index", 0))
-            if series_index < 0 or series_index >= len(inspection.series):
-                raise IndexError(
-                    f"Series index {series_index} is outside 0.."
-                    f"{len(inspection.series) - 1}"
-                )
-            selected = inspection.series[series_index]
+            expected_source_item = (
+                item.source_items.get(node_id)
+                if binding is not None
+                else source_item_from_params(node.params)
+            )
+            series_index = item.source_series_indices.get(
+                node_id,
+                int(node.params.get("series_index", 0)),
+            )
+            selected = select_inspected_item(
+                inspection,
+                series_index=(
+                    None if expected_source_item is not None else series_index
+                ),
+                item_key=(
+                    expected_source_item.selector.key
+                    if expected_source_item is not None
+                    else None
+                ),
+            )
             raw_state = inspect_image_state(
                 path,
                 inspection=inspection,
-                series_index=series_index,
+                series_index=selected.index,
             )
             base = np.empty((1,), dtype=np.dtype(selected.dtype))
             proxy = np.lib.stride_tricks.as_strided(
@@ -2590,6 +2816,27 @@ def _preflight_representative_scientific_contract(
                 binding,
                 image_source_declaration=node.params.get("axis_declaration"),
             )
+            bundle = capture_local_source_bundle(
+                path,
+                source_format=inspection.format,
+            )
+            if expected_source_item is None:
+                source_item = resolve_source_item(
+                    bundle,
+                    inspection,
+                    item_key=selected.key,
+                    image_state=effective_state,
+                    axis_declaration=declaration,
+                )
+            else:
+                source_item = verify_saved_source_item(
+                    expected_source_item,
+                    bundle,
+                    inspection,
+                    image_state=effective_state,
+                )
+            if binding is None:
+                fixed_source_items[node_id] = source_item
             summaries.append(
                 f"{title}: raw {axis_semantics['raw_axes']}, effective "
                 f"{axis_semantics['effective_axes']}"
@@ -2599,8 +2846,13 @@ def _preflight_representative_scientific_contract(
                     else f" ({declaration.display_text})"
                 )
             )
-            if binding is not None and declaration is None and any(
-                axis.type == "unknown" for axis in raw_state.axes
+            if (
+                binding is not None
+                and declaration is None
+                and any(
+                    axis.type in {"unknown", "custom"}
+                    for axis in raw_state.axes
+                )
             ):
                 generic_undeclared.append(
                     (node_id, title, raw_state.axis_order, inspection.format)
@@ -2628,6 +2880,7 @@ def _preflight_representative_scientific_contract(
             selected.name or path.name,
             effective_state,
             axis_semantics_resolved=True,
+            source_item=source_item,
         )
     try:
         contract_pipeline.preflight_axis_contract(payloads)
@@ -2638,6 +2891,7 @@ def _preflight_representative_scientific_contract(
             generic_undeclared,
             contract_pipeline,
         )
+    return fixed_source_items
 
 
 def _raise_batch_scientific_preflight_error(
@@ -2664,7 +2918,7 @@ def _raise_batch_scientific_preflight_error(
         )
         candidates = [item for item in candidates if item[0] in primary_sources]
     if candidates:
-        node_id, title, raw_axes, source_format = candidates[0]
+        node_id, title, raw_axes, _source_format = candidates[0]
         guidance = (
             f" Review '{title}' and, only if it is truly a Z stack, set "
             f"Declare axes to {raw_axes} -> ZYX."
@@ -2672,7 +2926,6 @@ def _raise_batch_scientific_preflight_error(
         if (
             len(candidates) == 1
             and raw_axes == "QYX"
-            and source_format == "tiff"
             and isinstance(exc, AmbiguousAxisError)
             and exc.code == "positional_spatial_layout"
             and exc.detected_axes == "QYX"
@@ -2684,8 +2937,8 @@ def _raise_batch_scientific_preflight_error(
                 declaration=AxisDeclaration("QYX", "ZYX"),
             )
             user_message = (
-                "This TIFF looks like a Z stack, but its first dimension is "
-                "labelled Q. VIPP can treat it as Z for this batch."
+                "This source has an unknown leading Q axis. Because the "
+                "workflow requires 3D processing, VIPP can treat Q as depth Z."
             )
         else:
             user_message = (
@@ -2735,6 +2988,7 @@ def _source_payloads_for_item(
     config: BatchConfig,
     source_paths: dict[str, Path],
     source_identities: dict[str, LocalSourceIdentity],
+    fixed_source_items: dict[str, SourceItem],
 ) -> tuple[dict[str, SourcePayload], list[dict[str, object]]]:
     payloads: dict[str, SourcePayload] = {}
     records: list[dict[str, object]] = []
@@ -2752,19 +3006,84 @@ def _source_payloads_for_item(
         else:
             title = binding.title if binding is not None else node.title
             role = "collection"
-        dataset = read_image(
-            path,
-            series_index=item.source_series_indices.get(
-                node_id,
-                int(node.params.get("series_index", 0)),
+        expected_source_item = (
+            item.source_items.get(node_id)
+            if role == "collection"
+            else fixed_source_items.get(node_id) or source_item_from_params(node.params)
+        )
+        legacy_series_index = item.source_series_indices.get(
+            node_id,
+            int(node.params.get("series_index", 0)),
+        )
+        inspection = inspect_image_source(path)
+        selected = select_inspected_item(
+            inspection,
+            series_index=(
+                None if expected_source_item is not None else legacy_series_index
+            ),
+            item_key=(
+                expected_source_item.selector.key
+                if expected_source_item is not None
+                else None
             ),
         )
+        dataset = read_image(
+            path,
+            series_index=selected.index,
+        )
+        if dataset.selected_series.key != selected.key:
+            raise RuntimeError(
+                "Reader contract mismatch: batch inspection selected item key "
+                f"{selected.key!r} but the reader returned "
+                f"{dataset.selected_series.key!r}."
+            )
         raw_state = dataset.image_state
         effective_state, axis_semantics = _declared_batch_source_state(
             raw_state,
             binding,
             image_source_declaration=node.params.get("axis_declaration"),
         )
+        identity = source_identities[node_id]
+        if expected_source_item is None:
+            bundle = capture_local_source_bundle(
+                path,
+                source_format=dataset.inspection.format,
+            )
+            if local_source_identity_from_bundle(bundle) != identity:
+                raise SourceChangedError(
+                    "The batch source changed while its logical item was being "
+                    "resolved. No output was published."
+                )
+            source_item = resolve_source_item(
+                bundle,
+                dataset.inspection,
+                item_key=dataset.selected_series.key,
+                image_state=effective_state,
+                axis_declaration=(
+                    binding.axis_declaration
+                    if binding is not None
+                    else node.params.get("axis_declaration")
+                ),
+            )
+        else:
+            if (
+                local_source_identity_from_bundle(expected_source_item.container)
+                != identity
+            ):
+                raise SourceChangedError(
+                    "The batch source revision no longer matches its planned "
+                    "SourceItem. Refresh the batch plan and review the changed "
+                    "source before running."
+                )
+            source_item = verify_saved_source_item(
+                expected_source_item,
+                replace(
+                    expected_source_item.container,
+                    uri=str(path.resolve(strict=False)),
+                ),
+                dataset.inspection,
+                image_state=effective_state,
+            )
         provenance = _json_safe(dataset.provenance)
         effective_provenance = (
             {**provenance, "axis_semantics": axis_semantics}
@@ -2780,39 +3099,45 @@ def _source_payloads_for_item(
                 "vipp_source_path": str(path),
                 "vipp_source_provenance": effective_provenance,
                 "vipp_axis_semantics": axis_semantics,
+                "vipp_source_identity": identity.to_dict(),
+                "vipp_source_item_key": source_item.selector.key,
+                "vipp_source_item_digest": source_item.digest,
+                "vipp_source_item": source_item.to_public_dict(),
             },
             dataset.selected_series.name or path.name,
             effective_state,
+            revision_token=identity,
             axis_semantics_resolved=True,
+            source_item=source_item,
         )
-        identity = {
+        identity_record = {
             **_path_identity(path),
-            **source_identities[node_id].to_dict(),
+            **identity.to_dict(),
         }
-        records.append(
-            {
-                "node_id": node_id,
-                "title": title,
-                "role": role,
-                "path": str(path),
-                "identity": identity,
-                "series": {
-                    "index": dataset.selected_series.index,
-                    "key": dataset.selected_series.key,
-                    "name": dataset.selected_series.name,
-                    "shape": list(dataset.selected_series.shape),
-                    "dtype": dataset.selected_series.dtype,
-                    "axes": dataset.selected_series.axes,
-                    "kind": dataset.selected_series.kind,
-                },
-                "raw_axes": axis_semantics["raw_axes"],
-                "effective_axes": axis_semantics["effective_axes"],
-                "axis_declaration": axis_semantics["declaration"],
-                "axis_semantics": axis_semantics,
-                "image_state": effective_state.to_dict(),
-                "provenance": effective_provenance,
-            }
-        )
+        source_record: dict[str, object] = {
+            "node_id": node_id,
+            "title": title,
+            "role": role,
+            "path": str(path),
+            "identity": identity_record,
+            "series": {
+                "index": dataset.selected_series.index,
+                "key": dataset.selected_series.key,
+                "name": dataset.selected_series.name,
+                "shape": list(dataset.selected_series.shape),
+                "dtype": dataset.selected_series.dtype,
+                "axes": dataset.selected_series.axes,
+                "kind": dataset.selected_series.kind,
+            },
+            "raw_axes": axis_semantics["raw_axes"],
+            "effective_axes": axis_semantics["effective_axes"],
+            "axis_declaration": axis_semantics["declaration"],
+            "axis_semantics": axis_semantics,
+            "image_state": effective_state.to_dict(),
+            "provenance": effective_provenance,
+        }
+        source_record["source_item"] = source_item.to_dict()
+        records.append(source_record)
     return payloads, records
 
 
@@ -2883,9 +3208,7 @@ def _capture_item_source_identities(
     for node_id, path in source_paths.items():
         identities[node_id] = capture_local_source_identity(
             path,
-            cancel_callback=(
-                None if cancel_event is None else cancel_event.is_set
-            ),
+            cancel_callback=(None if cancel_event is None else cancel_event.is_set),
             progress_callback=_source_identity_progress_callback(
                 callback=progress_callback,
                 item_index=item_index,
@@ -2912,9 +3235,7 @@ def _verify_item_source_identities(
         verify_local_source_identity(
             path,
             source_identities[node_id],
-            cancel_callback=(
-                None if cancel_event is None else cancel_event.is_set
-            ),
+            cancel_callback=(None if cancel_event is None else cancel_event.is_set),
             progress_callback=_source_identity_progress_callback(
                 callback=progress_callback,
                 item_index=item_index,
@@ -3059,11 +3380,16 @@ def _seed_manifest(
     workflow_document: dict[str, object],
     config_document: dict[str, object],
     fixed_source_paths: dict[str, Path],
+    resolved_fixed_source_items: dict[str, SourceItem],
     effective_request: ComputeRequest,
     *,
     override_used: bool,
 ) -> BatchManifest:
     items = []
+    fixed_source_items = {
+        **_workflow_source_items(workflow_document),
+        **resolved_fixed_source_items,
+    }
     for item in plan.items:
         sources = tuple(
             _planned_source_record(
@@ -3071,11 +3397,17 @@ def _seed_manifest(
                 path,
                 series_index=item.source_series_indices.get(node_id),
                 series_name=item.source_series_names.get(node_id, ""),
+                source_item=item.source_items.get(node_id),
             )
             for node_id, path in item.source_paths.items()
         )
         sources += tuple(
-            _planned_source_record(node_id, path, role="fixed")
+            _planned_source_record(
+                node_id,
+                path,
+                role="fixed",
+                source_item=fixed_source_items.get(node_id),
+            )
             for node_id, path in fixed_source_paths.items()
         )
         outputs = tuple(
@@ -3092,7 +3424,20 @@ def _seed_manifest(
             )
             for output in item.outputs
         )
-        items.append(BatchItemRecord(item.index, item.batch_id, sources, outputs))
+        override_record = parameter_override_provenance(
+            item.parameter_override_source_item_key,
+            item.parameter_overrides,
+            workflow_document,
+        )
+        items.append(
+            BatchItemRecord(
+                item.index,
+                item.batch_id,
+                sources,
+                outputs,
+                parameter_overrides=override_record,
+            )
+        )
     return BatchManifest(
         run_id=uuid.uuid4().hex,
         started_at=_timestamp(),
@@ -3124,6 +3469,7 @@ def _planned_source_record(
     role: str = "collection",
     series_index: int | None = None,
     series_name: str = "",
+    source_item: SourceItem | None = None,
 ) -> dict[str, object]:
     record: dict[str, object] = {
         "node_id": node_id,
@@ -3138,7 +3484,33 @@ def _planned_source_record(
             "index": series_index,
             "name": series_name or f"Series {series_index + 1}",
         }
+    if source_item is not None:
+        if not isinstance(source_item, SourceItem):
+            raise TypeError("planned source_item must be a SourceItem.")
+        record["source_item"] = source_item.to_dict()
     return record
+
+
+def _workflow_source_items(
+    workflow_document: dict[str, object],
+) -> dict[str, SourceItem]:
+    """Extract validated canonical fixed-source evidence from a workflow."""
+
+    raw_nodes = workflow_document.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        return {}
+    result: dict[str, SourceItem] = {}
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict) or raw_node.get("operation_id") != "input":
+            continue
+        node_id = raw_node.get("id")
+        params = raw_node.get("params")
+        if not isinstance(node_id, str) or not isinstance(params, dict):
+            continue
+        source_item = source_item_from_params(params)
+        if source_item is not None:
+            result[node_id] = source_item
+    return result
 
 
 def _path_identity(path: Path) -> dict[str, int]:
@@ -3259,6 +3631,8 @@ def _with_synthetic_execution_failure(
             cleanup_succeeded=True,
         ),
     )
+    if item.parameter_overrides:
+        execution["parameter_overrides"] = _json_safe(item.parameter_overrides)
     execution["status"] = execution["outcome"]
     provenance_sha256 = execution_provenance_digest(execution)
     return replace(
@@ -3318,8 +3692,7 @@ def _batch_actual_compute_summary(
         "implementation_ids": implementation_ids,
         "fallback_count": len(fallbacks),
         "out_of_memory_fallback_count": sum(
-            fallback.get("reason") == "out_of_memory"
-            for fallback in fallbacks
+            fallback.get("reason") == "out_of_memory" for fallback in fallbacks
         ),
         "item_cleanup_succeeded": all(
             item.execution.get("cleanup_succeeded") is True
@@ -3367,7 +3740,7 @@ def _runtime_versions() -> dict[str, object]:
 def _iter_source_paths(input_dir: Path, pattern: str) -> list[Path]:
     patterns = [
         item.strip() for item in _PATTERN_SEPARATORS.split(str(pattern)) if item.strip()
-    ] or ["*.tif"]
+    ] or [DEFAULT_BATCH_SOURCE_PATTERN]
     paths: list[Path] = []
     seen: set[Path] = set()
     for item in patterns:
@@ -3385,15 +3758,21 @@ def _iter_source_paths(input_dir: Path, pattern: str) -> list[Path]:
     )
 
 
-def _expand_source_items(paths: list[Path]) -> list[_BatchSourceItem]:
+def _expand_source_items(
+    paths: list[Path],
+    *,
+    axis_declaration: AxisDeclaration | None = None,
+) -> list[_BatchSourceItem]:
     """Expand multi-series containers through the shared source inspector."""
 
     items: list[_BatchSourceItem] = []
     inspectable_suffixes = {
+        ".npy",
         ".npz",
         ".tif",
         ".tiff",
         ".zarr",
+        *RASTER_SUFFIXES,
         *MICROSCOPE_SUFFIXES,
     }
     for path in paths:
@@ -3411,24 +3790,112 @@ def _expand_source_items(paths: list[Path]) -> list[_BatchSourceItem]:
             ) from exc
         if not inspection.series:
             raise ValueError(f"Batch source collection contains no images: {path}")
-        if len(inspection.series) == 1:
-            items.append(_BatchSourceItem(path))
+        try:
+            bundle = capture_local_source_bundle(
+                path,
+                source_format=inspection.format,
+            )
+            resolved_items = {
+                series.index: _resolved_batch_source_item(
+                    path,
+                    bundle,
+                    inspection,
+                    series.index,
+                    axis_declaration=axis_declaration,
+                )
+                for series in inspection.series
+            }
+        except Exception as exc:
+            raise ValueError(
+                f"Could not resolve batch SourceItems for {path}: {exc}"
+            ) from exc
+        ordered_series = tuple(
+            sorted(
+                inspection.series,
+                key=lambda series: (
+                    resolved_items[series.index].selector.key,
+                    resolved_items[series.index].selector.digest,
+                ),
+            )
+        )
+        if len(ordered_series) == 1:
+            selected = ordered_series[0]
+            items.append(
+                _BatchSourceItem(
+                    path,
+                    source_item=resolved_items[selected.index],
+                )
+            )
             continue
         items.extend(
             _BatchSourceItem(
                 path=path,
                 series_index=series.index,
                 series_name=series.name or series.key or f"Series {series.index + 1}",
+                source_item=resolved_items[series.index],
             )
-            for series in inspection.series
+            for series in ordered_series
         )
     return items
+
+
+def _resolved_batch_source_item(
+    path: Path,
+    bundle: SourceContainerBundle,
+    inspection: SourceInspection,
+    series_index: int,
+    *,
+    axis_declaration: AxisDeclaration | None,
+) -> SourceItem:
+    selected = next(
+        series for series in inspection.series if series.index == series_index
+    )
+    state = selected.image_state or inspect_image_state(
+        path,
+        inspection=inspection,
+        series_index=series_index,
+    )
+    if axis_declaration is not None:
+        state = apply_axis_declaration(
+            state,
+            axis_declaration,
+            declaration_source="batch config",
+        )
+    return resolve_source_item(
+        bundle,
+        inspection,
+        item_key=selected.key,
+        image_state=state,
+        axis_declaration=axis_declaration,
+    )
+
+
+def _verify_configured_source_items(
+    source: BatchSourceConfig,
+    items: list[_BatchSourceItem],
+) -> None:
+    if not source.source_items:
+        return
+    observed = tuple(item.source_item for item in items if item.source_item is not None)
+    expected_digests = {item.digest for item in source.source_items}
+    observed_digests = {item.digest for item in observed}
+    if expected_digests != observed_digests:
+        raise ValueError(
+            f"Batch source {source.title!r} no longer matches its configured "
+            "SourceItem revisions or logical selectors. Refresh the collection "
+            "and review the changed items before running."
+        )
 
 
 def _batch_source_item_stem(item: _BatchSourceItem) -> str:
     stem = batch_source_stem(item.path)
     if item.series_index is None:
         return stem
+    if item.source_item is not None:
+        series_name = safe_batch_filename(
+            item.source_item.resolved.name or item.source_item.selector.key
+        )
+        return f"{stem}__{series_name}_{item.source_item.selector.digest[:12]}"
     series_name = safe_batch_filename(
         item.series_name or f"Series_{item.series_index + 1}"
     )
@@ -3465,9 +3932,19 @@ def batch_source_stem(path: Path) -> str:
 
 
 def _is_supported_local_image_source(path: Path) -> bool:
-    return path.is_file() or (
-        path.is_dir() and path.suffix.lower() == ".zarr"
-    )
+    suffix = path.suffix.lower()
+    if path.is_dir():
+        return suffix == ".zarr"
+    if not path.is_file():
+        return False
+    return suffix in {
+        ".npy",
+        ".npz",
+        ".tif",
+        ".tiff",
+        *MICROSCOPE_SUFFIXES,
+        *RASTER_SUFFIXES,
+    }
 
 
 def safe_batch_filename(value: str) -> str:
@@ -3543,10 +4020,18 @@ def _canonical_scientific_node(value: object) -> dict[str, object]:
     params = _require_object(node.get("params", {}), "Workflow node parameters")
     operation_id = str(node.get("operation_id", ""))
     threshold_mode = str(params.get("threshold_mode", "Manual")).casefold()
+    source_item = source_item_from_params(params) if operation_id == "input" else None
+    source_item_bound = source_item is not None
     filtered: dict[str, object] = {}
     for key in sorted(params):
         name = str(key)
+        if name == SOURCE_ITEM_PARAMETER and source_item_bound:
+            filtered[name] = source_item.to_dict()
+            continue
         if name.startswith("_vipp_") or name == "resolved_spatial_ndim":
+            continue
+        if source_item_bound and name == "series_index":
+            # The ordinal is a compatibility hint, not durable item identity.
             continue
         if operation_id == "combine_channels" and name == "channel_axis":
             # The executor derives this optional cache from input metadata.
@@ -3585,6 +4070,29 @@ def _json_safe(value: object) -> object:
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _source_items_from_batch_source(
+    data: dict[str, Any],
+    *,
+    index: int,
+) -> tuple[SourceItem, ...]:
+    raw_items = data.get("source_items", [])
+    if not isinstance(raw_items, list):
+        raise ValueError(f"Batch source {index} source_items must be a list.")
+    items: list[SourceItem] = []
+    for item_index, raw_item in enumerate(raw_items):
+        if not isinstance(raw_item, dict):
+            raise ValueError(
+                f"Batch source {index} SourceItem {item_index} must be an object."
+            )
+        try:
+            items.append(SourceItem.from_dict(raw_item))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Batch source {index} SourceItem {item_index} is invalid: {exc}"
+            ) from exc
+    return tuple(items)
 
 
 def _require_object(value: object, label: str) -> dict[str, Any]:
@@ -3646,6 +4154,7 @@ class _SkippedOutput(RuntimeError):
 
 
 __all__ = [
+    "BATCH_PARAMETER_OVERRIDE_IDENTITY",
     "BATCH_CONFIG_FILENAME",
     "BATCH_CONFIG_TYPE",
     "BATCH_CONFIG_VERSION",
@@ -3664,9 +4173,11 @@ __all__ = [
     "BatchOutputConfig",
     "BatchOutputPlan",
     "BatchOutputRecord",
+    "BatchParameterOverride",
     "BatchPlan",
     "BatchRunResult",
     "BatchSourceConfig",
+    "BatchSourceParameterOverrides",
     "BatchStatus",
     "BatchRuntimeCleanupError",
     "BatchScientificPreflightError",
@@ -3674,6 +4185,8 @@ __all__ = [
     "atomic_write_json",
     "atomic_write_text",
     "batch_config_hash",
+    "bind_batch_plan_source_items",
+    "batch_source_item_override_key",
     "effective_batch_compute_request",
     "effective_batch_config_hash",
     "build_batch_plan",

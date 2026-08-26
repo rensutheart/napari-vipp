@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import weakref
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -50,6 +50,7 @@ from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
     _actionable_repair_refusals,
     _adaptive_cpu_stop_is_safe_for_current_assignment,
     _build_optimizer_graph,
+    _detach_source_payloads,
     _optimizer_validation_node_ids,
     _pipeline_input_peak,
     _pipeline_output_parity,
@@ -64,6 +65,7 @@ from napari_vipp.core.compute_registry import (
 )
 from napari_vipp.core.compute_specs import compute_specs_for
 from napari_vipp.core.execution import PipelineRunResult
+from napari_vipp.core.file_sources import load_frozen_file_source_snapshot
 from napari_vipp.core.pipeline import (
     MANUAL_RUN_SKIP,
     PrototypePipeline,
@@ -751,6 +753,41 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
         )
         != result.identity.source_fingerprint
     )
+
+
+def test_optimizer_source_identity_includes_and_preserves_source_item(tmp_path):
+    pipeline, source_id, _median_id, _writer_id = _writer_workflow()
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("custom"))
+    source_path = tmp_path / "source.npy"
+    np.save(source_path, np.arange(64, dtype=np.uint16).reshape(8, 8))
+    payload = load_frozen_file_source_snapshot(source_path).payload
+    assert payload.source_item is not None
+    changed_item = replace(
+        payload.source_item,
+        reader=replace(
+            payload.source_item.reader,
+            version=f"{payload.source_item.reader.version}-changed",
+        ),
+    )
+    changed_payload = replace(payload, source_item=changed_item)
+
+    original_fingerprint = fingerprint_pipeline_optimizer_sources(
+        document,
+        {source_id: payload},
+    )
+    changed_fingerprint = fingerprint_pipeline_optimizer_sources(
+        document,
+        {source_id: changed_payload},
+    )
+    detached = _detach_source_payloads(
+        pipeline,
+        {source_id: payload},
+        frozenset({source_id}),
+        check_abort=lambda: None,
+    )
+
+    assert changed_fingerprint != original_fingerprint
+    assert detached.payloads[source_id].source_item == payload.source_item
 
 
 def test_unavailable_proposed_backend_is_rejected_and_optimizer_continues(

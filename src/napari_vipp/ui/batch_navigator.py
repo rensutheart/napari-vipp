@@ -52,7 +52,9 @@ class BatchNavigator(QFrame):
     itemSelected = Signal(int)
 
     REPRESENTATIVE_MESSAGE = (
-        "Representative only - this does not run or save the batch."
+        "This selected item is calculated for preview with its effective "
+        "workflow values, including any per-sample overrides. Run batch "
+        "processes and saves all items."
     )
     STALE_MESSAGE = (
         "Batch settings changed - this graph still shows the representative "
@@ -90,6 +92,19 @@ class BatchNavigator(QFrame):
             "No representative sources selected."
         )
         self.sources_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.effective_overrides_label = _WrappingLabel()
+        self.effective_overrides_label.setAccessibleName(
+            "Effective per-sample overrides"
+        )
+        self.effective_overrides_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse
+        )
+        self.effective_overrides_label.setStyleSheet("color: #bfdbfe;")
+        self.effective_overrides_label.setToolTip(
+            "These values are applied only to this representative preview. "
+            "They do not change the authored workflow values."
+        )
+        self.effective_overrides_label.hide()
 
         self.previous_button = QPushButton("Previous")
         self.next_button = QPushButton("Next")
@@ -102,8 +117,9 @@ class BatchNavigator(QFrame):
 
         self.representative_label = _WrappingLabel(self.REPRESENTATIVE_MESSAGE)
         self.representative_label.setToolTip(
-            "The graph calculates one selected batch item for inspection. "
-            "Only Run batch executes and saves the complete plan."
+            "Changing the representative recalculates that item through the "
+            "graph using inherited workflow values plus any per-sample "
+            "overrides. Nothing is saved until Run batch."
         )
         self.representative_label.setStyleSheet("color: #94a3b8;")
 
@@ -137,6 +153,7 @@ class BatchNavigator(QFrame):
         layout.addLayout(self._header_layout)
         layout.addLayout(navigation_layout)
         layout.addLayout(self._details_layout)
+        layout.addWidget(self.effective_overrides_label)
         layout.addWidget(self.representative_label)
         layout.addWidget(self.progress_frame)
 
@@ -166,6 +183,8 @@ class BatchNavigator(QFrame):
         current_index: int,
         batch_id: str,
         source_filenames: Mapping[str, str] | Sequence[str],
+        *,
+        effective_overrides_summary: str = "",
     ) -> None:
         """Show one representative from an active collection session."""
         item_count = int(item_count)
@@ -189,8 +208,29 @@ class BatchNavigator(QFrame):
         source_text = self._source_filename_text(source_filenames)
         self.sources_label.setText(self._soft_wrap_long_tokens(source_text))
         self.sources_label.setToolTip(source_text)
+        self.set_effective_overrides_summary(effective_overrides_summary)
         self._sync_navigation_controls()
         self.show()
+
+    def set_effective_overrides_summary(self, summary: str = "") -> None:
+        """Show the overrides applied to the committed representative.
+
+        An empty summary removes the optional detail. Callers should leave it
+        empty while another item is loading so values from the prior
+        representative are never presented as current.
+        """
+
+        detail = str(summary).strip()
+        if not detail:
+            self.effective_overrides_label.clear()
+            self.effective_overrides_label.hide()
+            return
+        self.effective_overrides_label.setText(
+            self._soft_wrap_long_tokens(
+                f"Effective per-sample overrides: {detail}"
+            )
+        )
+        self.effective_overrides_label.show()
 
     def clear_session(self) -> None:
         """Clear all representative and progress state, then hide the widget."""
@@ -205,6 +245,7 @@ class BatchNavigator(QFrame):
         self.batch_id_label.setToolTip("")
         self.sources_label.setText("No representative sources selected.")
         self.sources_label.setToolTip("")
+        self.set_effective_overrides_summary()
         self.representative_label.setText(self.REPRESENTATIVE_MESSAGE)
         self.reset_batch_progress()
         self._sync_navigation_controls()
@@ -332,6 +373,7 @@ class BatchNavigator(QFrame):
         self.batch_id_label.setToolTip("Loading representative...")
         self.sources_label.setText("Loading paired sources...")
         self.sources_label.setToolTip("")
+        self.set_effective_overrides_summary()
         self._sync_navigation_controls()
         self.itemSelected.emit(index)
 

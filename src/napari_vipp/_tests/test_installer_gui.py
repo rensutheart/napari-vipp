@@ -13,6 +13,7 @@ from napari_vipp.installer.frontend import (
     InstallerScreen,
     InstallerSelection,
     InstallerViewState,
+    InstallSizeEstimate,
     TargetKind,
 )
 from napari_vipp.installer.gui import (
@@ -20,10 +21,12 @@ from napari_vipp.installer.gui import (
     VIPP_TAGLINE,
     InstallerWindow,
     _activity_text,
+    _format_size,
     _header_inline_width,
     _header_minimum_width,
     _header_should_stack,
     _reviewed_message,
+    _size_review_text,
     _window_title,
     build_parser,
 )
@@ -380,7 +383,75 @@ def test_checking_activity_explains_long_package_review_and_elapsed_time():
     assert "● Checking this computer and reviewing exact packages…" in rendered
     assert "can take several minutes" in rendered
     assert "moving bar means setup is still working" in rendered
-    assert "Elapsed in this stage: 2m 14s" in rendered
+    assert "Elapsed in this phase: 2m 14s" in rendered
+
+
+@pytest.mark.parametrize(
+    ("size_bytes", "rendered"),
+    [
+        (0, "0 B"),
+        (1536, "1.5 KiB"),
+        (250 * 1024**2, "250 MiB"),
+        (1536 * 1024**2, "1.5 GiB"),
+    ],
+)
+def test_installer_sizes_use_compact_binary_units(size_bytes, rendered):
+    assert _format_size(size_bytes) == rendered
+
+
+def test_size_review_separates_approximate_estimates_from_enforced_minimums():
+    state = InstallerViewState(
+        screen=InstallerScreen.READY,
+        headline="Ready",
+        message="Ready",
+        primary_label="Install",
+        primary_enabled=True,
+        size_estimate=InstallSizeEstimate(
+            download_bytes=1536 * 1024**2,
+            installed_bytes=5 * 1024**3,
+            peak_temporary_bytes=7 * 1024**3,
+        ),
+        required_free_bytes=15 * 1024**3,
+        temporary_free_bytes=5 * 1024**3,
+    )
+
+    rendered = _size_review_text(state)
+
+    assert "Approximate sizes (estimates, not enforced limits)" in rendered
+    assert "Download: 1.5 GiB" in rendered
+    assert "Installed: 5 GiB" in rendered
+    assert "Peak temporary working space: 7 GiB" in rendered
+    assert "Required minimum free space (enforced): 15 GiB" in rendered
+    assert "5 GiB on every drive used for Windows temporary files" in rendered
+    reviewed = _reviewed_message(
+        state,
+        InstallerSelection(track="cuda13"),
+    )
+    assert rendered in reviewed
+
+
+def test_quiet_active_phase_reports_heartbeat_without_claiming_failure():
+    latest = "Installing VIPP and its required components…"
+    rendered = _activity_text(
+        ["Preparing files…", latest],
+        screen=InstallerScreen.WORKING,
+        elapsed_seconds=305,
+        quiet_seconds=125,
+    )
+
+    assert latest in rendered
+    assert "Still working — no new milestone for 2m 05s" in rendered
+    assert "taking longer than usual" in rendered
+    assert "setup has not reported a failure" in rendered
+
+    stopped = _activity_text(
+        ["Setup stopped before completion."],
+        screen=InstallerScreen.FAILED,
+        elapsed_seconds=305,
+        quiet_seconds=305,
+    )
+    assert "Still working" not in stopped
+    assert "taking longer than usual" not in stopped
 
 
 def test_ready_message_shows_exact_checked_settings_without_technical_details(
@@ -460,6 +531,107 @@ def test_advanced_details_are_live_and_never_use_placeholder_text(tmp_path):
 
     window._development_build = False
     assert DEVELOPMENT_BUILD_LABEL not in window._rendered_details(state)
+
+
+def test_advanced_details_keeps_live_setup_log_location_visible(tmp_path):
+    log_path = tmp_path / "installer-state" / "setup.log"
+    window = object.__new__(InstallerWindow)
+    window._selection = InstallerSelection(install_root=tmp_path / "managed")
+    window._status_history = ["Downloading VIPP components…"]
+    window._development_build = False
+    window._elapsed_seconds = lambda: 75
+    state = InstallerViewState(
+        screen=InstallerScreen.WORKING,
+        headline="Installing",
+        message="Installing",
+        primary_label="Working",
+        primary_enabled=False,
+        status_message="Downloading VIPP components…",
+        progress_stage="download",
+        log_path=log_path,
+    )
+
+    details = window._rendered_details(state)
+
+    assert f"Setup log: {log_path}" in details
+    assert "Current activity: Downloading VIPP components…" in details
+    assert "Elapsed in this phase: 1m 15s" in details
+
+
+def test_open_setup_log_uses_exact_live_log_path(tmp_path, monkeypatch):
+    log_path = tmp_path / "installer-state" / "setup.log"
+    log_path.parent.mkdir()
+    log_path.write_text("installer event", encoding="utf-8")
+    opened = []
+    errors = []
+    monkeypatch.setattr(
+        gui_module.os,
+        "startfile",
+        lambda path: opened.append(Path(path)),
+        raising=False,
+    )
+    window = object.__new__(InstallerWindow)
+    window.root = object()
+    window._messagebox = SimpleNamespace(
+        showerror=lambda *args, **kwargs: errors.append((args, kwargs))
+    )
+    window._state = InstallerViewState(
+        screen=InstallerScreen.WORKING,
+        headline="Installing",
+        message="Installing",
+        primary_label="Working",
+        primary_enabled=False,
+        log_path=log_path,
+    )
+
+    window._open_setup_log()
+
+    assert opened == [log_path]
+    assert errors == []
+
+
+def test_open_setup_log_falls_back_to_notepad_without_jsonl_association(
+    tmp_path,
+    monkeypatch,
+):
+    log_path = tmp_path / "installer-state" / "setup-events.jsonl"
+    log_path.parent.mkdir()
+    log_path.write_text('{"event":"started"}\n', encoding="utf-8")
+    fallbacks = []
+    errors = []
+    monkeypatch.setattr(
+        gui_module.os,
+        "startfile",
+        lambda _path: (_ for _ in ()).throw(OSError("no file association")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        gui_module,
+        "subprocess",
+        SimpleNamespace(
+            Popen=lambda argv, **kwargs: fallbacks.append((tuple(argv), kwargs))
+        ),
+        raising=False,
+    )
+    window = object.__new__(InstallerWindow)
+    window.root = object()
+    window._messagebox = SimpleNamespace(
+        showerror=lambda *args, **kwargs: errors.append((args, kwargs))
+    )
+    window._state = InstallerViewState(
+        screen=InstallerScreen.WORKING,
+        headline="Installing",
+        message="Installing",
+        primary_label="Working",
+        primary_enabled=False,
+        log_path=log_path,
+    )
+
+    window._open_setup_log()
+
+    assert fallbacks
+    assert fallbacks[0][0] == ("notepad.exe", str(log_path))
+    assert errors == []
 
 
 def test_installer_header_uses_official_logo_without_reconstructed_circle():

@@ -28,9 +28,7 @@ from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
 
 
 def test_ome_tiff_round_trip_preserves_axes_scale_and_channels(tmp_path):
-    data = np.arange(2 * 3 * 4 * 8 * 9, dtype=np.uint16).reshape(
-        2, 3, 4, 8, 9
-    )
+    data = np.arange(2 * 3 * 4 * 8 * 9, dtype=np.uint16).reshape(2, 3, 4, 8, 9)
     state = image_state_from_array(
         data,
         axes=(
@@ -247,7 +245,7 @@ def test_common_raster_sources_read_png_and_jpeg(tmp_path):
 
 
 def test_write_image_saves_2d_raster_formats(tmp_path):
-    gray = (np.arange(6 * 7, dtype=np.uint16).reshape(6, 7) * 1000)
+    gray = np.arange(6 * 7, dtype=np.uint16).reshape(6, 7) * 1000
     png_path = tmp_path / "gray.png"
 
     saved = write_image(gray, png_path, format="png")
@@ -359,7 +357,7 @@ def test_ome_zarr_metadata_only_state_preserves_multi_letter_axis_names(tmp_path
     inspected_state = inspect_image_state(path, inspection=inspection)
     loaded = read_image(path)
 
-    assert inspection.series[0].axes == "DEPTHYX"
+    assert inspection.series[0].axes == "depth,y,x"
     assert tuple(axis.name for axis in inspected_state.axes) == (
         "depth",
         "y",
@@ -543,9 +541,7 @@ def test_nd2_microscope_reader_normalizes_metadata(monkeypatch, tmp_path):
         sizes = MappingProxyType({"T": 2, "Z": 3, "C": 2, "Y": 4, "X": 5})
         attributes = {"bitsPerComponentSignificant": 16}
         experiment = ()
-        text_info = {
-            "Description": "NIS Elements Richardson-Lucy deconvolution"
-        }
+        text_info = {"Description": "NIS Elements Richardson-Lucy deconvolution"}
 
         metadata = SimpleNamespace(
             channels=(
@@ -596,10 +592,15 @@ def test_nd2_microscope_reader_normalizes_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(microscope_io, "import_module", fake_import)
 
     inspection = inspect_image_source(path)
+    inspected_state = inspect_image_state(path, inspection=inspection)
     loaded = read_image(path)
 
     assert inspection.format == "nikon-nd2"
     assert inspection.series[0].axes == "TZCYX"
+    assert inspected_state.axis_order == "TZCYX"
+    assert inspected_state.axes == loaded.image_state.axes
+    assert inspected_state.channels == loaded.image_state.channels
+    assert inspected_state.acquisition == loaded.image_state.acquisition
     assert loaded.image_state.axis_order == "TZCYX"
     assert [axis.scale for axis in loaded.image_state.axes] == [
         1.0,
@@ -614,6 +615,170 @@ def test_nd2_microscope_reader_normalizes_metadata(monkeypatch, tmp_path):
     assert loaded.image_state.acquisition.refractive_index == 1.515
     assert loaded.image_state.acquisition.deconvolution_applied is True
     assert loaded.image_state.acquisition.deconvolution_method == "Richardson-Lucy"
+
+
+def test_oif_inspection_uses_decoded_series_axes_and_normalized_metadata(tmp_path):
+    metadata = {
+        "Axis 0 Parameters Common": {
+            "AxisCode": "X",
+            "MaxSize": 1024,
+            "PixUnit": "um",
+        },
+        "Axis 1 Parameters Common": {
+            "AxisCode": "Y",
+            "MaxSize": 1024,
+            "PixUnit": "um",
+        },
+        "Axis 2 Parameters Common": {"AxisCode": "C", "MaxSize": 2},
+        "Axis 3 Parameters Common": {
+            "AxisCode": "Z",
+            "MaxSize": 6,
+            "Interval": 510,
+            "PixUnit": "nm",
+        },
+        "Reference Image Parameter": {
+            "WidthConvertValue": "0,207.0",
+            "WidthUnit": "um",
+            "HeightConvertValue": "0,207.0",
+            "HeightUnit": "um",
+        },
+        "Channel 1 Parameters": {
+            "CH Name": "CH1",
+            "DyeName": "DAPI",
+            "ExcitationWavelength": 405,
+            "EmissionWavelength": 461,
+        },
+        "Channel 2 Parameters": {
+            "CH Name": "CH3",
+            "DyeName": "Alexa Fluor 594",
+            "ExcitationWavelength": 543,
+            "EmissionWavelength": 618,
+        },
+    }
+    series_item = SimpleNamespace(axes="CZ", shape=(2, 6))
+    oif = SimpleNamespace(dtype=np.dtype("uint16"))
+
+    selected = microscope_io._oif_series_info(
+        oif,
+        path=tmp_path / "volume.oib",
+        index=0,
+        series_item=series_item,
+        metadata=metadata,
+        reader_version="test",
+    )
+
+    assert selected.axes == "CZYX"
+    assert selected.shape == (2, 6, 1024, 1024)
+    assert selected.image_state is not None
+    assert selected.image_state.axis_order == "CZYX"
+    assert [axis.scale for axis in selected.image_state.axes] == pytest.approx(
+        [1.0, 0.51, 0.207, 0.207]
+    )
+    assert [axis.unit for axis in selected.image_state.axes] == [
+        None,
+        "micrometer",
+        "micrometer",
+        "micrometer",
+    ]
+    assert [channel.name for channel in selected.image_state.channels] == [
+        "DAPI",
+        "Alexa Fluor 594",
+    ]
+    assert selected.image_state.channels[1].emission_wavelength == 618
+
+
+def test_bioio_inspection_keeps_metadata_with_each_scene(monkeypatch, tmp_path):
+    class FakeBioImage:
+        scenes = ("primary", "macro")
+        dtype = np.dtype("uint16")
+
+        def __init__(self, _path):
+            self.current_scene = "primary"
+
+        def set_scene(self, scene):
+            if scene not in self.scenes:
+                raise IndexError(scene)
+            self.current_scene = scene
+
+        @property
+        def shape(self):
+            return (2, 4, 5) if self.current_scene == "primary" else (3, 2, 2)
+
+        @property
+        def dims(self):
+            return SimpleNamespace(
+                order="CYX" if self.current_scene == "primary" else "SYX"
+            )
+
+        @property
+        def physical_pixel_sizes(self):
+            scale = 0.2 if self.current_scene == "primary" else 1.0
+            return SimpleNamespace(X=scale, Y=scale, Z=None)
+
+        @property
+        def channel_names(self):
+            return ("DAPI", "FITC") if self.current_scene == "primary" else ()
+
+        @property
+        def metadata(self):
+            magnification = 60 if self.current_scene == "primary" else 1
+            return {"objectiveMagnification": magnification}
+
+    fake_bioio = SimpleNamespace(BioImage=FakeBioImage, __version__="test")
+    monkeypatch.setattr(microscope_io, "_optional_bioio", lambda _suffix: fake_bioio)
+
+    inspection = microscope_io._inspect_bioio(tmp_path / "source.vsi", "olympus-vsi")
+
+    assert [item.key for item in inspection.series] == ["primary", "macro"]
+    primary, macro = inspection.series
+    assert primary.image_state is not None
+    assert macro.image_state is not None
+    assert primary.image_state.axis_order == "CYX"
+    assert "".join(axis.name.upper() for axis in macro.image_state.axes) == "RGBYX"
+    assert primary.image_state.axes[-1].scale == 0.2
+    assert macro.image_state.axes[-1].scale == 1.0
+    assert [channel.name for channel in primary.image_state.channels] == [
+        "DAPI",
+        "FITC",
+    ]
+    assert primary.image_state.acquisition.objective_magnification == 60
+    assert macro.image_state.acquisition.objective_magnification == 1
+    assert inspection.original_metadata["primary"]["current_scene"] == "primary"
+    assert inspection.original_metadata["macro"]["current_scene"] == "macro"
+
+
+def test_bioio_scene_selection_failure_is_not_silently_ignored():
+    image = SimpleNamespace(
+        set_scene=lambda _scene: (_ for _ in ()).throw(IndexError())
+    )
+
+    with pytest.raises(ValueError, match="could not select scene"):
+        microscope_io._bioio_set_scene(image, "missing")
+
+
+def test_microscope_fallback_axes_preserve_rank_tokens_and_inferred_confidence():
+    order = microscope_io._fallback_axis_order((2, 3, 4, 5, 6, 7, 8))
+    axes = microscope_io._axes_from_order("broken", (2, 3, 4, 5, 6, 7, 8))
+
+    assert order == "D0,D1,T,C,Z,Y,X"
+    assert microscope_io._split_axis_order(order) == (
+        "D0",
+        "D1",
+        "T",
+        "C",
+        "Z",
+        "Y",
+        "X",
+    )
+    assert [axis.name for axis in axes] == ["d0", "d1", "t", "c", "z", "y", "x"]
+    assert all(axis.confidence == "shape-inferred" for axis in axes)
+
+
+def test_microscope_semantic_h_axis_is_not_renamed_to_scene():
+    axes = microscope_io._axes_from_order("HYX", (5, 8, 9))
+
+    assert [axis.name for axis in axes] == ["h", "y", "x"]
+    assert [axis.type for axis in axes] == ["unknown", "space", "space"]
 
 
 @pytest.mark.parametrize(
@@ -710,6 +875,46 @@ def test_nested_microscope_metadata_does_not_break_acquisition_detection():
 
     assert acquisition.objective == "Plan-Apochromat 63x"
     assert acquisition.objective_na == 1.35
+    assert acquisition.objective_magnification == 63.0
+
+
+def test_microscope_acquisition_parses_combined_objective_label_fallbacks():
+    acquisition = microscope_io._acquisition_from_metadata(
+        {"objectiveName": "63x, 1.3NA"}
+    )
+
+    assert acquisition.objective == "63x, 1.3NA"
+    assert acquisition.objective_magnification == 63.0
+    assert acquisition.objective_na == 1.3
+
+
+def test_explicit_objective_numbers_override_combined_label_fallbacks():
+    acquisition = microscope_io._acquisition_from_metadata(
+        {
+            "objectiveName": "63x/1.3",
+            "objectiveMagnification": 60,
+            "objectiveNumericalAperture": 1.25,
+        }
+    )
+
+    assert acquisition.objective_magnification == 60.0
+    assert acquisition.objective_na == 1.25
+
+
+def test_lenspower_requires_complete_objective_evidence():
+    generic_lens = microscope_io._acquisition_from_metadata(
+        {"Lens": "63x, 1.3NA"}
+    )
+    ambiguous_power = microscope_io._acquisition_from_metadata(
+        {"Lenspower": "tube lens 1.0x"}
+    )
+
+    assert generic_lens.objective == ""
+    assert generic_lens.objective_magnification is None
+    assert generic_lens.objective_na is None
+    assert ambiguous_power.objective == ""
+    assert ambiguous_power.objective_magnification is None
+    assert ambiguous_power.objective_na is None
 
 
 def test_microscope_acquisition_reads_object_style_nested_metadata():
@@ -835,9 +1040,10 @@ def test_xarray_czi_metadata_normalizes_channels_and_axes():
 
 
 def test_deconvolution_metadata_detection_is_conservative():
-    assert detect_deconvolution_metadata(
-        {"Processing": "Huygens deconvolution"}
-    ) == (True, "Huygens")
+    assert detect_deconvolution_metadata({"Processing": "Huygens deconvolution"}) == (
+        True,
+        "Huygens",
+    )
     assert detect_deconvolution_metadata(
         {"Processing": "no deconvolution applied"}
     ) == (False, "")

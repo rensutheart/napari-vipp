@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import tifffile
 
 from napari_vipp.core.batch import (
     BATCH_CONFIG_FILENAME,
@@ -26,6 +27,7 @@ from napari_vipp.core.export import (
     export_batch_runner_to_python,
     export_pipeline_to_python,
 )
+from napari_vipp.core.file_sources import load_frozen_file_source_snapshot
 from napari_vipp.core.io import ImageDataset, ImageSeriesInfo, SourceInspection
 from napari_vipp.core.metadata import (
     AXIS_CONFIDENCE_EXPLICIT,
@@ -46,6 +48,7 @@ from napari_vipp.core.pipeline import (
     SourcePayload,
 )
 from napari_vipp.core.source_identity import capture_local_source_identity
+from napari_vipp.core.source_item_persistence import SOURCE_ITEM_PARAMETER
 from napari_vipp.core.workflow import serialize_workflow
 
 
@@ -895,17 +898,24 @@ def test_generated_cli_sidecar_binds_exact_local_source_path_and_sha256(
             encoding="utf-8"
         )
     )
-    assert sidecar["sources"] == [
-        {
-            "node_id": "input",
-            "name": "source",
-            "path": str(source_path.resolve()),
-            "identity_complete": True,
-            "identity": expected_identity.to_dict(),
-            "reader_provenance": {},
-            "binding_sha256": sidecar["sources"][0]["binding_sha256"],
-        }
-    ]
+    source_record = sidecar["sources"][0]
+    assert {
+        key: value
+        for key, value in source_record.items()
+        if key != "source_item"
+    } == {
+        "node_id": "input",
+        "name": "source",
+        "path": str(source_path.resolve()),
+        "identity_complete": True,
+        "identity": expected_identity.to_dict(),
+        "reader_provenance": {},
+        "binding_sha256": source_record["binding_sha256"],
+    }
+    assert source_record["source_item"]["schema"] == (
+        "napari-vipp-public-source-item"
+    )
+    assert str(source_path.resolve()) not in str(source_record["source_item"])
     assert sidecar["sources"][0]["identity"]["sha256"] == (
         expected_identity.sha256
     )
@@ -1192,7 +1202,8 @@ def test_custom_export_function_name_is_used_by_generated_harness():
     assert "def analyze_image(" in code
     assert "results = analyze_image(" in code
     assert (
-        "load_image(source_path, progress_callback=progress_callback, "
+        "load_image(source_path, source_node_id='input', "
+        "progress_callback=progress_callback, "
         "cancel_event=cancel_event),"
     ) in code
     assert namespace["analyze_image"](image)["threshold"].dtype == bool
@@ -2688,7 +2699,7 @@ def test_export_preserves_segmentation_bridge_custom_implementation_ids():
     exec(compile(code, "<exported>", "exec"), namespace)
     embedded = json.loads(namespace["_WORKFLOW_JSON"])
 
-    assert embedded["version"] == 4
+    assert embedded["version"] == 5
     assert embedded["execution"]["compute"]["node_preferences"] == {
         extract.id: "implementation:cupy-extract-channel-view-v1",
         threshold.id: "implementation:cupy-binary-threshold-f32-exact-v1",
@@ -2789,6 +2800,86 @@ def test_exported_load_helper_returns_the_verified_frozen_payload():
     assert kwargs["cancel_callback"]() is False
     kwargs["progress_callback"](3, 9, "Hashing source bytes")
     assert progress == [("source-load", 3, 9, "Hashing source bytes")]
+
+
+def test_exported_load_helper_uses_authored_source_item_key(tmp_path):
+    source = tmp_path / "source.npz"
+    np.savez(
+        source,
+        first=np.ones((2, 3), dtype=np.uint8),
+        selected=np.full((2, 3), 7, dtype=np.uint8),
+    )
+    source_item = load_frozen_file_source_snapshot(
+        source,
+        series_index=1,
+    ).source_item
+    pipeline = _starter_pipeline()
+    pipeline.nodes["input"].params["series_index"] = 1
+    pipeline.nodes["input"].params[SOURCE_ITEM_PARAMETER] = source_item.to_dict()
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    payload = SourcePayload(np.ones((2, 3), dtype=np.uint8), {"axes": "YX"})
+    calls = []
+
+    def frozen_snapshot(path, series_index, **kwargs):
+        calls.append((path, series_index, kwargs))
+        return SimpleNamespace(payload=payload)
+
+    namespace["load_frozen_file_source_snapshot"] = frozen_snapshot
+
+    assert (
+        namespace["load_image"]("replacement.npz", source_node_id="input")
+        is payload
+    )
+    assert calls[0][0:2] == ("replacement.npz", 1)
+    assert calls[0][2]["item_key"] == "selected"
+
+    with pytest.raises(ValueError, match="cannot retarget"):
+        namespace["load_image"](
+            "replacement.npz",
+            source_node_id="input",
+            item_key="first",
+        )
+
+
+def test_exported_source_binding_preserves_canonical_axis_declaration(tmp_path):
+    original = tmp_path / "original.tif"
+    replacement = tmp_path / "replacement.tif"
+    values = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+    tifffile.imwrite(original, values, photometric="minisblack")
+    tifffile.imwrite(replacement, values + 1, photometric="minisblack")
+    declaration = AxisDeclaration("QYX", "ZYX")
+    source_item = load_frozen_file_source_snapshot(
+        original,
+        item_key="0",
+        axis_declaration=declaration,
+    ).source_item
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.nodes["input"].params["axis_declaration"] = declaration.display_text
+    pipeline.nodes["input"].params[SOURCE_ITEM_PARAMETER] = source_item.to_dict()
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+
+    payload = namespace["load_image"](
+        replacement,
+        source_node_id="input",
+    )
+    result = namespace["run_pipeline"](payload)
+
+    assert payload.axis_semantics_resolved
+    assert payload.image_state.axis_order == "ZYX"
+    assert payload.source_item.selector.source_axes == ("q", "y", "x")
+    assert payload.source_item.selector.effective_axes == ("z", "y", "x")
+    assert result.image_states["input"].axis_order == "ZYX"
+    source_record = result.provenance["sources"][0]["source_item"]
+    assert source_record["selector"]["key"] == "0"
+    assert source_record["selector"]["axis_declaration"] == {
+        "source_axes": ["q", "y", "x"],
+        "effective_axes": ["z", "y", "x"],
+    }
 
 
 def test_exported_load_helper_honors_precancel_before_source_hashing():

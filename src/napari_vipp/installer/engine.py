@@ -439,6 +439,12 @@ class InstallProgress:
     message: str
     completed: int
     total: int
+    unit: str = "steps"
+    log_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.log_path is not None:
+            object.__setattr__(self, "log_path", Path(self.log_path))
 
 
 ProgressCallback = Callable[[InstallProgress], None]
@@ -1168,7 +1174,14 @@ class ManagedInstallerEngine:
         try:
             with lock, log:
                 log.write("apply_started", resolution_id=prepared.resolution_id)
-                _emit(progress, ProgressStage.PREPARING, "Preparing VIPP…", 0, 6)
+                _emit(
+                    progress,
+                    ProgressStage.PREPARING,
+                    "Preparing VIPP…",
+                    0,
+                    6,
+                    log_path=log_path,
+                )
                 _checkpoint(cancellation)
                 current = self.inspect(prepared.plan)
                 if current.fingerprint != prepared.target_inspection.fingerprint:
@@ -4265,11 +4278,23 @@ def _emit(
     message: str,
     completed: int,
     total: int,
+    *,
+    unit: str = "steps",
+    log_path: Path | None = None,
 ) -> None:
     if callback is None:
         return
     try:
-        callback(InstallProgress(stage, message, completed, total))
+        callback(
+            InstallProgress(
+                stage,
+                message,
+                completed,
+                total,
+                unit=unit,
+                log_path=log_path,
+            )
+        )
     except Exception:
         # A display callback cannot corrupt an installation transaction.
         return

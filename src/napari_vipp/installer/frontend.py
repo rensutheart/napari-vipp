@@ -44,6 +44,14 @@ class InstallerScreen(StrEnum):
     FAILED = "failed"
 
 
+class ProgressUnit(StrEnum):
+    """How a progress total should be interpreted by the front end."""
+
+    ACTIVITY = "activity"
+    STEPS = "steps"
+    BYTES = "bytes"
+
+
 class TrackChoice(StrEnum):
     """Simple and advanced compute choices offered by the setup program."""
 
@@ -86,6 +94,46 @@ class InstallerSelection:
 
 
 @dataclass(frozen=True, slots=True)
+class InstallSizeEstimate:
+    """Rounded route-level storage estimates shown before mutation begins."""
+
+    download_bytes: int
+    installed_bytes: int
+    peak_temporary_bytes: int
+
+    def __post_init__(self) -> None:
+        for name in ("download_bytes", "installed_bytes", "peak_temporary_bytes"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer byte count.")
+
+
+_CPU_SIZE_ESTIMATE = InstallSizeEstimate(
+    download_bytes=250 * 1024**2,
+    installed_bytes=3 * 1024**3 // 2,
+    peak_temporary_bytes=5 * 1024**3 // 2,
+)
+_CUDA13_SIZE_ESTIMATE = InstallSizeEstimate(
+    download_bytes=3 * 1024**3 // 2,
+    installed_bytes=5 * 1024**3,
+    peak_temporary_bytes=7 * 1024**3,
+)
+
+
+def default_install_size_estimate(track: ComputeTrack) -> InstallSizeEstimate:
+    """Return conservative rounded estimates from retained qualified installs."""
+
+    track = ComputeTrack(track)
+    return _CUDA13_SIZE_ESTIMATE if track is ComputeTrack.CUDA13 else _CPU_SIZE_ESTIMATE
+
+
+def default_temporary_free_bytes(track: ComputeTrack) -> int:
+    """Return the unchanged per-volume temporary/state free-space threshold."""
+
+    return 5 * 1024**3 if ComputeTrack(track) is ComputeTrack.CUDA13 else 1024**3
+
+
+@dataclass(frozen=True, slots=True)
 class ProgressUpdate:
     """One backend milestone normalized for any future platform front end."""
 
@@ -93,9 +141,18 @@ class ProgressUpdate:
     message: str
     completed: int | None = None
     total: int | None = None
+    unit: ProgressUnit = ProgressUnit.STEPS
+    log_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "unit", ProgressUnit(self.unit))
+        if self.log_path is not None:
+            object.__setattr__(self, "log_path", Path(self.log_path))
 
     @property
     def fraction(self) -> float | None:
+        if self.unit is ProgressUnit.ACTIVITY:
+            return None
         if self.completed is None or self.total is None or self.total <= 0:
             return None
         return min(1.0, max(0.0, self.completed / self.total))
@@ -114,6 +171,8 @@ class PreparedInstall:
     payload: object | None = field(default=None, repr=False, compare=False)
     installed_version: str | None = None
     required_free_bytes: int | None = None
+    temporary_free_bytes: int | None = None
+    size_estimate: InstallSizeEstimate | None = None
     launcher: Path | None = None
     reason: str = ""
     help_url: str = ""
@@ -130,6 +189,12 @@ class PreparedInstall:
         object.__setattr__(self, "blocked_action", BlockedAction(self.blocked_action))
         if self.launcher is not None:
             object.__setattr__(self, "launcher", Path(self.launcher))
+        for name in ("required_free_bytes", "temporary_free_bytes"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer byte count.")
         if self.owned_uninstaller_path is not None:
             object.__setattr__(
                 self,
@@ -168,10 +233,13 @@ class InstallOutcome:
     launcher: Path
     message: str = "VIPP is ready to use."
     technical_details: str = ""
+    log_path: Path | None = None
     payload: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "launcher", Path(self.launcher))
+        if self.log_path is not None:
+            object.__setattr__(self, "log_path", Path(self.log_path))
 
 
 class InstallationCancelled(RuntimeError):
@@ -222,6 +290,12 @@ class InstallerViewState:
     cancel_enabled: bool = False
     status_message: str = ""
     progress_fraction: float | None = None
+    progress_stage: str = ""
+    progress_unit: ProgressUnit = ProgressUnit.ACTIVITY
+    log_path: Path | None = None
+    required_free_bytes: int | None = None
+    temporary_free_bytes: int | None = None
+    size_estimate: InstallSizeEstimate | None = None
     technical_details: str = ""
     target_kind: TargetKind | None = None
     target: Path | None = None
@@ -232,6 +306,9 @@ class InstallerViewState:
     def __post_init__(self) -> None:
         object.__setattr__(self, "screen", InstallerScreen(self.screen))
         object.__setattr__(self, "blocked_action", BlockedAction(self.blocked_action))
+        object.__setattr__(self, "progress_unit", ProgressUnit(self.progress_unit))
+        if self.log_path is not None:
+            object.__setattr__(self, "log_path", Path(self.log_path))
 
 
 StateListener = Callable[[InstallerViewState], None]
@@ -271,6 +348,7 @@ class InstallerController:
             primary_enabled=False,
             cancel_enabled=True,
             status_message="Starting checks…",
+            progress_stage="checking",
         )
 
     @property
@@ -308,6 +386,7 @@ class InstallerController:
                     primary_enabled=False,
                     cancel_enabled=True,
                     status_message="Checking Windows, Python, and available hardware…",
+                    progress_stage="checking",
                 )
             )
         self._start_worker(
@@ -416,10 +495,14 @@ class InstallerController:
                     primary_enabled=False,
                     cancel_enabled=True,
                     status_message="Preparing the installation…",
+                    progress_stage="preparing",
                     technical_details=prepared.technical_details,
                     target_kind=prepared.kind,
                     target=prepared.target,
                     track=prepared.track,
+                    required_free_bytes=prepared.required_free_bytes,
+                    temporary_free_bytes=prepared.temporary_free_bytes,
+                    size_estimate=prepared.size_estimate,
                 )
             )
         self._start_worker(
@@ -449,6 +532,7 @@ class InstallerController:
                     primary_enabled=False,
                     cancel_enabled=True,
                     status_message="Checking installed files and packages…",
+                    progress_stage="checking",
                     technical_details=self._prepared.technical_details,
                     target_kind=TargetKind.CURRENT,
                     target=self._prepared.target,
@@ -484,6 +568,8 @@ class InstallerController:
                     cancel_enabled=False,
                     status_message="Cancelling and cleaning up…",
                     progress_fraction=None,
+                    progress_stage="rolling_back",
+                    progress_unit=ProgressUnit.ACTIVITY,
                 )
             )
 
@@ -617,6 +703,12 @@ class InstallerController:
                         secondary_enabled=True,
                         status_message="Installation completed successfully.",
                         progress_fraction=1.0,
+                        progress_stage="completed",
+                        progress_unit=ProgressUnit.STEPS,
+                        log_path=outcome.log_path or self._state.log_path,
+                        required_free_bytes=prepared.required_free_bytes,
+                        temporary_free_bytes=prepared.temporary_free_bytes,
+                        size_estimate=prepared.size_estimate,
                         technical_details=details,
                         target_kind=prepared.kind,
                         target=prepared.target,
@@ -644,6 +736,9 @@ class InstallerController:
                     self._state,
                     status_message=update.message,
                     progress_fraction=update.fraction,
+                    progress_stage=update.stage,
+                    progress_unit=update.unit,
+                    log_path=update.log_path or self._state.log_path,
                 )
             )
 
@@ -666,6 +761,15 @@ class InstallerController:
                     secondary_label="Close",
                     secondary_enabled=True,
                     status_message="Cancellation completed.",
+                    progress_stage="cancelled",
+                    log_path=self._state.log_path,
+                    required_free_bytes=(
+                        prepared.required_free_bytes if prepared else None
+                    ),
+                    temporary_free_bytes=(
+                        prepared.temporary_free_bytes if prepared else None
+                    ),
+                    size_estimate=prepared.size_estimate if prepared else None,
                     technical_details=_join_details(
                         prepared.technical_details if prepared else "",
                         details,
@@ -700,6 +804,15 @@ class InstallerController:
                     secondary_label="Close",
                     secondary_enabled=True,
                     status_message="Setup stopped before completion.",
+                    progress_stage="failed",
+                    log_path=self._state.log_path,
+                    required_free_bytes=(
+                        selected.required_free_bytes if selected else None
+                    ),
+                    temporary_free_bytes=(
+                        selected.temporary_free_bytes if selected else None
+                    ),
+                    size_estimate=selected.size_estimate if selected else None,
                     technical_details=_join_details(
                         selected.technical_details if selected else "",
                         details,
@@ -722,6 +835,9 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
         "target": prepared.target,
         "track": prepared.track,
         "help_url": prepared.help_url,
+        "required_free_bytes": prepared.required_free_bytes,
+        "temporary_free_bytes": prepared.temporary_free_bytes,
+        "size_estimate": prepared.size_estimate,
     }
     if prepared.kind in {TargetKind.NEW, TargetKind.UPDATE, TargetKind.REPAIR}:
         verb = {
@@ -743,6 +859,9 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
             secondary_label="Close",
             secondary_enabled=True,
             status_message=_ready_status(prepared),
+            progress_stage="ready",
+            progress_fraction=None,
+            progress_unit=ProgressUnit.ACTIVITY,
             **common,
         )
     if prepared.kind is TargetKind.CURRENT:
@@ -755,6 +874,7 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
             secondary_label="Repair VIPP",
             secondary_enabled=True,
             status_message=f"VIPP {prepared.release_version} is installed.",
+            progress_stage="current",
             **common,
         )
     if prepared.kind is TargetKind.NEWER:
@@ -770,6 +890,7 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
             secondary_label="Close",
             secondary_enabled=True,
             status_message="Nothing has been changed.",
+            progress_stage="current",
             **common,
         )
     if prepared.kind is TargetKind.FOREIGN:
@@ -785,6 +906,7 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
             secondary_label="Close",
             secondary_enabled=True,
             status_message="Nothing has been changed.",
+            progress_stage="blocked",
             blocked_action=BlockedAction.RETRY,
             **common,
         )
@@ -810,6 +932,7 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
         ),
         secondary_enabled=True,
         status_message=prepared.reason or "Nothing has been changed.",
+        progress_stage="blocked",
         blocked_action=blocked_action,
         **common,
     )
@@ -824,19 +947,24 @@ def _ready_status(prepared: PreparedInstall) -> str:
     if prepared.required_free_bytes is None:
         return f"Setup will use {compute}."
     gib = prepared.required_free_bytes / 1024**3
+    temporary = prepared.temporary_free_bytes
+    temporary_requirement = (
+        " Windows temporary files and VIPP installer records also need at "
+        f"least {temporary / 1024**3:g} GiB of free disk space on every drive "
+        "they use."
+        if temporary is not None
+        else ""
+    )
     if prepared.track is ComputeTrack.CUDA13:
         return (
-            f"Setup will use GPU acceleration. It needs at least {gib:.0f} GiB "
-            "free on the installation drive during setup. This is disk "
-            "storage, not GPU memory (VRAM). Windows temporary files and VIPP "
-            "installer records also need at least 5 GiB free on every drive "
-            "they use."
+            f"Setup will use GPU acceleration and needs at least {gib:.0f} GiB "
+            "of free disk space on the installation drive."
+            f"{temporary_requirement}"
         )
     return (
         f"Setup will use {compute} and needs at least {gib:.0f} GiB of free "
-        "disk space on the installation drive during setup. Windows temporary "
-        "files and VIPP installer records also need at least 1 GiB free on "
-        "every drive they use."
+        "disk space on the installation drive during setup."
+        f"{temporary_requirement}"
     )
 
 
@@ -908,6 +1036,7 @@ def _plain_apply_failure(exc: Exception) -> tuple[str, str]:
 
 __all__ = [
     "BlockedAction",
+    "InstallSizeEstimate",
     "InstallOutcome",
     "InstallationCancelled",
     "InstallerBackend",
@@ -916,7 +1045,10 @@ __all__ = [
     "InstallerSelection",
     "InstallerViewState",
     "PreparedInstall",
+    "ProgressUnit",
     "ProgressUpdate",
     "TargetKind",
     "TrackChoice",
+    "default_install_size_estimate",
+    "default_temporary_free_bytes",
 ]

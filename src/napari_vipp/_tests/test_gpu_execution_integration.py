@@ -2827,7 +2827,7 @@ def test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance(
     module_spec.loader.exec_module(generated)
     embedded = json.loads(generated._WORKFLOW_JSON)
 
-    assert embedded["version"] == 4
+    assert embedded["version"] == 5
     assert embedded["execution"]["compute"]["mode"] == "custom"
     assert embedded["execution"]["compute"]["node_preferences"] == preferences
 

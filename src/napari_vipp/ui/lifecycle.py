@@ -72,6 +72,18 @@ class WidgetLifecycle:
         widget._active_source_load_id = None
         widget._source_load_pending = False
 
+        widget._batch_workspace_preview_serial += 1
+        for worker in tuple(widget._batch_workspace_preview_workers.values()):
+            try:
+                worker.cancel()
+            except Exception:
+                pass
+        widget._batch_workspace_preview_contexts.clear()
+        try:
+            widget._batch_workspace_preview_thread_pool.clear()
+        except Exception:
+            pass
+
         widget._thumbnail_contrast_serial += 1
         widget._discard_pending_thumbnail_contrast_limit_requests()
         # Terminal close invalidates ownership immediately after requesting

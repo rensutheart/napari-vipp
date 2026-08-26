@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import replace
+from importlib.metadata import PackageNotFoundError, version
+from math import prod
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +17,7 @@ from napari_vipp.core.io.microscope import (
     inspect_microscope,
     read_microscope,
 )
-from napari_vipp.core.io.model import ImageDataset, SourceInspection
+from napari_vipp.core.io.model import ImageDataset, ImageSeriesInfo, SourceInspection
 from napari_vipp.core.io.numpy_io import inspect_numpy, read_numpy, write_numpy
 from napari_vipp.core.io.ome_zarr import (
     image_state_from_ome_zarr_inspection,
@@ -66,15 +68,15 @@ def inspect_image_source(path: str | Path) -> SourceInspection:
     source_path = _source_path(path)
     suffix = source_path.suffix.lower()
     if suffix == ".zarr":
-        return inspect_ome_zarr(source_path)
+        return _annotated_inspection(inspect_ome_zarr(source_path), suffix=suffix)
     if suffix in MICROSCOPE_SUFFIXES:
-        return inspect_microscope(source_path)
+        return _annotated_inspection(inspect_microscope(source_path), suffix=suffix)
     if suffix in {".npy", ".npz"}:
-        return inspect_numpy(source_path)
+        return _annotated_inspection(inspect_numpy(source_path), suffix=suffix)
     if suffix in {".tif", ".tiff"}:
-        return inspect_tiff(source_path)
+        return _annotated_inspection(inspect_tiff(source_path), suffix=suffix)
     if suffix in RASTER_SUFFIXES:
-        return inspect_raster(source_path)
+        return _annotated_inspection(inspect_raster(source_path), suffix=suffix)
     raise ValueError(f"Unsupported image source: {source_path}")
 
 
@@ -122,7 +124,11 @@ def inspect_image_state(
         _MetadataOnlyArray(selected.shape, selected.dtype),
         layer_metadata=metadata,
         source_name=selected.name or source_path.name,
-        metadata_source=f"{resolved_inspection.format} source inspection",
+        metadata_source=(
+            "NumPy array container"
+            if resolved_inspection.format in {"npy", "npz"}
+            else "common raster image metadata"
+        ),
         source=SourceMetadata(
             uri=str(source_path),
             format=resolved_inspection.format,
@@ -146,16 +152,133 @@ def read_image(
     source_path = _source_path(path)
     suffix = source_path.suffix.lower()
     if suffix == ".zarr":
-        return read_ome_zarr(source_path, series_index)
-    if suffix in MICROSCOPE_SUFFIXES:
-        return read_microscope(source_path, series_index)
+        dataset = read_ome_zarr(source_path, series_index)
+    elif suffix in MICROSCOPE_SUFFIXES:
+        dataset = read_microscope(source_path, series_index)
+    elif suffix in {".npy", ".npz"}:
+        dataset = read_numpy(source_path, series_index)
+    elif suffix in {".tif", ".tiff"}:
+        dataset = read_tiff(source_path, series_index)
+    elif suffix in RASTER_SUFFIXES:
+        dataset = read_raster(source_path, series_index)
+    else:
+        raise ValueError(f"Unsupported image source: {source_path}")
+    inspection = _annotated_inspection(dataset.inspection, suffix=suffix)
+    selected = next(
+        (
+            item
+            for item in inspection.series
+            if item.key == dataset.selected_series.key
+        ),
+        None,
+    )
+    if selected is None:
+        raise ValueError(
+            "Reader contract mismatch: the selected item is absent from the "
+            "annotated source inspection."
+        )
+    return replace(dataset, inspection=inspection, selected_series=selected)
+
+
+def _annotated_inspection(
+    inspection: SourceInspection,
+    *,
+    suffix: str,
+) -> SourceInspection:
+    return replace(
+        inspection,
+        series=tuple(
+            _annotated_series(item, inspection.format, suffix=suffix)
+            for item in inspection.series
+        ),
+    )
+
+
+def _annotated_series(
+    item: ImageSeriesInfo,
+    source_format: str,
+    *,
+    suffix: str,
+) -> ImageSeriesInfo:
+    implementation, package = _reader_implementation(item, suffix=suffix)
+    # Reader-specific adapters historically used human-facing hyphenated
+    # capability labels, while the canonical SourceItem contract uses field
+    # identifiers.  Normalize at the registry boundary so a truthful native
+    # lazy reader cannot be persisted as eager merely because of punctuation.
+    capabilities = {
+        str(capability).strip().lower().replace("-", "_")
+        for capability in item.capabilities
+        if str(capability).strip()
+    }
+    capabilities.add("pixel_lazy_inspection")
+    if suffix == ".zarr":
+        capabilities.update(
+            {
+                "lazy_data",
+                "level_enumeration",
+                "preview_level_read",
+                "exact_region_read",
+                "chunked_read",
+            }
+        )
+    if suffix in {".vsi", ".oif"}:
+        capabilities.add("companion_discovery")
+    estimated = item.estimated_decoded_bytes
+    if estimated is None:
+        try:
+            estimated = int(prod(item.shape) * np.dtype(item.dtype).itemsize)
+        except (TypeError, ValueError):
+            estimated = None
+    if estimated is not None:
+        capabilities.add("decoded_size_estimate")
+    return replace(
+        item,
+        reader_key=item.reader_key or implementation,
+        reader_version=item.reader_version or _package_version(package),
+        capabilities=tuple(sorted(capabilities)),
+        estimated_decoded_bytes=estimated,
+        level_shapes=item.level_shapes or (item.shape,),
+    )
+
+
+def _reader_implementation(
+    item: ImageSeriesInfo,
+    *,
+    suffix: str,
+) -> tuple[str, str]:
+    if item.reader_key:
+        package = {
+            "bioio": "bioio",
+            "oiffile": "oiffile",
+            "nd2": "nd2",
+            "liffile": "liffile",
+            "czifile": "czifile",
+            "oirfile": "oirfile",
+        }.get(item.reader_key, item.reader_key)
+        return item.reader_key, package
+    if suffix == ".zarr":
+        return "ome-zarr", "ome-zarr"
     if suffix in {".npy", ".npz"}:
-        return read_numpy(source_path, series_index)
+        return "numpy", "numpy"
     if suffix in {".tif", ".tiff"}:
-        return read_tiff(source_path, series_index)
+        return "tifffile", "tifffile"
     if suffix in RASTER_SUFFIXES:
-        return read_raster(source_path, series_index)
-    raise ValueError(f"Unsupported image source: {source_path}")
+        return "imageio", "imageio"
+    return source_format_reader_key(source_format="microscope"), "napari-vipp"
+
+
+def source_format_reader_key(*, source_format: str) -> str:
+    """Return a stable fallback reader key for internal adapters."""
+
+    normalized = str(source_format or "napari-vipp").strip().lower()
+    return "-".join(normalized.split()) or "napari-vipp"
+
+
+def _package_version(package: str) -> str:
+    try:
+        return version(package)
+    except (PackageNotFoundError, ValueError):
+        return "unknown"
 
 
 class _MetadataOnlyArray:

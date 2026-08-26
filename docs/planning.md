@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-08-25
+Last reviewed: 2026-08-26
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -39,29 +39,30 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.13.0a9` is the current published alpha and carry-forward qualification
-baseline. Its official
-[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.13.0a9),
+`0.14.0a1` is the current alpha release. Its official
+[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a1),
 checksum sidecars,
-[PyPI package](https://pypi.org/project/napari-vipp/0.13.0a9/), and
-[numbered](https://rensutheart.github.io/vipp-mkdocs/0.13.0a9/) and
+[PyPI package](https://pypi.org/project/napari-vipp/0.14.0a1/), and
+[numbered](https://rensutheart.github.io/vipp-mkdocs/0.14.0a1/) and
 [stable](https://rensutheart.github.io/vipp-mkdocs/stable/) documentation are
-public. Development is now on `0.14.0a1`, beginning with immutable SourceItem
-identity. The 0.13 line provides:
+the release surfaces. The unchanged expensive installer-lifecycle and full-GPU
+evidence remains traceable to `v0.13.0a8`, while `v0.13.0a9` supplies the
+intervening correctness record, as detailed in the
+[qualification baseline](release-qualification-baseline.md). The current line
+provides:
 
-- workflow schema 4 and batch schema 3 with portable compute intent, explicit
-  outputs, checkpoints, manifests, and exact implementation provenance;
+- SourceItem v1 through workflow schema 5 and batch config/manifest schema 4,
+  with stable selected-item identity, reader evidence, source revision, axes,
+  metadata, checkpoints, manifests, and exact implementation provenance;
 - shared execution across interactive, batch, generated Python/CLI, and export;
-- graph editing, manual/cached nodes, isolated tuning, cancellation, and memory
-  controls;
-- explicit source-axis interpretation for unknown TIFF page axes, including
-  reviewed QYX-to-ZYX declaration and Z rescaling;
-- immediate named-axis inspector propagation, explicit volumetric
-  skeletonization, actionable GPU-memory admission errors, stable sibling
-  measurements for Merge Tables, and preserved downstream GPU eligibility
-  across intervening CPU-only nodes;
-- common image formats, local OME-Zarr, optional microscope readers, and an
-  initial multi-series batch model;
+- truthful contracts for the qualified ND2, LIF, CZI, OIR/OIB, VSI/IMS, and LSM
+  reader routes, including actionable optional-reader failures;
+- local OME-Zarr 0.4/0.5 lower-level presentation preview with level-0 analysis
+  kept unchanged;
+- reviewed numeric per-SourceItem batch overrides and retained Batch-workspace
+  restore, activity, and overwrite-confirmation behavior;
+- decoded-memory preflight, truthful source-load progress and cancellation, and
+  Windows setup capacity, phase, heartbeat, and log presentation;
 - PSF/restoration, segmentation and cleanup, measurement, skeleton,
   colocalization, and spatial-association workflows; and
 - a deliberately bounded CuPy/CuPyX CUDA catalogue, including binary Remove
@@ -70,13 +71,14 @@ identity. The 0.13 line provides:
 
 Important remaining limits are:
 
-- interactive source execution still materializes complete selected images even
-  when a reader exposes lazy arrays or resolution pyramids;
-- one container can hold several scientific images, but selected-item identity
-  is not yet durable across every interactive, batch, naming, and provenance
-  surface;
-- per-sample batch parameters and pyramid-aware interactive loading are not yet
-  available;
+- scientific graph execution still materializes the complete selected level-0
+  image; the lower OME-Zarr level is presentation-only;
+- presentation preview is limited to local OME-Zarr 0.4/0.5 image and label
+  groups; remote stores, HCS traversal, and IMS pyramid preview remain deferred;
+- native LIF, CZI, OIR, OIB, and LSM pixels remain eager, and Bio-Formats-backed
+  VSI/IMS still requires optional Java and codec prerequisites;
+- per-sample overrides are numeric scalars rather than expressions, selectors,
+  topology changes, or semantic-axis iteration;
 - accelerator qualification remains limited to the exact published runtime,
   device, operation, dtype, dimensionality, and parameter regions; and
 - validation and platform qualification remain uneven outside the exact
@@ -84,9 +86,9 @@ Important remaining limits are:
 
 ## Active Release Order
 
-The current development line is `0.14.0a1` Source-Aware Loading And Per-Sample
-Batch Alpha, beginning with immutable SourceItem identity. The detailed 0.13
-sections below remain delivered contract records.
+The current release is the `0.14.0a1` Source-Aware Loading And Per-Sample Batch
+Alpha. Its implementation record appears below, followed by committed work for
+later 0.14 alphas. The detailed 0.13 sections remain delivered contract records.
 
 ### Delivered Record: `0.13.0a9` Correctness Rollup
 
@@ -470,13 +472,59 @@ shipped independently of the optional crop follow-up.
 - Describe measured performance as machine-local unless more than one reviewed
   hardware class supports a broader claim.
 
-### Current: `0.14.0a1` Source-Aware Loading And Per-Sample Batch Alpha
+### Current Release: `0.14.0a1` Source-Aware Loading And Per-Sample Batch Alpha
 
 The first 0.14 alpha targets three connected source-aware outcomes:
 
 1. durable SourceItem identity;
 2. pyramid-aware source loading and presentation preview;
 3. typed per-sample batch parameters.
+
+Release scope:
+
+- SourceItem v1 is implemented across interactive persistence, workflow schema
+  5, batch config/manifest schema 4, generated execution, replay, export,
+  checkpoints, and provenance, with legacy-read and deterministic migration
+  coverage;
+- claimed microscope readers share their bounded inspection/read metadata,
+  Olympus OIB now passes its authoritative CZYX contract, multifile VSI/ETS and
+  OIF companion trees participate in source revision, and optional Java/
+  Bio-Formats failures are actionable;
+- local OME-Zarr 0.4/0.5 lower-level presentation preview is implemented with
+  exact level labelling, label semantics, requested-axis/region slicing,
+  observable I/O, cancellation, and unchanged level-0 analysis;
+- typed numeric per-SourceItem batch overrides are implemented with visible
+  inheritance, detached effective workflows, strict preflight, and shared
+  execution/provenance resolution; and
+- source loads have decoded-memory preflight, truthful progress, cooperative
+  cancellation, and stale-generation protection.
+
+Release qualification covers the integrated suite, the strict verified-cache
+corpus profile in the qualified optional-reader environment, final
+version/documentation consistency, and exact-tag packages plus the
+release-specific installer. This roadmap records the required scope without
+asserting an external gate result.
+
+The shared acceptance inputs are frozen in the
+[public data corpus](public-data-corpus.md). Its manifest predeclares the
+formats, dtypes, axes, item structures, licences, hashes, and objective
+per-sample cases used below; ordinary CI remains network-free.
+
+Corpus revision `0.14.0a1-v4` extends the focused vendor tier across Nikon ND2,
+Leica LIF, Zeiss CZI/LSM, Olympus OIR/OIB/VSI, and Imaris IMS. Every original is
+explicitly licensed, hash-pinned, and opened through VIPP only from a verified
+opt-in cache. The new files reach native `oirfile`, `oiffile`, and `tifffile`
+paths as well as the Java/Bio-Formats fallback and a multifile VSI/ETS layout.
+The audit exposed requirements beyond metadata. The release preserves the
+bounded scientific subset, preflights Bio-Formats/Java failures, keeps OIB
+pixels and ImageState on authoritative CZYX, binds multifile companions into
+source revision, records eager/large-reader capabilities truthfully, and
+resolves the same item across execution surfaces. The detailed implementation,
+format matrix, qualification gates, and deferrals are in the
+[`0.14.0a1` Source-Aware Loading Record](source-aware-loading-0.14.0a1.md).
+Revision v4 preserves v3 byte-for-byte and corrects one predeclared LIF
+expectation: the reader's ALEXA dye-coordinate names are channel identity,
+while Green/Red/Blue in the Leica XML are display LUT colors.
 
 The source-aware outcomes form one coherent user story: select a scientific item
 once, see a useful preview before the exact full-resolution snapshot is ready,
@@ -485,7 +533,7 @@ to first display; exact background
 verification and level-0 materialization still complete before scientific
 execution.
 
-Implementation order and pull-request boundaries:
+Delivered implementation sequence:
 
 1. define SourceItem v1, canonical identity, reader adapters, legacy migration,
    and compatibility goldens;
@@ -500,8 +548,9 @@ Implementation order and pull-request boundaries:
    the unchanged full-resolution analysis level.
 
 Installer issue [#42](https://github.com/rensutheart/napari-vipp/issues/42) is
-an independent pull-request boundary and may proceed in parallel. It does not
-alter or block the source-aware dependency order.
+integrated into `0.14.0a1` as a focused final package. It does not alter the
+source-aware dependency order; focused presentation acceptance is part of the
+a1 qualification scope.
 
 #### 0.14-A. Immutable SourceItem Identity
 
@@ -645,6 +694,9 @@ storage requirements plain and actionable. This is the canonical scope that
 absorbed the older wording-only draft in
 [pull request #25](https://github.com/rensutheart/napari-vipp/pull/25).
 
+Status: implemented in `0.14.0a1`; focused installer-presentation checks are
+part of the release qualification scope.
+
 - Before confirmation, show route-specific approximate download, installed, and
   peak temporary-disk requirements. State the CUDA safety minimum as at least
   15 GiB of free disk space on the installation drive, without referring to
@@ -663,19 +715,20 @@ wording, and unchanged transactional behavior.
 
 #### 0.14.0a1 Release Boundary And Non-Goals
 
-The source-aware core of the alpha is complete when SourceItem identity,
-pyramid-aware presentation, and per-sample scalar parameters agree across their
-documented surfaces and compatibility gates. Every work package must pass its
-own acceptance before it ships; an unfinished independent package moves
-visibly to the next alpha rather than holding a coherent release. The milestone
-does not imply completion of:
+The release contains the truthful reader contract, SourceItem identity,
+pyramid-aware OME-Zarr presentation, and numeric per-sample parameters. Its
+qualification scope includes focused package acceptance, integrated
+compatibility, and the strict cached-corpus gates. This milestone does not imply
+completion of:
 
 - arbitrary conditional branches or filename expressions;
 - full operation-level lazy/chunked execution;
 - remote stores, plate/well/field traversal, or semantic-axis batch iteration;
 - scientific progressive outputs;
 - arbitrary per-node or per-item topology changes; or
-- general branch-aware ROI-union planning.
+- general branch-aware ROI-union planning; or
+- a general toolbar, inspector, or Batch-workspace density redesign, retained
+  as an exploratory [product idea](product-ideas.md#workspace-density-and-action-hierarchy).
 
 Those items require later evidence or remain in [product ideas](product-ideas.md).
 
@@ -685,7 +738,7 @@ Those items require later evidence or remain in [product ideas](product-ideas.md
 
 Goal: make Crop Stack a discoverable volume ROI tool without recalculating on
 every drag event. This optional work did not ship in `0.13.0a8`, is not part of
-the current `0.14.0a1` scope, and must not delay SourceItem work. Create a
+the `0.14.0a1` release, and must not delay the committed follow-up work. Create a
 separate feature issue before implementation; it remains independent of `#33`.
 
 - preserve the existing operation and old workflows while adding persisted

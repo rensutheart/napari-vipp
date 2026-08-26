@@ -33,9 +33,13 @@ from napari_vipp.core.snapshots import (
     WorkflowNoteSnapshot,
     WorkflowSnapshot,
 )
+from napari_vipp.core.source_item_persistence import (
+    canonicalize_source_item_params,
+)
 
-WORKFLOW_VERSION = 4
+WORKFLOW_VERSION = 5
 LEGACY_COMPUTE_WORKFLOW_VERSION = 3
+LEGACY_SOURCE_ITEM_WORKFLOW_VERSION = 4
 WORKFLOW_TYPE = "napari-vipp-workflow"
 
 Position = tuple[float, float]
@@ -110,6 +114,7 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
     document_version = data.get("version")
     if type(document_version) is not int or document_version not in {
         LEGACY_COMPUTE_WORKFLOW_VERSION,
+        LEGACY_SOURCE_ITEM_WORKFLOW_VERSION,
         WORKFLOW_VERSION,
     }:
         migration_guidance = ""
@@ -123,13 +128,18 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
             )
         raise ValueError(
             f"Unsupported workflow version: {document_version!r}. "
-            f"Expected version {WORKFLOW_VERSION}.{migration_guidance}"
+            f"Expected version {LEGACY_COMPUTE_WORKFLOW_VERSION}, "
+            f"{LEGACY_SOURCE_ITEM_WORKFLOW_VERSION}, or {WORKFLOW_VERSION}."
+            f"{migration_guidance}"
         )
 
     raw_nodes = data.get("nodes")
     if not isinstance(raw_nodes, list) or not raw_nodes:
         raise ValueError("Workflow must contain a non-empty nodes list.")
-    nodes = [_node_from_dict(raw, index) for index, raw in enumerate(raw_nodes)]
+    nodes = [
+        _node_from_dict(raw, index, document_version=document_version)
+        for index, raw in enumerate(raw_nodes)
+    ]
     if not nodes:
         raise ValueError("Workflow contains no recognised nodes.")
     node_ids = [node.id for node in nodes]
@@ -349,18 +359,40 @@ def save_workflow(
 
 
 def save_workflow_document(path: str | Path, document: object) -> Path:
-    """Validate and atomically write one complete workflow document."""
+    """Validate, migrate, and atomically write one canonical workflow document."""
     raw_path = str(path).strip()
     if not raw_path:
         raise ValueError("Workflow save path cannot be blank.")
     target = Path(raw_path).expanduser()
-    deserialize_workflow(document)
+    canonical = canonical_workflow_document(document)
     return atomic_write_json(
         target,
-        document,
+        canonical,
         ensure_ascii=True,
         trailing_newline=False,
     )
+
+
+def canonical_workflow_document(data: Any) -> dict[str, Any]:
+    """Migrate any supported workflow to the one current write schema."""
+
+    restored = deserialize_workflow(data)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(
+        restored["nodes"],
+        restored["connections"],
+        restored["output_tunnels"],
+    )
+    canonical = serialize_workflow(
+        pipeline,
+        positions=restored["positions"],
+        notes=restored["notes"],
+        metadata=restored["metadata"],
+        compute_request=restored["compute_request"],
+    )
+    if "batch_config" in restored:
+        canonical["batch_config"] = restored["batch_config"]
+    return canonical
 
 
 def load_workflow(path: str | Path) -> dict[str, Any]:
@@ -374,20 +406,40 @@ def load_workflow(path: str | Path) -> dict[str, Any]:
 
 
 def _node_to_dict(node: GraphNode) -> dict[str, Any]:
+    params = (
+        canonicalize_source_item_params(node.params)
+        if node.operation_id == "input"
+        else dict(node.params)
+    )
     return {
         "id": node.id,
         "operation_id": node.operation_id,
-        "params": dict(node.params),
+        "params": params,
     }
 
 
-def _node_from_dict(raw: Any, index: int) -> GraphNode:
+def _node_from_dict(
+    raw: Any,
+    index: int,
+    *,
+    document_version: int,
+) -> GraphNode:
     if not isinstance(raw, dict):
         raise ValueError(f"Node {index} must be an object.")
+    operation_id = raw.get("operation_id")
+    saved_params = raw.get("params")
+    if operation_id == "input" and isinstance(saved_params, Mapping):
+        try:
+            saved_params = canonicalize_source_item_params(saved_params)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Workflow v{document_version} node {index} contains an invalid "
+                f"canonical SourceItem: {exc}"
+            ) from exc
     return graph_node_from_persisted_params(
         raw.get("id"),
-        raw.get("operation_id"),
-        raw.get("params"),
+        operation_id,
+        saved_params,
         index=index,
     )
 

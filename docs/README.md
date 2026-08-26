@@ -60,6 +60,12 @@ reviewing VIPP itself.
 - [Release qualification baseline](release-qualification-baseline.md):
   reusable installer, GPU, schema, packaging, and documentation evidence plus
   exact invalidation rules.
+- [Public data corpus](public-data-corpus.md): objective, licence-aware,
+  checksum-frozen image selection for SourceItem, pyramid-preview, and
+  per-sample acceptance.
+- [`0.14.0a1` Source-Aware Loading Record](source-aware-loading-0.14.0a1.md):
+  candidate reader contracts, metadata parity, durable item identity, source
+  UX, qualification gates, and explicit deferrals for the next alpha.
 - [Windows installer field acceptance](windows-installer-field-acceptance.md):
   a short record for exact-artifact CPU, CUDA, rollback, path, and novice checks.
 - [Windows setup packaging](../packaging/windows/README.md): the same-tag wheel,

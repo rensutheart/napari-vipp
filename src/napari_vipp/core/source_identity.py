@@ -9,6 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from napari_vipp.core.progress import OperationCancelled
+from napari_vipp.core.source_items import (
+    SourceContainerBundle,
+    SourceContainerMember,
+    SourceRevisionProof,
+)
 
 _HASH_CHUNK_BYTES = 1024 * 1024
 _IDENTITY_DOMAIN = b"napari-vipp-local-source-v1\0"
@@ -84,18 +89,48 @@ def capture_local_source_identity(
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> LocalSourceIdentity:
     """Hash every scientific byte and relative regular-file path at ``path``."""
+    bundle = capture_local_source_bundle(
+        path,
+        cancel_callback=cancel_callback,
+        progress_callback=progress_callback,
+    )
+    return local_source_identity_from_bundle(bundle)
+
+
+def capture_local_source_bundle(
+    path: str | Path,
+    *,
+    source_format: str = "local-source",
+    cancel_callback: Callable[[], bool] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> SourceContainerBundle:
+    """Hash the exact file inventory that forms one local source container.
+
+    Ordinary files contain one ``.`` member, directory stores contain every
+    relative regular file, and known multifile microscope containers include
+    their required companion tree.  The selected URI remains private evidence;
+    public SourceItem representations omit it.
+    """
     source = Path(path).expanduser()
     _check_cancelled(cancel_callback)
     if source.is_dir():
-        records = _directory_file_records(
+        raw_records = _directory_file_records(
             source,
             cancel_callback=cancel_callback,
             progress_callback=progress_callback,
         )
+        records = tuple(
+            (relative, member_path, size_bytes, "data")
+            for relative, member_path, size_bytes in raw_records
+        )
         kind = "directory"
     elif _is_regular_file(source):
-        records = ((".", source, source.stat().st_size),)
-        kind = "file"
+        records = _file_container_records(
+            source,
+            cancel_callback=cancel_callback,
+            progress_callback=progress_callback,
+        )
+        kind = "multifile" if len(records) > 1 else "file"
     elif not source.exists():
         raise FileNotFoundError(f"Local source not found: {source}")
     else:
@@ -108,15 +143,18 @@ def capture_local_source_identity(
     identity_hasher.update(kind.encode("ascii"))
     total_size = 0
     file_count = 0
-    expected_size = sum(size_bytes for _relative, _path, size_bytes in records)
+    expected_size = sum(
+        size_bytes for _relative, _path, size_bytes, _role in records
+    )
     processed_size = 0
+    members: list[SourceContainerMember] = []
     _report_progress(
         progress_callback,
         0,
         expected_size,
         f"Hashing source bytes: {source}",
     )
-    for relative_path, file_path, _recorded_size in records:
+    for relative_path, file_path, _recorded_size, role in records:
         _check_cancelled(cancel_callback)
 
         def file_progress(
@@ -145,17 +183,117 @@ def capture_local_source_identity(
         total_size += size_bytes
         processed_size += size_bytes
         file_count += 1
+        members.append(
+            SourceContainerMember(
+                key=relative_path,
+                sha256=file_sha256,
+                size_bytes=size_bytes,
+                role=role,
+            )
+        )
     _report_progress(
         progress_callback,
         total_size,
         expected_size,
         f"Source identity complete: {source}",
     )
-    return LocalSourceIdentity(
+    revision = SourceRevisionProof(
         kind=kind,
         sha256=identity_hasher.hexdigest(),
         regular_file_count=file_count,
         size_bytes=total_size,
+    )
+    return SourceContainerBundle(
+        uri=str(source.resolve(strict=False)),
+        format=_normalized_source_format(source_format),
+        revision=revision,
+        members=tuple(members),
+    )
+
+
+def local_source_identity_from_bundle(
+    bundle: SourceContainerBundle,
+) -> LocalSourceIdentity:
+    """Return the legacy-compatible exact identity for a captured bundle."""
+    revision = bundle.revision
+    return LocalSourceIdentity(
+        kind=revision.kind,
+        sha256=revision.sha256,
+        regular_file_count=revision.regular_file_count,
+        size_bytes=revision.size_bytes,
+    )
+
+
+def _normalized_source_format(value: str) -> str:
+    normalized = str(value or "local-source").strip().lower()
+    normalized = "-".join(normalized.replace("_", "-").split())
+    return normalized or "local-source"
+
+
+def _file_container_records(
+    source: Path,
+    *,
+    cancel_callback: Callable[[], bool] | None,
+    progress_callback: Callable[[int, int, str], None] | None,
+) -> tuple[tuple[str, Path, int, str], ...]:
+    records: list[tuple[str, Path, int, str]] = [
+        (".", source, source.stat().st_size, "primary")
+    ]
+    companion = _required_companion_directory(source)
+    if companion is None:
+        return tuple(records)
+    companion_records = _directory_file_records(
+        companion,
+        cancel_callback=cancel_callback,
+        progress_callback=progress_callback,
+    )
+    if not companion_records:
+        raise FileNotFoundError(
+            f"Required companion directory contains no readable files: {companion}"
+        )
+    records.extend(
+        (
+            f"{companion.name}/{relative}",
+            member_path,
+            size_bytes,
+            "companion",
+        )
+        for relative, member_path, size_bytes in companion_records
+    )
+    records.sort(key=lambda item: item[0])
+    return tuple(records)
+
+
+def _required_companion_directory(source: Path) -> Path | None:
+    suffix = source.suffix.casefold()
+    expected_name = ""
+    if suffix == ".vsi":
+        expected_name = f"_{source.stem}_"
+    elif suffix == ".oif":
+        expected_name = f"{source.stem}.files"
+    else:
+        return None
+
+    expected = source.parent / expected_name
+    if expected.is_dir():
+        return expected
+    try:
+        casefold_match = next(
+            (
+                candidate
+                for candidate in source.parent.iterdir()
+                if candidate.name.casefold() == expected_name.casefold()
+                and candidate.is_dir()
+            ),
+            None,
+        )
+    except OSError:
+        casefold_match = None
+    if casefold_match is not None:
+        return casefold_match
+    raise FileNotFoundError(
+        "Required microscope companion directory is missing: "
+        f"{expected}. Restore the companion files beside {source.name}."
     )
 
 
@@ -277,7 +415,9 @@ __all__ = [
     "LocalSourceIdentity",
     "SourceChangedError",
     "SourceRevisionToken",
+    "capture_local_source_bundle",
     "capture_local_source_identity",
     "is_vipp_owned_immutable_source_revision",
+    "local_source_identity_from_bundle",
     "verify_local_source_identity",
 ]

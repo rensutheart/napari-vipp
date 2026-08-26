@@ -8,6 +8,7 @@ import pytest
 from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import (
     SourceChangedError,
+    capture_local_source_bundle,
     capture_local_source_identity,
     verify_local_source_identity,
 )
@@ -88,3 +89,49 @@ def test_source_identity_reports_byte_progress_and_cancels_between_chunks(tmp_pa
     assert updates[0][0] == 0
     assert updates[0][1] == source.stat().st_size
     assert any(current >= 1024 * 1024 for current, _total, _message in updates)
+
+
+def test_vsi_identity_binds_primary_file_and_ets_companion_tree(tmp_path):
+    source = tmp_path / "sample.vsi"
+    source.write_bytes(b"vsi metadata")
+    companion = tmp_path / "_sample_" / "stack1"
+    companion.mkdir(parents=True)
+    ets = companion / "frame_t_0.ets"
+    ets.write_bytes(b"pixel payload A")
+
+    bundle = capture_local_source_bundle(source, source_format="olympus-vsi")
+    identity = capture_local_source_identity(source)
+
+    assert bundle.revision.kind == "multifile"
+    assert identity.kind == "multifile"
+    assert bundle.revision.sha256 == identity.sha256
+    assert [member.key for member in bundle.members] == [
+        ".",
+        "_sample_/stack1/frame_t_0.ets",
+    ]
+    assert [member.role for member in bundle.members] == ["primary", "companion"]
+
+    ets.write_bytes(b"pixel payload B")
+    with pytest.raises(SourceChangedError, match="source changed"):
+        verify_local_source_identity(source, identity)
+
+
+@pytest.mark.parametrize(
+    ("source_name", "companion_name"),
+    (("sample.vsi", "_sample_"), ("sample.oif", "sample.files")),
+)
+def test_multifile_source_requires_its_companion_directory(
+    tmp_path,
+    source_name,
+    companion_name,
+):
+    source = tmp_path / source_name
+    source.write_bytes(b"container metadata")
+
+    with pytest.raises(FileNotFoundError, match="companion directory is missing"):
+        capture_local_source_bundle(source)
+
+    companion = tmp_path / companion_name
+    companion.mkdir()
+    with pytest.raises(FileNotFoundError, match="contains no readable files"):
+        capture_local_source_bundle(source)

@@ -157,6 +157,7 @@ from napari_vipp.core.operations import (
     yen_threshold,
 )
 from napari_vipp.core.progress import ProgressContext
+from napari_vipp.core.source_items import SourceItem
 from napari_vipp.core.tables import TableState, table_state_from_data
 
 
@@ -181,13 +182,25 @@ class ParameterSpec:
     visibility_ports: tuple[str, ...] = ()
     slider_minimum: float | int | None = None
     slider_maximum: float | int | None = None
+    data_dependent_bounds: bool = False
 
     def __post_init__(self) -> None:
         """Validate an optional ergonomic slider window.
 
-        ``minimum`` and ``maximum`` remain the accepted numeric-entry range.
-        A narrower slider window is presentation-only and must stay inside it.
+        ``minimum`` and ``maximum`` remain the accepted numeric-entry range
+        unless ``data_dependent_bounds`` says the connected image determines
+        that range. A narrower slider window is presentation-only and must
+        stay inside the declared range.
         """
+        if not isinstance(self.data_dependent_bounds, bool):
+            raise TypeError(
+                f"Parameter {self.name!r} data_dependent_bounds must be Boolean."
+            )
+        if self.data_dependent_bounds and self.kind not in {"int", "float"}:
+            raise ValueError(
+                f"Parameter {self.name!r} can use data-dependent bounds only "
+                "for numeric controls."
+            )
         if self.slider_minimum is None and self.slider_maximum is None:
             return
         if self.kind not in {"int", "float"}:
@@ -949,6 +962,7 @@ class SourcePayload:
     image_state: ImageState | None = None
     revision_token: object | None = None
     axis_semantics_resolved: bool = False
+    source_item: SourceItem | None = None
 
 
 @dataclass
@@ -2958,7 +2972,17 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "mask",
         (
-            ParameterSpec("threshold", "Threshold", "float", 0.5, 0.0, 1.0, 0.01, 3),
+            ParameterSpec(
+                "threshold",
+                "Threshold",
+                "float",
+                0.5,
+                0.0,
+                1.0,
+                0.01,
+                3,
+                data_dependent_bounds=True,
+            ),
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         binary_threshold,
@@ -2980,6 +3004,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1.0,
                 0.01,
                 3,
+                data_dependent_bounds=True,
             ),
             ParameterSpec(
                 "high_threshold",
@@ -2990,6 +3015,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1.0,
                 0.01,
                 3,
+                data_dependent_bounds=True,
             ),
             SPATIAL_MODE_PARAMETER,
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,

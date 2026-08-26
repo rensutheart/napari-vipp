@@ -69,6 +69,7 @@ _RESERVED_FUNCTION_NAMES = {
     "_save_cli_failure_provenance",
     "_table_output_path",
     "_workflow_document",
+    "_workflow_source_binding",
     "_write_output_uncommitted",
     "argparse",
     "batch_process",
@@ -97,6 +98,7 @@ _RESERVED_FUNCTION_NAMES = {
     "hashlib",
     "serialize_execution_provenance",
     "scientific_workflow_hash",
+    "source_item_from_params",
     "signal",
     "shutil",
     "sys",
@@ -447,6 +449,10 @@ def _build_imports() -> str:
             "from napari_vipp.core.io import ImageDataset, write_image",
             "from napari_vipp.core.pipeline import SourcePayload",
             "from napari_vipp.core.progress import OperationCancelled",
+            (
+                "from napari_vipp.core.source_item_persistence import "
+                "source_item_from_params"
+            ),
             "from napari_vipp.core.tables import is_table_data, save_table_output",
             "from napari_vipp.core.workflow import deserialize_workflow",
         )
@@ -927,6 +933,42 @@ def _new_pipeline():
     return pipeline_from_workflow(_workflow_document())
 
 
+def _workflow_source_binding(node_id):
+    """Return authored stable selection and axis semantics for a source."""
+    node_id = str(node_id).strip()
+    matches = [
+        node
+        for node in _workflow_document().get("nodes", ())
+        if str(node.get("id", "")) == node_id
+        and str(node.get("operation_id", "")) == "input"
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Exported source node {node_id!r} does not resolve uniquely."
+        )
+    params = matches[0].get("params", {})
+    source_item = source_item_from_params(params)
+    series_index = params.get("series_index", 0)
+    if (
+        isinstance(series_index, bool)
+        or not isinstance(series_index, int)
+        or series_index < 0
+    ):
+        raise ValueError(
+            f"Exported source node {node_id!r} has an invalid series_index."
+        )
+    item_key = "" if source_item is None else source_item.selector.key
+    declaration = params.get("axis_declaration")
+    if isinstance(declaration, str) and not declaration.strip():
+        declaration = None
+    if source_item is not None and source_item.selector.source_axes:
+        declaration = {
+            "source_axes": ",".join(source_item.selector.source_axes),
+            "effective_axes": ",".join(source_item.selector.effective_axes),
+        }
+    return int(series_index), item_key, declaration
+
+
 def _effective_compute_request(document, override=None):
     """Resolve an explicit full-run override without mutating ``document``."""
     restored = deserialize_workflow(document)
@@ -1250,6 +1292,11 @@ def _source_provenance_records(payloads):
         metadata = payload.metadata if isinstance(payload.metadata, Mapping) else {}
         source_provenance = metadata.get("vipp_source_provenance")
         source_identity = metadata.get("vipp_source_identity")
+        source_item = (
+            payload.source_item.to_public_dict()
+            if payload.source_item is not None
+            else metadata.get("vipp_source_item")
+        )
         if not isinstance(source_identity, Mapping) and isinstance(
             source_provenance,
             Mapping,
@@ -1272,9 +1319,15 @@ def _source_provenance_records(payloads):
                     json.dumps(dict(source_identity), allow_nan=False)
                 )
             )
+            source_item_document = (
+                None
+                if not isinstance(source_item, Mapping)
+                else json.loads(json.dumps(dict(source_item), allow_nan=False))
+            )
         except (TypeError, ValueError):
             provenance_document = {}
             identity_document = None
+            source_item_document = None
         record = {
             "node_id": str(node_id),
             "name": str(payload.name or ""),
@@ -1286,6 +1339,8 @@ def _source_provenance_records(payloads):
             "identity": identity_document,
             "reader_provenance": provenance_document,
         }
+        if source_item_document is not None:
+            record["source_item"] = source_item_document
         record["binding_sha256"] = canonical_digest(record)
         records.append(record)
     return records
@@ -1331,6 +1386,7 @@ def _coerce_source_payload(
             value.image_state if image_state is None else image_state,
             value.revision_token,
             value.axis_semantics_resolved,
+            value.source_item,
         )
     if isinstance(value, ImageDataset):
         selected = getattr(value, "selected_series", None)
@@ -1346,11 +1402,37 @@ def _coerce_source_payload(
 def load_image(
     path,
     *,
-    series_index=0,
+    series_index=None,
+    item_key=None,
+    axis_declaration=None,
+    source_node_id=None,
     progress_callback=None,
     cancel_event=None,
 ):
     """Load one verified local revision with cooperative progress/cancellation."""
+    if source_node_id is not None:
+        bound_index, bound_key, bound_declaration = _workflow_source_binding(
+            source_node_id
+        )
+        if series_index is None:
+            series_index = bound_index
+        if item_key is None:
+            item_key = bound_key
+        elif bound_key and str(item_key).strip() != bound_key:
+            raise ValueError(
+                "An explicit item_key cannot retarget an exported canonical "
+                f"SourceItem ({bound_key!r})."
+            )
+        if axis_declaration is None:
+            axis_declaration = bound_declaration
+        elif bound_declaration is not None:
+            raise ValueError(
+                "An explicit axis_declaration cannot replace the exported "
+                "canonical SourceItem declaration."
+            )
+    if series_index is None:
+        series_index = 0
+    item_key = str(item_key or "").strip()
     _raise_if_cancelled(cancel_event, "Source loading cancelled before hashing.")
     source_progress = None
     if progress_callback is not None:
@@ -1366,6 +1448,8 @@ def load_image(
     return load_frozen_file_source_snapshot(
         path,
         series_index,
+        item_key=(item_key or None),
+        axis_declaration=axis_declaration,
         cancel_callback=cancel_callback,
         progress_callback=source_progress,
     ).payload
@@ -1645,13 +1729,14 @@ def _table_output_path(path):
 def _build_main(source_ids: list[str], function_name: str) -> str:
     primary = source_ids[0] if source_ids else None
     feed = (
-        "load_image(in_path, progress_callback=progress, "
+        f"load_image(in_path, source_node_id={primary!r}, progress_callback=progress, "
         "cancel_event=cancel_event)"
         if primary
         else ""
     )
     batch_feed = (
-        "load_image(source_path, progress_callback=progress_callback, "
+        f"load_image(source_path, source_node_id={primary!r}, "
+        "progress_callback=progress_callback, "
         "cancel_event=cancel_event)"
         if primary
         else ""

@@ -658,6 +658,32 @@ def test_build_batch_plan_glob_union_is_globally_sorted(tmp_path):
     ]
 
 
+def test_default_batch_source_discovery_filters_supported_top_level_items(tmp_path):
+    source_store = tmp_path / "sample.ome.zarr"
+    chunk_directory = source_store / "0" / "0"
+    chunk_directory.mkdir(parents=True)
+    (chunk_directory / "chunk.npy").write_bytes(b"nested chunk")
+    (source_store / ".zattrs").write_text("{}", encoding="utf-8")
+
+    for name in ("array.npy", "field.tif", "instrument.czi"):
+        (tmp_path / name).write_bytes(b"discovery does not decode pixels")
+    for name in ("metadata.json", "notes.txt", "measurements.csv"):
+        (tmp_path / name).write_text("not an image", encoding="utf-8")
+
+    discovered = batch_module._iter_source_paths(
+        tmp_path,
+        batch_module.DEFAULT_BATCH_SOURCE_PATTERN,
+    )
+
+    assert [path.name for path in discovered] == [
+        "array.npy",
+        "field.tif",
+        "instrument.czi",
+        "sample.ome.zarr",
+    ]
+    assert chunk_directory / "chunk.npy" not in discovered
+
+
 def test_multi_series_collection_expands_into_stable_batch_items(tmp_path):
     inputs = tmp_path / "inputs"
     inputs.mkdir()
@@ -676,24 +702,46 @@ def test_multi_series_collection_expands_into_stable_batch_items(tmp_path):
     plan = build_batch_plan(config)
 
     assert [item.source_series_indices for item in plan.items] == [
-        {"input": 0},
         {"input": 1},
+        {"input": 0},
     ]
     assert [item.source_label("input") for item in plan.items] == [
-        "acquisition.npz › upper_field",
         "acquisition.npz › lower_field",
+        "acquisition.npz › upper_field",
     ]
     assert len({item.batch_id for item in plan.items}) == 2
     assert len({item.outputs[0].path for item in plan.items}) == 2
+    assert plan.items[0].outputs[0].path.name.startswith(
+        "acquisition__lower_field_"
+    )
+    assert "__0002_" not in plan.items[0].outputs[0].path.name
+    source_items = tuple(item.source_items["input"] for item in plan.items)
+    assert [item.selector.key for item in source_items] == [
+        "lower_field",
+        "upper_field",
+    ]
+    bound_config = replace(
+        config,
+        sources=(replace(config.sources[0], source_items=source_items),),
+    )
+    assert len(build_batch_plan(bound_config).items) == 2
 
     result = run_batch(workflow, config)
 
     assert result.summary["completed"] == 2
-    np.testing.assert_array_equal(np.load(plan.items[0].outputs[0].path), first)
-    np.testing.assert_array_equal(np.load(plan.items[1].outputs[0].path), second)
+    np.testing.assert_array_equal(np.load(plan.items[0].outputs[0].path), second)
+    np.testing.assert_array_equal(np.load(plan.items[1].outputs[0].path), first)
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
-    assert manifest["items"][1]["sources"][0]["series"]["index"] == 1
-    assert manifest["items"][1]["sources"][0]["series"]["name"] == "lower_field"
+    assert manifest["items"][0]["sources"][0]["series"]["index"] == 1
+    assert manifest["items"][0]["sources"][0]["series"]["name"] == "lower_field"
+    assert (
+        manifest["items"][0]["sources"][0]["source_item"]["selector"]["key"]
+        == "lower_field"
+    )
+
+    np.savez(archive, upper_field=first, lower_field=second + 1)
+    with pytest.raises(ValueError, match="no longer matches.*SourceItem"):
+        build_batch_plan(bound_config)
 
 
 def test_build_batch_plan_rejects_output_overlapping_any_input(tmp_path):
@@ -777,6 +825,10 @@ def test_run_batch_writes_output_and_complete_provenance_manifest(tmp_path):
     assert len(source_record["identity"]["sha256"]) == 64
     assert source_record["series"]["shape"] == [4, 5]
     assert source_record["series"]["dtype"] == "uint16"
+    assert source_record["source_item"]["schema"] == "napari-vipp-source-item"
+    assert source_record["source_item"]["schema_version"] == 1
+    assert source_record["source_item"]["resolved"]["shape"] == [4, 5]
+    assert source_record["source_item"]["resolved"]["dtype"] == "uint16"
     assert [axis["name"] for axis in source_record["image_state"]["axes"]] == [
         "y",
         "x",
@@ -818,9 +870,9 @@ def test_qyx_scientific_preflight_stops_before_any_batch_artifact(
     assert "raw QYX, effective QYX" in message
     assert "QYX -> ZYX" in message
     assert "Reorder Axes" in message
-    assert "Z stack" in error.value.user_message
-    assert "labelled Q" in error.value.user_message
-    assert "treat it as Z" in error.value.user_message
+    assert "unknown leading Q axis" in error.value.user_message
+    assert "workflow requires 3D" in error.value.user_message
+    assert "treat Q as depth Z" in error.value.user_message
     assert len(error.value.user_message) < 160
     suggestion = error.value.axis_suggestion
     assert suggestion is not None
@@ -1016,7 +1068,7 @@ def test_blank_batch_axis_choice_overrides_saved_image_source_choice(tmp_path):
     assert not output_dir.exists()
 
 
-def test_non_tiff_qyx_contract_never_offers_automatic_z_suggestion():
+def test_ome_zarr_qyx_contract_offers_guarded_automatic_z_suggestion():
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     blur = pipeline.add_node("gaussian_blur_3d")
@@ -1037,8 +1089,73 @@ def test_non_tiff_qyx_contract_never_offers_automatic_z_suggestion():
             pipeline,
         )
 
-    assert error.value.axis_suggestion is None
-    assert "axis information" in error.value.user_message
+    suggestion = error.value.axis_suggestion
+    assert suggestion is not None
+    assert suggestion.source_node_id == "input"
+    assert suggestion.declaration == AxisDeclaration("QYX", "ZYX")
+    assert "unknown leading Q axis" in error.value.user_message
+
+
+def test_ome_zarr_custom_q_axis_preflight_offers_and_accepts_z_suggestion(
+    tmp_path,
+):
+    from ome_zarr.format import FormatV05
+    from ome_zarr.writer import write_image as write_ome_zarr_image
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    write_ome_zarr_image(
+        np.zeros((3, 8, 9), dtype=np.uint16),
+        str(inputs / "stack.ome.zarr"),
+        fmt=FormatV05(),
+        axes=(
+            {"name": "q", "type": "space", "unit": "micrometer"},
+            {"name": "y", "type": "space", "unit": "micrometer"},
+            {"name": "x", "type": "space", "unit": "micrometer"},
+        ),
+        scale_factors=(),
+    )
+    workflow, output_ids = _zyx_processing_batch_workflow()
+    config = _batch_config(workflow, inputs, tmp_path / "outputs", output_ids)
+    config = replace(
+        config,
+        sources=(
+            replace(
+                config.sources[0],
+                pattern=batch_module.DEFAULT_BATCH_SOURCE_PATTERN,
+            ),
+        ),
+    )
+
+    with pytest.raises(BatchScientificPreflightError) as error:
+        preflight_batch(workflow, config)
+
+    suggestion = error.value.axis_suggestion
+    assert suggestion is not None
+    assert suggestion.declaration == AxisDeclaration("QYX", "ZYX")
+
+    declared = replace(
+        config,
+        sources=(
+            replace(
+                config.sources[0],
+                axis_declaration=suggestion.declaration,
+            ),
+        ),
+    )
+    plan = preflight_batch(workflow, declared)
+
+    assert len(plan.items) == 1
+    assert plan.items[0].source_items["input"].selector.source_axes == (
+        "q",
+        "y",
+        "x",
+    )
+    assert plan.items[0].source_items["input"].selector.effective_axes == (
+        "z",
+        "y",
+        "x",
+    )
 
 
 def test_multi_input_axis_failure_does_not_suggest_unrelated_secondary_source():
@@ -1258,7 +1375,7 @@ def test_multi_letter_ome_zarr_axes_fail_scientific_preflight_before_outputs(
     assert not output_dir.exists()
 
 
-def test_invalid_representative_series_index_fails_before_outputs(tmp_path):
+def test_batch_source_item_supersedes_stale_workflow_series_index(tmp_path):
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     tifffile.imwrite(
@@ -1280,9 +1397,9 @@ def test_invalid_representative_series_index_fails_before_outputs(tmp_path):
         continue_on_error=True,
     )
 
-    with pytest.raises(BatchScientificPreflightError, match="Series index 1"):
-        preflight_batch(workflow, config)
+    plan = preflight_batch(workflow, config)
 
+    assert plan.items[0].source_items["input"].selector.key == "0"
     assert not output_dir.exists()
 
 

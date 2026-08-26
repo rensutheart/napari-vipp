@@ -9,7 +9,10 @@ from napari_vipp.core.batch import (
     BatchRunResult,
     BatchStatus,
 )
+from napari_vipp.ui.batch_controller import PreparedCollectionBatchPreview
 from napari_vipp.ui.batch_workers import (
+    BatchWorkspacePreviewWorker,
+    BatchWorkspacePreviewWorkerSpec,
     CollectionBatchWorker,
     PreparedCollectionBatchRun,
 )
@@ -102,9 +105,7 @@ def test_worker_carries_cancel_and_both_progress_channels(
 
     assert captured_cancel_event is not None
     assert worker.cancellation_requested
-    assert [(update.job_id, update.batch_id) for update in coarse] == [
-        (17, "sample")
-    ]
+    assert [(update.job_id, update.batch_id) for update in coarse] == [(17, "sample")]
     assert len(nested) == 1
     assert nested[0].job_id == 17
     assert nested[0].progress.operation_id == "gaussian_blur"
@@ -115,3 +116,62 @@ def test_worker_carries_cancel_and_both_progress_channels(
     assert outcomes[0].result is not None
     assert outcomes[0].result.cancelled
     assert outcomes[0].result.artifact_paths == (tmp_path / "workflow.json",)
+
+
+def test_workspace_preview_worker_suppresses_a_cancelled_request(tmp_path):
+    prepared = PreparedCollectionBatchPreview(
+        workflow={},
+        config=object(),
+        workflow_path=tmp_path / "workflow.json",
+        preview_limit=25,
+        explicit_outputs=False,
+    )
+    worker = BatchWorkspacePreviewWorker(
+        BatchWorkspacePreviewWorkerSpec(7, "tab-a", prepared)
+    )
+    outcomes = []
+    worker.signals.finished.connect(outcomes.append)
+
+    worker.cancel()
+    worker.run()
+
+    assert worker.cancellation_requested
+    assert len(outcomes) == 1
+    assert outcomes[0].request_id == 7
+    assert outcomes[0].origin_session_id == "tab-a"
+    assert outcomes[0].cancelled
+    assert outcomes[0].result is None
+    assert outcomes[0].error is None
+
+
+def test_workspace_preview_worker_preserves_the_verification_error(
+    monkeypatch,
+    tmp_path,
+):
+    prepared = PreparedCollectionBatchPreview(
+        workflow={},
+        config=object(),
+        workflow_path=tmp_path / "workflow.json",
+        preview_limit=25,
+        explicit_outputs=False,
+    )
+    worker = BatchWorkspacePreviewWorker(
+        BatchWorkspacePreviewWorkerSpec(8, "tab-b", prepared)
+    )
+    outcomes = []
+    worker.signals.finished.connect(outcomes.append)
+
+    def fail(_prepared):
+        raise ValueError("source revision changed")
+
+    monkeypatch.setattr(
+        "napari_vipp.ui.batch_workers.execute_prepared_collection_batch_preview",
+        fail,
+    )
+    worker.run()
+
+    assert len(outcomes) == 1
+    assert isinstance(outcomes[0].error, ValueError)
+    assert str(outcomes[0].error) == "source revision changed"
+    assert outcomes[0].result is None
+    assert not outcomes[0].cancelled

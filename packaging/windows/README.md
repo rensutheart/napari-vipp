@@ -13,6 +13,25 @@ and user guide separately explain the 5 GiB GPU (1 GiB CPU) allowance on every
 drive used for Windows temporary files and installer records, and setup names
 the exact failing location.
 
+The same review keeps rounded planning estimates visibly separate from those
+enforced gates:
+
+| Track | Approximate download | Approximate installed | Approximate peak working space | Enforced install-drive minimum | Enforced temp/records-drive minimum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CPU | 250 MiB | 1.5 GiB | 2.5 GiB | 5 GiB | 1 GiB |
+| CUDA 13 | 1.5 GiB | 5 GiB | 7 GiB | 15 GiB | 5 GiB |
+
+These are disk-storage figures, not GPU memory comparisons. Dependency indexes,
+cache state, and future package wheels can change the actual transfer or final
+size, so the approximate columns are orientation rather than a promise.
+
+During Apply, the setup window names the current phase and elapsed time. Work
+without an observable total remains indeterminate; byte progress is shown only
+when the dependency tool provides trustworthy totals. A quiet-operation
+heartbeat leaves the latest concrete activity visible, while Advanced details
+retains the setup-log path and can open that exact log. Slowness alone is not
+reported as a stall or failure.
+
 The release build embeds the exact `napari-vipp` wheel built from the same tag.
 The wheel SHA-256 is checked before the installer resolves dependencies and its
 path, digest, source commit, and version are retained in build/release manifests.

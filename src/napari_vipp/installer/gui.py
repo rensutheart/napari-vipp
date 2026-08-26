@@ -10,6 +10,7 @@ import argparse
 import importlib.metadata
 import os
 import queue
+import subprocess
 import sys
 import time
 import webbrowser
@@ -54,6 +55,74 @@ _STAGE_LABELS = {
     InstallerScreen.CANCELLED: "Setup cancelled",
     InstallerScreen.FAILED: "Setup needs attention",
 }
+_PHASE_LABELS = {
+    "checking": "Checking Windows, Python, and hardware",
+    "python": "Checking Python",
+    "python-found": "Checking Python",
+    "hardware": "Checking hardware",
+    "hardware-checked": "Checking hardware",
+    "inspecting": "Inspecting the installation location",
+    "resolution": "Resolving dependencies",
+    "resolving": "Resolving dependencies",
+    "decision": "Preparing the review",
+    "ready": "Ready for approval",
+    "preparing": "Preparing files",
+    "creating_environment": "Creating the private environment",
+    "installing": "Downloading and installing dependencies",
+    "verifying": "Validating the installation",
+    "creating_shortcuts": "Creating shortcuts",
+    "committing": "Finalizing the installation",
+    "rolling_back": "Rolling back safely",
+    "completed": "Complete",
+    "cancelled": "Cancelled",
+    "failed": "Failed",
+}
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format an approximate or required byte count using binary units."""
+
+    value = max(0, int(size_bytes))
+    for suffix, divisor in (
+        ("GiB", 1024**3),
+        ("MiB", 1024**2),
+        ("KiB", 1024),
+    ):
+        if value >= divisor:
+            amount = value / divisor
+            return (
+                f"{amount:.0f} {suffix}"
+                if amount.is_integer()
+                else f"{amount:.1f} {suffix}"
+            )
+    return f"{value} B"
+
+
+def _size_review_text(state: InstallerViewState) -> str:
+    """Keep estimates visibly separate from enforced free-space thresholds."""
+
+    estimate = state.size_estimate
+    if estimate is None:
+        return ""
+    lines = [
+        "Approximate sizes (estimates, not enforced limits):",
+        f"Download: {_format_size(estimate.download_bytes)}",
+        f"Installed: {_format_size(estimate.installed_bytes)}",
+        f"Peak temporary working space: {_format_size(estimate.peak_temporary_bytes)}",
+    ]
+    if state.required_free_bytes is not None:
+        minimum = (
+            "Required minimum free space (enforced): "
+            f"{_format_size(state.required_free_bytes)} on the installation drive"
+        )
+        if state.temporary_free_bytes is not None:
+            minimum += (
+                "; "
+                f"{_format_size(state.temporary_free_bytes)} on every drive used "
+                "for Windows temporary files and VIPP installer records"
+            )
+        lines.append(minimum + ".")
+    return "\n".join(lines)
 
 
 def _format_elapsed(seconds: int) -> str:
@@ -99,6 +168,7 @@ def _activity_text(
     *,
     screen: InstallerScreen | None = None,
     elapsed_seconds: int = 0,
+    quiet_seconds: int = 0,
 ) -> str:
     visible = history[-3:] or ["Starting VIPP Setup…"]
     lines = []
@@ -106,7 +176,9 @@ def _activity_text(
         marker = "●" if index == len(visible) - 1 else "✓"
         lines.append(f"{marker} {message}")
     if screen is InstallerScreen.CHECKING:
+        latest = visible[-1]
         lines[-1] = "● Checking this computer and reviewing exact packages…"
+        lines.append(f"  Latest activity: {latest}")
         lines.append(
             "  This can take several minutes; the moving bar means setup is "
             "still working."
@@ -116,7 +188,18 @@ def _activity_text(
         InstallerScreen.WORKING,
         InstallerScreen.CANCELLING,
     }:
-        lines.append(f"  Elapsed in this stage: {_format_elapsed(elapsed_seconds)}")
+        lines.append(f"  Elapsed in this phase: {_format_elapsed(elapsed_seconds)}")
+        if quiet_seconds >= 60:
+            lines.append(
+                "  Still working — no new milestone for "
+                f"{_format_elapsed(quiet_seconds)}."
+            )
+        if quiet_seconds >= 120:
+            lines.append(
+                "  This phase is taking longer than usual, but setup has not "
+                "reported a failure. Advanced details keeps the latest activity "
+                "and setup log location visible."
+            )
     return "\n".join(lines)
 
 
@@ -147,7 +230,11 @@ def _reviewed_message(
         f"Computer use: {track}\n"
         f"Shortcuts: {shortcuts}"
     )
-    return "\n\n".join(part for part in (state.message.strip(), review) if part)
+    return "\n\n".join(
+        part
+        for part in (state.message.strip(), review, _size_review_text(state))
+        if part
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -219,10 +306,12 @@ class InstallerWindow:
         )
         self._suppress_setting_events = False
         self._last_rendered_screen: InstallerScreen | None = None
+        self._last_rendered_phase = ""
         self._status_history = ["Starting VIPP Setup…"]
         self._brand_image = None
         self._header_stacked: bool | None = None
         self._stage_started_at = time.monotonic()
+        self._last_activity_at = self._stage_started_at
         self._last_elapsed_second = -1
         self._development_build = _is_development_build()
 
@@ -577,15 +666,23 @@ class InstallerWindow:
             command=self._open_third_party_notices,
         ).grid(row=5, column=1, sticky="e", pady=(8, 0))
 
+        self._open_log = ttk.Button(
+            parent,
+            text="Open setup log",
+            command=self._open_setup_log,
+            state="disabled",
+        )
+        self._open_log.grid(row=6, column=1, sticky="e", pady=(8, 0))
+
         ttk.Separator(parent).grid(
-            row=6,
+            row=7,
             column=0,
             columnspan=2,
             sticky="ew",
             pady=(12, 8),
         )
         details_panel = ttk.Frame(parent)
-        details_panel.grid(row=7, column=0, columnspan=2, sticky="nsew")
+        details_panel.grid(row=8, column=0, columnspan=2, sticky="nsew")
         details_panel.columnconfigure(0, weight=1)
         details_panel.rowconfigure(0, weight=1)
         self._details = self._tk.Text(
@@ -610,7 +707,7 @@ class InstallerWindow:
         self._details.configure(state="disabled")
         self._replace_details(self._rendered_details(self._controller.state))
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(7, weight=1)
+        parent.rowconfigure(8, weight=1)
 
     def _poll_states(self) -> None:
         latest = None
@@ -627,10 +724,15 @@ class InstallerWindow:
 
     def _render(self, state: InstallerViewState) -> None:
         previous_screen = self._last_rendered_screen
-        if previous_screen is not state.screen:
+        previous_phase = self._last_rendered_phase
+        if (
+            previous_screen is not state.screen
+            or previous_phase != state.progress_stage
+        ):
             self._stage_started_at = time.monotonic()
             self._last_elapsed_second = -1
         self._last_rendered_screen = state.screen
+        self._last_rendered_phase = state.progress_stage
         self._state = state
         self._record_status(state.status_message)
         self._headline.set(state.headline)
@@ -641,6 +743,7 @@ class InstallerWindow:
                 self._status_history,
                 screen=state.screen,
                 elapsed_seconds=self._elapsed_seconds(),
+                quiet_seconds=self._quiet_seconds(),
             )
         )
         self._primary_text.set(state.primary_label)
@@ -649,6 +752,10 @@ class InstallerWindow:
         self._set_enabled(self._secondary, state.secondary_enabled)
         self._set_enabled(self._cancel, state.cancel_enabled)
         self._set_settings_enabled(state)
+        self._set_enabled(
+            self._open_log,
+            state.log_path is not None and state.log_path.is_file(),
+        )
         if state.progress_fraction is None:
             self._progress.configure(mode="indeterminate")
             if state.screen in {
@@ -693,15 +800,21 @@ class InstallerWindow:
             "requested" if self._selection.create_desktop_shortcut else "not requested"
         )
         current_activity = state.status_message or "Waiting for the next check"
+        phase = _PHASE_LABELS.get(
+            state.progress_stage,
+            state.progress_stage.replace("_", " ").strip().title()
+            or _STAGE_LABELS[state.screen],
+        )
         facts = [f"VIPP Setup version: {_installed_version()}"]
         if getattr(self, "_development_build", False):
             facts.append(DEVELOPMENT_BUILD_LABEL)
         facts.extend(
             (
                 f"Stage: {_STAGE_LABELS[state.screen]}",
+                f"Phase: {phase}",
                 f"Current activity: {current_activity}",
                 f"Progress: {progress}",
-                f"Elapsed in this stage: {_format_elapsed(self._elapsed_seconds())}",
+                f"Elapsed in this phase: {_format_elapsed(self._elapsed_seconds())}",
                 f"Requested computer use: {_LABEL_FOR_TRACK[self._selection.track]}",
                 f"Desktop shortcut: {shortcut_request}",
             )
@@ -721,6 +834,17 @@ class InstallerWindow:
             facts.append(f"Computer use: {label}")
         if state.target_kind is not None:
             facts.append(f"Setup state: {state.target_kind.value}")
+        size_text = _size_review_text(state)
+        if size_text:
+            facts.extend(("", size_text))
+        facts.append(
+            "Setup log: "
+            + (
+                str(state.log_path)
+                if state.log_path is not None
+                else "available after installation starts"
+            )
+        )
         if state.technical_details:
             facts.extend(("", "Live technical details:", state.technical_details))
         facts.extend(("", "Recent activity:"))
@@ -754,6 +878,7 @@ class InstallerWindow:
                 self._status_history,
                 screen=state.screen,
                 elapsed_seconds=elapsed,
+                quiet_seconds=self._quiet_seconds(),
             )
         )
         self._replace_details(self._rendered_details(state))
@@ -766,6 +891,11 @@ class InstallerWindow:
             return
         self._status_history.append(normalized)
         del self._status_history[:-_STATUS_HISTORY_LIMIT]
+        self._last_activity_at = time.monotonic()
+
+    def _quiet_seconds(self) -> int:
+        last_activity = getattr(self, "_last_activity_at", time.monotonic())
+        return max(0, int(time.monotonic() - last_activity))
 
     def _replace_details(self, details: str) -> None:
         self._details.configure(state="normal")
@@ -1034,6 +1164,28 @@ class InstallerWindow:
             self._messagebox.showerror(
                 "Third-party notices",
                 f"The notices file could not be opened.\n\n{exc}",
+                parent=self.root,
+            )
+
+    def _open_setup_log(self) -> None:
+        state = self._state
+        path = state.log_path if state is not None else None
+        try:
+            if path is None or not path.is_file():
+                raise FileNotFoundError(
+                    "The setup log is not available yet or has been removed."
+                )
+            try:
+                os.startfile(str(path))
+            except (AttributeError, OSError, RuntimeError, ValueError):
+                # JSON Lines has no default association on a clean Windows
+                # account. Notepad is part of supported Windows installations
+                # and gives users a dependable fallback for the exact log.
+                subprocess.Popen(["notepad.exe", str(path)], close_fds=True)
+        except (AttributeError, OSError, RuntimeError, ValueError) as exc:
+            self._messagebox.showerror(
+                "Open setup log",
+                f"The setup log could not be opened.\n\n{exc}",
                 parent=self.root,
             )
 

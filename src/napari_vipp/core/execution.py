@@ -5057,6 +5057,10 @@ def _source_scientific_context_document(
             payload.revision_token,
             cancel_callback=cancel_callback,
         ),
+        "source_item": _scientific_identity_value(
+            payload.source_item,
+            cancel_callback=cancel_callback,
+        ),
     }
 
 

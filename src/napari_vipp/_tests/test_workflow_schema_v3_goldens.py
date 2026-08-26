@@ -89,8 +89,8 @@ def _restore_and_reserialize(document: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _canonical_schema_v4_document(document: dict[str, Any]) -> dict[str, Any]:
-    """Mirror normalization and the v3 explicit-CPU migration when needed."""
+def _canonical_schema_v5_document(document: dict[str, Any]) -> dict[str, Any]:
+    """Mirror normalization and legacy explicit-CPU migration when needed."""
     canonical = deepcopy(document)
     # ``view`` predates the current core persistence API and is intentionally
     # not part of the deserialized graph parts returned to callers.
@@ -101,8 +101,8 @@ def _canonical_schema_v4_document(document: dict[str, Any]) -> dict[str, Any]:
         canonical.get("tunnels", []),
         key=lambda item: item["name"],
     )
+    canonical["version"] = 5
     if document["version"] == 3:
-        canonical["version"] = 4
         canonical["execution"] = {
             "compute": {
                 "mode": "cpu",
@@ -119,12 +119,12 @@ def _canonical_schema_v4_document(document: dict[str, Any]) -> dict[str, Any]:
     "filename",
     EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES,
 )
-def test_bundled_examples_restore_to_canonical_schema_v4_structure(filename):
+def test_bundled_examples_restore_to_canonical_schema_v5_structure(filename):
     document = _load_example(filename)
 
     reserialized = _restore_and_reserialize(document)
 
-    assert reserialized == _canonical_schema_v4_document(document)
+    assert reserialized == _canonical_schema_v5_document(document)
 
 
 @pytest.mark.parametrize(

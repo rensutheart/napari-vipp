@@ -29,12 +29,23 @@ class ImageSeriesInfo:
     dtype: str
     axes: str
     kind: str = "image"
+    image_state: ImageState | None = None
+    reader_key: str = ""
+    reader_version: str = ""
+    capabilities: tuple[str, ...] = ()
+    estimated_decoded_bytes: int | None = None
+    level_shapes: tuple[tuple[int, ...], ...] = ()
 
     @property
     def label(self) -> str:
         name = self.name or f"Series {self.index + 1}"
         dimensions = " x ".join(str(size) for size in self.shape)
-        return f"{name} | {self.axes}: {dimensions} | {self.dtype}"
+        details = [f"{self.axes}: {dimensions}", self.dtype, self.kind]
+        if self.reader_key:
+            details.append(self.reader_key)
+        if len(self.level_shapes) > 1:
+            details.append(f"{len(self.level_shapes)} levels")
+        return f"{name} | " + " | ".join(details)
 
 
 @dataclass(frozen=True)
