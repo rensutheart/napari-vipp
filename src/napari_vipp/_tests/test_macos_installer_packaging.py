@@ -108,6 +108,7 @@ def test_plan_binds_exact_wheel_without_requiring_builder_tools(
     wheel = _wheel(
         tmp_path / f"napari_vipp-{PROJECT_VERSION}-py3-none-any.whl"
     )
+    monkeypatch.setattr(packager, "inspect_source", lambda _root: _release_state())
     monkeypatch.setattr(packager, "_macos_architecture", lambda: ("arm64", "osx-arm64"))
 
     plan = packager.build_installer(
@@ -204,10 +205,11 @@ def test_unsigned_release_lane_rejects_non_alpha_versions(
         )
 
 
-def test_plan_rejects_wheel_from_another_version(tmp_path):
+def test_plan_rejects_wheel_from_another_version(tmp_path, monkeypatch):
     wheel = _wheel(
         tmp_path / "napari_vipp-0.13.0-py3-none-any.whl", version="0.13.0"
     )
+    monkeypatch.setattr(packager, "inspect_source", lambda _root: _release_state())
 
     with pytest.raises(
         packager.MacOSInstallerPackagingError,
