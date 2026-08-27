@@ -55,6 +55,12 @@ class WidgetLifecycle:
         widget._live_source_adapter.shutdown()
         widget._live_source_node_layers.clear()
         widget._debounce_timer.stop()
+        crop_timer = getattr(widget, "_crop_draft_timer", None)
+        if crop_timer is not None:
+            crop_timer.stop()
+        discard_crop = getattr(widget, "_discard_crop_draft", None)
+        if callable(discard_crop):
+            discard_crop(remove_layers=True)
 
         for cancel_event in tuple(widget._pipeline_cancel_events.values()):
             cancel_event.set()

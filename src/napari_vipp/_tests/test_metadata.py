@@ -390,6 +390,72 @@ def test_transforms_preserve_inferred_axis_confidence():
     assert not transformed.axes_explicit
 
 
+@pytest.mark.parametrize(
+    ("kind", "dtype"),
+    (
+        ("intensity image", np.float32),
+        ("binary mask", np.bool_),
+        ("label image", np.uint16),
+    ),
+)
+def test_crop_transform_preserves_kind_and_calibration_while_shifting_origin(
+    kind,
+    dtype,
+):
+    data = np.zeros((2, 7, 3, 8, 6), dtype=dtype)
+    axes = (
+        AxisMetadata("t", "time", "second", 2.0, 10.0, 0),
+        AxisMetadata("y", "space", "micrometer", 0.5, 20.0, 1),
+        AxisMetadata("c", "channel", None, 1.0, 30.0, 2),
+        AxisMetadata("x", "space", "micrometer", 0.25, 40.0, 3),
+        AxisMetadata("z", "space", "micrometer", 2.0, 50.0, 4),
+    )
+    input_state = replace(
+        image_state_from_array(data, axes=axes),
+        kind=kind,
+    )
+    cropped = data[:, 1:-2, :, 2:-1, 1:-2]
+
+    transformed = transform_image_state(
+        cropped,
+        input_state,
+        operation_id="crop_stack",
+        operation_title="Crop Stack",
+        params={
+            "z_start": 1,
+            "z_end": 2,
+            "top": 1,
+            "bottom": 2,
+            "left": 2,
+            "right": 1,
+        },
+    )
+
+    assert transformed is not None
+    assert transformed.shape == cropped.shape
+    assert transformed.kind == kind
+    assert tuple(axis.name for axis in transformed.axes) == ("t", "y", "c", "x", "z")
+    assert tuple(axis.scale for axis in transformed.axes) == (2.0, 0.5, 1.0, 0.25, 2.0)
+    assert tuple(axis.translation for axis in transformed.axes) == (
+        10.0,
+        20.5,
+        30.0,
+        40.5,
+        52.0,
+    )
+    assert tuple(axis.unit for axis in transformed.axes) == (
+        "second",
+        "micrometer",
+        None,
+        "micrometer",
+        "micrometer",
+    )
+    assert tuple(axis.source_axis for axis in transformed.axes) == (0, 1, 2, 3, 4)
+    assert transformed.history[-1] == (
+        "Crop Stack: cropped Z start=1, Z end=2, top=1, bottom=2, left=2, right=1"
+    )
+
+
 def test_transform_created_projection_axes_derive_input_confidence():
     data = np.zeros((2, 5, 7), dtype=np.float32)
     montage = np.zeros((7, 12), dtype=np.float32)

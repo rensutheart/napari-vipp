@@ -49,6 +49,7 @@ from napari_vipp._widget import (
     CACHE_MODE_KEEP_ALL,
     CACHE_MODE_LOW_MEMORY,
     CACHE_MODE_SMART,
+    CROP_ROI_LAYER_NAME,
     EXAMPLE_WORKFLOWS,
     INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS,
     AutoContrastResult,
@@ -369,6 +370,11 @@ class _Layer:
         self.units = None
         self.axis_labels = None
         self.editable = True
+        self.opacity = 1.0
+        self.edge_color = None
+        self.face_color = None
+        self.edge_width = None
+        self.shape_type = None
         self.events = _SourceEvents()
 
 
@@ -438,6 +444,24 @@ class _Viewer:
             metadata=kwargs.get("metadata"),
             layer_type="labels",
         )
+        layer.scale = kwargs.get("scale")
+        layer.translate = kwargs.get("translate")
+        self.layers.append(layer)
+        self.layers.selection.select_only(layer)
+        return layer
+
+    def add_shapes(self, data, **kwargs):
+        layer = _Layer(
+            data,
+            kwargs["name"],
+            metadata=kwargs.get("metadata"),
+            layer_type="shapes",
+        )
+        layer.shape_type = kwargs.get("shape_type")
+        layer.edge_color = kwargs.get("edge_color")
+        layer.face_color = kwargs.get("face_color")
+        layer.edge_width = kwargs.get("edge_width")
+        layer.opacity = kwargs.get("opacity", 1.0)
         layer.scale = kwargs.get("scale")
         layer.translate = kwargs.get("translate")
         self.layers.append(layer)
@@ -4165,6 +4189,43 @@ def test_node_code_translates_scalar_channel_axis_sentinel(qtbot):
     assert "'channel_axis': None" in code
     assert "channel_axis=None" in call_line
     assert "channel_axis=-1" not in call_line
+
+
+def test_node_code_crop_injects_explicit_axis_contract_and_executes(qtbot):
+    data = np.arange(2 * 3 * 6 * 8 * 10, dtype=np.uint16).reshape(
+        2,
+        3,
+        6,
+        8,
+        10,
+    )
+    widget = VippWidget(_Viewer(data, metadata={"axes": "TCZYX"}))
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    for name, value in {
+        "z_start": 1,
+        "z_end": 2,
+        "top": 2,
+        "bottom": 1,
+        "left": 3,
+        "right": 2,
+    }.items():
+        widget.pipeline.set_param(crop.id, name, value)
+
+    code = widget._node_code_text(crop.id)
+    call_line = next(line for line in code.splitlines() if line.startswith("output ="))
+
+    assert "axis_names=('t', 'c', 'z', 'y', 'x')" in call_line
+    assert "z_axis_explicit=True" in call_line
+    namespace = {"input_output": data}
+    executable_prefix = code.split("# Operation function source", maxsplit=1)[0]
+    exec(executable_prefix, namespace)
+
+    np.testing.assert_array_equal(
+        namespace["output"],
+        data[:, :, 1:-2, 2:-1, 3:-2],
+    )
 
 
 def test_undo_redo_restores_deleted_node_and_connections(qtbot):
@@ -19319,6 +19380,72 @@ def test_save_selected_output_writes_npy(qtbot, tmp_path):
     np.testing.assert_array_equal(np.load(path), widget.pipeline.outputs["gaussian"])
 
 
+def test_save_crop_output_calculates_committed_pending_edit_before_write(
+    qtbot,
+    tmp_path,
+):
+    data = np.arange(6 * 8 * 10, dtype=np.uint16).reshape(6, 8, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget.run_pipeline(force_sync=True)
+    widget._debounce_timer.stop()
+    old_output = np.array(widget.pipeline.outputs[crop.id], copy=True)
+
+    top = widget._parameter_widgets["top"]
+    top.slider.setValue(2)
+    top.slider.sliderReleased.emit()
+    widget._debounce_timer.stop()
+
+    assert widget.pipeline.nodes[crop.id].params["top"] == 2
+    assert crop.id in widget._pending_dirty_node_ids
+    np.testing.assert_array_equal(widget.pipeline.outputs[crop.id], old_output)
+
+    path = tmp_path / "fresh-crop.npy"
+    saved = widget._save_node_output(crop.id, str(path), format="npy")
+
+    assert saved == path
+    np.testing.assert_array_equal(np.load(path), data[:, 2:, :])
+    assert crop.id not in widget._pending_dirty_node_ids
+
+
+def test_save_crop_output_fails_closed_while_older_crop_run_is_active(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(
+        _Viewer(
+            np.arange(6 * 8 * 10, dtype=np.uint16).reshape(6, 8, 10),
+            metadata={"axes": "ZYX"},
+        )
+    )
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget.run_pipeline(force_sync=True)
+    widget._debounce_timer.stop()
+
+    widget._active_pipeline_run_id = 991
+    widget._inflight_dirty_node_ids = {crop.id}
+    widget._inflight_full_graph = False
+    widget.pipeline.node_execution_states[crop.id] = EXECUTION_RUNNING
+    path = tmp_path / "must-not-exist.npy"
+
+    try:
+        saved = widget._save_node_output(crop.id, str(path), format="npy")
+
+        assert saved is None
+        assert not path.exists()
+        assert "no file was written" in widget.status_label.text()
+    finally:
+        widget._active_pipeline_run_id = None
+        widget._inflight_dirty_node_ids = None
+        widget.pipeline.node_execution_states[crop.id] = EXECUTION_READY
+
+
 def test_measure_objects_shows_table_preview_and_saves_csv(qtbot, tmp_path):
     image = np.zeros((3, 9, 9), dtype=np.float32)
     image[:, 1:4, 1:4] = 10
@@ -26561,7 +26688,762 @@ def test_crop_parameter_text_entry_stays_image_limited(qtbot):
 
     assert control.value() == 15
     assert control.slider.maximum() == 15
+    assert widget.pipeline.nodes[node.id].params["top"] == 0
+
+    control.value_box.editingFinished.emit()
+
     assert widget.pipeline.nodes[node.id].params["top"] == 15
+    widget._debounce_timer.stop()
+
+
+def _responsive_crop_widget(qtbot):
+    data = np.arange(6 * 8 * 10, dtype=np.uint16).reshape(6, 8, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._debounce_timer.stop()
+    widget._history.clear()
+    return widget, crop, data
+
+
+def _open_crop_top_draft(widget, value: int) -> None:
+    control = widget._parameter_widgets["top"]
+    control.slider.setValue(value)
+    widget._crop_draft_timer.stop()
+    assert widget._crop_draft_node_id == widget._selected_node_id
+    assert widget.pipeline.nodes[widget._selected_node_id].params["top"] != value
+
+
+def _workflow_crop_params(workflow: dict, crop_id: str) -> dict:
+    return next(node["params"] for node in workflow["nodes"] if node["id"] == crop_id)
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    (
+        "calculate",
+        "calculate-all",
+        "execution-snapshot",
+        "pixel-save",
+        "workflow-save",
+        "python-export",
+        "batch-start",
+        "tab-change",
+        "close",
+    ),
+)
+def test_responsive_crop_draft_flushes_once_at_every_durable_boundary(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    boundary,
+):
+    widget, crop, data = _responsive_crop_widget(qtbot)
+    authored_pipeline = widget.pipeline
+    authored_history = widget._history
+    _open_crop_top_draft(widget, 2)
+    captured_workflow = None
+
+    if boundary == "calculate":
+        widget._calculate_selected_node()
+    elif boundary == "calculate-all":
+        snapshots = []
+
+        def capture_calculation(*_args, **_kwargs):
+            snapshots.append(serialize_workflow(widget.pipeline))
+
+        monkeypatch.setattr(widget, "run_pipeline", capture_calculation)
+        widget._calculate_all_nodes()
+        assert len(snapshots) == 1
+        captured_workflow = snapshots[0]
+    elif boundary == "execution-snapshot":
+        pool = _QueuedThreadPool()
+        widget._pipeline_thread_pool = pool
+        source_payloads, source_layers = widget._source_payloads_for_pipeline()
+        source_signature = widget._pipeline_source_signature(
+            None,
+            None,
+            "",
+            source_payloads,
+        )
+        widget._start_background_pipeline_run(
+            None,
+            None,
+            "",
+            dict(source_payloads),
+            source_layers[0] if source_layers else None,
+            "test source",
+            source_signature,
+            {crop.id},
+        )
+        assert len(pool.workers) == 1
+        request = pool.workers[0].request
+        captured_workflow = request.workflow
+        widget._on_background_pipeline_finished(
+            PipelineRunResult(
+                request.run_id,
+                request.workflow,
+                cancelled=True,
+            )
+        )
+    elif boundary == "pixel-save":
+        target = tmp_path / "draft-boundary.npy"
+        assert widget._save_node_output(crop.id, str(target), format="npy") == target
+        np.testing.assert_array_equal(np.load(target), data[:, 2:, :])
+    elif boundary == "workflow-save":
+        target = tmp_path / "draft-boundary.json"
+        monkeypatch.setattr(
+            "napari_vipp._widget.QFileDialog.getSaveFileName",
+            lambda *_args, **_kwargs: (str(target), ""),
+        )
+        assert widget._save_workflow_dialog()
+        captured_workflow = json.loads(target.read_text(encoding="utf-8"))
+    elif boundary == "python-export":
+        target = tmp_path / "draft-boundary.py"
+        monkeypatch.setattr(
+            "napari_vipp._widget.QFileDialog.getSaveFileName",
+            lambda *_args, **_kwargs: (str(target), ""),
+        )
+        widget._export_python_dialog()
+        assert '"top":2' in target.read_text(encoding="utf-8")
+    elif boundary == "batch-start":
+        input_dir = tmp_path / "inputs"
+        input_dir.mkdir()
+        np.save(input_dir / "sample.npy", data)
+        session = widget._workflow_tabs.current
+        assert session is not None
+        prepared = widget._prepare_collection_batch_run(
+            input_dir=input_dir,
+            output_dir=tmp_path / "outputs",
+            pattern="*.npy",
+            image_format="npy",
+            save_python_script=False,
+            job_id=17,
+            origin_session_id=session.session_id,
+        )
+        captured_workflow = prepared.workflow
+    elif boundary == "tab-change":
+        widget._new_workflow()
+        assert widget.pipeline is not authored_pipeline
+    elif boundary == "close":
+        event = QCloseEvent()
+        widget.closeEvent(event)
+        assert event.isAccepted()
+        assert widget._closing
+    else:  # pragma: no cover - exhaustive guard for future parameter edits
+        raise AssertionError(boundary)
+
+    assert authored_pipeline.nodes[crop.id].params["top"] == 2
+    assert widget._crop_draft_node_id is None
+    assert len(authored_history.undo_stack) == 1
+    previous_crop = next(
+        node
+        for node in authored_history.undo_stack[0].workflow.graph.nodes
+        if node.id == crop.id
+    )
+    assert previous_crop.params["top"] == 0
+    if captured_workflow is not None:
+        assert _workflow_crop_params(captured_workflow, crop.id)["top"] == 2
+
+
+def test_responsive_crop_shows_z_controls_only_for_explicit_z(qtbot):
+    explicit = VippWidget(
+        _Viewer(np.zeros((6, 8, 10), dtype=np.float32), metadata={"axes": "ZYX"})
+    )
+    qtbot.addWidget(explicit)
+    explicit_crop = explicit.add_node_from_palette("crop_stack")
+    explicit._connect_nodes("input", explicit_crop.id)
+
+    assert {"z_start", "z_end"} <= explicit._parameter_widgets.keys()
+
+    data = np.zeros((6, 8, 10), dtype=np.float32)
+    inferred_state = image_state_from_array(data)
+    inferred_qyx = replace(
+        inferred_state,
+        axes=(
+            replace(inferred_state.axes[0], name="q", type="space"),
+            inferred_state.axes[1],
+            inferred_state.axes[2],
+        ),
+    )
+    inferred = VippWidget(
+        _Viewer(data, metadata={"vipp_image_state": inferred_qyx.to_dict()})
+    )
+    qtbot.addWidget(inferred)
+    inferred_crop = inferred.add_node_from_palette("crop_stack")
+    inferred._connect_nodes("input", inferred_crop.id)
+
+    assert inferred.pipeline.input_state_for_node(inferred_crop.id).axis_order == "QYX"
+    assert "z_start" not in inferred._parameter_widgets
+    assert "z_end" not in inferred._parameter_widgets
+
+
+def test_responsive_crop_drafts_until_release_then_commits_once(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer(
+        np.zeros((7, 9, 11), dtype=np.float32),
+        metadata={"axes": "ZYX"},
+    )
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._debounce_timer.stop()
+    widget._history.clear()
+
+    dirty_calls: list[str] = []
+    original_mark_dirty = widget._mark_pipeline_dirty
+
+    def counted_mark_dirty(node_id, *args, **kwargs):
+        dirty_calls.append(node_id)
+        return original_mark_dirty(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget, "_mark_pipeline_dirty", counted_mark_dirty)
+    committed_before = dict(widget.pipeline.nodes[crop.id].params)
+    pending_before = set(widget._pending_dirty_node_ids)
+
+    top = widget._parameter_widgets["top"]
+    left = widget._parameter_widgets["left"]
+    z_start = widget._parameter_widgets["z_start"]
+    for value in (1, 2, 3):
+        top.slider.setValue(value)
+    left.slider.setValue(4)
+    z_start.slider.setValue(2)
+
+    assert widget.pipeline.nodes[crop.id].params == committed_before
+    assert set(widget._pending_dirty_node_ids) == pending_before
+    assert dirty_calls == []
+    assert widget._undo_stack == []
+    assert widget._crop_draft_values["top"] == 3
+    assert widget._crop_draft_values["left"] == 4
+    assert widget._crop_draft_values["z_start"] == 2
+
+    top.slider.sliderReleased.emit()
+
+    params = widget.pipeline.nodes[crop.id].params
+    assert params["top"] == 3
+    assert params["left"] == 4
+    assert params["z_start"] == 2
+    assert dirty_calls == [crop.id]
+    assert len(widget._undo_stack) == 1
+    assert widget._crop_draft_node_id is None
+    assert widget._debounce_timer.isActive()
+    widget._debounce_timer.stop()
+
+    widget.undo()
+    assert widget.pipeline.nodes[crop.id].params == committed_before
+
+    widget.redo()
+    restored = widget.pipeline.nodes[crop.id].params
+    assert restored["top"] == 3
+    assert restored["left"] == 4
+    assert restored["z_start"] == 2
+
+
+def test_responsive_crop_draft_bounds_reserve_one_sample_per_axis(qtbot):
+    widget = VippWidget(
+        _Viewer(
+            np.zeros((6, 8, 10), dtype=np.float32),
+            metadata={"axes": "ZYX"},
+        )
+    )
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+
+    widget._parameter_widgets["top"].slider.setValue(3)
+    widget._parameter_widgets["left"].slider.setValue(4)
+    widget._parameter_widgets["z_start"].slider.setValue(2)
+
+    for name, expected_maximum in (
+        ("bottom", 4),
+        ("right", 5),
+        ("z_end", 3),
+    ):
+        control = widget._parameter_widgets[name]
+        assert control.slider.maximum() == expected_maximum
+        assert control.value_box.maximum() == expected_maximum
+
+
+def test_responsive_crop_idle_timer_commits_latest_slider_draft_once(qtbot):
+    widget = VippWidget(
+        _Viewer(
+            np.zeros((6, 8, 10), dtype=np.float32),
+            metadata={"axes": "ZYX"},
+        )
+    )
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._debounce_timer.stop()
+    widget._history.clear()
+
+    control = widget._parameter_widgets["top"]
+    for value in (1, 2, 3):
+        control.slider.setValue(value)
+
+    assert widget.pipeline.nodes[crop.id].params["top"] == 0
+    qtbot.waitUntil(lambda: widget._crop_draft_node_id is None, timeout=1_500)
+
+    assert widget.pipeline.nodes[crop.id].params["top"] == 3
+    assert len(widget._undo_stack) == 1
+    assert widget._debounce_timer.isActive()
+    widget._debounce_timer.stop()
+
+
+def test_responsive_crop_new_drag_coalesces_a_pending_generic_run(qtbot):
+    widget = VippWidget(
+        _Viewer(
+            np.zeros((6, 8, 10), dtype=np.float32),
+            metadata={"axes": "ZYX"},
+        )
+    )
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+
+    control = widget._parameter_widgets["top"]
+    control.slider.setValue(1)
+    control.slider.sliderReleased.emit()
+    assert widget._debounce_timer.isActive()
+
+    control.slider.setValue(2)
+
+    assert not widget._debounce_timer.isActive()
+    assert widget.pipeline.nodes[crop.id].params["top"] == 1
+    assert widget._crop_draft_values["top"] == 2
+    widget._crop_draft_timer.stop()
+
+
+def test_responsive_crop_same_geometry_output_replacement_keeps_draft(qtbot):
+    widget = VippWidget(
+        _Viewer(
+            np.zeros((6, 8, 10), dtype=np.float32),
+            metadata={"axes": "ZYX"},
+        )
+    )
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    control = widget._parameter_widgets["top"]
+    control.slider.setValue(2)
+    signature = widget._crop_draft_input_signature
+
+    widget.pipeline.outputs["input"] = np.ones((6, 8, 10), dtype=np.float32)
+    widget._refresh_selected_parameter_controls()
+
+    assert widget._crop_draft_node_id == crop.id
+    assert widget._crop_draft_input_signature == signature
+    assert widget._crop_draft_values["top"] == 2
+    widget._crop_draft_timer.stop()
+
+
+@pytest.mark.parametrize("old_terminal", ("completed", "cancelled"))
+def test_responsive_crop_older_background_terminal_never_republishes_crop(
+    qtbot,
+    old_terminal,
+):
+    widget, crop, data = _responsive_crop_widget(qtbot)
+    independent = widget.add_node_from_palette("median_filter")
+    widget.pipeline.set_param(independent.id, "size", 1)
+    widget._connect_nodes("input", independent.id)
+    widget._select_node(crop.id)
+
+    _open_crop_top_draft(widget, 1)
+    widget._parameter_widgets["top"].slider.sliderReleased.emit()
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    widget._history.clear()
+    np.testing.assert_array_equal(widget.pipeline.outputs[crop.id], data[:, 1:, :])
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    widget.background_all_checkbox.setChecked(True)
+    source_payloads, source_layers = widget._source_payloads_for_pipeline()
+    source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        source_payloads,
+    )
+    widget._mark_pipeline_dirty(independent.id)
+    widget._start_background_pipeline_run(
+        None,
+        None,
+        "",
+        dict(source_payloads),
+        source_layers[0] if source_layers else None,
+        "test source",
+        source_signature,
+        {independent.id},
+    )
+    assert len(pool.workers) == 1
+    old_request = pool.workers[0].request
+    assert widget._active_pipeline_node_id == independent.id
+    completed_result = (
+        execute_pipeline_request(old_request) if old_terminal == "completed" else None
+    )
+
+    _open_crop_top_draft(widget, 3)
+    widget._parameter_widgets["top"].slider.sliderReleased.emit()
+    widget._debounce_timer.stop()
+    assert widget.pipeline.nodes[crop.id].params["top"] == 3
+    widget.run_pipeline()
+
+    assert widget._pipeline_run_pending
+    assert crop.id in widget._pending_dirty_node_ids
+    # The active branch is independent, so its successful terminal result is
+    # allowed to publish. A same-geometry replacement models a newer retained
+    # Crop cache and makes any stale whole-pipeline replacement observable by
+    # object identity even before the queued crop calculation starts.
+    retained_crop_output = np.array(widget.pipeline.outputs[crop.id], copy=True)
+    widget.pipeline.outputs[crop.id] = retained_crop_output
+    widget.pipeline.node_outputs[crop.id][0] = retained_crop_output
+    roi_layer = widget._owned_crop_presentation_layers("crop_roi")[0]
+    roi_identity = id(roi_layer)
+    committed_roi = tuple(np.array(face, copy=True) for face in roi_layer.data)
+
+    if old_terminal == "cancelled":
+        old_request.cancel_event.set()
+        old_result = execute_pipeline_request(old_request)
+        assert old_result.cancelled
+    else:
+        old_result = completed_result
+        assert old_result is not None
+        assert not old_result.cancelled
+    assert old_result.pipeline is None or (
+        old_result.pipeline.outputs[crop.id] is not retained_crop_output
+    )
+
+    old_crop_node_result = None
+    if old_result.pipeline is not None:
+        old_pipeline = old_result.pipeline
+        old_crop_node_result = PipelineNodeResult(
+            old_request.run_id,
+            crop.id,
+            crop.operation_id,
+            old_pipeline.outputs[crop.id],
+            old_pipeline.output_states[crop.id],
+            tuple(old_pipeline.node_outputs[crop.id]),
+            tuple(old_pipeline.node_output_states[crop.id]),
+            old_pipeline.node_execution_states[crop.id],
+            old_pipeline.node_execution_messages[crop.id],
+            source_revisions=old_result.source_revisions,
+        )
+        widget._on_background_pipeline_node_finished(old_crop_node_result)
+
+    assert widget.pipeline.outputs[crop.id] is retained_crop_output
+    assert id(roi_layer) == roi_identity
+    for actual, expected in zip(roi_layer.data, committed_roi, strict=True):
+        np.testing.assert_array_equal(actual, expected)
+
+    widget._on_background_pipeline_finished(old_result)
+
+    # The old terminal callback must not republish its cached Crop branch, even
+    # transiently while the latest crop calculation is only queued.
+    assert widget.pipeline.outputs[crop.id] is retained_crop_output
+    assert id(roi_layer) == roi_identity
+    for actual, expected in zip(roi_layer.data, committed_roi, strict=True):
+        np.testing.assert_array_equal(actual, expected)
+
+    qtbot.waitUntil(lambda: len(pool.workers) == 2, timeout=5_000)
+    latest_request = pool.workers[-1].request
+    assert _workflow_crop_params(latest_request.workflow, crop.id)["top"] == 3
+    latest_result = execute_pipeline_request(latest_request)
+    assert not latest_result.cancelled
+    assert latest_result.error == ""
+    widget._on_background_pipeline_finished(latest_result)
+
+    final_output = widget.pipeline.outputs[crop.id]
+    np.testing.assert_array_equal(final_output, data[:, 3:, :])
+    assert widget.pipeline.nodes[crop.id].params["top"] == 3
+    assert id(roi_layer) == roi_identity
+    final_roi = tuple(np.array(face, copy=True) for face in roi_layer.data)
+    assert np.min(np.concatenate(final_roi, axis=0)[:, 1]) == 2.5
+
+    # Duplicate queued callbacks can arrive after the accepted latest result;
+    # their run id must make them inert for both scientific and presentation
+    # state.
+    if old_crop_node_result is not None:
+        widget._on_background_pipeline_node_finished(old_crop_node_result)
+    widget._on_background_pipeline_finished(old_result)
+
+    assert widget.pipeline.outputs[crop.id] is final_output
+    np.testing.assert_array_equal(final_output, data[:, 3:, :])
+    assert id(roi_layer) == roi_identity
+    for actual, expected in zip(roi_layer.data, final_roi, strict=True):
+        np.testing.assert_array_equal(actual, expected)
+    assert len(widget._undo_stack) == 1
+    previous_crop = next(
+        node
+        for node in widget._undo_stack[0].workflow.graph.nodes
+        if node.id == crop.id
+    )
+    assert previous_crop.params["top"] == 1
+
+
+def test_responsive_crop_box_uses_pixel_edges_for_one_sample_roi(qtbot):
+    widget = VippWidget(
+        _Viewer(
+            np.zeros((6, 8, 10), dtype=np.float32),
+            metadata={"axes": "ZYX"},
+        )
+    )
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._parameter_widgets["z_start"].slider.setValue(5)
+    widget._parameter_widgets["top"].slider.setValue(7)
+    widget._parameter_widgets["left"].slider.setValue(9)
+
+    roi_layer = next(
+        layer
+        for layer in widget.viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "crop_roi"
+    )
+    box_vertices = np.concatenate(roi_layer.data[:6], axis=0)
+
+    assert np.ptp(box_vertices[:, 0]) == 1.0
+    assert np.ptp(box_vertices[:, 1]) == 1.0
+    assert np.ptp(box_vertices[:, 2]) == 1.0
+    widget._crop_draft_timer.stop()
+
+
+def test_responsive_crop_disconnect_removes_stale_presentation_layers(qtbot):
+    widget = VippWidget(
+        _Viewer(
+            np.zeros((6, 8, 10), dtype=np.float32),
+            metadata={"axes": "ZYX"},
+        )
+    )
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._parameter_widgets["top"].slider.setValue(2)
+    assert widget._owned_crop_presentation_layers()
+
+    widget._disconnect_nodes("input", crop.id)
+
+    assert widget._owned_crop_presentation_layers() == []
+    assert widget._crop_draft_node_id is None
+
+
+def test_responsive_crop_real_viewer_tracks_noncanonical_display_plane(qtbot):
+    data = np.zeros((2, 8, 3, 10, 6), dtype=np.float32)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("t", "time"),
+            AxisMetadata("y", "space", confidence="shape-inferred"),
+            AxisMetadata("c", "channel"),
+            AxisMetadata("x", "space", confidence="shape-inferred"),
+            AxisMetadata("z", "space"),
+        ),
+    )
+    viewer = ViewerModel()
+    viewer.add_image(
+        data,
+        name="noncanonical TYCXZ",
+        metadata={"vipp_image_state": state.to_dict()},
+    )
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+
+    assert widget._parameter_widgets["top"].slider.maximum() == 7
+    assert widget._parameter_widgets["left"].slider.maximum() == 9
+    assert widget._parameter_widgets["z_start"].slider.maximum() == 5
+    widget._parameter_widgets["top"].slider.setValue(2)
+    widget._parameter_widgets["z_start"].slider.setValue(1)
+    roi_layer = next(
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "crop_roi"
+    )
+
+    assert roi_layer.ndim == 5
+    assert len(roi_layer.data) == 7
+    assert tuple(viewer.dims.displayed) == (3, 4)
+    initial_face = np.asarray(roi_layer.data[-1]).copy()
+    initial_step = tuple(int(value) for value in viewer.dims.current_step)
+    assert np.all(initial_face[:, 0] == initial_step[0])
+    assert np.all(initial_face[:, 1] == initial_step[1])
+    assert np.all(initial_face[:, 2] == initial_step[2])
+    assert roi_layer.metadata["geometry"] == "volumetric-box-and-current-slice"
+    assert roi_layer.visible is True
+    layer_identity = id(roi_layer)
+
+    viewer.dims.set_current_step(0, 1)
+    viewer.dims.set_current_step(2, 2)
+
+    assert id(roi_layer) == layer_identity
+    expected_step = list(initial_step)
+    expected_step[0] = 1
+    expected_step[2] = 2
+    assert tuple(int(value) for value in viewer.dims.current_step) == tuple(
+        expected_step
+    )
+    assert tuple(viewer.dims.displayed) == (3, 4)
+    current_face = np.asarray(roi_layer.data[-1])
+    assert np.all(current_face[:, 0] == 1)
+    assert np.all(current_face[:, 2] == 2)
+    assert not np.array_equal(current_face, initial_face)
+    assert roi_layer.metadata["current_slice_retained"] is True
+    assert roi_layer.visible is True
+    widget._crop_draft_timer.stop()
+
+
+def test_responsive_crop_real_viewer_tracks_plane_when_dims_are_unlinked(qtbot):
+    data = np.zeros((6, 8, 10), dtype=np.float32)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    viewer = ViewerModel()
+    viewer.add_image(
+        data,
+        name="explicit ZYX",
+        metadata={"vipp_image_state": state.to_dict()},
+    )
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._parameter_widgets["z_start"].slider.setValue(1)
+    roi_layer = next(
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "crop_roi"
+    )
+    layer_identity = id(roi_layer)
+    initial_face = np.asarray(roi_layer.data[-1]).copy()
+    initial_step = tuple(int(value) for value in viewer.dims.current_step)
+    assert tuple(viewer.dims.displayed) == (1, 2)
+    assert np.all(initial_face[:, 0] == initial_step[0])
+    assert roi_layer.metadata["geometry"] == "volumetric-box-and-current-slice"
+
+    widget.follow_dims_checkbox.setChecked(False)
+    viewer.dims.set_current_step(0, 3)
+
+    assert id(roi_layer) == layer_identity
+    expected_step = list(initial_step)
+    expected_step[0] = 3
+    assert tuple(int(value) for value in viewer.dims.current_step) == tuple(
+        expected_step
+    )
+    assert tuple(viewer.dims.displayed) == (1, 2)
+    current_face = np.asarray(roi_layer.data[-1])
+    assert np.all(current_face[:, 0] == 3)
+    assert not np.array_equal(current_face, initial_face)
+    assert roi_layer.metadata["current_slice_retained"] is True
+    assert roi_layer.visible is True
+    widget._crop_draft_timer.stop()
+
+
+def test_responsive_crop_reused_layers_follow_changed_calibration(qtbot):
+    data = np.zeros((6, 8, 10), dtype=np.float32)
+    viewer = ViewerModel()
+    viewer.add_image(data, name="ZYX source", metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    source_layer = widget._owned_crop_presentation_layers("crop_source")[0]
+    roi_layer = widget._owned_crop_presentation_layers("crop_roi")[0]
+    calibrated = replace(
+        widget.pipeline.input_state_for_node(crop.id),
+        axes=tuple(
+            replace(axis, scale=scale, translation=translation)
+            for axis, scale, translation in zip(
+                widget.pipeline.input_state_for_node(crop.id).axes,
+                (2.0, 3.0, 4.0),
+                (10.0, 20.0, 30.0),
+                strict=True,
+            )
+        ),
+    )
+    widget.pipeline.output_states["input"] = calibrated
+    widget.pipeline.node_output_states["input"] = [calibrated]
+
+    widget._ensure_crop_source_layer(crop.id)
+    widget._update_crop_roi_presentation(crop.id)
+
+    assert id(widget._owned_crop_presentation_layers("crop_source")[0]) == id(
+        source_layer
+    )
+    assert id(widget._owned_crop_presentation_layers("crop_roi")[0]) == id(roi_layer)
+    assert tuple(source_layer.scale) == (2.0, 3.0, 4.0)
+    assert tuple(source_layer.translate) == (10.0, 20.0, 30.0)
+    assert tuple(roi_layer.scale) == (2.0, 3.0, 4.0)
+    assert tuple(roi_layer.translate) == (10.0, 20.0, 30.0)
+
+
+def test_responsive_crop_shapes_layer_is_owned_without_claiming_same_name_user_layer(
+    qtbot,
+):
+    viewer = _Viewer(
+        np.zeros((6, 8, 10), dtype=np.float32),
+        metadata={"axes": "ZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    user_layer = viewer.add_shapes(
+        [np.asarray([[0, 0], [0, 1], [1, 1], [1, 0]], dtype=float)],
+        name=CROP_ROI_LAYER_NAME,
+        metadata={"owner": "user"},
+        shape_type="polygon",
+    )
+
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._parameter_widgets["top"].slider.setValue(2)
+    widget._parameter_widgets["z_start"].slider.setValue(2)
+    widget._parameter_widgets["z_end"].slider.setValue(1)
+
+    owned = [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "crop_roi"
+    ]
+    assert len(owned) == 1
+    roi_layer = owned[0]
+    assert roi_layer is not user_layer
+    assert roi_layer.name == user_layer.name == CROP_ROI_LAYER_NAME
+    assert roi_layer.layer_type == "shapes"
+    assert roi_layer.shape_type == "polygon"
+    assert len(roi_layer.data) == 7
+    assert all(np.asarray(face).shape == (4, 3) for face in roi_layer.data)
+    assert roi_layer.metadata["geometry"] == "volumetric-box-and-current-slice"
+    assert roi_layer.metadata["current_z_slice_retained"] is False
+    assert roi_layer.edge_color[-1] == "#ef4444"
+    assert roi_layer.editable is False
+    assert widget._is_vipp_generated_layer(roi_layer)
+    assert widget._available_layer_names().count(CROP_ROI_LAYER_NAME) == 1
+
+    viewer.dims.set_current_step(0, 2)
+
+    assert roi_layer.metadata["current_z_slice_retained"] is True
+    assert roi_layer.edge_color[-1] == "#f59e0b"
+
+    widget._discard_crop_presentation_layers()
+
+    assert user_layer in viewer.layers
+    assert user_layer.metadata == {"owner": "user"}
+    assert roi_layer not in viewer.layers
 
 
 @pytest.mark.parametrize(

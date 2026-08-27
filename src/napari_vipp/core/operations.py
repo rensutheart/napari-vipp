@@ -113,11 +113,18 @@ def crop_stack(
     right: int = 0,
     channel_axis: int | None = None,
     axis_names: Sequence[str] = (),
+    z_start: int = 0,
+    z_end: int = 0,
+    z_axis_explicit: bool | None = None,
 ) -> np.ndarray:
-    """Crop declared Y/X axes, or trailing scalar axes without metadata.
+    """Crop Y/X and, when explicitly declared, Z axes by edge margins.
 
     Arrays are scalar by default. In particular, a trailing dimension of
     length 3 or 4 is treated as X unless ``channel_axis`` is supplied.
+    Direct callers that provide a named ``z`` axis are treated as having made
+    an explicit declaration. Pipeline callers pass ``z_axis_explicit`` from
+    carried axis metadata so inferred QYX/ZYX layouts cannot silently acquire
+    volumetric meaning.
     """
     arr = np.asarray(data)
     channel_axis = _validated_filter_channel_axis(
@@ -126,20 +133,41 @@ def crop_stack(
         operation="Crop stack",
     )
     if arr.ndim < 2:
-        if any(value != 0 for value in (top, bottom, left, right)):
+        if any(
+            value != 0
+            for value in (top, bottom, left, right, z_start, z_end)
+        ):
             raise ValueError("Crop stack requires at least two spatial axes.")
         return arr.copy()
 
+    names = tuple(str(name).strip().casefold() for name in axis_names)
+    if names and len(names) != arr.ndim:
+        raise ValueError("Declared axis names must match the input array rank.")
     y_axis, x_axis = _xy_axes(
         arr,
         channel_axis=channel_axis,
-        axis_names=axis_names,
+        axis_names=names,
     )
     slices = [slice(None)] * arr.ndim
     top, bottom = _crop_pair(top, bottom, arr.shape[y_axis])
     left, right = _crop_pair(left, right, arr.shape[x_axis])
     slices[y_axis] = slice(top, arr.shape[y_axis] - bottom)
     slices[x_axis] = slice(left, arr.shape[x_axis] - right)
+    z_start, z_end = _crop_margin_values(z_start, z_end)
+    if z_start != 0 or z_end != 0:
+        if names.count("z") != 1 or z_axis_explicit is False:
+            raise ValueError(
+                "Z cropping requires exactly one explicitly declared Z axis. "
+                "If a generic leading axis is depth, record an exact mapping "
+                "such as QYX -> ZYX first."
+            )
+        z_axis = names.index("z")
+        if channel_axis == z_axis:
+            raise ValueError(
+                "The declared channel axis cannot also be the Z spatial axis."
+            )
+        z_start, z_end = _crop_pair(z_start, z_end, arr.shape[z_axis])
+        slices[z_axis] = slice(z_start, arr.shape[z_axis] - z_end)
     return np.ascontiguousarray(arr[tuple(slices)])
 
 
@@ -11397,6 +11425,18 @@ def _odd_size(value: int | float, minimum: int = 1, maximum: int | None = None) 
 
 
 def _crop_pair(first: int, second: int, axis_size: int) -> tuple[int, int]:
+    first, second = _crop_margin_values(first, second)
+    if axis_size <= 0:
+        raise ValueError("Crop stack cannot crop an empty spatial axis.")
+    if first + second >= axis_size:
+        raise ValueError(
+            f"Crop margins {first} and {second} remove every sample from an "
+            f"axis of length {axis_size}."
+        )
+    return first, second
+
+
+def _crop_margin_values(first: int, second: int) -> tuple[int, int]:
     values = (first, second)
     if any(
         isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral)
@@ -11406,13 +11446,6 @@ def _crop_pair(first: int, second: int, axis_size: int) -> tuple[int, int]:
     first, second = (int(value) for value in values)
     if first < 0 or second < 0:
         raise ValueError("Crop margins must be non-negative.")
-    if axis_size <= 0:
-        raise ValueError("Crop stack cannot crop an empty spatial axis.")
-    if first + second >= axis_size:
-        raise ValueError(
-            f"Crop margins {first} and {second} remove every sample from an "
-            f"axis of length {axis_size}."
-        )
     return first, second
 
 

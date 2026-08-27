@@ -69,6 +69,7 @@ LABEL_OPERATIONS = {
     "relabel_sequential",
 }
 KIND_PRESERVING_OPERATIONS = {
+    "crop_stack",
     "rescale_axes",
     "clear_border_objects",
     "remove_small_objects",
@@ -1372,17 +1373,42 @@ def _crop_shifted_axes(
     axes: tuple[AxisMetadata, ...],
     params: dict[str, Any],
 ) -> tuple[AxisMetadata, ...]:
-    axis_map = _xyz_axis_map_for_metadata(axes)
-    y_index = axis_map.get("y")
-    x_index = axis_map.get("x")
-    if y_index is None or x_index is None:
-        return axes
+    axis_names = tuple(
+        str(name).strip().casefold()
+        for name in params.get("axis_names", ())
+    )
+    if len(axis_names) == len(axes):
+        y_indices = tuple(index for index, name in enumerate(axis_names) if name == "y")
+        x_indices = tuple(index for index, name in enumerate(axis_names) if name == "x")
+        if len(y_indices) != 1 or len(x_indices) != 1:
+            return axes
+        y_index, x_index = y_indices[0], x_indices[0]
+    else:
+        axis_map = _xyz_axis_map_for_metadata(axes)
+        y_index = axis_map.get("y")
+        x_index = axis_map.get("x")
+        if y_index is None or x_index is None:
+            return axes
 
     top = _safe_float(params.get("top"), 0.0)
     left = _safe_float(params.get("left"), 0.0)
     shifted = list(axes)
     shifted[y_index] = _translated_axis(shifted[y_index], top)
     shifted[x_index] = _translated_axis(shifted[x_index], left)
+    named_z = tuple(
+        index
+        for index, axis in enumerate(axes)
+        if axis.name.strip().casefold() == "z"
+    )
+    if (
+        len(named_z) == 1
+        and axes[named_z[0]].type.strip().casefold() == "space"
+        and axes[named_z[0]].is_explicit
+    ):
+        shifted[named_z[0]] = _translated_axis(
+            shifted[named_z[0]],
+            _safe_float(params.get("z_start"), 0.0),
+        )
     return tuple(shifted)
 
 
@@ -2655,10 +2681,19 @@ def _operation_history(
     if operation_id == "skeleton_graph_overlay":
         return f"{operation_title}: {params.get('display_mode', 'RGB graph overlay')}"
     if operation_id == "crop_stack":
-        return (
-            f"{operation_title}: cropped top={int(params.get('top', 0))}, "
+        xy_detail = (
+            f"top={int(params.get('top', 0))}, "
             f"bottom={int(params.get('bottom', 0))}, "
-            f"left={int(params.get('left', 0))}, right={int(params.get('right', 0))}"
+            f"left={int(params.get('left', 0))}, "
+            f"right={int(params.get('right', 0))}"
+        )
+        z_start = int(params.get("z_start", 0))
+        z_end = int(params.get("z_end", 0))
+        if z_start == 0 and z_end == 0:
+            return f"{operation_title}: cropped {xy_detail}"
+        return (
+            f"{operation_title}: cropped Z start={z_start}, Z end={z_end}, "
+            f"{xy_detail}"
         )
     if operation_id in {"rolling_ball_background", "subtract_background"}:
         radius = _format_number(params.get("radius", 50.0))

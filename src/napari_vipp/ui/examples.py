@@ -29,6 +29,17 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "one-step undo/redo, and a qualified GPU dtype repair.",
     ),
     ExampleWorkflowSpec(
+        "responsive-crop",
+        "Axes & Regions",
+        "Responsive Volumetric Crop Acceptance",
+        "responsive-volume-crop-acceptance.json",
+        ("VIPP synthetic time-lapse multichannel",),
+        "Follow numbered canvas notes to review an explicit TCZYX volume crop, "
+        "immediate draft ROI feedback, one calculation and undo per completed "
+        "interaction, physical-origin updates, durable-boundary flushing, QYX "
+        "safety, and the truthful CPU assignment under Prefer GPU.",
+    ),
+    ExampleWorkflowSpec(
         "batch-provenance",
         "Batch & Reproducibility",
         "Deterministic Batch & Provenance",

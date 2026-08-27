@@ -282,6 +282,10 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     SourcePayload,
     _ambiguous_qyx_suffix_mapping,
+    _crop_runtime_axis_names,
+    _crop_runtime_xy_axis_indices,
+    _explicit_crop_channel_axis_index,
+    _explicit_crop_z_axis_index,
     grouped_palette_specs,
     operation_call_parameter_value,
     resolve_parameter_visibility,
@@ -768,6 +772,24 @@ RESCALE_PERCENTILE_PARAMETERS = {"in_low_percentile", "in_high_percentile"}
 RESCALE_CUTOFF_PARAMETERS = RESCALE_VALUE_PARAMETERS | RESCALE_PERCENTILE_PARAMETERS
 RESCALE_CUTOFF_MODE_PARAMETER = "cutoff_mode"
 CLIP_CUTOFF_PARAMETERS = {"minimum", "maximum"}
+CROP_MARGIN_PARAMETERS = (
+    "z_start",
+    "z_end",
+    "top",
+    "bottom",
+    "left",
+    "right",
+)
+CROP_MARGIN_PAIRS = {
+    "z_start": "z_end",
+    "z_end": "z_start",
+    "top": "bottom",
+    "bottom": "top",
+    "left": "right",
+    "right": "left",
+}
+CROP_ROI_LAYER_NAME = "VIPP Crop ROI"
+CROP_SOURCE_LAYER_NAME = "VIPP Crop Source"
 QT_SIGNED_INT_MINIMUM = -(2**31)
 QT_SIGNED_INT_MAXIMUM = 2**31 - 1
 # Qt's public macro is not exported consistently by every Python binding.
@@ -2345,6 +2367,16 @@ class VippWidget(QWidget):
         self._debounce_timer.setInterval(150)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.timeout.connect(self.run_pipeline)
+        self._crop_draft_node_id: str | None = None
+        self._crop_draft_session_id = ""
+        self._crop_draft_input_signature: tuple | None = None
+        self._crop_draft_values: dict[str, int] = {}
+        self._crop_draft_revision = 0
+        self._crop_draft_committing = False
+        self._crop_draft_timer = QTimer(self)
+        self._crop_draft_timer.setInterval(350)
+        self._crop_draft_timer.setSingleShot(True)
+        self._crop_draft_timer.timeout.connect(self._commit_crop_draft)
 
         self._build_layout()
         self._connect_signals()
@@ -2650,6 +2682,7 @@ class VippWidget(QWidget):
             event.ignore()
             return
         self._closing = True
+        self._discard_crop_draft(remove_layers=True)
         self._cancel_active_source_io(invalidate_generation=True)
         self._invalidate_source_preview(remove_layer=True)
         if self._colocalization_scatter_dialog is not None:
@@ -2664,6 +2697,7 @@ class VippWidget(QWidget):
 
     def _confirm_close_dirty_workflow_tabs(self) -> bool:
         """Resolve every unsaved tab before allowing terminal widget shutdown."""
+        self._commit_crop_draft(schedule_run=False)
         if self._discard_incomplete_startup_on_close:
             # A staged launcher may need to dispose a partially built editor
             # after startup fails.  No initial workflow has been handed to the
@@ -5255,6 +5289,7 @@ class VippWidget(QWidget):
         )
 
     def _benchmark_selected_node(self) -> None:
+        self._commit_crop_draft(schedule_run=False)
         ready, reason = self._can_benchmark_selected_node()
         if not ready:
             self._set_status(reason, severity=MessageSeverity.WARNING)
@@ -5454,6 +5489,7 @@ class VippWidget(QWidget):
         dialog.activateWindow()
 
     def _start_pipeline_optimizer_analysis(self) -> None:
+        self._commit_crop_draft(schedule_run=False)
         dialog = self._pipeline_optimizer_dialog
         if dialog is None or dialog.running:
             return
@@ -7103,6 +7139,7 @@ class VippWidget(QWidget):
         *,
         check_safety: bool = True,
     ) -> bool:
+        self._commit_crop_draft(schedule_run=False)
         if not 0 <= target_index < len(self._workflow_tabs):
             return False
         if target_index == self._workflow_tabs.current_index:
@@ -7118,6 +7155,7 @@ class VippWidget(QWidget):
         # remove them at the central activation seam so direct/internal tab
         # switches cannot mistake another tab's common input id for their own.
         self._invalidate_source_preview(remove_layer=True)
+        self._discard_crop_draft(remove_layers=True)
 
         current = self._workflow_tabs.current
         if current is not None:
@@ -7515,6 +7553,8 @@ class VippWidget(QWidget):
         active isolated-tuning session first. This keeps Cancel from restoring
         execution dictionaries and history stacks captured for an older graph.
         """
+        if not self._crop_draft_committing:
+            self._commit_crop_draft(schedule_run=False)
         if not preserve_isolated_tuning and self._isolated_tuning_node_id is not None:
             had_changes = self._apply_isolated_tuning(
                 run=False,
@@ -7538,6 +7578,7 @@ class VippWidget(QWidget):
             self.run_pipeline()
 
     def _restore_history_snapshot(self, snapshot: WorkflowHistorySnapshot) -> None:
+        self._discard_crop_draft(remove_layers=True)
         self._supersede_interaction_for_untraced_edit(
             "workflow_history",
             "restore",
@@ -9575,6 +9616,7 @@ class VippWidget(QWidget):
     def _inspect_node_code(self, node_id: str) -> None:
         if node_id not in self.pipeline.nodes:
             return
+        self._commit_crop_draft(schedule_run=False)
         dialog = QDialog(self)
         dialog.setWindowTitle(f"VIPP node code: {self._node_title(node_id)}")
         dialog.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -9657,6 +9699,29 @@ class VippWidget(QWidget):
             for key, value in node.params.items()
             if key in accepted and (not accepted or key != accepted[0])
         }
+        if node.operation_id == "crop_stack":
+            input_state = self.pipeline.input_state_for_node(node_id)
+            if isinstance(input_state, ImageState):
+                channel_axis = kwargs.get("channel_axis")
+                if channel_axis is None:
+                    channel_axis = _explicit_crop_channel_axis_index(input_state)
+                    if channel_axis is not None:
+                        kwargs["channel_axis"] = channel_axis
+                xy_axis_indices = _crop_runtime_xy_axis_indices(
+                    input_state,
+                    channel_axis=channel_axis,
+                )
+                kwargs["axis_names"] = _crop_runtime_axis_names(
+                    input_state,
+                    xy_axis_indices=xy_axis_indices,
+                )
+                kwargs["z_axis_explicit"] = (
+                    _explicit_crop_z_axis_index(
+                        input_state,
+                        channel_axis=channel_axis,
+                    )
+                    is not None
+                )
         kwargs_text = ", ".join(f"{key}={value!r}" for key, value in kwargs.items())
         call_args = first_arg
         if kwargs_text:
@@ -9701,6 +9766,7 @@ class VippWidget(QWidget):
         self._new_workflow()
 
     def _new_workflow(self) -> None:
+        self._commit_crop_draft(schedule_run=False)
         reason = self._workflow_tab_switch_block_reason()
         if reason:
             self.status_label.setText(
@@ -9726,6 +9792,7 @@ class VippWidget(QWidget):
         self.status_label.setText("New empty workflow created.")
 
     def _close_workflow_tab(self, bar_index: int) -> None:
+        self._commit_crop_draft(schedule_run=False)
         if bar_index < 0:
             self._reset_workflow_tab_bar_selection()
             return
@@ -9998,6 +10065,7 @@ class VippWidget(QWidget):
         return workflow
 
     def _save_workflow_dialog(self) -> bool:
+        self._commit_crop_draft(schedule_run=False)
         include_batch = self._include_batch_workspace_with_workflow()
         if include_batch is None:
             self.status_label.setText("Workflow save cancelled.")
@@ -10638,6 +10706,7 @@ class VippWidget(QWidget):
         return ""
 
     def _export_python_dialog(self) -> None:
+        self._commit_crop_draft(schedule_run=False)
         path, _filter = QFileDialog.getSaveFileName(
             self,
             "Export pipeline to Python",
@@ -10880,6 +10949,7 @@ class VippWidget(QWidget):
         values: object,
     ) -> None:
         """Execute a full batch while retaining its workspace and progress."""
+        self._commit_crop_draft(schedule_run=False)
         if dialog is not self._active_collection_batch_dialog:
             return
         self._engage_collection_batch_workspace(dialog)
@@ -12611,6 +12681,7 @@ class VippWidget(QWidget):
         compute_request: ComputeRequest | None = None,
     ) -> PreparedCollectionBatchRun:
         """Create and persist immutable inputs before any worker starts."""
+        self._commit_crop_draft(schedule_run=False)
         del save_workflow_snapshot
         if compute_request is None:
             compute_request = self._current_compute_request()
@@ -12682,6 +12753,7 @@ class VippWidget(QWidget):
         expected_items: tuple[BatchItemPlan, ...] | None = None,
     ) -> BatchRunResult:
         """Run a batch synchronously for the public API and focused tests."""
+        self._commit_crop_draft(schedule_run=False)
         session = self._workflow_tabs.current
         prepared = self._prepare_collection_batch_run(
             input_dir=input_dir,
@@ -12852,6 +12924,7 @@ class VippWidget(QWidget):
         path: str | Path,
         **values,
     ) -> tuple[Path, Path]:
+        self._commit_crop_draft(schedule_run=False)
         return self._collection_batch_controller.save_config(
             path,
             compute_request=self._compute_request_for_batch_dialog(
@@ -12908,6 +12981,7 @@ class VippWidget(QWidget):
         continue_on_error: bool = True,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
     ) -> BatchPreviewResult:
+        self._commit_crop_draft(schedule_run=False)
         dialog = self._active_collection_batch_dialog
         if dialog is not None:
             self._cancel_attached_batch_workspace_preview(dialog)
@@ -13011,6 +13085,22 @@ class VippWidget(QWidget):
         if not labels:
             self.status_label.setText(
                 "OME dataset export needs at least one label output."
+            )
+            return
+        if not self._prepare_crop_pixel_output_boundary(
+            {reference_id, *(label.source_node_id for label in labels)},
+            action="OME dataset export",
+        ):
+            return
+        # Re-resolve the payloads after the synchronous freshness boundary.
+        reference_id = self._default_analysis_reference_node()
+        labels = self._analysis_label_outputs()
+        if reference_id is None or not labels:
+            self._set_status(
+                "OME dataset export stopped because the updated workflow no "
+                "longer has the required image and label outputs.",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
             )
             return
         path, selected_filter = QFileDialog.getSaveFileName(
@@ -15693,6 +15783,8 @@ class VippWidget(QWidget):
         self._clear_node_inspector_selection()
 
     def _clear_node_inspector_selection(self) -> None:
+        self._commit_crop_draft(schedule_run=True)
+        self._discard_crop_draft(remove_layers=True)
         self._selected_node_id = ""
         self.selected_title.setText("No node selected")
         self._clear_parameter_form()
@@ -15736,6 +15828,9 @@ class VippWidget(QWidget):
     def _select_node(self, node_id: str) -> None:
         if node_id not in self.pipeline.nodes:
             return
+        if node_id != self._selected_node_id:
+            self._commit_crop_draft(schedule_run=True)
+            self._discard_crop_draft(remove_layers=True)
         self._selected_node_id = node_id
         # Recompute at a deliberate selection boundary. Subsequent inspector
         # repaints reuse the result while the resolved input identities and
@@ -15752,6 +15847,7 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._inspect_selected_node()
         self._apply_selected_viewer_surface(select_layer=True)
+        self._update_crop_roi_presentation(node_id)
         self._sync_view_dims_bar()
         self._update_metadata_panel()
         self._restore_selected_output_for_interactive_cache(node_id)
@@ -15812,6 +15908,7 @@ class VippWidget(QWidget):
         return all(port in connected_ports for port in range(required_inputs))
 
     def _calculate_selected_node(self) -> None:
+        self._commit_crop_draft(schedule_run=False)
         self._calculate_node(self._selected_node_id)
 
     def _calculate_node(self, node_id: str) -> None:
@@ -15823,6 +15920,7 @@ class VippWidget(QWidget):
         self.run_pipeline(manual_node_ids={node_id})
 
     def _calculate_all_nodes(self) -> None:
+        self._commit_crop_draft(schedule_run=False)
         had_isolation = self._isolated_tuning_node_id is not None
         if had_isolation:
             self._apply_isolated_tuning(run=False, announce=False)
@@ -16252,9 +16350,17 @@ class VippWidget(QWidget):
                 and spec.name == "preview_channel"
                 and self._single_used_split_channel_port(node.id) is not None
             )
+            crop_draft_value = (
+                self._crop_effective_values(node_id).get(spec.name)
+                if node.operation_id == "crop_stack"
+                and spec.name in CROP_MARGIN_PARAMETERS
+                else None
+            )
             presented_value = (
                 self._single_used_split_channel_port(node.id)
                 if locked_split_channel
+                else crop_draft_value
+                if crop_draft_value is not None
                 else node.params.get(spec.name)
             )
             if self._parameter_uses_numeric_entry_only(node_id, spec):
@@ -16285,9 +16391,26 @@ class VippWidget(QWidget):
                     )
                 else:
                     widget.slider.setMinimumWidth(72)
-            widget.valueChanged.connect(
-                lambda value, name=spec.name: self._on_param_changed(name, value)
+            is_crop_margin = bool(
+                node.operation_id == "crop_stack"
+                and spec.name in CROP_MARGIN_PARAMETERS
             )
+            if is_crop_margin:
+                widget.valueChanged.connect(
+                    lambda value, name=spec.name: self._on_crop_margin_draft_changed(
+                        name,
+                        value,
+                    )
+                )
+                if isinstance(widget, ParameterControl):
+                    widget.slider.sliderReleased.connect(self._commit_crop_draft)
+                    widget.value_box.editingFinished.connect(
+                        self._commit_crop_draft
+                    )
+            else:
+                widget.valueChanged.connect(
+                    lambda value, name=spec.name: self._on_param_changed(name, value)
+                )
             self.parameter_form.addRow(spec.label, widget)
             self._apply_parameter_tooltip(spec, widget)
             self._parameter_widgets[spec.name] = widget
@@ -16304,6 +16427,15 @@ class VippWidget(QWidget):
             self.parameter_form.addRow(note)
             self._parameter_widgets["fill_holes_scope_note"] = note
             self._update_fill_holes_scope_note()
+            rendered = True
+        if node.operation_id == "crop_stack":
+            note = QLabel()
+            note.setWordWrap(True)
+            note.setTextFormat(Qt.PlainText)
+            note.setStyleSheet("color: #fbbf24;")
+            self.parameter_form.addRow("Crop ROI", note)
+            self._parameter_widgets["crop_roi_summary"] = note
+            self._update_crop_roi_summary(node_id)
             rendered = True
         if stack_note:
             self._add_operation_note(stack_note)
@@ -18500,6 +18632,14 @@ class VippWidget(QWidget):
         """Keep analysis primary unless the selected source requests preview."""
 
         selected = self.pipeline.nodes.get(self._selected_node_id)
+        crop_active = bool(
+            selected is not None and selected.operation_id == "crop_stack"
+        )
+        crop_source = (
+            self._ensure_crop_source_layer(selected.id)
+            if crop_active and selected is not None
+            else None
+        )
         preview_requested = bool(
             selected is not None
             and selected.operation_id == "input"
@@ -18530,7 +18670,7 @@ class VippWidget(QWidget):
                 hidden_state = metadata.get(
                     _INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY
                 )
-                if show_preview:
+                if show_preview or crop_active:
                     if not (
                         isinstance(hidden_state, dict)
                         and hidden_state.get("profile_key") == profile_key
@@ -18550,13 +18690,17 @@ class VippWidget(QWidget):
             except Exception:
                 pass
 
-        target = selected_preview if show_preview else None
+        target = selected_preview if show_preview else crop_source
         if show_preview and selected_preview is not None:
             self._move_layer_to_top(selected_preview)
+        elif crop_source is not None:
+            self._move_layer_to_top(crop_source)
         elif inspect_layers:
             self._move_generated_layers_to_top(self._inspect_layer_name)
             target = inspect_layers[-1]
         self._keep_active_pin_on_top()
+        for layer in self._owned_crop_presentation_layers("crop_roi"):
+            self._move_layer_to_top(layer)
         if select_layer and target is not None:
             self._select_only_viewer_layer(target)
 
@@ -19298,6 +19442,17 @@ class VippWidget(QWidget):
             return False
         changed = False
         node = self.pipeline.nodes[self._selected_node_id]
+        if (
+            self._crop_draft_node_id == node.id
+            and self._crop_draft_input_signature
+            != self._crop_input_signature(node.id)
+        ):
+            self._discard_crop_draft(remove_layers=False)
+            self._set_status(
+                "Crop ROI draft was cancelled because its input geometry changed.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
         visibility_context = self._parameter_visibility_context_for_render(
             self._selected_node_id
         )
@@ -19407,6 +19562,14 @@ class VippWidget(QWidget):
                 context=visibility_context,
             )
             previous = node.params.get(spec.name)
+            if (
+                node.operation_id == "crop_stack"
+                and spec.name in CROP_MARGIN_PARAMETERS
+            ):
+                previous = self._crop_effective_values(node.id).get(
+                    spec.name,
+                    previous,
+                )
             if spec.kind == "choice" and previous not in spec.choices:
                 previous = spec.default
             bounds = self._parameter_bounds_for(self._selected_node_id, spec)
@@ -19445,6 +19608,9 @@ class VippWidget(QWidget):
             # never serialize a control's rounded/clamped representation here.
         if node.operation_id == "fill_holes":
             self._update_fill_holes_scope_note()
+        if node.operation_id == "crop_stack":
+            self._update_crop_roi_summary(node.id)
+            self._update_crop_roi_presentation(node.id)
         if node.operation_id == "gaussian_blur_3d":
             changed = (
                 self._sync_gaussian_blur_3d_xy_lock(
@@ -20295,7 +20461,11 @@ class VippWidget(QWidget):
             return self._slice_index_bounds(node_id, spec)
         if spec.name == "channel_axis":
             return self._channel_axis_bounds(node_id, spec)
-        if spec.name in {"top", "bottom", "left", "right"}:
+        if (
+            node is not None
+            and node.operation_id == "crop_stack"
+            and spec.name in CROP_MARGIN_PARAMETERS
+        ):
             return self._crop_bounds(node_id, spec)
         if spec.name in {"channel", "red_channel", "green_channel", "blue_channel"}:
             return self._channel_bounds(node_id, spec)
@@ -21568,8 +21738,18 @@ class VippWidget(QWidget):
     def _cache_resident_thumbnail_statistics_from_run_result(
         self,
         result: PipelineRunResult,
+        *,
+        node_ids: Iterable[str] | None = None,
     ) -> None:
+        accepted_node_ids = (
+            None if node_ids is None else {str(node_id) for node_id in node_ids}
+        )
         for observation in result.resident_thumbnail_statistics:
+            if (
+                accepted_node_ids is not None
+                and observation.node_id not in accepted_node_ids
+            ):
+                continue
             preview_data, preview_state, output_port = self._node_display_payload(
                 observation.node_id
             )
@@ -22989,15 +23169,758 @@ class VippWidget(QWidget):
         return ParameterBounds(0, max(arr.shape[axis] - 1, 0), 1, 0)
 
     def _crop_bounds(self, node_id: str, spec) -> ParameterBounds:
+        shape, state = self._crop_input_shape_and_state(node_id)
+        if len(shape) < 2:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        axis_index = self._crop_margin_axis_index(spec.name, shape, state)
+        if axis_index is None:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        values = self._crop_effective_values(node_id)
+        opposite = int(values.get(CROP_MARGIN_PAIRS[spec.name], 0))
+        maximum = int(shape[axis_index]) - 1 - opposite
+        return ParameterBounds(0, max(maximum, 0), 1, 0)
+
+    def _crop_input_shape_and_state(self, node_id: str):
+        """Read Crop input geometry without materializing lazy image data."""
+        state = self.pipeline.input_state_for_node(node_id)
+        if state is not None:
+            try:
+                shape = tuple(int(size) for size in state.shape)
+            except Exception:
+                shape = ()
+            if shape:
+                return shape, state
+        data = self.pipeline.input_data_for_node(node_id)
+        try:
+            shape = tuple(int(size) for size in getattr(data, "shape", ()))
+        except Exception:
+            shape = ()
+        return shape, state
+
+    def _crop_margin_axis_index(self, name: str, shape: tuple[int, ...], state):
+        axes = tuple(getattr(state, "axes", ()))
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        try:
+            authored_channel_axis = int(node.params.get("channel_axis", -1))
+        except (AttributeError, TypeError, ValueError):
+            authored_channel_axis = -1
+        channel_axis = (
+            authored_channel_axis
+            if 0 <= authored_channel_axis < len(shape)
+            else _explicit_crop_channel_axis_index(state)
+            if isinstance(state, ImageState)
+            else None
+        )
+        if name in {"z_start", "z_end"}:
+            if len(axes) != len(shape):
+                return None
+            named_z = tuple(
+                index
+                for index, axis in enumerate(axes)
+                if str(axis.name).strip().casefold() == "z"
+            )
+            if len(named_z) != 1:
+                return None
+            index = named_z[0]
+            axis = axes[index]
+            if (
+                str(axis.type).strip().casefold() != "space"
+                or not _axis_is_explicit(axis)
+                or channel_axis == index
+            ):
+                return None
+            return index
+
+        role = "y" if name in {"top", "bottom"} else "x"
+        if len(axes) == len(shape) and isinstance(state, ImageState):
+            resolved = _crop_runtime_xy_axis_indices(
+                state,
+                channel_axis=channel_axis,
+            )
+            if resolved is None:
+                return None
+            return resolved[0 if role == "y" else 1]
+        candidate_axes = tuple(
+            index for index in range(len(shape)) if index != channel_axis
+        )
+        if not candidate_axes:
+            return None
+        if role == "y" and len(candidate_axes) >= 2:
+            return candidate_axes[-2]
+        return candidate_axes[-1]
+
+    def _crop_current_session_id(self) -> str:
+        session = self._workflow_tabs.current
+        return "" if session is None else str(session.session_id)
+
+    def _crop_input_signature(self, node_id: str) -> tuple:
+        shape, state = self._crop_input_shape_and_state(node_id)
+        data = self.pipeline.input_data_for_node(node_id)
+        axes = tuple(
+            (
+                str(axis.name),
+                str(axis.type),
+                str(getattr(axis, "confidence", "")),
+                float(getattr(axis, "scale", 1.0)),
+                float(getattr(axis, "translation", 0.0)),
+                str(getattr(axis, "unit", "") or ""),
+            )
+            for axis in tuple(getattr(state, "axes", ()))
+        )
+        return (
+            shape,
+            str(getattr(data, "dtype", getattr(state, "dtype", ""))),
+            axes,
+        )
+
+    def _crop_effective_values(self, node_id: str) -> dict[str, int]:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "crop_stack":
+            return {}
+        values = {
+            name: int(node.params.get(name, 0)) for name in CROP_MARGIN_PARAMETERS
+        }
+        if (
+            self._crop_draft_node_id == node_id
+            and self._crop_draft_session_id == self._crop_current_session_id()
+            and self._crop_draft_input_signature
+            == self._crop_input_signature(node_id)
+        ):
+            values.update(self._crop_draft_values)
+        return values
+
+    def _on_crop_margin_draft_changed(self, name: str, value) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if (
+            node is None
+            or node.operation_id != "crop_stack"
+            or name not in CROP_MARGIN_PARAMETERS
+        ):
+            return
+        # A prior committed parameter edit may still have the generic pipeline
+        # debounce queued. Coalesce it into this newer crop interaction so it
+        # cannot flush a half-finished second drag into a separate undo/run.
+        self._debounce_timer.stop()
+        session_id = self._crop_current_session_id()
+        signature = self._crop_input_signature(node_id)
+        if self._crop_draft_node_id not in {None, node_id}:
+            self._commit_crop_draft(schedule_run=False)
+        if self._crop_draft_node_id is None:
+            self._finish_parameter_history_group(preserve_isolated_tuning=True)
+            self._crop_draft_node_id = node_id
+            self._crop_draft_session_id = session_id
+            self._crop_draft_input_signature = signature
+            self._crop_draft_values = {
+                parameter: int(node.params.get(parameter, 0))
+                for parameter in CROP_MARGIN_PARAMETERS
+            }
+        elif (
+            self._crop_draft_session_id != session_id
+            or self._crop_draft_input_signature != signature
+        ):
+            self._discard_crop_draft(remove_layers=False)
+            self._set_status(
+                "Crop ROI draft was cancelled because its input geometry changed.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            self._render_parameters(node_id)
+            return
+
+        resolved = max(int(value), 0)
+        shape, state = self._crop_input_shape_and_state(node_id)
+        axis_index = self._crop_margin_axis_index(name, shape, state)
+        if axis_index is not None:
+            opposite = int(
+                self._crop_draft_values.get(CROP_MARGIN_PAIRS[name], 0)
+            )
+            resolved = min(resolved, max(int(shape[axis_index]) - 1 - opposite, 0))
+        self._crop_draft_values[name] = resolved
+        self._crop_draft_revision += 1
+        self._refresh_crop_draft_bounds(node_id)
+        self._update_crop_roi_summary(node_id)
+        self._update_crop_roi_presentation(node_id)
+        self._crop_draft_timer.start()
+
+    def _refresh_crop_draft_bounds(self, node_id: str) -> None:
+        for spec in self.pipeline.node_parameter_specs(node_id):
+            if spec.name not in CROP_MARGIN_PARAMETERS:
+                continue
+            control = self._parameter_widgets.get(spec.name)
+            if not isinstance(control, ParameterControl):
+                continue
+            value = self._crop_effective_values(node_id).get(spec.name, 0)
+            control.set_bounds(
+                self._crop_bounds(node_id, spec),
+                value,
+                emit=False,
+            )
+
+    def _validated_crop_draft_values(
+        self,
+        node_id: str,
+        values: Mapping[str, int],
+    ) -> dict[str, int]:
+        shape, state = self._crop_input_shape_and_state(node_id)
+        normalized: dict[str, int] = {}
+        for name in CROP_MARGIN_PARAMETERS:
+            value = values.get(name, 0)
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+                raise ValueError(f"Crop margin {name!r} must be an integer.")
+            if int(value) < 0:
+                raise ValueError(f"Crop margin {name!r} cannot be negative.")
+            normalized[name] = int(value)
+        for first, second in (
+            ("top", "bottom"),
+            ("left", "right"),
+            ("z_start", "z_end"),
+        ):
+            if first.startswith("z") and not (
+                normalized[first] or normalized[second]
+            ):
+                continue
+            axis_index = self._crop_margin_axis_index(first, shape, state)
+            if axis_index is None:
+                raise ValueError(
+                    "Z cropping requires exactly one explicitly declared Z axis."
+                    if first.startswith("z")
+                    else "Crop input Y/X geometry is unresolved."
+                )
+            if normalized[first] + normalized[second] >= int(shape[axis_index]):
+                raise ValueError(
+                    f"Crop {first}/{second} margins must retain at least one sample."
+                )
+        return normalized
+
+    def _commit_crop_draft(self, *, schedule_run: bool = True) -> bool:
+        if self._crop_draft_committing or self._crop_draft_node_id is None:
+            return False
+        node_id = self._crop_draft_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "crop_stack":
+            self._discard_crop_draft(remove_layers=True)
+            return False
+        if (
+            self._crop_draft_session_id != self._crop_current_session_id()
+            or self._crop_draft_input_signature != self._crop_input_signature(node_id)
+        ):
+            self._discard_crop_draft(remove_layers=False)
+            self._set_status(
+                "Crop ROI draft was cancelled because its input geometry changed.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return False
+        try:
+            values = self._validated_crop_draft_values(
+                node_id,
+                self._crop_draft_values,
+            )
+        except ValueError as exc:
+            self._discard_crop_draft(remove_layers=False)
+            self._set_status(
+                f"Crop ROI was not applied: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            if node_id == self._selected_node_id:
+                self._render_parameters(node_id)
+            return False
+
+        changed = {
+            name: value
+            for name, value in values.items()
+            if node.params.get(name) != value
+        }
+        self._crop_draft_committing = True
+        try:
+            self._crop_draft_timer.stop()
+            self._history.finish_group()
+            before = self._current_history_snapshot()
+            self._crop_draft_node_id = None
+            self._crop_draft_session_id = ""
+            self._crop_draft_input_signature = None
+            self._crop_draft_values = {}
+            self._crop_draft_revision += 1
+            if not changed:
+                self._update_crop_roi_summary(node_id)
+                self._update_crop_roi_presentation(node_id)
+                return False
+            previous = dict(node.params)
+            try:
+                for name, value in changed.items():
+                    self.pipeline.set_param(node_id, name, value)
+            except Exception:
+                node.params.clear()
+                node.params.update(previous)
+                raise
+            self._mark_pipeline_dirty(node_id)
+            self._push_undo_if_changed(before)
+            if node_id == self._selected_node_id:
+                self._refresh_selected_parameter_controls()
+            if schedule_run:
+                self._debounce_timer.start()
+                self.status_label.setText(
+                    "Crop ROI applied; one updated calculation is queued."
+                )
+            self._sync_current_workflow_tab_state()
+            return True
+        finally:
+            self._crop_draft_committing = False
+
+    def _discard_crop_draft(self, *, remove_layers: bool) -> None:
+        self._crop_draft_timer.stop()
+        self._crop_draft_node_id = None
+        self._crop_draft_session_id = ""
+        self._crop_draft_input_signature = None
+        self._crop_draft_values = {}
+        self._crop_draft_revision += 1
+        if remove_layers:
+            self._discard_crop_presentation_layers()
+
+    def _update_crop_roi_summary(self, node_id: str) -> None:
+        note = self._parameter_widgets.get("crop_roi_summary")
+        node = self.pipeline.nodes.get(node_id)
+        if not isinstance(note, QLabel) or node is None:
+            return
+        shape, state = self._crop_input_shape_and_state(node_id)
+        if len(shape) < 2:
+            note.setText("Connect an image to preview the crop ROI.")
+            return
+        values = self._crop_effective_values(node_id)
+        retained = list(shape)
+        ranges: list[str] = []
+        for first, second, label in (
+            ("z_start", "z_end", "Z"),
+            ("top", "bottom", "Y"),
+            ("left", "right", "X"),
+        ):
+            axis_index = self._crop_margin_axis_index(first, shape, state)
+            if axis_index is None:
+                if label == "Z":
+                    ranges.append("Z unchanged (no explicit Z axis)")
+                continue
+            start = int(values.get(first, 0))
+            end = int(values.get(second, 0))
+            retained[axis_index] -= start + end
+            ranges.append(
+                f"{label} {start + 1}–{int(shape[axis_index]) - end} "
+                f"of {int(shape[axis_index])}"
+            )
+        axes = str(getattr(state, "axis_order", "")) or "shape"
+        is_draft = self._crop_draft_node_id == node_id
+        prefix = "Draft ROI (presentation only)" if is_draft else "Applied ROI"
+        suffix = (
+            " Release the slider or pause briefly to apply once."
+            if is_draft
+            else " Drag a margin to preview a new ROI."
+        )
+        note.setText(
+            f"{prefix}: {', '.join(ranges)}. Retained {axes} "
+            f"{' × '.join(str(size) for size in retained)}.{suffix}"
+        )
+
+    def _owned_crop_presentation_layers(self, kind: str | None = None) -> list:
+        layers = []
+        for layer in list(self.viewer.layers):
+            metadata = getattr(layer, "metadata", None)
+            if not isinstance(metadata, Mapping):
+                continue
+            layer_kind = str(metadata.get("napari_vipp_kind", ""))
+            if layer_kind not in {"crop_roi", "crop_source"}:
+                continue
+            if kind is None or layer_kind == kind:
+                layers.append(layer)
+        return layers
+
+    def _discard_crop_presentation_layers(self) -> None:
+        for layer in self._owned_crop_presentation_layers():
+            self._remove_layer(layer)
+
+    def _crop_presentation_metadata(self, node_id: str, kind: str) -> dict:
+        return {
+            "napari_vipp_kind": kind,
+            "presentation_only": True,
+            "session_id": self._crop_current_session_id(),
+            "node_id": node_id,
+            "input_signature": repr(self._crop_input_signature(node_id)),
+            "draft_revision": int(self._crop_draft_revision),
+        }
+
+    def _ensure_crop_source_layer(self, node_id: str):
         data = self.pipeline.input_data_for_node(node_id)
         if data is None:
-            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
-        height, width = _xy_shape(
-            np.asarray(data),
-            self.pipeline.input_state_for_node(node_id),
+            for layer in self._owned_crop_presentation_layers("crop_source"):
+                self._remove_layer(layer)
+            return None
+        metadata = self._crop_presentation_metadata(node_id, "crop_source")
+        state = self.pipeline.input_state_for_node(node_id)
+        if state is not None:
+            metadata["vipp_image_state"] = state.to_dict()
+        rank = len(tuple(getattr(data, "shape", ())))
+        axes = tuple(getattr(state, "axes", ()))
+        scale = (
+            tuple(float(axis.scale) for axis in axes)
+            if len(axes) == rank
+            else (1.0,) * rank
         )
-        maximum = height - 1 if spec.name in {"top", "bottom"} else width - 1
-        return ParameterBounds(0, max(maximum, 0), 1, 0)
+        translate = (
+            tuple(float(axis.translation) for axis in axes)
+            if len(axes) == rank
+            else (0.0,) * rank
+        )
+        owned = self._owned_crop_presentation_layers("crop_source")
+        layer = owned[0] if owned else None
+        for extra in owned[1:]:
+            self._remove_layer(extra)
+        if layer is None:
+            kwargs = {
+                "name": CROP_SOURCE_LAYER_NAME,
+                "metadata": metadata,
+                "blending": "translucent",
+                "colormap": "gray",
+            }
+            if rank:
+                kwargs["scale"] = scale
+                kwargs["translate"] = translate
+            try:
+                layer = self.viewer.add_image(data, **kwargs)
+            except Exception:
+                return None
+        else:
+            try:
+                layer.data = data
+                layer.metadata.update(metadata)
+                if rank:
+                    layer.scale = scale
+                    layer.translate = translate
+                layer.visible = True
+            except Exception:
+                return None
+        self._make_generated_layer_noneditable(layer)
+        return layer
+
+    def _crop_roi_axis_coordinates(self, shape: tuple[int, ...], state) -> list[float]:
+        """Return source-local viewer coordinates without reading image pixels."""
+        coordinates = [0.0] * len(shape)
+        # The presentation overlay belongs to napari's canvas.  It must follow
+        # the plane napari is actually displaying even when users intentionally
+        # unlink the independent VIPP thumbnail/slice navigation controls.
+        current_step = self._viewer_current_step()
+        if current_step is None:
+            return coordinates
+        current_nsteps = self._viewer_current_nsteps()
+        for axis_index, axis_size in enumerate(shape):
+            step_axis = self._state_axis_to_step_axis(state, axis_index, current_step)
+            if step_axis is None or not 0 <= step_axis < len(current_step):
+                continue
+            viewer_size = (
+                int(current_nsteps[step_axis])
+                if current_nsteps is not None and step_axis < len(current_nsteps)
+                else int(axis_size)
+            )
+            coordinates[axis_index] = float(
+                _local_dim_value_from_viewer(
+                    int(current_step[step_axis]),
+                    axis_size=int(axis_size),
+                    viewer_axis_size=viewer_size,
+                )
+            )
+        return coordinates
+
+    @staticmethod
+    def _crop_roi_face(
+        base: list[float],
+        first_axis: int,
+        first_bounds: tuple[float, float],
+        second_axis: int,
+        second_bounds: tuple[float, float],
+        *,
+        fixed_axis: int | None = None,
+        fixed_value: float = 0.0,
+    ) -> np.ndarray:
+        """Build one planar four-vertex face in the source's complete rank."""
+        vertices = []
+        for first, second in (
+            (first_bounds[0], second_bounds[0]),
+            (first_bounds[0], second_bounds[1]),
+            (first_bounds[1], second_bounds[1]),
+            (first_bounds[1], second_bounds[0]),
+        ):
+            vertex = list(base)
+            vertex[first_axis] = float(first)
+            vertex[second_axis] = float(second)
+            if fixed_axis is not None:
+                vertex[fixed_axis] = float(fixed_value)
+            vertices.append(vertex)
+        return np.asarray(vertices, dtype=np.float64)
+
+    def _crop_roi_display_axis_indices(
+        self,
+        shape: tuple[int, ...],
+        state,
+        *,
+        fallback: tuple[int, int],
+    ) -> tuple[int, int]:
+        """Map napari's current 2D world plane back to source-state axes."""
+        dims = getattr(self.viewer, "dims", None)
+        displayed = tuple(int(value) for value in getattr(dims, "displayed", ()))
+        if len(displayed) != 2:
+            order = tuple(int(value) for value in getattr(dims, "order", ()))
+            ndisplay = int(getattr(dims, "ndisplay", 2) or 2)
+            if ndisplay == 2 and len(order) >= 2:
+                displayed = order[-2:]
+        current_step = self._viewer_current_step()
+        if len(displayed) != 2 or current_step is None:
+            return fallback
+        state_by_step_axis = {
+            step_axis: axis_index
+            for axis_index in range(len(shape))
+            if (
+                step_axis := self._state_axis_to_step_axis(
+                    state,
+                    axis_index,
+                    current_step,
+                )
+            )
+            is not None
+        }
+        mapped = tuple(state_by_step_axis.get(axis) for axis in displayed)
+        if len(mapped) != 2 or any(axis is None for axis in mapped):
+            return fallback
+        first, second = (int(axis) for axis in mapped)
+        if first == second:
+            return fallback
+        return first, second
+
+    def _crop_roi_geometry(
+        self,
+        node_id: str,
+        shape: tuple[int, ...],
+        state,
+        values: Mapping[str, int],
+    ) -> tuple[list[np.ndarray], list[str], list[str], bool]:
+        """Create constant-size slice and volume outlines for Crop presentation."""
+        y_axis = self._crop_margin_axis_index("top", shape, state)
+        x_axis = self._crop_margin_axis_index("left", shape, state)
+        if y_axis is None or x_axis is None:
+            return [], [], [], False
+        top = int(values.get("top", 0))
+        bottom = int(values.get("bottom", 0))
+        left = int(values.get("left", 0))
+        right = int(values.get("right", 0))
+        # Image samples live at integer centres; use half-pixel edges so the
+        # box encloses the complete retained samples and a legal one-sample
+        # crop remains a visible one-pixel-wide region rather than collapsing.
+        y_bounds = (
+            float(top) - 0.5,
+            float(int(shape[y_axis]) - bottom) - 0.5,
+        )
+        x_bounds = (
+            float(left) - 0.5,
+            float(int(shape[x_axis]) - right) - 0.5,
+        )
+        axis_bounds = {
+            index: (-0.5, float(int(size)) - 0.5)
+            for index, size in enumerate(shape)
+        }
+        axis_bounds[y_axis] = y_bounds
+        axis_bounds[x_axis] = x_bounds
+        z_axis = self._crop_margin_axis_index("z_start", shape, state)
+        z_bounds = None
+        if z_axis is not None:
+            z_start = int(values.get("z_start", 0))
+            z_end = int(values.get("z_end", 0))
+            z_bounds = (
+                float(z_start) - 0.5,
+                float(int(shape[z_axis]) - z_end) - 0.5,
+            )
+            axis_bounds[z_axis] = z_bounds
+        base = self._crop_roi_axis_coordinates(shape, state)
+        display_axes = self._crop_roi_display_axis_indices(
+            shape,
+            state,
+            fallback=(y_axis, x_axis),
+        )
+        current_face = self._crop_roi_face(
+            base,
+            display_axes[0],
+            axis_bounds[display_axes[0]],
+            display_axes[1],
+            axis_bounds[display_axes[1]],
+        )
+        cropped_axes = {y_axis, x_axis}
+        if z_axis is not None:
+            cropped_axes.add(z_axis)
+        retained = all(
+            axis in display_axes
+            or axis_bounds[axis][0] <= float(base[axis]) <= axis_bounds[axis][1]
+            for axis in cropped_axes
+        )
+        current_edge = "#f59e0b" if retained else "#ef4444"
+        current_face_color = "#f59e0b30" if retained else "#ef444430"
+        if z_axis is None or z_bounds is None:
+            return [current_face], [current_edge], [current_face_color], retained
+
+        faces = [
+            self._crop_roi_face(
+                base,
+                y_axis,
+                y_bounds,
+                x_axis,
+                x_bounds,
+                fixed_axis=z_axis,
+                fixed_value=z_bounds[0],
+            ),
+            self._crop_roi_face(
+                base,
+                y_axis,
+                y_bounds,
+                x_axis,
+                x_bounds,
+                fixed_axis=z_axis,
+                fixed_value=z_bounds[1],
+            ),
+            self._crop_roi_face(
+                base,
+                z_axis,
+                z_bounds,
+                x_axis,
+                x_bounds,
+                fixed_axis=y_axis,
+                fixed_value=y_bounds[0],
+            ),
+            self._crop_roi_face(
+                base,
+                z_axis,
+                z_bounds,
+                x_axis,
+                x_bounds,
+                fixed_axis=y_axis,
+                fixed_value=y_bounds[1],
+            ),
+            self._crop_roi_face(
+                base,
+                z_axis,
+                z_bounds,
+                y_axis,
+                y_bounds,
+                fixed_axis=x_axis,
+                fixed_value=x_bounds[0],
+            ),
+            self._crop_roi_face(
+                base,
+                z_axis,
+                z_bounds,
+                y_axis,
+                y_bounds,
+                fixed_axis=x_axis,
+                fixed_value=x_bounds[1],
+            ),
+        ]
+        faces.append(current_face)
+        return (
+            faces,
+            ["#f59e0b"] * 6 + [current_edge],
+            ["#f59e0b10"] * 6 + [current_face_color],
+            retained,
+        )
+
+    def _update_crop_roi_presentation(self, node_id: str) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        if (
+            node is None
+            or node.operation_id != "crop_stack"
+            or node_id != self._selected_node_id
+        ):
+            return
+        shape, state = self._crop_input_shape_and_state(node_id)
+        if len(shape) < 2:
+            self._discard_crop_presentation_layers()
+            return
+        values = self._crop_effective_values(node_id)
+        faces, edge_colors, face_colors, current_slice_retained = (
+            self._crop_roi_geometry(
+                node_id,
+                shape,
+                state,
+                values,
+            )
+        )
+        if not faces:
+            for owned_layer in self._owned_crop_presentation_layers("crop_roi"):
+                self._remove_layer(owned_layer)
+            return
+        metadata = self._crop_presentation_metadata(node_id, "crop_roi")
+        metadata.update(
+            {
+                "z_start": int(values.get("z_start", 0)),
+                "z_end": int(values.get("z_end", 0)),
+                "current_slice_retained": bool(current_slice_retained),
+                "current_z_slice_retained": bool(current_slice_retained),
+                "geometry": (
+                    "volumetric-box-and-current-slice"
+                    if len(faces) > 1
+                    else "current-slice"
+                ),
+            }
+        )
+        axes = tuple(getattr(state, "axes", ()))
+        rank = len(shape)
+        scale = (
+            tuple(float(axis.scale) for axis in axes)
+            if len(axes) == rank
+            else (1.0,) * rank
+        )
+        translate = (
+            tuple(float(axis.translation) for axis in axes)
+            if len(axes) == rank
+            else (0.0,) * rank
+        )
+        owned = self._owned_crop_presentation_layers("crop_roi")
+        layer = owned[0] if owned else None
+        for extra in owned[1:]:
+            self._remove_layer(extra)
+        if layer is not None:
+            layer_ndim = getattr(layer, "ndim", None)
+            if layer_ndim is not None and int(layer_ndim) != int(faces[0].shape[1]):
+                self._remove_layer(layer)
+                layer = None
+        prior_active = self._active_viewer_layer()
+        if layer is None and hasattr(self.viewer, "add_shapes"):
+            kwargs = {
+                "name": CROP_ROI_LAYER_NAME,
+                "metadata": metadata,
+                "shape_type": "polygon",
+                "edge_color": edge_colors,
+                "face_color": face_colors,
+                "edge_width": 2,
+                "opacity": 0.9,
+            }
+            kwargs["scale"] = scale
+            kwargs["translate"] = translate
+            try:
+                layer = self.viewer.add_shapes(faces, **kwargs)
+            except Exception:
+                layer = None
+        elif layer is not None:
+            try:
+                layer.data = faces
+                layer.edge_color = edge_colors
+                layer.face_color = face_colors
+                layer.metadata.update(metadata)
+                layer.scale = scale
+                layer.translate = translate
+                layer.visible = True
+            except Exception:
+                self._remove_layer(layer)
+                layer = None
+        if layer is not None:
+            self._make_generated_layer_noneditable(layer)
+            self._move_layer_to_top(layer)
+        if prior_active is not None and prior_active in self.viewer.layers:
+            self._select_only_viewer_layer(prior_active)
 
     def _channel_bounds(self, node_id: str, spec) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
@@ -23217,6 +24140,8 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(self._selected_node_id)
         if node is None:
             return
+        if node.operation_id == "crop_stack" and name not in CROP_MARGIN_PARAMETERS:
+            self._commit_crop_draft(schedule_run=False)
         if (
             (node.operation_id == "clip_intensity" and name in CLIP_CUTOFF_PARAMETERS)
             or (
@@ -23669,6 +24594,7 @@ class VippWidget(QWidget):
     ) -> None:
         if self._closing:
             return
+        self._commit_crop_draft(schedule_run=False)
         self._record_interaction_phase(
             self._interaction_current_generation(),
             InteractionLatencyPhase.DEBOUNCE_FINISHED,
@@ -24577,6 +25503,7 @@ class VippWidget(QWidget):
         execute_synchronously: bool = False,
         workflow_parameter_overrides: tuple[BatchParameterOverride, ...] = (),
     ) -> None:
+        self._commit_crop_draft(schedule_run=False)
         manual_node_ids = set(manual_node_ids or set())
         processing_node_id = self._background_processing_node_id(
             dirty_node_ids,
@@ -25472,6 +26399,12 @@ class VippWidget(QWidget):
                 QTimer.singleShot(0, self.run_pipeline)
                 return
 
+        excluded_pending_nodes = (
+            self.pipeline.descendants_inclusive(pending_dirty)
+            if can_apply_before_pending
+            else set()
+        )
+        applied_result_nodes = set(result.pipeline.nodes) - excluded_pending_nodes
         self._apply_pipeline_run_result(
             result.pipeline,
             update_params=(
@@ -25479,10 +26412,30 @@ class VippWidget(QWidget):
                 and not preserve_workflow_params
                 and not self._interactive_collection_source_paths
             ),
+            exclude_node_ids=excluded_pending_nodes,
         )
-        self._cache_resident_thumbnail_statistics_from_run_result(result)
+        self._cache_resident_thumbnail_statistics_from_run_result(
+            result,
+            node_ids=applied_result_nodes,
+        )
         if result.execution_report is not None:
-            self._accept_execution_report(result.execution_report)
+            accepted_report = result.execution_report
+            if excluded_pending_nodes:
+                accepted_report = replace(
+                    accepted_report,
+                    plan=None,
+                    actual_decisions=tuple(
+                        decision
+                        for decision in accepted_report.actual_decisions
+                        if decision.node_id in applied_result_nodes
+                    ),
+                    fallback_records=tuple(
+                        record
+                        for record in accepted_report.fallback_records
+                        if set(record.node_ids) <= applied_result_nodes
+                    ),
+                )
+            self._accept_execution_report(accepted_report)
         else:
             self._record_synchronous_cpu_decisions(
                 runnable_node_ids,
@@ -25546,15 +26499,21 @@ class VippWidget(QWidget):
         result_pipeline: PrototypePipeline,
         *,
         update_params: bool = True,
+        exclude_node_ids: Iterable[str] = (),
     ) -> None:
+        excluded = {str(node_id) for node_id in exclude_node_ids}
         for node_id, node in self.pipeline.nodes.items():
             result_node = result_pipeline.nodes.get(node_id)
-            if result_node is None or result_node.operation_id != node.operation_id:
+            if (
+                node_id in excluded
+                or result_node is None
+                or result_node.operation_id != node.operation_id
+            ):
                 continue
             if update_params:
                 node.params = dict(result_node.params)
         self._discard_pending_thumbnail_contrast_limit_requests()
-        result_node_ids = set(result_pipeline.nodes)
+        result_node_ids = set(result_pipeline.nodes) - excluded
         live_node_ids = tuple(self.pipeline.nodes)
         live_node_id_set = set(live_node_ids)
         self.pipeline.outputs = {
@@ -25608,8 +26567,15 @@ class VippWidget(QWidget):
         }
         self.pipeline.node_cache_lineage = {
             node_id: provenance
-            for node_id, provenance in result_pipeline.node_cache_lineage.items()
-            if node_id in live_node_id_set
+            for node_id in live_node_ids
+            if (
+                provenance := (
+                    result_pipeline.node_cache_lineage.get(node_id)
+                    if node_id in result_node_ids
+                    else self.pipeline.node_cache_lineage.get(node_id)
+                )
+            )
+            is not None
         }
         self.pipeline.node_execution_states = {
             node_id: (
@@ -26063,6 +27029,8 @@ class VippWidget(QWidget):
     def _on_dims_changed(self, _event=None) -> None:
         if self._closing:
             return
+        if self._selected_node_id in self.pipeline.nodes:
+            self._update_crop_roi_presentation(self._selected_node_id)
         if not self._dims_linked():
             return
         self._capture_vipp_dims_from_viewer()
@@ -28688,6 +29656,11 @@ class VippWidget(QWidget):
 
     def _save_selected_output_dialog(self) -> None:
         node_id = self._selected_node_id
+        if not self._prepare_crop_pixel_output_boundary(
+            {node_id},
+            action="Save output",
+        ):
+            return
         selected_data, _selected_state, _output_port = self._node_display_payload(
             node_id
         )
@@ -28774,6 +29747,11 @@ class VippWidget(QWidget):
         *,
         format: str = "auto",
     ) -> Path | None:
+        if not self._prepare_crop_pixel_output_boundary(
+            {node_id},
+            action="Save output",
+        ):
+            return None
         data, state, _output_port = self._node_display_payload(node_id)
         if data is None:
             self.status_label.setText("That node has no output to save yet.")
@@ -28806,6 +29784,87 @@ class VippWidget(QWidget):
             severity=MessageSeverity.SUCCESS,
         )
         return output_path
+
+    def _prepare_crop_pixel_output_boundary(
+        self,
+        target_node_ids: Iterable[str],
+        *,
+        action: str,
+    ) -> bool:
+        """Publish a fresh Crop-dependent result or fail closed before writing.
+
+        Crop controls deliberately edit a lightweight presentation draft before
+        committing one atomic scientific change.  A durable output boundary may
+        therefore arrive while that draft is open, while its debounced run is
+        pending, or while an older background run still owns the worker.  Never
+        let any of those states serialize the previous crop result.
+        """
+
+        targets = {
+            str(node_id)
+            for node_id in target_node_ids
+            if str(node_id) in self.pipeline.nodes
+        }
+        if not targets:
+            return True
+        relevant_nodes = self.pipeline.ancestors_inclusive(targets)
+        crop_nodes = {
+            node_id
+            for node_id in relevant_nodes
+            if self.pipeline.nodes[node_id].operation_id == "crop_stack"
+        }
+        if not crop_nodes:
+            return True
+
+        committed = self._commit_crop_draft(schedule_run=False)
+        pending_crop_nodes = crop_nodes & self._pending_dirty_node_ids
+        affected_targets = targets & self.pipeline.descendants_inclusive(crop_nodes)
+
+        inflight_dirty = self._inflight_dirty_node_ids
+        inflight_affects_target = bool(
+            self._active_pipeline_run_id is not None
+            and affected_targets
+            and (
+                self._inflight_full_graph
+                or inflight_dirty is None
+                or bool(
+                    affected_targets
+                    & self.pipeline.descendants_inclusive(inflight_dirty)
+                )
+            )
+        )
+        needs_refresh = committed or bool(pending_crop_nodes)
+        if not needs_refresh and not inflight_affects_target:
+            return True
+
+        self._debounce_timer.stop()
+        if needs_refresh:
+            # With an active run this requests cancellation and queues the exact
+            # latest graph.  run_pipeline intentionally returns before resource
+            # cleanup in that case, so the write remains blocked below.
+            self.run_pipeline(force_sync=True)
+
+        still_pending = bool(crop_nodes & self._pending_dirty_node_ids)
+        still_busy = bool(
+            self._active_pipeline_run_id is not None
+            or self._active_source_load_id is not None
+            or self._pipeline_run_pending
+            or self._source_load_pending
+        )
+        not_ready = {
+            node_id
+            for node_id in affected_targets
+            if self.pipeline.node_execution_states.get(node_id) != EXECUTION_READY
+        }
+        if still_pending or still_busy or not_ready:
+            self._set_status(
+                f"{action} paused until the updated Crop calculation finishes; "
+                "no file was written. Try again when Processing is complete.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return False
+        return True
 
     def inspect_node(self, node_id: str) -> None:
         data, state, output_port = self._node_display_payload(node_id)
@@ -30630,6 +31689,8 @@ class VippWidget(QWidget):
     def _is_vipp_generated_layer(self, layer) -> bool:
         try:
             return str(layer.metadata.get("napari_vipp_kind", "")) in {
+                "crop_roi",
+                "crop_source",
                 "inspect",
                 "pinned",
                 "source_preview",

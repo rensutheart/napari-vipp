@@ -1600,6 +1600,80 @@ def test_crop_stack_preserves_roi_type_when_workflow_is_restored(
     assert GraphConnection(crop.id, metrics.id, target_port=2) in restored.connections
 
 
+def test_legacy_crop_workflow_restores_zero_z_margins_and_identical_pixels():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    pipeline.set_param(crop.id, "top", 1)
+    pipeline.set_param(crop.id, "bottom", 2)
+    pipeline.set_param(crop.id, "left", 2)
+    pipeline.set_param(crop.id, "right", 1)
+    legacy = serialize_workflow(pipeline)
+    serialized_crop = next(
+        node for node in legacy["nodes"] if node["operation_id"] == "crop_stack"
+    )
+    serialized_crop["params"].pop("z_start")
+    serialized_crop["params"].pop("z_end")
+
+    document = deserialize_workflow(legacy)
+    restored_crop = next(
+        node for node in document["nodes"] if node.operation_id == "crop_stack"
+    )
+    assert restored_crop.params["z_start"] == 0
+    assert restored_crop.params["z_end"] == 0
+
+    restored = PrototypePipeline()
+    restored.restore_graph(
+        document["nodes"],
+        document["connections"],
+        document["output_tunnels"],
+    )
+    image = np.arange(4 * 8 * 9, dtype=np.uint16).reshape(4, 8, 9)
+    output = restored.run(image, input_metadata={"axes": "QYX"})[crop.id]
+
+    np.testing.assert_array_equal(output, image[:, 1:-2, 2:-1])
+    assert output.shape == (4, 5, 6)
+
+
+def test_crop_workflow_file_roundtrip_preserves_all_volumetric_margins(tmp_path):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    expected_params = {
+        "z_start": 1,
+        "z_end": 2,
+        "top": 2,
+        "bottom": 3,
+        "left": 4,
+        "right": 2,
+    }
+    for name, value in expected_params.items():
+        pipeline.set_param(crop.id, name, value)
+
+    path = save_workflow(tmp_path / "volumetric-crop.json", pipeline)
+    document = load_workflow(path)
+    restored_crop = next(
+        node for node in document["nodes"] if node.operation_id == "crop_stack"
+    )
+
+    assert {
+        name: restored_crop.params[name] for name in expected_params
+    } == expected_params
+
+    restored = PrototypePipeline()
+    restored.restore_graph(
+        document["nodes"],
+        document["connections"],
+        document["output_tunnels"],
+    )
+    image = np.arange(7 * 12 * 15, dtype=np.uint16).reshape(7, 12, 15)
+    output = restored.run(image, input_metadata={"axes": "ZYX"})[crop.id]
+
+    np.testing.assert_array_equal(output, image[1:-2, 2:-3, 4:-2])
+
+
 def test_restore_graph_rejects_incompatible_typed_input_connection():
     pipeline = PrototypePipeline()
     measurements = pipeline.add_node("measure_objects_intensity")

@@ -756,32 +756,34 @@ Those items require later evidence or remain in [product ideas](product-ideas.md
 
 ### Committed Follow-Ups After `0.14.0a2`
 
-#### Responsive Volume Crop (issue required before implementation)
+#### Responsive Volume Crop — Implemented, Pending Release
 
-Goal: make Crop Stack a discoverable volume ROI tool without recalculating on
-every drag event. This optional work did not ship in `0.13.0a8`, `0.14.0a1`, or
-`0.14.0a2`, and must not delay the committed follow-up work. Create a separate
-feature issue before implementation; it remains independent of `#33`.
+Implementation for [issue #50](https://github.com/rensutheart/napari-vipp/issues/50)
+is complete in the current development tree and awaits release qualification.
+It did not ship in `0.13.0a8`, `0.14.0a1`, or `0.14.0a2` and remains independent
+of `#33`. Crop Stack is now a discoverable volume ROI tool without recalculating
+on every drag event:
 
-- preserve the existing operation and old workflows while adding persisted
-  nonnegative `z_start` and `z_end` crop margins, measured as samples removed
-  from the leading and trailing ends of an explicitly named Z axis;
-- default both new parameters to zero when loading an old workflow;
-- show the controls only when metadata contains explicit Z or the user has
-  authored an exact axis mapping; inferred QYX must never treat Q as Z;
-- preserve T/C axes, leave at least one sample on every cropped axis, and update
-  physical origins, history, and output-size summaries;
-- while dragging, draw an immediate translucent ROI outline/mask over the
-  cached display rather than constructing a full zero-filled image;
-- keep draft control values during interaction, then commit one undoable
-  scientific edit on release or after roughly 300-500 ms idle; and
-- flush a pending draft before Calculate, Calculate all, any Run or execution
+- The existing operation and old workflows are preserved while persisted
+  nonnegative `z_start` and `z_end` crop margins remove samples from the leading
+  and trailing ends of an explicitly named Z axis.
+- Old workflows default both new parameters to zero.
+- The controls appear only when metadata contains explicit Z or the user has
+  authored an exact axis mapping; inferred QYX is never treated as Z.
+- T/C axes remain intact, every cropped axis retains at least one sample, and
+  physical origins, history, and output-size summaries update together.
+- Dragging draws an immediate constant-size full-rank crop box and current-slice
+  outline over the cached display rather than constructing a zero-filled image.
+- Draft values remain presentation-only during interaction, then commit as one
+  undoable scientific edit on release or after roughly 300-500 ms idle.
+- A pending draft flushes before Calculate, Calculate all, any Run or execution
   snapshot, save, export, batch start, tab change, or close.
 
-Tests cover ZYX, TCZYX, noncanonical explicit layouts, rejection of inferred QYX,
-images/masks/labels, physical origins, save/reopen/export/batch, rapid drag
-events, one committed calculation, and stale/cancelled completion. This remains
-a committed post-a1 follow-up, not unfinished 0.13 work.
+Automated coverage includes ZYX, TCZYX, noncanonical explicit layouts, rejection
+of inferred QYX, images/masks/labels, physical origins, old-workflow migration,
+save/reopen/export/batch parity, rapid drag events, one committed calculation,
+undo/redo, durable-boundary flushing, and stale/cancelled completion. The
+bundled `responsive-crop` workflow supplies the numbered manual acceptance path.
 
 #### Safe Node Bypass And Batch Execution Profiles
 

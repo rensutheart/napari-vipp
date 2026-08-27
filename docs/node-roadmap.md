@@ -2,7 +2,7 @@
 
 Status: current node-family planning document
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-08-27
 
 This document tracks the node catalogue at the level of workflow capability:
 what VIPP can already do, which node families are still worth building, and
@@ -92,7 +92,7 @@ truth is `NODE_LIBRARY` in `src/napari_vipp/core/pipeline.py`.
 | Family | Implemented enough to build on | Important remaining work |
 | --- | --- | --- |
 | Sources, outputs, and persistence | `Image Source`, SourceItem v1, `Save Image`, `Batch Output`, workflow JSON, Python export, local collection batch execution, typed numeric per-sample overrides, versioned batch configs/manifests, OME-TIFF/ImageJ TIFF/TIFF/OME-Zarr/NumPy/common raster I/O, qualified frozen-corpus microscope routes, and local OME-Zarr lower-level presentation preview. | Remote reads, HCS plate/well/field and semantic-axis iteration, IMS/CZI pyramid claims, label colours/properties beyond preserved label semantics, arbitrary override expressions/topology, and operation-level lazy execution. |
-| Axes, calibration, and channels | Crop, axis slice, split/reorder axes, `Set Pixel Size / Units`, `Rescale Axes`, channel extraction/splitting/combining, channel colour assignment, RGB compositing. | Resample to target physical spacing, pad/crop to target shape, flip/rotate, richer channel/probe/objective metadata from real microscope files. |
+| Axes, calibration, and channels | Responsive `Crop Stack` with explicit-Z margins and cached-display ROI feedback, axis slice, split/reorder axes, `Set Pixel Size / Units`, `Rescale Axes`, channel extraction/splitting/combining, channel colour assignment, RGB compositing. | Resample to target physical spacing, pad/crop to target shape, flip/rotate, richer channel/probe/objective metadata from real microscope files. |
 | Intensity and math | Linear scale/offset, gamma, rescale intensity, normalize, clip, weighted image calculation, add/subtract/ratio, mask image, logical operations, invert, dtype conversion. | Clarify old names where needed; avoid growing a generic image-calculator surface until reproducibility and safety rules are clear. |
 | Filtering, enhancement, and restoration foundation | Average/Gaussian/3D Gaussian/median/bilateral/non-local-means filtering, rolling-ball background, subtract background, DoG, unsharp mask, Sobel, Canny, Laplace, `Born-Wolf PSF`, `Prepare / Validate PSF`, baseline Richardson-Lucy, and Richardson-Lucy TV deconvolution. | Real microscopy/PSF validation, reflect-padded edge-policy follow-up, performance profiling for large 3D restoration, wavelet denoising, noise estimation, Laplacian-of-Gaussian/blob-oriented helpers, and clearer performance/progress guidance on expensive restoration steps. |
 | Thresholding and segmentation | Otsu, Triangle, Li, Yen, Isodata, Minimum, Binary, Hysteresis, Adaptive Mean/Gaussian, Sauvola, Niblack, Auto Watershed From Mask, distance transform, H-maxima markers, marker-controlled watershed, and expand labels. | Watershed validation and marker QC summaries, better defaults from microscopy examples, optional mask-port semantics where needed, and possible consolidation into selector nodes only if the palette becomes hard to scan. |

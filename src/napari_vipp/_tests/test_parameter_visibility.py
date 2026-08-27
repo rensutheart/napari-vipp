@@ -5,7 +5,12 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from napari_vipp.core.metadata import AxisMetadata, ImageState, image_state_from_array
+from napari_vipp.core.metadata import (
+    AXIS_CONFIDENCE_INFERRED,
+    AxisMetadata,
+    ImageState,
+    image_state_from_array,
+)
 from napari_vipp.core.pipeline import (
     HISTOGRAM_BINS_PARAMETER,
     NODE_LIBRARY,
@@ -161,6 +166,59 @@ def test_explicit_channel_names_remain_safe_with_incomplete_axis_types():
         SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         context=_context(rgb),
     ).visible
+
+
+def test_crop_z_controls_require_one_explicit_nonchannel_z_axis():
+    crop = next(operation for operation in NODE_LIBRARY if operation.id == "crop_stack")
+    z_parameters = tuple(
+        parameter
+        for parameter in crop.parameters
+        if parameter.name in {"z_start", "z_end"}
+    )
+    explicit_zyx = _state((4, 5, 7), axes="ZYX")
+    explicit_tczyx = _state((2, 3, 4, 5, 7), axes="TCZYX")
+    inferred_zyx = replace(
+        explicit_zyx,
+        axes=tuple(
+            replace(axis, confidence=AXIS_CONFIDENCE_INFERRED)
+            for axis in explicit_zyx.axes
+        ),
+    )
+    mixed = replace(
+        explicit_zyx,
+        axes=(
+            explicit_zyx.axes[0],
+            replace(explicit_zyx.axes[1], confidence=AXIS_CONFIDENCE_INFERRED),
+            replace(explicit_zyx.axes[2], confidence=AXIS_CONFIDENCE_INFERRED),
+        ),
+    )
+    duplicate_z = replace(
+        _state((2, 3, 5, 7), axes="TZYX"),
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    cases = (
+        (explicit_zyx, -1, True),
+        (explicit_tczyx, -1, True),
+        (mixed, -1, True),
+        (inferred_zyx, -1, False),
+        (_state((4, 5, 7), axes="QYX"), -1, False),
+        (duplicate_z, -1, False),
+        (explicit_zyx, 0, False),
+    )
+
+    assert {parameter.name for parameter in z_parameters} == {"z_start", "z_end"}
+    for parameter in z_parameters:
+        for state, channel_axis, expected in cases:
+            result = resolve_parameter_visibility(
+                parameter,
+                context=_context(state, params={"channel_axis": channel_axis}),
+            )
+            assert result.visible is expected
 
 
 @pytest.mark.parametrize(
