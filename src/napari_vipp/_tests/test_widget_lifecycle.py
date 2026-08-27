@@ -3,7 +3,9 @@ from __future__ import annotations
 import threading
 
 import numpy as np
-from qtpy.QtWidgets import QApplication
+from qtpy.compat import isalive
+from qtpy.QtCore import QEvent, Qt, QTimer
+from qtpy.QtWidgets import QApplication, QDockWidget, QMainWindow
 
 from napari_vipp._widget import PipelineRunResult, VippWidget
 
@@ -111,6 +113,24 @@ def _make_widget(qtbot) -> tuple[VippWidget, _Viewer]:
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
     return widget, viewer
+
+
+def test_queued_callbacks_ignore_widget_destroyed_by_dock_parent(qtbot):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget()
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+
+    QTimer.singleShot(0, widget._start_thumbnail_contrast_limit_run)
+    QTimer.singleShot(0, widget._ensure_dock_widget_chrome)
+    QTimer.singleShot(0, widget._configure_floating_dock_window)
+    window.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    assert not isalive(widget)
+    QApplication.processEvents()
 
 
 def test_close_stops_and_invalidates_all_background_work(qtbot):

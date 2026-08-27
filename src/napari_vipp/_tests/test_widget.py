@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import tifffile
 from napari.components import ViewerModel
-from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, Qt, QTimer
+from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, QSize, Qt, QTimer
 from qtpy.QtGui import QCloseEvent, QColor, QKeySequence, QMouseEvent
 from qtpy.QtWidgets import (
     QApplication,
@@ -32,6 +32,7 @@ from qtpy.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QStackedLayout,
     QWidget,
 )
 
@@ -10831,6 +10832,105 @@ def test_floating_dock_window_has_standard_maximize_controls(qtbot):
     qtbot.waitUntil(lambda: bool(dock.windowFlags() & Qt.WindowMaximizeButtonHint))
 
     assert dock.windowFlags() & Qt.WindowType_Mask == Qt.Window
+
+
+def test_floating_dock_releases_stale_size_limits_on_both_axes(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer, defer_initial_run=True)
+    host = QWidget()
+    host.setMinimumSize(440, 260)
+    host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    host_layout = QStackedLayout(host)
+    host_layout.addWidget(widget)
+    window = QMainWindow()
+    dock = QDockWidget()
+    qtbot.addWidget(window)
+    dock.setWidget(host)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    QApplication.processEvents()
+
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    QApplication.processEvents()
+    widget._configure_floating_dock_window()
+    QApplication.processEvents()
+
+    configured_flags = dock.windowFlags()
+    assert configured_flags & Qt.WindowType_Mask == Qt.Window
+    for target in (widget, host, dock):
+        target.setFixedSize(760, 480)
+    QApplication.processEvents()
+    assert dock.windowFlags() == configured_flags
+
+    # Visibility and host callbacks may reapply constraints after the native
+    # flags are already correct. Reconfiguration must still repair that state.
+    widget._configure_floating_dock_window()
+    QApplication.processEvents()
+
+    for target in (widget, host, dock):
+        assert target.minimumWidth() < 600
+        assert target.minimumHeight() < 300
+        assert target.maximumWidth() > 920
+        assert target.maximumHeight() > 640
+        assert target.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+        assert target.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+
+    dock.resize(QSize(920, 640))
+    qtbot.waitUntil(lambda: dock.width() > 760 and dock.height() > 480)
+    dock.resize(QSize(600, 300))
+    qtbot.waitUntil(lambda: dock.width() < 760 and dock.height() < 480)
+
+    dock.setFloating(False)
+    QApplication.processEvents()
+    widget._restore_docked_title_bar()
+
+    assert host.minimumSize() == QSize(440, 260)
+    assert host.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+    assert host.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+    assert widget.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+    assert widget.sizePolicy().verticalPolicy() == QSizePolicy.Ignored
+
+    host.setMinimumSize(510, 310)
+    host.setMaximumSize(1010, 710)
+    host.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+    dock.setFloating(True)
+    QApplication.processEvents()
+    widget._configure_floating_dock_window()
+    dock.setFloating(False)
+    QApplication.processEvents()
+    widget._restore_docked_title_bar()
+
+    assert host.minimumSize() == QSize(510, 310)
+    assert host.maximumSize() == QSize(1010, 710)
+    assert host.sizePolicy().horizontalPolicy() == QSizePolicy.Preferred
+    assert host.sizePolicy().verticalPolicy() == QSizePolicy.Fixed
+
+
+def test_redocking_restores_the_host_dock_minimum(qtbot):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget()
+    dock.setMinimumSize(50, 50)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    QApplication.processEvents()
+    widget._ensure_dock_widget_chrome()
+    assert dock.minimumHeight() >= 50
+
+    dock.setFloating(True)
+    QApplication.processEvents()
+    widget._configure_floating_dock_window()
+    dock.setFloating(False)
+    QApplication.processEvents()
+    widget._restore_docked_title_bar()
+
+    # Native title-bar chrome may add platform-specific pixels on redocking,
+    # but napari's explicit 50 px host minimum must not be lost.
+    assert dock.minimumHeight() >= 50
+    assert dock.maximumHeight() > dock.minimumHeight()
 
 
 def test_floating_dock_title_double_click_toggles_maximized(qtbot):

@@ -1,0 +1,7 @@
+VIPP for macOS — __VIPP_BUILD_LABEL__
+
+This installer adds a private, CPU-only VIPP environment under
+~/Library/vipp and creates ~/Applications/VIPP.app. It does not replace the
+system Python or modify shell startup files.
+
+__VIPP_DISTRIBUTION_NOTICE__

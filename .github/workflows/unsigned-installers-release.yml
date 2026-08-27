@@ -1,0 +1,289 @@
+name: Build unsigned release installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing clean release tag (for example v0.14.0a2)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x86_64 unsigned release
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the requested tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up the pinned build Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Verify the immutable release source
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+a[0-9]+$') {
+            throw "Unsigned installer releases are limited to alpha versions."
+          }
+          if ($env:RELEASE_TAG -ne "v$version") {
+            throw "Requested tag $env:RELEASE_TAG does not match version $version."
+          }
+          if ((git describe --tags --exact-match) -ne $env:RELEASE_TAG) {
+            throw "Checkout is not at the requested exact tag."
+          }
+          if (git status --porcelain --untracked-files=all) {
+            throw "Release checkout is dirty."
+          }
+          git fetch origin main
+          git merge-base --is-ancestor "$env:RELEASE_TAG^{}" origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release tag is not contained in origin/main."
+          }
+
+      - name: Install exact installer tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps -e .
+          python -m pip install ".[installer-build]" "pytest>=8"
+
+      - name: Validate and build the exact unsigned installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pytest -q src/napari_vipp/_tests/test_windows_installer_packaging.py
+          python -m build --wheel --no-isolation --outdir dist/python
+          $wheel = (Get-ChildItem -LiteralPath dist/python -Filter '*.whl' -File).FullName
+          if (@($wheel).Count -ne 1) { throw "Expected exactly one wheel." }
+          python scripts/package_windows_installer.py build --wheel $wheel --output-directory dist/windows-staging
+          $staging = (Get-ChildItem -LiteralPath dist/windows-staging -Filter '*-SIGNING-STAGING.exe' -File).FullName
+          $manifest = (Get-ChildItem -LiteralPath dist/windows-staging -Filter '*-SIGNING-STAGING-build.json' -File).FullName
+          if (@($staging).Count -ne 1 -or @($manifest).Count -ne 1) {
+            throw "Expected one staging EXE and build manifest."
+          }
+          python scripts/package_windows_installer.py finalize-unsigned --unsigned-staging-executable $staging --build-manifest $manifest --output-directory dist/windows-release
+
+      - name: Verify the final Windows release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          $exe = Get-Item "dist/windows-release/VIPP-Setup-$version-Windows-x86_64-UNSIGNED.exe"
+          $signature = Get-AuthenticodeSignature -LiteralPath $exe.FullName
+          if ($signature.Status -ne "NotSigned") {
+            throw "Expected NotSigned; found $($signature.Status)."
+          }
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList '--version' -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Final Windows installer --version smoke failed."
+          }
+          $expected = @(
+            "SHA256SUMS-Windows-$version.txt",
+            "VIPP-Setup-$version-Windows-x86_64-UNSIGNED.exe",
+            "VIPP-Setup-$version-Windows-x86_64-UNSIGNED-release.json",
+            "VIPP-Setup-$version-Windows-x86_64-UNSIGNED-THIRD-PARTY-NOTICES.txt"
+          ) | Sort-Object
+          $actual = Get-ChildItem dist/windows-release -File | ForEach-Object Name | Sort-Object
+          if (Compare-Object $expected $actual) {
+            throw "Unexpected Windows release asset set: $actual"
+          }
+          Push-Location dist/windows-release
+          try {
+            Get-Content "SHA256SUMS-Windows-$version.txt" | ForEach-Object {
+              $parts = $_ -split '\s+', 2
+              if ((Get-FileHash -Algorithm SHA256 -LiteralPath $parts[1]).Hash.ToLowerInvariant() -ne $parts[0]) {
+                throw "Checksum mismatch: $($parts[1])"
+              }
+            }
+          }
+          finally {
+            Pop-Location
+          }
+
+      - name: Upload final Windows release assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: vipp-windows-installer-unsigned-${{ inputs.tag }}
+          path: dist/windows-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS ${{ matrix.architecture }} unsigned release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+
+    steps:
+      - name: Check out the requested tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create the pinned macOS builder environment
+        uses: mamba-org/setup-micromamba@ce51e99f4bb8a82ab7158c4dc59ef4634c59c4f9 # v3.1.0
+        with:
+          environment-file: packaging/macos/builder-environment.yml
+          cache-environment: true
+
+      - name: Verify the immutable release source
+        shell: bash -el {0}
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+a[0-9]+$ ]]
+          test "$RELEASE_TAG" = "v$version"
+          test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git fetch origin main
+          git merge-base --is-ancestor "$RELEASE_TAG^{}" origin/main
+          test "$(uname -m)" = "${{ matrix.architecture }}"
+
+      - name: Validate and build the exact unsigned installer
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps -e .
+          python -m pytest -q --noconftest \
+            src/napari_vipp/_tests/test_macos_installer_packaging.py
+          python -m build --wheel --no-isolation --outdir dist/python
+          wheel="$(find dist/python -maxdepth 1 -name '*.whl' -type f)"
+          test -n "$wheel"
+          test "$(printf '%s\n' "$wheel" | wc -l | tr -d ' ')" -eq 1
+          python scripts/package_macos_installer.py build \
+            --wheel "$wheel" \
+            --output-directory dist/macos-staging
+          staging="$(find dist/macos-staging -maxdepth 1 -name '*-SIGNING-STAGING.pkg' -type f)"
+          manifest="$(find dist/macos-staging -maxdepth 1 -name '*-SIGNING-STAGING-build.json' -type f)"
+          test -n "$staging"
+          test -n "$manifest"
+          python scripts/package_macos_installer.py finalize-unsigned \
+            --unsigned-staging-installer "$staging" \
+            --build-manifest "$manifest" \
+            --output-directory dist/macos-release
+
+      - name: Inspect, install, and launch the final macOS release
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          package="dist/macos-release/VIPP-$version-macOS-${{ matrix.architecture }}-UNSIGNED.pkg"
+          test -f "$package"
+          if pkgutil --check-signature "$package" > signature.txt 2>&1; then
+            echo "Unsigned release PKG unexpectedly has a trusted signature."
+            exit 1
+          fi
+          grep -F "Status: no signature" signature.txt
+          checksum="dist/macos-release/SHA256SUMS-macOS-${{ matrix.architecture }}-$version.txt"
+          checksum_dir="$(dirname "$checksum")"
+          checksum_file="$(basename "$checksum")"
+          (cd "$checksum_dir" && shasum -a 256 -c "$checksum_file")
+          release_base="dist/macos-release/VIPP-$version-macOS-${{ matrix.architecture }}-UNSIGNED"
+          for evidence in \
+            "$release_base-release.json" \
+            "$release_base-constructor-info.json" \
+            "$release_base-licenses.json" \
+            "$release_base-lockfile.txt" \
+            "$release_base-package-list.txt"; do
+            test -f "$evidence"
+          done
+          test "$(find dist/macos-release -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 7
+          pkgutil --expand-full "$package" "$RUNNER_TEMP/vipp-pkg-expanded"
+          test -f "$RUNNER_TEMP/vipp-pkg-expanded/Distribution"
+
+          /usr/sbin/installer \
+            -allowUntrusted \
+            -pkg "$package" \
+            -target CurrentUserHomeDirectory
+          prefix="$HOME/Library/vipp"
+          app="$HOME/Applications/VIPP.app"
+          test -x "$prefix/bin/python"
+          test -x "$app/Contents/MacOS/vipp"
+          "$prefix/bin/python" -m pip check
+          "$prefix/bin/python" -c \
+            "from importlib.metadata import version; assert version('napari-vipp') == '$version'; assert version('napari') == '0.9.0'; assert version('PySide6') == '6.9.3'"
+
+          launcher_script="$app/Contents/MacOS/vipp-script"
+          launcher="$app/Contents/MacOS/vipp"
+          test -x "$launcher_script"
+          grep -Fq "export QT_API=pyside6" "$launcher_script"
+          grep -Fq "$app/Contents/Resources/python -m napari_vipp --profile cpu" \
+            "$launcher_script"
+
+          QT_API=pyqt6 "$launcher" \
+            > "$RUNNER_TEMP/vipp-shortcut.log" 2>&1 &
+          shortcut_pid=$!
+          shortcut_ready=0
+          for _ in $(seq 1 180); do
+            if ! kill -0 "$shortcut_pid" 2>/dev/null; then
+              if wait "$shortcut_pid"; then
+                shortcut_ready=1
+              fi
+              break
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/vipp-shortcut.log"
+          test "$shortcut_ready" -eq 1
+          child_pid="$(pgrep -f 'napari_vipp.app.*--profile cpu' | head -n 1)"
+          test -n "$child_pid"
+          kill -0 "$child_pid"
+          sleep 2
+          kill -0 "$child_pid"
+          kill "$child_pid"
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$child_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          ! kill -0 "$child_pid" 2>/dev/null
+
+          QT_API=pyside6 "$prefix/bin/python" -m napari_vipp.app \
+            --profile cpu --smoke-exit-after-ready \
+            > "$RUNNER_TEMP/vipp-native.log" 2>&1
+          cat "$RUNNER_TEMP/vipp-native.log"
+          grep -Fq "VIPP: VIPP is ready" "$RUNNER_TEMP/vipp-native.log"
+
+      - name: Upload final macOS release assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: vipp-macos-installer-unsigned-${{ matrix.architecture }}-${{ inputs.tag }}
+          path: dist/macos-release/*
+          if-no-files-found: error
+          retention-days: 7

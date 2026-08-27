@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.14.0a2 - 2026-08-27
+
+### Features
+
+- Added separate native macOS installers for Apple Silicon and Intel. Each
+  offline, CPU-only package installs its own managed Python environment for the
+  current user and creates a normal `VIPP.app`, so Python and command-line
+  setup are not required.
+- Added exact-wheel macOS packaging, architecture-specific checksum and build
+  records, and native Cocoa install-and-launch checks. The macOS package joins
+  the Windows executable as an explicitly unsigned alpha convenience artifact.
+
+### Bug Fixes
+
+- Detached VIPP windows now release stale width and height constraints across
+  the complete Qt dock-widget chain, so they can be maximized or resized freely
+  in either direction. Reattaching the window restores napari's original dock
+  constraints and size policies.
+- Corrected PySide6 compatibility in graph dialogs, rendered colocalization
+  previews, settings submenus, dock callbacks, and queued thumbnail work while
+  retaining PyQt6 behavior. Callbacks now avoid Qt objects whose native owners
+  have already been destroyed, and menu wrappers remain alive for as long as
+  their actions are displayed.
+
+### Remaining limitations
+
+- The macOS installers are unsigned and not notarized. macOS may require the
+  documented **Open Anyway** confirmation after checksum verification.
+- macOS installation is CPU-only and current-user-only. Automatic update and a
+  graphical uninstaller are not included in this alpha.
+
 ## 0.14.0a1 - 2026-08-26
 
 ### Features

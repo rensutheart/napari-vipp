@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+from qtpy.compat import isalive
 from qtpy.QtCore import (
     QEvent,
     QEventLoop,
@@ -688,6 +689,14 @@ if TYPE_CHECKING:
     import napari
 
 
+@dataclass(frozen=True, slots=True)
+class _WidgetSizeConstraintState:
+    widget_ref: weakref.ReferenceType[QWidget]
+    minimum_size: QSize
+    maximum_size: QSize
+    size_policy: QSizePolicy
+
+
 @dataclass(frozen=True)
 class GraphNoteState:
     id: str
@@ -761,6 +770,8 @@ RESCALE_CUTOFF_MODE_PARAMETER = "cutoff_mode"
 CLIP_CUTOFF_PARAMETERS = {"minimum", "maximum"}
 QT_SIGNED_INT_MINIMUM = -(2**31)
 QT_SIGNED_INT_MAXIMUM = 2**31 - 1
+# Qt's public macro is not exported consistently by every Python binding.
+_QT_WIDGET_SIZE_MAXIMUM = (1 << 24) - 1
 INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS = frozenset(
     spec.id
     for specs in grouped_palette_specs().get(INTENSITY_CONTRAST_CATEGORY, {}).values()
@@ -1566,6 +1577,7 @@ class VippWidget(QWidget):
         )
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
+        self._docked_size_constraints: tuple[_WidgetSizeConstraintState, ...] = ()
         self._initial_dock_size_applied = False
         self._history = WorkflowHistory(limit=self.HISTORY_LIMIT)
         self._workflow_tabs = WorkflowTabModel()
@@ -1902,6 +1914,8 @@ class VippWidget(QWidget):
             "Graph labels, cache behavior, and collapsed display controls."
         )
         self.settings_menu = QMenu(self.settings_menu_button)
+        self._settings_menu_submenus: list[QMenu] = []
+        self._settings_menu_submenu_actions: list[QAction] = []
         self.settings_menu.aboutToShow.connect(self._populate_settings_toolbar_menu)
         self.settings_menu_button.setMenu(self.settings_menu)
         self.port_label_mode_combo = QComboBox()
@@ -2750,7 +2764,7 @@ class VippWidget(QWidget):
         return QSize(1180, 560)
 
     def _ensure_dock_widget_chrome(self) -> None:
-        if self._closing:
+        if self._closing or not isalive(self):
             return
         dock = self._dock_widget()
         if dock is None or self._dock_chrome_configured:
@@ -2788,6 +2802,9 @@ class VippWidget(QWidget):
 
     def _on_dock_top_level_changed(self, floating: bool) -> None:
         if floating:
+            dock = self._dock_widget()
+            if dock is not None:
+                self._capture_docked_size_constraints(dock)
             QTimer.singleShot(0, self._configure_floating_dock_window)
         else:
             QTimer.singleShot(0, self._restore_docked_title_bar)
@@ -2797,16 +2814,21 @@ class VippWidget(QWidget):
             QTimer.singleShot(0, self._configure_floating_dock_window)
 
     def _configure_floating_dock_window(self) -> None:
+        if self._closing or not isalive(self):
+            return
         dock = self._dock_widget()
         if dock is None or not dock.isFloating():
             return
         try:
+            self._release_floating_size_constraints(dock)
             if dock.titleBarWidget() is not None:
                 dock.setTitleBarWidget(None)
 
             flags = dock.windowFlags()
             desired_flags = (flags & ~Qt.WindowType_Mask) | Qt.Window
-            desired_flags &= ~Qt.FramelessWindowHint
+            desired_flags &= ~(
+                Qt.FramelessWindowHint | Qt.MSWindowsFixedSizeDialogHint
+            )
             desired_flags |= (
                 Qt.WindowTitleHint
                 | Qt.WindowSystemMenuHint
@@ -2828,21 +2850,107 @@ class VippWidget(QWidget):
                         dock.showMaximized()
                     else:
                         dock.show()
+            # Replacing the native window can make QDockWidget propagate its
+            # content constraints again, so normalize once more afterward.
+            self._release_floating_size_constraints(dock)
         except Exception:
             pass
 
     def _restore_docked_title_bar(self) -> None:
+        if self._closing or not isalive(self):
+            return
         dock = self._dock_widget()
         if dock is None or dock.isFloating():
             return
         try:
+            self._restore_docked_size_constraints(dock)
             if dock.titleBarWidget() is not None:
                 dock.setTitleBarWidget(None)
         except Exception:
             pass
 
+    def _dock_size_constraint_targets(self, dock: QDockWidget) -> tuple[QWidget, ...]:
+        """Return the editor, any napari wrappers, and the containing dock."""
+        targets: list[QWidget] = []
+        target: QWidget | None = self
+        while target is not None:
+            targets.append(target)
+            if target is dock:
+                break
+            target = target.parentWidget()
+        if not targets or targets[-1] is not dock:
+            targets.append(dock)
+        return tuple(targets)
+
+    def _capture_docked_size_constraints(self, dock: QDockWidget) -> None:
+        """Remember host constraints so floating-only changes are reversible."""
+        if any(
+            (target := state.widget_ref()) is dock and isalive(target)
+            for state in self._docked_size_constraints
+        ):
+            return
+        self._docked_size_constraints = tuple(
+            _WidgetSizeConstraintState(
+                widget_ref=weakref.ref(target),
+                minimum_size=QSize(target.minimumSize()),
+                maximum_size=QSize(target.maximumSize()),
+                size_policy=QSizePolicy(target.sizePolicy()),
+            )
+            for target in self._dock_size_constraint_targets(dock)
+        )
+
+    def _release_floating_size_constraints(self, dock: QDockWidget) -> None:
+        """Remove stale one-axis limits from the complete floating dock chain."""
+        self._capture_docked_size_constraints(dock)
+        targets = self._dock_size_constraint_targets(dock)
+        for target in targets:
+            target.setMinimumSize(0, 0)
+            target.setMaximumSize(_QT_WIDGET_SIZE_MAXIMUM, _QT_WIDGET_SIZE_MAXIMUM)
+            target.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            layout = target.layout()
+            if layout is not None:
+                layout.invalidate()
+        for target in targets:
+            layout = target.layout()
+            if layout is not None:
+                layout.activate()
+            target.updateGeometry()
+
+    def _restore_docked_size_constraints(self, dock: QDockWidget) -> None:
+        """Restore the current dock chain from this detach cycle's snapshot."""
+        states = self._docked_size_constraints
+        self._docked_size_constraints = ()
+        current_target_ids = {
+            id(target) for target in self._dock_size_constraint_targets(dock)
+        }
+        restored: list[QWidget] = []
+        for state in states:
+            target = state.widget_ref()
+            if (
+                target is None
+                or not isalive(target)
+                or id(target) not in current_target_ids
+            ):
+                continue
+            target.setMinimumSize(state.minimum_size)
+            target.setMaximumSize(state.maximum_size)
+            target.setSizePolicy(state.size_policy)
+            layout = target.layout()
+            if layout is not None:
+                layout.invalidate()
+            restored.append(target)
+        for target in restored:
+            layout = target.layout()
+            if layout is not None:
+                layout.activate()
+            target.updateGeometry()
+
     def _apply_initial_dock_size(self) -> None:
-        if self._initial_dock_size_applied:
+        if (
+            self._closing
+            or not isalive(self)
+            or self._initial_dock_size_applied
+        ):
             return
         dock = self._dock_widget()
         if dock is None:
@@ -2872,6 +2980,8 @@ class VippWidget(QWidget):
             pass
 
     def _dock_widget(self):
+        if not isalive(self):
+            return None
         parent = self.parentWidget()
         while parent is not None:
             if isinstance(parent, QDockWidget):
@@ -3220,6 +3330,8 @@ class VippWidget(QWidget):
     def _populate_settings_toolbar_menu(self) -> None:
         menu = self.settings_menu
         menu.clear()
+        self._settings_menu_submenus.clear()
+        self._settings_menu_submenu_actions.clear()
         (
             _hide_checkboxes,
             hide_dropdowns,
@@ -3335,6 +3447,11 @@ class VippWidget(QWidget):
         combo: QComboBox,
     ) -> QMenu:
         submenu = menu.addMenu(label)
+        # PySide6 6.9 does not reliably preserve the Python wrapper merely
+        # because the native menu owns it; retain the menu and its action until
+        # the settings menu is rebuilt.
+        self._settings_menu_submenus.append(submenu)
+        self._settings_menu_submenu_actions.append(submenu.menuAction())
         submenu.setEnabled(combo.isEnabled())
         submenu.setToolTip(combo.toolTip())
         current = combo.currentText()
@@ -8094,7 +8211,7 @@ class VippWidget(QWidget):
             f"tunnel '{tunnel.name}'",
             parent=self,
         )
-        if dialog.exec() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         return dialog.selected_mapping()
 
@@ -8140,7 +8257,7 @@ class VippWidget(QWidget):
             )
             return None
         dialog = ConnectionInsertDialog(candidates, self)
-        if dialog.exec() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         return dialog.selected_operation_id()
 
@@ -8328,7 +8445,7 @@ class VippWidget(QWidget):
             self.status_label.setText("No compatible nodes can be inserted here.")
             return None
         dialog = ConnectionInsertDialog(candidates, self)
-        if dialog.exec() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         return dialog.selected_operation_id()
 
@@ -8484,7 +8601,7 @@ class VippWidget(QWidget):
             mappings_by_axis=mappings_by_axis,
             parent=self,
         )
-        if dialog.exec() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         return dialog.selected_mapping()
 
@@ -9983,7 +10100,7 @@ class VippWidget(QWidget):
 
     def _open_example_workflow_dialog(self) -> None:
         dialog = ExampleWorkflowDialog(self)
-        if dialog.exec() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         example = dialog.selected_example()
         if example is None:
@@ -14918,7 +15035,7 @@ class VippWidget(QWidget):
         editor = dialog.findChild(QPlainTextEdit)
         if editor is not None:
             editor.setLineWrapMode(QPlainTextEdit.WidgetWidth)
-        if dialog.exec() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             self._set_graph_note_text(note_id, str(dialog.textValue()))
 
     def _set_graph_note_text(self, note_id: str, text: str) -> None:
@@ -21771,6 +21888,11 @@ class VippWidget(QWidget):
         return True
 
     def _start_thumbnail_contrast_limit_run(self) -> None:
+        # Static QTimer.singleShot callbacks can outlive a dock whose C++
+        # QObject tree was destroyed by its host.  PySide raises on the first
+        # child access in that state, while PyQt silently tolerated it.
+        if not isalive(self):
+            return
         if self._active_thumbnail_contrast_run_id is not None:
             return
         if self._thumbnail_statistics_dispatch_blocked():

@@ -11,9 +11,10 @@ reviewing VIPP itself.
 
 ## Use VIPP
 
-- [Quick start](quick-start.md): the installer-first Windows experience,
-  manual Linux/macOS and advanced routes, CPU/GPU choices, and a first
-  workflow. Start here if you are installing VIPP rather than developing it.
+- [Quick start](quick-start.md): the installer-first Windows and macOS
+  experiences, manual Linux/macOS and advanced routes,
+  CPU/GPU choices, and a first workflow. Start here if you are installing VIPP
+  rather than developing it.
 - [User guide](user-guide.md): build, inspect, save, export, and batch-run
   workflows.
 - [GPU guide](gpu-guide.md): optional GPU qualification, compute modes,
@@ -70,6 +71,9 @@ reviewing VIPP itself.
   a short record for exact-artifact CPU, CUDA, rollback, path, and novice checks.
 - [Windows setup packaging](../packaging/windows/README.md): the same-tag wheel,
   PyInstaller, Authenticode, licence, checksum, and release-asset boundary.
+- [macOS PKG packaging](../packaging/macos/README.md): the exact-wheel offline
+  constructor build, native app shortcut, architecture matrix, and the future
+  Developer ID/notarization boundary.
 - [Research and publication record](research-and-publication.md): evidence
   boundaries, evaluation plan, and reproducibility artifacts.
 

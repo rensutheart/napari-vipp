@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-vipp"
-version = "0.14.0a1"
+version = "0.14.0a2"
 description = "Visual image processing made approachable"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"

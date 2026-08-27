@@ -1,11 +1,13 @@
 # Desktop Startup And Installer Plan
 
-This document separates the startup and transactional installer implemented in
-the source tree from future code-signing work. VIPP `0.14.0a1` publishes one
-checksum-qualified, explicitly unsigned Windows setup executable; an
-Authenticode-signed release asset is not yet available. The product goal is that
-a microscopy user can start VIPP without first learning napari, Python virtual
-environments, or terminal activation.
+This document separates the startup and installer implementations in the
+source tree from future code-signing work. VIPP `0.14.0a2` publishes one
+checksum-qualified, explicitly unsigned Windows setup executable plus separate
+native, offline, CPU-only macOS PKGs for Apple Silicon (`arm64`) and Intel
+(`x86_64`). The Windows executable is not Authenticode-signed, and the macOS
+packages are neither Developer ID-signed nor notarized. The product goal is
+that a microscopy user can start VIPP without first learning napari, Python
+virtual environments, or terminal activation.
 
 The primary design persona is a physiologist who may not know what Python,
 napari, virtual environments, CUDA packages, dependency resolution, or a
@@ -100,7 +102,9 @@ Platform scope should remain truthful:
 - Windows: managed CPU and qualified NVIDIA CUDA routes;
 - Linux: managed CPU first, then GPU only after native-Linux policy evidence is
   released;
-- macOS: managed CPU while no Apple accelerator provider is admitted.
+- macOS: native, current-user, managed-CPU packages for `arm64` and `x86_64`;
+  no Apple accelerator provider is admitted. Each architecture has its own
+  offline PKG rather than a Universal 2 package or DMG.
 
 Python and the NVIDIA display driver are separate prerequisites in the first
 installer generation. The bootstrapper must detect them, link to the correct
@@ -111,22 +115,27 @@ the standard VIPP CUDA route.
 
 ## Documentation And Discovery Contract
 
-The release installer must be the first installation path shown in the README,
-documentation index, release notes, and versioned user manual. The ordinary
-quick start should fit on one screen: download and verify the exact release
-`.exe`, handle any documented Windows publisher warning, keep the managed-
-environment recommendation, review the
-compute route and location, install, then open the created VIPP shortcut.
+The platform release installer must be the first installation path shown in the
+README, documentation index, release notes, and versioned user manual. The
+ordinary Windows quick start should fit on one screen: download and verify the
+exact release `.exe`, handle the documented Windows publisher warning, keep the
+managed-environment recommendation, review the compute route and location,
+install, then open the created VIPP shortcut. The macOS path must similarly put
+the matching `arm64` or `x86_64` PKG and checksum first, state that it is
+CPU-only, unsigned, and unnotarized, and explain the narrow **Open Anyway** path
+without telling users to disable platform security.
 
 Documentation must remain truthful while delivery is staged:
 
 - before the installer artifact exists, label it **not yet published** and keep a
   clearly separated manual fallback for the current release;
-- after publication, link directly to the exact release asset and publish its
-  deterministic name, version, signing status, and SHA-256 beside the link. An
-  unsigned alpha must contain `-UNSIGNED` in its filename, state that **Unknown
-  publisher** is expected, and put checksum verification before **More info >
-  Run anyway**;
+- after publication, link directly to each exact platform and architecture
+  release asset and publish its deterministic name, version, signing status,
+  and SHA-256 beside the link. An unsigned alpha must contain `-UNSIGNED` in its
+  filename. Windows guidance states that **Unknown publisher** is expected and
+  puts checksum verification before **More info > Run anyway**. macOS guidance
+  puts checksum verification before **System Settings > Privacy & Security >
+  Open Anyway**;
 - present managed installation first and move existing-napari installation,
   the headless planner, raw pip commands, and environment repair into
   **Advanced** or troubleshooting sections;
@@ -155,18 +164,23 @@ same reviewed change so the public path cannot lag behind executable behavior.
 4. **Linux desktop package:** reuse the same Python launcher and environment
    plan, creating `.desktop` entries and icons without assuming one desktop
    environment.
-5. **macOS application/bootstrapper:** reuse the launcher and CPU environment
-   plan with an app bundle and normal macOS signing/notarization.
+5. **macOS application/bootstrapper:** `0.14.0a2` ships native, offline,
+   current-user, CPU-only PKGs for `arm64` and `x86_64`. Each installs a managed
+   environment under `~/Library/vipp` and creates
+   `~/Applications/VIPP.app`. Developer ID signing, notarization, a graphical
+   updater/uninstaller, and production lifecycle support remain future work;
+   a DMG is unnecessary because the PKG performs installation directly.
 
 The front ends may differ, but the environment planner and acceptance contract
 should remain shared and testable without a GUI.
 
-The current implementation resolves and retains concrete dependency changes
-before confirmation. The ordinary UI summarizes them in plain language and
-exposes the full list only under **Advanced details**, then applies the exact
-hash-locked plan after one explicit confirmation. It provides cancellation,
-retained logs, an ownership record, acceptance checks, owned shortcuts,
-bounded rollback, update/repair, and an ownership-safe Windows uninstall path.
+The current Windows implementation resolves and retains concrete dependency
+changes before confirmation. The ordinary UI summarizes them in plain language
+and exposes the full list only under **Advanced details**, then applies the
+exact hash-locked plan after one explicit confirmation. It provides
+cancellation, retained logs, an ownership record, acceptance checks, owned
+shortcuts, bounded rollback, update/repair, and an ownership-safe Windows
+uninstall path.
 Large GPU dependency downloads can legitimately take several minutes. Network
 operations use bounded retries and a 120-second no-data timeout rather than a
 120-second total-install timer. If a transient network failure still stops
@@ -174,8 +188,10 @@ Apply, the incomplete candidate is rolled back without replacing a previous
 working copy. **Try again** reruns checking and resolution for the exact choices
 currently shown, then requires a new review and confirmation instead of reusing
 the failed transaction.
-Remaining release work is clean-machine acceptance, selected signed or
-explicitly-unsigned finalization, and publishing the verified same-tag assets.
+The explicitly unsigned `0.14.0a2` Windows and macOS installers have been
+finalized and published from the immutable release tag. Remaining production
+work is platform signing/notarization and the still-unimplemented macOS
+graphical update/uninstall lifecycle, not another alpha publication step.
 
 ## Release Gates
 
@@ -185,12 +201,16 @@ Every installer or launcher release should verify:
   manual all point first to the exact installer artifact, state its signing
   status, and provide checksum-first instructions, or explicitly say that it
   has not yet been published;
-- clean CPU installation and launch on Windows, Linux, and macOS;
+- clean CPU installation and launch on Windows and Linux, plus native `arm64`
+  and `x86_64` macOS PKG installation and launch on matching hardware;
+- the macOS PKGs remain CPU-only, install only the current user's managed
+  environment and `VIPP.app`, and carry matching architecture-qualified
+  checksums, manifests, package inventories, lockfiles, and licence evidence;
 - Windows CUDA installation, compute doctor, real eligible GPU execution,
   visible CPU decisions, cleanup, and fallback reporting;
 - spaces in managed CPU and CUDA paths, Unicode managed CPU paths, and the
   pre-download ASCII-only guidance for managed and existing CUDA paths,
-  introduced in `0.13.0a7` and retained in `0.14.0a1`, including exact
+  introduced in `0.13.0a7` and retained through `0.14.0a2`, including exact
   canonical Local-App-Data roots, rejection of
   custom managed roots, CPU availability when canonical Local App Data makes
   CUDA incompatible, a separate non-mutating existing-environment route, and

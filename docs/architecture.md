@@ -5,11 +5,13 @@ prototype.
 
 Last reviewed: 2026-08-27
 
-It reflects the live codebase through VIPP `0.14.0a1`, including durable
-SourceItems, optional microscope-reader routing, local OME-Zarr presentation
-preview, per-sample batch parameters, reproducible collection execution, graph
-restore hardening, the unified CPU/GPU execution contract, and graph fragment
-authoring.
+It reflects the live codebase through VIPP `0.14.0a2`. The durable SourceItems,
+optional microscope-reader routing, local OME-Zarr presentation preview,
+per-sample batch parameters, reproducible collection execution, graph restore
+hardening, unified CPU/GPU execution contract, and graph-fragment authoring
+introduced through `0.14.0a1` remain current. `0.14.0a2` additionally qualifies
+cross-Qt desktop integration and native, offline, CPU-only macOS packages for
+both Apple Silicon (`arm64`) and Intel (`x86_64`).
 
 For product framing and longer-range ideas, see [README.md](../README.md) and
 [planning.md](planning.md). The accepted OME I/O architecture is documented in
@@ -129,6 +131,10 @@ src/napari_vipp/
 
 scripts/launch_vipp_sample.py
 scripts/launch_vipp_label_workflow.py
+scripts/package_windows_installer.py
+scripts/package_macos_installer.py
+packaging/windows/       Windows bootstrapper, PyInstaller, and release guidance
+packaging/macos/         native arm64/x86_64 constructor recipes and PKG guidance
 examples/otsu-red-channel-labels.json
 docs/planning.md
 docs/architecture.md

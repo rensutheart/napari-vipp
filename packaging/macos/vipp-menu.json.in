@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schemas.conda.org/menuinst/menuinst-1-1-3.schema.json",
+  "menu_name": "VIPP",
+  "menu_items": [
+    {
+      "name": "VIPP",
+      "description": "Visual image processing made approachable",
+      "icon": "{{ MENU_DIR }}/vipp.{{ ICON_EXT }}",
+      "precommand": "unset PYTHONHOME && unset PYTHONPATH && export QT_API=pyside6",
+      "command": [
+        "{{ PYTHON }}",
+        "-m",
+        "napari_vipp",
+        "--profile",
+        "cpu"
+      ],
+      "activate": true,
+      "terminal": false,
+      "platforms": {
+        "osx": {
+          "link_in_bundle": {
+            "{{ PREFIX }}/bin/python": "{{ MENU_ITEM_LOCATION }}/Contents/Resources/python"
+          },
+          "command": [
+            "{{ MENU_ITEM_LOCATION }}/Contents/Resources/python",
+            "-m",
+            "napari_vipp",
+            "--profile",
+            "cpu"
+          ],
+          "CFBundleName": "VIPP",
+          "CFBundleDisplayName": "VIPP",
+          "CFBundleIdentifier": "io.github.rensutheart.napari-vipp",
+          "CFBundleVersion": "__VIPP_BUNDLE_VERSION__",
+          "info_plist_extra": {
+            "CFBundleShortVersionString": "__VIPP_SHORT_VERSION__"
+          }
+        }
+      }
+    }
+  ]
+}
