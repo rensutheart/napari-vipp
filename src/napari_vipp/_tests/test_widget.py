@@ -27271,17 +27271,33 @@ def test_responsive_crop_real_viewer_tracks_noncanonical_display_plane(qtbot):
 
     assert roi_layer.ndim == 5
     assert len(roi_layer.data) == 7
-    assert 6 in set(int(index) for index in roi_layer._indices_view)
+    assert tuple(viewer.dims.displayed) == (3, 4)
+    initial_face = np.asarray(roi_layer.data[-1]).copy()
+    initial_step = tuple(int(value) for value in viewer.dims.current_step)
+    assert np.all(initial_face[:, 0] == initial_step[0])
+    assert np.all(initial_face[:, 1] == initial_step[1])
+    assert np.all(initial_face[:, 2] == initial_step[2])
+    assert roi_layer.metadata["geometry"] == "volumetric-box-and-current-slice"
+    assert roi_layer.visible is True
     layer_identity = id(roi_layer)
 
     viewer.dims.set_current_step(0, 1)
     viewer.dims.set_current_step(2, 2)
 
     assert id(roi_layer) == layer_identity
+    expected_step = list(initial_step)
+    expected_step[0] = 1
+    expected_step[2] = 2
+    assert tuple(int(value) for value in viewer.dims.current_step) == tuple(
+        expected_step
+    )
+    assert tuple(viewer.dims.displayed) == (3, 4)
     current_face = np.asarray(roi_layer.data[-1])
     assert np.all(current_face[:, 0] == 1)
     assert np.all(current_face[:, 2] == 2)
-    assert 6 in set(int(index) for index in roi_layer._indices_view)
+    assert not np.array_equal(current_face, initial_face)
+    assert roi_layer.metadata["current_slice_retained"] is True
+    assert roi_layer.visible is True
     widget._crop_draft_timer.stop()
 
 
@@ -27313,13 +27329,27 @@ def test_responsive_crop_real_viewer_tracks_plane_when_dims_are_unlinked(qtbot):
         if layer.metadata.get("napari_vipp_kind") == "crop_roi"
     )
     layer_identity = id(roi_layer)
+    initial_face = np.asarray(roi_layer.data[-1]).copy()
+    initial_step = tuple(int(value) for value in viewer.dims.current_step)
+    assert tuple(viewer.dims.displayed) == (1, 2)
+    assert np.all(initial_face[:, 0] == initial_step[0])
+    assert roi_layer.metadata["geometry"] == "volumetric-box-and-current-slice"
 
     widget.follow_dims_checkbox.setChecked(False)
     viewer.dims.set_current_step(0, 3)
 
     assert id(roi_layer) == layer_identity
-    assert np.all(np.asarray(roi_layer.data[-1])[:, 0] == 3)
-    assert 6 in set(int(index) for index in roi_layer._indices_view)
+    expected_step = list(initial_step)
+    expected_step[0] = 3
+    assert tuple(int(value) for value in viewer.dims.current_step) == tuple(
+        expected_step
+    )
+    assert tuple(viewer.dims.displayed) == (1, 2)
+    current_face = np.asarray(roi_layer.data[-1])
+    assert np.all(current_face[:, 0] == 3)
+    assert not np.array_equal(current_face, initial_face)
+    assert roi_layer.metadata["current_slice_retained"] is True
+    assert roi_layer.visible is True
     widget._crop_draft_timer.stop()
 
 

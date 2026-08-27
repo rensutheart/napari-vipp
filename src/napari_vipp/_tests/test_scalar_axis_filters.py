@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from scipy import ndimage as ndi
 
+from napari_vipp.core.metadata import AxisMetadata, image_state_from_array
 from napari_vipp.core.operations import (
     average_blur,
     crop_stack,
@@ -123,6 +124,129 @@ def test_crop_uses_declared_noncanonical_yx_axes():
     )
 
     np.testing.assert_array_equal(result, data[:, 1:-2, :, 2:-1])
+
+
+def test_pipeline_crop_does_not_promote_shape_inferred_yxc_names():
+    data = np.arange(7 * 9 * 3, dtype=np.uint16).reshape(7, 9, 3)
+    state = image_state_from_array(data)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    for name, value in {
+        "top": 1,
+        "bottom": 2,
+        "left": 1,
+        "right": 1,
+    }.items():
+        pipeline.set_param(crop.id, name, value)
+
+    call = pipeline.prepare_node_call(crop.id, (data,), (state,))
+    outputs = pipeline.run(data)
+
+    assert call.kwargs["axis_names"] == ("axis:0", "y", "x")
+    assert call.kwargs["channel_axis"] is None
+    np.testing.assert_array_equal(outputs[crop.id], data[:, 1:-2, 1:-1])
+    assert tuple(
+        axis.translation for axis in pipeline.output_states[crop.id].axes
+    ) == (0.0, 1.0, 1.0)
+
+
+def test_pipeline_crop_preserves_explicit_yxc_semantics():
+    data = np.arange(7 * 9 * 3, dtype=np.uint16).reshape(7, 9, 3)
+    state = image_state_from_array(data, layer_metadata={"axes": "YXC"})
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    for name, value in {
+        "top": 1,
+        "bottom": 2,
+        "left": 1,
+        "right": 1,
+    }.items():
+        pipeline.set_param(crop.id, name, value)
+
+    call = pipeline.prepare_node_call(crop.id, (data,), (state,))
+    outputs = pipeline.run(data, input_metadata={"axes": "YXC"})
+
+    assert call.kwargs["axis_names"] == ("y", "x", "c")
+    assert call.kwargs["channel_axis"] == 2
+    np.testing.assert_array_equal(outputs[crop.id], data[1:-2, 1:-1, :])
+    assert tuple(
+        axis.translation for axis in pipeline.output_states[crop.id].axes
+    ) == (1.0, 1.0, 0.0)
+
+
+def test_pipeline_crop_protects_explicit_non_xy_axes_with_inferred_yx():
+    data = np.arange(2 * 7 * 3 * 9 * 5, dtype=np.uint16).reshape(2, 7, 3, 9, 5)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("t", "time"),
+            AxisMetadata("y", "space", confidence="shape-inferred"),
+            AxisMetadata("c", "channel"),
+            AxisMetadata("x", "space", confidence="shape-inferred"),
+            AxisMetadata("z", "space"),
+        ),
+    )
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    pipeline.set_param(crop.id, "top", 1)
+    pipeline.set_param(crop.id, "left", 2)
+    pipeline.set_param(crop.id, "z_start", 1)
+
+    call = pipeline.prepare_node_call(crop.id, (data,), (state,))
+    outputs = pipeline.run(
+        data,
+        input_metadata={"vipp_image_state": state.to_dict()},
+    )
+
+    assert call.kwargs["axis_names"] == ("t", "y", "c", "x", "z")
+    assert call.kwargs["channel_axis"] == 2
+    assert call.kwargs["z_axis_explicit"] is True
+    np.testing.assert_array_equal(outputs[crop.id], data[:, 1:, :, 2:, 1:])
+    assert tuple(
+        axis.translation for axis in pipeline.output_states[crop.id].axes
+    ) == (0.0, 1.0, 0.0, 2.0, 1.0)
+
+
+@pytest.mark.parametrize(
+    ("shape", "axes"),
+    (
+        (
+            (4, 5, 6),
+            (
+                AxisMetadata("y", "space"),
+                AxisMetadata("y", "space"),
+                AxisMetadata("x", "space"),
+            ),
+        ),
+        (
+            (4, 3),
+            (
+                AxisMetadata("t", "time"),
+                AxisMetadata("c", "channel"),
+            ),
+        ),
+    ),
+)
+def test_pipeline_crop_fails_closed_without_one_safe_yx_pair(shape, axes):
+    data = np.zeros(shape, dtype=np.uint16)
+    state = image_state_from_array(data, axes=axes)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    pipeline.set_param(crop.id, "top", 1)
+
+    with pytest.raises(ValueError, match="cannot resolve two safe Y/X axes"):
+        pipeline.run(
+            data,
+            input_metadata={"vipp_image_state": state.to_dict()},
+        )
 
 
 @pytest.mark.parametrize(

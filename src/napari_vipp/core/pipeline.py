@@ -7756,7 +7756,7 @@ class PrototypePipeline:
                 y_axis, x_axis = _operations._xy_axes(
                     self._axis_contract_proxy(shape, dtype),
                     channel_axis=channel_axis,
-                    axis_names=tuple(axis.name for axis in input_state.axes),
+                    axis_names=tuple(params.get("axis_names", ())),
                 )
                 top, bottom = _operations._crop_pair(
                     params.get("top", 0),
@@ -8855,15 +8855,32 @@ class PrototypePipeline:
         if node.operation_id == "reorder_axes" and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
         if node.operation_id == "crop_stack" and isinstance(input_state, ImageState):
-            kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
+            channel_axis = _operations._validated_filter_channel_axis(
+                kwargs.get("channel_axis"),
+                len(input_state.shape),
+                operation="Crop stack",
+            )
+            if channel_axis is None:
+                channel_axis = _explicit_crop_channel_axis_index(input_state)
+                if channel_axis is not None:
+                    kwargs["channel_axis"] = channel_axis
+            xy_axis_indices = _crop_runtime_xy_axis_indices(
+                input_state,
+                channel_axis=channel_axis,
+            )
+            if xy_axis_indices is None and len(input_state.shape) >= 2:
+                raise ValueError(
+                    "Crop stack cannot resolve two safe Y/X axes. Declare an "
+                    "exact Y/X mapping or choose a channel axis explicitly."
+                )
+            kwargs["axis_names"] = _crop_runtime_axis_names(
+                input_state,
+                xy_axis_indices=xy_axis_indices,
+            )
             kwargs["z_axis_explicit"] = (
                 _explicit_crop_z_axis_index(
                     input_state,
-                    channel_axis=_operations._validated_filter_channel_axis(
-                        kwargs.get("channel_axis"),
-                        len(input_state.shape),
-                        operation="Crop stack",
-                    ),
+                    channel_axis=channel_axis,
                 )
                 is not None
             )
@@ -9018,6 +9035,11 @@ class PrototypePipeline:
                     (),
                 ),
                 "output_dtype": str(getattr(output, "dtype", "floating RGB")),
+            }
+        if node.operation_id == "crop_stack":
+            transform_params = {
+                **transform_params,
+                "axis_names": keyword_arguments.get("axis_names", ()),
             }
         state = transform_image_state(
             output,
@@ -9686,6 +9708,101 @@ def _explicit_crop_z_axis_index(
     ):
         return None
     return index
+
+
+def _explicit_crop_channel_axis_index(state: ImageState) -> int | None:
+    """Return Crop Stack's one explicit channel axis, if unambiguous."""
+    candidates = tuple(
+        index
+        for index, axis in enumerate(state.axes)
+        if axis.is_explicit
+        and (
+            axis.type.strip().casefold() == "channel"
+            or axis.name.strip().casefold() in {"c", "channel", "rgb", "rgba"}
+        )
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _crop_runtime_axis_names(
+    state: ImageState,
+    *,
+    xy_axis_indices: tuple[int, int] | None,
+) -> tuple[str, ...]:
+    """Build safe full-rank names for Crop Stack's resolved runtime axes."""
+    y_axis, x_axis = xy_axis_indices or (-1, -1)
+    names: list[str] = []
+    for index, axis in enumerate(state.axes):
+        if index == y_axis:
+            names.append("y")
+        elif index == x_axis:
+            names.append("x")
+        elif axis.is_explicit:
+            names.append(axis.name)
+        else:
+            names.append(f"axis:{index}")
+    return tuple(names)
+
+
+def _crop_runtime_xy_axis_indices(
+    state: ImageState,
+    *,
+    channel_axis: int | None,
+) -> tuple[int, int] | None:
+    """Resolve explicit roles, then fill missing roles from inferred axes."""
+    if any(
+        axis.is_explicit
+        and axis.name.strip().casefold() in {"y", "x"}
+        and (
+            index == channel_axis
+            or axis.type.strip().casefold() != "space"
+        )
+        for index, axis in enumerate(state.axes)
+    ):
+        return None
+    explicit_roles: dict[str, int | None] = {}
+    for role in ("y", "x"):
+        matches = tuple(
+            index
+            for index, axis in enumerate(state.axes)
+            if index != channel_axis
+            and axis.is_explicit
+            and axis.type.strip().casefold() == "space"
+            and axis.name.strip().casefold() == role
+        )
+        if len(matches) > 1:
+            return None
+        explicit_roles[role] = matches[0] if matches else None
+
+    protected = {
+        index
+        for index, axis in enumerate(state.axes)
+        if axis.is_explicit and index not in explicit_roles.values()
+    }
+    unresolved = tuple(
+        index
+        for index in range(len(state.axes))
+        if index != channel_axis
+        and index not in protected
+        and index not in explicit_roles.values()
+    )
+    y_axis = explicit_roles["y"]
+    x_axis = explicit_roles["x"]
+    if y_axis is None and x_axis is None:
+        if len(unresolved) < 2:
+            return None
+        return unresolved[-2], unresolved[-1]
+    if y_axis is None:
+        if not unresolved:
+            return None
+        y_axis = unresolved[-1]
+    if x_axis is None:
+        if not unresolved:
+            return None
+        x_axis = unresolved[-1]
+    if y_axis == x_axis:
+        return None
+    return y_axis, x_axis
 
 
 def _validate_rescale_axes_semantics(

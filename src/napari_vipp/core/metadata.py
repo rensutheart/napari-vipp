@@ -1373,11 +1373,22 @@ def _crop_shifted_axes(
     axes: tuple[AxisMetadata, ...],
     params: dict[str, Any],
 ) -> tuple[AxisMetadata, ...]:
-    axis_map = _xyz_axis_map_for_metadata(axes)
-    y_index = axis_map.get("y")
-    x_index = axis_map.get("x")
-    if y_index is None or x_index is None:
-        return axes
+    axis_names = tuple(
+        str(name).strip().casefold()
+        for name in params.get("axis_names", ())
+    )
+    if len(axis_names) == len(axes):
+        y_indices = tuple(index for index, name in enumerate(axis_names) if name == "y")
+        x_indices = tuple(index for index, name in enumerate(axis_names) if name == "x")
+        if len(y_indices) != 1 or len(x_indices) != 1:
+            return axes
+        y_index, x_index = y_indices[0], x_indices[0]
+    else:
+        axis_map = _xyz_axis_map_for_metadata(axes)
+        y_index = axis_map.get("y")
+        x_index = axis_map.get("x")
+        if y_index is None or x_index is None:
+            return axes
 
     top = _safe_float(params.get("top"), 0.0)
     left = _safe_float(params.get("left"), 0.0)

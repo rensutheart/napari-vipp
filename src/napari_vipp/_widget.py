@@ -282,6 +282,9 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     SourcePayload,
     _ambiguous_qyx_suffix_mapping,
+    _crop_runtime_axis_names,
+    _crop_runtime_xy_axis_indices,
+    _explicit_crop_channel_axis_index,
     _explicit_crop_z_axis_index,
     grouped_palette_specs,
     operation_call_parameter_value,
@@ -9699,10 +9702,19 @@ class VippWidget(QWidget):
         if node.operation_id == "crop_stack":
             input_state = self.pipeline.input_state_for_node(node_id)
             if isinstance(input_state, ImageState):
-                kwargs["axis_names"] = tuple(
-                    axis.name for axis in input_state.axes
-                )
                 channel_axis = kwargs.get("channel_axis")
+                if channel_axis is None:
+                    channel_axis = _explicit_crop_channel_axis_index(input_state)
+                    if channel_axis is not None:
+                        kwargs["channel_axis"] = channel_axis
+                xy_axis_indices = _crop_runtime_xy_axis_indices(
+                    input_state,
+                    channel_axis=channel_axis,
+                )
+                kwargs["axis_names"] = _crop_runtime_axis_names(
+                    input_state,
+                    xy_axis_indices=xy_axis_indices,
+                )
                 kwargs["z_axis_explicit"] = (
                     _explicit_crop_z_axis_index(
                         input_state,
@@ -23187,6 +23199,18 @@ class VippWidget(QWidget):
 
     def _crop_margin_axis_index(self, name: str, shape: tuple[int, ...], state):
         axes = tuple(getattr(state, "axes", ()))
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        try:
+            authored_channel_axis = int(node.params.get("channel_axis", -1))
+        except (AttributeError, TypeError, ValueError):
+            authored_channel_axis = -1
+        channel_axis = (
+            authored_channel_axis
+            if 0 <= authored_channel_axis < len(shape)
+            else _explicit_crop_channel_axis_index(state)
+            if isinstance(state, ImageState)
+            else None
+        )
         if name in {"z_start", "z_end"}:
             if len(axes) != len(shape):
                 return None
@@ -23199,29 +23223,31 @@ class VippWidget(QWidget):
                 return None
             index = named_z[0]
             axis = axes[index]
-            node = self.pipeline.nodes.get(self._selected_node_id)
-            try:
-                channel_axis = int(node.params.get("channel_axis", -1))
-            except (AttributeError, TypeError, ValueError):
-                channel_axis = -1
             if (
                 str(axis.type).strip().casefold() != "space"
                 or not _axis_is_explicit(axis)
-                or (channel_axis >= 0 and channel_axis % len(shape) == index)
+                or channel_axis == index
             ):
                 return None
             return index
 
         role = "y" if name in {"top", "bottom"} else "x"
-        if len(axes) == len(shape):
-            named = tuple(
-                index
-                for index, axis in enumerate(axes)
-                if str(axis.name).strip().casefold() == role
+        if len(axes) == len(shape) and isinstance(state, ImageState):
+            resolved = _crop_runtime_xy_axis_indices(
+                state,
+                channel_axis=channel_axis,
             )
-            if len(named) == 1:
-                return named[0]
-        return len(shape) - (2 if role == "y" else 1)
+            if resolved is None:
+                return None
+            return resolved[0 if role == "y" else 1]
+        candidate_axes = tuple(
+            index for index in range(len(shape)) if index != channel_axis
+        )
+        if not candidate_axes:
+            return None
+        if role == "y" and len(candidate_axes) >= 2:
+            return candidate_axes[-2]
+        return candidate_axes[-1]
 
     def _crop_current_session_id(self) -> str:
         session = self._workflow_tabs.current
