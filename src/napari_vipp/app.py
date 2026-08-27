@@ -63,6 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--startup-token", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--smoke-exit-after-ready",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -99,7 +104,12 @@ def _configure_initial_workflow(widget) -> None:
     widget.graph_view.select_node("input")
 
 
-def run_application(profile: LaunchProfile, reporter: StartupReporter) -> int:
+def run_application(
+    profile: LaunchProfile,
+    reporter: StartupReporter,
+    *,
+    smoke_exit_after_ready: bool = False,
+) -> int:
     """Load napari, build VIPP, report readiness, and enter the Qt event loop."""
     reporter.progress("loading_napari")
     import napari
@@ -130,6 +140,14 @@ def run_application(profile: LaunchProfile, reporter: StartupReporter) -> int:
     reporter.ready("VIPP is ready")
     reporter.close()
 
+    if smoke_exit_after_ready:
+        # Installer CI uses a real Cocoa event loop and then asks it to stop
+        # normally.  This catches native Qt teardown failures without adding a
+        # visible user-facing option or killing the process mid-cleanup.
+        from qtpy.QtCore import QTimer
+
+        QTimer.singleShot(750, QApplication.instance().quit)
+
     napari.run()
     return 0
 
@@ -147,7 +165,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         reporter.progress("starting_python")
-        return run_application(profile, reporter)
+        return run_application(
+            profile,
+            reporter,
+            smoke_exit_after_ready=args.smoke_exit_after_ready,
+        )
     except KeyboardInterrupt:
         try:
             reporter.failure("VIPP startup was interrupted.")

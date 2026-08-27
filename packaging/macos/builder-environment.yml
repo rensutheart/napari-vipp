@@ -1,0 +1,14 @@
+name: vipp-macos-builder
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - build=1.5.0
+  - conda-index=0.12.1
+  - conda-standalone=26.5.2
+  - constructor=3.16.1
+  - menuinst=2.5.2
+  - pytest>=8
+  - rattler-build=0.75.0
+  - setuptools=82.0.1
+  - wheel=0.47.0

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from qtpy.QtCore import QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QPoint, QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QColor, QImage, QPainter
 from qtpy.QtWidgets import (
     QComboBox,
@@ -359,7 +359,9 @@ def render_widget_image(widget) -> QImage:
     image = QImage(width, height, QImage.Format_RGB888)
     image.fill(QColor("#111827"))
     painter = QPainter(image)
-    widget.render(painter)
+    # PySide6 does not expose the one-argument QPainter overload that PyQt6
+    # accepts.  Supplying the default target offset selects the shared Qt API.
+    widget.render(painter, QPoint())
     painter.end()
     return image
 

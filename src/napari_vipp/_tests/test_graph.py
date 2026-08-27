@@ -572,7 +572,7 @@ def test_thumbnail_retains_full_render_detail_for_device_aware_painting(qtbot):
     rendered.fill(Qt.black)
     painter = QPainter(rendered)
     painter.scale(4.0, 4.0)
-    card.preview.render(painter)
+    card.preview.render(painter, QPoint())
     painter.end()
     scanline = np.fromiter(
         (rendered.pixelColor(x, 220).red() for x in range(720)),

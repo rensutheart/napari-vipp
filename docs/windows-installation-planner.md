@@ -1,10 +1,10 @@
 # Windows Installer And Planning Contract
 
-VIPP `0.14.0a1` is the current alpha containing both the read-only
+VIPP `0.14.0a2` is the current alpha containing both the read-only
 installation planner and a transactional managed-environment executor behind a
-novice-facing Windows setup window. This release adds clearer capacity and
-activity presentation without changing that
-transactional ownership model. A release executable is built only from its
+novice-facing Windows setup window. It retains the capacity and activity
+presentation introduced in `0.14.0a1` without changing the transactional
+ownership model. A release executable is built only from its
 immutable tag with that tag's exact wheel, published only with an explicit
 `-UNSIGNED` filename, and bound to its release manifest and SHA-256 checksum.
 Windows therefore reports **Unknown publisher** for an unsigned alpha; the
@@ -120,7 +120,7 @@ exact current selection and presents the resulting package review for a fresh
 confirmation; it never reuses the failed transaction's resolution or
 authorization.
 
-VIPP `0.14.0a1` keeps setup activity inspectable throughout this work.
+VIPP `0.14.0a2` keeps setup activity inspectable throughout this work.
 It names the current phase and elapsed time, and uses an indeterminate activity
 bar when the active tool cannot report an observable total. Byte progress is
 shown only when a dependency tool provides trustworthy totals. If no new

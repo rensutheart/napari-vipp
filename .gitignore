@@ -1,6 +1,8 @@
 .venv/
 .venv-installer-build-31210/
 .venv-macos/
+.venv-macos-pyside6/
+.venv-macos-installer/
 .venv-gpu-*/
 .pytest_cache/
 .ruff_cache/

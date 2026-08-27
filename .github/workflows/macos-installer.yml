@@ -1,0 +1,157 @@
+name: macOS installer development smoke
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/macos-installer.yml"
+      - ".github/workflows/unsigned-installers-release.yml"
+      - "packaging/macos/**"
+      - "scripts/package_macos_installer.py"
+      - "src/napari_vipp/_tests/test_macos_installer_packaging.py"
+      - "src/napari_vipp/**"
+      - "pyproject.toml"
+      - "MANIFEST.in"
+      - "README.md"
+      - "LICENSE"
+      - "NOTICE"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  development-build:
+    name: Unsigned PKG smoke (${{ matrix.architecture }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Create the pinned macOS builder environment
+        uses: mamba-org/setup-micromamba@ce51e99f4bb8a82ab7158c4dc59ef4634c59c4f9 # v3.1.0
+        with:
+          environment-file: packaging/macos/builder-environment.yml
+          cache-environment: true
+
+      - name: Validate packaging code
+        shell: bash -el {0}
+        run: |
+          python -m pip install --no-deps -e .
+          python -m pytest -q --noconftest \
+            src/napari_vipp/_tests/test_macos_installer_packaging.py
+
+      - name: Build the exact source wheel
+        shell: bash -el {0}
+        run: python -m build --wheel --no-isolation --outdir dist
+
+      - name: Build the clearly marked development PKG
+        shell: bash -el {0}
+        run: |
+          wheel=(dist/napari_vipp-*.whl)
+          test "${#wheel[@]}" -eq 1
+          python scripts/package_macos_installer.py build \
+            --development \
+            --wheel "${wheel[0]}" \
+            --output-directory dist/macos-development
+
+      - name: Inspect unsigned artifact and package structure
+        shell: bash -el {0}
+        run: |
+          package=(dist/macos-development/*-DEVELOPMENT.pkg)
+          test "${#package[@]}" -eq 1
+          if pkgutil --check-signature "${package[0]}" > signature.txt 2>&1; then
+            echo "A development PKG unexpectedly has a trusted signature."
+            exit 1
+          fi
+          grep -F "Status: no signature" signature.txt
+          pkgutil --expand-full "${package[0]}" "$RUNNER_TEMP/vipp-pkg-expanded"
+          test -f "$RUNNER_TEMP/vipp-pkg-expanded/Distribution"
+          checksum=(dist/macos-development/*-DEVELOPMENT.pkg.sha256)
+          test "${#checksum[@]}" -eq 1
+          checksum_dir="$(dirname "${checksum[0]}")"
+          checksum_file="$(basename "${checksum[0]}")"
+          (cd "$checksum_dir" && shasum -a 256 -c "$checksum_file")
+
+      - name: Install and launch on the disposable runner
+        shell: bash -el {0}
+        run: |
+          package=(dist/macos-development/*-DEVELOPMENT.pkg)
+          /usr/sbin/installer \
+            -allowUntrusted \
+            -pkg "${package[0]}" \
+            -target CurrentUserHomeDirectory
+
+          prefix="$HOME/Library/vipp"
+          app="$HOME/Applications/VIPP.app"
+          test -x "$prefix/bin/python"
+          test -d "$app"
+          "$prefix/bin/python" -m pip check
+          expected_version="$(python -c \
+            'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          "$prefix/bin/python" -c \
+            "from importlib.metadata import version; assert version('napari-vipp') == '$expected_version'; assert version('napari') == '0.9.0'; assert version('PySide6') == '6.9.3'"
+          test "$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist")" = \
+            "io.github.rensutheart.napari-vipp"
+
+          launcher_script="$app/Contents/MacOS/vipp-script"
+          launcher="$app/Contents/MacOS/vipp"
+          test -x "$launcher"
+          test -x "$launcher_script"
+          grep -Fq "export QT_API=pyside6" "$launcher_script"
+          grep -Fq "$app/Contents/Resources/python -m napari_vipp --profile cpu" \
+            "$launcher_script"
+
+          QT_API=pyqt6 "$launcher" \
+            > "$RUNNER_TEMP/vipp-shortcut.log" 2>&1 &
+          shortcut_pid=$!
+          shortcut_ready=0
+          for _ in $(seq 1 180); do
+            if ! kill -0 "$shortcut_pid" 2>/dev/null; then
+              if wait "$shortcut_pid"; then
+                shortcut_ready=1
+              fi
+              break
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/vipp-shortcut.log"
+          test "$shortcut_ready" -eq 1
+          child_pid="$(pgrep -f 'napari_vipp.app.*--profile cpu' | head -n 1)"
+          test -n "$child_pid"
+          kill -0 "$child_pid"
+          sleep 2
+          kill -0 "$child_pid"
+          kill "$child_pid"
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$child_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          ! kill -0 "$child_pid" 2>/dev/null
+
+          QT_API=pyside6 "$prefix/bin/python" -m napari_vipp.app \
+            --profile cpu --smoke-exit-after-ready \
+            > "$RUNNER_TEMP/vipp-native.log" 2>&1
+          cat "$RUNNER_TEMP/vipp-native.log"
+          grep -Fq "VIPP: VIPP is ready" "$RUNNER_TEMP/vipp-native.log"
+
+      - name: Upload non-release development evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: vipp-macos-installer-development-${{ matrix.architecture }}-${{ github.sha }}
+          path: dist/macos-development/*
+          if-no-files-found: error
+          retention-days: 7
