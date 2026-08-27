@@ -7,8 +7,9 @@ Last reviewed: 2026-08-27
 > installers, PyPI publication, and changed-domain gates are complete. The
 > GitHub wheel and installers include the detached-window resizing fix; PyPI
 > retains the earlier pre-fix package bytes because published files cannot be
-> replaced. Companion documentation publication is tracked separately and must
-> not be claimed until its numbered, stable, and version-index surfaces pass.
+> replaced. Companion documentation PR #19, its strict exact-main checks, and
+> its numbered, stable, nightly, version-index, and screenshot surfaces are also
+> published and verified.
 
 This page records expensive behavioral evidence that future releases may carry
 forward. It prevents a version-only release change from triggering unrelated
@@ -82,6 +83,25 @@ and source archive
 Those hashes intentionally differ from the corrected GitHub assets and are
 recorded here so the distinction is auditable.
 
+### Companion documentation
+
+- [`vipp-mkdocs#19`](https://github.com/rensutheart/vipp-mkdocs/pull/19)
+  was reviewed at exact head
+  `1012acf9d3e0e8d7eaa860d95149daf9faf6407e` and merge-committed as
+  `fcdb5f69b0559d5399b7d30e1b4fc207994acc0d`.
+- Exact-main [Documentation checks run 33062909826](https://github.com/rensutheart/vipp-mkdocs/actions/runs/33062909826)
+  and push-triggered [nightly deployment run 33062909774](https://github.com/rensutheart/vipp-mkdocs/actions/runs/33062909774)
+  passed.
+- Manual [release deployment run 33063988184](https://github.com/rensutheart/vipp-mkdocs/actions/runs/33063988184)
+  passed with `version=0.14.0a2` and `make_stable=true`.
+- On 2026-08-27, the [numbered manual](https://rensutheart.github.io/vipp-mkdocs/0.14.0a2/),
+  [stable manual](https://rensutheart.github.io/vipp-mkdocs/stable/),
+  [nightly manual](https://rensutheart.github.io/vipp-mkdocs/nightly/), and
+  [`versions.json`](https://rensutheart.github.io/vipp-mkdocs/versions.json)
+  returned the current a2 content; `stable` aliases `0.14.0a2`, the site root
+  redirects to `stable/`, and the newly published source and batch-workspace
+  screenshots returned non-empty PNG responses.
+
 ## Current Domain Records: `v0.14.0a2`
 
 | Domain | Qualified at | Baseline evidence | Carry forward when | Invalidate when |
@@ -93,7 +113,7 @@ recorded here so the distinction is auditable.
 | Workflow/schema/provenance | `v0.14.0a1` / `e16ca87` / 2026-08-26 | Workflow schema 5, batch config/manifest schema 4, SourceItem migrations, generated/replay/export paths, per-sample overrides, checkpoints, and provenance are unchanged in a2. | Schema, serializers, migrations, source identity, planning, manifests/checkpoints, and generated-runner contracts remain unchanged. | Any listed contract changes. |
 | Dependencies/toolchain | macOS route at `v0.14.0a2` / `4aaf996`; existing routes at their recorded a1/a8 baselines | Exact-tag installer jobs qualified the new pinned macOS builder and runtime contents; existing Windows, Linux, and CUDA routes were unchanged. | Relevant runtime/build pins, OS/toolchain matrix, dependency groups, and accelerator stack remain unchanged. | Any relevant runtime, build, installer, Python, OS, or accelerator dependency changes. |
 | Packaging/release | `v0.14.0a2` / `4aaf996` / 2026-08-27 | Exact-source distributions and all three platform installers passed tag/version/hash/public-asset checks. The PyPI/GitHub byte distinction is explicitly recorded above. | Package-data layout, entry points, release workflows, dependency declarations, and asset composition remain unchanged. | Any listed input changes or publication canary failure. |
-| Documentation | companion publication for `0.14.0a2` pending | The refreshed source and strict build must pass before the numbered manual and stable alias are deployed. | Not eligible for carry-forward until numbered, stable, and `versions.json` are verified. | Any relevant documentation or pictured behavior changes. |
+| Documentation | `0.14.0a2` / `fcdb5f69` / 2026-08-27 | Companion PR #19, exact-main strict checks, nightly deployment, and release deployment 33063988184 passed; numbered, stable, nightly, version-index, redirect, and new screenshot surfaces were verified. | Site configuration, navigation, installation/upgrade behavior, UI shown in screenshots, and changed feature documentation remain unchanged. | Any relevant documentation, deployment configuration, navigation, installation guidance, or pictured behavior changes. |
 
 ## Historical `v0.14.0a1` App Release Qualification
 
