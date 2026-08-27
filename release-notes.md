@@ -1,9 +1,9 @@
 # VIPP 0.14.0a2
 
 VIPP 0.14.0a2 makes the normal desktop application and an offline installer
-available on macOS while retaining the existing unsigned Windows installer.
-It is a focused compatibility and packaging alpha; the scientific contracts
-released in 0.14.0a1 are unchanged.
+available on macOS, refreshes the unsigned Windows installer, and fixes
+detached-window resizing. It is a focused UI compatibility and packaging
+alpha; the scientific contracts released in 0.14.0a1 are unchanged.
 
 This remains alpha software. Keep original data and workflows, verify the
 published checksum before running an unsigned installer, and review important
@@ -23,6 +23,8 @@ outputs before using them for scientific conclusions or publication.
 
 ## Cross-Qt compatibility fixes
 
+- Detached VIPP windows can now be maximized or resized freely in both width
+  and height. Reattaching them restores napari's original dock constraints.
 - Qt dialog result handling and widget rendering now use APIs shared by PyQt6
   and PySide6.
 - Settings-menu wrappers are retained while their native actions are visible.
@@ -39,12 +41,12 @@ PyPI installation remains available for Linux and advanced users.
 
 ## Qualification scope
 
-The changed release domains are core/UI compatibility, macOS installer and
-packaging infrastructure, dependency/toolchain inputs for that installer, and
-documentation. Focused PyQt6/PySide6 checks and native Apple Silicon lifecycle
-tests cover the compatibility delta; the release workflow also builds and
-tests the Intel package. Unchanged SourceItem, workflow/schema, scientific GPU,
-and Windows transactional-installer behavior carry forward from their recorded
-0.14.0a1 and 0.13.0a8 baselines. Exact 0.14.0a2 wheel, source archive,
-installer, checksum, version, and public-URL facts are regenerated from the
-immutable tag.
+The changed release domains are core/UI compatibility, detached dock sizing,
+macOS installer and packaging infrastructure, dependency/toolchain inputs for
+that installer, and documentation. Focused PyQt6/PySide6 dock checks and native
+Apple Silicon lifecycle tests cover the compatibility delta; the release
+workflow also builds and tests the Intel package. Unchanged SourceItem,
+workflow/schema, scientific GPU, and Windows transactional-installer behavior
+carry forward from their recorded 0.14.0a1 and 0.13.0a8 baselines. Exact
+0.14.0a2 wheel, source archive, installer, checksum, version, and public-URL
+facts are regenerated from the release tag.

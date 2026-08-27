@@ -14,6 +14,10 @@
 
 ### Bug Fixes
 
+- Detached VIPP windows now release stale width and height constraints across
+  the complete Qt dock-widget chain, so they can be maximized or resized freely
+  in either direction. Reattaching the window restores napari's original dock
+  constraints and size policies.
 - Corrected PySide6 compatibility in graph dialogs, rendered colocalization
   previews, settings submenus, dock callbacks, and queued thumbnail work while
   retaining PyQt6 behavior. Callbacks now avoid Qt objects whose native owners

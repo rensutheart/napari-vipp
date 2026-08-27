@@ -265,7 +265,8 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Use
 
 ## Current Alpha
 
-`0.14.0a2` adds native Apple Silicon and Intel installers and fixes PySide6
+`0.14.0a2` adds native Apple Silicon and Intel installers, allows detached VIPP
+windows to be resized freely in both dimensions, and fixes PySide6
 compatibility in dialogs, menus, rendering, and delayed Qt callbacks. The
 SourceItem, reader, batch-override, OME-Zarr preview, workflow, and scientific
 contracts introduced in `0.14.0a1` remain unchanged. CPU remains the portable

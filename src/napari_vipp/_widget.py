@@ -689,6 +689,14 @@ if TYPE_CHECKING:
     import napari
 
 
+@dataclass(frozen=True, slots=True)
+class _WidgetSizeConstraintState:
+    widget_ref: weakref.ReferenceType[QWidget]
+    minimum_size: QSize
+    maximum_size: QSize
+    size_policy: QSizePolicy
+
+
 @dataclass(frozen=True)
 class GraphNoteState:
     id: str
@@ -762,6 +770,8 @@ RESCALE_CUTOFF_MODE_PARAMETER = "cutoff_mode"
 CLIP_CUTOFF_PARAMETERS = {"minimum", "maximum"}
 QT_SIGNED_INT_MINIMUM = -(2**31)
 QT_SIGNED_INT_MAXIMUM = 2**31 - 1
+# Qt's public macro is not exported consistently by every Python binding.
+_QT_WIDGET_SIZE_MAXIMUM = (1 << 24) - 1
 INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS = frozenset(
     spec.id
     for specs in grouped_palette_specs().get(INTENSITY_CONTRAST_CATEGORY, {}).values()
@@ -1567,6 +1577,7 @@ class VippWidget(QWidget):
         )
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
+        self._docked_size_constraints: tuple[_WidgetSizeConstraintState, ...] = ()
         self._initial_dock_size_applied = False
         self._history = WorkflowHistory(limit=self.HISTORY_LIMIT)
         self._workflow_tabs = WorkflowTabModel()
@@ -2791,6 +2802,9 @@ class VippWidget(QWidget):
 
     def _on_dock_top_level_changed(self, floating: bool) -> None:
         if floating:
+            dock = self._dock_widget()
+            if dock is not None:
+                self._capture_docked_size_constraints(dock)
             QTimer.singleShot(0, self._configure_floating_dock_window)
         else:
             QTimer.singleShot(0, self._restore_docked_title_bar)
@@ -2806,12 +2820,15 @@ class VippWidget(QWidget):
         if dock is None or not dock.isFloating():
             return
         try:
+            self._release_floating_size_constraints(dock)
             if dock.titleBarWidget() is not None:
                 dock.setTitleBarWidget(None)
 
             flags = dock.windowFlags()
             desired_flags = (flags & ~Qt.WindowType_Mask) | Qt.Window
-            desired_flags &= ~Qt.FramelessWindowHint
+            desired_flags &= ~(
+                Qt.FramelessWindowHint | Qt.MSWindowsFixedSizeDialogHint
+            )
             desired_flags |= (
                 Qt.WindowTitleHint
                 | Qt.WindowSystemMenuHint
@@ -2833,6 +2850,9 @@ class VippWidget(QWidget):
                         dock.showMaximized()
                     else:
                         dock.show()
+            # Replacing the native window can make QDockWidget propagate its
+            # content constraints again, so normalize once more afterward.
+            self._release_floating_size_constraints(dock)
         except Exception:
             pass
 
@@ -2843,10 +2863,87 @@ class VippWidget(QWidget):
         if dock is None or dock.isFloating():
             return
         try:
+            self._restore_docked_size_constraints(dock)
             if dock.titleBarWidget() is not None:
                 dock.setTitleBarWidget(None)
         except Exception:
             pass
+
+    def _dock_size_constraint_targets(self, dock: QDockWidget) -> tuple[QWidget, ...]:
+        """Return the editor, any napari wrappers, and the containing dock."""
+        targets: list[QWidget] = []
+        target: QWidget | None = self
+        while target is not None:
+            targets.append(target)
+            if target is dock:
+                break
+            target = target.parentWidget()
+        if not targets or targets[-1] is not dock:
+            targets.append(dock)
+        return tuple(targets)
+
+    def _capture_docked_size_constraints(self, dock: QDockWidget) -> None:
+        """Remember host constraints so floating-only changes are reversible."""
+        if any(
+            (target := state.widget_ref()) is dock and isalive(target)
+            for state in self._docked_size_constraints
+        ):
+            return
+        self._docked_size_constraints = tuple(
+            _WidgetSizeConstraintState(
+                widget_ref=weakref.ref(target),
+                minimum_size=QSize(target.minimumSize()),
+                maximum_size=QSize(target.maximumSize()),
+                size_policy=QSizePolicy(target.sizePolicy()),
+            )
+            for target in self._dock_size_constraint_targets(dock)
+        )
+
+    def _release_floating_size_constraints(self, dock: QDockWidget) -> None:
+        """Remove stale one-axis limits from the complete floating dock chain."""
+        self._capture_docked_size_constraints(dock)
+        targets = self._dock_size_constraint_targets(dock)
+        for target in targets:
+            target.setMinimumSize(0, 0)
+            target.setMaximumSize(_QT_WIDGET_SIZE_MAXIMUM, _QT_WIDGET_SIZE_MAXIMUM)
+            target.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            layout = target.layout()
+            if layout is not None:
+                layout.invalidate()
+        for target in targets:
+            layout = target.layout()
+            if layout is not None:
+                layout.activate()
+            target.updateGeometry()
+
+    def _restore_docked_size_constraints(self, dock: QDockWidget) -> None:
+        """Restore the current dock chain from this detach cycle's snapshot."""
+        states = self._docked_size_constraints
+        self._docked_size_constraints = ()
+        current_target_ids = {
+            id(target) for target in self._dock_size_constraint_targets(dock)
+        }
+        restored: list[QWidget] = []
+        for state in states:
+            target = state.widget_ref()
+            if (
+                target is None
+                or not isalive(target)
+                or id(target) not in current_target_ids
+            ):
+                continue
+            target.setMinimumSize(state.minimum_size)
+            target.setMaximumSize(state.maximum_size)
+            target.setSizePolicy(state.size_policy)
+            layout = target.layout()
+            if layout is not None:
+                layout.invalidate()
+            restored.append(target)
+        for target in restored:
+            layout = target.layout()
+            if layout is not None:
+                layout.activate()
+            target.updateGeometry()
 
     def _apply_initial_dock_size(self) -> None:
         if (
