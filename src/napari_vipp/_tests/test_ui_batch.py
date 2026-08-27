@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QApplication, QFormLayout, QScrollArea, QSizePolicy
+from qtpy.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFormLayout,
+    QScrollArea,
+    QSizePolicy,
+)
 
 from napari_vipp.core.batch import (
     DEFAULT_BATCH_SOURCE_PATTERN,
@@ -787,7 +793,7 @@ def test_batch_dialog_run_request_does_not_accept_workspace(qtbot, tmp_path):
 
     assert len(requests) == 1
     assert requests[0]["continue_on_error"] is True
-    assert dialog.result() != dialog.Accepted
+    assert dialog.result() != QDialog.DialogCode.Accepted
     assert dialog.close_button.text() == "Close"
 
 

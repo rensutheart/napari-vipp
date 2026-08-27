@@ -1,6 +1,6 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-08-23
+Last reviewed: 2026-08-27
 
 > **0.13.0a8 release record (2026-08-22):** Every domain invalidated by the
 > complete post-a7 change set was requalified at the boundaries recorded below.
@@ -152,7 +152,43 @@ after its focused qualification passes. Record:
 
 Do not rewrite unaffected rows merely to replace the release version.
 
-## Expected `0.14.0a1` Selection
+## Expected `0.14.0a2` Selection
+
+The complete delta from `v0.14.0a1` declares:
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  workflow_schema_provenance: false
+  gpu_scientific: false
+  windows_installer: false
+  macos_installer: true
+  dependencies_toolchain: true
+  packaging_release: true
+  documentation: true
+carried_forward:
+  source_workflow_scientific_contracts: v0.14.0a1
+  gpu_scientific_catalogue: v0.13.0a8
+  windows_installer_transactional_lifecycle: v0.13.0a8
+```
+
+The core/UI gate covers the changed PySide6/PyQt6 dialog, rendered-preview,
+menu-lifetime, dock-callback, and thumbnail-callback behavior. The first macOS
+installer baseline must cover exact-wheel and offline contents, the current-user
+layout, dependency health, application identity, native Cocoa startup and clean
+shutdown, and install/launch behavior on both Apple Silicon and Intel. Because
+package data, installer assets, and the macOS builder toolchain are new, exact
+artifact checks and independent wheel/source-archive reproducibility remain
+release gates.
+
+The Windows setup must be rebuilt from the exact `0.14.0a2` wheel and receive
+its routine frozen-payload, version, unsigned-state, and checksum checks. Its
+unchanged update/repair/rollback/uninstall behavior does not require another
+full lifecycle matrix. SourceItem, reader, workflow/schema, GPU/scientific, and
+other scientific behavior are unchanged and retain the baselines above.
+
+## Historical `0.14.0a1` Selection
 
 For the `0.14.0a1` release, the selected changed domains are `core_ui`,
 `workflow_schema`, `windows_installer`, and `documentation`. Its release checks

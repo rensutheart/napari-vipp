@@ -18,20 +18,20 @@ RELEASE_TEXT_SUFFIXES = frozenset(
 )
 
 
-def test_014a1_release_version_contract_is_consistent() -> None:
+def test_014a2_release_version_contract_is_consistent() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     citation = (REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8")
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     release_notes = (REPO_ROOT / "release-notes.md").read_text(encoding="utf-8")
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert project["project"]["version"] == "0.14.0a1"
-    assert 'version: "0.14.0a1"' in citation
-    assert 'date-released: "2026-08-26"' in citation
-    assert changelog.startswith("# Changelog\n\n## 0.14.0a1 - 2026-08-26")
-    assert release_notes.startswith("# VIPP 0.14.0a1\n")
+    assert project["project"]["version"] == "0.14.0a2"
+    assert 'version: "0.14.0a2"' in citation
+    assert 'date-released: "2026-08-27"' in citation
+    assert changelog.startswith("# Changelog\n\n## 0.14.0a2 - 2026-08-27")
+    assert release_notes.startswith("# VIPP 0.14.0a2\n")
     assert "release candidate" not in release_notes.casefold()
-    assert "VIPP `0.14.0a1` is published" in readme
+    assert "VIPP `0.14.0a2` is published" in readme
 
 
 def test_local_markdown_links_resolve():
@@ -139,13 +139,13 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
         'python -m pip install "napari[pyqt6]>=0.6"'
     )
     assert quick_start.index("## Windows: The Recommended Route") < quick_start.index(
-        "## Manual Alpha Installation (Advanced And Non-Windows)"
+        "## Manual Alpha Installation (Advanced And Portable)"
     )
     assert (
         "https://github.com/rensutheart/napari-vipp/releases/download/"
-        "v0.14.0a1/VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED.exe"
+        "v0.14.0a2/VIPP-Setup-0.14.0a2-Windows-x86_64-UNSIGNED.exe"
     ) in quick_start
-    assert "SHA256SUMS-Windows-0.14.0a1.txt" in quick_start
+    assert "SHA256SUMS-Windows-0.14.0a2.txt" in quick_start
     assert "**Unknown publisher**" in quick_start
     assert "**More info**, confirm" in quick_start
     assert "**Run anyway**" in quick_start
@@ -184,6 +184,32 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
         planner_guide.split()
     )
     assert "ready_for_apply: false" in planner_guide
+
+
+def test_macos_installer_quick_start_is_primary_and_truthful():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    quick_start = (REPO_ROOT / "docs" / "quick-start.md").read_text(
+        encoding="utf-8"
+    )
+
+    for architecture in ("arm64", "x86_64"):
+        package = f"VIPP-0.14.0a2-macOS-{architecture}-UNSIGNED.pkg"
+        checksum = f"SHA256SUMS-macOS-{architecture}-0.14.0a2.txt"
+        assert (
+            "https://github.com/rensutheart/napari-vipp/releases/download/"
+            f"v0.14.0a2/{package}"
+        ) in quick_start
+        assert checksum in quick_start
+
+    normalized = " ".join(quick_start.split())
+    assert "System Settings > Privacy & Security" in normalized
+    assert "Open Anyway" in normalized
+    assert "unsigned and not notarized" in normalized
+    assert "~/Library/vipp" in quick_start
+    assert "~/Applications/VIPP.app" in quick_start
+    assert readme.index("### macOS Installer (Recommended Path)") < readme.index(
+        'python -m pip install "napari[pyqt6]>=0.6"'
+    )
 
 
 def test_product_tagline_is_consistent_across_primary_surfaces():

@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-27
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -39,11 +39,11 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.14.0a1` is the current alpha release. Its official
-[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a1),
+`0.14.0a2` is the current alpha release. Its official
+[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a2),
 checksum sidecars,
-[PyPI package](https://pypi.org/project/napari-vipp/0.14.0a1/), and
-[numbered](https://rensutheart.github.io/vipp-mkdocs/0.14.0a1/) and
+[PyPI package](https://pypi.org/project/napari-vipp/0.14.0a2/), and
+[numbered](https://rensutheart.github.io/vipp-mkdocs/0.14.0a2/) and
 [stable](https://rensutheart.github.io/vipp-mkdocs/stable/) documentation are
 the release surfaces. The unchanged expensive installer-lifecycle and full-GPU
 evidence remains traceable to `v0.13.0a8`, while `v0.13.0a9` supplies the
@@ -63,6 +63,8 @@ provides:
   restore, activity, and overwrite-confirmation behavior;
 - decoded-memory preflight, truthful source-load progress and cancellation, and
   Windows setup capacity, phase, heartbeat, and log presentation;
+- native CPU-only Apple Silicon and Intel installers, plus PySide6/PyQt6
+  compatibility across the normal application UI;
 - PSF/restoration, segmentation and cleanup, measurement, skeleton,
   colocalization, and spatial-association workflows; and
 - a deliberately bounded CuPy/CuPyX CUDA catalogue, including binary Remove
@@ -86,9 +88,11 @@ Important remaining limits are:
 
 ## Active Release Order
 
-The current release is the `0.14.0a1` Source-Aware Loading And Per-Sample Batch
-Alpha. Its implementation record appears below, followed by committed work for
-later 0.14 alphas. The detailed 0.13 sections remain delivered contract records.
+The current release is the `0.14.0a2` macOS installer and cross-Qt
+compatibility alpha. It carries the `0.14.0a1` Source-Aware Loading and
+Per-Sample Batch scientific contracts forward unchanged. Both implementation
+records appear below, followed by committed work for later 0.14 alphas. The
+detailed 0.13 sections remain delivered contract records.
 
 ### Delivered Record: `0.13.0a9` Correctness Rollup
 
@@ -472,7 +476,22 @@ shipped independently of the optional crop follow-up.
 - Describe measured performance as machine-local unless more than one reviewed
   hardware class supports a broader claim.
 
-### Current Release: `0.14.0a1` Source-Aware Loading And Per-Sample Batch Alpha
+### Current Release: `0.14.0a2` macOS Installer And Cross-Qt Compatibility
+
+This focused alpha gives non-command-line macOS users separate offline Apple
+Silicon and Intel PKGs. Each package installs a current-user CPU environment
+and creates a normal `VIPP.app`. The release also corrects PySide6 compatibility
+in dialogs, rendered previews, menu lifetime, and delayed Qt callbacks while
+retaining PyQt6 behavior. Both the Windows executable and macOS packages remain
+explicitly unsigned convenience installers with checksum-first instructions.
+
+The scientific, source, workflow/schema, and GPU contracts are unchanged from
+`0.14.0a1`. Qualification therefore focuses on PyQt6/PySide6 behavior, native
+Cocoa launch and clean shutdown, exact-wheel offline packaging, and install/
+launch checks on both Mac architectures. Existing scientific and Windows
+transactional-lifecycle evidence carries forward under the release baseline.
+
+### Delivered Record: `0.14.0a1` Source-Aware Loading And Per-Sample Batch Alpha
 
 The first 0.14 alpha targets three connected source-aware outcomes:
 
@@ -732,14 +751,14 @@ completion of:
 
 Those items require later evidence or remain in [product ideas](product-ideas.md).
 
-### Committed Follow-Ups After `0.14.0a1`
+### Committed Follow-Ups After `0.14.0a2`
 
 #### Responsive Volume Crop (issue required before implementation)
 
 Goal: make Crop Stack a discoverable volume ROI tool without recalculating on
-every drag event. This optional work did not ship in `0.13.0a8`, is not part of
-the `0.14.0a1` release, and must not delay the committed follow-up work. Create a
-separate feature issue before implementation; it remains independent of `#33`.
+every drag event. This optional work did not ship in `0.13.0a8`, `0.14.0a1`, or
+`0.14.0a2`, and must not delay the committed follow-up work. Create a separate
+feature issue before implementation; it remains independent of `#33`.
 
 - preserve the existing operation and old workflows while adding persisted
   nonnegative `z_start` and `z_end` crop margins, measured as samples removed

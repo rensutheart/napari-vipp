@@ -4,12 +4,17 @@ on:
   pull_request:
     paths:
       - ".github/workflows/windows-installer.yml"
+      - ".github/workflows/unsigned-installers-release.yml"
       - "packaging/windows/**"
       - "scripts/package_windows_installer.py"
       - "scripts/sign_windows_installer.ps1"
-      - "src/napari_vipp/installer/**"
+      - "src/napari_vipp/**"
       - "src/napari_vipp/_tests/test_windows_installer_packaging.py"
       - "pyproject.toml"
+      - "MANIFEST.in"
+      - "README.md"
+      - "LICENSE"
+      - "NOTICE"
   workflow_dispatch:
 
 permissions:

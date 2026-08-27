@@ -1,0 +1,57 @@
+# This template produces either a clearly marked DEVELOPMENT package or a
+# clean-tag staging package. Only package_macos_installer.py finalize-unsigned
+# may create the explicitly named public -UNSIGNED alpha assets. Developer ID
+# signing and notarization remain a separate production gate.
+name: VIPP
+version: "__VIPP_VERSION__"
+installer_type: pkg
+installer_filename: "__VIPP_INSTALLER_FILENAME__"
+
+channels:
+  - "__VIPP_LOCAL_CHANNEL_URI__"
+  - conda-forge
+
+specs:
+  - python=3.12
+  - conda>=23.11
+  - napari=0.9.0
+  - pyside6=6.9.3
+  - numpy=2.5.1
+  - scipy=1.18.0
+  - scikit-image=0.26.0
+  - menuinst=2.5.2
+  - pip
+  - vipp-menu=__VIPP_VERSION__
+
+virtual_specs:
+  - "__osx>=13"
+
+menu_packages:
+  - vipp-menu
+
+initialize_conda: false
+register_envs: false
+keep_pkgs: false
+write_condarc: false
+check_path_spaces: true
+
+default_location_pkg: Library
+pkg_name: VIPP
+pkg_domains:
+  enable_anywhere: false
+  enable_currentUserHome: true
+  enable_localSystem: false
+reverse_domain_identifier: io.github.rensutheart.vipp
+progress_notifications: true
+
+license_file: LICENSE.txt
+welcome_file: welcome.txt
+conclusion_file: conclusion.txt
+
+build_outputs:
+  - hash:
+      algorithm: sha256
+  - info.json
+  - licenses
+  - lockfile
+  - pkgs_list

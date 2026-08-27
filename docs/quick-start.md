@@ -8,28 +8,28 @@ The normal VIPP experience is one Windows installer: download the explicitly
 named unsigned `.exe`, verify it, review the proposed location and compute
 option, and launch VIPP from the shortcuts it creates.
 
-The official `0.14.0a1` prerelease and its checksum sidecars are public. Use
+The official `0.14.0a2` prerelease and its checksum sidecars are public. Use
 only that release surface; never download a guessed release asset.
 
-**[Download the VIPP 0.14.0a1 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a1/VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED.exe)**
+**[Download the VIPP 0.14.0a2 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a2/VIPP-Setup-0.14.0a2-Windows-x86_64-UNSIGNED.exe)**
 
 Use only the file attached to the official
-[`v0.14.0a1` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a1).
+[`v0.14.0a2` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a2).
 This alpha is intentionally not Authenticode-signed. **Unknown publisher** and
 a **Windows protected your PC** warning are therefore expected. The same
 release includes the SHA-256 checksum and release manifest.
 
-1. Download both `VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED.exe` and
-   `SHA256SUMS-Windows-0.14.0a1.txt` from the official release.
+1. Download both `VIPP-Setup-0.14.0a2-Windows-x86_64-UNSIGNED.exe` and
+   `SHA256SUMS-Windows-0.14.0a2.txt` from the official release.
 2. Open PowerShell in the download folder and run:
 
    ```powershell
    Get-FileHash -Algorithm SHA256 `
-     .\VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED.exe
+     .\VIPP-Setup-0.14.0a2-Windows-x86_64-UNSIGNED.exe
    ```
 
    The 64-character hash must exactly match the hash beside that filename in
-   `SHA256SUMS-Windows-0.14.0a1.txt`. Stop and delete the installer if it does
+   `SHA256SUMS-Windows-0.14.0a2.txt`. Stop and delete the installer if it does
    not match.
 3. Double-click the installer. If Windows shows **Windows protected your PC**,
    select **More info**, confirm the app name ends in `-UNSIGNED.exe` and the
@@ -60,7 +60,7 @@ After that one-time Windows warning, the ordinary setup flow is:
    settings it has not checked. Windows obtains canonical Local App Data with
    `SHGetKnownFolderPath(FOLDERID_LocalAppData)`; one-click setup uses only
    `VIPP\environments\cpu` or `VIPP\environments\cuda13` beneath it. Custom
-   managed roots are not accepted. In `0.14.0a1`, the complete CUDA path must
+   managed roots are not accepted. In `0.14.0a2`, the complete CUDA path must
    use ASCII characters only because CuPy 14.1.1 cannot reliably compile CUDA
    kernels from a Windows environment path containing characters such as `Å`
    or `é`. Spaces are supported. If canonical Local App Data contains a
@@ -84,7 +84,7 @@ Managed CPU and CUDA installations can coexist. Remove either one later from
 uninstaller and the other installation is left intact.
 
 An installer-owned CUDA copy already stored in a non-ASCII path is a special
-case: `0.14.0a1` will not update or repair it in place. Graphical setup may
+case: `0.14.0a2` will not update or repair it in place. Graphical setup may
 first complete and record recovery from an earlier interrupted transaction;
 after that separate recovery, the newly blocked selection performs no new
 mutation of the old copy, shortcuts, or ownership record. Do not move or rename
@@ -143,19 +143,66 @@ before **Install** can be selected again.
 The standard GPU installation includes every current reviewed CuPy/CuPyX
 implementation. No separately built GPU provider is required.
 
-## Manual Alpha Installation (Advanced And Non-Windows)
+## macOS: The Recommended Route
 
-Use these commands when an advanced installation needs terminal-level control
-or when installing on Linux or macOS.
+Choose the package that matches **Apple menu > About This Mac**:
+
+- **Apple Silicon** (`Chip: Apple ...`):
+  [download the arm64 PKG](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a2/VIPP-0.14.0a2-macOS-arm64-UNSIGNED.pkg)
+  and its
+  [SHA-256 file](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a2/SHA256SUMS-macOS-arm64-0.14.0a2.txt).
+- **Intel** (`Processor: Intel ...`):
+  [download the x86_64 PKG](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a2/VIPP-0.14.0a2-macOS-x86_64-UNSIGNED.pkg)
+  and its
+  [SHA-256 file](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a2/SHA256SUMS-macOS-x86_64-0.14.0a2.txt).
+
+Each package is offline, CPU-only, and current-user-only. It provides its own
+managed Python environment at `~/Library/vipp`, creates
+`~/Applications/VIPP.app`, and needs approximately 3 GB of free disk space.
+It does not modify the system Python or shell startup files.
+
+This alpha is explicitly unsigned and not notarized. Before opening it, verify
+that its SHA-256 matches the line in the downloaded checksum file. The optional
+Terminal check for Apple Silicon is:
+
+```bash
+shasum -a 256 VIPP-0.14.0a2-macOS-arm64-UNSIGNED.pkg
+```
+
+Use the `x86_64` filename on Intel. Stop if the value differs or the package did
+not come from the official release. Double-click the verified PKG. If macOS
+blocks it because the developer cannot be verified, choose **Done**, open
+**System Settings > Privacy & Security**, find the blocked VIPP package under
+**Security**, choose **Open Anyway**, confirm the exact package name, and
+approve the Installer prompt. A managed work or school Mac may prohibit this
+override; use the manual route below or ask its administrator instead of
+weakening security settings.
+
+After installation, open **VIPP** from `~/Applications`. First launch may take
+longer while napari loads. To remove this alpha, move only
+`~/Applications/VIPP.app` and `~/Library/vipp` to Trash. There is no graphical
+updater or uninstaller yet; installing a later package replaces the managed
+environment only when that later release explicitly documents a supported
+update. Otherwise remove both installer-owned paths before reinstalling.
+
+The [macOS packaging guide](../packaging/macos/README.md) records the exact
+offline build, lifecycle checks, licence inventory, and future Developer ID and
+notarization path. The PKG itself performs installation, so a DMG wrapper is not
+required.
+
+## Manual Alpha Installation (Advanced And Portable)
+
+Use these commands for terminal-level control, Linux, or integration with an
+existing napari environment.
 
 ### CPU On Windows, Linux, Or macOS
 
-VIPP `0.14.0a1` supports CPython 3.12 and 3.13. Create and activate a dedicated
+VIPP `0.14.0a2` supports CPython 3.12 and 3.13. Create and activate a dedicated
 virtual environment first; do not install the application into a global/base
 Python. Then run:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.14.0a1"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.14.0a2"
 vipp
 ```
 
@@ -171,7 +218,7 @@ Run these commands from an ASCII-only working directory:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.14.0a1"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.14.0a2"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -198,7 +245,7 @@ Python explicitly. A conservative CPU update is:
 
 ```powershell
 $napariPython = "C:\Path\To\napari-env\Scripts\python.exe"
-& $napariPython -m pip install "napari-vipp==0.14.0a1"
+& $napariPython -m pip install "napari-vipp==0.14.0a2"
 & $napariPython -m pip check
 ```
 
