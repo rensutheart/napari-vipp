@@ -120,17 +120,20 @@ was skipped rather than risking an avoidable host OOM.
 
 ## Saved And Effective Compute Requests
 
-Workflow schema 4 stores portable authored intent, including the serialized
-`prefer_gpu` mode. Batch configuration schema 3 retains the full `compute`
-object and adds guarded source-axis declarations, so a saved collection run
-also retains its source interpretation, runtime, device, memory, and
+Workflow schema 5 retains version 4's portable authored intent, including the
+serialized `prefer_gpu` mode, and adds canonical SourceItem evidence for
+resolved file sources. Batch configuration schema 4 retains the full `compute`
+object and version 3's guarded source-axis declarations, then adds SourceItem
+inventories and typed per-sample parameter overrides. A saved collection run
+therefore retains its source interpretation, runtime, device, memory, and
 experimental settings. Batch config version 1 had no compute contract and is
-migrated to an explicit CPU request; version 2 keeps its saved compute request.
-Both older versions load without axis declarations and become version 3 only
-when reviewed and saved. VIPP never guesses that an old batch intended to use
-an accelerator or that a generic TIFF page axis meant Z. Per-node preferences
-are preserved when another global mode is active but remain dormant unless the
-mode is `custom`.
+migrated to an explicit CPU request; version 2 keeps its saved compute request;
+version 3 keeps its source declarations. Older versions contain no per-sample
+overrides, acquire SourceItems when resolved, and become version 4 only when
+reviewed and saved. VIPP never guesses that an old batch intended to use an
+accelerator or that a generic TIFF page axis meant Z. Per-node preferences are
+preserved when another global mode is active but remain dormant unless the mode
+is `custom`.
 
 The precedence rules are deliberate:
 
@@ -144,7 +147,7 @@ The precedence rules are deliberate:
 4. A saved `vipp_batch_pipeline.py` uses its config request by default. Its CLI
    overlays only the explicitly supplied mode, fallback, and per-node options;
    the other saved fields remain unchanged.
-5. An exported workflow function uses its embedded schema-4 request unless the
+5. An exported workflow function uses its embedded schema-5 request unless the
    caller supplies a complete `ComputeRequest` or mapping. The exported CLI
    similarly overlays only options written on the command line.
 
@@ -296,11 +299,13 @@ A generated `PipelineResults` exposes `execution_report`,
 specific output node and port and includes its own digest. `save_image()` uses
 this output-specific document for the atomic `.vipp-provenance.json` sidecar.
 
-Batch manifest schema 3 stores the full execution document and its SHA-256 on
-each item. A source successfully read during item execution also records its
-raw axes, effective axes, and optional declaration; the embedded config retains
-the intended declaration for sources skipped or failed before reading. Every
-published output record has `provenance_status: produced`
+Batch manifest schema 4 stores the full execution document and its SHA-256 on
+each item, canonical SourceItem/source-revision evidence, requested/effective
+parameter overrides, and the effective workflow hash. It retains version 3's
+raw axes, effective axes, and optional declaration for each successfully read
+source; the embedded config retains the intended declaration for sources
+skipped or failed before reading. Every published output record has
+`provenance_status: produced`
 and an `execution_provenance_sha256` link to that exact item execution. The
 run's checkpoint sidecars contain the same item link; separate output
 provenance files are unnecessary because the authoritative batch manifest
@@ -349,12 +354,12 @@ publication follows the same rule and reports publication failures separately
 from successful scientific calculation.
 
 In an interactive VIPP process, a false cleanup result from pipeline execution,
-a node benchmark, **Find fastest**, or collection batch means the accelerator
+a node benchmark, **Find fastest pipeline…**, or collection batch means the accelerator
 runtime is no longer safe to reuse. VIPP requests cooperative cancellation of
 every other active compute owner, preserves its last coherent interactive
 result, and disables new calculation, policy changes (including policy-changing
 undo/redo), benchmark/optimizer work, and batch starts until the application is
-restarted. **Find fastest** also rolls back benchmark records written by the
+restarted. **Find fastest pipeline…** also rolls back benchmark records written by the
 unsafe analysis. If an individual rollback cannot be written safely, VIPP
 writes a durable poison marker first and moves the complete local timing-store
 file to an `.unsafe-*` quarantine name under the store's cross-process lock. A

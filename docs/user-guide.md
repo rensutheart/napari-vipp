@@ -187,7 +187,7 @@ cannot be measured, Auto keeps the reviewed safe assignment, explains that the
 CPU evidence was skipped, and may collect it on a later compatible run. The
 portable
 CPU/library/exact preference you explicitly accept in `Custom` is used going
-forward and saved in workflow schema 4.
+forward and saved in workflow schema 5.
 
 `Find fastest pipeline…` shows two levels of progress. The overall bar tracks
 the complete analysis across nodes and validation stages. The current-operation
@@ -857,34 +857,40 @@ tunnels, graph notes, selected inspector state, and portable compute intent.
 
 If a Batch workspace is active, Save asks whether its validated batch config
 should be included in the same workflow JSON. `Yes` stores a top-level
-`batch_config`; loading that workflow restores and opens the workspace without
-automatically previewing or scanning the collection. `No` saves only the normal
-workflow, while `Cancel` writes nothing. The attached config records local
-input/output paths and policies but never embeds source pixels, so it is a
-single-file convenience rather than a portable data package.
+`batch_config`; loading that workflow restores and opens the workspace, then
+automatically redetects the current SourceItems in a background metadata-only
+preflight. It does not calculate a representative image or run the graph. `No`
+saves only the normal workflow, while `Cancel` writes nothing. The attached
+config records local input/output paths and policies but never embeds source
+pixels, so it is a single-file convenience rather than a portable data package.
 
 Workflow JSON does not embed cached image pixels or tables. When a saved
 workflow is loaded, VIPP rebuilds the graph from sources and node settings.
 
-Current saves use workflow schema version 4. Its `execution.compute` object
-stores only portable, authored intent: `mode`, `fallback_policy`,
-`node_preferences`, `precision_policy`, and `workload_policy`. It does not copy
-a machine's selected runtime or device, accelerator memory limits or safety
+Current saves use workflow schema version 5. It retains version 4's
+`execution.compute` object, which stores only portable authored intent: `mode`,
+`fallback_policy`, `node_preferences`, `precision_policy`, and
+`workload_policy`. Version 5 also carries canonical SourceItem evidence for a
+resolved file source: its stable logical selector, reader identity, normalized
+axes/shape, metadata, and exact container revision. It does not copy a
+machine's selected runtime or device, accelerator memory limits or safety
 reserve, experimental-admission switch, capability probe, or benchmark
 evidence. Those facts must be discovered or measured again on the machine that
 runs the workflow.
 
-Schema-version-3 workflows remain supported. Because version 3 had no compute
-policy, VIPP migrates them to an explicit CPU request; saving the loaded graph
-writes version 4. Select `Auto`, `Prefer GPU`, or `Custom` deliberately if
-that workflow should use admitted GPU implementations. Versions 1 and 2 are
-intentionally rejected because silently inventing threshold, cutoff, channel
-axis, color, or intensity-mapping choices could change scientific results.
-Keep the VIPP environment that created such an older workflow to inspect and
-run it unchanged, then use its graph and JSON as references while recreating and
-verifying it in the current release. Do not change the JSON version number
-alone; version 3 introduced required scientific parameters and version 4 adds
-the required compute-intent block.
+Schema-version-3 and version-4 workflows remain supported. Because version 3
+had no compute policy, VIPP decodes it as an explicit CPU request; version 4
+retains its authored compute request. Resolved legacy file sources acquire
+SourceItem evidence, and saving either loaded schema writes version 5. Select
+`Auto`, `Prefer GPU`, or `Custom` deliberately if a version-3 workflow should
+use admitted GPU implementations. Versions 1 and 2 are intentionally rejected
+because silently inventing threshold, cutoff, channel-axis, color, or
+intensity-mapping choices could change scientific results. Keep the VIPP
+environment that created such an older workflow to inspect and run it unchanged,
+then use its graph and JSON as references while recreating and verifying it in
+the current release. Do not change the JSON version number alone; version 3
+introduced required scientific parameters, version 4 added the required
+compute-intent block, and version 5 adds SourceItem persistence.
 
 Read the categorized [0.12.0a1 compatibility notes](../CHANGELOG.md#0120a1---2026-07-14)
 before recreating an older analysis. They identify the source-revision,
@@ -946,7 +952,7 @@ still has no multi-source pairing, collision plan, final prepublication source
 recheck, checkpoints, manifest, or resumable replay; use the callable API or
 saved-config batch runner for those needs.
 
-The embedded schema-4 workflow retains `execution.compute` so authored intent
+The embedded schema-5 workflow retains `execution.compute` so authored intent
 is not lost in review, version control, or later regeneration. Generated Python
 and collection batch use the same CPU/GPU execution service as interactive
 VIPP. They preserve CPU/Auto/Prefer-GPU/Custom mode and per-node choices,
@@ -993,7 +999,7 @@ change, the old pairing remains browsable but the runnable plan is marked stale.
 Run performs fresh planning and inspects one representative source set through
 the same source-axis declarations and scientific axis contract used by
 execution. When an exact `QYX` TIFF reaches a 3D operation that requires `ZYX`,
-the Batch workspace can visibly select `Pages are depth slices (Z stack)` and
+the Batch workspace can visibly select `Stack planes are depth slices (Z stack)` and
 retry with that guarded interpretation. Other deterministic mismatches stop
 before output directories, run artifacts, or GPU setup are created. Run
 executes immediately when no reviewed plan is current, but
@@ -1034,10 +1040,13 @@ colocalization_metrics
 ```
 
 The batch workspace supports local folder bindings and sorted positional pairing
-of multiple sources. For a new unsaved source, `Image stack` starts at
+of multiple sources. Planning expands each matched container into stable logical
+SourceItems before pairing, so a changed saved inventory or container topology
+fails visibly instead of silently assigning an override to another image. For a
+new unsaved source, `Image stack` starts at
 `Automatic (recommended)`. When the representative is exactly `QYX` and the
 workflow demonstrates that it needs `ZYX`, VIPP selects
-`Pages are depth slices (Z stack)`, shows a short notice, and retries. The
+`Stack planes are depth slices (Z stack)`, shows a short notice, and retries. The
 notice makes clear that pixel order is unchanged and that the concrete choice
 will be saved with the batch. Keep it only when the pages really are depth
 slices. Selecting
@@ -1046,33 +1055,38 @@ same suggestion from being reapplied to that source. Uncommon manual mappings
 remain under `Something else (advanced)...` rather than in the normal setup
 path.
 
-`Preview batch` is optional: it plans the collection without saving batch
-outputs, then calculates one selected item as the graph representative. `Run
-batch` performs fresh planning plus a representative scientific-contract
-preflight and starts the full collection directly when no reviewed plan is
-current. That preflight is deliberately representative-only, not a scan of
-every file header. Each later item must still match the declaration exactly
-when it is read. A representative that cannot be read remains an item-specific
-failure governed by the continuation policy. If inspection succeeds but the
-saved series index or normalized metadata contract is invalid, preflight blocks
-the run as a deterministic configuration error. A deterministic axis-contract
-failure likewise blocks the run even when `Continue on error` is selected.
+`Preview batch` is optional: it metadata-inspects the matched containers, plans
+their SourceItems and outputs without saving batch outputs, then calculates one
+selected item as the graph representative. `Run batch` performs the same fresh
+inventory planning plus a representative scientific-contract preflight and
+starts the full collection directly when no reviewed plan is current. Source
+discovery covers every matched supported container; the full graph calculation
+and scientific-contract preflight remain representative-only. Each later item
+must still match the saved SourceItem and declaration exactly when its pixels
+are read. An unreadable item remains governed by the continuation policy, while
+a changed SourceItem inventory, invalid saved selector/metadata contract, or
+deterministic axis-contract failure blocks the run regardless of `Continue
+after item failures`.
 
 The single `Batch workspace...` action is visually separated between workflow
 loading and the export actions in the main toolbar. `Save...` writes a
-versioned `vipp_batch_config.json`. Current config version 3 records the
-complete effective compute request and any guarded source-axis declarations.
+versioned `vipp_batch_config.json`. Current config version 4 adds canonical
+SourceItem inventories and typed per-sample parameter overrides to version 3's
+complete effective compute request and guarded source-axis declarations.
 Version 1 loads as explicit CPU because it predates accelerator execution;
-version 2 retains its saved compute request. Both older versions load without
-axis declarations and become version 3 only when reviewed and saved. Their blank
-declarations are shown as `Use the file's labels unchanged`, not the
-automatic policy used for a new unsaved row. `Load...` restores source
-bindings, output folder, default format, existing-file policy, continuation
-behavior, required workflow companion, and optional runner choice, and validates
-the resolved output declarations against the current graph. The saved workflow
-and config carry enough information to reproduce which outputs are selected and
-how their file names are planned. A workflow-hash mismatch is reported rather
-than silently running a different graph under an old configuration.
+version 2 retains its saved compute request; version 3 retains its source
+declarations and acquires SourceItems when the collection resolves. Older
+versions contain no parameter overrides and become version 4 only when reviewed
+and saved. Their blank declarations are shown as `Use the file's labels
+unchanged`, not the automatic policy used for a new unsaved row. `Load...`
+restores source bindings, output folder, default format, existing-file policy,
+continuation behavior, required workflow companion, optional runner choice, and
+reviewed per-sample values, and validates the resolved output declarations
+against the current graph. The saved workflow and config carry enough
+information to reproduce which outputs are selected and how their file names
+are planned. A workflow-hash or SourceItem-revision mismatch is reported rather
+than silently running a different graph or collection under an old
+configuration.
 
 A loaded config's compute request remains selected while the toolbar compute
 request is unchanged from load time. Changing any toolbar compute setting makes
@@ -1111,10 +1125,12 @@ writes `vipp_batch_manifest.json` beside the outputs. The manifest records the
 workflow and config hashes, VIPP and runtime package versions, input identity
 and available source metadata, every planned output path/policy, and
 per-item/output status. For sources successfully read during item execution,
-version-3 manifests record the reader-reported raw axes, effective axes, and
-applied declaration, so `QYX -> ZYX` remains auditable. The embedded config
-retains the intended declaration for an item skipped or failed before reading.
-They also record the actual CPU/CuPy identity and version
+version-4 manifests retain version 3's reader-reported raw axes, effective axes,
+and applied declaration, so `QYX -> ZYX` remains auditable, and add canonical
+SourceItem/source-revision evidence plus requested/effective parameter overrides
+and effective workflow hashes. The embedded config retains the intended
+declaration for an item skipped or failed before reading. Manifests also record
+the actual CPU/CuPy identity and version
 selected for every completed node, the environment and decision reasons,
 structured OOM/CPU-retry records, warnings, and cleanup evidence. The manifest
 embeds the canonical config and scientific graph;
@@ -1445,19 +1461,19 @@ Some conventional TIFF readers use `Q` for a page dimension whose scientific
 meaning is not encoded in the file. VIPP does not blindly assume that `Q` is Z.
 The Image Source inspector therefore starts at `Use the file's labels
 unchanged`. If you know independently that the pages are depth slices, choose
-`Pages are depth slices (Z stack)` there; the reviewed choice is saved with the
+`Stack planes are depth slices (Z stack)` there; the reviewed choice is saved with the
 workflow.
 
 The collection batch workspace uses the same **Image stack** control. A new
 unsaved batch row starts at `Automatic (recommended)`. Only when an exact
 `QYX` representative reaches a workflow step that explicitly requires `ZYX`
-does VIPP select `Pages are depth slices (Z stack)` and retry. A visible notice
+does VIPP select `Stack planes are depth slices (Z stack)` and retry. A visible notice
 says why the choice changed, that it will be saved, and that pixel order is
 unchanged. The workflow requirement makes the suggestion useful; it does not
 prove that the acquisition really contains depth slices. Review either choice
 against the acquisition or the images themselves.
 
-Choosing `Pages are depth slices (Z stack)` records this declaration:
+Choosing `Stack planes are depth slices (Z stack)` records this declaration:
 
 ```text
 QYX -> ZYX
@@ -1497,7 +1513,7 @@ the image metadata and appear in workflow history without changing pixels.
 
 The shared menu is a friendly front end to the durable source declaration. In
 a workflow, Image Source stores the optional `axis_declaration` value
-`QYX -> ZYX`; batch config version 3 stores the same decision as exact
+`QYX -> ZYX`; batch config version 4 stores the same decision as exact
 `source_axes` and `effective_axes` values. Both use
 `AxisDeclaration("QYX", "ZYX")` and `apply_axis_declaration()` at the common
 source boundary. Without an explicit saved declaration, headless execution
@@ -1522,7 +1538,7 @@ unit, source mapping, and confidence. A true no-op changes no confidence.
 
 This exception does not infer depth. For a generic `QYX` TIFF, X/Y rescaling
 leaves Q untouched and the Q dimension keeps the same number of samples. To
-resize that leading dimension as Z, first choose `Pages are depth slices (Z
+resize that leading dimension as Z, first choose `Stack planes are depth slices (Z
 stack)` in Image Source (the reviewed `QYX -> ZYX` declaration), and only do so
 when you know independently that Q really represents depth. After the source
 recalculates, Rescale Axes shows both `Z scale factor` and `Z output size`.
@@ -1771,7 +1787,7 @@ unnecessary full-volume branches.
 | Structures remain blurred or disappear | Follow the ordered PSF/TV/convergence/RL comparison checklist in `Blurred Or Missing Structures`; do not start with numerical guards. |
 | Edges look unreliable after deconvolution | Crop margins or interpret borders cautiously. |
 | Batch saves the wrong output | Add explicit `Batch Output` nodes with clear tags. |
-| A 3D batch stops because TIFF axes are `QYX`, not `ZYX` | Review the source's `Image stack` choice. Use `Pages are depth slices (Z stack)` only when the pages really are depth slices; use `Use the file's labels unchanged` to reject that interpretation. Do not use `Reorder Axes` to rename Q, and verify Z calibration separately. |
+| A 3D batch stops because TIFF axes are `QYX`, not `ZYX` | Review the source's `Image stack` choice. Use `Stack planes are depth slices (Z stack)` only when the planes really are depth slices; use `Use the file's labels unchanged` to reject that interpretation. Do not use `Reorder Axes` to rename Q, and verify Z calibration separately. |
 
 ## Related Guides
 

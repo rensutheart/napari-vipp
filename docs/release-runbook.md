@@ -1,6 +1,6 @@
 # VIPP Release Runbook
 
-Last reviewed: 2026-08-15
+Last reviewed: 2026-08-27
 
 This runbook is intentionally risk-based. A release version change does not,
 by itself, invalidate evidence for an unchanged installer, GPU provider,
@@ -11,10 +11,13 @@ The governing rule is:
 > required work = cheap release invariants + gates for changed domains + the
 > release-maturity gate
 
-The current reusable qualification baseline is
-[`v0.13.0a8`](release-qualification-baseline.md). The large qualification
-procedures remain available as conditional tools; they are not a checklist to
-repeat for every alpha.
+The current per-domain qualification ledger is
+[release-qualification-baseline.md](release-qualification-baseline.md). It
+records the completed `v0.14.0a2` application and native macOS packaging
+domains, the `v0.14.0a1` source-aware-loading evidence carried forward where
+unchanged, and the older expensive evidence retained from `v0.13.0a8`. Large
+qualification procedures remain available as conditional tools; they are not
+a checklist to repeat for every alpha.
 
 ## Release Lanes
 
@@ -68,12 +71,14 @@ changed:
   workflow_schema: true
   gpu_scientific: false
   windows_installer: false
+  macos_installer: false
   dependencies_toolchain: false
   packaging_release: false
   documentation: true
 carried_forward:
-  gpu_scientific: v0.13.0a7
-  windows_installer: v0.13.0a7
+  gpu_scientific: v0.13.0a8
+  windows_installer: v0.13.0a8
+  macos_installer: v0.14.0a2
 ```
 
 When unsure, activate the domain and run its affected checks. Do not respond
@@ -87,6 +92,7 @@ to uncertainty by running every gate in the repository.
 | Workflow/schema | Workflow, batch, manifest, provenance, source identity, serializer, or migration changes | Affected old-version fixtures, save/reopen and round-trip checks, and one representative generated/batch path when relevant. |
 | GPU/scientific | Provider algorithm, numerical contract, dtype/axes behavior, compute policy, dispatch, fallback, cleanup, memory, provenance, catalogue, or CUDA/CuPy pins | Qualify only the changed provider or shared layer on real hardware. Run the full catalogue only for a catalogue-wide/shared-layer change, an RC, or a production baseline refresh. |
 | Windows installer | Installer/repair/update/rollback/network/path/ownership code, dependency resolution, PyInstaller, signing policy, or supported Windows/Python route | Run packaging tests plus the affected lifecycle scenario. Full new/install/repair/update/rollback/uninstall and fresh-account matrices are reserved for cross-cutting installer changes, RCs, or production refreshes. |
+| macOS installer | Constructor recipe, managed environment, app launcher/menu metadata, architecture split, PKG lifecycle, signing/notarization policy, or supported macOS/Python/Qt route | Run packaging tests plus native installation/launch/removal on each affected architecture. Treat `arm64` and `x86_64` as separate artifacts; do not infer one from the other. |
 | Dependencies/toolchain | Runtime/build dependency, Python support, compiler, build backend, or packaging tool changes | Clean package installs first, then only the scientific/installer domains affected by that dependency. Test-only dependency changes do not invalidate runtime evidence. |
 | Packaging/release | Package data, entry points, build backend, resource layout, publishing workflows, or release asset composition | Exact artifact content/entry-point checks. Reproducibility comparison is required when packaging changed, not for an unrelated app-only alpha. |
 | Documentation | Installation, upgrade, schema, UI, limitation, download name, navigation, or site configuration changes | Strict documentation build and manual inspection of changed pages only. Screenshots are refreshed only when their pictured UI changed. |
@@ -315,12 +321,12 @@ $hashesA
 $artifactDir = $artifactDirA
 ```
 
-Routine alphas may publish only the wheel and source archive. If a Windows EXE
-is useful for alpha testers, it may also be rebuilt from the exact wheel. When
-installer code and its dependency/toolchain inputs are unchanged, require only
-the automated frozen-payload, embedded-wheel, version, signature-state, and
-hash checks; carry forward lifecycle evidence. Do not repeat manual
-install/repair/update/rollback/uninstall testing.
+Routine alphas may publish only the wheel and source archive. If platform
+installers are useful for alpha testers, they may also be rebuilt from the exact
+tag and qualified wheel. When installer code and its dependency/toolchain
+inputs are unchanged, require only the automated frozen-payload,
+embedded-wheel, version, signature-state, and hash checks; carry forward
+lifecycle evidence. Do not repeat unrelated manual lifecycle testing.
 
 When publishing an alpha EXE, build it from the exact wheel above. Choose one
 finalization route—signed or explicitly unsigned—rather than both:
@@ -357,10 +363,20 @@ field procedures live in
 [`windows-installer-field-acceptance.md`](windows-installer-field-acceptance.md)
 and are conditional, not alpha defaults.
 
+When native macOS packages ship, build separately on Apple Silicon and Intel
+from the same immutable alpha tag. The public artifacts are distinct,
+architecture-qualified, offline, CPU-only `-UNSIGNED.pkg` files with their
+matching checksums and release evidence; they are not a Universal 2 package and
+must not be wrapped in a DMG merely for presentation. An unsigned alpha is also
+unnotarized and must not be described as production-signed. Exact commands and
+artifact inventories live in
+[`packaging/macos/README.md`](../packaging/macos/README.md).
+
 ### 5. Publish in one direction
 
 1. Push the immutable tag.
-2. Create the GitHub prerelease and attach the already-qualified artifacts.
+2. Create the GitHub prerelease and attach only the already-qualified Python
+   distributions and selected platform/architecture installer artifacts.
 3. Dispatch `publish-pypi.yml` with the exact tag; it downloads the GitHub
    wheel/source archive rather than rebuilding them.
 4. Verify the PyPI version and hashes.
@@ -395,7 +411,8 @@ An RC tests the combined feature line rather than every historical scenario:
 - one representative end-to-end UI workflow;
 - the supported saved-workflow compatibility corpus;
 - a quick real-GPU workflow if the feature line includes GPU behavior; and
-- an exact-EXE happy-path install/launch/uninstall if an installer will ship.
+- an exact-artifact happy path on every installer platform and architecture
+  that will ship.
 
 Run the full GPU catalogue only if GPU shared infrastructure/catalogue inputs
 changed. Run the full installer matrix only if installer cross-cutting inputs
@@ -424,7 +441,8 @@ domain it invalidates.
 - [ ] Final `main` CI passes and its commit is recorded.
 - [ ] Tag resolves to that exact commit.
 - [ ] Wheel/source archive metadata and hashes pass.
-- [ ] An optional EXE passes its exact-artifact integrity checks.
+- [ ] Every optional platform/architecture installer passes its exact-artifact
+      integrity checks.
 - [ ] GitHub prerelease and PyPI bytes match.
 - [ ] Numbered documentation resolves; `stable` is moved if intended.
 - [ ] napari hub is either updated or truthfully recorded as asynchronously pending.
@@ -435,7 +453,7 @@ changed domain.
 ## Automation Follow-Up
 
 The next release-infrastructure slice should make this fast path one manual
-workflow with inputs for the tag, tier, and optional EXE.
+workflow with inputs for the tag, tier, and optional platform installers.
 It should build once, publish the same bytes to GitHub/PyPI, deploy docs once,
 and report the exact artifacts. A path-based report can pre-fill the domain
 declaration, but a maintainer still confirms it.

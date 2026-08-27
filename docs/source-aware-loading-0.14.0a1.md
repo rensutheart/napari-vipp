@@ -330,13 +330,13 @@ base workflow.
   focused UI acceptance, schema goldens, strict docs, and only the changed
   release qualification domains.
 
-Expected changed domains are core/UI, workflow schema, Windows installer, and
-documentation. Add focused GPU scientific parity for shared axis/metadata
-changes, focused installer capacity/activity acceptance for #42, dependency
-toolchain only when reader declarations change, and the normal
-packaging/release checks for the final tag. The unchanged installer
-transactional lifecycle and full GPU catalogue are carried forward rather than
-repeating those complete matrices.
+The selected changed domains were core/UI, workflow schema, Windows installer,
+and documentation. Qualification added focused GPU scientific parity for shared
+axis/metadata changes and focused installer capacity/activity acceptance for
+#42; dependency/toolchain evidence remained carried forward because reader
+declarations did not change. Normal packaging/release checks covered the final
+tag. The unchanged installer transactional lifecycle and full GPU catalogue
+were carried forward rather than repeating those complete matrices.
 
 ## Release Blockers
 

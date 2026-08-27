@@ -2,10 +2,14 @@
 
 Last reviewed: 2026-08-27
 
-> **0.13.0a8 release record (2026-08-22):** Every domain invalidated by the
-> complete post-a7 change set was requalified at the boundaries recorded below.
-> The a7 rows remain unchanged as an historical record; the a8 rows are the
-> current carry-forward baseline.
+> **0.14.0a2 app release record (2026-08-27):** The immutable app tag, GitHub
+> prerelease, refreshed Windows installer, native Apple Silicon and Intel macOS
+> installers, PyPI publication, and changed-domain gates are complete. The
+> GitHub wheel and installers include the detached-window resizing fix; PyPI
+> retains the earlier pre-fix package bytes because published files cannot be
+> replaced. Companion documentation PR #19, its strict exact-main checks, and
+> its numbered, stable, nightly, version-index, and screenshot surfaces are also
+> published and verified.
 
 This page records expensive behavioral evidence that future releases may carry
 forward. It prevents a version-only release change from triggering unrelated
@@ -15,7 +19,193 @@ The baseline is evidence, not a claim that untested platforms or scenarios are
 supported. A release may carry an entry forward only while none of its listed
 invalidators changed.
 
-## `v0.13.0a8` Release Qualification
+## `v0.14.0a2` App Release Qualification
+
+- Immutable annotated tag and release commit:
+  `4aaf9961b97259c94390c859374d8a6b9f45ec6c`.
+- [Exact-main CI run 33048422781](https://github.com/rensutheart/napari-vipp/actions/runs/33048422781):
+  all 13 jobs passed at that exact commit.
+- [Exact-tag unsigned-installer run 33048446173](https://github.com/rensutheart/napari-vipp/actions/runs/33048446173):
+  Windows x86_64, macOS Apple Silicon, and macOS Intel build, integrity,
+  install, and launch jobs passed.
+- [GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a2)
+  and [PyPI 0.14.0a2](https://pypi.org/project/napari-vipp/0.14.0a2/):
+  published. [PyPI run 33048727450](https://github.com/rensutheart/napari-vipp/actions/runs/33048727450)
+  succeeded, but its files are the earlier pre-resize-fix build. The canonical
+  release note directs users who need that fix to the GitHub wheel or an
+  installer.
+- Post-release release-note formatting commit `89f0bc8` passed all 13 jobs in
+  [CI run 33052432859](https://github.com/rensutheart/napari-vipp/actions/runs/33052432859)
+  and does not change the tagged application artifacts.
+
+Changed since `v0.14.0a1`:
+
+```yaml
+core_ui: true
+workflow_schema_provenance: false
+gpu_scientific: false
+windows_installer: false
+macos_installer: true
+dependencies_toolchain: true
+packaging_release: true
+documentation: true
+```
+
+### Focused changed-domain evidence
+
+The a2 core/UI delta covers detached dock sizing, shared PyQt6/PySide6 dialog
+and rendering APIs, menu lifetime, and callbacks whose owning Qt objects have
+been destroyed. Exact-main CI exercised the changed cross-Qt behavior. The
+first macOS installer baseline built and installed separate native Apple
+Silicon and Intel packages, verified exact immutable source and offline
+contents, checked current-user layout and application identity, and exercised
+native Cocoa startup and clean shutdown. Scientific SourceItem, reader,
+workflow/schema, GPU, and Windows transactional-installer contracts did not
+change and retain the a1/a8 evidence below.
+
+### Published artifacts
+
+The GitHub prerelease publishes checksums and release records alongside these
+primary artifacts:
+
+| Asset | SHA-256 |
+| --- | --- |
+| `napari_vipp-0.14.0a2-py3-none-any.whl` | `a30aa4ff1f4882b06903800d60912be4f6b29f185716a1752b3f8c540690ae8c` |
+| `napari_vipp-0.14.0a2.tar.gz` | `8d1bf13b752bdb4c6777076c5e6bda5a75275073016f15e347ed8698e6b01886` |
+| `VIPP-Setup-0.14.0a2-Windows-x86_64-UNSIGNED.exe` | `cdab2be65b83c36260ba45b3b700bc1685287e665bb9558585f9f13f9fb3f3be` |
+| `VIPP-0.14.0a2-macOS-arm64-UNSIGNED.pkg` | `9ad6a01e614277a4abac501a27d8623da5bd22bf4184bfb7b0884c319b67f529` |
+| `VIPP-0.14.0a2-macOS-x86_64-UNSIGNED.pkg` | `15ddfa6378af4bdf69887d35bd107b04143d89a944e68686687f350532546d14` |
+
+PyPI contains the earlier wheel
+`3b066887de739d600a684abf85d599832d5b92c83fb357b6c75a471ed20cd2a8`
+and source archive
+`ad72ae95a5595c8bcad6125aada8aab1c30a419b98929a91b405d3560405fd27`.
+Those hashes intentionally differ from the corrected GitHub assets and are
+recorded here so the distinction is auditable.
+
+### Companion documentation
+
+- [`vipp-mkdocs#19`](https://github.com/rensutheart/vipp-mkdocs/pull/19)
+  was reviewed at exact head
+  `1012acf9d3e0e8d7eaa860d95149daf9faf6407e` and merge-committed as
+  `fcdb5f69b0559d5399b7d30e1b4fc207994acc0d`.
+- Exact-main [Documentation checks run 33062909826](https://github.com/rensutheart/vipp-mkdocs/actions/runs/33062909826)
+  and push-triggered [nightly deployment run 33062909774](https://github.com/rensutheart/vipp-mkdocs/actions/runs/33062909774)
+  passed.
+- Manual [release deployment run 33063988184](https://github.com/rensutheart/vipp-mkdocs/actions/runs/33063988184)
+  passed with `version=0.14.0a2` and `make_stable=true`.
+- On 2026-08-27, the [numbered manual](https://rensutheart.github.io/vipp-mkdocs/0.14.0a2/),
+  [stable manual](https://rensutheart.github.io/vipp-mkdocs/stable/),
+  [nightly manual](https://rensutheart.github.io/vipp-mkdocs/nightly/), and
+  [`versions.json`](https://rensutheart.github.io/vipp-mkdocs/versions.json)
+  returned the current a2 content; `stable` aliases `0.14.0a2`, the site root
+  redirects to `stable/`, and the newly published source and batch-workspace
+  screenshots returned non-empty PNG responses.
+
+## Current Domain Records: `v0.14.0a2`
+
+| Domain | Qualified at | Baseline evidence | Carry forward when | Invalidate when |
+| --- | --- | --- | --- | --- |
+| Core/UI | `v0.14.0a2` / `4aaf996` / 2026-08-27 | Exact-main CI covered the changed dock sizing, PyQt6/PySide6 compatibility, menu lifetime, and stale-Qt-object callbacks. | The affected UI, ownership, rendering, and callback contracts remain unchanged. | A relevant UI/Qt/lifecycle behavior changes or focused smoke fails. |
+| macOS installer | `v0.14.0a2` / `4aaf996` / 2026-08-27 | Exact-tag run 33048446173 built, inspected, installed, launched, and cleanly stopped separate native Apple Silicon and Intel offline packages. | macOS packaging inputs, builder pins, current-user layout, application identity, and support assumptions remain unchanged. | Any relevant package layout, dependency, signing/notarization policy, architecture, startup, or removal behavior changes. |
+| Windows installer | focused presentation at `v0.14.0a1` / `e16ca87`; transactional lifecycle at `v0.13.0a8` / `5a66ae9`; exact a2 payload at `4aaf996` | The exact a2 Windows artifact passed frozen-payload, version, unsigned-state, and checksum checks. Presentation and transactional behavior are unchanged from their recorded baselines. | Presentation, transactional inputs, dependency route, and ownership layout remain unchanged. | Any relevant presentation, install/update/repair/rollback/uninstall/network/path/ownership/dependency/signing change. |
+| GPU/scientific catalogue | shared axes/metadata at `v0.14.0a1` / `e16ca87`; full catalogue at `v0.13.0a8` / `7189cf4` | a2 did not change SourceItem, schema, GPU provider, or scientific behavior; the focused a1 and full a8 evidence carry forward. | GPU implementations, policy/dispatch/fallback/cleanup, dependencies, and supported regions remain unchanged. | Any listed input or shared layer changes, or a real-GPU canary fails. |
+| Workflow/schema/provenance | `v0.14.0a1` / `e16ca87` / 2026-08-26 | Workflow schema 5, batch config/manifest schema 4, SourceItem migrations, generated/replay/export paths, per-sample overrides, checkpoints, and provenance are unchanged in a2. | Schema, serializers, migrations, source identity, planning, manifests/checkpoints, and generated-runner contracts remain unchanged. | Any listed contract changes. |
+| Dependencies/toolchain | macOS route at `v0.14.0a2` / `4aaf996`; existing routes at their recorded a1/a8 baselines | Exact-tag installer jobs qualified the new pinned macOS builder and runtime contents; existing Windows, Linux, and CUDA routes were unchanged. | Relevant runtime/build pins, OS/toolchain matrix, dependency groups, and accelerator stack remain unchanged. | Any relevant runtime, build, installer, Python, OS, or accelerator dependency changes. |
+| Packaging/release | `v0.14.0a2` / `4aaf996` / 2026-08-27 | Exact-source distributions and all three platform installers passed tag/version/hash/public-asset checks. The PyPI/GitHub byte distinction is explicitly recorded above. | Package-data layout, entry points, release workflows, dependency declarations, and asset composition remain unchanged. | Any listed input changes or publication canary failure. |
+| Documentation | `0.14.0a2` / `fcdb5f69` / 2026-08-27 | Companion PR #19, exact-main strict checks, nightly deployment, and release deployment 33063988184 passed; numbered, stable, nightly, version-index, redirect, and new screenshot surfaces were verified. | Site configuration, navigation, installation/upgrade behavior, UI shown in screenshots, and changed feature documentation remain unchanged. | Any relevant documentation, deployment configuration, navigation, installation guidance, or pictured behavior changes. |
+
+## Historical `v0.14.0a1` App Release Qualification
+
+- Immutable annotated tag and release commit:
+  `e16ca87161ec7b1041a5e98c5a2bf786b11a1ec8`.
+- [Exact-main CI run 32975633514](https://github.com/rensutheart/napari-vipp/actions/runs/32975633514):
+  all 13 jobs passed at that exact commit.
+- [Exact-main Windows-installer smoke run 32975659650](https://github.com/rensutheart/napari-vipp/actions/runs/32975659650):
+  passed at that exact commit.
+- [GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a1)
+  and [PyPI 0.14.0a1](https://pypi.org/project/napari-vipp/0.14.0a1/):
+  published and verified.
+- [PyPI publication run 32982120913](https://github.com/rensutheart/napari-vipp/actions/runs/32982120913):
+  passed; downloaded public wheel and source-archive bytes matched the qualified
+  exact-tag artifacts.
+
+Changed since `v0.13.0a9`:
+
+```yaml
+core_ui: true
+workflow_schema_provenance: true
+gpu_scientific_shared_axes_metadata: true
+windows_installer: true
+dependencies_toolchain: false
+packaging_release_metadata: true
+documentation: true
+```
+
+### Focused changed-domain evidence
+
+Release PR [#47](https://github.com/rensutheart/napari-vipp/pull/47) recorded
+393 focused source/schema/UI tests, a native RTX 5090 ZYX
+Gaussian/Otsu/Remove-Small-Objects corridor with exact GPU assignments and no
+skips, and 164 installer frontend/backend/engine/GUI tests with one expected
+account-level symlink-capability skip. Its CI and Windows installer smoke passed
+before merge.
+
+The strict hash-pinned public corpus v4 gate passed all 10 vendor cases. Its
+[fixture manifest](validation/public-data/fixtures/sourceitem-contract-fixtures-v1.json)
+records SHA-256
+`3365b4cec7a220f6399f3c030eb3ac751581bde730fac60f01c9fca3b823714d`;
+the IMS case used portable Temurin 21. This qualifies the changed SourceItem,
+reader, schema/migration, preview, per-sample override, and shared-axis/metadata
+boundaries. The unchanged full GPU catalogue, installer transactional
+lifecycle, and dependencies/toolchain evidence carry forward from `v0.13.0a8`.
+
+### Published artifacts
+
+The GitHub prerelease contains exactly these six qualified assets:
+
+| Asset | SHA-256 |
+| --- | --- |
+| `napari_vipp-0.14.0a1-py3-none-any.whl` | `ebc46ac87d90b1b5a82821920b13f75e75f306b3301882745969e7081236be70` |
+| `napari_vipp-0.14.0a1.tar.gz` | `bad176628678d00b6cd58965c29022a55c6c7d40f414a259f2aa6e5bb70fa53d` |
+| `VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED.exe` | `24ca7e8a0ea80bb21f849a30a5946e83e9e55be785047a5164305fab84d9aeea` |
+| `VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED-release.json` | `066726da2b5f6a0ec130f09d005f696abdca5d5c72ddbbf211b6aae71713ca66` |
+| `VIPP-Setup-0.14.0a1-Windows-x86_64-UNSIGNED-THIRD-PARTY-NOTICES.txt` | `95ca668d0977be347ab39af820f97652ed3565ed7ea4218205bb3a716a847e2d` |
+| `SHA256SUMS-Windows-0.14.0a1.txt` | `bf2ad89fb5e78b7f068d7ce7ee694260304535f85fe8a439d4e7fd8bd3e50032` |
+
+The independent CPython 3.12.10 exact-tag A/B package builds matched, and the
+PyPI wheel and source archive match the first two rows byte for byte.
+
+### Companion documentation status
+
+Companion documentation PR
+[`vipp-mkdocs#18`](https://github.com/rensutheart/vipp-mkdocs/pull/18) merged as
+`4f213f27fdabbe7ee26d66e3d34f677d31320302`; its build check
+[32970058466](https://github.com/rensutheart/vipp-mkdocs/actions/runs/32970058466)
+and a pristine local strict build passed. Public deployment did not complete:
+run [32984340385](https://github.com/rensutheart/vipp-mkdocs/actions/runs/32984340385)
+ended in a zero-job startup failure, and the single replacement
+[32985831392](https://github.com/rensutheart/vipp-mkdocs/actions/runs/32985831392)
+failed before any deployment step acquired a hosted runner. As verified on
+2026-08-27, `/0.14.0a1/` returns 404 and `versions.json` still aliases `stable`
+to `0.13.0a9`. This is a documentation-hosting blocker, not an app artifact or
+scientific-workflow failure. Issue
+[#42](https://github.com/rensutheart/napari-vipp/issues/42) remains open pending
+release closure.
+
+## Historical Domain Records: `v0.14.0a1`
+
+| Domain | Qualified at | Baseline evidence | Carry forward when | Invalidate when |
+| --- | --- | --- | --- | --- |
+| Core/UI | `v0.14.0a1` / `e16ca87` / 2026-08-26 | PR #47 focused source/schema/UI tests, strict public corpus v4, and exact-main CI covered SourceItems, readers, OME-Zarr preview, batch overrides, restore/activity/overwrite UI, and changed graph journeys. | The specific source, UI, worker/ownership, example, and interaction contracts being relied on are unchanged. | Affected source, UI, interaction, worker, or example behavior changes. Smoke only the changed journey. |
+| Windows installer | focused presentation at `v0.14.0a1` / `e16ca87`; transactional lifecycle at `v0.13.0a8` / `5a66ae9` | 164 focused tests plus exact-main installer smoke qualified capacity estimates/minima, phase/activity/heartbeat, and log presentation. The unchanged transactional install/update/rollback lifecycle carries forward from a8. | Presentation code and the carried transactional inputs remain unchanged. | Any relevant capacity/progress/log UI change, or install/update/repair/rollback/uninstall/network/path/ownership/dependency/signing change. |
+| GPU/scientific catalogue | shared axes/metadata at `v0.14.0a1` / `e16ca87`; full catalogue at `v0.13.0a8` / `7189cf4` | The focused RTX 5090 ZYX corridor passed exact assignments/no skips; strict corpus v4 qualified the shared source-axis boundary. Full a8 admission remains 19 public implementations and 24 evidence owners, aggregate SHA-256 `0365366dc23750e000c6e9c4f8b384cdf706afdcb338ae3a9f80cfad3d1d8506`. | GPU implementations, policy/dispatch/fallback/cleanup, dependencies, and supported regions are unchanged. | Any listed input or shared layer changes, or a real-GPU canary fails. Requalify affected providers unless a shared/catalogue-wide boundary changes. |
+| Workflow/schema/provenance | `v0.14.0a1` / `e16ca87` / 2026-08-26 | Exact-main CI, 393 focused tests, and strict corpus v4 covered workflow schema 5, batch config/manifest schema 4, SourceItem migrations, generated/replay/export paths, per-sample overrides, checkpoints, and provenance. | Schema versions, serializers, migrations, source identity, planning, manifests/checkpoints, and generated-runner contracts are unchanged. | Any schema, migration, source identity, serializer, batch, provenance, or generated-runner contract changes. |
+| Dependencies/toolchain | `v0.13.0a8` / `5a66ae9` / 2026-08-22 | a8 qualified the current pins and CuPy-only public route; a1 exact-main clean wheel/sdist installs and exact-tag CPython 3.12.10 builds reconfirmed the unchanged boundary. | Runtime/build pins, supported Python/OS/toolchain matrix, dependency groups, and accelerator stack are unchanged. | Any relevant runtime, build, installer, Python, OS, or accelerator dependency changes. |
+| Packaging/release | `v0.14.0a1` / `e16ca87` / 2026-08-26 | Independent exact-tag package builds matched; exact-main clean installs passed; exactly six hash-qualified GitHub assets and matching PyPI bytes were published. | Build backend, package-data/resource layout, entry points, publication workflows, dependency declarations, and asset composition are unchanged. | Any listed input changes or publication canary failure. Exact tag/version/hash/public-URL facts are regenerated for every release. |
+| Documentation | source merged at `v0.14.0a1` / `4f213f2`; public deployment pending | PR #18 and strict builds passed, but both release deployment attempts failed before publication; numbered/stable/version-index surfaces remain unqualified. | Not yet eligible for carry-forward as a completed 0.14 deployment baseline. | Retry only after the external hosted-runner/deployment blocker is resolved, then verify numbered, stable, and `versions.json` surfaces. |
+
+## Historical `v0.13.0a8` Release Qualification
 
 - Tag and release commit:
   `5a66ae9d1098ca5a8d409a4075c585692e3c3638`.
@@ -92,7 +282,7 @@ passed, followed by successful stable-release deployment
 [32592472705](https://github.com/rensutheart/vipp-mkdocs/actions/runs/32592472705).
 The public `/0.13.0a8/`, `/stable/`, and `versions.json` surfaces were verified.
 
-## Current Domain Records: `v0.13.0a8`
+### Historical a8 Domain Records
 
 | Domain | Qualified at | Baseline evidence | Carry forward when | Invalidate when |
 | --- | --- | --- | --- | --- |
@@ -152,7 +342,7 @@ after its focused qualification passes. Record:
 
 Do not rewrite unaffected rows merely to replace the release version.
 
-## Expected `0.14.0a2` Selection
+## `0.14.0a2` Selection Outcome
 
 The complete delta from `v0.14.0a1` declares:
 
@@ -173,34 +363,26 @@ carried_forward:
   windows_installer_transactional_lifecycle: v0.13.0a8
 ```
 
-The core/UI gate covers the changed PySide6/PyQt6 dialog, rendered-preview,
+The core/UI gate covered the changed PySide6/PyQt6 dialog, rendered-preview,
 menu-lifetime, dock-callback, and thumbnail-callback behavior. The first macOS
-installer baseline must cover exact-wheel and offline contents, the current-user
+installer baseline covered exact-wheel and offline contents, the current-user
 layout, dependency health, application identity, native Cocoa startup and clean
 shutdown, and install/launch behavior on both Apple Silicon and Intel. Because
-package data, installer assets, and the macOS builder toolchain are new, exact
-artifact checks and independent wheel/source-archive reproducibility remain
-release gates.
+package data, installer assets, and the macOS builder toolchain were new, exact
+artifact checks remained release gates.
 
-The Windows setup must be rebuilt from the exact `0.14.0a2` wheel and receive
-its routine frozen-payload, version, unsigned-state, and checksum checks. Its
+The Windows setup was rebuilt from the exact `0.14.0a2` wheel and received its
+routine frozen-payload, version, unsigned-state, and checksum checks. Its
 unchanged update/repair/rollback/uninstall behavior does not require another
 full lifecycle matrix. SourceItem, reader, workflow/schema, GPU/scientific, and
 other scientific behavior are unchanged and retain the baselines above.
 
 ## Historical `0.14.0a1` Selection
 
-For the `0.14.0a1` release, the selected changed domains are `core_ui`,
-`workflow_schema`, `windows_installer`, and `documentation`. Its release checks
-should cover SourceItem migration, save/reopen, batch naming, generated
-execution, provenance compatibility, and the focused installer presentation
-below.
-
-Installer issue
-[`#42`](https://github.com/rensutheart/napari-vipp/issues/42) is included, so
-select the Windows-installer and documentation domains and
-requalify the changed capacity, progress, heartbeat, stall/failure, and log
-presentation. Carry forward only the unchanged installer transactional
-lifecycle from `v0.13.0a8`; do not rerun its complete matrix solely for this
-focused UI change. The unchanged full GPU catalogue may likewise carry forward,
-with focused real-GPU parity only at the changed shared axis/metadata boundary.
+The planned a1 selection was executed as recorded in its historical ledger above:
+core/UI, workflow/schema/provenance, the shared GPU axis/metadata boundary,
+focused Windows-installer presentation, packaging metadata, and documentation
+changed. The unchanged full GPU catalogue, installer transactional lifecycle,
+and dependencies/toolchain remained carried from `v0.13.0a8`. App publication
+completed; its failed companion deployment attempts are retained above as
+historical evidence and are superseded by the 0.14.0a2 manual publication.

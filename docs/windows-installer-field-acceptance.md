@@ -1,11 +1,19 @@
 # Windows Installer Field Acceptance
 
-Last reviewed: 2026-08-14. `0.14.0a1` checklist updated: 2026-08-26.
+Last reviewed: 2026-08-27. Current Windows release: `0.14.0a2`; the focused
+capacity/activity checklist introduced for `0.14.0a1` remains applicable.
 
 Use this page for a tagged VIPP installer on a fresh Windows account. It is a
 short evidence record, not an installation guide. The ordinary installation
 steps remain in the [quick start](quick-start.md), and CUDA details remain in
 the [GPU guide](gpu-guide.md).
+
+This form covers only the Windows `.exe`. `0.14.0a2` also publishes separate
+native, offline, CPU-only macOS PKGs for Apple Silicon (`arm64`) and Intel
+(`x86_64`). Those explicitly unsigned and unnotarized packages have their own
+architecture-qualified checksums and are documented in the
+[macOS packaging guide](../packaging/macos/README.md); do not record them as
+Windows acceptance evidence here.
 
 Do not publish names, usernames, local paths, support reports, or screenshots
 without reviewing them for private information.
@@ -33,7 +41,8 @@ Stop if the filename, tag, or checksum does not match the official GitHub
 release. An alpha installer may show **Unknown publisher**, but it must also say
 `UNSIGNED` in its filename and the warning must match the release instructions.
 
-For `0.13.0a8`, Windows supplies canonical Local App Data through
+Introduced in `0.13.0a8` and retained through `0.14.0a2`, Windows supplies
+canonical Local App Data through
 `SHGetKnownFolderPath(FOLDERID_LocalAppData)`. Managed setup accepts only
 `VIPP\environments\cpu` or `VIPP\environments\cuda13` beneath it; custom
 managed roots are rejected. The fixed CPU location supports spaces and
@@ -152,7 +161,7 @@ Result: pass / fail
 
 What was confusing, if anything:
 
-## 0.14.0a1 installer capacity and activity smoke
+## 0.14.0a1-introduced installer capacity and activity smoke
 
 Run this focused section for installer issue
 [#42](https://github.com/rensutheart/napari-vipp/issues/42). It qualifies the

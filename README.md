@@ -49,14 +49,15 @@ VIPP from the shortcuts it creates. A supported 64-bit Python is a separate prer
 if it is missing, setup links to the official Python 3.12.10 installer and lets
 the user check again afterward.
 
-Before **Install** is enabled, setup shows the exact managed location, the
+Before **Install VIPP** is enabled, setup shows the exact managed location, the
 resolved CPU or NVIDIA CUDA 13 route, and whether shortcuts will be added to the
-Start Menu only or to both the Start Menu and Desktop. GPU setup currently
-needs at least 15 GiB free on the installation drive while it runs. This is disk
-storage, not GPU memory (VRAM). It also needs at least 5 GiB free on each drive
-used for Windows temporary files and VIPP installer records; CPU setup needs at
-least 1 GiB there. Setup names the exact location if that check fails. The
-standard GPU installation includes every current GPU implementation.
+Start Menu only or to both the Start Menu and Desktop. Setup currently needs at
+least 5 GiB free on the installation drive for CPU or 15 GiB for CUDA while it
+runs. This is disk storage, not GPU memory (VRAM). It also needs at least 1 GiB
+free on each drive used for Windows temporary files and VIPP installer records
+for CPU, or 5 GiB for CUDA. Setup names the exact location if that check fails.
+The standard GPU installation includes every current reviewed public CuPy/CuPyX
+GPU implementation.
 
 Setup also shows separate rounded estimates before installation: CPU is
 approximately 250 MiB to download, 1.5 GiB

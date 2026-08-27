@@ -1,6 +1,6 @@
 # Image Import And Export
 
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-27
 
 VIPP uses one headless I/O layer for interactive sources, quick saves, Save
 Image nodes, and exported Python scripts. The explicit format choice matters:
@@ -122,10 +122,12 @@ TIFF, OME-TIFF, or Export OME Analysis Dataset for those labels.
 collections. The retained workspace shows one source row for each `Image
 Source` node in the workflow. Bind a
 source row to a folder and one or more glob patterns, separated by semicolons,
-when that node should receive a different file for every batch item. A blank
-row is reproducible only when that `Image Source` already uses a fixed local
-file path; napari-layer and bundled-sample sources must be bound to a collection
-before saving or running a batch config.
+when that node should receive a different file for every batch item. The default
+`*` includes recognized image files and directory stores such as `.ome.zarr`;
+narrow the pattern only when the folder contains sources that should not join
+the batch. A blank row is reproducible only when that `Image Source` already
+uses a fixed local file path; napari-layer and bundled-sample sources must be
+bound to a collection before saving or running a batch config.
 
 The main toolbar places `Batch workspace...` between workflow loading and the
 separate export actions. It is the single entry point for opening or returning
@@ -191,7 +193,7 @@ source used for default naming. Each item gets a stable batch index (`0001`,
 Each collection source has an `Image stack` choice. A new unsaved source row
 starts at `Automatic (recommended)`. If a representative reports exactly `QYX`
 and then reaches a workflow step that explicitly requires `ZYX`, VIPP selects
-`Pages are depth slices (Z stack)`, retries the check, and shows a notice
+`Stack planes are depth slices (Z stack)`, retries the check, and shows a notice
 explaining that the concrete choice will be saved. This is a narrow
 workflow-based suggestion, not evidence that every TIFF page is scientifically
 a depth slice. Select `Use the file's labels unchanged` to opt out; VIPP respects
@@ -215,19 +217,21 @@ the selected representative
 through the live graph. It does not create batch outputs. The workspace table
 shows up to the first 25 plan rows, while the slider covers the complete plan.
 `Run batch` always performs fresh planning and a representative scientific-axis
-preflight, and does not require a representative preview. It applies source
-declarations and checks the first item's graph contract before creating the
-output directory, run artifacts, or a CPU/GPU device context. A deterministic
-contract error stops the run even under `Continue on error`; an unreadable
-representative remains an ordinary item-level failure. This is not a scan of
-every file, so each later item still has to match its declaration when read. If
-there is no displayed plan, Run immediately executes that fresh plan in the
-same click. If an already displayed plan changed unexpectedly through files,
-destinations, collision states, or the scientific graph, VIPP refreshes the
-table and stops so you can review it before clicking Run again. Editing batch
-settings or the graph deliberately invalidates the old runnable plan, but the
-slider stays available as an explicitly labelled view of the previous source
-pairing and Run can build and execute a new plan.
+preflight, and does not require a representative preview. Planning
+metadata-inspects every matched supported container to resolve and verify its
+SourceItems without reading every image's complete pixels. It then applies
+source declarations and checks the first item's graph contract before creating
+the output directory, run artifacts, or a CPU/GPU device context. A
+deterministic inventory or contract error stops the run even under `Continue
+after item failures`; an unreadable item remains governed by that continuation
+choice. The graph calculation remains representative-only, and each later item
+is reverified when read. If there is no displayed plan, Run immediately executes
+that fresh plan in the same click. If an already displayed plan changed
+unexpectedly through files, destinations, collision states, or the scientific
+graph, VIPP refreshes the table and stops so you can review it before clicking
+Run again. Editing batch settings or the graph deliberately invalidates the old
+runnable plan, but the slider stays available as an explicitly labelled view of
+the previous source pairing and Run can build and execute a new plan.
 Files opened as representatives are pinned to their verified revision. If one
 is overwritten in place after review, Run stops and asks you to refresh while
 the graph keeps showing the earlier verified bytes rather than silently mixing
@@ -298,7 +302,7 @@ that config shows `Use the file's labels unchanged`, not automatic mode.
 The same is true for historic or headless configs with no declaration. Once the
 guarded Z-stack suggestion has been applied, saving records the concrete
 `QYX -> ZYX` declaration and loading restores
-`Pages are depth slices (Z stack)`.
+`Stack planes are depth slices (Z stack)`.
 
 In the GUI, the loaded config's compute request remains effective while the
 toolbar compute request is unchanged from load time. Changing any toolbar
@@ -310,12 +314,13 @@ effective config hashes.
 
 When a Batch workspace is active, `Save workflow...` asks whether to include
 that validated batch config inside the workflow JSON. `Yes` creates one file;
-loading it restores and opens the workspace without planning or calculating a
-representative. `No` saves the ordinary graph-only workflow, and `Cancel` saves
-nothing. The attached config contains local input/output paths but not input
-pixels, so review those paths before sharing or moving the file. Keep using
-standalone `Save...` when a separate config and headless runner are
-needed.
+loading it restores and opens the workspace, then starts background
+metadata-only source discovery. That refreshes the current sample plan without
+calculating a representative image or running the graph. `No` saves the
+ordinary graph-only workflow, and `Cancel` saves nothing. The attached config
+contains local input/output paths but not input pixels, so review those paths
+before sharing or moving the file. Keep using standalone `Save...` when a
+separate config and headless runner are needed.
 
 `Continue after item failures` is enabled by default. Clear it only when a
 pipeline exception or failed output should stop execution; intentional skips

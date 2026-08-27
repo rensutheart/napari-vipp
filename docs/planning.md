@@ -45,8 +45,11 @@ checksum sidecars,
 [PyPI package](https://pypi.org/project/napari-vipp/0.14.0a2/), and
 [numbered](https://rensutheart.github.io/vipp-mkdocs/0.14.0a2/) and
 [stable](https://rensutheart.github.io/vipp-mkdocs/stable/) documentation are
-the release surfaces. The unchanged expensive installer-lifecycle and full-GPU
-evidence remains traceable to `v0.13.0a8`, while `v0.13.0a9` supplies the
+the release surfaces. PyPI retains the earlier pre-resize-fix package bytes;
+use the Windows or macOS installer, or the wheel attached to the GitHub release,
+when the detached-window resizing fix is required. The unchanged expensive
+installer-lifecycle and full-GPU evidence remains traceable to `v0.13.0a8`,
+while `v0.13.0a9` supplies the
 intervening correctness record, as detailed in the
 [qualification baseline](release-qualification-baseline.md). The current line
 provides:

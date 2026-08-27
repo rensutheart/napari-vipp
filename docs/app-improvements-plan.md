@@ -1,12 +1,22 @@
-# App Improvements Implementation Plan
+# Archived 0.13 App Improvements Implementation Plan
+
+> **Historical completed-plan record.** This document captures the 0.13-era
+> design baseline and work decomposition used to implement the inspector,
+> graph-port, toolbar, and RL-TV improvements. It is preserved for design and
+> review provenance, not as the current architecture map or active backlog.
+> Present ownership and behavior are documented in
+> [architecture.md](architecture.md), [user-guide.md](user-guide.md), and
+> [planning.md](planning.md). Planning-time statements below are intentionally
+> not rewritten as descriptions of the 0.14 source tree.
 
 ## Purpose
 
-This plan turns four requested improvements into independently assignable work
-packages. It is based on the current `src/napari_vipp` architecture and keeps
-scientific behavior, workflow compatibility, and CPU-only installations safe.
+This plan turned four requested improvements into independently assignable work
+packages. It was based on the then-current `src/napari_vipp` architecture and
+kept scientific behavior, workflow compatibility, and CPU-only installations
+safe.
 
-## Current architecture and important findings
+## Planning-Time Architecture And Findings
 
 - Operation and parameter declarations live in `core/pipeline.py`.
   `ParameterSpec` already carries labels and tooltips, while `OperationSpec`
@@ -29,7 +39,7 @@ scientific behavior, workflow compatibility, and CPU-only installations safe.
   or resample the PSF. These are plausible sources of edge artifacts or
   structure loss and must be tested separately from the default lambda.
 
-## Recommended sequence
+## Planned Sequence
 
 1. Implement the shared input-aware parameter visibility mechanism.
 2. Implement port labels and toolbar layout in parallel after agreeing on the
@@ -132,7 +142,8 @@ with `Ambiguous only` as the default.
 7. Add the selector to the Settings menu in `_widget.py`. Treat it as an app
    display preference (default per installation/session), not scientific
    workflow content. If persistence is added, use Qt application settings; do
-   not bump workflow schema version 3 for a canvas-only preference.
+   not bump the then-current workflow schema (version 3) for a canvas-only
+   preference.
 
 ### Tests
 
@@ -281,8 +292,9 @@ must be reviewed separately from UI polish.
 ### Integration agent
 
 After the above packages land, resolve the two Settings menu additions, run the
-full suite, test workflow v3 round trips, execute synthetic examples in CPU
-mode, run narrow/high-DPI UI checks, and update `docs/user-guide.md`,
+   full suite, test the then-current workflow-v3 round trips, execute synthetic
+   examples in CPU mode, run narrow/high-DPI UI checks, and update
+   `docs/user-guide.md`,
 `docs/operator-tips.md`, `docs/architecture.md`, `docs/cache-and-memory.md`, and
 the changelog.
 
