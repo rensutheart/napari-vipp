@@ -90,6 +90,11 @@ GPU_SEGMENTATION_EXAMPLE_WORKFLOW = (
     / "examples"
     / "synthetic-gpu-segmentation-bridge.json"
 )
+RESPONSIVE_CROP_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "responsive-volume-crop-acceptance.json"
+)
 
 
 def _restore_workflow(pipeline: PrototypePipeline, workflow: dict) -> None:
@@ -160,6 +165,77 @@ def test_graph_authoring_acceptance_workflow_records_each_manual_invariant():
     assert "float32 and Preserve" in note_text
     assert "GPU eligible, not guaranteed" in note_text
     assert "CPU-only system" in note_text
+
+
+def test_responsive_volume_crop_example_is_annotated_and_scientifically_exact():
+    workflow = load_workflow(RESPONSIVE_CROP_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    _restore_workflow(pipeline, workflow)
+
+    assert workflow["compute_request"].mode is ComputeMode.PREFER_GPU
+    assert workflow["compute_request"].fallback_policy.value == "visible"
+    assert [
+        pipeline.nodes[node_id].operation_id
+        for node_id in pipeline.topological_order()
+    ] == ["input", "crop_stack"]
+
+    source = pipeline.nodes["input"]
+    crop = pipeline.nodes["crop_stack_1"]
+    assert source.params["sample_name"] == "VIPP synthetic time-lapse multichannel"
+    assert {
+        name: crop.params[name]
+        for name in ("z_start", "z_end", "top", "bottom", "left", "right")
+    } == {
+        "z_start": 2,
+        "z_end": 1,
+        "top": 4,
+        "bottom": 5,
+        "left": 6,
+        "right": 7,
+    }
+
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == source.params["sample_name"]
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+    cropped = outputs["crop_stack_1"]
+    state = pipeline.output_states["crop_stack_1"]
+
+    np.testing.assert_array_equal(
+        cropped,
+        data[:, :, 2:-1, 4:-5, 6:-7],
+        strict=True,
+    )
+    assert cropped.shape == (5, 3, 9, 87, 115)
+    assert state.axis_order == "TCZYX"
+    assert state.shape == cropped.shape
+    assert [axis.scale for axis in state.axes] == [1.0, 1.0, 0.45, 0.45, 0.45]
+    assert [axis.translation for axis in state.axes] == [0.0, 0.0, 0.9, 1.8, 2.7]
+    assert [axis.unit for axis in state.axes] == [
+        "second",
+        None,
+        "micrometer",
+        "micrometer",
+        "micrometer",
+    ]
+    assert state.history[-1] == (
+        "Crop Stack: cropped Z start=2, Z end=1, top=4, bottom=5, "
+        "left=6, right=7"
+    )
+
+    note_text = " ".join(note["text"] for note in workflow["notes"])
+    assert all(f"TEST {index}" in note_text for index in range(1, 8))
+    assert "crop box and current-slice outline" in note_text
+    assert "No intermediate drag positions appear in history" in note_text
+    assert "source[:, :, 2:-1, 4:-5, 6:-7]" in note_text
+    assert "QYX -> ZYX" in note_text
+    assert "Prefer GPU with visible fallback" in note_text
 
 
 def test_gpu_segmentation_bridge_is_portable_annotated_and_scientifically_stable():

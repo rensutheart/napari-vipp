@@ -224,6 +224,99 @@ def test_positional_spatial_operations_reject_noncanonical_explicit_axes(
         pipeline.run(data, input_metadata={"axes": "CYZX"})
 
 
+def test_crop_z_requires_explicit_semantics_and_exact_declaration_runs():
+    data = np.arange(4 * 6 * 8, dtype=np.uint16).reshape(4, 6, 8)
+    inferred_qyx = _inferred_named_state(data, "QYX")
+    rejected, rejected_id = _pipeline_with("crop_stack")
+    rejected.set_param(rejected_id, "z_start", 1)
+    rejected.set_param(rejected_id, "z_end", 1)
+
+    with pytest.raises(AmbiguousAxisError, match="QYX.*QYX -> ZYX") as raised:
+        rejected.run(
+            None,
+            source_payloads={
+                "input": SourcePayload(data, image_state=inferred_qyx),
+            },
+        )
+
+    assert raised.value.code == "positional_spatial_layout"
+    assert raised.value.detected_axes == "QYX"
+    assert raised.value.required_axes == "ZYX"
+    assert raised.value.failing_node_id == rejected_id
+
+    declared = apply_axis_declaration(
+        inferred_qyx,
+        AxisDeclaration("QYX", "ZYX"),
+        declaration_source="test declaration",
+    )
+    accepted, accepted_id = _pipeline_with("crop_stack")
+    accepted.set_param(accepted_id, "z_start", 1)
+    accepted.set_param(accepted_id, "z_end", 1)
+    accepted.set_param(accepted_id, "top", 1)
+    accepted.set_param(accepted_id, "left", 2)
+
+    accepted.run(
+        None,
+        source_payloads={"input": SourcePayload(data, image_state=declared)},
+    )
+
+    np.testing.assert_array_equal(
+        accepted.outputs[accepted_id],
+        data[1:-1, 1:, 2:],
+    )
+    output_state = accepted.output_states[accepted_id]
+    assert output_state.axis_order == "ZYX"
+    assert tuple(axis.translation for axis in output_state.axes) == (1.0, 1.0, 2.0)
+
+
+def test_crop_xy_only_preserves_legacy_inferred_qyx_behavior():
+    data = np.arange(3 * 6 * 8, dtype=np.uint16).reshape(3, 6, 8)
+    inferred_qyx = _inferred_named_state(data, "QYX")
+    pipeline, crop_id = _pipeline_with("crop_stack")
+    pipeline.set_param(crop_id, "top", 1)
+    pipeline.set_param(crop_id, "left", 2)
+
+    pipeline.run(
+        None,
+        source_payloads={"input": SourcePayload(data, image_state=inferred_qyx)},
+    )
+
+    np.testing.assert_array_equal(pipeline.outputs[crop_id], data[:, 1:, 2:])
+    assert pipeline.output_states[crop_id].axis_order == "QYX"
+
+
+@pytest.mark.parametrize("case", ("duplicate-z", "z-selected-as-channel"))
+def test_crop_z_semantics_reject_duplicate_z_and_channel_conflicts(case):
+    if case == "duplicate-z":
+        data = np.zeros((2, 3, 5, 7), dtype=np.uint16)
+        state = image_state_from_array(
+            data,
+            axes=(
+                AxisMetadata("z", "space"),
+                AxisMetadata("z", "space"),
+                AxisMetadata("y", "space"),
+                AxisMetadata("x", "space"),
+            ),
+        )
+        channel_axis = -1
+    else:
+        data = np.zeros((4, 5, 7), dtype=np.uint16)
+        state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+        channel_axis = 0
+
+    pipeline, crop_id = _pipeline_with("crop_stack")
+    pipeline.set_param(crop_id, "z_start", 1)
+    pipeline.set_param(crop_id, "channel_axis", channel_axis)
+
+    with pytest.raises(AmbiguousAxisError, match="exactly one explicit Z") as raised:
+        pipeline.run(
+            None,
+            source_payloads={"input": SourcePayload(data, image_state=state)},
+        )
+
+    assert raised.value.failing_node_id == crop_id
+
+
 def test_qyx_volume_needs_declaration_before_sequential_zyx_processing():
     data = np.arange(3 * 8 * 9, dtype=np.float32).reshape(3, 8, 9)
 

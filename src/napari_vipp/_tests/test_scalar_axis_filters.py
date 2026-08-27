@@ -125,6 +125,57 @@ def test_crop_uses_declared_noncanonical_yx_axes():
     np.testing.assert_array_equal(result, data[:, 1:-2, :, 2:-1])
 
 
+@pytest.mark.parametrize(
+    ("shape", "axis_names", "channel_axis", "expected_slices"),
+    (
+        pytest.param(
+            (6, 7, 8),
+            ("z", "y", "x"),
+            None,
+            (slice(1, -2), slice(1, -1), slice(2, -1)),
+            id="zyx",
+        ),
+        pytest.param(
+            (2, 3, 6, 7, 8),
+            ("t", "c", "z", "y", "x"),
+            1,
+            (slice(None), slice(None), slice(1, -2), slice(1, -1), slice(2, -1)),
+            id="tczyx",
+        ),
+        pytest.param(
+            (2, 7, 3, 8, 6),
+            ("t", "y", "c", "x", "z"),
+            2,
+            (slice(None), slice(1, -1), slice(None), slice(2, -1), slice(1, -2)),
+            id="noncanonical",
+        ),
+    ),
+)
+def test_crop_crops_exact_named_z_without_reordering_other_axes(
+    shape,
+    axis_names,
+    channel_axis,
+    expected_slices,
+):
+    data = np.arange(np.prod(shape), dtype=np.uint16).reshape(shape)
+
+    result = crop_stack(
+        data,
+        z_start=1,
+        z_end=2,
+        top=1,
+        bottom=1,
+        left=2,
+        right=1,
+        channel_axis=channel_axis,
+        axis_names=axis_names,
+    )
+
+    np.testing.assert_array_equal(result, data[expected_slices])
+    assert result.dtype == data.dtype
+    assert result.flags.c_contiguous
+
+
 @pytest.mark.parametrize("axis_names", [("z", "y"), ("z", "a", "x")])
 def test_crop_rejects_malformed_declared_yx_axes(axis_names):
     with pytest.raises(ValueError, match="axis names|exactly one"):
@@ -142,6 +193,60 @@ def test_crop_rejects_malformed_declared_yx_axes(axis_names):
 def test_crop_rejects_margins_that_would_be_silently_repaired(kwargs, message):
     with pytest.raises(ValueError, match=message):
         crop_stack(np.zeros((4, 4), dtype=np.uint8), **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("shape", "axis_names", "channel_axis", "kwargs", "message"),
+    (
+        (
+            (2, 3, 5, 7),
+            ("z", "z", "y", "x"),
+            None,
+            {"z_start": 1},
+            "exactly one explicitly declared Z axis",
+        ),
+        (
+            (4, 5, 7),
+            ("z", "y", "x"),
+            0,
+            {"z_start": 1},
+            "cannot also be the Z spatial axis",
+        ),
+        (
+            (4, 5, 7),
+            ("z", "y", "x"),
+            None,
+            {"z_start": 2, "z_end": 2},
+            "remove every sample",
+        ),
+    ),
+)
+def test_crop_rejects_ambiguous_or_empty_z_crops(
+    shape,
+    axis_names,
+    channel_axis,
+    kwargs,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        crop_stack(
+            np.zeros(shape, dtype=np.uint8),
+            axis_names=axis_names,
+            channel_axis=channel_axis,
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize("name", ("z_start", "z_end"))
+def test_crop_z_margin_set_param_rejects_negative_values(name):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+
+    with pytest.raises(ValueError, match="non-negative"):
+        pipeline.set_param(crop.id, name, -1)
+
+    assert pipeline.nodes[crop.id].params[name] == 0
 
 
 @pytest.mark.parametrize("x_size", [3, 4])

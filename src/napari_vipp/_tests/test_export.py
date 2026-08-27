@@ -1075,6 +1075,43 @@ def test_exported_rescale_axes_matches_native_for_inferred_qyx():
     ]
 
 
+def test_exported_crop_stack_matches_native_for_explicit_zyx():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    for name, value in {
+        "z_start": 1,
+        "z_end": 2,
+        "top": 2,
+        "bottom": 1,
+        "left": 3,
+        "right": 2,
+    }.items():
+        pipeline.set_param(crop.id, name, value)
+    image = np.arange(7 * 9 * 11, dtype=np.uint16).reshape(7, 9, 11)
+
+    native = pipeline.run(image, input_metadata={"axes": "ZYX"})[crop.id]
+    native_state = pipeline.output_states[crop.id]
+    code = export_pipeline_to_python(
+        pipeline,
+        compute_request=ComputeRequest(mode="cpu"),
+    )
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+
+    exported = namespace["run_pipeline"](
+        image,
+        input_metadata={"axes": "ZYX"},
+    )
+
+    np.testing.assert_array_equal(exported[crop.id], native)
+    assert exported[crop.id].shape == (4, 6, 6)
+    assert exported.output_states[crop.id].to_dict() == native_state.to_dict()
+    assert '"z_start":1' in code
+    assert '"z_end":2' in code
+
+
 def test_exported_image_source_axis_declaration_enables_z_rescale():
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()

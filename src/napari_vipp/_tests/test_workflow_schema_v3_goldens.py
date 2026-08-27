@@ -15,6 +15,9 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     "graph-authoring-acceptance.json": (
         "bf6fc43ad7ac57f3bcc01229302c8bea38a934ba2e5cbe72f38e6c05f60dc51f"
     ),
+    "responsive-volume-crop-acceptance.json": (
+        "59e1bd115aa1def8a9dd8dae06e2e6fe9b14e17d6cf1a68f41c211800a21c216"
+    ),
     "otsu-red-channel-labels.json": (
         "60367b60a9657770ed7bcc2ffacc1ce0474b4d40a4610f57f46e449dfba85faf"
     ),

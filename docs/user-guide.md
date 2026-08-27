@@ -45,6 +45,7 @@ Good first examples:
 | Segment a fluorescence channel | `Red-Channel Label Cleanup` |
 | Measure labels with intensity | `Object Intensity Measurements` |
 | Review 3D morphology | `3D Mesh Morphology` |
+| Review responsive volumetric cropping | `Responsive Volumetric Crop Acceptance` |
 | Try PSF-aware restoration | `3D Richardson-Lucy / TV Deconvolution` |
 | Review colocalization outputs | `RACC Colocalization` |
 | Audit skeleton/network measurements | `Skeleton QC` |
@@ -1526,6 +1527,45 @@ workflows and headless configs with a blank declaration are represented the
 same way, so opening them can never silently activate reinterpretation. After
 you choose or VIPP applies the guarded suggestion, saving writes the concrete
 `QYX -> ZYX` declaration and reloading restores the Z-stack choice.
+
+### Crop A Volume Responsively
+
+`Crop Stack` removes samples from the beginning and end of named spatial axes.
+`Top`/`Bottom` crop Y and `Left`/`Right` crop X. `Z start` and `Z end` appear
+only when the input contains exactly one explicitly declared Z spatial axis.
+That includes trustworthy file/sample metadata and an authored exact mapping
+such as `QYX -> ZYX`; shape inference alone never turns Q into Z. If a generic
+TIFF really is a depth stack, review and record that fact at Image Source before
+cropping Z.
+
+During slider movement VIPP draws a constant-size full-rank crop box and a
+current-slice outline over the cached image. On 2D slices the outline is orange
+inside the retained Z range and red on an excluded Z plane; napari's 3D view
+shows the retained box faces. The displayed control values are drafts: dragging
+does not launch a full scientific calculation for every intermediate position
+or allocate an image-sized zero mask. Releasing the slider, finishing numeric
+entry, or pausing briefly commits the final margins as one scientific edit and
+starts one calculation. One Undo restores the previous crop; one Redo reapplies
+it.
+
+Every opposing margin pair must leave at least one sample. Crop preserves T, C,
+and any other nonspatial axes unchanged. It also preserves axis scale and unit,
+while moving each cropped spatial origin by `leading margin × scale`; history
+records all six margins. For example, the bundled acceptance workflow crops a
+`(5, 3, 12, 96, 128)` TCZYX sample with Z `2/1`, Y `4/5`, and X `6/7` to
+`(5, 3, 9, 87, 115)` without dropping a timepoint or channel.
+
+VIPP commits any pending Crop draft before Calculate, Calculate all, an
+execution snapshot, workflow save, Python export, batch start, workflow-tab
+change, or close. Saved/reopened workflows, generated Python, batch, CPU, and
+supported GPU execution therefore use the final visible margins. Workflows
+created before Z margins existed load with `Z start = 0` and `Z end = 0`, so
+their previous pixels and scientific hash remain unchanged.
+
+Open **Responsive Volumetric Crop Acceptance** from `Open example...` (launcher
+ID `responsive-crop`) for numbered checks covering rapid drag, idle commit,
+undo/redo, physical origins, durable boundaries, QYX safety, and the explained
+CPU assignment under Prefer GPU.
 
 ### Rescale Axes with inferred names
 

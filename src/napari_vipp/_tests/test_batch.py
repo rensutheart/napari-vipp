@@ -81,6 +81,22 @@ def _zyx_processing_batch_workflow() -> tuple[dict[str, object], tuple[str, ...]
     return serialize_workflow(pipeline), (output.id,)
 
 
+def _crop_batch_workflow() -> tuple[dict[str, object], tuple[str, ...]]:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    pipeline.set_param(crop.id, "z_start", 1)
+    pipeline.set_param(crop.id, "z_end", 1)
+    pipeline.set_param(crop.id, "top", 1)
+    pipeline.set_param(crop.id, "left", 2)
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(crop.id, output.id).success
+    pipeline.set_param(output.id, "tag", "output")
+    pipeline.set_param(output.id, "format", "npy")
+    return serialize_workflow(pipeline), (output.id,)
+
+
 def _batch_config(
     workflow: dict[str, object],
     input_dir: Path,
@@ -394,6 +410,48 @@ def test_scientific_workflow_hash_ignores_layout_notes_and_ui_metadata():
     pipeline.set_param("gaussian", "sigma", 3.25)
     changed = serialize_workflow(pipeline)
     assert scientific_workflow_hash(changed) != scientific_workflow_hash(plain)
+
+
+def test_crop_zero_defaults_preserve_fixed_pre_feature_workflow_hash():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    current = serialize_workflow(pipeline)
+    current_crop = next(
+        node for node in current["nodes"] if node["operation_id"] == "crop_stack"
+    )
+    legacy = deepcopy(current)
+    legacy_crop = next(
+        node for node in legacy["nodes"] if node["operation_id"] == "crop_stack"
+    )
+    legacy_crop["params"].pop("z_start")
+    legacy_crop["params"].pop("z_end")
+    historical_hash = "bbaca3110ec86a91ec82b9ddd6fc5c1edd13b156692bb10c3790225adc9848c1"
+
+    assert current_crop["params"]["z_start"] == 0
+    assert current_crop["params"]["z_end"] == 0
+    assert scientific_workflow_hash(legacy) == historical_hash
+    assert scientific_workflow_hash(current) == historical_hash
+
+    changed = deepcopy(current)
+    changed_crop = next(
+        node for node in changed["nodes"] if node["operation_id"] == "crop_stack"
+    )
+    changed_crop["params"]["z_start"] = 1
+    assert scientific_workflow_hash(changed) != historical_hash
+
+
+@pytest.mark.parametrize("name", ("z_start", "z_end"))
+def test_persisted_crop_rejects_negative_z_margins(name):
+    workflow, _output_ids = _crop_batch_workflow()
+    crop = next(
+        node for node in workflow["nodes"] if node["operation_id"] == "crop_stack"
+    )
+    crop["params"][name] = -1
+
+    with pytest.raises(ValueError, match="non-negative"):
+        scientific_workflow_hash(workflow)
 
 
 def test_scientific_workflow_hash_includes_authored_compute_intent():
@@ -893,6 +951,50 @@ def test_qyx_scientific_preflight_stops_before_any_batch_artifact(
         run_batch(workflow, config)
 
     assert not output_dir.exists()
+
+
+def test_crop_qyx_batch_requires_and_accepts_exact_z_declaration(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.arange(4 * 6 * 8, dtype=np.uint16).reshape(4, 6, 8)
+    tifffile.imwrite(inputs / "generic.tif", source, photometric="minisblack")
+    workflow, output_ids = _crop_batch_workflow()
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, output_ids)
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.tif"),),
+    )
+
+    with pytest.raises(BatchScientificPreflightError) as raised:
+        preflight_batch(workflow, config)
+
+    assert raised.value.axis_suggestion is not None
+    assert raised.value.axis_suggestion.declaration == AxisDeclaration("QYX", "ZYX")
+    assert not output_dir.exists()
+
+    declared = replace(
+        config,
+        sources=(
+            replace(
+                config.sources[0],
+                axis_declaration=AxisDeclaration("QYX", "ZYX"),
+            ),
+        ),
+    )
+    plan = preflight_batch(workflow, declared)
+    result = run_batch(
+        workflow,
+        declared,
+        plan=plan,
+        compute_request=ComputeRequest(mode="cpu"),
+    )
+
+    assert result.summary["completed"] == 1
+    np.testing.assert_array_equal(
+        np.load(output_dir / "generic__output.npy"),
+        source[1:-1, 1:, 2:],
+    )
 
 
 def test_qyx_xy_rescale_preflight_matches_second_rescale_execution(

@@ -31,6 +31,22 @@
 - macOS installation is CPU-only and current-user-only. Automatic update and a
   graphical uninstaller are not included in this alpha.
 
+## Pending release
+
+### Features
+
+- Completed responsive volumetric Crop Stack support for issue
+  [#50](https://github.com/rensutheart/napari-vipp/issues/50). Persisted Z-start
+  and Z-end margins apply only to one explicitly declared Z spatial axis; old
+  workflows retain zero-Z behavior, inferred QYX is never promoted to Z, and
+  T/C axes, physical calibration, origins, history, workflow hashes, export,
+  generated execution, and batch behavior remain reproducible.
+- Crop controls now present a lightweight translucent ROI over cached pixels
+  while the user drags. Release or a short idle interval commits one undoable
+  scientific edit and one calculation, and pending drafts are flushed before
+  calculation, save, export, batch, workflow-tab, and close boundaries. The
+  bundled `responsive-crop` example provides a numbered TCZYX acceptance path.
+
 ## 0.14.0a1 - 2026-08-26
 
 ### Features

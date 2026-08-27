@@ -267,6 +267,7 @@ PARAMETER_VISIBILITY_MULTICHANNEL_INPUT = "multichannel_input"
 PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT = "spatial_mode_relevant"
 PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT = "stack_scope_relevant"
 PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS = "three_spatial_dimensions"
+PARAMETER_VISIBILITY_EXPLICIT_Z_AXIS = "explicit_z_axis"
 PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING = "two_dimensional_processing"
 PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS = "at_least_two_spatial_dimensions"
 PARAMETER_VISIBILITY_PARAMETER_IN = "parameter_in"
@@ -282,6 +283,7 @@ _PARAMETER_VISIBILITY_VALUES = {
     PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT,
     PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT,
     PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS,
+    PARAMETER_VISIBILITY_EXPLICIT_Z_AXIS,
     PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
     PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
     PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -460,6 +462,33 @@ def resolve_parameter_visibility(
 
     if visibility == PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT:
         return _stack_scope_parameter_visibility(context)
+
+    if visibility == PARAMETER_VISIBILITY_EXPLICIT_Z_AXIS:
+        state = context.primary_input_state
+        if state is None:
+            return ParameterVisibility(
+                False,
+                "An explicit Z axis has not been resolved yet.",
+            )
+        named_z_axes = tuple(
+            index
+            for index, axis in enumerate(state.axes)
+            if axis.name.strip().casefold() == "z"
+        )
+        has_exact_explicit_z = bool(
+            len(named_z_axes) == 1
+            and state.axes[named_z_axes[0]].type.strip().casefold() == "space"
+            and state.axes[named_z_axes[0]].is_explicit
+            and int(context.parameter_values.get("channel_axis", -1))
+            != named_z_axes[0]
+        )
+        return ParameterVisibility(
+            has_exact_explicit_z,
+            "The resolved input does not have one explicitly declared Z "
+            "spatial axis."
+            if not has_exact_explicit_z
+            else "",
+        )
 
     if visibility in {
         PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS,
@@ -1610,6 +1639,34 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
+            ParameterSpec(
+                "z_start",
+                "Z start",
+                "int",
+                0,
+                0,
+                256,
+                1,
+                visibility=PARAMETER_VISIBILITY_EXPLICIT_Z_AXIS,
+                tooltip=(
+                    "Samples removed from the beginning of the explicitly "
+                    "declared Z axis. Generic Q axes are never treated as Z."
+                ),
+            ),
+            ParameterSpec(
+                "z_end",
+                "Z end",
+                "int",
+                0,
+                0,
+                256,
+                1,
+                visibility=PARAMETER_VISIBILITY_EXPLICIT_Z_AXIS,
+                tooltip=(
+                    "Samples removed from the end of the explicitly declared "
+                    "Z axis. At least one Z sample is always retained."
+                ),
+            ),
             ParameterSpec("top", "Top", "int", 0, 0, 256, 1),
             ParameterSpec("bottom", "Bottom", "int", 0, 0, 256, 1),
             ParameterSpec("left", "Left", "int", 0, 0, 256, 1),
@@ -5345,6 +5402,14 @@ def graph_node_from_persisted_params(
     if not isinstance(saved_params, dict):
         raise ValueError(f"Parameters for node {node_id!r} must be an object.")
 
+    # Crop Stack gained explicit Z margins without a workflow schema bump.
+    # Centralize the no-op defaults here so workflows, history snapshots,
+    # graph fragments, and every other persisted-node restore path agree.
+    if operation_id == "crop_stack":
+        saved_params = dict(saved_params)
+        saved_params.setdefault("z_start", 0)
+        saved_params.setdefault("z_end", 0)
+
     required_params = {parameter.name for parameter in spec.parameters}
     missing_params = required_params - saved_params.keys()
     if missing_params:
@@ -5373,6 +5438,8 @@ def graph_node_from_persisted_params(
             params[parameter.name],
             context=f"Node {node_id!r} parameter",
         )
+        if spec.id == "crop_stack" and parameter.name in {"z_start", "z_end"}:
+            _operations._crop_margin_values(params[parameter.name], 0)
     for name, value in params.items():
         optional_spec = optional_persisted_parameter_spec(spec, name)
         if optional_spec is not None:
@@ -6236,6 +6303,11 @@ class PrototypePipeline:
                 value,
                 context=f"Node {node_id!r} parameter",
             )
+            if node.operation_id == "crop_stack" and name in {
+                "z_start",
+                "z_end",
+            }:
+                _operations._crop_margin_values(value, 0)
         node.params[name] = value
 
     def node_auto_recalculate(self, node_id: str) -> bool:
@@ -7696,9 +7768,30 @@ class PrototypePipeline:
                     params.get("right", 0),
                     shape[x_axis],
                 )
+                z_start, z_end = _operations._crop_margin_values(
+                    params.get("z_start", 0),
+                    params.get("z_end", 0),
+                )
                 cropped_shape = list(shape)
                 cropped_shape[y_axis] -= top + bottom
                 cropped_shape[x_axis] -= left + right
+                if z_start != 0 or z_end != 0:
+                    z_axis = _explicit_crop_z_axis_index(
+                        input_state,
+                        channel_axis=channel_axis,
+                    )
+                    if z_axis is None:
+                        raise ValueError(
+                            "Z cropping requires exactly one explicitly declared "
+                            "Z axis. If a generic leading axis is depth, record "
+                            "an exact mapping such as QYX -> ZYX first."
+                        )
+                    z_start, z_end = _operations._crop_pair(
+                        z_start,
+                        z_end,
+                        shape[z_axis],
+                    )
+                    cropped_shape[z_axis] -= z_start + z_end
                 output_shape = tuple(cropped_shape)
         elif operation_id == "reorder_axes":
             indices = _metadata._axis_order_indices(
@@ -8763,6 +8856,17 @@ class PrototypePipeline:
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
         if node.operation_id == "crop_stack" and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
+            kwargs["z_axis_explicit"] = (
+                _explicit_crop_z_axis_index(
+                    input_state,
+                    channel_axis=_operations._validated_filter_channel_axis(
+                        kwargs.get("channel_axis"),
+                        len(input_state.shape),
+                        operation="Crop stack",
+                    ),
+                )
+                is not None
+            )
         if node.operation_id in {
             "project_image",
             "orthogonal_projection",
@@ -9460,6 +9564,14 @@ def _validate_operation_axis_semantics(
     kwargs: dict[str, Any],
 ) -> None:
     image_state = state if isinstance(state, ImageState) else None
+    if node.operation_id == "crop_stack":
+        _validate_crop_stack_semantics(
+            image_state,
+            kwargs,
+            operation_title=node.title,
+            failing_node_id=node.id,
+        )
+        return
     if node.operation_id == "rescale_axes":
         _validate_rescale_axes_semantics(
             image_state,
@@ -9508,6 +9620,72 @@ def _validate_operation_axis_semantics(
             operation_title=node.title,
             purpose="derive PSF sampling and channel parameters",
         )
+
+
+def _validate_crop_stack_semantics(
+    state: ImageState | None,
+    kwargs: Mapping[str, Any],
+    *,
+    operation_title: str,
+    failing_node_id: str,
+) -> None:
+    """Reject positional Z cropping while preserving the established YX crop."""
+    z_start, z_end = _operations._crop_margin_values(
+        kwargs.get("z_start", 0),
+        kwargs.get("z_end", 0),
+    )
+    if z_start == 0 and z_end == 0:
+        return
+    channel_axis = (
+        None
+        if state is None
+        else _operations._validated_filter_channel_axis(
+            kwargs.get("channel_axis"),
+            len(state.shape),
+            operation="Crop stack",
+        )
+    )
+    if state is not None and _explicit_crop_z_axis_index(
+        state,
+        channel_axis=channel_axis,
+    ) is not None:
+        return
+    detected = state.axis_order if state is not None else "unresolved"
+    confidence = state.axis_confidence if state is not None else "unknown"
+    raise AmbiguousAxisError(
+        f"{operation_title} cannot crop Z from {detected} axes with "
+        f"{confidence} confidence. Z margins require exactly one explicit Z "
+        "spatial axis. If a generic leading axis is truly depth, record an "
+        "exact declaration such as QYX -> ZYX first.",
+        code="positional_spatial_layout",
+        detected_axes=detected,
+        required_axes="ZYX",
+        failing_node_id=failing_node_id,
+    )
+
+
+def _explicit_crop_z_axis_index(
+    state: ImageState,
+    *,
+    channel_axis: int | None,
+) -> int | None:
+    """Return Crop Stack's one exact Z axis, never a positional inference."""
+    named_z_axes = tuple(
+        index
+        for index, axis in enumerate(state.axes)
+        if axis.name.strip().casefold() == "z"
+    )
+    if len(named_z_axes) != 1:
+        return None
+    index = named_z_axes[0]
+    axis = state.axes[index]
+    if (
+        axis.type.strip().casefold() != "space"
+        or not axis.is_explicit
+        or channel_axis == index
+    ):
+        return None
+    return index
 
 
 def _validate_rescale_axes_semantics(

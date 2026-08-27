@@ -4017,8 +4017,18 @@ def _canonical_compute_execution(request: ComputeRequest) -> dict[str, object]:
 def _canonical_scientific_node(value: object) -> dict[str, object]:
     """Exclude runtime/UI cache fields while retaining declared node intent."""
     node = _canonical_mapping(value)
-    params = _require_object(node.get("params", {}), "Workflow node parameters")
     operation_id = str(node.get("operation_id", ""))
+    params = dict(
+        _require_object(node.get("params", {}), "Workflow node parameters")
+    )
+    if operation_id == "crop_stack":
+        # Missing margins in pre-feature workflows are scientifically
+        # identical to authored zeroes. Omit no-op margins so their canonical
+        # form remains byte-for-byte equivalent to the historical document and
+        # existing attached BatchConfig hashes remain valid.
+        for name in ("z_start", "z_end"):
+            if params.get(name, 0) == 0:
+                params.pop(name, None)
     threshold_mode = str(params.get("threshold_mode", "Manual")).casefold()
     source_item = source_item_from_params(params) if operation_id == "input" else None
     source_item_bound = source_item is not None
