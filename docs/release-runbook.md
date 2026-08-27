@@ -140,6 +140,8 @@ Write documentation so it remains true before and after publication. Avoid
 separate “pending”, “now public”, and “stable promoted” commits. The versioned
 manual is not deployed until the package is public.
 
+Write `release-notes.md` with one physical line per paragraph or list item. Do not hard-wrap release-note prose at a fixed column; the publishing surface must control visual wrapping for the reader's viewport.
+
 ### 2. Merge once and trust exact-commit CI
 
 Merge the reviewed release PR into `main`, wait for the final `main` CI run,

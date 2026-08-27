@@ -16,6 +16,9 @@ ABSOLUTE_HOME_PATHS = (
 RELEASE_TEXT_SUFFIXES = frozenset(
     {".csv", ".json", ".md", ".svg", ".txt", ".yaml", ".yml"}
 )
+RELEASE_NOTE_BLOCK_START = re.compile(
+    r"^(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|\||```|~~~|(?:-{3,}|_{3,}|\*{3,})\s*$)"
+)
 
 
 def test_014a2_release_version_contract_is_consistent() -> None:
@@ -30,8 +33,40 @@ def test_014a2_release_version_contract_is_consistent() -> None:
     assert 'date-released: "2026-08-27"' in citation
     assert changelog.startswith("# Changelog\n\n## 0.14.0a2 - 2026-08-27")
     assert release_notes.startswith("# VIPP 0.14.0a2\n")
+    assert "PyPI distribution note" in release_notes
     assert "release candidate" not in release_notes.casefold()
     assert "VIPP `0.14.0a2` is published" in readme
+
+
+def test_release_notes_do_not_hard_wrap_prose() -> None:
+    lines = (REPO_ROOT / "release-notes.md").read_text(encoding="utf-8").splitlines()
+    continuation_lines: list[int] = []
+    previous_line_has_content = False
+    fence_marker: str | None = None
+
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        marker = stripped[:3]
+        if fence_marker is not None:
+            if marker == fence_marker:
+                fence_marker = None
+                previous_line_has_content = True
+            continue
+        if marker in {"```", "~~~"}:
+            fence_marker = marker
+            previous_line_has_content = True
+            continue
+        if not stripped:
+            previous_line_has_content = False
+            continue
+        if previous_line_has_content and not RELEASE_NOTE_BLOCK_START.match(stripped):
+            continuation_lines.append(line_number)
+        previous_line_has_content = True
+
+    assert not continuation_lines, (
+        "release-notes.md must use one physical line per paragraph or list item; "
+        f"hard-wrapped continuation lines: {continuation_lines}"
+    )
 
 
 def test_local_markdown_links_resolve():
