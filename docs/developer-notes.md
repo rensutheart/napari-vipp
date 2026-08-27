@@ -1,6 +1,6 @@
 # VIPP Developer and Architecture Notes
 
-Last reviewed: 2026-07-13
+Last reviewed: 2026-08-27
 
 This is the shortest technical entry point for contributors. It identifies the
 owner of each behavior, the scientific contracts that must survive a change,
@@ -199,10 +199,13 @@ for the exact owning modules and limitations.
   bump or explicitly reject the old schema, update golden tests and bundled
   examples, and avoid an implicit migration that changes scientific meaning.
 - Batch configuration must retain the exact scientific workflow hash and
-  deterministic source/output plan. Batch config schema 3 retains the full
-  effective `ComputeRequest` and guarded source-axis declarations; schema 1
-  migrates to explicit CPU, while schema 2 keeps its compute request and loads
-  without a declaration.
+  deterministic source/output plan. Current workflow schema 5 adds canonical
+  SourceItem evidence to version 4's portable compute intent. Batch config
+  schema 4 adds SourceItem inventories and typed per-sample overrides to version
+  3's full effective `ComputeRequest` and guarded source-axis declarations;
+  schema 1 migrates to explicit CPU, while schema 2 keeps its compute request.
+  Legacy configs acquire SourceItems only after deterministic resolution and
+  contain no per-sample overrides.
 - Never publish a batch output before all source-dependent bytes are staged and
   every source identity has been reverified. Preserve collision policy and
   per-item/output provenance. Cleanup proof is an additional publication gate.

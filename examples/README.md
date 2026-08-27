@@ -10,17 +10,27 @@ Launch one of the named review workflows with:
 python scripts/launch_vipp_intensity_workflow.py <name>
 ```
 
-Current launcher names:
+Current launcher IDs (run the launcher with `--list` for the authoritative
+registry):
 
 - `graph-authoring`
+- `batch-provenance`
+- `label-cleanup`
 - `gpu-segmentation`
-- `intensity`
-- `merged`
-- `morphology`
-- `mesh`
-- `object-coloc`
-- `deconvolution`
+- `object-intensity`
+- `merged-measurements`
+- `summary-table`
+- `derived-morphology`
+- `mesh-morphology`
+- `skeleton-qc`
+- `advanced-skeleton`
+- `racc-colocalization`
+- `object-colocalization`
+- `deconvolution-2d`
 - `deconvolution-3d`
+
+The older aliases `intensity`, `merged`, `morphology`, `mesh`, `object-coloc`,
+and `deconvolution` remain accepted for compatibility.
 
 In the interactive widget, use `Open example...`; it presents these checked-in
 workflows as a grouped, searchable template list and opens them with their

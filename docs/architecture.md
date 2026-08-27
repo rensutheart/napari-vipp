@@ -3,12 +3,13 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-08-14
+Last reviewed: 2026-08-27
 
-It reflects the live codebase through VIPP `0.13.0a8`, including restoration,
-optional microscope-reader routing, reproducible collection batch execution,
-graph restore hardening, the unified CPU/GPU execution contract, and graph
-fragment authoring.
+It reflects the live codebase through VIPP `0.14.0a1`, including durable
+SourceItems, optional microscope-reader routing, local OME-Zarr presentation
+preview, per-sample batch parameters, reproducible collection execution, graph
+restore hardening, the unified CPU/GPU execution contract, and graph fragment
+authoring.
 
 For product framing and longer-range ideas, see [README.md](../README.md) and
 [planning.md](planning.md). The accepted OME I/O architecture is documented in
@@ -47,6 +48,9 @@ Qt-free scientific core
   core/grid.py                 physical-grid compatibility contracts
   core/source_identity.py      exact local file/store identities
   core/file_sources.py         verified, owned file-source snapshots
+  core/source_items.py         stable logical item and container contracts
+  core/source_resolution.py    inspection-to-SourceItem resolution
+  core/source_preview.py       presentation-only lower-level preview reads
   core/diagnostics.py          exact all-value diagnostic reductions
   core/snapshots.py            typed graph/workflow runtime snapshots
   core/execution.py            typed headless execution service
@@ -77,6 +81,11 @@ src/napari_vipp/
     grid.py            aligned-image and image/PSF physical-grid validation
     source_identity.py exact identities for local files and directory stores
     file_sources.py    verified, owned, read-only file-source snapshots
+    source_items.py    SourceItem v1 selectors, reader evidence, and revisions
+    source_item_persistence.py canonical workflow SourceItem persistence
+    source_inspection.py shared background inspection contracts
+    source_resolution.py inspection-to-SourceItem resolution
+    source_preview.py  presentation-only lower-level preview reads
     diagnostics.py     exact statistics, percentiles, histograms, and label sizes
     snapshots.py       defensively copied graph and workflow snapshots
     execution.py       PipelineRunRequest/Result and headless execution service
@@ -88,8 +97,10 @@ src/napari_vipp/
       raster.py        common PNG/JPEG/BMP/GIF/WebP/TGA/PNM import and 2D export
       ome_zarr.py      OME-Zarr 0.4/0.5 image support
       numpy_io.py      NPY/NPZ support
+      microscope.py    optional native/Bio-Formats microscope routes
     tables.py          TableData, TableState, CSV/TSV writer
     batch.py           collection config, planning, execution, and manifests
+    batch_parameters.py typed per-SourceItem parameter overrides
     batch_setup.py     headless config construction from one workflow snapshot
     batch_demo.py      deterministic paired collection and ground-truth validator
     preview.py         slice/MIP/RGB thumbnail generation
@@ -105,6 +116,8 @@ src/napari_vipp/
     diagnostic_workers.py typed requests/results and Qt diagnostic runnables
     source_adapter.py  owned, revisioned live napari source boundary
     file_sources.py    Qt worker for verified local file snapshots
+    source_inspection.py source selector and metadata presentation
+    source_preview.py  generation-safe presentation preview coordination
     workers.py         thin Qt adapter for core execution
     batch.py           retained collection batch workspace and UI data contracts
     batch_controller.py batch setup/save/load/preview coordination
@@ -130,7 +143,8 @@ quietly changing a scientific result.
 
 | Concern | Owning boundary | Implemented contract |
 | --- | --- | --- |
-| Local file/store revisions | `core/source_identity.py`, `core/file_sources.py`, `ui/file_sources.py` | VIPP hashes every regular-file path and byte in a file or directory store before inspection/materialization and verifies the same identity afterward. The selected series is copied to an owned, read-only NumPy array. A path-and-series revision stays pinned until explicit `Refresh`; stale in-flight loads cannot repopulate the cache. |
+| Local file/store revisions | `core/source_identity.py`, `core/source_items.py`, `core/source_resolution.py`, `core/file_sources.py`, `ui/file_sources.py` | VIPP hashes every regular-file path and byte in a file or directory/companion bundle before inspection/materialization and verifies the same identity afterward. A canonical SourceItem binds the stable logical selector, reader evidence, normalized metadata, and container revision. The selected level-0 image is copied to an owned, read-only NumPy array and stays pinned until explicit `Refresh`; stale in-flight loads cannot repopulate the cache. |
+| Source presentation preview | `core/source_preview.py`, `ui/source_preview.py` | A lower local OME-Zarr level may be read and sliced for early presentation only. Generation checks and cancellation prevent stale publication. Preview bytes never replace SourceItem level-0 analysis, scientific cache data, or provenance. |
 | Live napari revisions | `ui/source_adapter.py`, `_widget.py` | In-memory NumPy layer data and metadata are detached on the GUI thread and tagged with a revision token. Relevant layer events invalidate the token; a background result from an older revision is discarded. Live data that cannot be detached, including lazy arrays, is rejected with an instruction to materialize it or use an immutable file source. Non-axis-aligned napari transforms are rejected rather than ignored. |
 | Axis semantics | `core/metadata.py`, `core/pipeline.py` | Every axis carries `explicit` or `shape-inferred` confidence, with `mixed` available at the image-state level. Operations that need semantic auto-selection of spatial rank, channel axis, projection axes, or PSF parameters reject inferred-only axes with `AmbiguousAxisError`; callers must supply explicit metadata or an explicit supported mode/index. Positional kernels also reject explicit noncanonical layouts instead of treating a `ZX` suffix as `YX`; semantic-capable crop, projection, rescaling, and measurement paths resolve named axes directly. Array shape alone never establishes RGB or Z/Y/X meaning. A batch source may apply an exact raw-to-effective `AxisDeclaration`, but it is provenance-recorded, never transposes pixels, and never manufactures calibration. Malformed declared axes, stale carried shapes, and non-finite or non-positive calibration fail instead of being replaced by inferred/default metadata. |
 | Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. A typed `PipelineNodeResult` may expose one completed node's transient execution-display state immediately, so its card and sampled thumbnail can advance while later nodes run. When the active cache policy already retains that node, its run-scoped presentation payload also keeps inspection, pinning, tables, and metadata synchronized without defeating Low-memory pruning. Normal success replaces the live scientific cache and execution state with the accepted final result. Cancellation or supersession discards transient presentation state. On failure, a verified source boundary may be merged. A cleanup-failed result may additionally merge completed processing output only with matching actual-implementation provenance; otherwise the coherent earlier value is restored. Source ownership remains an explicit upstream responsibility. |
@@ -223,14 +237,18 @@ access, plus the full per-port lists in `node_outputs[node_id]` and
 Source nodes use `SourcePayload`s. File sources are loaded through
 `core.io.read_image()` inside the verified `core.file_sources` boundary. The
 interactive boundary captures and verifies an exact whole-file or
-directory-tree identity around inspection and materialization, copies the
-selected series into an owned read-only NumPy array, and pins that
-path-and-series snapshot until explicit Refresh. OME-Zarr, microscope, and
-large-file materialization uses the background queue. A refresh invalidates the
-file-load generation as well as the cache, so an older in-flight result cannot
-repopulate a stale snapshot. The normalized reader-built state is preserved and
-completed against the detached array rather than reparsed from lossy display
-metadata.
+directory/companion-bundle identity around inspection and materialization,
+resolves a canonical SourceItem with stable logical selector, reader evidence,
+normalized axes/shape, metadata, and container revision, copies the selected
+level-0 image into an owned read-only NumPy array, and pins that snapshot until
+explicit Refresh. A local multiscale OME-Zarr source may first publish a sliced
+lower level through the separate presentation-preview path; that array never
+enters graph execution, scientific cache state, or provenance. OME-Zarr,
+microscope, and large-file materialization use the background queue. A refresh
+invalidates both preview and file-load generations as well as the cache, so an
+older in-flight result cannot repopulate a stale snapshot. The normalized
+reader-built state is preserved and completed against the detached array rather
+than reparsed from lossy display metadata.
 
 Live napari sources enter through `LiveLayerSourceAdapter`. An in-memory NumPy
 layer is copied, marked read-only, paired with detached display metadata and a
@@ -363,7 +381,7 @@ documented exceptions are in
 Visibility is excluded from workflow JSON, execution kwargs, cache keys,
 scientific hashes, and undo/redo snapshots. Hidden parameters therefore retain
 their exact stored values and still participate in generated Python and batch
-execution. The current workflow schema is version 4; this visibility boundary
+execution. The current workflow schema is version 5; this visibility boundary
 is unchanged.
 
 ## Node Library
@@ -1464,7 +1482,9 @@ supports:
 
 - existing napari layer;
 - file path (`.npy`, `.npz`, OME-TIFF/ImageJ/conventional TIFF, OME-Zarr
-  stores, and common raster images such as PNG/JPEG/BMP/GIF/WebP);
+  stores, common raster images such as PNG/JPEG/BMP/GIF/WebP, and qualified
+  optional microscope routes including ND2, LIF, CZI/LSM, OIR/OIB/OIF/VSI, and
+  IMS);
 - bundled synthetic sample;
 - adaptive file/store inspection with a series or image selector when multiple
   items are available.
@@ -1491,11 +1511,14 @@ Workflow persistence:
 - `core/workflow.py` serializes nodes, params, connections including
   `target_port`, `source_port`, optional tunnel names, output tunnel
   definitions, and canvas positions to JSON.
-- Workflow version 4 retains version 3's graph notes, VIPP UI metadata, and
+- Workflow version 5 retains version 4's required `execution.compute` object
+  with portable `mode`, `fallback_policy`, `node_preferences`,
+  `precision_policy`, and `workload_policy` fields. It adds canonical SourceItem
+  evidence to resolved file-source parameters: stable logical selector, reader
+  key/version, normalized axes/shape and metadata, and exact container revision.
+  Version 4 in turn retained version 3's graph notes, VIPP UI metadata, and
   required scientific controls for threshold/cutoff behavior, explicit channel
-  semantics, and composite intensity mapping. It adds the required
-  `execution.compute` object with portable `mode`, `fallback_policy`,
-  `node_preferences`, `precision_policy`, and `workload_policy` fields.
+  semantics, and composite intensity mapping.
 - Portable `mode` values are `cpu`, `auto`, `prefer_gpu`, and `custom`.
   Prefer GPU requires visible fallback and considers reviewed public Custom
   as well as Auto-candidate providers while bypassing only the CPU-performance
@@ -1503,9 +1526,11 @@ Workflow persistence:
   Custom; this preserves intent when switching modes without changing what
   the other three modes mean.
 - Version-3 documents are accepted and decoded as an explicit CPU
-  `ComputeRequest`; a subsequent save emits version 4. Versions 1 and 2 are
-  intentionally rejected instead of receiving inferred scientific parameter
-  migrations; changing only the JSON version number is not a valid migration.
+  `ComputeRequest`; version-4 documents retain their authored request. Resolved
+  legacy file sources acquire SourceItem evidence, and a subsequent save emits
+  version 5. Versions 1 and 2 are intentionally rejected instead of receiving
+  inferred scientific parameter migrations; changing only the JSON version
+  number is not a valid migration.
 - Compute persistence records authored portability intent, not the environment
   that happened to run or benchmark it. `runtime_id`, `device_id`, accelerator
   memory cap/reserve, experimental admission, provider probes, device/runtime
@@ -1526,8 +1551,9 @@ Workflow persistence:
 - Workflow JSON does not serialize thumbnail pixels, cached arrays, cached
   tables, environment provenance, benchmark evidence, or YAML.
 - Image Source paths and layer names are serialized as literal parameters;
-  input files are not embedded and paths are not rebased for portable sharing.
-- The loader requires the workflow type, accepts schema versions 3 and 4, and
+  resolved file sources additionally carry canonical SourceItem evidence. Input
+  files are not embedded and paths are not rebased for portable sharing.
+- The loader requires the workflow type, accepts schema versions 3, 4, and 5, and
   rejects unknown operations, malformed records, duplicate node ids, invalid
   positions, and dangling or multiply occupied connections. It also rejects
   compute preferences that reference missing graph nodes, duplicate tunnel
@@ -1555,7 +1581,7 @@ Python export:
 - The generated program embeds validated canonical workflow JSON and creates a
   fresh shared headless executor for every call, so it uses the same graph,
   port, parameter, semantic-axis, and scientific-operation contracts as VIPP.
-- The embedded schema-4 document supplies the default `ComputeRequest` to the
+- The embedded schema-5 document supplies the default `ComputeRequest` to the
   shared CPU/GPU executor. `run_pipeline(..., compute_request=...)` can replace
   it for one call; CLI mode/fallback/node-preference flags overlay only fields
   explicitly supplied and never mutate `_WORKFLOW_JSON`.
@@ -1646,23 +1672,26 @@ Collection batch UI:
   napari-layer and sample sources must be collection-bound.
 - `core.batch.BatchSourceConfig`, `BatchItemPlan`, and `BatchOutputPlan` are the
   Qt-free source, item, and output contracts. A source config optionally carries
-  an `AxisDeclaration`; a blank value trusts reader metadata. `BatchPreviewResult`
-  exposes a limited row sample plus full-plan item and collision totals to the
-  dialog.
-- When several sources are bound, matched paths are sorted per source and paired
-  by position. All bound sources must match the same number of files. The first
-  bound source becomes the primary source for default naming.
+  an `AxisDeclaration`, a frozen SourceItem inventory, and typed per-SourceItem
+  parameter overrides; a blank declaration trusts reader metadata.
+  `BatchPreviewResult` exposes a limited row sample plus full-plan item and
+  collision totals to the dialog.
+- Planning expands every matched supported container through the shared source
+  inspector and sorts the resulting logical SourceItems per source before
+  pairing by position. All bound sources must resolve the same number of items.
+  The first bound source becomes the primary source for default naming. A saved
+  inventory must match current SourceItem selectors and revisions exactly.
 - Batch planning is deterministic and separate from graph execution. Preview
   and execution use the same planner instead of calculating names through
-  separate UI paths. Execution performs fresh planning, then inspects the first
-  representative source set, applies the same declarations used by interactive
-  representative loading, and calls the graph's scientific axis-contract
-  preflight before output-directory/artifact creation or compute-device setup.
-  Deterministic contract errors are fatal regardless of `continue_on_error`.
-  An unreadable representative remains an item-level failure, and the preflight
-  does not claim to scan every collection file; every later source is still
-  checked against its declaration during execution. The exact plan is then
-  passed into the runner so changes since an earlier preview are detected.
+  separate UI paths. Planning metadata-inspects every matched supported
+  container to resolve SourceItems without loading all image pixels. Execution
+  then inspects and calculates the first representative source set, applies the
+  same declarations used by interactive representative loading, and calls the
+  graph's scientific axis-contract preflight before output-directory/artifact
+  creation or compute-device setup. Deterministic inventory and contract errors
+  are fatal regardless of `continue_on_error`; every later source is also
+  reverified when its pixels are read. The exact plan is passed into the runner
+  so changes since an earlier preview are detected.
 - `Batch Output` nodes are the authoritative save markers. They pass data
   through during normal graph execution and provide tag, format, subfolder,
   filename-template, and overwrite controls for batch saves.
@@ -1679,21 +1708,23 @@ Collection batch UI:
   schema. It persists source bindings and patterns, output location and
   default format, existing-file policy, the required workflow companion, the
   optional runner choice, the workflow hash, resolved output declarations, and
-  the full effective `ComputeRequest` plus guarded source-axis declarations in
-  schema version 3. Versions 1 and 2 remain loadable. Version 1 migrates to
-  explicit CPU because it had no compute field; version 2 retains its saved
-  compute request. Both load without declarations and are emitted as version 3
-  only after review/save.
+  the full effective `ComputeRequest` plus guarded source-axis declarations.
+  Schema version 4 adds canonical SourceItem inventories and typed per-sample
+  numeric overrides to version 3. Versions 1, 2, and 3 remain loadable. Version
+  1 migrates to explicit CPU because it had no compute field; version 2 retains
+  its saved compute request; version 3 retains source declarations. Older
+  versions contain no overrides, acquire SourceItems when resolved, and are
+  emitted as version 4 only after review/save.
   Load validates the workflow hash so a configuration cannot silently select
   outputs from a different graph.
 - An active workspace may attach the exact versioned config as optional
-  top-level `batch_config` in workflow schema 4. The scientific hash includes
+  top-level `batch_config` in workflow schema 5. The scientific hash includes
   canonical portable compute intent but explicitly excludes `batch_config`,
-  preventing self-reference and calculation drift. Canonical version-4 CPU
-  intent remains hash-compatible with version 3's implicit CPU execution. Load
-  validates the config against the containing graph and path, restores the form
-  without a preview calculation, and leaves standalone config/runner export
-  unchanged.
+  preventing self-reference and calculation drift. Canonical CPU intent remains
+  hash-compatible with version 3's implicit CPU execution. Load validates the
+  config against the containing graph and path, restores the form, and starts a
+  background metadata-only SourceItem inventory check without calculating a
+  representative image. Standalone config/runner export remains unchanged.
 - A new workspace captures the current toolbar request. A loaded config keeps
   its saved request while toolbar intent remains unchanged since load; the
   first toolbar compute change replaces it with the complete current request.
@@ -1704,8 +1735,10 @@ Collection batch UI:
   exact actual node identities, decision reasons, structured fallback records,
   environment and cleanup evidence. A fallback on one item does not mutate the
   request used to plan later items.
-- The batch-level existing-file choices are `Error`, `Skip`, and `Overwrite`.
-  A `Batch Output` node with an explicit `yes` or `no` overwrite value takes
+- The Batch workspace labels the existing-file choices `Ask before overwrite
+  (recommended)`, `Skip existing`, and `Overwrite without asking`; headless
+  execution retains the underlying fail-closed `Error` policy because it cannot
+  ask. A `Batch Output` node with an explicit `yes` or `no` overwrite value takes
   precedence over the default. Collision state is part of the plan and shown
   before execution.
 - Dialog-started runs write the resolved `vipp_batch_config.json` and required
@@ -1719,8 +1752,10 @@ Collection batch UI:
   input identity and available source metadata, output policy/path/status,
   errors, and summary counts. Successfully read source records additionally
   contain raw and effective axes plus the applied declaration; the embedded
-  config retains intended declarations for pre-read skips or failures. New runs
-  emit manifest schema 3; earlier manifests remain historical
+  config retains intended declarations for pre-read skips or failures. Manifest
+  schema 4 additionally records canonical SourceItem/source-revision evidence,
+  requested/effective per-sample overrides, and effective workflow hashes. New
+  runs emit schema 4; earlier manifests remain historical
   records rather than being rewritten. Output statuses are `pending`, `completed`,
   `skipped`, `cancelled`, and `failed`; item statuses additionally include
   `running` and `partial`. Published output records link to the item's canonical
@@ -1952,9 +1987,11 @@ Still incomplete or deliberately future-facing:
 - calibrated extended-length variants outside the mesh-specific table;
 - specialist domain-specific network metrics and broader cooperative
   cancellation/percentage progress inside long manual calculations;
-- OME-Zarr pyramids, label colors/properties, and HCS plate/well/field browsing;
+- OME-Zarr pyramid writing, label colors/properties, remote stores, and HCS
+  plate/well/field browsing; local OME-Zarr lower-level presentation preview is
+  implemented, while scientific analysis still materializes level 0;
 - operation-level lazy execution, remote URI reads, and collection batch
-  execution beyond the first-pass local folder UI;
+  execution beyond the local SourceItem-aware folder UI;
 - richer channel/probe naming and colour metadata from real microscopy files;
 - semantic-axis batch iteration and HCS traversal;
 - plugin/template generation for arbitrary new analysis nodes.

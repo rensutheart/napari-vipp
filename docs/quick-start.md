@@ -53,11 +53,11 @@ After that one-time Windows warning, the ordinary setup flow is:
    missing if those checks do not pass.
 3. In **Reviewed settings**, confirm the fixed installation location, the CPU
    or NVIDIA CUDA 13 route, and whether shortcuts will be added to the Start
-   Menu only or to both the Start Menu and Desktop. Select **Install**, then
-   wait for setup and its final checks to finish. If you change the
+   Menu only or to both the Start Menu and Desktop. Select **Install VIPP**,
+   then wait for setup and its final checks to finish. If you change the
    computer-use choice or desktop-shortcut choice,
-   select **Check these settings** again. Setup will not enable **Install** for
-   settings it has not checked. Windows obtains canonical Local App Data with
+   select **Check these settings** again. Setup will not enable **Install VIPP**
+   for settings it has not checked. Windows obtains canonical Local App Data with
    `SHGetKnownFolderPath(FOLDERID_LocalAppData)`; one-click setup uses only
    `VIPP\environments\cpu` or `VIPP\environments\cuda13` beneath it. Custom
    managed roots are not accepted. In `0.14.0a1`, the complete CUDA path must
@@ -138,7 +138,7 @@ trustworthy byte total.
 
 After the connection recovers, **Try again** rechecks the computer-use and
 shortcut choices currently shown and presents them for review
-before **Install** can be selected again.
+before **Install VIPP** can be selected again.
 
 The standard GPU installation includes every current reviewed CuPy/CuPyX
 implementation. No separately built GPU provider is required.

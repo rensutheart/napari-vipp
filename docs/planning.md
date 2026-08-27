@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-27
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -39,14 +39,16 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.14.0a1` is the current alpha release. Its official
+`0.14.0a1` is the current app alpha release. Its official
 [GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a1),
-checksum sidecars,
-[PyPI package](https://pypi.org/project/napari-vipp/0.14.0a1/), and
-[numbered](https://rensutheart.github.io/vipp-mkdocs/0.14.0a1/) and
-[stable](https://rensutheart.github.io/vipp-mkdocs/stable/) documentation are
-the release surfaces. The unchanged expensive installer-lifecycle and full-GPU
-evidence remains traceable to `v0.13.0a8`, while `v0.13.0a9` supplies the
+checksum sidecars, and
+[PyPI package](https://pypi.org/project/napari-vipp/0.14.0a1/) are online and
+verified. Companion documentation source is merged and strict-build clean, but
+the public `0.14.0a1` deployment remains blocked: the numbered URL is not yet
+online and [stable](https://rensutheart.github.io/vipp-mkdocs/stable/) still
+selects `0.13.0a9`. Treat this as a documentation-hosting blocker, not an app or
+scientific-workflow failure. The unchanged expensive installer-lifecycle and
+full-GPU evidence remains traceable to `v0.13.0a8`, while `v0.13.0a9` supplies the
 intervening correctness record, as detailed in the
 [qualification baseline](release-qualification-baseline.md). The current line
 provides:

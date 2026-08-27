@@ -44,7 +44,8 @@ ordinal 0 as its default, every visible device must meet that architecture
 floor; device ordinals are retained in the plan. The installer still runs the
 complete VIPP compute doctor before it activates an installation.
 
-For `0.13.0a8`, one-click managed setup calls
+Introduced in `0.13.0a8` and retained in current `0.14.0a1`, one-click managed
+setup calls
 `SHGetKnownFolderPath(FOLDERID_LocalAppData)` and accepts only the exact track
 roots `VIPP\environments\cpu` and `VIPP\environments\cuda13` beneath that
 canonical directory. A custom managed root is a blocking request, not an

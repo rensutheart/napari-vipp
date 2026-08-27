@@ -1,6 +1,6 @@
 # VIPP Release Runbook
 
-Last reviewed: 2026-08-15
+Last reviewed: 2026-08-27
 
 This runbook is intentionally risk-based. A release version change does not,
 by itself, invalidate evidence for an unchanged installer, GPU provider,
@@ -11,10 +11,12 @@ The governing rule is:
 > required work = cheap release invariants + gates for changed domains + the
 > release-maturity gate
 
-The current reusable qualification baseline is
-[`v0.13.0a8`](release-qualification-baseline.md). The large qualification
-procedures remain available as conditional tools; they are not a checklist to
-repeat for every alpha.
+The current per-domain qualification ledger is
+[release-qualification-baseline.md](release-qualification-baseline.md). It
+records the completed `v0.14.0a1` app domains, the still-pending companion docs
+deployment, and the unchanged expensive evidence carried from `v0.13.0a8`.
+Large qualification procedures remain available as conditional tools; they are
+not a checklist to repeat for every alpha.
 
 ## Release Lanes
 
@@ -72,8 +74,8 @@ changed:
   packaging_release: false
   documentation: true
 carried_forward:
-  gpu_scientific: v0.13.0a7
-  windows_installer: v0.13.0a7
+  gpu_scientific: v0.13.0a8
+  windows_installer: v0.13.0a8
 ```
 
 When unsure, activate the domain and run its affected checks. Do not respond

@@ -1,6 +1,6 @@
 # Windows Installer Field Acceptance
 
-Last reviewed: 2026-08-14. `0.14.0a1` checklist updated: 2026-08-26.
+Last reviewed: 2026-08-14. `0.14.0a1` checklist updated: 2026-08-27.
 
 Use this page for a tagged VIPP installer on a fresh Windows account. It is a
 short evidence record, not an installation guide. The ordinary installation
@@ -33,7 +33,8 @@ Stop if the filename, tag, or checksum does not match the official GitHub
 release. An alpha installer may show **Unknown publisher**, but it must also say
 `UNSIGNED` in its filename and the warning must match the release instructions.
 
-For `0.13.0a8`, Windows supplies canonical Local App Data through
+Introduced in `0.13.0a8` and retained in `0.14.0a1`, Windows supplies canonical
+Local App Data through
 `SHGetKnownFolderPath(FOLDERID_LocalAppData)`. Managed setup accepts only
 `VIPP\environments\cpu` or `VIPP\environments\cuda13` beneath it; custom
 managed roots are rejected. The fixed CPU location supports spaces and

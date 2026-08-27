@@ -1,9 +1,11 @@
 # Desktop Startup And Installer Plan
 
 This document separates the startup and transactional installer implemented in
-the source tree from the signed, one-download release asset that is not yet
-published. The product goal is that a microscopy user can start VIPP without
-first learning napari, Python virtual environments, or terminal activation.
+the source tree from future code-signing work. VIPP `0.14.0a1` publishes one
+checksum-qualified, explicitly unsigned Windows setup executable; an
+Authenticode-signed release asset is not yet available. The product goal is that
+a microscopy user can start VIPP without first learning napari, Python virtual
+environments, or terminal activation.
 
 The primary design persona is a physiologist who may not know what Python,
 napari, virtual environments, CUDA packages, dependency resolution, or a
@@ -188,15 +190,15 @@ Every installer or launcher release should verify:
   visible CPU decisions, cleanup, and fallback reporting;
 - spaces in managed CPU and CUDA paths, Unicode managed CPU paths, and the
   pre-download ASCII-only guidance for managed and existing CUDA paths,
-  introduced in `0.13.0a7` and retained in `0.13.0a8`, including exact
+  introduced in `0.13.0a7` and retained in `0.14.0a1`, including exact
   canonical Local-App-Data roots, rejection of
   custom managed roots, CPU availability when canonical Local App Data makes
   CUDA incompatible, a separate non-mutating existing-environment route, and
   separately reported prior-transaction recovery;
 - cancel, retry, repair, uninstall, insufficient disk, offline/network failure,
   and interrupted-download behavior;
-- changing any install-relevant choice after review disables Install until the
-  exact current choices are checked again;
+- changing any install-relevant choice after review disables **Install VIPP**
+  until the exact current choices are checked again;
 - a multi-minute GPU download remains visibly active, the 120-second network
   timeout applies only to an idle connection, retries are bounded, and a
   transient terminal failure rolls back before **Try again** repeats the current
