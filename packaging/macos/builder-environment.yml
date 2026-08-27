@@ -3,7 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
-  - build=1.5.0
+  - python-build=1.5.0
   - conda-index=0.12.1
   - conda-standalone=26.5.2
   - constructor=3.16.1

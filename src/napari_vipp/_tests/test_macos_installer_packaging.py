@@ -296,7 +296,7 @@ def test_builder_environment_pins_wheel_build_toolchain():
         REPO_ROOT / "packaging/macos/builder-environment.yml"
     ).read_text(encoding="utf-8")
 
-    assert "build=1.5.0" in environment
+    assert "python-build=1.5.0" in environment
     assert "setuptools=82.0.1" in environment
     assert "wheel=0.47.0" in environment
     assert packager.BUILDER_VERSION_PINS["setuptools"] == "82.0.1"
