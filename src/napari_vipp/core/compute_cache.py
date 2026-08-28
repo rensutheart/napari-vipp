@@ -41,6 +41,9 @@ from napari_vipp.core.compute_specs import (
 )
 
 _CPU_RUNTIME_ID = "cpu-numpy"
+_BYPASS_RUNTIME_ID = "vipp-bypass"
+_BYPASS_IMPLEMENTATION_LIBRARY_ID = "vipp-alias"
+_BYPASS_IMPLEMENTATION_ID = "vipp-safe-bypass-v1"
 _EXACT_IMMUTABLE_TYPES = frozenset({str, bytes, bool, int, float, complex, type(None)})
 _RESULT_CONTRACT_TAG = "vipp-result-v1"
 _MISSING = object()
@@ -368,6 +371,35 @@ def build_cached_source_provenance(
     )
 
 
+def build_cached_bypass_provenance(
+    *,
+    node_id: str,
+    operation_id: str,
+    scientific_context_fingerprint: str,
+) -> CachedNodeComputeProvenance:
+    """Build exact cache provenance for a no-kernel unary alias."""
+
+    normalized_operation_id = str(operation_id).strip()
+    if not normalized_operation_id:
+        raise ValueError("operation_id must not be empty.")
+    return CachedNodeComputeProvenance(
+        node_id=node_id,
+        actual_implementation=ScientificImplementationIdentity(
+            operation_id=normalized_operation_id,
+            runtime_id=_BYPASS_RUNTIME_ID,
+            array_domain="resident-alias",
+            implementation_library_id=_BYPASS_IMPLEMENTATION_LIBRARY_ID,
+            implementation_id=_BYPASS_IMPLEMENTATION_ID,
+            implementation_version="1",
+            parity_policy_id="exact-unary-alias-v1",
+        ),
+        compute_context_fingerprint=canonical_digest(
+            {"schema_id": "vipp-safe-bypass-compute-context-v1"}
+        ),
+        scientific_context_fingerprint=scientific_context_fingerprint,
+    )
+
+
 def cached_source_provenance_matches(
     provenance: CachedNodeComputeProvenance,
     *,
@@ -425,6 +457,16 @@ def cached_node_provenance_matches(
         or provenance.produced_by_fallback
     ):
         return False
+    if provenance.actual_implementation.runtime_id == _BYPASS_RUNTIME_ID:
+        try:
+            expected = build_cached_bypass_provenance(
+                node_id=normalized_node_id,
+                operation_id=normalized_operation_id,
+                scientific_context_fingerprint=scientific_context_fingerprint,
+            )
+        except (TypeError, ValueError):
+            return False
+        return provenance == expected
     if provenance.compute_context_fingerprint != node_compute_context_fingerprint(
         request,
         normalized_node_id,
@@ -1714,6 +1756,7 @@ __all__ = [
     "ScientificCacheTransaction",
     "ScientificImplementationIdentity",
     "TransientScientificCacheStore",
+    "build_cached_bypass_provenance",
     "build_cached_node_compute_provenance",
     "build_cached_source_provenance",
     "build_scientific_result_key",

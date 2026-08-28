@@ -29,6 +29,7 @@ from typing import Any
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
+    DecisionKind,
     DecisionReason,
     NodeExecutionDecision,
     canonical_digest,
@@ -71,7 +72,10 @@ class PipelineTimingDecision:
 
     @property
     def uses_accelerator(self) -> bool:
-        return self.runtime_id != "cpu-numpy"
+        # Safe Node Bypass is an exact alias operation, not an accelerator
+        # implementation.  Keep the runtime guard as defense in depth for
+        # timing files written by a newer producer.
+        return self.runtime_id not in {"cpu-numpy", "vipp-bypass"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +115,7 @@ class PipelineTimingAssignment:
                     item.implementation_version,
                 )
                 for item in decisions
+                if item.decision_kind is not DecisionKind.BYPASSED
             )
         )
 

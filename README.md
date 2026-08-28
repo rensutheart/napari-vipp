@@ -161,7 +161,7 @@ to collection processing.
 
 | Area | Current alpha capabilities |
 | --- | --- |
-| Graph authoring | Searchable node palette and canvas, typed ports, multi-node selection and movement, copy/paste and exact-operation value transfer, dynamic outputs, cycle prevention, undo/redo, graph notes, named tunnels, insert-on-wire or before-tunnel editing, saved positions, and auto-layout. |
+| Graph authoring | Searchable node palette and canvas, typed ports, topology-safe node bypass, multi-node selection and movement, copy/paste and exact-operation value transfer, dynamic outputs, cycle prevention, undo/redo, graph notes, named tunnels, insert-on-wire or before-tunnel editing, saved positions, and auto-layout. |
 | Images and metadata | Semantic T/C/Z/Y/X axes, scale, units, origin, channel/acquisition metadata, source identity, and operation history. |
 | Processing | Intensity transforms, filters, background correction, thresholding, watershed, binary/label morphology, channels, axes, masks, and composites. |
 | Measurements | Object and intensity tables, calibrated/mesh morphology, skeleton/network analysis, colocalization, object association, and table composition. |

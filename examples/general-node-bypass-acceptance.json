@@ -1,0 +1,204 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 6,
+  "nodes": [
+    {
+      "id": "image_source",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic deconvolution image",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "psf_source",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic measured PSF",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "gaussian_bypass",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 2.4,
+        "channel_axis": -1
+      },
+      "execution_mode": "bypass"
+    },
+    {
+      "id": "prepare_psf",
+      "operation_id": "prepare_validate_psf",
+      "params": {
+        "center_mode": "Peak",
+        "clip_negatives": true,
+        "normalize_sum": true,
+        "minimum_valid_sum": 1e-12,
+        "force_odd_shape": true,
+        "crop_empty_border": false
+      }
+    },
+    {
+      "id": "rl_tv_bypass",
+      "operation_id": "richardson_lucy_tv_deconvolution",
+      "params": {
+        "spatial_mode": "2D YX",
+        "iterations": 3,
+        "tv_regularization": 0.002,
+        "tv_epsilon": 1e-06,
+        "normalize_psf": true,
+        "clip_negative_input": true,
+        "clip_output_negative": true,
+        "preserve_input_scale": true,
+        "filter_epsilon": 1e-12,
+        "denominator_floor": 0.05
+      },
+      "execution_mode": "bypass"
+    },
+    {
+      "id": "downstream_consumer",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 0.7,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "incompatible_threshold",
+      "operation_id": "otsu_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "mask_consumer",
+      "operation_id": "remove_binary_outliers",
+      "params": {
+        "radius": 2.0,
+        "which_outliers": "Foreground (remove)"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "image_source",
+      "target": "gaussian_bypass",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gaussian_bypass",
+      "target": "rl_tv_bypass",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "psf_source",
+      "target": "prepare_psf",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "prepare_psf",
+      "target": "rl_tv_bypass",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "rl_tv_bypass",
+      "target": "downstream_consumer",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "image_source",
+      "target": "incompatible_threshold",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "incompatible_threshold",
+      "target": "mask_consumer",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "tunnels": [],
+  "positions": {
+    "image_source": [0.0, 250.0],
+    "gaussian_bypass": [400.0, 250.0],
+    "rl_tv_bypass": [820.0, 250.0],
+    "downstream_consumer": [1260.0, 250.0],
+    "psf_source": [0.0, 700.0],
+    "prepare_psf": [400.0, 700.0],
+    "incompatible_threshold": [400.0, 1120.0],
+    "mask_consumer": [820.0, 1120.0]
+  },
+  "notes": [
+    {
+      "id": "note_unary",
+      "text": "TEST 1 - UNARY BYPASS\nSelect Gaussian Blur. PASS: Bypass node is checked, the card is visibly faded with its Bypassed badge, dotted outline, and pass-through cue, and its scientific output is the exact Image Source value and metadata. The card thumbnail remains a presentation-only preview of the sigma 2.4 blur that Run would produce; it never becomes downstream scientific data.",
+      "position": [300.0, -190.0],
+      "width": 500.0,
+      "attached_node": "gaussian_bypass"
+    },
+    {
+      "id": "note_rl_tv",
+      "text": "TEST 2 - MULTI-INPUT RL-TV BYPASS\nSelect Richardson-Lucy TV. Both Image and PSF are connected, and Bypass node starts checked. PASS: the internal cue runs from Image (port 0) to the sole output. The exact Image/intensity input is forwarded scientifically; PSF stays connected but is ignored by the bypass path. The would-run thumbnail is presentation only and may use the PSF plus the stored three-iteration settings. Clear Bypass node to run RL-TV, then check it again to restore the exact Image pass-through.",
+      "position": [760.0, -190.0],
+      "width": 520.0,
+      "attached_node": "rl_tv_bypass"
+    },
+    {
+      "id": "note_terminal_boundaries",
+      "text": "TEST 3 - TERMINALS AND BOUNDARIES\nSelect the Image Source and the rightmost, terminal Gaussian Blur node. PASS: a source never offers Bypass, while a terminal node has no enabled bypass because there is no scientific output consumer. Split Channels and other multi-output operations cannot define one unambiguous pass-through output. Save Image and Batch Output are publication boundaries and are also excluded.",
+      "position": [1260.0, -190.0],
+      "width": 500.0,
+      "attached_node": "downstream_consumer"
+    },
+    {
+      "id": "note_incompatible",
+      "text": "TEST 4 - TYPE-INCOMPATIBLE SPLICE\nSelect Otsu Threshold. Its image input normally becomes a mask consumed by Remove Outliers. PASS: Bypass is unavailable and its tooltip explains that forwarding image data cannot satisfy the mask input. VIPP fails closed instead of relabelling the image as a mask. This check is topology-aware: only a primary input that every current output consumer accepts can be forwarded.",
+      "position": [330.0, 1450.0],
+      "width": 560.0,
+      "attached_node": "incompatible_threshold"
+    },
+    {
+      "id": "note_persistence",
+      "text": "TEST 5 - ONE SHARED CONTRACT\nToggle either eligible node, then use Undo/Redo and save/reopen if desired. PASS: the checkbox, context-menu action, card treatment, exact primary-input alias, scientific history, export, GPU-neutral Bypassed status, and batch Run/Bypass profile all agree. Secondary inputs remain authored so returning to Run needs no rewiring.",
+      "position": [900.0, 760.0],
+      "width": 520.0,
+      "attached_node": "rl_tv_bypass"
+    }
+  ],
+  "execution": {
+    "compute": {
+      "mode": "auto",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "rl_tv_bypass",
+        "right_panel_visible": true
+      }
+    }
+  }
+}

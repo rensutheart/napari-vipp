@@ -167,9 +167,11 @@ def _source_payloads(spec, pipeline, sample_catalog) -> dict[str, SourcePayload]
         payloads = _batch_source_payloads()
     else:
         source_ids = tuple(
-            "input" if index == 0 else f"input_{index + 1}"
-            for index in range(len(spec.samples))
+            node_id
+            for node_id in pipeline.topological_order()
+            if pipeline.nodes[node_id].operation_id == "input"
         )
+        assert len(source_ids) == len(spec.samples)
         payloads = {}
         for source_id, sample_name in zip(source_ids, spec.samples, strict=True):
             data, layer_kwargs = sample_catalog[sample_name]
@@ -303,6 +305,16 @@ def _execute_example(spec, sample_catalog, mode: ComputeMode):
         DecisionReason.MEMORY_LIMIT,
     }
     for decision in result.execution_report.actual_decisions:
+        if decision.decision_kind is DecisionKind.BYPASSED:
+            assert completed.node_is_bypassed(decision.node_id)
+            assert decision.runtime_id == "vipp-bypass"
+            assert decision.implementation_library_id == "vipp-alias"
+            assert decision.implementation_id == "vipp-safe-bypass-v1"
+            assert decision.reason is DecisionReason.BYPASSED
+            assert decision.fallback_used is False
+            assert decision.fallback_reason is FallbackReason.NONE
+            assert decision.reason_text.strip()
+            continue
         assert decision.runtime_id == "cpu-numpy"
         assert decision.implementation_library_id == "cpu"
         assert decision.decision_kind is DecisionKind.POLICY_CPU
@@ -503,7 +515,7 @@ def test_fresh_example_cpu_and_prefer_gpu_outputs_match(spec, sample_catalog):
 
 
 def test_compute_matrix_covers_every_bundled_example():
-    assert len(EXAMPLE_WORKFLOWS) == 16
+    assert len(EXAMPLE_WORKFLOWS) == 18
     ids = [spec.id for spec in EXAMPLE_WORKFLOWS]
     filenames = [spec.filename for spec in EXAMPLE_WORKFLOWS]
     assert len(ids) == len(set(ids))

@@ -208,8 +208,8 @@ def test_schema_v3_migrates_to_explicit_cpu_intent():
     }
 
 
-@pytest.mark.parametrize("legacy_version", (3, 4))
-def test_saving_legacy_workflow_writes_only_schema_v5(tmp_path, legacy_version):
+@pytest.mark.parametrize("legacy_version", (3, 4, 5))
+def test_saving_legacy_workflow_writes_only_schema_v6(tmp_path, legacy_version):
     from napari_vipp.core.batch import scientific_workflow_hash
 
     legacy = serialize_workflow(_build_pipeline())

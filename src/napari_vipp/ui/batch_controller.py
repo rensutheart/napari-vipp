@@ -21,6 +21,7 @@ from napari_vipp.core.batch import (
     save_batch_config,
     validate_batch_config,
 )
+from napari_vipp.core.batch_execution import BatchNodeExecutionOverride
 from napari_vipp.core.batch_parameters import BatchSourceParameterOverrides
 from napari_vipp.core.batch_setup import (
     batch_output_node_ids,
@@ -143,6 +144,7 @@ class CollectionBatchController:
         workflow: dict | None = None,
         compute_request: ComputeRequest | None = None,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
+        node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
     ) -> BatchConfig:
         """Build a validated config from one stable workflow snapshot."""
         del save_workflow_snapshot
@@ -162,6 +164,7 @@ class CollectionBatchController:
             continue_on_error=continue_on_error,
             compute_request=compute_request,
             parameter_overrides=parameter_overrides,
+            node_execution_overrides=node_execution_overrides,
         )
 
     def save_config(
@@ -228,6 +231,7 @@ class CollectionBatchController:
         continue_on_error: bool = True,
         compute_request: ComputeRequest | None = None,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
+        node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
     ) -> BatchPreviewResult:
         """Map the core preflight plan into the dialog preview contract."""
         prepared = self.prepare_preview(
@@ -243,6 +247,7 @@ class CollectionBatchController:
             continue_on_error=continue_on_error,
             compute_request=compute_request,
             parameter_overrides=parameter_overrides,
+            node_execution_overrides=node_execution_overrides,
         )
         return execute_prepared_collection_batch_preview(prepared)
 
@@ -260,6 +265,7 @@ class CollectionBatchController:
         continue_on_error: bool = True,
         compute_request: ComputeRequest | None = None,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
+        node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
     ) -> PreparedCollectionBatchPreview:
         """Freeze GUI-owned providers before a preview runs now or in a worker."""
 
@@ -277,6 +283,7 @@ class CollectionBatchController:
             workflow=workflow,
             compute_request=compute_request,
             parameter_overrides=parameter_overrides,
+            node_execution_overrides=node_execution_overrides,
         )
         return PreparedCollectionBatchPreview(
             workflow=workflow,
@@ -327,6 +334,7 @@ class CollectionBatchController:
             continue_on_error=config.continue_on_error,
             compute_request=config.compute_request,
             parameter_overrides=config.parameter_overrides,
+            node_execution_overrides=config.node_execution_overrides,
         )
         frozen_inventory = any(source.source_items for source in config.sources)
         return PreparedCollectionBatchPreview(

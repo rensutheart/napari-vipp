@@ -74,6 +74,21 @@ def _decision(
     )
 
 
+def _bypass_decision(node_id: str = "crop") -> NodeExecutionDecision:
+    return NodeExecutionDecision(
+        node_id,
+        "crop_stack",
+        NodeComputePreference("best_gpu"),
+        "vipp-bypass",
+        "vipp-alias",
+        "vipp-safe-bypass-v1",
+        DecisionKind.BYPASSED,
+        DecisionReason.BYPASSED,
+        "The exact input was forwarded without executing an implementation.",
+        implementation_version="1",
+    )
+
+
 def _sample(
     *,
     elapsed_seconds: float,
@@ -293,6 +308,38 @@ def test_fallback_free_assignment_survives_store_roundtrip(tmp_path):
         "cpu-node",
         "gpu-node",
     ]
+
+
+def test_timing_assignment_excludes_bypass_from_compute_and_accelerator_counts():
+    sample = PipelineTimingSample.completed_run(
+        workload_fingerprint="bypassed-workload",
+        host_environment_fingerprint="host-a",
+        environment=_environment(),
+        decisions=(
+            _decision("gaussian", accelerated=False),
+            _bypass_decision(),
+        ),
+        elapsed_seconds=0.5,
+        requested_mode="prefer_gpu",
+        execution_surface="planned-owned-registry-v1",
+    )
+
+    assert [item.node_id for item in sample.assignment.decisions] == ["gaussian"]
+    assert not sample.assignment.uses_accelerator
+    assert sample.accelerator_environment_fingerprint == ""
+
+
+def test_bypass_only_run_cannot_be_recorded_as_a_compute_assignment():
+    with pytest.raises(ValueError, match="at least one decision"):
+        PipelineTimingSample.completed_run(
+            workload_fingerprint="bypass-only",
+            host_environment_fingerprint="host-a",
+            environment=_environment(),
+            decisions=(_bypass_decision(),),
+            elapsed_seconds=0.5,
+            requested_mode="prefer_gpu",
+            execution_surface="planned-owned-registry-v1",
+        )
 
 
 def test_timing_sample_rejects_a_fallback_decision():

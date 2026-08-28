@@ -22,6 +22,7 @@ from napari_vipp.core.batch import (
     scientific_workflow_hash,
     validate_batch_config,
 )
+from napari_vipp.core.batch_execution import BatchNodeExecutionOverride
 from napari_vipp.core.batch_parameters import BatchSourceParameterOverrides
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.metadata import AxisDeclaration
@@ -42,6 +43,7 @@ def build_collection_batch_config(
     continue_on_error: bool = True,
     compute_request: ComputeRequest | None = None,
     parameter_overrides: Sequence[BatchSourceParameterOverrides] | None = None,
+    node_execution_overrides: Sequence[BatchNodeExecutionOverride] | None = None,
 ) -> BatchConfig:
     """Translate one workflow and collection form into a validated config."""
     output_text = str(output_dir).strip()
@@ -51,9 +53,7 @@ def build_collection_batch_config(
     restored = deserialize_workflow(workflow)
     pipeline = pipeline_from_workflow(workflow)
     effective_compute_request = (
-        restored["compute_request"]
-        if compute_request is None
-        else compute_request
+        restored["compute_request"] if compute_request is None else compute_request
     )
     if not isinstance(effective_compute_request, ComputeRequest):
         raise TypeError("compute_request must be a ComputeRequest or None.")
@@ -68,8 +68,7 @@ def build_collection_batch_config(
         source_bindings=source_bindings,
     )
     outputs = tuple(
-        _batch_output_config(pipeline, node_id)
-        for node_id in output_node_ids
+        _batch_output_config(pipeline, node_id) for node_id in output_node_ids
     )
     try:
         policy = ExistingFilePolicy(str(existing_file_policy))
@@ -91,6 +90,7 @@ def build_collection_batch_config(
         continue_on_error=continue_on_error,
         compute_request=effective_compute_request,
         parameter_overrides=tuple(parameter_overrides or ()),
+        node_execution_overrides=tuple(node_execution_overrides or ()),
     )
     validate_batch_config(
         workflow,
@@ -224,9 +224,7 @@ def _collection_source_node_ids(pipeline: PrototypePipeline) -> tuple[str, ...]:
     collection_ids = tuple(
         node_id
         for node_id in source_ids
-        if str(
-            pipeline.nodes[node_id].params.get("binding_mode", "single item")
-        )
+        if str(pipeline.nodes[node_id].params.get("binding_mode", "single item"))
         == "collection"
     )
     if collection_ids:
@@ -256,9 +254,7 @@ def _batch_output_config(
         kind="table" if output_type == "table" else "image",
         format=str(params.get("format", "batch default")),
         subfolder=str(params.get("subfolder", "")),
-        filename_template=str(
-            params.get("filename_template", "{source_stem}__{tag}")
-        ),
+        filename_template=str(params.get("filename_template", "{source_stem}__{tag}")),
         overwrite=str(params.get("overwrite", "batch default")),
     )
 

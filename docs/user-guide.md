@@ -188,7 +188,7 @@ cannot be measured, Auto keeps the reviewed safe assignment, explains that the
 CPU evidence was skipped, and may collect it on a later compatible run. The
 portable
 CPU/library/exact preference you explicitly accept in `Custom` is used going
-forward and saved in workflow schema 5.
+forward and saved in workflow schema 6.
 
 `Find fastest pipeline…` shows two levels of progress. The overall bar tracks
 the complete analysis across nodes and validation stages. The current-operation
@@ -911,21 +911,22 @@ pixels, so it is a single-file convenience rather than a portable data package.
 Workflow JSON does not embed cached image pixels or tables. When a saved
 workflow is loaded, VIPP rebuilds the graph from sources and node settings.
 
-Current saves use workflow schema version 5. It retains version 4's
-`execution.compute` object, which stores only portable authored intent: `mode`,
-`fallback_policy`, `node_preferences`, `precision_policy`, and
-`workload_policy`. Version 5 also carries canonical SourceItem evidence for a
-resolved file source: its stable logical selector, reader identity, normalized
-axes/shape, metadata, and exact container revision. It does not copy a
+Current saves use workflow schema version 6. It retains version 5's portable
+`execution.compute` object and canonical SourceItem evidence for a resolved file
+source: its stable logical selector, reader identity, normalized axes/shape,
+metadata, and exact container revision. Version 6 also records an explicit
+`bypass` execution mode on a reviewed node; ordinary Run remains the default and
+is omitted from that node's JSON. It does not copy a
 machine's selected runtime or device, accelerator memory limits or safety
 reserve, experimental-admission switch, capability probe, or benchmark
 evidence. Those facts must be discovered or measured again on the machine that
 runs the workflow.
 
-Schema-version-3 and version-4 workflows remain supported. Because version 3
-had no compute policy, VIPP decodes it as an explicit CPU request; version 4
-retains its authored compute request. Resolved legacy file sources acquire
-SourceItem evidence, and saving either loaded schema writes version 5. Select
+Schema-version-3, version-4, and version-5 workflows remain supported. Because
+version 3 had no compute policy, VIPP decodes it as an explicit CPU request;
+versions 4 and 5 retain their authored compute request. Resolved legacy file
+sources acquire SourceItem evidence, and saving a loaded legacy schema writes
+version 6. Select
 `Auto`, `Prefer GPU`, or `Custom` deliberately if a version-3 workflow should
 use admitted GPU implementations. Versions 1 and 2 are intentionally rejected
 because silently inventing threshold, cutoff, channel-axis, color, or
@@ -934,7 +935,8 @@ environment that created such an older workflow to inspect and run it unchanged,
 then use its graph and JSON as references while recreating and verifying it in
 the current release. Do not change the JSON version number alone; version 3
 introduced required scientific parameters, version 4 added the required
-compute-intent block, and version 5 adds SourceItem persistence.
+compute-intent block, version 5 added SourceItem persistence, and version 6 adds
+explicit Safe Node Bypass intent.
 
 Read the categorized [0.12.0a1 compatibility notes](../CHANGELOG.md#0120a1---2026-07-14)
 before recreating an older analysis. They identify the source-revision,
@@ -1114,14 +1116,15 @@ after item failures`.
 
 The single `Batch workspace...` action is visually separated between workflow
 loading and the export actions in the main toolbar. `Save...` writes a
-versioned `vipp_batch_config.json`. Current config version 4 adds canonical
-SourceItem inventories and typed per-sample parameter overrides to version 3's
+versioned `vipp_batch_config.json`. Current config version 5 retains version 4's
+canonical SourceItem inventories and typed per-sample parameter overrides, then
+adds the typed whole-batch node-behavior profile. Version 3 introduced the
 complete effective compute request and guarded source-axis declarations.
 Version 1 loads as explicit CPU because it predates accelerator execution;
 version 2 retains its saved compute request; version 3 retains its source
 declarations and acquires SourceItems when the collection resolves. Older
-versions contain no parameter overrides and become version 4 only when reviewed
-and saved. Their blank declarations are shown as `Use the file's labels
+versions contain no node-behavior profile and become version 5 only when
+reviewed and saved. Their blank declarations are shown as `Use the file's labels
 unchanged`, not the automatic policy used for a new unsaved row. `Load...`
 restores source bindings, output folder, default format, existing-file policy,
 continuation behavior, required workflow companion, optional runner choice, and
@@ -1131,6 +1134,23 @@ information to reproduce which outputs are selected and how their file names
 are planned. A workflow-hash or SourceItem-revision mismatch is reported rather
 than silently running a different graph or collection under an old
 configuration.
+
+For every node with a reviewed Safe Node Bypass contract, **Node behavior for
+all samples** offers **Use workflow**, **Run for all samples**, and **Bypass for
+all samples**. Use workflow displays and inherits the authored state. The other
+choices apply only to a detached effective batch workflow; they do not edit the
+open graph. Changing the profile invalidates representative pixels, and preview,
+preflight, full execution, saved config, and the generated batch runner all use
+the same resolved profile. Per-sample parameter overrides cannot target a node
+that is effectively bypassed because those values would be inert.
+
+Batch source pairing remains an authored-workflow contract. Bypassing a
+multi-input node does not remove its secondary Image Source row, change sample
+pairing or batch IDs, or discard the bound source identity needed to return the
+profile to Run. For example, an RL-TV PSF remains bound and revision-checked,
+but the effective bypass does not use it in the output's scientific node
+lineage. Source pruning or metadata-only loading for such inactive bindings is
+a separate optimization, not an implicit change to the saved batch definition.
 
 A loaded config's compute request remains selected while the toolbar compute
 request is unchanged from load time. Changing any toolbar compute setting makes
@@ -1169,10 +1189,11 @@ writes `vipp_batch_manifest.json` beside the outputs. The manifest records the
 workflow and config hashes, VIPP and runtime package versions, input identity
 and available source metadata, every planned output path/policy, and
 per-item/output status. For sources successfully read during item execution,
-version-4 manifests retain version 3's reader-reported raw axes, effective axes,
+version-5 manifests retain version 3's reader-reported raw axes, effective axes,
 and applied declaration, so `QYX -> ZYX` remains auditable, and add canonical
-SourceItem/source-revision evidence plus requested/effective parameter overrides
-and effective workflow hashes. The embedded config retains the intended
+SourceItem/source-revision evidence plus requested/effective parameter overrides,
+the authored and profile-effective workflow hashes, and exact Run/Bypass
+directives. The embedded config retains the intended
 declaration for an item skipped or failed before reading. Manifests also record
 the actual CPU/CuPy identity and version
 selected for every completed node, the environment and decision reasons,
@@ -1561,7 +1582,7 @@ the image metadata and appear in workflow history without changing pixels.
 
 The shared menu is a friendly front end to the durable source declaration. In
 a workflow, Image Source stores the optional `axis_declaration` value
-`QYX -> ZYX`; batch config version 4 stores the same decision as exact
+`QYX -> ZYX`; the current batch config stores the same decision as exact
 `source_axes` and `effective_axes` values. Both use
 `AxisDeclaration("QYX", "ZYX")` and `apply_axis_declaration()` at the common
 source boundary. Without an explicit saved declaration, headless execution
@@ -1625,6 +1646,68 @@ Open **Responsive Volumetric Crop Acceptance** from `Open example...` (launcher
 ID `responsive-crop`) for numbered checks covering rapid drag, held-idle safety,
 undo/redo, physical origins, durable boundaries, QYX safety, and the explained
 CPU assignment under Prefer GPU.
+
+### Run Or Safely Bypass A Compatible Node
+
+Most processing nodes include one compact **Bypass node** checkbox alongside the
+existing inspector checkboxes when their current graph position has a safe
+pass-through path. Leave it clear to run the operation normally, or select it to
+keep the stored parameters visible but inactive and forward the exact main input
+data and metadata as the node's output. Hover over the checkbox for the named
+input and exact consequences; the inspector does not add a separate behavior
+description panel. The same checkable **Bypass node** action is available when
+you right-click the node, so clearing that action returns the node to Run.
+
+The main input is the node's first input port. For a unary operation this is its
+only input. For a multi-input operation, bypass removes that operation from the
+scientific path and forwards only the first input; its other inputs are ignored.
+For example, bypassing Richardson-Lucy or RL-TV forwards **Image** (intensity),
+never **PSF**. This is the same result as splicing the main input wire directly
+to the node's consumers without deleting the authored node.
+
+A bypassed card retains its **Bypassed** badge, fades slightly behind active
+nodes, uses a prominent dotted outline, and shows a subtle line from input to
+output through the card. The line is only a visual cue; it is not another wire
+or an interactive target. Together these cues show that the node remains part
+of the authored workflow but is transparent during scientific execution.
+
+The image inside a bypassed card still attempts a presentation-only preview of
+what the stored operation *would* produce when all of its normal inputs are
+available. Crop Stack uses a lightweight bounded preview; other compatible
+operations use the same reviewed operation path as their ordinary card preview.
+This lets you review the authored operation without sending that hypothetical
+result downstream. A missing secondary input or preview failure does not make
+the scientific pass-through fail. The compact shape, axes, dtype, and other
+output metadata on the card continue to describe the real forwarded main input.
+Inspecting, pinning, saving, exporting, and downstream nodes likewise receive
+that exact unchanged input; the would-run image is a thumbnail only.
+
+Scientific bypass does not call the node operation, draw an active interaction
+overlay, or create CPU/GPU work for that scientific node. The compute summary
+therefore reports **Bypassed** rather than pretending the separate presentation
+thumbnail ran on a scientific backend.
+
+Changing Run/Bypass is one undoable scientific edit. It invalidates the node and
+its descendants while leaving unrelated cached branches and previews intact.
+The choice is saved in workflow schema 6 and changes the scientific workflow
+hash. The same shared execution path is used interactively, in exported Python,
+and in batch runs, including a resident GPU chain where the alias introduces no
+unnecessary host transfer.
+
+Bypass eligibility is inherited graph behavior rather than a flag added to every
+operation. VIPP offers it when a callable node has one fixed output, its first
+input is connected, its output is actually used, and the real first-input type
+can connect to every current consumer. This permits compatible unary,
+multi-input, image, and table transformations, including normally type-changing
+nodes only where the live splice is safe. Sources, Save Image, Batch Output,
+multi-output or dynamic-output nodes such as Split Channels, and unused terminal
+nodes do not offer it. If a bypassed node later becomes terminal, it can still be
+returned to Run. Connection edits are checked again so an authored bypass cannot
+silently become type-incompatible. Open **General Node Bypass Acceptance**
+(launcher ID `general-node-bypass`) for numbered unary, RL-TV primary-input,
+terminal, boundary, incompatible-type, undo, persistence, GPU, and batch checks.
+The narrower **Safe Node Bypass Acceptance** (`safe-node-bypass`) remains useful
+for Crop Stack's interactive and presentation-only preview details.
 
 ### Rescale Axes with inferred names
 

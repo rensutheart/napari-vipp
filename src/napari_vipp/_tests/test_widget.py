@@ -51,6 +51,7 @@ from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._graph import (
     BLOCKED_EXECUTION_ACCENT,
     STALE_EXECUTION_ACCENT,
+    ComputeBadgeKind,
     PortLabelMode,
     ThumbnailStatsBadgeKind,
 )
@@ -106,6 +107,7 @@ from napari_vipp.core.batch import (
     BatchAxisSuggestion,
     BatchConfig,
     BatchExecutionProgress,
+    BatchNodeExecutionOverride,
     BatchOutputConfig,
     BatchParameterOverride,
     BatchScientificPreflightError,
@@ -153,6 +155,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
 )
 from napari_vipp.core.execution import (
     PipelineExecutionFailure,
+    PipelinePresentationShadowResult,
     PipelineRunRequest,
     ResidentThumbnailStatisticsObservation,
     execute_pipeline_request,
@@ -216,6 +219,7 @@ from napari_vipp.core.thumbnail_statistics import (
     ThumbnailStatisticsResult,
 )
 from napari_vipp.core.workflow import (
+    WORKFLOW_VERSION,
     deserialize_workflow,
     save_workflow,
     serialize_workflow,
@@ -1177,6 +1181,36 @@ def test_optimizer_captures_exact_retained_mixed_assignment(qtbot):
                 NodePreferenceKind.IMPLEMENTATION,
                 decision.implementation_id,
             )
+
+
+def test_optimizer_retained_baseline_ignores_neutral_bypass_decision(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    crop = widget.pipeline.add_node("crop_stack")
+    assert widget.pipeline.connect("input", crop.id).success
+    widget.pipeline.set_node_execution_mode(crop.id, "bypass")
+    widget._accepted_compute_decisions[crop.id] = NodeExecutionDecision(
+        crop.id,
+        crop.operation_id,
+        NodeComputePreference(),
+        "vipp-bypass",
+        "vipp",
+        "vipp-bypass",
+        DecisionKind.BYPASSED,
+        DecisionReason.BYPASSED,
+        "The reviewed node forwarded its exact input.",
+        implementation_version="1",
+    )
+    widget._compute_mode = ComputeMode.CUSTOM
+    widget._pending_dirty_node_ids.clear()
+    authored = widget._current_compute_request()
+
+    baseline = widget._retained_optimizer_baseline_request(authored)
+
+    assert baseline is not None
+    assert crop.id not in baseline.node_preferences
+    assert "gaussian" in baseline.node_preferences
 
 
 def test_optimizer_uses_fresh_private_baseline_after_scientific_edit(qtbot):
@@ -3822,6 +3856,46 @@ def test_duplicate_node_copies_parameters_without_connections(qtbot):
     assert clone_id in widget._compute_optimizer_locked_node_ids
 
 
+def test_duplicate_preserves_disconnected_bypass_and_can_clear_then_reconnect(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    widget.pipeline.set_node_execution_mode("gaussian", "bypass")
+    widget.graph_view.set_node_bypassed("gaussian", True)
+    before_ids = set(widget.pipeline.nodes)
+
+    widget._duplicate_node("gaussian")
+
+    clone_id = (set(widget.pipeline.nodes) - before_ids).pop()
+    assert widget.pipeline.node_is_bypassed(clone_id)
+    assert not any(
+        connection.source_id == clone_id or connection.target_id == clone_id
+        for connection in widget.pipeline.connections
+    )
+    assert widget.graph_view._cards[clone_id]._bypassed
+    assert widget.node_bypass_checkbox.isChecked()
+    assert widget.node_bypass_checkbox.isEnabled()
+    assert "clear bypass" in widget.node_bypass_checkbox.toolTip().casefold()
+    assert not widget.parameter_group.isEnabled()
+
+    assert widget._set_node_bypassed(clone_id, False)
+    assert not widget.pipeline.node_is_bypassed(clone_id)
+
+    widget.undo()
+
+    assert widget.pipeline.node_is_bypassed(clone_id)
+    assert widget.graph_view._cards[clone_id]._bypassed
+    widget._connect_nodes("input", clone_id)
+    assert widget.pipeline.node_is_bypassed(clone_id)
+    assert any(
+        connection.source_id == "input" and connection.target_id == clone_id
+        for connection in widget.pipeline.connections
+    )
+
+
 def test_graph_fragment_copy_paste_is_atomic_and_keeps_only_internal_edges(
     qtbot,
     monkeypatch,
@@ -3877,6 +3951,81 @@ def test_graph_fragment_copy_paste_is_atomic_and_keeps_only_internal_edges(
     assert set(widget.pipeline.nodes) == before_ids
     assert not any(
         note.attached_node in set(pasted_ids) for note in widget._graph_notes.values()
+    )
+
+
+def test_graph_fragment_copy_paste_preserves_validated_bypass_intent(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    QApplication.clipboard().clear()
+    widget.pipeline.set_node_execution_mode("gaussian", "bypass")
+    widget.graph_view.set_node_bypassed("gaussian", True)
+    widget._history.clear()
+
+    widget._copy_graph_nodes(("input", "gaussian", "threshold"))
+    pasted_ids = widget._paste_graph_fragment(QPointF(900.0, 500.0))
+
+    pasted_gaussian = next(
+        node_id
+        for node_id in pasted_ids
+        if widget.pipeline.nodes[node_id].operation_id == "gaussian_blur"
+    )
+    assert widget.pipeline.node_is_bypassed(pasted_gaussian)
+    assert widget.graph_view._cards[pasted_gaussian]._bypassed
+    assert (
+        widget.graph_view._cards[pasted_gaussian]._compute_badge_kind
+        is ComputeBadgeKind.BYPASSED
+    )
+    widget._select_node(pasted_gaussian)
+    assert widget.node_bypass_checkbox.isChecked()
+    assert not widget.parameter_group.isEnabled()
+    assert len(widget._undo_stack) == 1
+
+
+def test_single_node_copy_paste_preserves_disconnected_bypass_and_reconnects(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    QApplication.clipboard().clear()
+    widget.pipeline.set_node_execution_mode("gaussian", "bypass")
+    widget.graph_view.set_node_bypassed("gaussian", True)
+    before_ids = set(widget.pipeline.nodes)
+
+    widget._copy_graph_nodes(("gaussian",))
+    pasted_ids = widget._paste_graph_fragment(QPointF(900.0, 500.0))
+
+    assert len(pasted_ids) == 1
+    pasted_id = pasted_ids[0]
+    assert set(widget.pipeline.nodes) - before_ids == {pasted_id}
+    assert widget.pipeline.node_is_bypassed(pasted_id)
+    assert not any(
+        connection.source_id == pasted_id or connection.target_id == pasted_id
+        for connection in widget.pipeline.connections
+    )
+    assert widget.graph_view._cards[pasted_id]._bypassed
+    assert widget.node_bypass_checkbox.isChecked()
+    assert widget.node_bypass_checkbox.isEnabled()
+    assert "clear bypass" in widget.node_bypass_checkbox.toolTip().casefold()
+
+    assert widget._set_node_bypassed(pasted_id, False)
+    assert not widget.pipeline.node_is_bypassed(pasted_id)
+
+    widget.undo()
+
+    assert widget.pipeline.node_is_bypassed(pasted_id)
+    assert widget.graph_view._cards[pasted_id]._bypassed
+    widget._connect_nodes("input", pasted_id)
+    assert widget.pipeline.node_is_bypassed(pasted_id)
+    assert any(
+        connection.source_id == "input" and connection.target_id == pasted_id
+        for connection in widget.pipeline.connections
     )
 
 
@@ -4277,6 +4426,25 @@ def test_node_code_crop_injects_explicit_axis_contract_and_executes(qtbot):
         namespace["output"],
         data[:, :, 1:-2, 2:-1, 3:-2],
     )
+
+
+def test_node_code_bypassed_crop_is_an_exact_alias_without_operation_call(qtbot):
+    data = np.arange(4 * 6 * 8, dtype=np.uint16).reshape(4, 6, 8)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget.pipeline.set_param(crop.id, "top", 2)
+    widget.pipeline.set_node_execution_mode(crop.id, "bypass")
+
+    code = widget._node_code_text(crop.id)
+
+    assert "Reviewed safe bypass" in code
+    assert "output = input_output" in code
+    assert "crop_stack(" not in code
+    namespace = {"input_output": data}
+    exec(code, namespace)
+    assert namespace["output"] is data
 
 
 def test_undo_redo_restores_deleted_node_and_connections(qtbot):
@@ -8785,7 +8953,7 @@ def test_hidden_parameter_round_trips_through_current_workflow_schema(qtbot):
         restored_graph.get("output_tunnels", ()),
     )
 
-    assert document["version"] == 5
+    assert document["version"] == WORKFLOW_VERSION
     assert restored.nodes[node.id].params["histogram_bins"] == 8_192
     assert "histogram_bins=8192" in widget._node_code_text(node.id)
     exported = export_pipeline_to_python(widget.pipeline)
@@ -20627,8 +20795,9 @@ def test_actual_ctrl_s_keypress_saves_dirty_workflow_and_clears_tab_marker(
         widget.workflow_tab_bar.currentIndex()
     ).endswith(" *")
 
+    widget.activateWindow()
     widget.graph_view.setFocus()
-    assert QApplication.focusWidget() is widget.graph_view
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is widget.graph_view)
     qtbot.keyClick(widget.graph_view, Qt.Key_S, Qt.ControlModifier)
 
     assert target.exists()
@@ -20669,7 +20838,7 @@ def test_ctrl_s_from_napari_sibling_focus_saves_active_vipp_workflow(
 
     host.activateWindow()
     viewer_surface.setFocus()
-    assert QApplication.focusWidget() is viewer_surface
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is viewer_surface)
     assert not widget.isAncestorOf(viewer_surface)
     qtbot.keyClick(viewer_surface, Qt.Key_S, Qt.ControlModifier)
 
@@ -20721,7 +20890,7 @@ def test_ctrl_s_claims_key_before_competing_napari_action(
     monkeypatch.setattr(widget, "_request_workflow_save", track_save_request)
     host.activateWindow()
     viewer_surface.setFocus()
-    assert QApplication.focusWidget() is viewer_surface
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is viewer_surface)
     assert not widget.isAncestorOf(viewer_surface)
 
     qtbot.keyClick(viewer_surface, Qt.Key_S, Qt.ControlModifier)
@@ -20742,7 +20911,7 @@ def test_ctrl_s_claims_key_before_competing_napari_action(
     other_host.show()
     other_host.activateWindow()
     other_surface.setFocus()
-    assert QApplication.focusWidget() is other_surface
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is other_surface)
 
     unrelated_override = QKeyEvent(
         QEvent.ShortcutOverride,
@@ -22118,6 +22287,125 @@ def test_batch_parameter_override_preview_uses_detached_item_workflow(
     assert (
         "workflow value: " + widget._batch_parameter_value_text(original_params["beta"])
     ) in effective_text
+
+
+@pytest.mark.parametrize(
+    (
+        "authored_mode",
+        "batch_mode",
+        "expected_slice",
+        "expected_decision",
+        "expected_badge",
+    ),
+    [
+        (
+            "run",
+            "bypass",
+            np.s_[:, :],
+            DecisionKind.BYPASSED,
+            ComputeBadgeKind.BYPASSED,
+        ),
+        (
+            "bypass",
+            "run",
+            np.s_[1:, 2:],
+            DecisionKind.POLICY_CPU,
+            ComputeBadgeKind.CPU,
+        ),
+    ],
+)
+def test_batch_node_behavior_preview_uses_detached_whole_batch_workflow(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    authored_mode,
+    batch_mode,
+    expected_slice,
+    expected_decision,
+    expected_badge,
+):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    source = np.arange(30, dtype=np.uint16).reshape(5, 6)
+    np.save(input_dir / "field.npy", source)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._compute_mode = ComputeMode.CPU
+    crop = widget.add_node_from_palette("crop_stack")
+    widget.pipeline.set_param(crop.id, "top", 1)
+    widget.pipeline.set_param(crop.id, "left", 2)
+    output = widget.add_node_from_palette("batch_output")
+    widget.pipeline.set_param(output.id, "format", "npy")
+    widget._connect_nodes("input", crop.id)
+    widget._connect_nodes(crop.id, output.id)
+    if authored_mode == "bypass":
+        widget.pipeline.set_node_execution_mode(crop.id, "bypass")
+    widget._debounce_timer.stop()
+    authored_params = dict(widget.pipeline.nodes[crop.id].params)
+    values = {
+        "input_dir": "",
+        "output_dir": tmp_path / "outputs",
+        "pattern": "*.npy",
+        "image_format": "npy",
+        "source_bindings": [
+            {
+                "node_id": "input",
+                "title": "Batch input",
+                "input_dir": str(input_dir),
+                "pattern": "*.npy",
+            }
+        ],
+        "node_execution_overrides": (BatchNodeExecutionOverride(crop.id, batch_mode),),
+    }
+    background_calls = []
+    original_background = widget._start_background_pipeline_run
+
+    def tracked_background(*args, **kwargs):
+        background_calls.append(
+            tuple(kwargs.get("workflow_node_execution_overrides", ()))
+        )
+        return original_background(*args, **kwargs)
+
+    monkeypatch.setattr(widget, "_start_background_pipeline_run", tracked_background)
+
+    preview = widget._preview_collection_batch(**values)
+    qtbot.waitUntil(
+        lambda: (
+            widget._interactive_collection_batch_index == 0
+            and widget._active_pipeline_run_id is None
+        ),
+        timeout=10_000,
+    )
+
+    assert background_calls[-1] == values["node_execution_overrides"]
+    np.testing.assert_array_equal(
+        widget.pipeline.outputs[crop.id],
+        source[expected_slice],
+    )
+    assert widget.pipeline.nodes[crop.id].execution_mode == authored_mode
+    assert widget.pipeline.nodes[crop.id].params == authored_params
+    assert scientific_workflow_hash(widget._batch_workflow_document()) == (
+        preview.config.workflow_sha256
+    )
+    widget._select_node(crop.id)
+    card = widget.graph_view._cards[crop.id]
+    decision = widget._accepted_compute_decisions[crop.id]
+    assert decision.decision_kind is expected_decision
+    assert card._bypassed is (authored_mode == "bypass")
+    assert card._compute_badge_kind is expected_badge
+    assert not card.compute_badge.isHidden()
+    assert f"batch-only {batch_mode.capitalize()}" in card.compute_badge.toolTip()
+    assert (
+        f"shared workflow remains {authored_mode.capitalize()}"
+        in card.compute_badge.toolTip()
+    )
+    assert not widget.batch_effective_parameter_group.isHidden()
+    effective_text = widget.batch_effective_parameter_label.text()
+    assert f"Node behavior: {batch_mode.capitalize()}" in effective_text
+    assert "whole-batch override" in effective_text
+    assert f"workflow value: {authored_mode.capitalize()}" in effective_text
+    assert "backend badge reports its actual Run/Bypass result" in effective_text
 
 
 def test_batch_representative_navigation_shows_and_uses_exact_threshold_override(
@@ -27375,9 +27663,859 @@ def _responsive_crop_widget(qtbot):
     qtbot.addWidget(widget)
     crop = widget.add_node_from_palette("crop_stack")
     widget._connect_nodes("input", crop.id)
+    widget.pipeline.add_output_tunnel("Crop acceptance", crop.id, 0)
+    widget._sync_port_tunnels()
     widget._debounce_timer.stop()
     widget._history.clear()
     return widget, crop, data
+
+
+def test_safe_bypass_inspector_is_shared_and_keeps_parameters_dormant(qtbot):
+    widget, crop, data = _responsive_crop_widget(qtbot)
+    widget.pipeline.set_param(crop.id, "top", 2)
+    widget._render_parameters(crop.id)
+    stored = dict(widget.pipeline.nodes[crop.id].params)
+
+    widget._select_node("input")
+    assert widget.node_bypass_checkbox.isHidden()
+
+    widget._select_node("gaussian")
+    assert not widget.node_bypass_checkbox.isHidden()
+    assert widget.node_bypass_checkbox.isEnabled()
+
+    widget._select_node(crop.id)
+    assert not widget.node_bypass_checkbox.isHidden()
+    assert widget.node_bypass_checkbox.text() == "Bypass node"
+    assert not widget.node_bypass_checkbox.isChecked()
+    tooltip = widget.node_bypass_checkbox.toolTip().casefold()
+    assert "exact input data and metadata" in tooltip
+    assert "stored settings" in tooltip
+    assert widget.parameter_group.isEnabled()
+    assert widget._owned_crop_presentation_layers("crop_roi")
+
+    widget.node_bypass_checkbox.setChecked(True)
+
+    assert widget.pipeline.nodes[crop.id].execution_mode == "bypass"
+    assert widget.pipeline.nodes[crop.id].params == stored
+    assert not widget.parameter_group.isEnabled()
+    assert not widget._parameter_widgets["top"].isEnabled()
+    assert (
+        "complete input"
+        in widget._parameter_widgets["crop_roi_summary"].text().casefold()
+    )
+    assert not widget._owned_crop_presentation_layers("crop_roi")
+    assert widget.graph_view._cards[crop.id]._bypassed
+    assert (
+        widget.graph_view._cards[crop.id]._compute_badge_kind
+        is ComputeBadgeKind.BYPASSED
+    )
+    assert not widget.graph_view._cards[crop.id].compute_badge.isHidden()
+    assert widget.pipeline.outputs[crop.id] is widget.pipeline.outputs["input"]
+    np.testing.assert_array_equal(widget.pipeline.outputs[crop.id], data)
+    assert (
+        widget.pipeline.output_states[crop.id] is widget.pipeline.output_states["input"]
+    )
+
+    widget._compute_mode = ComputeMode.CUSTOM
+    widget._sync_node_compute_control()
+    ready, reason = widget._can_benchmark_selected_node()
+    assert not ready
+    assert "bypassed" in reason.casefold()
+    assert not widget.node_benchmark_button.isEnabled()
+
+
+def test_safe_bypass_hides_sources_writers_and_multi_output_nodes(qtbot):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+
+    split = widget.add_node_from_palette("split_channels")
+    save = widget.add_node_from_palette("save_output")
+    batch_output = widget.add_node_from_palette("batch_output")
+
+    for node_id in ("input", split.id, save.id, batch_output.id):
+        widget._select_node(node_id)
+        assert widget.node_bypass_checkbox.isHidden()
+
+
+def test_safe_bypass_terminal_restriction_updates_with_live_graph_and_can_clear(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    median = widget.add_node_from_palette("median_filter")
+    widget._connect_nodes("input", median.id)
+    widget._select_node(median.id)
+
+    assert not widget.node_bypass_checkbox.isHidden()
+    assert not widget.node_bypass_checkbox.isEnabled()
+    assert "no downstream connection or output tunnel" in (
+        widget.node_bypass_checkbox.toolTip().casefold()
+    )
+
+    widget.pipeline.add_output_tunnel("Median result", median.id, 0)
+    widget._sync_port_tunnels()
+    assert widget.node_bypass_checkbox.isEnabled()
+
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    widget.node_bypass_checkbox.setChecked(True)
+    assert widget.pipeline.node_is_bypassed(median.id)
+
+    widget.pipeline.remove_output_tunnel("Median result")
+    widget._sync_port_tunnels()
+    assert widget.node_bypass_checkbox.isEnabled()
+    assert "clear bypass" in widget.node_bypass_checkbox.toolTip().casefold()
+
+    widget.node_bypass_checkbox.setChecked(False)
+    assert not widget.pipeline.node_is_bypassed(median.id)
+    assert not widget.node_bypass_checkbox.isEnabled()
+
+    downstream = widget.add_node_from_palette("invert")
+    widget._connect_nodes(median.id, downstream.id)
+    widget._select_node(median.id)
+    assert widget.node_bypass_checkbox.isEnabled()
+    widget._disconnect_nodes(median.id, downstream.id, 0)
+    assert not widget.node_bypass_checkbox.isEnabled()
+
+
+def test_safe_bypass_rl_tv_names_and_routes_only_image_intensity_input(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.float32).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    deconvolution = widget.add_node_from_palette(
+        "richardson_lucy_tv_deconvolution"
+    )
+    downstream = widget.add_node_from_palette("invert")
+    widget._connect_nodes("input", deconvolution.id, target_port=0)
+    widget._connect_nodes("input", deconvolution.id, target_port=1)
+    widget._connect_nodes(deconvolution.id, downstream.id)
+    widget._select_node(deconvolution.id)
+
+    assert widget.node_bypass_checkbox.isEnabled()
+    tooltip = widget.node_bypass_checkbox.toolTip().casefold()
+    assert "image/intensity input" in tooltip
+    assert "only" in tooltip
+    assert "psf" in tooltip
+
+    widget.node_bypass_checkbox.setChecked(True)
+
+    assert widget.pipeline.node_is_bypassed(deconvolution.id)
+    assert not widget.parameter_group.isEnabled()
+    proxy = widget.graph_view._proxies[deconvolution.id]
+    overlay = widget.graph_view._cards[deconvolution.id]._bypass_overlay
+    assert overlay._input_y == pytest.approx(proxy.input_ports[0].pos().y())
+    assert overlay._input_y != pytest.approx(proxy.input_ports[1].pos().y())
+    assert overlay._output_y == pytest.approx(proxy.output_ports[0].pos().y())
+
+
+def test_type_changing_bypass_follows_current_consumer_compatibility(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    labels_only = widget.add_node_from_palette("remove_small_objects")
+    widget._connect_nodes("threshold", labels_only.id)
+    widget._select_node("threshold")
+
+    assert not widget.node_bypass_checkbox.isHidden()
+    assert not widget.node_bypass_checkbox.isEnabled()
+    tooltip = widget.node_bypass_checkbox.toolTip().casefold()
+    assert "bypass unavailable" in tooltip
+    assert "would forward" in tooltip
+    assert "requires" in tooltip
+
+    widget._disconnect_nodes("threshold", labels_only.id, 0)
+    permissive = widget.add_node_from_palette("invert")
+    widget._connect_nodes("threshold", permissive.id)
+    widget._select_node("threshold")
+
+    assert widget.node_bypass_checkbox.isEnabled()
+
+
+def test_safe_bypass_card_uses_what_if_pixels_but_all_scientific_surfaces_alias(
+    qtbot,
+):
+    widget, crop, data = _responsive_crop_widget(qtbot)
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
+    widget.pipeline.set_param(crop.id, "top", 2)
+    widget._mark_pipeline_dirty(crop.id)
+    widget.run_pipeline(force_sync=True)
+    widget._select_node(crop.id)
+
+    widget.node_bypass_checkbox.setChecked(True)
+
+    scientific_data, scientific_state, _port = widget._node_display_payload(crop.id)
+    card_data, card_state, _card_port = widget._node_thumbnail_display_payload(
+        crop.id
+    )
+    source_data = widget.pipeline.outputs["input"]
+    assert scientific_data is source_data
+    assert scientific_state is widget.pipeline.output_states["input"]
+    assert widget.pipeline.outputs[crop.id] is source_data
+    assert widget.pipeline.output_states[crop.id] is scientific_state
+    assert card_data.shape == (6, 6, 10)
+    assert card_state.shape == (6, 6, 10)
+    assert np.shares_memory(card_data, source_data)
+    assert not card_data.flags.writeable
+    card = widget.graph_view._cards[crop.id]
+    assert card.preview.has_source_pixmap()
+    assert "6 x 8 x 10" in card.metadata_label.text()
+
+    widget.inspect_node(crop.id)
+    inspect_layer = widget._layer_by_name(widget._inspect_layer_name)
+    assert inspect_layer is not None
+    assert inspect_layer.data.shape == data.shape
+    assert np.shares_memory(inspect_layer.data, source_data)
+
+
+def test_safe_bypass_image_to_mask_shadow_uses_shadow_render_kind_only(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
+    widget.pipeline.add_output_tunnel("Threshold acceptance", "threshold", 0)
+    widget.pipeline.set_node_execution_mode("threshold", "bypass")
+    widget.graph_view.set_node_bypassed("threshold", True)
+
+    scientific_data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    scientific_state = image_state_from_array(
+        scientific_data,
+        layer_metadata={"axes": "YX"},
+    )
+    shadow_data = scientific_data > 31
+    shadow_state = image_state_from_array(
+        shadow_data,
+        layer_metadata={"axes": "YX"},
+    )
+    shadow = PipelinePresentationShadowResult(
+        run_id=804,
+        node_id="threshold",
+        operation_id="otsu_threshold",
+        output=shadow_data,
+        output_state=shadow_state,
+        node_outputs=(shadow_data,),
+        node_output_states=(shadow_state,),
+    )
+    widget.pipeline.outputs["threshold"] = scientific_data
+    widget.pipeline.output_states["threshold"] = scientific_state
+    widget.pipeline.node_outputs["threshold"] = [scientific_data]
+    widget.pipeline.node_output_states["threshold"] = [scientific_state]
+    widget._bypass_shadow_results["threshold"] = shadow
+    rendered_kinds = []
+
+    def fake_make_preview(data, *_args, **_kwargs):
+        return np.asarray(data)
+
+    def fake_normalize_thumbnail(
+        _data,
+        _size=(180, 110),
+        *,
+        data_kind="image",
+        **_kwargs,
+    ):
+        rendered_kinds.append(data_kind)
+        return None
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    monkeypatch.setattr(
+        "napari_vipp._widget.normalize_thumbnail_with_colormap",
+        fake_normalize_thumbnail,
+    )
+
+    preview_data, preview_state, output_port = (
+        widget._node_thumbnail_display_payload("threshold")
+    )
+    widget._update_node_thumbnail(
+        "threshold",
+        preview_data,
+        preview_state,
+        output_port,
+        queue_stack_contrast=False,
+    )
+
+    assert preview_data is shadow_data
+    assert rendered_kinds == ["mask"]
+    assert widget.graph_view._proxies["threshold"].output_type == "image"
+    assert "uint16" in widget.graph_view._cards["threshold"].metadata_label.text()
+    assert "bool" not in widget.graph_view._cards["threshold"].metadata_label.text()
+    assert widget.pipeline.outputs["threshold"] is scientific_data
+    assert widget.pipeline.output_states["threshold"] is scientific_state
+
+
+def test_secondary_input_edit_refreshes_bypass_shadow_without_downstream_science(
+    qtbot,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
+    psf_filter = widget.add_node_from_palette("gaussian_blur")
+    deconvolution = widget.add_node_from_palette(
+        "richardson_lucy_tv_deconvolution"
+    )
+    downstream = widget.add_node_from_palette("invert")
+    widget._connect_nodes("input", psf_filter.id)
+    widget._connect_nodes("input", deconvolution.id, target_port=0)
+    widget._connect_nodes(psf_filter.id, deconvolution.id, target_port=1)
+    widget._connect_nodes(deconvolution.id, downstream.id)
+    widget.pipeline.set_node_execution_mode(deconvolution.id, "bypass")
+
+    dirty_node_ids = {psf_filter.id}
+    execution_plan = widget.pipeline.plan_execution(
+        dirty_node_ids,
+        manual_mode="skip",
+    )
+    assert psf_filter.id in execution_plan.runnable_node_ids
+    assert deconvolution.id not in execution_plan.runnable_node_ids
+    assert downstream.id not in execution_plan.runnable_node_ids
+    assert widget.pipeline.presentation_shadow_nodes_affected_by(
+        dirty_node_ids
+    ) == {deconvolution.id}
+
+    old_shadow_data = np.zeros((8, 8), dtype=np.float32)
+    old_shadow_state = image_state_from_array(
+        old_shadow_data,
+        layer_metadata={"axes": "YX"},
+    )
+    widget._bypass_shadow_results[deconvolution.id] = (
+        PipelinePresentationShadowResult(
+            run_id=805,
+            node_id=deconvolution.id,
+            operation_id=deconvolution.operation_id,
+            output=old_shadow_data,
+            output_state=old_shadow_state,
+            node_outputs=(old_shadow_data,),
+            node_output_states=(old_shadow_state,),
+        )
+    )
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    source_payloads, source_layers = widget._source_payloads_for_pipeline()
+    source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        source_payloads,
+    )
+
+    widget._start_background_pipeline_run(
+        None,
+        None,
+        "",
+        dict(source_payloads),
+        source_layers[0] if source_layers else None,
+        "input volume",
+        source_signature,
+        dirty_node_ids,
+    )
+
+    assert len(pool.workers) == 1
+    request = pool.workers[0].request
+    assert request.dirty_node_ids == frozenset({psf_filter.id})
+    assert request.presentation_shadow_node_ids == frozenset({deconvolution.id})
+    assert deconvolution.id in widget._bypass_shadow_pending_node_ids
+    assert deconvolution.id not in widget._bypass_shadow_results
+    widget._pending_dirty_node_ids.add(psf_filter.id)
+    widget._on_background_pipeline_presentation_shadow_finished(
+        PipelinePresentationShadowResult(
+            run_id=request.run_id,
+            node_id=deconvolution.id,
+            operation_id=deconvolution.operation_id,
+            output=old_shadow_data + 1.0,
+            output_state=old_shadow_state,
+            node_outputs=(old_shadow_data + 1.0,),
+            node_output_states=(old_shadow_state,),
+        )
+    )
+    assert deconvolution.id not in widget._bypass_shadow_results
+    assert deconvolution.id in widget._bypass_shadow_pending_node_ids
+    widget._pending_dirty_node_ids.clear()
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(request.run_id, request.workflow, cancelled=True)
+    )
+
+
+@pytest.mark.parametrize(
+    ("authored_mode", "batch_mode", "expect_scientific_branch", "expect_shadow"),
+    (
+        ("run", "bypass", False, True),
+        ("bypass", "run", True, False),
+    ),
+)
+def test_batch_mode_override_plans_effective_multi_input_graph_and_shadow(
+    qtbot,
+    authored_mode,
+    batch_mode,
+    expect_scientific_branch,
+    expect_shadow,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
+    psf_filter = widget.add_node_from_palette("gaussian_blur")
+    deconvolution = widget.add_node_from_palette(
+        "richardson_lucy_tv_deconvolution"
+    )
+    downstream = widget.add_node_from_palette("invert")
+    widget._connect_nodes("input", psf_filter.id)
+    widget._connect_nodes("input", deconvolution.id, target_port=0)
+    widget._connect_nodes(psf_filter.id, deconvolution.id, target_port=1)
+    widget._connect_nodes(deconvolution.id, downstream.id)
+    if authored_mode == "bypass":
+        widget.pipeline.set_node_execution_mode(deconvolution.id, "bypass")
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    source_payloads, source_layers = widget._source_payloads_for_pipeline()
+    source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        source_payloads,
+    )
+    dirty_node_ids = {psf_filter.id}
+
+    widget._start_background_pipeline_run(
+        None,
+        None,
+        "",
+        dict(source_payloads),
+        source_layers[0] if source_layers else None,
+        "input volume",
+        source_signature,
+        dirty_node_ids,
+        {deconvolution.id},
+        workflow_node_execution_overrides=(
+            BatchNodeExecutionOverride(deconvolution.id, batch_mode),
+        ),
+    )
+
+    assert len(pool.workers) == 1
+    request = pool.workers[0].request
+    runnable_node_ids = widget._pipeline_run_context[request.run_id][6]
+    assert (deconvolution.id in runnable_node_ids) is expect_scientific_branch
+    assert (downstream.id in runnable_node_ids) is expect_scientific_branch
+    assert (
+        deconvolution.id in request.presentation_shadow_node_ids
+    ) is expect_shadow
+    workflow_mode = next(
+        node.get("execution_mode", "run")
+        for node in request.workflow["nodes"]
+        if node["id"] == deconvolution.id
+    )
+    assert workflow_mode == batch_mode
+    assert request.atomic_bypass_profile
+    assert widget.pipeline.nodes[deconvolution.id].execution_mode == authored_mode
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(request.run_id, request.workflow, cancelled=True)
+    )
+
+
+def test_batch_aggregate_bypass_profile_plans_and_dispatches_atomically(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
+    psf = widget.add_node_from_palette("input")
+    threshold = widget.add_node_from_palette("binary_threshold")
+    overlay = widget.add_node_from_palette("skeleton_graph_overlay")
+    restoration = widget.add_node_from_palette(
+        "richardson_lucy_tv_deconvolution"
+    )
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, overlay.id)
+    widget._connect_nodes(overlay.id, restoration.id, target_port=0)
+    widget._connect_nodes(psf.id, restoration.id, target_port=1)
+    overrides = (
+        BatchNodeExecutionOverride(threshold.id, "bypass"),
+        BatchNodeExecutionOverride(overlay.id, "bypass"),
+    )
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    source_payloads, source_layers = widget._source_payloads_for_pipeline()
+    source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        source_payloads,
+    )
+
+    widget._start_background_pipeline_run(
+        None,
+        None,
+        "",
+        dict(source_payloads),
+        source_layers[0] if source_layers else None,
+        "input volume",
+        source_signature,
+        None,
+        {restoration.id},
+        workflow_node_execution_overrides=overrides,
+    )
+
+    assert len(pool.workers) == 1
+    request = pool.workers[0].request
+    assert request.atomic_bypass_profile
+    assert request.presentation_shadow_node_ids == frozenset(
+        {threshold.id, overlay.id}
+    )
+    runnable_node_ids = widget._pipeline_run_context[request.run_id][6]
+    assert {threshold.id, overlay.id, restoration.id} <= runnable_node_ids
+    assert widget.pipeline.nodes[threshold.id].execution_mode == "run"
+    assert widget.pipeline.nodes[overlay.id].execution_mode == "run"
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(request.run_id, request.workflow, cancelled=True)
+    )
+
+
+@pytest.mark.parametrize("table_case", ("labels-to-table", "table-to-table"))
+def test_table_output_bypasses_never_request_or_store_card_shadows(
+    qtbot,
+    table_case,
+):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
+    labels = widget.add_node_from_palette("label_connected_components")
+    widget._connect_nodes("threshold", labels.id)
+    measurements = widget.add_node_from_palette("measure_objects")
+    widget._connect_nodes(labels.id, measurements.id)
+    manual_node_ids = {measurements.id}
+    table_node = measurements
+    if table_case == "table-to-table":
+        table_data = TableData(("label",), ((1,),), name="measurements")
+        table_state = TableState(
+            1,
+            1,
+            ("label",),
+            source_name="measurements",
+        )
+        widget.pipeline.outputs[measurements.id] = table_data
+        widget.pipeline.output_states[measurements.id] = table_state
+        widget.pipeline.node_outputs[measurements.id] = [table_data]
+        widget.pipeline.node_output_states[measurements.id] = [table_state]
+        widget.pipeline.completed_node_ids.add(measurements.id)
+        widget.pipeline.node_execution_states[measurements.id] = EXECUTION_READY
+        table_node = widget.add_node_from_palette("add_metadata_columns")
+        widget._connect_nodes(measurements.id, table_node.id)
+    widget.pipeline.add_output_tunnel("Table acceptance", table_node.id, 0)
+    widget.pipeline.set_node_execution_mode(table_node.id, "bypass")
+
+    dirty_node_ids = {table_node.id}
+    execution_plan = widget.pipeline.plan_execution(
+        dirty_node_ids,
+        manual_mode="skip",
+        manual_node_ids=manual_node_ids,
+    )
+    assert table_node.id in execution_plan.runnable_node_ids
+    assert not widget._node_allows_bypass_presentation_shadow(table_node.id)
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    source_payloads, source_layers = widget._source_payloads_for_pipeline()
+    source_signature = widget._pipeline_source_signature(
+        None,
+        None,
+        "",
+        source_payloads,
+    )
+    widget._start_background_pipeline_run(
+        None,
+        None,
+        "",
+        dict(source_payloads),
+        source_layers[0] if source_layers else None,
+        "input volume",
+        source_signature,
+        dirty_node_ids,
+        manual_node_ids,
+    )
+
+    assert len(pool.workers) == 1
+    request = pool.workers[0].request
+    assert table_node.id not in request.presentation_shadow_node_ids
+    assert table_node.id not in widget._bypass_shadow_pending_node_ids
+
+    # Even a defensive callback from a malformed/older worker is a normal
+    # no-shadow result: it must not become a card preview or visible error.
+    widget._pipeline_run_shadow_node_ids[request.run_id] = frozenset(
+        {table_node.id}
+    )
+    widget._bypass_shadow_pending_node_ids.add(table_node.id)
+    shadow_table = TableData(("value",), ((7,),), name="what-if")
+    shadow_state = TableState(1, 1, ("value",), source_name="what-if")
+    widget._on_background_pipeline_presentation_shadow_finished(
+        PipelinePresentationShadowResult(
+            run_id=request.run_id,
+            node_id=table_node.id,
+            operation_id=table_node.operation_id,
+            output=shadow_table,
+            output_state=shadow_state,
+            node_outputs=(shadow_table,),
+            node_output_states=(shadow_state,),
+        )
+    )
+
+    assert table_node.id not in widget._bypass_shadow_results
+    assert table_node.id not in widget._bypass_shadow_errors
+    assert table_node.id not in widget._bypass_shadow_pending_node_ids
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(request.run_id, request.workflow, cancelled=True)
+    )
+
+
+def test_safe_bypass_rejects_stale_card_shadow_completion(qtbot):
+    widget, crop, data = _responsive_crop_widget(qtbot)
+    widget._active_pipeline_run_id = 801
+    widget._pipeline_run_shadow_node_ids[801] = frozenset({crop.id})
+    widget._bypass_shadow_pending_node_ids.add(crop.id)
+    widget._pending_dirty_node_ids.add(crop.id)
+    shadow_data = data[:, 1:, :]
+    shadow_state = image_state_from_array(
+        shadow_data,
+        layer_metadata={"axes": "ZYX"},
+    )
+
+    widget._on_background_pipeline_presentation_shadow_finished(
+        PipelinePresentationShadowResult(
+            run_id=801,
+            node_id=crop.id,
+            operation_id="crop_stack",
+            output=shadow_data,
+            output_state=shadow_state,
+            node_outputs=(shadow_data,),
+            node_output_states=(shadow_state,),
+        )
+    )
+
+    assert crop.id not in widget._bypass_shadow_results
+    assert crop.id in widget._bypass_shadow_pending_node_ids
+    widget._active_pipeline_run_id = None
+    widget._pipeline_run_shadow_node_ids.clear()
+    widget._bypass_shadow_pending_node_ids.clear()
+
+
+def test_safe_bypass_shadow_failure_retains_complete_card_and_exact_output(qtbot):
+    widget, crop, _data = _responsive_crop_widget(qtbot)
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
+    widget._select_node(crop.id)
+    widget._update_thumbnails()
+    card = widget.graph_view._cards[crop.id]
+    before = card.preview.source_pixmap()
+    assert not before.isNull()
+    source_data = widget.pipeline.outputs["input"]
+    source_state = widget.pipeline.output_states["input"]
+    widget._active_pipeline_run_id = 802
+    widget._pipeline_run_shadow_node_ids[802] = frozenset({crop.id})
+    widget._bypass_shadow_pending_node_ids.add(crop.id)
+
+    widget._on_background_pipeline_presentation_shadow_finished(
+        PipelinePresentationShadowResult(
+            run_id=802,
+            node_id=crop.id,
+            operation_id="crop_stack",
+            error="preview-only failure",
+        )
+    )
+    widget._on_background_pipeline_node_finished(
+        PipelineNodeResult(
+            run_id=802,
+            node_id=crop.id,
+            operation_id="crop_stack",
+            output=source_data,
+            output_state=source_state,
+            node_outputs=(source_data,),
+            node_output_states=(source_state,),
+            execution_state=EXECUTION_READY,
+        )
+    )
+
+    assert card.preview.source_pixmap().cacheKey() == before.cacheKey()
+    assert crop.id in widget._bypass_shadow_errors
+    assert widget.pipeline.outputs[crop.id] is not source_data
+    # The callback is presentation-only: until a terminal scientific result is
+    # accepted, the live pipeline cache remains byte-for-byte untouched.
+    widget._active_pipeline_run_id = None
+    widget._pipeline_run_shadow_node_ids.clear()
+    widget._bypass_shadow_errors.clear()
+
+
+def test_leaving_batch_clears_effective_bypass_card_shadow(qtbot):
+    widget, crop, data = _responsive_crop_widget(qtbot)
+    state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+    shadow = PipelinePresentationShadowResult(
+        run_id=803,
+        node_id=crop.id,
+        operation_id="crop_stack",
+        output=data[:, 1:, :],
+        output_state=state,
+        node_outputs=(data[:, 1:, :],),
+        node_output_states=(state,),
+    )
+    widget._bypass_shadow_results[crop.id] = shadow
+    widget._bypass_shadow_errors[crop.id] = "old batch failure"
+    widget._bypass_shadow_pending_node_ids.add(crop.id)
+
+    widget._clear_interactive_collection_batch_session(close_workspace=False)
+
+    assert widget._bypass_shadow_results == {}
+    assert widget._bypass_shadow_errors == {}
+    assert widget._bypass_shadow_pending_node_ids == set()
+
+
+def test_safe_bypass_graph_menu_uses_shared_one_step_edit_path(
+    qtbot,
+    monkeypatch,
+):
+    widget, crop, _data = _responsive_crop_widget(qtbot)
+    runs = []
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *_args, **_kwargs: runs.append(set(widget._pending_dirty_node_ids)),
+    )
+
+    def choose_bypass(menu, _pos):
+        return next(
+            action for action in menu.actions() if action.text() == "Bypass node"
+        )
+
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", choose_bypass)
+
+    widget.graph_view._show_node_context_menu(crop.id, QPoint(0, 0))
+
+    assert widget.pipeline.nodes[crop.id].execution_mode == "bypass"
+    assert widget.node_bypass_checkbox.isChecked()
+    assert widget.graph_view._cards[crop.id]._bypassed
+    assert len(widget._undo_stack) == 1
+
+    widget.undo()
+
+    assert widget.pipeline.nodes[crop.id].execution_mode == "run"
+    assert not widget.node_bypass_checkbox.isChecked()
+    assert not widget.graph_view._cards[crop.id]._bypassed
+    assert runs == [{crop.id}, {crop.id}]
+
+
+def test_safe_bypass_waits_for_isolated_tuning_to_finish(qtbot, monkeypatch):
+    widget, crop, _data = _responsive_crop_widget(qtbot)
+    widget._isolated_tuning_node_id = crop.id
+    widget._sync_isolated_tuning_ui()
+
+    assert not widget.node_bypass_checkbox.isEnabled()
+    assert "apply or cancel isolated tuning" in (
+        widget.node_bypass_checkbox.toolTip().casefold()
+    )
+
+    menu_enabled = []
+
+    def inspect_menu(menu, _pos):
+        action = next(
+            action for action in menu.actions() if action.text() == "Bypass node"
+        )
+        menu_enabled.append(action.isEnabled())
+        return None
+
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", inspect_menu)
+    widget.graph_view._show_node_context_menu(crop.id, QPoint(0, 0))
+
+    assert menu_enabled == [False]
+    assert not widget._set_node_bypassed(crop.id, True)
+    assert widget.pipeline.nodes[crop.id].execution_mode == "run"
+    assert "apply or cancel isolated tuning" in widget.status_label.text().casefold()
+
+
+def test_safe_bypass_undo_redo_is_localized_and_updates_inspector_card(
+    qtbot,
+    monkeypatch,
+):
+    widget, crop, _data = _responsive_crop_widget(qtbot)
+    node_ids = tuple(widget.pipeline.nodes)
+    card_ids = {node_id: id(widget.graph_view._cards[node_id]) for node_id in node_ids}
+    gaussian_output = widget.pipeline.outputs["gaussian"]
+    runs: list[set[str]] = []
+
+    def capture_run(*_args, **_kwargs):
+        runs.append(set(widget._pending_dirty_node_ids))
+
+    monkeypatch.setattr(widget, "run_pipeline", capture_run)
+    widget.node_bypass_checkbox.setChecked(True)
+    assert widget.pipeline.nodes[crop.id].execution_mode == "bypass"
+    assert widget.node_bypass_checkbox.isChecked()
+    assert len(widget._undo_stack) == 1
+
+    def reject_full_restore(*_args, **_kwargs):
+        raise AssertionError("bypass history must not rebuild the full workflow")
+
+    monkeypatch.setattr(widget.graph_view, "build_graph", reject_full_restore)
+    monkeypatch.setattr(widget, "_invalidate_pipeline_cache", reject_full_restore)
+
+    widget.undo()
+
+    assert widget.pipeline.nodes[crop.id].execution_mode == "run"
+    assert not widget.node_bypass_checkbox.isChecked()
+    assert widget.parameter_group.isEnabled()
+    assert (
+        widget.graph_view._cards[crop.id]._compute_badge_kind
+        is not ComputeBadgeKind.BYPASSED
+    )
+    assert widget.pipeline.outputs["gaussian"] is gaussian_output
+    assert {node_id: id(widget.graph_view._cards[node_id]) for node_id in node_ids} == (
+        card_ids
+    )
+
+    widget.redo()
+
+    assert widget.pipeline.nodes[crop.id].execution_mode == "bypass"
+    assert widget.node_bypass_checkbox.isChecked()
+    assert not widget.parameter_group.isEnabled()
+    assert not widget.graph_view._cards[crop.id].compute_badge.isHidden()
+    assert widget.pipeline.outputs["gaussian"] is gaussian_output
+    assert {node_id: id(widget.graph_view._cards[node_id]) for node_id in node_ids} == (
+        card_ids
+    )
+    assert runs == [{crop.id}, {crop.id}, {crop.id}]
+
+
+def test_safe_bypass_history_restores_disconnected_persisted_mode(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    widget.pipeline.set_node_execution_mode("gaussian", "bypass")
+    widget.graph_view.set_node_bypassed("gaussian", True)
+    widget._history.clear()
+
+    widget._disconnect_nodes("input", "gaussian", 0)
+    assert not any(
+        connection.source_id == "input" and connection.target_id == "gaussian"
+        for connection in widget.pipeline.connections
+    )
+    widget._select_node("gaussian")
+    assert widget.pipeline.node_is_bypassed("gaussian")
+    assert widget._set_node_bypassed("gaussian", False)
+    assert not widget.pipeline.node_is_bypassed("gaussian")
+
+    widget.undo()
+
+    assert widget.pipeline.node_is_bypassed("gaussian")
+    assert widget.graph_view._cards["gaussian"]._bypassed
+    assert widget.node_bypass_checkbox.isChecked()
+    assert widget.node_bypass_checkbox.isEnabled()
+    assert not widget.parameter_group.isEnabled()
+    assert "failed" not in widget.status_label.text().casefold()
+
+    widget.redo()
+
+    assert not widget.pipeline.node_is_bypassed("gaussian")
+    assert not widget.graph_view._cards["gaussian"]._bypassed
+    assert not widget.node_bypass_checkbox.isChecked()
+    assert widget.parameter_group.isEnabled()
 
 
 def _press_slider_handle(qtbot, slider) -> QPoint:

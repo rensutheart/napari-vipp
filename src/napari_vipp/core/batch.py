@@ -39,6 +39,17 @@ from napari_vipp.core.atomic_io import (
 from napari_vipp.core.atomic_io import (
     atomic_write_text,
 )
+from napari_vipp.core.batch_execution import (
+    BATCH_NODE_EXECUTION_OVERRIDE_IDENTITY,
+    BatchNodeExecutionMode,
+    BatchNodeExecutionOverride,
+    batch_node_execution_overrides_document,
+    node_execution_override_provenance,
+    normalize_batch_node_execution_overrides,
+    parse_batch_node_execution_overrides,
+    validate_batch_node_execution_overrides,
+    workflow_with_node_execution_overrides,
+)
 from napari_vipp.core.batch_parameters import (
     BATCH_PARAMETER_OVERRIDE_IDENTITY,
     BatchParameterOverride,
@@ -103,9 +114,9 @@ if TYPE_CHECKING:
     from napari_vipp.core.execution import ComputePlanner
 
 BATCH_CONFIG_TYPE = "napari-vipp-batch-config"
-BATCH_CONFIG_VERSION = 4
+BATCH_CONFIG_VERSION = 5
 BATCH_MANIFEST_TYPE = "napari-vipp-batch-manifest"
-BATCH_MANIFEST_VERSION = 4
+BATCH_MANIFEST_VERSION = 5
 
 BATCH_CONFIG_FILENAME = "vipp_batch_config.json"
 BATCH_MANIFEST_FILENAME = "vipp_batch_manifest.json"
@@ -405,6 +416,7 @@ class BatchConfig:
     compute_request: ComputeRequest = field(default_factory=ComputeRequest)
     base_dir: Path | None = field(default=None, compare=False, repr=False)
     parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = ()
+    node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text(str(self.workflow_file), "Batch config workflow_file")
@@ -437,6 +449,11 @@ class BatchConfig:
             self,
             "parameter_overrides",
             normalize_batch_parameter_overrides(self.parameter_overrides),
+        )
+        object.__setattr__(
+            self,
+            "node_execution_overrides",
+            normalize_batch_node_execution_overrides(self.node_execution_overrides),
         )
         for name in (
             "save_workflow_snapshot",
@@ -479,6 +496,10 @@ class BatchConfig:
             document["parameter_overrides"] = batch_parameter_overrides_document(
                 self.parameter_overrides
             )
+        if self.node_execution_overrides:
+            document["node_execution_overrides"] = (
+                batch_node_execution_overrides_document(self.node_execution_overrides)
+            )
         return document
 
     @classmethod
@@ -506,16 +527,19 @@ class BatchConfig:
             1,
             2,
             3,
+            4,
             BATCH_CONFIG_VERSION,
         }:
             raise ValueError(
                 f"Unsupported batch config version: {raw_version!r}. "
-                f"Expected version 1, 2, 3, or {BATCH_CONFIG_VERSION}."
+                f"Expected version 1, 2, 3, 4, or {BATCH_CONFIG_VERSION}."
             )
         if raw_version == 1:
             allowed.remove("compute")
-        if raw_version == BATCH_CONFIG_VERSION:
+        if raw_version in {4, BATCH_CONFIG_VERSION}:
             allowed.add("parameter_overrides")
+        if raw_version == BATCH_CONFIG_VERSION:
+            allowed.add("node_execution_overrides")
         _reject_unknown_keys(data, allowed, "Batch config")
         workflow = _require_object(data.get("workflow"), "Batch config workflow")
         _reject_unknown_keys(workflow, {"file", "sha256"}, "Batch config workflow")
@@ -591,6 +615,11 @@ class BatchConfig:
             parameter_overrides=(
                 parse_batch_parameter_overrides(data["parameter_overrides"])
                 if "parameter_overrides" in data
+                else ()
+            ),
+            node_execution_overrides=(
+                parse_batch_node_execution_overrides(data["node_execution_overrides"])
+                if "node_execution_overrides" in data
                 else ()
             ),
             base_dir=(
@@ -770,6 +799,8 @@ class BatchItemRecord:
     execution_provenance_sha256: str = ""
     error_type: str = ""
     error_message: str = ""
+    effective_workflow_sha256: str = ""
+    node_execution_overrides: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -787,6 +818,12 @@ class BatchItemRecord:
             result["execution"] = _json_safe(self.execution)
         if self.parameter_overrides:
             result["parameter_overrides"] = _json_safe(self.parameter_overrides)
+        if self.effective_workflow_sha256:
+            result["effective_workflow_sha256"] = self.effective_workflow_sha256
+        if self.node_execution_overrides:
+            result["node_execution_overrides"] = _json_safe(
+                self.node_execution_overrides
+            )
         if self.execution_provenance_sha256:
             result["execution_provenance_sha256"] = self.execution_provenance_sha256
         if self.error_type:
@@ -814,6 +851,9 @@ class BatchManifest:
     config_document: dict[str, object]
     compute: dict[str, object]
     items: tuple[BatchItemRecord, ...]
+    profile_workflow_sha256: str = ""
+    profile_workflow_document: dict[str, object] = field(default_factory=dict)
+    node_execution_overrides: dict[str, object] = field(default_factory=dict)
     item_records_dir: str = ""
     finished_at: str = ""
 
@@ -840,6 +880,12 @@ class BatchManifest:
                 "file": self.workflow_file,
                 "sha256": self.workflow_sha256,
                 "scientific_graph": _json_safe(self.workflow_document),
+                "effective_for_batch": {
+                    "sha256": (self.profile_workflow_sha256 or self.workflow_sha256),
+                    "scientific_graph": _json_safe(
+                        self.profile_workflow_document or self.workflow_document
+                    ),
+                },
             },
             "config": {
                 "file": self.config_file,
@@ -853,6 +899,10 @@ class BatchManifest:
             "summary": self.summary,
             "items": [item.to_dict() for item in self.items],
         }
+        if self.node_execution_overrides:
+            result["workflow"]["node_execution_overrides"] = _json_safe(
+                self.node_execution_overrides
+            )
         if self.item_records_dir:
             result["item_records_dir"] = self.item_records_dir
         if self.finished_at:
@@ -945,12 +995,19 @@ def scientific_workflow_document(workflow: object) -> dict[str, object]:
         for node in nodes
         if node.get("operation_id") == "input"
     )
-    if data.get("version") in {4, 5}:
+    bypass_authored = any(
+        str(node.get("execution_mode", "run")).strip().casefold() == "bypass"
+        for node in nodes
+    )
+    if data.get("version") in {4, 5, 6}:
         # Authored compute intent changes reproducibility and therefore belongs
         # in the scientific workflow hash. Machine-local benchmark evidence and
         # resolved devices are excluded by the portable workflow schema itself.
         execution = _canonical_compute_execution(restored["compute_request"])
-        if source_item_bound:
+        if bypass_authored:
+            document["version"] = 6
+            document["execution"] = execution
+        elif source_item_bound:
             document["version"] = 5
             document["execution"] = execution
         elif execution == _implicit_v3_cpu_execution():
@@ -1531,12 +1588,13 @@ def run_batch(
     """Execute a deterministic batch plan with checkpointed provenance."""
     effective_request = effective_batch_compute_request(config, compute_request)
     workflow_sha256 = scientific_workflow_hash(workflow)
-    pipeline, fixed_source_paths = _validated_batch_pipeline(
+    _authored_pipeline, fixed_source_paths = _validated_batch_pipeline(
         workflow,
         config,
         workflow_sha256,
         workflow_path=workflow_path,
     )
+    profile_workflow, pipeline = _effective_batch_pipeline(workflow, config)
     _validate_compute_request_node_ids(
         pipeline,
         effective_request,
@@ -1582,13 +1640,24 @@ def run_batch(
     # Resolve and deserialize every item-specific graph before creating any
     # run artifacts. Invalid substitutions therefore fail closed before the
     # first item can start or publish output.
+    _validate_no_inert_parameter_overrides(pipeline, plan)
     item_workflows = {
         item.index: workflow_with_parameter_overrides(
-            workflow,
+            profile_workflow,
             item.parameter_overrides,
         )
         for item in plan.items
     }
+    item_workflow_hashes = {
+        index: scientific_workflow_hash(document)
+        for index, document in item_workflows.items()
+    }
+    profile_workflow_sha256 = scientific_workflow_hash(profile_workflow)
+    execution_override_record = node_execution_override_provenance(
+        config.node_execution_overrides,
+        workflow,
+        profile_workflow,
+    )
     plan.output_dir.mkdir(parents=True, exist_ok=True)
 
     workflow_label = str(workflow_path or config.workflow_file)
@@ -1602,6 +1671,10 @@ def run_batch(
         workflow_label,
         config_label,
         scientific_workflow_document(workflow),
+        profile_workflow_sha256,
+        scientific_workflow_document(profile_workflow),
+        item_workflow_hashes,
+        execution_override_record,
         config.to_dict(),
         fixed_source_paths,
         fixed_source_items,
@@ -1746,10 +1819,14 @@ def run_batch(
                         source_payloads=payloads,
                         compute_request=effective_request,
                         manual_node_ids=frozenset(pipeline.manual_node_ids()),
+                        target_node_ids=frozenset(output_node_ids),
                         retain_node_ids=frozenset(output_node_ids),
                         prune_unretained=True,
                         cancel_event=cancel_event,
                         performance_history_path=performance_history_path,
+                        atomic_bypass_profile=bool(
+                            config.node_execution_overrides
+                        ),
                     ),
                     node_started_callback=node_started,
                     node_finished_callback=node_finished,
@@ -1775,6 +1852,7 @@ def run_batch(
                     execution["parameter_overrides"] = _json_safe(
                         item_record.parameter_overrides
                     )
+                _attach_item_workflow_provenance(execution, item_record)
                 execution["status"] = execution["outcome"]
                 provenance_sha256 = execution_provenance_digest(execution)
                 item_record = replace(
@@ -2376,16 +2454,18 @@ def preflight_batch(
 ) -> BatchPlan:
     """Validate and plan a batch, raising before any artifact is modified."""
     workflow_sha256 = scientific_workflow_hash(workflow)
-    pipeline, fixed_source_paths = _validated_batch_pipeline(
+    _authored_pipeline, fixed_source_paths = _validated_batch_pipeline(
         workflow,
         config,
         workflow_sha256,
         workflow_path=workflow_path,
     )
+    _effective_workflow, pipeline = _effective_batch_pipeline(workflow, config)
     plan = _with_fixed_source_collisions(
         build_batch_plan(config),
         fixed_source_paths.values(),
     )
+    _validate_no_inert_parameter_overrides(pipeline, plan)
     if plan.has_collisions and not allow_collisions:
         collisions = _collision_paths(plan)
         preview = ", ".join(collisions[:3])
@@ -2463,13 +2543,97 @@ def _validated_batch_pipeline(
         config.compute_request,
         label="Batch config compute request",
     )
+    validate_batch_node_execution_overrides(
+        config.node_execution_overrides,
+        pipeline,
+    )
     validate_batch_parameter_overrides(config.parameter_overrides, pipeline)
     fixed_source_paths = _validate_pipeline_config(
         pipeline,
         config,
         workflow_path=workflow_path,
     )
+    _effective_workflow, effective_pipeline = _effective_batch_pipeline(
+        workflow,
+        config,
+    )
+    _validate_effective_batch_output_contract(effective_pipeline, config)
     return pipeline, fixed_source_paths
+
+
+def _effective_batch_pipeline(
+    workflow: object,
+    config: BatchConfig,
+) -> tuple[dict[str, object], PrototypePipeline]:
+    """Resolve one detached whole-batch graph without editing authored intent."""
+
+    effective_workflow = workflow_with_node_execution_overrides(
+        workflow,
+        config.node_execution_overrides,
+    )
+    restored = deserialize_workflow(effective_workflow)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(
+        restored["nodes"],
+        restored["connections"],
+        restored.get("output_tunnels", ()),
+        atomic_bypass_profile=bool(config.node_execution_overrides),
+    )
+    return effective_workflow, pipeline
+
+
+def _validate_effective_batch_output_contract(
+    pipeline: PrototypePipeline,
+    config: BatchConfig,
+) -> None:
+    """Fail before planning when a run-scoped profile changes saved data kind."""
+
+    for output in config.outputs:
+        node = pipeline.nodes.get(output.node_id)
+        if node is None:
+            raise ValueError(
+                f"Effective batch output {output.node_id!r} is missing."
+            )
+        ports = pipeline.output_ports(output.node_id)
+        if not ports:
+            raise ValueError(
+                f"Effective batch output {output.node_id!r} has no output port."
+            )
+        effective_type = ports[0].output_type
+        effective_kind = "table" if effective_type == "table" else "image"
+        if output.kind == effective_kind:
+            continue
+        resolved_format = _resolved_output_format(config, output)
+        raise ValueError(
+            f"Effective Safe Node Bypass changes Batch Output "
+            f"{output.node_id!r} to {effective_type} ({effective_kind}) data, "
+            f"but the saved batch declaration expects {output.kind} data in "
+            f"{resolved_format!r} format. Disable or revise the batch bypass "
+            "profile, or author a matching Batch Output declaration before "
+            "running."
+        )
+
+
+def _validate_no_inert_parameter_overrides(
+    pipeline: PrototypePipeline,
+    plan: BatchPlan,
+) -> None:
+    bypassed_node_ids = {
+        node_id for node_id in pipeline.nodes if pipeline.node_is_bypassed(node_id)
+    }
+    inert = sorted(
+        {
+            override.node_id
+            for item in plan.items
+            for override in item.parameter_overrides
+            if override.node_id in bypassed_node_ids
+        }
+    )
+    if inert:
+        raise ValueError(
+            "Per-sample parameter overrides cannot target nodes that are "
+            "effectively bypassed: " + ", ".join(inert) + "."
+        )
 
 
 def _validate_compute_request_node_ids(
@@ -2849,10 +3013,7 @@ def _preflight_representative_scientific_contract(
             if (
                 binding is not None
                 and declaration is None
-                and any(
-                    axis.type in {"unknown", "custom"}
-                    for axis in raw_state.axes
-                )
+                and any(axis.type in {"unknown", "custom"} for axis in raw_state.axes)
             ):
                 generic_undeclared.append(
                     (node_id, title, raw_state.axis_order, inspection.format)
@@ -3378,6 +3539,10 @@ def _seed_manifest(
     workflow_file: str,
     config_file: str,
     workflow_document: dict[str, object],
+    profile_workflow_sha256: str,
+    profile_workflow_document: dict[str, object],
+    item_workflow_hashes: dict[int, str],
+    node_execution_overrides: dict[str, object],
     config_document: dict[str, object],
     fixed_source_paths: dict[str, Path],
     resolved_fixed_source_items: dict[str, SourceItem],
@@ -3436,6 +3601,8 @@ def _seed_manifest(
                 sources,
                 outputs,
                 parameter_overrides=override_record,
+                effective_workflow_sha256=item_workflow_hashes[item.index],
+                node_execution_overrides=node_execution_overrides,
             )
         )
     return BatchManifest(
@@ -3459,6 +3626,9 @@ def _seed_manifest(
             "warnings": [],
         },
         items=tuple(items),
+        profile_workflow_sha256=profile_workflow_sha256,
+        profile_workflow_document=profile_workflow_document,
+        node_execution_overrides=node_execution_overrides,
     )
 
 
@@ -3633,6 +3803,7 @@ def _with_synthetic_execution_failure(
     )
     if item.parameter_overrides:
         execution["parameter_overrides"] = _json_safe(item.parameter_overrides)
+    _attach_item_workflow_provenance(execution, item)
     execution["status"] = execution["outcome"]
     provenance_sha256 = execution_provenance_digest(execution)
     return replace(
@@ -3640,6 +3811,20 @@ def _with_synthetic_execution_failure(
         execution=execution,
         execution_provenance_sha256=provenance_sha256,
     )
+
+
+def _attach_item_workflow_provenance(
+    execution: dict[str, object],
+    item: BatchItemRecord,
+) -> None:
+    """Bind execution evidence to the exact effective item workflow."""
+
+    if item.effective_workflow_sha256:
+        execution["effective_workflow_sha256"] = item.effective_workflow_sha256
+    if item.node_execution_overrides:
+        execution["node_execution_overrides"] = _json_safe(
+            item.node_execution_overrides
+        )
 
 
 def _batch_actual_compute_summary(
@@ -4017,10 +4202,10 @@ def _canonical_compute_execution(request: ComputeRequest) -> dict[str, object]:
 def _canonical_scientific_node(value: object) -> dict[str, object]:
     """Exclude runtime/UI cache fields while retaining declared node intent."""
     node = _canonical_mapping(value)
+    if str(node.get("execution_mode", "run")).strip().casefold() == "run":
+        node.pop("execution_mode", None)
     operation_id = str(node.get("operation_id", ""))
-    params = dict(
-        _require_object(node.get("params", {}), "Workflow node parameters")
-    )
+    params = dict(_require_object(node.get("params", {}), "Workflow node parameters"))
     if operation_id == "crop_stack":
         # Missing margins in pre-feature workflows are scientifically
         # identical to authored zeroes. Omit no-op margins so their canonical
@@ -4164,6 +4349,7 @@ class _SkippedOutput(RuntimeError):
 
 
 __all__ = [
+    "BATCH_NODE_EXECUTION_OVERRIDE_IDENTITY",
     "BATCH_PARAMETER_OVERRIDE_IDENTITY",
     "BATCH_CONFIG_FILENAME",
     "BATCH_CONFIG_TYPE",
@@ -4180,6 +4366,8 @@ __all__ = [
     "BatchItemPlan",
     "BatchItemRecord",
     "BatchManifest",
+    "BatchNodeExecutionMode",
+    "BatchNodeExecutionOverride",
     "BatchOutputConfig",
     "BatchOutputPlan",
     "BatchOutputRecord",

@@ -978,6 +978,15 @@ class InputSpec:
         return self.title or self.name
 
 
+SAFE_BYPASS_BOUNDARY_OPERATION_IDS = frozenset(
+    {
+        "input",
+        "save_output",
+        "batch_output",
+    }
+)
+
+
 @dataclass(frozen=True)
 class OperationSpec:
     id: str
@@ -1024,6 +1033,35 @@ class OperationSpec:
             return self.outputs
         return (OutputSpec("out", self.output_type),)
 
+    @property
+    def bypass_primary_input(self) -> InputSpec | None:
+        """Return the schema-defined pass-through input, when one exists.
+
+        Safe Node Bypass is a graph splice rather than an operation-specific
+        implementation.  Any ordinary operation with a static single output
+        can therefore be a candidate; the live graph performs the stricter
+        source/consumer type check before Bypass can be authored.  Sources,
+        writers, and dynamically/multiply-output operations are boundaries
+        and deliberately never expose the contract.
+        """
+
+        if (
+            self.id in SAFE_BYPASS_BOUNDARY_OPERATION_IDS
+            or self.function is None
+            or not self.has_input
+            or self.output_factory is not None
+            or len(self.output_ports) != 1
+        ):
+            return None
+        ports = self.input_ports
+        return ports[0] if ports else None
+
+    @property
+    def supports_bypass(self) -> bool:
+        """Whether this operation schema can participate in a safe splice."""
+
+        return self.bypass_primary_input is not None
+
 
 @dataclass(frozen=True)
 class SourcePayload:
@@ -1046,6 +1084,7 @@ class GraphNode:
     output_type: str
     params: dict[str, Any] = field(default_factory=dict)
     max_inputs: int | None = 1
+    execution_mode: str = "run"
 
     @property
     def has_input(self) -> bool:
@@ -1136,6 +1175,9 @@ EXECUTION_BLOCKED = "blocked"
 EXECUTION_ERROR = "error"
 EXECUTION_NOT_CALCULATED = "not_calculated"
 EXECUTION_POLICIES = {"auto", "manual"}
+NODE_EXECUTION_RUN = "run"
+NODE_EXECUTION_BYPASS = "bypass"
+NODE_EXECUTION_MODES = frozenset({NODE_EXECUTION_RUN, NODE_EXECUTION_BYPASS})
 MANUAL_RUN_CALCULATE = "calculate"
 MANUAL_RUN_SKIP = "skip"
 MANUAL_AUTO_RECALCULATE_PARAM = "_vipp_auto_recalculate"
@@ -5437,12 +5479,39 @@ _RESOLVED_SPATIAL_PARAMETER_OPERATION_IDS = frozenset(
 PALETTE_NODE_LIBRARY = NODE_LIBRARY
 
 
+def validate_node_execution_mode(
+    operation: OperationSpec,
+    value: object,
+    *,
+    context: str = "Node",
+) -> str:
+    """Return one reviewed authored execution mode or fail closed."""
+
+    if not isinstance(operation, OperationSpec):
+        raise TypeError("operation must be an OperationSpec.")
+    if not isinstance(value, str):
+        raise ValueError(f"{context} execution_mode must be text.")
+    mode = value.strip().casefold()
+    if mode not in NODE_EXECUTION_MODES:
+        choices = ", ".join(sorted(NODE_EXECUTION_MODES))
+        raise ValueError(
+            f"{context} execution_mode must be one of: {choices}."
+        )
+    if mode == NODE_EXECUTION_BYPASS and not operation.supports_bypass:
+        raise ValueError(
+            f"{context} operation {operation.id!r} is a source, writer, or "
+            "multi-output boundary and cannot be bypassed."
+        )
+    return mode
+
+
 def graph_node_from_persisted_params(
     node_id: object,
     operation_id: object,
     saved_params: object,
     *,
     index: int,
+    execution_mode: object = NODE_EXECUTION_RUN,
 ) -> GraphNode:
     """Build one graph node using current-schema parameter validation rules."""
     context = f"Node {index}"
@@ -5455,6 +5524,11 @@ def graph_node_from_persisted_params(
         raise ValueError(f"{context} requires non-empty 'id'.")
     if not isinstance(saved_params, dict):
         raise ValueError(f"Parameters for node {node_id!r} must be an object.")
+    normalized_execution_mode = validate_node_execution_mode(
+        spec,
+        execution_mode,
+        context=f"Node {node_id!r}",
+    )
 
     # Crop Stack gained explicit Z margins without a workflow schema bump.
     # Centralize the no-op defaults here so workflows, history snapshots,
@@ -5512,6 +5586,7 @@ def graph_node_from_persisted_params(
         spec.output_type,
         params,
         spec.max_inputs,
+        normalized_execution_mode,
     )
 
 
@@ -5634,8 +5709,19 @@ class PrototypePipeline:
         nodes: Iterable[GraphNode],
         connections: Iterable[GraphConnection],
         output_tunnels: Iterable[OutputTunnel] | None = None,
+        *,
+        atomic_bypass_profile: bool = False,
     ) -> None:
-        """Replace the current graph with deserialized nodes and connections."""
+        """Replace the current graph with deserialized nodes and connections.
+
+        ``atomic_bypass_profile`` is reserved for detached batch profiles whose
+        entire Run/Bypass directive set is applied and reset as one unit.  Normal
+        interactive and persisted workflow restoration must keep the stricter
+        one-step-clearability contract.
+        """
+
+        if not isinstance(atomic_bypass_profile, bool):
+            raise TypeError("atomic_bypass_profile must be a boolean.")
         node_list = list(nodes)
         connection_list = list(connections)
         tunnel_list = list(output_tunnels or ())
@@ -5647,6 +5733,7 @@ class PrototypePipeline:
                 node.operation_id,
                 node.params,
                 index=index,
+                execution_mode=node.execution_mode,
             )
             restored.nodes[validated.id] = validated
         if len(restored.nodes) != len(node_list):
@@ -5713,7 +5800,10 @@ class PrototypePipeline:
             restored._restore_output_tunnel(tunnel)
         canonical_connections: list[GraphConnection] = []
         for connection in restored.connections:
-            restored._validate_restored_connection(connection)
+            restored._validate_restored_connection(
+                connection,
+                atomic_bypass_profile=atomic_bypass_profile,
+            )
             if connection.tunnel_name:
                 declared_tunnel = restored.output_tunnel(connection.tunnel_name)
                 connection = replace(
@@ -5722,6 +5812,10 @@ class PrototypePipeline:
                 )
             canonical_connections.append(connection)
         restored.connections = canonical_connections
+        if atomic_bypass_profile:
+            restored._validate_atomic_bypass_profile()
+        else:
+            restored._validate_graph_type_invariants()
 
         for node in restored.nodes.values():
             restored._counters[node.operation_id] += 1
@@ -5837,6 +5931,17 @@ class PrototypePipeline:
             tunnel.source_id == node_id for tunnel in self.output_tunnels.values()
         )
 
+    def node_has_output_use(self, node_id: str) -> bool:
+        """Whether a node output currently feeds a wire or public tunnel."""
+
+        if node_id not in self.nodes:
+            return False
+        return any(
+            connection.source_id == node_id for connection in self.connections
+        ) or any(
+            tunnel.source_id == node_id for tunnel in self.output_tunnels.values()
+        )
+
     def connect(
         self,
         source_id: str,
@@ -5857,6 +5962,11 @@ class PrototypePipeline:
         if not 0 <= source_port < len(source_ports):
             return ConnectionResult(False, "That node does not have that output.")
         source_output_type = source_ports[source_port].output_type
+        normal_source_output_type = (
+            self._normal_output_type(source_id, source_port)
+            if self.node_is_bypassed(source_id)
+            else source_output_type
+        )
         tunnel_name = _clean_tunnel_name(tunnel_name)
         if tunnel_name:
             tunnel = self.output_tunnel(tunnel_name)
@@ -5870,6 +5980,7 @@ class PrototypePipeline:
         if self._would_create_cycle(source_id, target_id):
             return ConnectionResult(False, "Cannot connect nodes in a cycle.")
 
+        original_connections = list(self.connections)
         existing_targets = [
             existing for existing in self.connections if existing.target_id == target_id
         ]
@@ -5896,6 +6007,23 @@ class PrototypePipeline:
                     False,
                     f"That node already has {maximum} connected inputs.",
                 )
+            expected_type = self._input_type_for_port(target, port)
+            if not self._types_compatible(normal_source_output_type, expected_type):
+                return ConnectionResult(
+                    False,
+                    (
+                        f"Cannot connect while {self.nodes[source_id].title} is "
+                        f"bypassed: its normal {normal_source_output_type} output "
+                        f"cannot feed this {expected_type} input."
+                    ),
+                )
+            if port == 0 and self.node_is_bypassed(target_id):
+                bypass_reason = self._bypass_consumer_block_reason(
+                    target_id,
+                    source_output_type,
+                )
+                if bypass_reason:
+                    return ConnectionResult(False, bypass_reason)
             removed = tuple(
                 existing
                 for existing in existing_targets
@@ -5911,14 +6039,32 @@ class PrototypePipeline:
         else:
             port = 0
             expected_type = self._input_type_for_port(target, port)
-            if not self._types_compatible(source_output_type, expected_type):
+            if not self._types_compatible(
+                source_output_type,
+                expected_type,
+            ) or not self._types_compatible(
+                normal_source_output_type,
+                expected_type,
+            ):
+                source_description = f"{source_output_type} output"
+                if normal_source_output_type != source_output_type:
+                    source_description += (
+                        f" (normal output {normal_source_output_type})"
+                    )
                 return ConnectionResult(
                     False,
                     (
-                        f"Cannot connect {source_output_type} output to "
+                        f"Cannot connect {source_description} to "
                         f"{expected_type} input."
                     ),
                 )
+            if self.node_is_bypassed(target_id):
+                bypass_reason = self._bypass_consumer_block_reason(
+                    target_id,
+                    source_output_type,
+                )
+                if bypass_reason:
+                    return ConnectionResult(False, bypass_reason)
             removed = tuple(existing_targets)
             self.connections = [
                 existing
@@ -5939,6 +6085,11 @@ class PrototypePipeline:
                 connection=connection,
             )
         self.connections.append(connection)
+        try:
+            self._validate_graph_type_invariants()
+        except ValueError as exc:
+            self.connections = original_connections
+            return ConnectionResult(False, str(exc))
         return ConnectionResult(
             True,
             f"Connected input to tunnel '{tunnel_name}'."
@@ -6001,17 +6152,25 @@ class PrototypePipeline:
         current = self.output_tunnels[key]
         if rerouted == current:
             return current
-        self.output_tunnels[key] = rerouted
-        self.connections = [
-            replace(
-                connection,
-                source_id=rerouted.source_id,
-                source_port=rerouted.source_port,
-            )
-            if connection.tunnel_name == current.name
-            else connection
-            for connection in self.connections
-        ]
+        original_connections = list(self.connections)
+        original_tunnels = dict(self.output_tunnels)
+        try:
+            self.output_tunnels[key] = rerouted
+            self.connections = [
+                replace(
+                    connection,
+                    source_id=rerouted.source_id,
+                    source_port=rerouted.source_port,
+                )
+                if connection.tunnel_name == current.name
+                else connection
+                for connection in self.connections
+            ]
+            self._validate_graph_type_invariants()
+        except Exception:
+            self.connections = original_connections
+            self.output_tunnels = original_tunnels
+            raise
         return rerouted
 
     def splice_node_before_output_tunnel(
@@ -6130,6 +6289,10 @@ class PrototypePipeline:
         source_type = self.output_ports(rerouted.source_id)[
             rerouted.source_port
         ].output_type
+        normal_source_type = self._normal_output_type(
+            rerouted.source_id,
+            rerouted.source_port,
+        )
         candidate_connections: list[GraphConnection] = []
         for connection in self.connections:
             if connection.tunnel_name != current.name:
@@ -6149,6 +6312,12 @@ class PrototypePipeline:
                 raise ValueError(
                     f"Cannot reroute tunnel '{rerouted.name}': Cannot connect "
                     f"{source_type} output to {expected_type} input."
+                )
+            if not self._types_compatible(normal_source_type, expected_type):
+                raise ValueError(
+                    f"Cannot reroute tunnel '{rerouted.name}': Cannot connect "
+                    f"normal {normal_source_type} output to {expected_type} "
+                    "input; clearing Bypass must remain valid."
                 )
             candidate_connections.append(
                 replace(
@@ -6246,7 +6415,14 @@ class PrototypePipeline:
             if not 0 <= tunnel.source_port < len(source_ports):
                 continue
             source_type = source_ports[tunnel.source_port].output_type
-            if self._types_compatible(source_type, target_type):
+            normal_source_type = self._normal_output_type(
+                tunnel.source_id,
+                tunnel.source_port,
+            )
+            if self._types_compatible(
+                source_type,
+                target_type,
+            ) and self._types_compatible(normal_source_type, target_type):
                 compatible.append(tunnel)
         return tuple(compatible)
 
@@ -6375,7 +6551,12 @@ class PrototypePipeline:
             return
         self.nodes[node_id].params[MANUAL_AUTO_RECALCULATE_PARAM] = bool(enabled)
 
-    def _validate_restored_connection(self, connection: GraphConnection) -> None:
+    def _validate_restored_connection(
+        self,
+        connection: GraphConnection,
+        *,
+        atomic_bypass_profile: bool = False,
+    ) -> None:
         target = self.nodes[connection.target_id]
         if connection.source_id == connection.target_id:
             raise ValueError("Cannot restore a connection from a node to itself.")
@@ -6399,10 +6580,31 @@ class PrototypePipeline:
                 "port(s)."
             )
         source_type = source_ports[connection.source_port].output_type
+        normal_source_type = (
+            self._normal_output_type(connection.source_id, connection.source_port)
+            if self.node_is_bypassed(connection.source_id)
+            else source_type
+        )
         target_type = self._input_type_for_port(target, connection.target_port)
-        if not self._types_compatible(source_type, target_type):
+        if atomic_bypass_profile and self.node_is_bypassed(connection.target_id):
+            incompatible = False
+        elif atomic_bypass_profile:
+            incompatible = not self._types_compatible(source_type, target_type)
+        else:
+            incompatible = not self._types_compatible(
+                source_type,
+                target_type,
+            ) or not self._types_compatible(normal_source_type, target_type)
+        if incompatible and not self._scientific_output_lineage_is_unresolved(
+            connection.source_id
+        ):
+            type_label = (
+                source_type
+                if normal_source_type == source_type
+                else f"{source_type} (normal {normal_source_type})"
+            )
             raise ValueError(
-                f"Cannot restore {source_type} output to {target_type} input: "
+                f"Cannot restore {type_label} output to {target_type} input: "
                 f"{connection.source_id!r} -> {connection.target_id!r}."
             )
         if connection.tunnel_name:
@@ -6565,6 +6767,24 @@ class PrototypePipeline:
             ports = self._labeled_born_wolf_psf_ports(node_id, ports)
         return self._resolved_output_port_types(node_id, ports)
 
+    def _normal_output_type(self, node_id: str, port_index: int) -> str:
+        """Return the port type exposed when authored execution is Run."""
+
+        node = self.nodes[node_id]
+        spec = self.operation_spec(node.operation_id)
+        ports = spec.output_ports
+        if not 0 <= port_index < len(ports):
+            return node.output_type
+        if not spec.preserves_input_type:
+            return ports[port_index].output_type
+        primary = self._bypass_primary_connection(node_id)
+        if primary is None:
+            return ports[port_index].output_type
+        source_ports = self.output_ports(primary.source_id)
+        if not 0 <= primary.source_port < len(source_ports):
+            return ports[port_index].output_type
+        return source_ports[primary.source_port].output_type
+
     def inferred_dynamic_output_count(
         self,
         operation_id: str,
@@ -6607,12 +6827,27 @@ class PrototypePipeline:
         ports: tuple[OutputSpec, ...],
     ) -> tuple[OutputSpec, ...]:
         spec = self.operation_spec(self.nodes[node_id].operation_id)
-        if not spec.preserves_input_type:
+        node = self.nodes[node_id]
+        resolve_primary_type = spec.preserves_input_type or (
+            node.execution_mode == NODE_EXECUTION_BYPASS
+            and spec.supports_bypass
+            and len(ports) == 1
+        )
+        if not resolve_primary_type:
             return ports
-        connections = self._input_connections(node_id)
-        if not connections:
+        source = self._bypass_primary_connection(node_id)
+        if source is None:
+            if (
+                node.execution_mode == NODE_EXECUTION_BYPASS
+                and spec.supports_bypass
+                and len(ports) == 1
+            ):
+                # A persisted bypass may temporarily lose its primary binding.
+                # Its scientific output is then unresolved, not the operation's
+                # normal declared output.  Propagate that uncertainty through
+                # downstream bypass chains until a compatible source reconnects.
+                return (replace(ports[0], output_type="any"),)
             return ports
-        source = connections[0]
         source_ports = self.output_ports(source.source_id)
         if not 0 <= source.source_port < len(source_ports):
             return ports
@@ -6887,9 +7122,580 @@ class PrototypePipeline:
 
     def is_manual_node(self, node_id: str) -> bool:
         node = self.nodes.get(node_id)
-        if node is None:
+        if node is None or self.node_is_bypassed(node_id):
             return False
         return self.operation_spec(node.operation_id).execution_policy == "manual"
+
+    def node_is_bypassed(self, node_id: str) -> bool:
+        """Whether ``node_id`` is authored to forward its exact input."""
+
+        node = self.nodes.get(node_id)
+        return bool(
+            node is not None and node.execution_mode == NODE_EXECUTION_BYPASS
+        )
+
+    def node_bypass_block_reason(self, node_id: str) -> str:
+        """Explain why the live graph cannot safely splice ``node_id``.
+
+        The operation schema establishes only candidacy.  A live bypass also
+        needs a connected primary input (target port 0), one resolved output,
+        and an exact upstream output type that every current consumer accepts.
+        Secondary inputs are deliberately irrelevant to this scientific path.
+        """
+
+        reason = self._direct_bypass_block_reason(node_id)
+        if reason or self.node_is_bypassed(node_id):
+            return reason
+
+        # A locally compatible splice may still change the effective type seen
+        # through an already-bypassed downstream chain.  Model the candidate
+        # mode without publishing it so inspector preflight agrees with the
+        # atomic validation performed by ``set_node_execution_mode``.
+        node = self.nodes[node_id]
+        previous = node.execution_mode
+        node.execution_mode = NODE_EXECUTION_BYPASS
+        try:
+            for candidate_id in self.topological_order():
+                if not self.node_is_bypassed(candidate_id):
+                    continue
+                candidate_reason = self._direct_bypass_block_reason(candidate_id)
+                if candidate_reason:
+                    if self._bypass_primary_connection(candidate_id) is None:
+                        # Existing disconnected bypasses are a permitted editing
+                        # state and remain unresolved until explicitly rebound.
+                        continue
+                    if candidate_id == node_id:
+                        return candidate_reason
+                    return (
+                        f"Bypassing {node.title} would invalidate the existing "
+                        f"Bypass on {self.nodes[candidate_id].title}: "
+                        f"{candidate_reason}"
+                    )
+            graph_reason = self._graph_type_invariant_reason()
+            if graph_reason:
+                return (
+                    f"Bypassing {node.title} would make the graph unsafe: "
+                    f"{graph_reason}"
+                )
+        finally:
+            node.execution_mode = previous
+        return ""
+
+    def _direct_bypass_block_reason(self, node_id: str) -> str:
+        """Validate one splice against the graph's current effective types."""
+
+        node = self.nodes.get(node_id)
+        if node is None:
+            return f"Unknown node {node_id!r}."
+        operation = self.operation_spec(node.operation_id)
+        primary_spec = operation.bypass_primary_input
+        if primary_spec is None:
+            return (
+                f"{node.title} is a source, writer, or multi-output boundary "
+                "and cannot be bypassed."
+            )
+        if len(operation.output_ports) != 1:
+            return f"{node.title} does not have exactly one output."
+        primary = self._bypass_primary_connection(node_id)
+        if primary is None:
+            return (
+                f"Connect {node.title}'s primary input ({primary_spec.label}) "
+                "before bypassing it."
+            )
+        source_ports = self.output_ports(primary.source_id)
+        if not 0 <= primary.source_port < len(source_ports):
+            return f"{node.title}'s primary input references an unavailable output."
+        forwarded_type = source_ports[primary.source_port].output_type
+        return self._bypass_consumer_block_reason(node_id, forwarded_type)
+
+    def _bypass_consumer_block_reason(
+        self,
+        node_id: str,
+        forwarded_type: str,
+    ) -> str:
+        """Validate one prospective exact type against current consumers."""
+
+        node = self.nodes[node_id]
+        operation = self.operation_spec(node.operation_id)
+        normal_type = (
+            forwarded_type
+            if operation.preserves_input_type
+            else self._normal_output_type(node_id, 0)
+        )
+        for connection in self.connections:
+            if connection.source_id != node_id or connection.source_port != 0:
+                continue
+            target = self.nodes.get(connection.target_id)
+            if target is None:
+                return f"{node.title} has a downstream connection to a missing node."
+            target_type = self._input_type_for_port(target, connection.target_port)
+            if not self._types_compatible(forwarded_type, target_type):
+                return (
+                    f"Bypassing {node.title} would forward {forwarded_type} data, "
+                    f"but {target.title} input {connection.target_port + 1} "
+                    f"requires {target_type}."
+                )
+            if not self._types_compatible(normal_type, target_type):
+                return (
+                    f"{target.title} input {connection.target_port + 1} would "
+                    f"reject {node.title}'s normal {normal_type} output, so this "
+                    "connection would make Bypass impossible to clear safely."
+                )
+        return ""
+
+    def node_supports_bypass(self, node_id: str) -> bool:
+        """Whether the current graph can safely splice ``node_id`` now."""
+
+        return not self.node_bypass_block_reason(node_id)
+
+    def _validate_bypass_graph(
+        self,
+        node_id: str,
+        *,
+        allow_disconnected: bool = False,
+    ) -> None:
+        reason = self.node_bypass_block_reason(node_id)
+        if not reason:
+            return
+        if allow_disconnected and self._scientific_output_lineage_is_unresolved(
+            node_id
+        ):
+            return
+        raise ValueError(reason)
+
+    def _validate_all_bypass_graphs(self) -> None:
+        """Fail when any authored splice is incompatible with current lineage."""
+
+        for candidate_id in self.topological_order():
+            if self.node_is_bypassed(candidate_id):
+                self._validate_bypass_graph(
+                    candidate_id,
+                    allow_disconnected=True,
+                )
+
+    def _current_connection_type_block_reason(self) -> str:
+        """Return the first incompatible effective edge in the live graph."""
+
+        for connection in self.connections:
+            source = self.nodes.get(connection.source_id)
+            target = self.nodes.get(connection.target_id)
+            if source is None or target is None:
+                return "A connection references a missing node."
+            source_ports = self.output_ports(connection.source_id)
+            if not 0 <= connection.source_port < len(source_ports):
+                return (
+                    f"{source.title} output {connection.source_port + 1} "
+                    "is unavailable."
+                )
+            source_type = source_ports[connection.source_port].output_type
+            target_type = self._input_type_for_port(target, connection.target_port)
+            if not self._types_compatible(source_type, target_type):
+                if self._scientific_output_lineage_is_unresolved(
+                    connection.source_id
+                ):
+                    # Loose/disconnected nodes are an intentional graph-editing
+                    # state.  Their concrete propagated type is checked when a
+                    # required upstream edge is rebound.
+                    continue
+                return (
+                    f"{source.title} exposes {source_type} data, but {target.title} "
+                    f"input {connection.target_port + 1} requires {target_type}."
+                )
+        return ""
+
+    def _scientific_output_lineage_is_unresolved(
+        self,
+        node_id: str,
+        _visited: set[str] | None = None,
+    ) -> bool:
+        """Whether an output depends on a currently unbound required input."""
+
+        node = self.nodes.get(node_id)
+        if node is None:
+            return True
+        operation = self.operation_spec(node.operation_id)
+        if not operation.has_input:
+            return False
+        visited = set() if _visited is None else set(_visited)
+        if node_id in visited:
+            return True
+        visited.add(node_id)
+        required = self._required_input_connections(node_id)
+        if required is None:
+            return True
+        return any(
+            self._scientific_output_lineage_is_unresolved(
+                connection.source_id,
+                visited,
+            )
+            for connection in required
+        )
+
+    def _graph_type_invariant_reason(self) -> str:
+        """Validate effective types and one-step clearability of live splices."""
+
+        current_reason = self._current_connection_type_block_reason()
+        if current_reason:
+            return current_reason
+        for node_id in self.topological_order():
+            if not self.node_is_bypassed(node_id):
+                continue
+            if self._bypass_forwarding_is_unresolved(node_id):
+                # Persisted disconnected bypasses are a deliberate editing
+                # state.  Their forwarded type remains unresolved until an
+                # atomic reconnect makes the lineage concrete again.
+                continue
+            node = self.nodes[node_id]
+            previous = node.execution_mode
+            node.execution_mode = NODE_EXECUTION_RUN
+            try:
+                reason = self._current_connection_type_block_reason()
+            finally:
+                node.execution_mode = previous
+            if reason:
+                return (
+                    f"Clearing Bypass on {node.title} would make a connection "
+                    f"incompatible: {reason}"
+                )
+        return ""
+
+    def _bypass_forwarding_is_unresolved(
+        self,
+        node_id: str,
+        _visited: set[str] | None = None,
+    ) -> bool:
+        """Whether a bypass chain currently has no bound primary root."""
+
+        if not self.node_is_bypassed(node_id):
+            return False
+        visited = set() if _visited is None else set(_visited)
+        if node_id in visited:
+            return True
+        visited.add(node_id)
+        primary = self._bypass_primary_connection(node_id)
+        if primary is None:
+            return True
+        if not self.node_is_bypassed(primary.source_id):
+            return False
+        return self._bypass_forwarding_is_unresolved(primary.source_id, visited)
+
+    def _validate_graph_type_invariants(self) -> None:
+        """Fail closed unless all exact splices and edge types are reversible."""
+
+        self._validate_all_bypass_graphs()
+        reason = self._graph_type_invariant_reason()
+        if reason:
+            raise ValueError(reason)
+
+    def _validate_atomic_bypass_profile(self) -> None:
+        """Validate one detached batch profile as an inseparable mode set."""
+
+        for node_id in self.topological_order():
+            if not self.node_is_bypassed(node_id):
+                continue
+            node = self.nodes[node_id]
+            operation = self.operation_spec(node.operation_id)
+            validate_node_execution_mode(
+                operation,
+                node.execution_mode,
+                context=f"Atomic batch node {node_id!r}",
+            )
+            if self._bypass_primary_connection(node_id) is None:
+                raise ValueError(
+                    f"Atomic batch Bypass for {node.title} requires connected "
+                    "primary input port 0."
+                )
+            if len(self.output_ports(node_id)) != 1:
+                raise ValueError(
+                    f"Atomic batch Bypass for {node.title} requires one output."
+                )
+        for connection in self.connections:
+            if self.node_is_bypassed(connection.target_id):
+                # Port 0 is the contracted splice edge; secondary ports are
+                # presentation-only.  Neither participates in final science.
+                continue
+            source = self.nodes[connection.source_id]
+            target = self.nodes[connection.target_id]
+            source_ports = self.output_ports(connection.source_id)
+            if not 0 <= connection.source_port < len(source_ports):
+                raise ValueError(
+                    f"Atomic batch profile references unavailable output "
+                    f"{connection.source_port + 1} on {source.title}."
+                )
+            source_type = source_ports[connection.source_port].output_type
+            target_type = self._input_type_for_port(target, connection.target_port)
+            if not self._types_compatible(source_type, target_type):
+                raise ValueError(
+                    f"Atomic batch profile forwards {source_type} data from "
+                    f"{source.title}, but {target.title} input "
+                    f"{connection.target_port + 1} requires {target_type}."
+                )
+
+    def set_node_execution_mode(self, node_id: str, mode: object) -> bool:
+        """Set reviewed authored Run/Bypass intent and invalidate its branch."""
+
+        try:
+            node = self.nodes[node_id]
+        except KeyError as exc:
+            raise KeyError(f"Unknown node {node_id!r}.") from exc
+        normalized = validate_node_execution_mode(
+            self.operation_spec(node.operation_id),
+            mode,
+            context=f"Node {node_id!r}",
+        )
+        if normalized == node.execution_mode:
+            return False
+        if normalized == NODE_EXECUTION_BYPASS:
+            self._validate_bypass_graph(node_id)
+        previous = node.execution_mode
+        node.execution_mode = normalized
+        try:
+            self._validate_graph_type_invariants()
+        except ValueError as exc:
+            node.execution_mode = previous
+            action = (
+                "Clearing Bypass on"
+                if previous == NODE_EXECUTION_BYPASS
+                else "Bypassing"
+            )
+            raise ValueError(f"{action} {node.title} is unsafe: {exc}") from exc
+        affected = self.descendants_inclusive({node_id})
+        self.completed_node_ids.difference_update(affected)
+        for affected_node_id in affected:
+            self.node_compute_provenance.pop(affected_node_id, None)
+            self.node_cache_lineage.pop(affected_node_id, None)
+        self.mark_nodes_stale(
+            affected,
+            message=(
+                f"'{node.title}' execution changed to "
+                f"{normalized.capitalize()}. Recalculate to refresh this branch."
+            ),
+        )
+        return True
+
+    def restore_node_execution_mode(self, node_id: str, mode: object) -> bool:
+        """Materialize trusted persisted mode intent during disconnected staging.
+
+        Unlike the user-facing setter, this permits a validated Bypass intent
+        while its primary input lineage is temporarily unbound (for graph
+        restore, fragment paste, duplicate, or undo staging).  Any connected
+        graph still has to satisfy the full effective-type and one-step-clear
+        invariants atomically.  Callers must not use this to bypass interactive
+        eligibility checks.
+        """
+
+        return bool(self.restore_node_execution_modes({node_id: mode}))
+
+    def restore_node_execution_modes(
+        self,
+        modes: Mapping[str, object],
+    ) -> frozenset[str]:
+        """Atomically materialize multiple trusted persisted mode intents.
+
+        Validation occurs once against the completed staged profile, avoiding
+        order-dependent transient failures while a pasted fragment is loose.
+        The returned IDs are exactly those whose mode changed.
+        """
+
+        if not isinstance(modes, Mapping):
+            raise TypeError("Restored node execution modes must be a mapping.")
+        normalized_modes: dict[str, str] = {}
+        for raw_node_id, mode in modes.items():
+            node_id = str(raw_node_id).strip()
+            if not node_id or node_id not in self.nodes:
+                raise KeyError(f"Unknown node {node_id!r}.")
+            node = self.nodes[node_id]
+            normalized_modes[node_id] = validate_node_execution_mode(
+                self.operation_spec(node.operation_id),
+                mode,
+                context=f"Restored node {node_id!r}",
+            )
+        changed = frozenset(
+            node_id
+            for node_id, mode in normalized_modes.items()
+            if self.nodes[node_id].execution_mode != mode
+        )
+        if not changed:
+            return frozenset()
+        previous = {
+            node_id: self.nodes[node_id].execution_mode for node_id in changed
+        }
+        for node_id in changed:
+            self.nodes[node_id].execution_mode = normalized_modes[node_id]
+        try:
+            self._validate_graph_type_invariants()
+        except ValueError:
+            for node_id, mode in previous.items():
+                self.nodes[node_id].execution_mode = mode
+            raise
+        affected = self.descendants_inclusive(changed)
+        self.completed_node_ids.difference_update(affected)
+        for affected_node_id in affected:
+            self.node_compute_provenance.pop(affected_node_id, None)
+            self.node_cache_lineage.pop(affected_node_id, None)
+        self.mark_nodes_stale(
+            affected,
+            message=(
+                "Restored node execution modes changed. Recalculate to refresh "
+                "this branch."
+            ),
+        )
+        return changed
+
+    def apply_atomic_node_execution_profile(
+        self,
+        modes: Mapping[str, object],
+    ) -> frozenset[str]:
+        """Apply a detached batch mode profile and validate only its final graph.
+
+        This is intentionally not an interactive setter.  The whole profile is
+        reset as one unit, so intermediate modes and individual checkbox
+        clearability are outside its contract.
+        """
+
+        if not isinstance(modes, Mapping):
+            raise TypeError("Atomic node execution profile must be a mapping.")
+        normalized_modes: dict[str, str] = {}
+        for raw_node_id, mode in modes.items():
+            node_id = str(raw_node_id).strip()
+            if not node_id or node_id not in self.nodes:
+                raise KeyError(f"Unknown node {node_id!r}.")
+            node = self.nodes[node_id]
+            normalized_modes[node_id] = validate_node_execution_mode(
+                self.operation_spec(node.operation_id),
+                mode,
+                context=f"Atomic batch node {node_id!r}",
+            )
+        changed = frozenset(
+            node_id
+            for node_id, mode in normalized_modes.items()
+            if self.nodes[node_id].execution_mode != mode
+        )
+        if not changed:
+            self._validate_atomic_bypass_profile()
+            return frozenset()
+        previous = {
+            node_id: self.nodes[node_id].execution_mode for node_id in changed
+        }
+        for node_id in changed:
+            self.nodes[node_id].execution_mode = normalized_modes[node_id]
+        try:
+            self._validate_atomic_bypass_profile()
+        except ValueError:
+            for node_id, mode in previous.items():
+                self.nodes[node_id].execution_mode = mode
+            raise
+        return changed
+
+    def bypass_node_results(
+        self,
+        node_id: str,
+        inputs: tuple[Any, ...] | None = None,
+        input_states: tuple[ImageState | TableState | None, ...] | None = None,
+    ) -> list[tuple[Any, ImageState | TableState | None]]:
+        """Alias one exact input value/state to an approved bypass output."""
+
+        node = self.nodes[node_id]
+        spec = self.operation_spec(node.operation_id)
+        validate_node_execution_mode(
+            spec,
+            node.execution_mode,
+            context=f"Node {node_id!r}",
+        )
+        if node.execution_mode != NODE_EXECUTION_BYPASS:
+            raise ValueError(f"Node {node_id!r} is not bypassed.")
+        primary = self._bypass_primary_connection(node_id)
+        if primary is None or len(self.output_ports(node_id)) != 1:
+            raise ValueError(
+                f"Bypassed node {node_id!r} requires connected primary input "
+                "port 0 and exactly one output."
+            )
+        if inputs is None:
+            values = self.node_outputs.get(primary.source_id, ())
+            states = self.node_output_states.get(primary.source_id, ())
+            if primary.source_port >= len(values):
+                return [(None, None)]
+            primary_value = values[primary.source_port]
+            primary_state = (
+                states[primary.source_port]
+                if primary.source_port < len(states)
+                else None
+            )
+        else:
+            inputs = tuple(inputs)
+            connections = self._input_connections(node_id)
+            primary_index = next(
+                (
+                    index
+                    for index, connection in enumerate(connections)
+                    if connection.target_port == 0
+                ),
+                None,
+            )
+            if len(inputs) == 1:
+                primary_index = 0
+            if primary_index is None or primary_index >= len(inputs):
+                raise ValueError(
+                    f"Bypassed node {node_id!r} did not receive primary input port 0."
+                )
+            primary_value = inputs[primary_index]
+            if input_states is None:
+                primary_state = None
+            else:
+                input_states = tuple(input_states)
+                if len(input_states) not in {1, len(inputs)}:
+                    raise ValueError(
+                        f"Bypassed node {node_id!r} received mismatched input states."
+                    )
+                state_index = 0 if len(input_states) == 1 else primary_index
+                primary_state = input_states[state_index]
+        return [(primary_value, primary_state)]
+
+    def prepare_bypass_call(
+        self,
+        node_id: str,
+        inputs: tuple[Any, ...] | None = None,
+        input_states: tuple[ImageState | TableState | None, ...] | None = None,
+    ) -> PreparedNodeCall:
+        """Describe an approved alias without validating inactive parameters."""
+
+        node = self.nodes[node_id]
+        spec = self.operation_spec(node.operation_id)
+        validate_node_execution_mode(
+            spec,
+            node.execution_mode,
+            context=f"Node {node_id!r}",
+        )
+        if node.execution_mode != NODE_EXECUTION_BYPASS:
+            raise ValueError(f"Node {node_id!r} is not bypassed.")
+        primary = self._bypass_primary_connection(node_id)
+        if primary is None or len(self.output_ports(node_id)) != 1:
+            raise ValueError(
+                f"Bypassed node {node_id!r} requires connected primary input "
+                "port 0 and exactly one output."
+            )
+        if inputs is None:
+            results = self.bypass_node_results(node_id)
+            primary_input = results[0][0]
+            primary_state = results[0][1]
+        else:
+            results = self.bypass_node_results(
+                node_id,
+                tuple(inputs),
+                None if input_states is None else tuple(input_states),
+            )
+            primary_input = results[0][0]
+            primary_state = results[0][1]
+        return PreparedNodeCall(
+            node_id=node_id,
+            operation_id=node.operation_id,
+            cpu_function=_bypass_identity,
+            inputs=(primary_input,),
+            input_states=(primary_state,),
+            kwargs={},
+            multiple_inputs=False,
+            output_port_count=1,
+        )
 
     def manual_node_ids(self) -> set[str]:
         return {node_id for node_id in self.nodes if self.is_manual_node(node_id)}
@@ -7106,6 +7912,9 @@ class PrototypePipeline:
         connections = self._input_connections(node_id)
         if not connections:
             return None
+        if self.node_is_bypassed(node_id):
+            primary = self._bypass_primary_connection(node_id)
+            return None if primary is None else (primary,)
         if not self._node_accepts_multiple_inputs(node):
             return (connections[0],)
         connected_ports = {
@@ -7689,6 +8498,8 @@ class PrototypePipeline:
                         source_payloads,
                         defer_statistics=True,
                     )
+                elif self.node_is_bypassed(node_id):
+                    results = self.bypass_node_results(node_id)
                 else:
                     call = self.prepare_node_call(
                         node_id,
@@ -8474,6 +9285,66 @@ class PrototypePipeline:
         self.node_compute_provenance.pop(node_id, None)
 
     def descendants_inclusive(self, node_ids: Iterable[str]) -> set[str]:
+        """Return scientific descendants, excluding ignored bypass inputs."""
+
+        return self._descendants_inclusive(
+            node_ids,
+            include_bypass_secondary_inputs=False,
+        )
+
+    def presentation_descendants_inclusive(
+        self,
+        node_ids: Iterable[str],
+    ) -> set[str]:
+        """Return authored descendants including presentation-only inputs.
+
+        Secondary inputs of a bypassed multi-input node do not affect its
+        scientific alias or downstream results, but they do affect the card's
+        would-run presentation shadow.
+        """
+
+        return self._descendants_inclusive(
+            node_ids,
+            include_bypass_secondary_inputs=True,
+        )
+
+    def presentation_shadow_nodes_affected_by(
+        self,
+        node_ids: Iterable[str],
+    ) -> set[str]:
+        """Return bypass cards whose would-run inputs depend on ``node_ids``.
+
+        A change entering a bypass through primary port 0 also changes its exact
+        scientific alias, so traversal continues downstream.  A change entering
+        only through a secondary port changes that node's presentation shadow
+        but stops there because the shadow is never published downstream.
+        """
+
+        roots = {node_id for node_id in node_ids if node_id in self.nodes}
+        shadows = {node_id for node_id in roots if self.node_is_bypassed(node_id)}
+        pending = list(roots)
+        visited = set(roots)
+        while pending:
+            source_id = pending.pop(0)
+            for connection in self.connections:
+                if connection.source_id != source_id:
+                    continue
+                target_id = connection.target_id
+                if self.node_is_bypassed(target_id):
+                    shadows.add(target_id)
+                    if connection.target_port != 0:
+                        continue
+                if target_id not in visited:
+                    visited.add(target_id)
+                    pending.append(target_id)
+        return shadows
+
+    def _descendants_inclusive(
+        self,
+        node_ids: Iterable[str],
+        *,
+        include_bypass_secondary_inputs: bool,
+    ) -> set[str]:
         targets = {node_id for node_id in node_ids if node_id in self.nodes}
         if not targets:
             return set()
@@ -8482,6 +9353,12 @@ class PrototypePipeline:
         while changed:
             changed = False
             for connection in self.connections:
+                if (
+                    not include_bypass_secondary_inputs
+                    and self.node_is_bypassed(connection.target_id)
+                    and connection.target_port != 0
+                ):
+                    continue
                 if (
                     connection.source_id in descendants
                     and connection.target_id not in descendants
@@ -8499,6 +9376,11 @@ class PrototypePipeline:
         while changed:
             changed = False
             for connection in self.connections:
+                if (
+                    self.node_is_bypassed(connection.target_id)
+                    and connection.target_port != 0
+                ):
+                    continue
                 if (
                     connection.target_id in ancestors
                     and connection.source_id not in ancestors
@@ -8584,6 +9466,9 @@ class PrototypePipeline:
                 input_name,
                 source_payloads,
             )
+
+        if self.node_is_bypassed(node_id):
+            return self.bypass_node_results(node_id)
 
         call = self.prepare_node_call(
             node_id,
@@ -9406,7 +10291,10 @@ class PrototypePipeline:
         }
 
     def _input_sources(self, node_id: str) -> list[str]:
-        return [connection.source_id for connection in self._input_connections(node_id)]
+        return [
+            connection.source_id
+            for connection in self._scientific_input_connections(node_id)
+        ]
 
     def _input_connections(self, node_id: str) -> list[GraphConnection]:
         return sorted(
@@ -9417,6 +10305,32 @@ class PrototypePipeline:
             ),
             key=lambda connection: connection.target_port,
         )
+
+    def _bypass_primary_connection(
+        self,
+        node_id: str,
+    ) -> GraphConnection | None:
+        """Return the unique target-port-0 connection for a bypass splice."""
+
+        primary = tuple(
+            connection
+            for connection in self.connections
+            if connection.target_id == node_id and connection.target_port == 0
+        )
+        return primary[0] if len(primary) == 1 else None
+
+    def _scientific_input_connections(
+        self,
+        node_id: str,
+    ) -> list[GraphConnection]:
+        """Return inputs that contribute to the authored scientific result."""
+
+        connections = self._input_connections(node_id)
+        if not self.node_is_bypassed(node_id):
+            return connections
+        return [
+            connection for connection in connections if connection.target_port == 0
+        ]
 
     def input_port_count(self, node_id: str) -> int:
         node = self.nodes.get(node_id)
@@ -10303,7 +11217,14 @@ def _clone_node(node: GraphNode) -> GraphNode:
         node.output_type,
         dict(node.params),
         node.max_inputs,
+        node.execution_mode,
     )
+
+
+def _bypass_identity(value: Any) -> Any:
+    """CPU fallback seam for an already validated bypass alias."""
+
+    return value
 
 
 def _clean_tunnel_name(name: str) -> str:

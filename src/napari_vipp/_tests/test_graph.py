@@ -3,9 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt
-from qtpy.QtGui import QImage, QPainter, QPainterPath
+from qtpy.QtGui import QColor, QImage, QPainter, QPainterPath
 
 from napari_vipp._graph import (
+    BYPASSED_NODE_OPACITY,
+    BYPASSED_NODE_OUTLINE,
+    BYPASSED_NODE_PASS_THROUGH,
     STALE_EXECUTION_ACCENT,
     ComputeBadgeKind,
     PipelineGraphView,
@@ -13,7 +16,7 @@ from napari_vipp._graph import (
     _wire_path,
 )
 from napari_vipp._theme import category_color, category_tint
-from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
 
 
 def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
@@ -39,6 +42,188 @@ def test_node_subtitle_is_elided_but_keeps_complete_binding_tooltip(qtbot):
     assert label.isVisible()
     assert label.text() != binding
     assert "…" in label.text()
+
+
+def test_node_card_shows_and_updates_authored_bypass_badge(qtbot):
+    pipeline = PrototypePipeline()
+    source = pipeline.add_node("input")
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect(source.id, crop.id).success
+    pipeline.set_node_execution_mode(crop.id, "bypass")
+    view = PipelineGraphView()
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+
+    card = view._cards[crop.id]
+    assert card._bypassed
+    assert card._compute_badge_kind is ComputeBadgeKind.BYPASSED
+    assert card.compute_badge.text() == "Bypassed"
+    assert not card.compute_badge.isHidden()
+    assert not card._bypass_overlay.isHidden()
+    assert card._bypass_overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+    assert card._bypass_overlay.focusPolicy() == Qt.NoFocus
+    assert view._proxies[crop.id].opacity() == pytest.approx(
+        BYPASSED_NODE_OPACITY
+    )
+    assert "exact primary input" in card.compute_badge.toolTip()
+    outline_pen = card._bypass_outline_pen()
+    assert outline_pen.color() == QColor(BYPASSED_NODE_OUTLINE)
+    assert outline_pen.style() == Qt.DotLine
+    assert outline_pen.widthF() == pytest.approx(3.0)
+    assert outline_pen.isCosmetic()
+    pass_through_pen = card._bypass_pass_through_pen()
+    assert pass_through_pen.color().name() == BYPASSED_NODE_PASS_THROUGH
+    assert pass_through_pen.color().alpha() < 255
+    assert pass_through_pen.style() == Qt.SolidLine
+    assert pass_through_pen.isCosmetic()
+    card.resize(card.sizeHint())
+    card.show()
+    rendered = QImage(card.size(), QImage.Format_ARGB32)
+    rendered.fill(QColor("#000000"))
+    card.render(rendered)
+    outline_rgb = QColor(BYPASSED_NODE_OUTLINE).rgb()
+    outline_pixels = sum(
+        QColor.fromRgb(rendered.pixel(x, y)).rgb() == outline_rgb
+        for y in range(rendered.height())
+        for x in range(rendered.width())
+    )
+    assert outline_pixels > 50
+    center_y = rendered.height() // 2
+    pass_through_pixels = sum(
+        (
+            QColor.fromRgb(rendered.pixel(x, y)).green()
+            - QColor.fromRgb(rendered.pixel(x, y)).red()
+            > 35
+        )
+        and (
+            QColor.fromRgb(rendered.pixel(x, y)).blue()
+            - QColor.fromRgb(rendered.pixel(x, y)).red()
+            > 35
+        )
+        for y in range(center_y - 1, center_y + 2)
+        for x in range(rendered.width())
+    )
+    assert pass_through_pixels > rendered.width()
+
+    view.set_node_bypassed(crop.id, False)
+
+    assert not card._bypassed
+    assert card.compute_badge.isHidden()
+    assert card._bypass_overlay.isHidden()
+    assert view._proxies[crop.id].opacity() == pytest.approx(1.0)
+
+
+def test_bypass_fade_preserves_selected_pinned_and_error_cues(qtbot):
+    pipeline = PrototypePipeline()
+    source = pipeline.add_node("input")
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect(source.id, crop.id).success
+    pipeline.set_node_execution_mode(crop.id, "bypass")
+    view = PipelineGraphView()
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+    card = view._cards[crop.id]
+    proxy = view._proxies[crop.id]
+
+    card.set_selected(True)
+    assert "#60a5fa" in card.styleSheet()
+    assert proxy.opacity() == pytest.approx(BYPASSED_NODE_OPACITY)
+
+    card.set_pinned(True)
+    assert "#facc15" in card.styleSheet()
+    assert proxy.opacity() == pytest.approx(BYPASSED_NODE_OPACITY)
+
+    card.set_pinned(False)
+    card.set_execution_state("error", manual=True, message="Expected test error")
+    assert "#ef4444" in card.styleSheet()
+    assert proxy.opacity() == pytest.approx(BYPASSED_NODE_OPACITY)
+
+
+def test_incrementally_added_bypassed_node_is_faded_immediately(qtbot):
+    pipeline = PrototypePipeline()
+    source = pipeline.add_node("input")
+    view = PipelineGraphView()
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect(source.id, crop.id).success
+    pipeline.set_node_execution_mode(crop.id, "bypass")
+
+    view.add_node(crop, QPointF(330, -220))
+
+    assert view._cards[crop.id]._bypassed
+    assert view._proxies[crop.id].opacity() == pytest.approx(
+        BYPASSED_NODE_OPACITY
+    )
+
+
+def test_node_context_menu_toggles_reviewed_bypass_mode(qtbot, monkeypatch):
+    pipeline = PrototypePipeline()
+    source = pipeline.add_node("input")
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect(source.id, crop.id).success
+    pipeline.add_output_tunnel("Crop result", crop.id, 0)
+    view = PipelineGraphView()
+    view.build_graph(
+        pipeline.nodes.values(),
+        pipeline.connections,
+        output_tunnels=pipeline.output_tunnel_list(),
+    )
+    qtbot.addWidget(view)
+    requested = []
+    menu_states = []
+    menu_enabled = []
+    view.node_bypass_requested.connect(
+        lambda node_id, bypassed: requested.append((node_id, bypassed))
+    )
+
+    def fake_exec(menu, _pos):
+        action = next(
+            action for action in menu.actions() if action.text() == "Bypass node"
+        )
+        menu_states.append(action.isChecked())
+        menu_enabled.append(action.isEnabled())
+        return action
+
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", fake_exec)
+
+    view._show_node_context_menu(crop.id, QPoint(0, 0))
+    view.set_node_bypassed(crop.id, True)
+    view._show_node_context_menu(crop.id, QPoint(0, 0))
+
+    assert menu_states == [False, True]
+    assert menu_enabled == [True, True]
+    assert requested == [(crop.id, True), (crop.id, False)]
+
+
+def test_node_context_bypass_is_disabled_at_terminal_but_can_clear(qtbot):
+    pipeline = PrototypePipeline()
+    source = pipeline.add_node("input")
+    median = pipeline.add_node("median_filter")
+    assert pipeline.connect(source.id, median.id).success
+    view = PipelineGraphView()
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+    operation = NODE_LIBRARY_BY_ID[median.operation_id]
+
+    visible, enabled, tooltip = view._node_bypass_action_state(
+        median.id,
+        operation,
+        bypassed=False,
+    )
+
+    assert visible
+    assert not enabled
+    assert "no downstream connection or output tunnel" in tooltip.casefold()
+
+    view.set_node_bypassed(median.id, True)
+    _visible, enabled, tooltip = view._node_bypass_action_state(
+        median.id,
+        operation,
+        bypassed=True,
+    )
+    assert enabled
+    assert "clear bypass" in tooltip.casefold()
 
 
 def test_dragging_output_tunnel_badge_requests_source_reroute(qtbot):
@@ -713,10 +898,11 @@ def test_node_context_menu_emits_requested_action(qtbot, monkeypatch):
         "Copy node",
         "Paste values",
         "Delete",
-        "Inspect Code",
-        "Duplicate Node",
-        "Add note",
-        "Tune node in isolation",
+            "Inspect Code",
+            "Duplicate Node",
+            "Add note",
+            "Bypass node",
+            "Tune node in isolation",
         "Pin",
     ]
     assert deleted == ["threshold"]

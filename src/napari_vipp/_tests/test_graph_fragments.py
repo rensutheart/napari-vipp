@@ -46,7 +46,7 @@ def test_mime_type_and_schema_identity_are_stable() -> None:
         "application/x-napari-vipp-graph-fragment+json"
     )
     assert GRAPH_FRAGMENT_KIND == "napari-vipp-graph-fragment"
-    assert GRAPH_FRAGMENT_VERSION == 1
+    assert GRAPH_FRAGMENT_VERSION == 2
 
 
 def test_capture_roundtrip_uses_local_keys_and_relative_positions() -> None:

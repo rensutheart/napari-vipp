@@ -49,7 +49,7 @@ from napari_vipp.core.pipeline import (
 )
 from napari_vipp.core.source_identity import capture_local_source_identity
 from napari_vipp.core.source_item_persistence import SOURCE_ITEM_PARAMETER
-from napari_vipp.core.workflow import serialize_workflow
+from napari_vipp.core.workflow import WORKFLOW_VERSION, serialize_workflow
 
 
 def _starter_pipeline() -> PrototypePipeline:
@@ -2736,7 +2736,7 @@ def test_export_preserves_segmentation_bridge_custom_implementation_ids():
     exec(compile(code, "<exported>", "exec"), namespace)
     embedded = json.loads(namespace["_WORKFLOW_JSON"])
 
-    assert embedded["version"] == 5
+    assert embedded["version"] == WORKFLOW_VERSION
     assert embedded["execution"]["compute"]["node_preferences"] == {
         extract.id: "implementation:cupy-extract-channel-view-v1",
         threshold.id: "implementation:cupy-binary-threshold-f32-exact-v1",

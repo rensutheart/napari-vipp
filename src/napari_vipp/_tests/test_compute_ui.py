@@ -57,6 +57,20 @@ def _decision(
     )
 
 
+def _bypass_decision(node_id: str = "crop") -> NodeExecutionDecision:
+    return NodeExecutionDecision(
+        node_id,
+        "crop_stack",
+        NodeComputePreference("best_gpu"),
+        "vipp-bypass",
+        "vipp-alias",
+        "vipp-safe-bypass-v1",
+        DecisionKind.BYPASSED,
+        DecisionReason.BYPASSED,
+        "The exact input was forwarded without executing an implementation.",
+    )
+
+
 def _gpu_environment() -> ComputeEnvironment:
     return ComputeEnvironment(
         runtime_ids=("cpu-numpy", "cuda-cupy"),
@@ -122,6 +136,19 @@ def test_custom_intent_compatibility_keeps_actual_provenance_separate():
         mismatching,
         (cpu, gpu),
         previous_request=ComputeRequest(mode="prefer_gpu"),
+    )
+
+
+def test_custom_compute_preference_is_dormant_for_a_bypassed_node():
+    request = ComputeRequest(
+        mode="custom",
+        node_preferences={"crop": "implementation:missing-gpu-pin"},
+    )
+
+    assert custom_request_satisfied_by_actual_decisions(
+        request,
+        (_bypass_decision(),),
+        previous_request=ComputeRequest(mode="custom"),
     )
 
 
@@ -446,6 +473,19 @@ def test_actual_public_gpu_decision_has_normal_provider_badge():
     assert "Experimental GPU implementation" not in badge.tooltip
 
 
+def test_bypass_decision_has_neutral_no_compute_badge():
+    badge = actual_decision_badge(
+        _bypass_decision(),
+        environment=_gpu_environment(),
+    )
+
+    assert badge.text == "Bypassed"
+    assert badge.tone is ComputePresentationTone.NEUTRAL
+    assert badge.experimental is False
+    assert "without running a CPU or GPU implementation" in badge.tooltip
+    assert "Test RTX" not in badge.tooltip
+
+
 def test_actual_hidden_gpu_decision_keeps_experimental_provider_badge(monkeypatch):
     public = compute_ui_module.compute_specs_for(
         "median_filter",
@@ -625,6 +665,50 @@ def test_toolbar_summary_reports_mixed_actual_run_and_fallback():
 
     assert summary.text == "Auto · 1 GPU / 2 CPU · 1 fallback"
     assert summary.tone is ComputePresentationTone.FALLBACK
+
+
+def test_toolbar_summary_reports_bypass_without_counting_it_as_gpu_or_cpu():
+    request = ComputeRequest(mode="prefer_gpu")
+    gpu = _decision(
+        node_id="median",
+        operation_id="median_filter",
+        runtime_id="cuda-cupy",
+        library_id="cupy",
+        implementation_id="cupy-median-filter-v1",
+    )
+    report = ExecutionReport(
+        request,
+        _gpu_environment(),
+        actual_decisions=(gpu, _bypass_decision()),
+    )
+
+    summary = compute_toolbar_summary(request, report)
+
+    assert summary.text == "Prefer GPU · 1 GPU / 0 CPU · 1 bypassed"
+    assert summary.tone is ComputePresentationTone.GPU
+    assert (
+        summary.gpu_nodes,
+        summary.cpu_nodes,
+        summary.fallback_nodes,
+        summary.bypass_nodes,
+    ) == (1, 0, 0, 1)
+    assert "1 bypassed" in summary.tooltip
+
+
+def test_toolbar_summary_keeps_bypass_only_status_neutral():
+    request = ComputeRequest(mode="prefer_gpu")
+    report = ExecutionReport(
+        request,
+        _gpu_environment(),
+        actual_decisions=(_bypass_decision(),),
+    )
+
+    summary = compute_toolbar_summary(request, report)
+
+    assert summary.text == "Prefer GPU · 1 bypassed"
+    assert summary.tone is ComputePresentationTone.NEUTRAL
+    assert (summary.gpu_nodes, summary.cpu_nodes, summary.bypass_nodes) == (0, 0, 1)
+    assert "GPU unavailable" not in summary.tooltip
 
 
 def test_toolbar_summary_keeps_cpu_only_auto_run_compact():

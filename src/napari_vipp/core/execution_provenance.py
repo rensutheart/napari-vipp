@@ -109,10 +109,18 @@ def serialize_execution_provenance(
         cached = cached_by_node.get(node_id)
         decision = decisions_by_node.get(node_id)
         if decision is None:
-            decision = _cpu_decision(
-                request,
-                node_id=node_id,
-                operation_id=operation_id,
+            decision = (
+                _bypass_decision(
+                    request,
+                    node_id=node_id,
+                    operation_id=operation_id,
+                )
+                if pipeline.node_is_bypassed(node_id)
+                else _cpu_decision(
+                    request,
+                    node_id=node_id,
+                    operation_id=operation_id,
+                )
             )
         identity = _actual_identity(
             decision,
@@ -122,6 +130,8 @@ def serialize_execution_provenance(
         record = {
             "node_id": node_id,
             "operation_id": operation_id,
+            "execution_mode": node.execution_mode,
+            "bypassed": decision.decision_kind is DecisionKind.BYPASSED,
             "requested_preference": decision.requested_preference.as_dict(),
             "actual_implementation": identity,
             "decision_kind": decision.decision_kind.value,
@@ -329,6 +339,18 @@ def _actual_identity(
             "cache_equivalence_group": cached_identity.cache_equivalence_group,
         }
 
+    if decision.decision_kind is DecisionKind.BYPASSED:
+        return {
+            "identity_complete": True,
+            "runtime_id": "vipp-bypass",
+            "array_domain": "resident-alias",
+            "implementation_library_id": "vipp-alias",
+            "implementation_id": "vipp-safe-bypass-v1",
+            "implementation_version": "1",
+            "parity_policy_id": "exact-unary-alias-v1",
+            "cache_equivalence_group": "",
+        }
+
     spec = specs.get(
         (
             decision.operation_id,
@@ -392,6 +414,29 @@ def _cpu_decision(
         ),
         fallback_reason=FallbackReason.NONE,
         implementation_version="1",
+    )
+
+
+def _bypass_decision(
+    request: ComputeRequest,
+    *,
+    node_id: str,
+    operation_id: str,
+) -> NodeExecutionDecision:
+    return NodeExecutionDecision(
+        node_id=node_id,
+        operation_id=operation_id,
+        requested_preference=request.preference_for(node_id),
+        runtime_id="vipp-bypass",
+        implementation_library_id="vipp-alias",
+        implementation_id="vipp-safe-bypass-v1",
+        implementation_version="1",
+        decision_kind=DecisionKind.BYPASSED,
+        reason=DecisionReason.BYPASSED,
+        reason_text=(
+            "Safe Node Bypass forwarded the exact input without invoking the "
+            "operation."
+        ),
     )
 
 

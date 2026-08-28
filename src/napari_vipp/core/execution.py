@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
@@ -45,6 +45,7 @@ from napari_vipp.core.compute import (
 )
 from napari_vipp.core.compute_cache import (
     CachedNodeComputeProvenance,
+    build_cached_bypass_provenance,
     build_cached_node_compute_provenance,
     build_cached_source_provenance,
     cached_node_provenance_matches,
@@ -86,10 +87,13 @@ from napari_vipp.core.host_memory import (
 from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.pipeline import (
     EXECUTION_RUNNING,
+    MANUAL_RUN_CALCULATE,
     MANUAL_RUN_SKIP,
+    NODE_EXECUTION_RUN,
     PrototypePipeline,
     SourcePayload,
 )
+from napari_vipp.core.presentation import crop_stack_presentation_view
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.source_identity import (
     is_vipp_owned_immutable_source_revision,
@@ -545,6 +549,16 @@ class PipelineRunRequest:
     resident_thumbnail_statistics_request: ResidentThumbnailStatisticsRequest | None = (
         field(default=None, repr=False, compare=False)
     )
+    presentation_shadow_node_ids: frozenset[str] = field(
+        default=frozenset(),
+        repr=False,
+        compare=False,
+    )
+    atomic_bypass_profile: bool = field(
+        default=False,
+        repr=False,
+        compare=False,
+    )
     device_execution_telemetry: DeviceExecutionTelemetryConfig | None = field(
         default=None,
         repr=False,
@@ -670,6 +684,20 @@ class PipelineRunRequest:
                 "resident_thumbnail_statistics_request must be a "
                 "ResidentThumbnailStatisticsRequest or None."
             )
+        shadow_node_ids = frozenset(
+            str(node_id).strip() for node_id in self.presentation_shadow_node_ids
+        )
+        if any(not node_id for node_id in shadow_node_ids):
+            raise ValueError(
+                "presentation_shadow_node_ids must not contain empty values."
+            )
+        object.__setattr__(
+            self,
+            "presentation_shadow_node_ids",
+            shadow_node_ids,
+        )
+        if not isinstance(self.atomic_bypass_profile, bool):
+            raise TypeError("atomic_bypass_profile must be a boolean.")
         device_telemetry = self.device_execution_telemetry
         if device_telemetry is not None and not isinstance(
             device_telemetry,
@@ -946,7 +974,6 @@ class PipelineNodeResult:
         ResidentThumbnailStatisticsObservation,
         ...,
     ] = ()
-
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
@@ -961,11 +988,69 @@ class PipelineNodeResult:
 NodeFinishedCallback = Callable[[PipelineNodeResult], None]
 
 
+@dataclass(frozen=True, slots=True)
+class PipelinePresentationShadowResult:
+    """Presentation-only what-if result for one effectively bypassed node.
+
+    This type is deliberately separate from :class:`PipelineNodeResult` so no
+    scientific cache, batch/export path, or provenance consumer can mistake a
+    shadow for the node's authoritative exact-alias output.
+    """
+
+    run_id: int
+    node_id: str
+    operation_id: str
+    output: object = field(default=None, repr=False, compare=False)
+    output_state: object = field(default=None, repr=False, compare=False)
+    node_outputs: tuple[object, ...] = field(default=(), repr=False, compare=False)
+    node_output_states: tuple[object, ...] = field(
+        default=(),
+        repr=False,
+        compare=False,
+    )
+    error: str = ""
+    source_revisions: tuple[object, ...] = ()
+
+    def __post_init__(self) -> None:
+        node_id = str(self.node_id).strip()
+        operation_id = str(self.operation_id).strip()
+        if not node_id or not operation_id:
+            raise ValueError("Presentation shadow identifiers must not be empty.")
+        outputs = tuple(self.node_outputs)
+        states = tuple(self.node_output_states)
+        if len(outputs) != len(states):
+            raise ValueError(
+                "Presentation shadow outputs and states must have equal lengths."
+            )
+        error = str(self.error).strip()
+        if not error and not outputs:
+            raise ValueError(
+                "A successful presentation shadow must contain at least one output."
+            )
+        if error and (
+            outputs
+            or states
+            or self.output is not None
+            or self.output_state is not None
+        ):
+            raise ValueError("A failed presentation shadow cannot carry output data.")
+        object.__setattr__(self, "node_id", node_id)
+        object.__setattr__(self, "operation_id", operation_id)
+        object.__setattr__(self, "node_outputs", outputs)
+        object.__setattr__(self, "node_output_states", states)
+        object.__setattr__(self, "error", error)
+        object.__setattr__(self, "source_revisions", tuple(self.source_revisions))
+
+
+PresentationShadowCallback = Callable[[PipelinePresentationShadowResult], None]
+
+
 def execute_pipeline_request(
     request: PipelineRunRequest,
     *,
     node_started_callback: NodeStartedCallback | None = None,
     node_finished_callback: NodeFinishedCallback | None = None,
+    presentation_shadow_callback: PresentationShadowCallback | None = None,
     progress_callback: ProgressCallback | None = None,
     compute_registry: ComputeRegistry | None = None,
     compute_planner: ComputePlanner | None = None,
@@ -989,6 +1074,7 @@ def execute_pipeline_request(
     timing_workload_fingerprint = ""
     timing_host_environment_fingerprint = ""
     timing_execution_surface = ""
+    timing_graph_node_ids: frozenset[str] = frozenset()
     timing_runnable_node_ids: frozenset[str] = frozenset()
     timing_warnings: list[str] = []
     resident_thumbnail_statistics: list[ResidentThumbnailStatisticsObservation] = []
@@ -1022,6 +1108,11 @@ def execute_pipeline_request(
         if node_finished_callback is None
         else lambda result: call_observer(node_finished_callback, result)
     )
+    observed_presentation_shadow_callback = (
+        None
+        if presentation_shadow_callback is None
+        else lambda result: call_observer(presentation_shadow_callback, result)
+    )
     observed_progress_callback = (
         None
         if progress_callback is None
@@ -1045,15 +1136,31 @@ def execute_pipeline_request(
                 workflow["nodes"],
                 workflow["connections"],
                 workflow.get("output_tunnels", ()),
+                atomic_bypass_profile=request.atomic_bypass_profile,
             )
         with _observed_pipeline_preparation_phase(
             preparation_recorder,
             PipelinePreparationPhase.CACHE_PREPARATION,
         ):
             _check_fact_scan_cancelled(cancel_callback)
+            if request.target_node_ids is None:
+                scientific_source_scope = set(pipeline.nodes)
+            else:
+                public_scope_seeds = (
+                    set(request.target_node_ids)
+                    | set(request.retain_node_ids)
+                    | {
+                        tunnel.source_id
+                        for tunnel in pipeline.output_tunnel_list()
+                    }
+                )
+                scientific_source_scope = pipeline.ancestors_inclusive(
+                    public_scope_seeds
+                )
             captured_source_scientific_contexts = _capture_source_scientific_contexts(
                 pipeline,
                 request,
+                source_node_ids=scientific_source_scope,
                 cancel_callback=cancel_callback,
             )
             source_scientific_contexts = {
@@ -1086,12 +1193,17 @@ def execute_pipeline_request(
                 manual_node_ids=request.manual_node_ids,
                 target_node_ids=request.target_node_ids,
             )
-            timing_runnable_node_ids = frozenset(
+            timing_graph_node_ids = frozenset(
                 node_id
                 for node_id in timing_schedule.runnable_node_ids
                 if pipeline.operation_spec(
                     pipeline.nodes[node_id].operation_id
                 ).has_input
+            )
+            timing_runnable_node_ids = frozenset(
+                node_id
+                for node_id in timing_graph_node_ids
+                if not pipeline.node_is_bypassed(node_id)
             )
         with _observed_pipeline_preparation_phase(
             preparation_recorder,
@@ -1102,7 +1214,7 @@ def execute_pipeline_request(
                 try:
                     timing_workload_fingerprint = _pipeline_timing_workload_fingerprint(
                         pipeline,
-                        timing_runnable_node_ids,
+                        timing_graph_node_ids,
                         retain_node_ids=request.retain_node_ids,
                         prune_unretained=request.prune_unretained,
                         manual_node_ids=request.manual_node_ids,
@@ -1139,7 +1251,112 @@ def execute_pipeline_request(
                         f"this run will continue without it ({exc})."
                     )
 
+        published_presentation_shadow_ids: set[str] = set()
+
+        def publish_presentation_shadow(node_id: str) -> None:
+            nonlocal observer_seconds
+            if observed_presentation_shadow_callback is None:
+                return
+            if node_id not in request.presentation_shadow_node_ids:
+                return
+            if node_id in published_presentation_shadow_ids:
+                return
+            node = pipeline.nodes[node_id]
+            shadow_started = perf_counter()
+            try:
+                _check_fact_scan_cancelled(cancel_callback)
+                if not pipeline.node_is_bypassed(node_id):
+                    raise ValueError(
+                        "Presentation shadows may be requested only for an "
+                        "effectively bypassed node."
+                    )
+                if not pipeline.operation_spec(node.operation_id).supports_bypass:
+                    raise ValueError(
+                        "Presentation shadows require a reviewed safe-bypass "
+                        "operation."
+                    )
+                if node.operation_id != "crop_stack":
+                    # Generic operation preparation may resolve parameters or
+                    # populate operation-local caches.  Always perform it in a
+                    # detached graph so a card-only what-if result cannot
+                    # mutate the scientific workflow, hash, caches, or
+                    # provenance returned to the caller.
+                    shadow_results = _detached_presentation_shadow_results(
+                        request,
+                        node_id,
+                        progress_callback=observed_progress_callback,
+                        cancel_callback=cancel_callback,
+                    )
+                else:
+                    call = pipeline.prepare_node_call(
+                        node_id,
+                        progress_callback=observed_progress_callback,
+                        cancel_callback=cancel_callback,
+                    )
+                    if call is None:
+                        shadow_results = _detached_presentation_shadow_results(
+                            request,
+                            node_id,
+                            progress_callback=observed_progress_callback,
+                            cancel_callback=cancel_callback,
+                        )
+                    else:
+                        raw_shadow = crop_stack_presentation_view(
+                            call.positional_input(),
+                            **call.keyword_arguments(),
+                        )
+                        _check_fact_scan_cancelled(cancel_callback)
+                        shadow_results = pipeline.finalize_node_call(call, raw_shadow)
+                if not shadow_results:
+                    raise ValueError(
+                        "The bypassed operation returned no presentation output."
+                    )
+                shadow_node_outputs = tuple(
+                    output for output, _state in shadow_results
+                )
+                shadow_node_output_states = tuple(
+                    state for _output, state in shadow_results
+                )
+                shadow_result = PipelinePresentationShadowResult(
+                    run_id=request.run_id,
+                    node_id=node_id,
+                    operation_id=node.operation_id,
+                    output=shadow_node_outputs[0],
+                    output_state=shadow_node_output_states[0],
+                    node_outputs=shadow_node_outputs,
+                    node_output_states=shadow_node_output_states,
+                    source_revisions=request.source_revisions,
+                )
+            except OperationCancelled:
+                raise
+            except Exception as exc:
+                # A what-if preview is deliberately outside the scientific
+                # transaction. Its failure must not replace a valid exact
+                # bypass result, downstream output, provenance, or cache.
+                shadow_result = PipelinePresentationShadowResult(
+                    run_id=request.run_id,
+                    node_id=node_id,
+                    operation_id=node.operation_id,
+                    error=str(exc).strip() or type(exc).__name__,
+                    source_revisions=request.source_revisions,
+                )
+            finally:
+                # Presentation work must not contaminate learned scientific
+                # timing choices even though it shares this detached worker.
+                observer_seconds += max(
+                    0.0,
+                    perf_counter() - shadow_started,
+                )
+            published_presentation_shadow_ids.add(node_id)
+            observed_presentation_shadow_callback(shadow_result)
+
         def publish_node_result(node_id: str) -> None:
+            if (
+                observed_node_finished_callback is None
+                and observed_presentation_shadow_callback is None
+            ):
+                return
+            publish_presentation_shadow(node_id)
             if observed_node_finished_callback is None:
                 return
             node = pipeline.nodes[node_id]
@@ -1272,6 +1489,9 @@ def execute_pipeline_request(
                 resident_observer_seconds=resident_thumbnail_observer_seconds,
             )
             observer_seconds += resident_thumbnail_observer_seconds[0]
+        for shadow_node_id in pipeline.topological_order():
+            if shadow_node_id in request.presentation_shadow_node_ids:
+                publish_presentation_shadow(shadow_node_id)
     except OperationCancelled as exc:
         failure = _pipeline_execution_failure(
             exc,
@@ -1326,6 +1546,7 @@ def execute_pipeline_request(
         decision
         for decision in execution_report.actual_decisions
         if decision.node_id in timing_runnable_node_ids
+        and decision.decision_kind is not DecisionKind.BYPASSED
     )
     if (
         timing_store is not None
@@ -1409,6 +1630,105 @@ def execute_pipeline_request(
             )
         ),
     )
+
+
+def _detached_presentation_shadow_results(
+    request: PipelineRunRequest,
+    node_id: str,
+    *,
+    progress_callback: ProgressCallback | None,
+    cancel_callback: Callable[[], bool] | None,
+) -> list[tuple[object, object | None]]:
+    """Compute a card-only would-run result in an isolated CPU transaction.
+
+    Targeted and low-memory scientific runs intentionally omit secondary inputs
+    of a bypassed node.  A presentation shadow still needs the operation's full
+    ordinary input ancestry, so materialize that ancestry in a separate graph
+    whose outputs, caches, provenance, and timing never enter the scientific
+    transaction returned to the caller.
+    """
+
+    workflow = deserialize_workflow(deepcopy(request.workflow))
+    restored_pipeline = PrototypePipeline()
+    restored_pipeline.restore_graph(
+        workflow["nodes"],
+        workflow["connections"],
+        workflow.get("output_tunnels", ()),
+        atomic_bypass_profile=request.atomic_bypass_profile,
+    )
+    if not restored_pipeline.node_is_bypassed(node_id):
+        raise ValueError(
+            "Presentation shadows may be requested only for an effectively "
+            "bypassed node."
+        )
+    # Re-materialize only the target's ordinary authored input ancestry.  This
+    # both includes presentation-only secondary inputs and excludes every
+    # downstream consumer, so an aggregate batch profile cannot strand a
+    # disconnected downstream bypass while this private target is switched to
+    # Run.
+    shadow_node_ids = {node_id}
+    changed = True
+    while changed:
+        changed = False
+        for connection in restored_pipeline.connections:
+            if (
+                connection.target_id in shadow_node_ids
+                and connection.source_id not in shadow_node_ids
+            ):
+                shadow_node_ids.add(connection.source_id)
+                changed = True
+    shadow_pipeline = PrototypePipeline()
+    shadow_pipeline.restore_graph(
+        tuple(restored_pipeline.nodes[item] for item in shadow_node_ids),
+        tuple(
+            connection
+            for connection in restored_pipeline.connections
+            if connection.source_id in shadow_node_ids
+            and connection.target_id in shadow_node_ids
+        ),
+        (),
+        atomic_bypass_profile=request.atomic_bypass_profile,
+    )
+    missing_source_payloads = sorted(
+        source_id
+        for source_id in shadow_node_ids
+        if source_id != "input"
+        and not shadow_pipeline.operation_spec(
+            shadow_pipeline.nodes[source_id].operation_id
+        ).has_input
+        and source_id not in request.source_payloads
+    )
+    if missing_source_payloads:
+        raise ValueError(
+            "Presentation shadow is unavailable because source payloads are "
+            "missing for: " + ", ".join(missing_source_payloads) + "."
+        )
+    if request.atomic_bypass_profile:
+        shadow_pipeline.apply_atomic_node_execution_profile(
+            {node_id: NODE_EXECUTION_RUN}
+        )
+    else:
+        shadow_pipeline.restore_node_execution_mode(node_id, NODE_EXECUTION_RUN)
+    shadow_pipeline.run(
+        request.input_data,
+        input_metadata=request.input_metadata,
+        input_name=request.input_name,
+        source_payloads=dict(request.source_payloads),
+        progress_callback=progress_callback,
+        cancel_callback=cancel_callback,
+        manual_mode=MANUAL_RUN_CALCULATE,
+        target_node_ids={node_id},
+        retain_node_ids={node_id},
+        prune_unretained=False,
+    )
+    outputs = tuple(shadow_pipeline.node_outputs.get(node_id, ()))
+    states = tuple(shadow_pipeline.node_output_states.get(node_id, ()))
+    if not outputs:
+        output = shadow_pipeline.outputs.get(node_id)
+        if output is not None:
+            outputs = (output,)
+            states = (shadow_pipeline.output_states.get(node_id),)
+    return list(zip(outputs, states, strict=True))
 
 
 def _pipeline_execution_failure(
@@ -1885,14 +2205,18 @@ def _execute_accelerated_pipeline(
                 state_by_port.get(
                     OutputPortKey(connection.source_id, connection.source_port)
                 )
-                for connection in pipeline._input_connections(node_id)
+                for connection in pipeline._scientific_input_connections(node_id)
             )
-            call = pipeline.prepare_node_call(
-                node_id,
-                inputs,
-                input_states,
-                progress_callback=progress_callback,
-                cancel_callback=cancel_callback,
+            call = (
+                pipeline.prepare_bypass_call(node_id, inputs, input_states)
+                if pipeline.node_is_bypassed(node_id)
+                else pipeline.prepare_node_call(
+                    node_id,
+                    inputs,
+                    input_states,
+                    progress_callback=progress_callback,
+                    cancel_callback=cancel_callback,
+                )
             )
             if call is None:
                 raise RuntimeError(f"Node {node_id!r} could not be prepared.")
@@ -1911,6 +2235,14 @@ def _execute_accelerated_pipeline(
             outputs: tuple[object, ...],
             runtime_id: str,
         ) -> None:
+            if pipeline.node_is_bypassed(node_id):
+                if len(outputs) != 1 or len(call.input_states) != 1:
+                    raise RuntimeError(
+                        f"Bypassed node {node_id!r} did not preserve its unary "
+                        "execution contract."
+                    )
+                state_by_port[OutputPortKey(node_id, 0)] = call.input_states[0]
+                return
             implementation = None
             if runtime_id != CPU_RUNTIME_ID:
                 decision = decisions_by_node.get(node_id)
@@ -2068,9 +2400,37 @@ def _execute_accelerated_pipeline(
                     continue
                 call = calls_by_node[node_id]
                 outputs = tuple(device_result.host_values[port] for port in ports)
-                raw_output = outputs[0] if output_count == 1 else outputs
-                results = pipeline.finalize_node_call(call, raw_output)
+                if pipeline.node_is_bypassed(node_id):
+                    connections = pipeline._scientific_input_connections(node_id)
+                    if len(connections) != 1:
+                        raise RuntimeError(
+                            f"Bypassed node {node_id!r} did not preserve its "
+                            "primary-input splice contract."
+                        )
+                    source = connections[0]
+                    results = pipeline.bypass_node_results(
+                        node_id,
+                        outputs,
+                        (
+                            state_by_port.get(
+                                OutputPortKey(
+                                    source.source_id,
+                                    source.source_port,
+                                )
+                            ),
+                        ),
+                    )
+                else:
+                    raw_output = outputs[0] if output_count == 1 else outputs
+                    results = pipeline.finalize_node_call(call, raw_output)
             pipeline.commit_node_results(execution, node_id, results)
+            # Device metadata prediction happens before any host values are
+            # committed.  Host finalization can produce a distinct-but-equal
+            # state object, so publish each committed state back into the
+            # lineage map.  A following bypass then aliases the authoritative
+            # finalized upstream state rather than its earlier prediction.
+            for port_index, (_value, state) in enumerate(results):
+                state_by_port[OutputPortKey(node_id, port_index)] = state
             if node_finished_callback is not None:
                 node_finished_callback(node_id)
         pipeline.finish_execution(execution)
@@ -2079,6 +2439,12 @@ def _execute_accelerated_pipeline(
             tuple(decisions_by_node.values()),
             device_plan,
             device_result.fallback_segment_ids,
+        )
+        actual_decisions = _with_bypass_execution_decisions(
+            pipeline,
+            request.compute_request,
+            actual_decisions,
+            execution.completed_node_ids,
         )
         warnings = list(getattr(planning, "warnings", ()))
         warnings.extend(history_warnings)
@@ -2576,10 +2942,18 @@ def _pipeline_timing_workload_fingerprint(
 ) -> str:
     """Identify an exact scientific graph/source/scope without compute intent."""
 
+    # Timing evidence belongs to the scientific induced subgraph that can affect
+    # this execution.  In particular, an RL/TV PSF connected to port 1 remains a
+    # presentation-shadow dependency while the node is bypassed; requiring or
+    # hashing that source here would make scientifically identical port-0 alias
+    # runs appear to be different workloads.
+    scientific_node_ids = pipeline.ancestors_inclusive(runnable_node_ids)
     source_node_ids = {
         node_id
-        for node_id, node in pipeline.nodes.items()
-        if not pipeline.operation_spec(node.operation_id).has_input
+        for node_id in scientific_node_ids
+        if not pipeline.operation_spec(
+            pipeline.nodes[node_id].operation_id
+        ).has_input
     }
     if not source_node_ids.issubset(source_scientific_contexts):
         # Opaque metadata/source values must disable learning rather than permit
@@ -2589,6 +2963,13 @@ def _pipeline_timing_workload_fingerprint(
         runnable = set(runnable_node_ids)
         cached_boundaries = []
         for connection in pipeline.connections:
+            if (
+                pipeline.node_is_bypassed(connection.target_id)
+                and connection.target_port != 0
+            ):
+                # Secondary inputs remain presentation-shadow dependencies, but
+                # they are not part of the bypassed node's scientific lineage.
+                continue
             if connection.target_id not in runnable or connection.source_id in runnable:
                 continue
             source_node = pipeline.nodes[connection.source_id]
@@ -2620,6 +3001,7 @@ def _pipeline_timing_workload_fingerprint(
                 cancel_callback=cancel_callback,
             )
             for node_id in pipeline.topological_order()
+            if node_id in scientific_node_ids
         ]
         tunnels = [
             {
@@ -2628,6 +3010,7 @@ def _pipeline_timing_workload_fingerprint(
                 "source_port": item.source_port,
             }
             for item in pipeline.output_tunnel_list()
+            if item.source_id in scientific_node_ids
         ]
         return canonical_digest(
             {
@@ -2635,12 +3018,21 @@ def _pipeline_timing_workload_fingerprint(
                 "nodes": nodes,
                 "tunnels": tunnels,
                 "source_scientific_contexts": dict(
-                    sorted(source_scientific_contexts.items())
+                    sorted(
+                        (node_id, source_scientific_contexts[node_id])
+                        for node_id in source_node_ids
+                    )
                 ),
                 "runnable_node_ids": sorted(runnable_node_ids),
-                "manual_node_ids": sorted(manual_node_ids or ()),
-                "target_node_ids": sorted(target_node_ids or ()),
-                "retain_node_ids": sorted(retain_node_ids),
+                "manual_node_ids": sorted(
+                    set(manual_node_ids or ()) & scientific_node_ids
+                ),
+                "target_node_ids": sorted(
+                    set(target_node_ids or ()) & scientific_node_ids
+                ),
+                "retain_node_ids": sorted(
+                    set(retain_node_ids) & scientific_node_ids
+                ),
                 "prune_unretained": bool(prune_unretained),
                 "cached_boundaries": cached_boundaries,
                 "compute_contract": {
@@ -2859,14 +3251,17 @@ def _assemble_workloads(
             continue
         node = pipeline.nodes[node_id]
         operation = pipeline.operation_spec(node.operation_id)
-        connections = pipeline._input_connections(node_id)
+        connections = pipeline._scientific_input_connections(node_id)
         if operation.has_input:
             if not connections:
                 # Disconnected processing nodes are valid graph-editing state,
                 # but they have no scientific workload to preflight or plan.
                 # PrototypePipeline.run() will leave them uncalculated.
                 continue
-            if pipeline._node_accepts_multiple_inputs(node):
+            if (
+                not pipeline.node_is_bypassed(node_id)
+                and pipeline._node_accepts_multiple_inputs(node)
+            ):
                 required = pipeline._required_inputs_for(node)
                 connected_ports = {connection.target_port for connection in connections}
                 if any(port not in connected_ports for port in range(required)):
@@ -2893,6 +3288,27 @@ def _assemble_workloads(
             input_states.append(state)
             facts = facts_by_port.get(port)
             input_facts.append(facts)
+
+        if pipeline.node_is_bypassed(node_id):
+            if len(connections) != 1 or len(pipeline.output_ports(node_id)) != 1:
+                raise ValueError(
+                    f"Bypassed node {node_id!r} requires primary input port 0 "
+                    "and one output."
+                )
+            source_port = OutputPortKey(
+                connections[0].source_id,
+                connections[0].source_port,
+            )
+            output_port = OutputPortKey(node_id, 0)
+            if inputs_resolved:
+                values[output_port] = input_values[0]
+            states[output_port] = input_states[0]
+            if input_facts[0] is not None:
+                facts_by_port[output_port] = input_facts[0]
+            fact_lineage[output_port] = source_port
+            # Bypass is authored scientific intent but has no implementation
+            # workload, benchmark candidate, or optimizer timing of its own.
+            continue
 
         if (
             node.operation_id == "measure_objects_intensity"
@@ -2938,15 +3354,15 @@ def _assemble_workloads(
                     resolved_spatial_ndim = int(raw_spatial_ndim)
 
         parameters = _workload_parameters(pipeline, node_id, planning_call)
-        predecessors = tuple(
-            connection.source_id
-            for connection in connections
-            if connection.source_id in runnable
+        predecessors = _resident_predecessors_through_bypass(
+            pipeline,
+            node_id,
+            runnable,
         )
-        successors = tuple(
-            connection.target_id
-            for connection in pipeline.connections
-            if connection.source_id == node_id and connection.target_id in runnable
+        successors = _resident_successors_through_bypass(
+            pipeline,
+            node_id,
+            runnable,
         )
         required_boundaries = int(
             not operation.has_input
@@ -3078,6 +3494,69 @@ def _assemble_workloads(
         MappingProxyType(facts_by_node),
         MappingProxyType(fact_lineage),
     )
+
+
+def _resident_predecessors_through_bypass(
+    pipeline: PrototypePipeline,
+    node_id: str,
+    runnable: set[str],
+) -> tuple[str, ...]:
+    """Resolve compute predecessors across transparent unary aliases."""
+
+    resolved: list[str] = []
+    for connection in pipeline._scientific_input_connections(node_id):
+        source_id = connection.source_id
+        visited: set[str] = set()
+        while pipeline.node_is_bypassed(source_id):
+            if source_id in visited:
+                raise ValueError("Bypass lineage unexpectedly contains a cycle.")
+            visited.add(source_id)
+            upstream = pipeline._scientific_input_connections(source_id)
+            if len(upstream) != 1:
+                break
+            source_id = upstream[0].source_id
+        if source_id in runnable and source_id not in resolved:
+            resolved.append(source_id)
+    return tuple(resolved)
+
+
+def _resident_successors_through_bypass(
+    pipeline: PrototypePipeline,
+    node_id: str,
+    runnable: set[str],
+) -> tuple[str, ...]:
+    """Resolve compute successors across transparent unary aliases."""
+
+    resolved: list[str] = []
+    pending = [
+        connection.target_id
+        for connection in pipeline.connections
+        if connection.source_id == node_id
+        and not (
+            pipeline.node_is_bypassed(connection.target_id)
+            and connection.target_port != 0
+        )
+    ]
+    visited: set[str] = set()
+    while pending:
+        target_id = pending.pop(0)
+        if target_id in visited:
+            continue
+        visited.add(target_id)
+        if pipeline.node_is_bypassed(target_id):
+            pending.extend(
+                connection.target_id
+                for connection in pipeline.connections
+                if connection.source_id == target_id
+                and not (
+                    pipeline.node_is_bypassed(connection.target_id)
+                    and connection.target_port != 0
+                )
+            )
+            continue
+        if target_id in runnable and target_id not in resolved:
+            resolved.append(target_id)
+    return tuple(resolved)
 
 
 def _project_host_planning_outputs(
@@ -4063,7 +4542,7 @@ def _ancestor_source_revision_digest(
                     return False
                 revisions[node_id] = revision
             else:
-                connections = pipeline._input_connections(node_id)
+                connections = pipeline._scientific_input_connections(node_id)
                 if not connections:
                     return False
                 if any(not visit(connection.source_id) for connection in connections):
@@ -4105,12 +4584,16 @@ def _scientific_output_digest(
         memo[port] = None
         return None
     try:
-        parameters = {
-            str(name): _json_contract_value(value)
-            for name, value in pipeline._public_params(node.params).items()
-        }
+        parameters = (
+            {}
+            if pipeline.node_is_bypassed(node.id)
+            else {
+                str(name): _json_contract_value(value)
+                for name, value in pipeline._public_params(node.params).items()
+            }
+        )
         inputs = []
-        for connection in pipeline._input_connections(node.id):
+        for connection in pipeline._scientific_input_connections(node.id):
             source_port = OutputPortKey(
                 connection.source_id,
                 connection.source_port,
@@ -4846,12 +5329,20 @@ def _capture_source_scientific_contexts(
     pipeline: PrototypePipeline,
     request: PipelineRunRequest,
     *,
+    source_node_ids: Collection[str] | None = None,
     cancel_callback: Callable[[], bool] | None,
 ) -> dict[str, _CapturedSourceScientificContext]:
     """Fingerprint exact sources, reusing only a proven immutable snapshot."""
 
     contexts: dict[str, _CapturedSourceScientificContext] = {}
+    selected_sources = (
+        None
+        if source_node_ids is None
+        else {node_id for node_id in source_node_ids if node_id in pipeline.nodes}
+    )
     for node_id in pipeline.topological_order():
+        if selected_sources is not None and node_id not in selected_sources:
+            continue
         node = pipeline.nodes[node_id]
         if pipeline.operation_spec(node.operation_id).has_input:
             continue
@@ -5072,7 +5563,7 @@ def _processing_scientific_context_fingerprint(
     cancel_callback: Callable[[], bool] | None = None,
 ) -> str:
     upstream_contexts = []
-    for connection in pipeline._input_connections(node_id):
+    for connection in pipeline._scientific_input_connections(node_id):
         provenance = upstream_provenance[connection.source_id]
         upstream_contexts.append(
             {
@@ -5104,15 +5595,18 @@ def _node_structural_identity(
     cancel_callback: Callable[[], bool] | None = None,
 ) -> object:
     node = pipeline.nodes[node_id]
-    connections = pipeline._input_connections(node_id)
+    connections = pipeline._scientific_input_connections(node_id)
     return {
         "node_id": node_id,
         "operation_id": node.operation_id,
+        "execution_mode": node.execution_mode,
         "input_type": node.input_type,
         "output_type": node.output_type,
         "max_inputs": node.max_inputs,
         "public_params": _scientific_identity_value(
-            pipeline._public_params(node.params),
+            {}
+            if pipeline.node_is_bypassed(node_id)
+            else pipeline._public_params(node.params),
             cancel_callback=cancel_callback,
         ),
         "input_ports": _scientific_identity_value(
@@ -5481,7 +5975,7 @@ def _hydrate_cached_pipeline_outputs(
         else:
             if any(
                 connection.source_id not in validated_lineage
-                for connection in pipeline._input_connections(node_id)
+                for connection in pipeline._scientific_input_connections(node_id)
             ):
                 continue
             try:
@@ -5503,12 +5997,54 @@ def _hydrate_cached_pipeline_outputs(
             ):
                 continue
         validated_lineage[node_id] = provenance
+        if pipeline.node_is_bypassed(node_id) and not (
+            _rebind_hydrated_bypass_cache_to_upstream(pipeline, node_id)
+        ):
+            # Bypass provenance proves the scientific lineage, but it cannot
+            # turn an independently copied cache value into the exact alias
+            # promised by Safe Bypass.  Keep the lineage available for a
+            # provenance-valid downstream cache, while rejecting this node's
+            # resident completion when its upstream value is unavailable.
+            continue
         if node_id in requested_completed and pipeline._has_cached_output(node_id):
             accepted_completed.add(node_id)
             accepted_provenance[node_id] = provenance
     pipeline.completed_node_ids = accepted_completed
     pipeline.node_compute_provenance = accepted_provenance
     pipeline.node_cache_lineage = validated_lineage
+
+
+def _rebind_hydrated_bypass_cache_to_upstream(
+    pipeline: PrototypePipeline,
+    node_id: str,
+) -> bool:
+    """Replace a validated bypass cache with its exact upstream aliases.
+
+    Cached provenance authenticates the bypass lineage, not the Python object
+    identity of values supplied by a caller.  A copy can therefore retain
+    valid provenance while violating the bypass contract.  Clear that
+    untrusted resident value first, then rebuild both the primary and per-port
+    cache surfaces from the exact upstream value/state objects.
+    """
+
+    pipeline.outputs[node_id] = None
+    pipeline.output_states[node_id] = None
+    pipeline.node_outputs[node_id] = []
+    pipeline.node_output_states[node_id] = []
+    try:
+        results = pipeline.bypass_node_results(node_id)
+    except (KeyError, TypeError, ValueError):
+        return False
+    if len(results) != 1:
+        return False
+    value, state = results[0]
+    if value is None:
+        return False
+    pipeline.outputs[node_id] = value
+    pipeline.output_states[node_id] = state
+    pipeline.node_outputs[node_id] = [value]
+    pipeline.node_output_states[node_id] = [state]
+    return True
 
 
 def _publish_cpu_compute_provenance(
@@ -5525,7 +6061,11 @@ def _publish_cpu_compute_provenance(
         if node_id not in scheduled_node_ids:
             continue
         node = pipeline.nodes.get(node_id)
-        if node is None or not pipeline.operation_spec(node.operation_id).has_input:
+        if (
+            node is None
+            or not pipeline.operation_spec(node.operation_id).has_input
+            or pipeline.node_is_bypassed(node_id)
+        ):
             continue
         preference = request.compute_request.preference_for(node_id)
         decisions.append(
@@ -5544,17 +6084,63 @@ def _publish_cpu_compute_provenance(
                 implementation_version="1",
             )
         )
+    resolved_decisions = _with_bypass_execution_decisions(
+        pipeline,
+        request.compute_request,
+        tuple(decisions),
+        scheduled_node_ids,
+    )
     _publish_actual_compute_provenance(
         pipeline,
         request.compute_request,
-        decisions,
+        resolved_decisions,
         source_scientific_contexts=source_scientific_contexts,
         source_reuse_envelope_fingerprints=(source_reuse_envelope_fingerprints),
         cancel_callback=(
             request.cancel_event.is_set if request.cancel_event is not None else None
         ),
     )
-    return tuple(decisions)
+    return resolved_decisions
+
+
+def _with_bypass_execution_decisions(
+    pipeline: PrototypePipeline,
+    request: ComputeRequest,
+    decisions: Sequence[NodeExecutionDecision],
+    completed_node_ids: Sequence[str] | frozenset[str] | set[str],
+) -> tuple[NodeExecutionDecision, ...]:
+    """Add explicit no-work decisions for completed authored aliases."""
+
+    by_node = {decision.node_id: decision for decision in decisions}
+    completed = set(completed_node_ids)
+    for node_id in pipeline.topological_order():
+        if (
+            node_id not in completed
+            or node_id in by_node
+            or not pipeline.node_is_bypassed(node_id)
+        ):
+            continue
+        node = pipeline.nodes[node_id]
+        by_node[node_id] = NodeExecutionDecision(
+            node_id=node_id,
+            operation_id=node.operation_id,
+            requested_preference=request.preference_for(node_id),
+            runtime_id="vipp-bypass",
+            implementation_library_id="vipp-alias",
+            implementation_id="vipp-safe-bypass-v1",
+            implementation_version="1",
+            decision_kind=DecisionKind.BYPASSED,
+            reason=DecisionReason.BYPASSED,
+            reason_text=(
+                "The authored Safe Node Bypass forwarded the exact input value, "
+                "metadata, and current residency without invoking an operation."
+            ),
+        )
+    return tuple(
+        by_node[node_id]
+        for node_id in pipeline.topological_order()
+        if node_id in by_node
+    )
 
 
 def _publish_actual_compute_provenance(
@@ -5617,6 +6203,19 @@ def _publish_actual_compute_provenance(
                 if node.operation_id != decision.operation_id:
                     continue
                 try:
+                    if decision.decision_kind is DecisionKind.BYPASSED:
+                        provenance = build_cached_bypass_provenance(
+                            node_id=node_id,
+                            operation_id=node.operation_id,
+                            scientific_context_fingerprint=scientific_context,
+                        )
+                        resolved_provenance[node_id] = provenance
+                        if (
+                            node_id in pipeline.completed_node_ids
+                            and pipeline._has_cached_output(node_id)
+                        ):
+                            published_provenance[node_id] = provenance
+                        continue
                     implementation_spec = next(
                         (
                             spec
@@ -5652,6 +6251,8 @@ __all__ = [
     "NodeFinishedCallback",
     "NodeStartedCallback",
     "PipelineNodeResult",
+    "PipelinePresentationShadowResult",
+    "PresentationShadowCallback",
     "PipelineExecutionFailure",
     "PipelineRunRequest",
     "PipelineRunResult",

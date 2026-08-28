@@ -471,6 +471,7 @@ class DecisionReason(StrEnum):
     MEMORY_LIMIT = "memory_limit"
     VISIBLE_FALLBACK = "visible_fallback"
     OUT_OF_MEMORY_FALLBACK = "out_of_memory_fallback"
+    BYPASSED = "bypassed"
 
 
 class DecisionKind(StrEnum):
@@ -479,6 +480,7 @@ class DecisionKind(StrEnum):
     POLICY_CPU = "policy_cpu"
     SELECTED = "selected"
     FALLBACK_CPU = "fallback_cpu"
+    BYPASSED = "bypassed"
 
 
 class ComputeRepairAction(StrEnum):

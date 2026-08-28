@@ -61,6 +61,20 @@
   persistent Settings choice can instead confirm every overwrite or create a
   separately timestamped workflow on every save. Bundled examples remain
   templates, so saving one never overwrites the packaged example.
+- Added topology-aware Safe Node Bypass across callable, fixed-single-output
+  processing nodes. Bypass forwards the exact first/main input while preserving
+  the authored node and its settings; multi-input restoration nodes therefore
+  forward Image/intensity rather than PSF. Sources, writers, unused terminal
+  nodes, dynamic/multi-output operations, and type-incompatible splices fail
+  closed. Bypassed cards retain a presentation-only would-run thumbnail, a
+  faded dotted treatment, badge, and pass-through cue without exposing those
+  hypothetical pixels to downstream analysis.
+- Added matching whole-batch **Use workflow / Run / Bypass** profiles. Profiles
+  are applied atomically to detached effective workflows, remain separate from
+  authored graph intent, and are recorded in saved configuration, generated
+  runners, manifests, hashes, and execution provenance. Workflow schema 6 and
+  batch config/manifest schema 5 carry the new intent while continuing to read
+  their supported earlier schema versions.
 
 ### Bug Fixes
 

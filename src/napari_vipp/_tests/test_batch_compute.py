@@ -48,7 +48,7 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.execution_provenance import serialize_execution_provenance
 from napari_vipp.core.metadata import AxisDeclaration
 from napari_vipp.core.pipeline import PrototypePipeline
-from napari_vipp.core.workflow import serialize_workflow
+from napari_vipp.core.workflow import WORKFLOW_VERSION, serialize_workflow
 
 
 def _image_batch(tmp_path, *, item_count: int = 1):
@@ -213,7 +213,7 @@ def test_batch_config_roundtrip_preserves_segmentation_bridge_compute_intent(
     loaded = load_batch_config(config_path)
 
     assert loaded.compute_request == request
-    assert workflow["version"] == 5
+    assert workflow["version"] == WORKFLOW_VERSION
     assert loaded.workflow_sha256 == scientific_workflow_hash(workflow)
     assert {
         node["id"]: node["operation_id"] for node in workflow["nodes"]

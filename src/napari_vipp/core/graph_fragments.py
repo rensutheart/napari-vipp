@@ -35,11 +35,12 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     graph_node_from_persisted_params,
     optional_persisted_parameter_spec,
+    validate_node_execution_mode,
 )
 
 GRAPH_FRAGMENT_MIME_TYPE = "application/x-napari-vipp-graph-fragment+json"
 GRAPH_FRAGMENT_KIND = "napari-vipp-graph-fragment"
-GRAPH_FRAGMENT_VERSION = 1
+GRAPH_FRAGMENT_VERSION = 2
 MAX_GRAPH_FRAGMENT_BYTES = 1_000_000
 MAX_GRAPH_FRAGMENT_NODES = 512
 MAX_GRAPH_FRAGMENT_CONNECTIONS = 4_096
@@ -78,6 +79,7 @@ class GraphFragmentNode:
     position: tuple[float, float]
     compute_preference: NodeComputePreference | None
     optimizer_locked: bool
+    execution_mode: str
     _params: dict[str, Any] = field(repr=False)
 
     __hash__ = None
@@ -92,6 +94,7 @@ class GraphFragmentNode:
             NodeComputePreference | str | Mapping[str, object] | None
         ) = None,
         optimizer_locked: bool = False,
+        execution_mode: str = "run",
     ) -> None:
         normalized_params = _normalize_json_object(params, context="Node parameters")
         preference = _normalize_compute_preference(compute_preference)
@@ -110,6 +113,16 @@ class GraphFragmentNode:
         )
         object.__setattr__(self, "compute_preference", preference)
         object.__setattr__(self, "optimizer_locked", optimizer_locked)
+        operation = _operation_spec(operation_id)
+        try:
+            normalized_execution_mode = validate_node_execution_mode(
+                operation,
+                execution_mode,
+                context=f"Fragment node {key!r}",
+            )
+        except (TypeError, ValueError) as exc:
+            raise GraphFragmentError(str(exc)) from exc
+        object.__setattr__(self, "execution_mode", normalized_execution_mode)
         object.__setattr__(self, "_params", normalized_params)
 
     @property
@@ -276,6 +289,7 @@ class GraphFragment:
                         else node.compute_preference.as_dict()
                     ),
                     "optimizer_locked": node.optimizer_locked,
+                    "execution_mode": node.execution_mode,
                 }
                 for node in self.nodes
             ],
@@ -559,6 +573,7 @@ def capture_graph_fragment(
                 relative,
                 preference,
                 node_id in locked_ids,
+                node.execution_mode,
             )
         )
 
@@ -682,6 +697,7 @@ def validate_graph_fragment(fragment: GraphFragment) -> GraphFragment:
                     node.operation_id,
                     params,
                     index=index,
+                    execution_mode=node.execution_mode,
                 )
             )
         except (TypeError, ValueError) as exc:
@@ -802,12 +818,13 @@ def graph_fragment_from_mapping(raw: Mapping[str, Any]) -> GraphFragment:
     if (
         isinstance(top["version"], bool)
         or not isinstance(top["version"], Integral)
-        or int(top["version"]) != GRAPH_FRAGMENT_VERSION
+        or int(top["version"]) not in {1, GRAPH_FRAGMENT_VERSION}
     ):
         raise GraphFragmentError(
             f"Unsupported graph fragment version {top['version']!r}; "
-            f"expected {GRAPH_FRAGMENT_VERSION}."
+            f"expected 1 or {GRAPH_FRAGMENT_VERSION}."
         )
+    fragment_version = int(top["version"])
 
     raw_nodes = _required_list(top["nodes"], context="Graph fragment nodes")
     raw_connections = _required_list(
@@ -818,16 +835,19 @@ def graph_fragment_from_mapping(raw: Mapping[str, Any]) -> GraphFragment:
 
     nodes: list[GraphFragmentNode] = []
     for index, value in enumerate(raw_nodes):
+        required_node_fields = {
+            "key",
+            "operation_id",
+            "params",
+            "position",
+            "compute_preference",
+            "optimizer_locked",
+        }
+        if fragment_version == GRAPH_FRAGMENT_VERSION:
+            required_node_fields.add("execution_mode")
         item = _strict_object(
             value,
-            required={
-                "key",
-                "operation_id",
-                "params",
-                "position",
-                "compute_preference",
-                "optimizer_locked",
-            },
+            required=required_node_fields,
             context=f"Node {index}",
         )
         nodes.append(
@@ -838,6 +858,7 @@ def graph_fragment_from_mapping(raw: Mapping[str, Any]) -> GraphFragment:
                 item["position"],
                 item["compute_preference"],
                 item["optimizer_locked"],
+                item.get("execution_mode", "run"),
             )
         )
 

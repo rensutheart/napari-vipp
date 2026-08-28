@@ -40,6 +40,29 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "safety, and the truthful CPU assignment under Prefer GPU.",
     ),
     ExampleWorkflowSpec(
+        "safe-node-bypass",
+        "Graph Authoring & Editing",
+        "Safe Node Bypass Acceptance",
+        "safe-node-bypass-acceptance.json",
+        ("VIPP synthetic volume",),
+        "Follow numbered canvas notes to verify explicit Run/Bypass intent, "
+        "exact value and metadata aliasing, localized undo/redo, neutral GPU "
+        "residency, persistence/export, and whole-batch behavior.",
+    ),
+    ExampleWorkflowSpec(
+        "general-node-bypass",
+        "Graph Authoring & Editing",
+        "General Node Bypass Acceptance",
+        "general-node-bypass-acceptance.json",
+        (
+            "VIPP synthetic deconvolution image",
+            "VIPP synthetic measured PSF",
+        ),
+        "Follow numbered canvas notes to verify generalized unary and "
+        "multi-input bypass, including RL-TV forwarding Image port 0 while "
+        "retaining but scientifically ignoring its connected PSF.",
+    ),
+    ExampleWorkflowSpec(
         "batch-provenance",
         "Batch & Reproducibility",
         "Deterministic Batch & Provenance",
