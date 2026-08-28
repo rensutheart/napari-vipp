@@ -264,6 +264,7 @@ PARAMETER_VISIBILITY_FLOATING_INPUT = "floating_input"
 PARAMETER_VISIBILITY_NEGATIVE_VALUES_POSSIBLE = "negative_values_possible"
 PARAMETER_VISIBILITY_RGB_OR_RGBA_INPUT = "rgb_or_rgba_input"
 PARAMETER_VISIBILITY_MULTICHANNEL_INPUT = "multichannel_input"
+PARAMETER_VISIBILITY_CROP_CHANNEL_OVERRIDE = "crop_channel_override"
 PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT = "spatial_mode_relevant"
 PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT = "stack_scope_relevant"
 PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS = "three_spatial_dimensions"
@@ -280,6 +281,7 @@ _PARAMETER_VISIBILITY_VALUES = {
     PARAMETER_VISIBILITY_NEGATIVE_VALUES_POSSIBLE,
     PARAMETER_VISIBILITY_RGB_OR_RGBA_INPUT,
     PARAMETER_VISIBILITY_MULTICHANNEL_INPUT,
+    PARAMETER_VISIBILITY_CROP_CHANNEL_OVERRIDE,
     PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT,
     PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT,
     PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS,
@@ -423,6 +425,46 @@ def resolve_parameter_visibility(
         ):
             return ParameterVisibility(True)
         return ParameterVisibility(False, "The resolved input is explicitly scalar.")
+
+    if visibility == PARAMETER_VISIBILITY_CROP_CHANNEL_OVERRIDE:
+        stored_axis = context.parameter_values.get(spec.name, spec.default)
+        if (
+            isinstance(stored_axis, Integral)
+            and not isinstance(stored_axis, (bool, np.bool_))
+            and int(stored_axis) >= 0
+        ):
+            return ParameterVisibility(
+                True,
+                "A saved manual channel-axis override remains active.",
+            )
+        state = context.primary_input_state
+        if state is None:
+            return ParameterVisibility(
+                True,
+                "Input channel-axis semantics are unresolved.",
+            )
+        channel_axis = _explicit_crop_channel_axis_index(state)
+        if channel_axis is not None:
+            axis_name = state.axes[channel_axis].name
+            return ParameterVisibility(
+                False,
+                f"Input metadata identifies channel axis {axis_name!r} at index "
+                f"{channel_axis}; Crop Stack preserves it automatically.",
+            )
+        if _visibility_axes_resolved(state) and not any(
+            axis.type.strip().casefold() == "channel"
+            or axis.name.strip().casefold() in {"c", "channel", "rgb", "rgba"}
+            for axis in state.axes
+        ):
+            return ParameterVisibility(
+                False,
+                "The resolved input is explicitly scalar; Crop Stack has no "
+                "channel axis to protect.",
+            )
+        return ParameterVisibility(
+            True,
+            "Input channel-axis semantics are unresolved or ambiguous.",
+        )
 
     if visibility == PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT:
         states = _visibility_relevant_input_states(context, spec, all_ports=True)
@@ -1316,6 +1358,18 @@ SCALAR_CHANNEL_AXIS_PARAMETER = ParameterSpec(
     visibility=PARAMETER_VISIBILITY_MULTICHANNEL_INPUT,
 )
 
+CROP_CHANNEL_AXIS_PARAMETER = replace(
+    SCALAR_CHANNEL_AXIS_PARAMETER,
+    label="Channel axis override (-1 = automatic)",
+    tooltip=(
+        "This does not crop channels. The chosen axis is protected while Crop "
+        "Stack resolves the Y/X crop plane. Leave at -1 to use explicit "
+        "channel metadata automatically; choose an axis only when channel "
+        "semantics are unresolved."
+    ),
+    visibility=PARAMETER_VISIBILITY_CROP_CHANNEL_OVERRIDE,
+)
+
 OPTIONAL_CHANNEL_AXIS_PARAMETER = replace(
     SCALAR_CHANNEL_AXIS_PARAMETER,
     label="Channel axis (-1 = none)",
@@ -1671,7 +1725,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("bottom", "Bottom", "int", 0, 0, 256, 1),
             ParameterSpec("left", "Left", "int", 0, 0, 256, 1),
             ParameterSpec("right", "Right", "int", 0, 0, 256, 1),
-            SCALAR_CHANNEL_AXIS_PARAMETER,
+            CROP_CHANNEL_AXIS_PARAMETER,
         ),
         crop_stack,
         subcategory=AXES_REGIONS_GROUP,

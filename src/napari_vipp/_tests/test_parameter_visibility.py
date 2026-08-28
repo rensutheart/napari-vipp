@@ -12,9 +12,11 @@ from napari_vipp.core.metadata import (
     image_state_from_array,
 )
 from napari_vipp.core.pipeline import (
+    CROP_CHANNEL_AXIS_PARAMETER,
     HISTOGRAM_BINS_PARAMETER,
     NODE_LIBRARY,
     PARAMETER_VISIBILITY_ALWAYS,
+    PARAMETER_VISIBILITY_CROP_CHANNEL_OVERRIDE,
     PARAMETER_VISIBILITY_FLOATING_INPUT,
     PARAMETER_VISIBILITY_MULTICHANNEL_INPUT,
     PARAMETER_VISIBILITY_RGB_OR_RGBA_INPUT,
@@ -221,6 +223,50 @@ def test_crop_z_controls_require_one_explicit_nonchannel_z_axis():
             assert result.visible is expected
 
 
+def test_crop_channel_axis_override_is_only_shown_as_a_manual_fallback():
+    explicit_tczyx = _state((2, 3, 4, 5, 7), axes="TCZYX")
+    explicit_zyx = _state((4, 5, 7), axes="ZYX")
+    mixed_cyx = replace(
+        _state((3, 5, 7), axes="CYX"),
+        axes=(
+            AxisMetadata("C", "channel"),
+            AxisMetadata("Y", "space", confidence=AXIS_CONFIDENCE_INFERRED),
+            AxisMetadata("X", "space", confidence=AXIS_CONFIDENCE_INFERRED),
+        ),
+    )
+    ambiguous_channels = replace(
+        _state((2, 3, 5, 7), axes="CCYX"),
+        axes=(
+            AxisMetadata("C", "channel"),
+            AxisMetadata("channel", "channel"),
+            AxisMetadata("Y", "space"),
+            AxisMetadata("X", "space"),
+        ),
+    )
+    cases = (
+        (explicit_tczyx, -1, False),
+        (explicit_zyx, -1, False),
+        (mixed_cyx, -1, False),
+        (_state((3, 5, 7)), -1, True),
+        (ambiguous_channels, -1, True),
+        (explicit_tczyx, 0, True),
+        (None, -1, True),
+    )
+
+    assert CROP_CHANNEL_AXIS_PARAMETER.label == (
+        "Channel axis override (-1 = automatic)"
+    )
+    assert CROP_CHANNEL_AXIS_PARAMETER.tooltip.startswith(
+        "This does not crop channels. The chosen axis is protected"
+    )
+    for state, channel_axis, expected in cases:
+        result = resolve_parameter_visibility(
+            CROP_CHANNEL_AXIS_PARAMETER,
+            context=_context(state, params={"channel_axis": channel_axis}),
+        )
+        assert result.visible is expected
+
+
 @pytest.mark.parametrize(
     ("axes", "mode", "visible"),
     (
@@ -377,7 +423,6 @@ def test_catalog_visibility_rules_and_shared_families_are_complete():
         and parameter.visibility == PARAMETER_VISIBILITY_MULTICHANNEL_INPUT
     }
     assert ordinary == {
-        "crop_stack",
         "average_blur",
         "gaussian_blur",
         "gaussian_blur_3d",
@@ -390,6 +435,14 @@ def test_catalog_visibility_rules_and_shared_families_are_complete():
         "difference_of_gaussians",
         "unsharp_mask",
     }
+    crop_overrides = {
+        operation.id
+        for operation in NODE_LIBRARY
+        for parameter in operation.parameters
+        if parameter.name == "channel_axis"
+        and parameter.visibility == PARAMETER_VISIBILITY_CROP_CHANNEL_OVERRIDE
+    }
+    assert crop_overrides == {"crop_stack"}
     encoded = {
         operation.id
         for operation in NODE_LIBRARY

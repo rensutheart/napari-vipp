@@ -42,10 +42,49 @@
   T/C axes, physical calibration, origins, history, workflow hashes, export,
   generated execution, and batch behavior remain reproducible.
 - Crop controls now present a lightweight translucent ROI over cached pixels
-  while the user drags. Release or a short idle interval commits one undoable
-  scientific edit and one calculation, and pending drafts are flushed before
+  while the user drags. Release commits one undoable scientific edit and one
+  calculation; a pause while the mouse remains held is never an Undo boundary.
+  Pending drafts are flushed before
   calculation, save, export, batch, workflow-tab, and close boundaries. The
   bundled `responsive-crop` example provides a numbered TCZYX acceptance path.
+- Crop Stack now hides its channel-axis override when explicit metadata already
+  identifies the preserved channel axis, and also for explicitly scalar data.
+  The fallback remains visible for unresolved axes and saved manual overrides,
+  with wording that makes clear it protects an axis rather than cropping
+  channels.
+- Refined the Crop ROI overlay for each napari display mode: a thinner
+  current-plane guide in 2D and a transparent, depth-independent wireframe in
+  3D, avoiding the thick embedded-looking faces seen against rendered volumes.
+- Added conventional workflow saving with `Ctrl+S`. The toolbar save action now
+  overwrites the current workflow by default, while first saves and `Save as`
+  request a destination and confirm before replacing an existing file. A
+  persistent Settings choice can instead confirm every overwrite or create a
+  separately timestamped workflow on every save. Bundled examples remain
+  templates, so saving one never overwrites the packaged example.
+
+### Bug Fixes
+
+- Advanced Image Source axis text now remains an uncommitted editor draft until
+  it is a complete valid mapping and the user presses Enter or leaves the field.
+  Partial keystrokes can no longer enter workflow history or trip strict source
+  validation during an otherwise valid edit.
+- Undo and Redo now restore a single node's parameter change in
+  place, retain graph cards, thumbnails, viewer layers, and unaffected cached
+  branches, and recalculate only that node and its descendants. Image Source
+  edits also use this path while still refreshing source-owned I/O and preview
+  state. Topology, layout, compute-policy, and multi-node changes retain the
+  audited whole-workflow restore path.
+- Slider, axis-range, histogram-marker, and colocalization-threshold scrubbing
+  now creates one Undo step per completed press-drag-release gesture, even when
+  a recalculation or idle timer finishes while the pointer remains held. Undo
+  returns directly to the value present at mouse-down rather than a calculated
+  intermediate value.
+- `Ctrl+S` is now caught at the active VIPP/napari window boundary, so graph,
+  inspector, and viewer focus cannot prevent workflow saving. VIPP no longer
+  registers a second Qt action shortcut that can collide with napari's own
+  `Ctrl+S`; the window-level handler claims the key before napari resolves its
+  actions. A successful save clears the tab's dirty asterisk and reports
+  `Saved workflow` in the status strip.
 
 ## 0.14.0a1 - 2026-08-26
 

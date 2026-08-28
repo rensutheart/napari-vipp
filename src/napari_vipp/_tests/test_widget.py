@@ -7,6 +7,7 @@ import time
 import weakref
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,10 +18,18 @@ import pytest
 import tifffile
 from napari.components import ViewerModel
 from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, QSize, Qt, QTimer
-from qtpy.QtGui import QCloseEvent, QColor, QKeySequence, QMouseEvent
+from qtpy.QtGui import (
+    QAction,
+    QCloseEvent,
+    QColor,
+    QKeyEvent,
+    QKeySequence,
+    QMouseEvent,
+)
 from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGraphicsItem,
@@ -33,6 +42,8 @@ from qtpy.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QStackedLayout,
+    QStyle,
+    QStyleOptionSlider,
     QWidget,
 )
 
@@ -220,6 +231,7 @@ from napari_vipp.ui.compute_setup import ComputeDeviceOption
 from napari_vipp.ui.diagnostic_workers import ThumbnailContrastProgress
 from napari_vipp.ui.file_sources import SourceFileLoadSpec
 from napari_vipp.ui.presentation_settings import ThumbnailStatisticsPolicy
+from napari_vipp.ui.workflow_save_settings import WorkflowSavePolicy
 
 
 class _Event:
@@ -307,6 +319,7 @@ class _DimsEvents:
     def __init__(self):
         self.current_step = _Event()
         self.point = _Event()
+        self.ndisplay = _Event()
 
 
 class _SourceEvents:
@@ -333,6 +346,19 @@ class _Dims:
         self.nsteps = tuple(int(size) for size in shape)
         self.current_step = tuple(0 for _ in self.nsteps)
         self.events = _DimsEvents()
+        self._ndisplay = 2
+
+    @property
+    def ndisplay(self):
+        return self._ndisplay
+
+    @ndisplay.setter
+    def ndisplay(self, value):
+        value = int(value)
+        if value == self._ndisplay:
+            return
+        self._ndisplay = value
+        self.events.ndisplay.emit()
 
     def set_current_step(self, axis, value):
         current = list(self.current_step)
@@ -462,6 +488,7 @@ class _Viewer:
         layer.face_color = kwargs.get("face_color")
         layer.edge_width = kwargs.get("edge_width")
         layer.opacity = kwargs.get("opacity", 1.0)
+        layer.blending = kwargs.get("blending")
         layer.scale = kwargs.get("scale")
         layer.translate = kwargs.get("translate")
         self.layers.append(layer)
@@ -3664,6 +3691,30 @@ def test_open_example_workflow_loads_bundled_template(qtbot):
     assert widget._selected_node_id == "input"
     assert widget.graph_view._cards["input"]._selected
     assert widget.status_label.text().startswith("Opened example workflow")
+    session = widget._workflow_tabs.current
+    example = next(spec for spec in EXAMPLE_WORKFLOWS if spec.id == "label-cleanup")
+    assert session is not None
+    assert session.path is None
+    assert session.title == example.title
+    assert not session.dirty
+
+
+def test_loading_packaged_example_path_directly_keeps_save_destination_unbound(
+    qtbot,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    example = next(spec for spec in EXAMPLE_WORKFLOWS if spec.id == "label-cleanup")
+    packaged = _example_workflow_path(example)
+
+    loaded = widget.load_workflow_file(packaged)
+
+    session = widget._workflow_tabs.current
+    assert loaded.resolve() == packaged.resolve()
+    assert session is not None
+    assert session.path is None
+    assert session.title == example.title
+    assert not session.dirty
 
 
 def test_example_workflow_selects_source_before_background_thumbnail_run(qtbot):
@@ -4412,7 +4463,10 @@ def test_image_source_node_can_select_napari_layer(qtbot):
     assert _metadata_value(widget, "Dimensions") == "z=3, y=6, x=7"
 
 
-def test_image_source_axis_declaration_enables_rescale_z_and_undo(qtbot):
+def test_image_source_axis_declaration_enables_rescale_z_and_undo(
+    qtbot,
+    monkeypatch,
+):
     data = np.zeros((3, 8, 9), dtype=np.uint16)
     widget = VippWidget(_Viewer(data, metadata={"axes": "QYX"}))
     qtbot.addWidget(widget)
@@ -4429,16 +4483,31 @@ def test_image_source_axis_declaration_enables_rescale_z_and_undo(qtbot):
     assert widget.pipeline.output_states["input"].axis_order == "ZYX"
     assert "saved with the workflow" in source_control.axis_control.notice_label.text()
 
+    card_ids = {node_id: id(card) for node_id, card in widget.graph_view._cards.items()}
+
+    def reject_full_restore(*_args, **_kwargs):
+        raise AssertionError("source parameter undo must not rebuild the graph")
+
+    monkeypatch.setattr(widget.graph_view, "build_graph", reject_full_restore)
+    monkeypatch.setattr(widget, "_discard_inspect_layers", reject_full_restore)
+    monkeypatch.setattr(widget, "_invalidate_pipeline_cache", reject_full_restore)
+
     widget.undo()
     widget._debounce_timer.stop()
     widget.run_pipeline(force_sync=True)
     assert not widget.pipeline.nodes["input"].params.get("axis_declaration", "")
     assert widget.pipeline.output_states["input"].axis_order == "QYX"
+    assert {
+        node_id: id(card) for node_id, card in widget.graph_view._cards.items()
+    } == card_ids
 
     widget.redo()
     widget._debounce_timer.stop()
     widget.run_pipeline(force_sync=True)
     assert widget.pipeline.output_states["input"].axis_order == "ZYX"
+    assert {
+        node_id: id(card) for node_id, card in widget.graph_view._cards.items()
+    } == card_ids
 
     rescale = widget.add_node_from_palette("rescale_axes")
     widget._connect_nodes("input", rescale.id)
@@ -4463,6 +4532,232 @@ def test_image_source_axis_declaration_enables_rescale_z_and_undo(qtbot):
     output = widget.pipeline.outputs[rescale.id]
     assert output is not None, widget.status_label.text()
     assert output.shape == (5, 8, 9)
+
+
+def test_image_source_advanced_axis_draft_never_enters_workflow_history(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "QYX"}))
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    control = widget._parameter_widgets["image_source"]
+    axis_control = control.axis_control
+    custom_index = axis_control.mode_combo.findData(axis_control.CUSTOM)
+    axis_control.mode_combo.setCurrentIndex(custom_index)
+    history_size = len(widget._undo_stack)
+
+    for partial in ("Z", "Z-", "Z ->", "QYX ->"):
+        axis_control.advanced_edit.setText(partial)
+        assert not widget.pipeline.nodes["input"].params.get(
+            "axis_declaration",
+            "",
+        )
+        widget._current_history_snapshot()
+    assert len(widget._undo_stack) == history_size
+
+    axis_control.advanced_edit.setText("QYX -> ZYX")
+    assert not widget.pipeline.nodes["input"].params.get("axis_declaration", "")
+    axis_control.advanced_edit.editingFinished.emit()
+
+    assert widget.pipeline.nodes["input"].params["axis_declaration"] == ("QYX -> ZYX")
+    assert len(widget._undo_stack) == history_size + 1
+
+
+def test_image_source_rejects_programmatic_invalid_axis_without_losing_other_edit(
+    qtbot,
+):
+    widget = VippWidget(_Viewer(np.zeros((3, 8, 9)), metadata={"axes": "QYX"}))
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    value = widget._image_source_value(widget.pipeline.nodes["input"])
+    value["axis_declaration"] = "Z"
+    value["sample_name"] = "replacement sample"
+
+    widget._on_image_source_changed(value)
+
+    node = widget.pipeline.nodes["input"]
+    assert not node.params.get("axis_declaration", "")
+    assert node.params["sample_name"] == "replacement sample"
+    assert "not applied" in widget.status_label.text().casefold()
+
+
+def test_parameter_undo_preserves_graph_thumbnails_outputs_and_viewer_layers(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    sibling = widget.add_node_from_palette("median_filter")
+    widget._connect_nodes("input", sibling.id)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("gaussian")
+    widget._update_thumbnails()
+    qtbot.waitUntil(
+        lambda: all(
+            widget.graph_view.node_has_thumbnail(node_id)
+            for node_id in ("input", "gaussian")
+        ),
+        timeout=5_000,
+    )
+    widget._debounce_timer.stop()
+    inspect_layer = viewer.layers["VIPP Inspect"]
+
+    node_ids = tuple(widget.pipeline.nodes)
+    card_ids = {node_id: id(widget.graph_view._cards[node_id]) for node_id in node_ids}
+    unaffected_node_ids = ("input", sibling.id)
+    output_ids = {
+        node_id: id(widget.pipeline.outputs[node_id]) for node_id in unaffected_node_ids
+    }
+    layer_ids = tuple(id(layer) for layer in viewer.layers)
+    thumbnail_nodes = {
+        node_id for node_id in node_ids if widget.graph_view.node_has_thumbnail(node_id)
+    }
+    assert {"input", "gaussian"} <= thumbnail_nodes
+
+    def reject_full_restore(*_args, **_kwargs):
+        raise AssertionError("parameter undo must not rebuild the full workflow")
+
+    monkeypatch.setattr(widget.graph_view, "build_graph", reject_full_restore)
+    monkeypatch.setattr(widget, "_discard_inspect_layers", reject_full_restore)
+    monkeypatch.setattr(widget, "_invalidate_pipeline_cache", reject_full_restore)
+    run_roots: list[set[str]] = []
+    original_run_pipeline = widget.run_pipeline
+
+    def run_pipeline_sync(*_args, **_kwargs):
+        run_roots.append(set(widget._pending_dirty_node_ids))
+        return original_run_pipeline(force_sync=True)
+
+    monkeypatch.setattr(widget, "run_pipeline", run_pipeline_sync)
+
+    old_sigma = float(widget.pipeline.nodes["gaussian"].params["sigma"])
+    widget._on_param_changed("sigma", old_sigma + 1.0)
+    widget._debounce_timer.stop()
+    widget.undo()
+
+    assert widget.pipeline.nodes["gaussian"].params["sigma"] == old_sigma
+    assert {node_id: id(widget.graph_view._cards[node_id]) for node_id in node_ids} == (
+        card_ids
+    )
+    assert {
+        node_id: id(widget.pipeline.outputs[node_id]) for node_id in unaffected_node_ids
+    } == output_ids
+    assert tuple(id(layer) for layer in viewer.layers) == layer_ids
+    assert viewer.layers["VIPP Inspect"] is inspect_layer
+    assert all(
+        widget.graph_view.node_has_thumbnail(node_id) for node_id in thumbnail_nodes
+    )
+    assert run_roots == [{"gaussian"}]
+
+    widget.redo()
+
+    assert widget.pipeline.nodes["gaussian"].params["sigma"] == old_sigma + 1.0
+    assert {node_id: id(widget.graph_view._cards[node_id]) for node_id in node_ids} == (
+        card_ids
+    )
+    assert {
+        node_id: id(widget.pipeline.outputs[node_id]) for node_id in unaffected_node_ids
+    } == output_ids
+    assert tuple(id(layer) for layer in viewer.layers) == layer_ids
+    assert viewer.layers["VIPP Inspect"] is inspect_layer
+    assert all(
+        widget.graph_view.node_has_thumbnail(node_id) for node_id in thumbnail_nodes
+    )
+    assert run_roots == [{"gaussian"}, {"gaussian"}]
+
+
+def test_parameter_only_history_restore_accepts_source_but_rejects_topology(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    before_source = widget._current_history_snapshot()
+
+    widget.pipeline.set_param("input", "sample_name", "Another sample")
+    after_source = widget._current_history_snapshot()
+
+    source_change = widget._parameter_only_history_change(
+        before_source,
+        after_source,
+    )
+    assert source_change is not None
+    assert source_change[1] == "input"
+
+    widget.pipeline.add_node("median_filter")
+    after_topology = widget._current_history_snapshot()
+
+    assert widget._parameter_only_history_change(after_source, after_topology) is None
+
+
+def test_cache_retention_undo_updates_ui_without_recalculating(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+
+    widget.keep_cached_checkbox.setChecked(True)
+
+    assert widget.pipeline.nodes["gaussian"].params[CACHE_KEEP_NODE_PARAM] is True
+    assert widget.keep_cached_checkbox.isChecked()
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cache-retention history must not recalculate")
+        ),
+    )
+
+    widget.undo()
+
+    assert not widget.pipeline.nodes["gaussian"].params.get(
+        CACHE_KEEP_NODE_PARAM,
+        False,
+    )
+    assert not widget.keep_cached_checkbox.isChecked()
+
+    widget.redo()
+
+    assert widget.pipeline.nodes["gaussian"].params[CACHE_KEEP_NODE_PARAM] is True
+    assert widget.keep_cached_checkbox.isChecked()
+
+
+def test_split_preview_channel_undo_refreshes_presentation_without_recalculation(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(
+        _Viewer(
+            np.zeros((2, 8, 9), dtype=np.uint16),
+            metadata={"axes": "CYX"},
+        )
+    )
+    qtbot.addWidget(widget)
+    split = widget.add_node_from_palette("split_channels")
+    widget._connect_nodes("input", split.id)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(split.id)
+    refreshes: list[set[str]] = []
+    monkeypatch.setattr(
+        widget,
+        "_refresh_split_channel_display_surfaces",
+        lambda node_ids: refreshes.append(set(node_ids)),
+    )
+
+    widget._on_param_changed("preview_channel", 1)
+    refreshes.clear()
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("preview-channel history must not recalculate")
+        ),
+    )
+
+    widget.undo()
+
+    assert widget.pipeline.nodes[split.id].params["preview_channel"] == 0
+    assert refreshes == [{split.id}]
+
+    widget.redo()
+
+    assert widget.pipeline.nodes[split.id].params["preview_channel"] == 1
+    assert refreshes == [{split.id}, {split.id}]
 
 
 def test_qyx_declaration_updates_gaussian_z_visibility_before_pixels_run(
@@ -5134,9 +5429,12 @@ def test_source_preview_preserves_user_hidden_inspect_visibility(qtbot):
 
     assert preview.visible is True
     assert inspect.visible is False
-    assert next(profile for profile in profiles if profile["node_id"] == "input")[
-        "settings"
-    ]["visible"] is False
+    assert (
+        next(profile for profile in profiles if profile["node_id"] == "input")[
+            "settings"
+        ]["visible"]
+        is False
+    )
 
     widget._source_view_modes["input"] = "analysis"
     widget._apply_selected_viewer_surface(select_layer=True)
@@ -20250,6 +20548,344 @@ def test_save_selected_output_dialog_allows_raster_for_2d_output(
     assert iio.imread(path).ndim == 2
 
 
+def _select_workflow_save_policy(
+    widget: VippWidget,
+    policy: WorkflowSavePolicy,
+) -> None:
+    index = widget.workflow_save_policy_combo.findData(policy.value)
+    assert index >= 0
+    widget.workflow_save_policy_combo.setCurrentIndex(index)
+    assert widget._workflow_save_policy is policy
+
+
+def test_save_action_overwrites_named_workflow_without_reopening_dialog(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = tmp_path / "named-workflow.json"
+    dialog_calls = []
+
+    def select_initial_path(*_args, **_kwargs):
+        dialog_calls.append(True)
+        return str(target), ""
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        select_initial_path,
+    )
+    assert widget._save_workflow_dialog()
+    initial_bytes = target.read_bytes()
+    assert len(dialog_calls) == 1
+
+    widget.pipeline.set_param("gaussian", "sigma", 4.25)
+    widget._sync_current_workflow_tab_state()
+    session = widget._workflow_tabs.current
+    assert session is not None and session.dirty
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Ctrl+S must overwrite the named workflow without reopening Save As."
+        ),
+    )
+
+    # Keyboard handling belongs to the host-window event filter. Registering
+    # the same QAction shortcut as napari makes Qt reject both as ambiguous.
+    assert widget.save_workflow_action.shortcuts() == []
+    assert widget.save_workflow_as_action.shortcuts() == []
+    widget.save_workflow_action.trigger()
+
+    assert target.read_bytes() != initial_bytes
+    assert session.path == target.resolve()
+    assert not session.dirty
+    assert widget.status_label.text().startswith("Saved workflow")
+
+
+def test_actual_ctrl_s_keypress_saves_dirty_workflow_and_clears_tab_marker(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.resize(1_100, 650)
+    widget.show()
+    target = tmp_path / "ctrl-s-workflow.json"
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+
+    session = widget._workflow_tabs.current
+    assert session is not None and session.path is None
+    widget.pipeline.set_param("gaussian", "sigma", 4.25)
+    widget._sync_current_workflow_tab_state()
+    assert session.dirty
+    assert widget.workflow_tab_bar.tabText(
+        widget.workflow_tab_bar.currentIndex()
+    ).endswith(" *")
+
+    widget.graph_view.setFocus()
+    assert QApplication.focusWidget() is widget.graph_view
+    qtbot.keyClick(widget.graph_view, Qt.Key_S, Qt.ControlModifier)
+
+    assert target.exists()
+    assert session.path == target.resolve()
+    assert not session.dirty
+    assert not widget.workflow_tab_bar.tabText(
+        widget.workflow_tab_bar.currentIndex()
+    ).endswith(" *")
+    assert widget.status_label.text().startswith("Saved workflow")
+
+
+def test_ctrl_s_from_napari_sibling_focus_saves_active_vipp_workflow(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    host = QMainWindow()
+    viewer_surface = QPushButton("napari viewer surface", host)
+    host.setCentralWidget(viewer_surface)
+    widget = VippWidget(_Viewer())
+    dock = QDockWidget("VIPP Workflow", host)
+    dock.setWidget(widget)
+    host.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    qtbot.addWidget(host)
+    host.resize(1_200, 760)
+    host.show()
+    target = tmp_path / "viewer-focus-ctrl-s.json"
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+
+    session = widget._workflow_tabs.current
+    assert session is not None
+    widget.pipeline.set_param("gaussian", "sigma", 3.75)
+    widget._sync_current_workflow_tab_state()
+    assert session.dirty
+
+    host.activateWindow()
+    viewer_surface.setFocus()
+    assert QApplication.focusWidget() is viewer_surface
+    assert not widget.isAncestorOf(viewer_surface)
+    qtbot.keyClick(viewer_surface, Qt.Key_S, Qt.ControlModifier)
+
+    assert target.exists()
+    assert session.path == target.resolve()
+    assert not session.dirty
+    assert widget.status_label.text().startswith("Saved workflow")
+
+
+def test_ctrl_s_claims_key_before_competing_napari_action(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    capfd,
+):
+    host = QMainWindow()
+    viewer_surface = QPushButton("napari viewer surface", host)
+    widget = VippWidget(_Viewer())
+    dock = QDockWidget("VIPP Workflow", host)
+    dock.setWidget(widget)
+    host.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    host.setCentralWidget(viewer_surface)
+    competing_save = QAction("napari save layer", host)
+    competing_save.setShortcuts(QKeySequence.keyBindings(QKeySequence.Save))
+    competing_save.setShortcutContext(Qt.WindowShortcut)
+    host.addAction(competing_save)
+    competing_calls = []
+    competing_save.triggered.connect(lambda: competing_calls.append(True))
+    qtbot.addWidget(host)
+    host.resize(1_200, 760)
+    host.show()
+    target = tmp_path / "unambiguous-vipp-save.json"
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+
+    session = widget._workflow_tabs.current
+    assert session is not None
+    widget.pipeline.set_param("gaussian", "sigma", 3.25)
+    widget._sync_current_workflow_tab_state()
+    save_requests = []
+    original_save = widget._request_workflow_save
+
+    def track_save_request(*, force_choose_path=False):
+        save_requests.append(force_choose_path)
+        return original_save(force_choose_path=force_choose_path)
+
+    monkeypatch.setattr(widget, "_request_workflow_save", track_save_request)
+    host.activateWindow()
+    viewer_surface.setFocus()
+    assert QApplication.focusWidget() is viewer_surface
+    assert not widget.isAncestorOf(viewer_surface)
+
+    qtbot.keyClick(viewer_surface, Qt.Key_S, Qt.ControlModifier)
+
+    assert target.exists()
+    assert not session.dirty
+    assert save_requests == [False]
+    assert competing_calls == []
+    assert widget.status_label.text().startswith("Saved workflow")
+    assert "Ambiguous shortcut overload" not in capfd.readouterr().err
+
+    # The application-level filter must not steal Save from another top-level
+    # window that does not contain this VIPP instance.
+    other_host = QMainWindow()
+    other_surface = QPushButton("unrelated window", other_host)
+    other_host.setCentralWidget(other_surface)
+    qtbot.addWidget(other_host)
+    other_host.show()
+    other_host.activateWindow()
+    other_surface.setFocus()
+    assert QApplication.focusWidget() is other_surface
+
+    unrelated_override = QKeyEvent(
+        QEvent.ShortcutOverride,
+        Qt.Key_S,
+        Qt.ControlModifier,
+    )
+    unrelated_override.setAccepted(False)
+
+    assert not widget.eventFilter(other_surface, unrelated_override)
+    assert not unrelated_override.isAccepted()
+    assert save_requests == [False]
+
+
+def test_untitled_save_requires_explicit_confirmation_before_replacing_file(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = tmp_path / "already-there.json"
+    sentinel = b"existing workflow must survive cancellation"
+    target.write_bytes(sentinel)
+    dialog_options = []
+
+    def choose_existing(_parent, _title, _start, _filters, *args, **kwargs):
+        dialog_options.append(kwargs.get("options", args[0] if args else None))
+        return str(target.with_suffix("")), ""
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        choose_existing,
+    )
+    answers = [QMessageBox.No, QMessageBox.Yes]
+    prompts = []
+
+    def answer_overwrite(_parent, title, message, *_args, **_kwargs):
+        prompts.append((title, message))
+        return answers.pop(0)
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        answer_overwrite,
+    )
+
+    assert not widget._save_workflow_dialog()
+    assert target.read_bytes() == sentinel
+    assert widget._workflow_tabs.current.path is None
+    assert "cancel" in widget.status_label.text().lower()
+
+    assert widget._save_workflow_dialog()
+    assert target.read_bytes() != sentinel
+    assert widget._workflow_tabs.current.path == target.resolve()
+    assert len(prompts) == 2
+    assert all("replace" in f"{title} {message}".lower() for title, message in prompts)
+    assert all(
+        options is not None and options & QFileDialog.Option.DontConfirmOverwrite
+        for options in dialog_options
+    )
+
+
+def test_confirm_save_policy_prompts_for_named_workflow_without_save_as_dialog(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = tmp_path / "confirmed-workflow.json"
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+    assert widget._save_workflow_dialog()
+    original = target.read_bytes()
+    _select_workflow_save_policy(widget, WorkflowSavePolicy.CONFIRM)
+    widget.pipeline.set_param("gaussian", "sigma", 5.5)
+    widget._sync_current_workflow_tab_state()
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Confirmation policy must reuse the current workflow path."
+        ),
+    )
+    answers = [QMessageBox.No, QMessageBox.Yes]
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: answers.pop(0),
+    )
+
+    assert not widget._save_workflow_dialog()
+    assert target.read_bytes() == original
+    assert widget._workflow_tabs.current.dirty
+
+    assert widget._save_workflow_dialog()
+    assert target.read_bytes() != original
+    assert not widget._workflow_tabs.current.dirty
+    assert widget.status_label.text().startswith("Saved workflow")
+
+
+def test_timestamp_save_policy_creates_collision_safe_versions_from_stable_base(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    base = tmp_path / "analysis.json"
+    _select_workflow_save_policy(widget, WorkflowSavePolicy.TIMESTAMPED)
+    monkeypatch.setattr(
+        "napari_vipp._widget._workflow_timestamp_now",
+        lambda: datetime(2026, 8, 27, 14, 5, 6, 123456),
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(base), ""),
+    )
+
+    assert widget._save_workflow_dialog()
+    first = tmp_path / "analysis__vipp-2026-08-27_14-05-06-123456.json"
+    assert first.exists()
+    first_bytes = first.read_bytes()
+    assert not base.exists()
+
+    widget.pipeline.set_param("gaussian", "sigma", 7.75)
+    widget._sync_current_workflow_tab_state()
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: pytest.fail(
+            "A timestamp series must retain its original base path."
+        ),
+    )
+    assert widget._save_workflow_dialog()
+
+    second = tmp_path / "analysis__vipp-2026-08-27_14-05-06-123456-02.json"
+    assert second.exists()
+    assert second.read_bytes() != first_bytes
+    assert widget._workflow_tabs.current.path == second.resolve()
+    assert not widget._workflow_tabs.current.dirty
+    assert widget.status_label.text().startswith("Saved workflow version")
+
+
 def _configure_workflow_attached_batch(widget, tmp_path):
     input_dir = tmp_path / "batch-input"
     input_dir.mkdir(exist_ok=True)
@@ -20361,7 +20997,7 @@ def test_workflow_save_directory_is_reused_by_load(qtbot, monkeypatch, tmp_path)
     target = selected_dir / "remembered.json"
     starts = []
 
-    def select_save(_parent, _title, start, _filters):
+    def select_save(_parent, _title, start, _filters, *_args, **_kwargs):
         starts.append(start)
         return str(target), ""
 
@@ -20412,7 +21048,7 @@ def test_workflow_load_directory_is_reused_by_save(qtbot, monkeypatch, tmp_path)
 
     save_starts = []
 
-    def cancel_save(_parent, _title, start, _filters):
+    def cancel_save(_parent, _title, start, _filters, *_args, **_kwargs):
         save_starts.append(start)
         return "", ""
 
@@ -24344,6 +24980,42 @@ def test_scatter_threshold_guide_immediately_marks_workflow_tab_dirty(
     ).endswith(" *")
 
 
+def test_scatter_threshold_drag_and_recalculation_pause_share_one_undo_point(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8)), metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(
+        widget,
+        "_update_colocalization_scatter",
+        lambda *_args, **_kwargs: None,
+    )
+    coloc = widget.add_node_from_palette("racc_index")
+    widget.graph_view.select_node(coloc.id)
+    initial_params = dict(coloc.params)
+    widget._debounce_timer.stop()
+    widget._history.clear()
+
+    plot = widget.colocalization_scatter_plot
+    plot.gestureStarted.emit()
+    widget._on_colocalization_scatter_threshold_changed(1, 12.5)
+    widget._debounce_timer.stop()
+    widget._finish_debounced_parameter_history_group()
+    widget._on_colocalization_scatter_threshold_changed(1, 18.5)
+
+    assert coloc.params["threshold_mode"] == "Manual"
+    assert coloc.params["channel_1_threshold"] == 18.5
+    assert len(widget._undo_stack) == 1
+    plot.gestureFinished.emit()
+    assert len(widget._undo_stack) == 1
+
+    widget._debounce_timer.stop()
+    widget.run_pipeline = lambda *_args, **_kwargs: None
+    widget.undo()
+    assert widget.pipeline.nodes[coloc.id].params == initial_params
+
+
 def test_deferred_pipeline_refresh_remains_owned_by_origin_workflow_tab(
     qtbot,
 ):
@@ -26708,6 +27380,21 @@ def _responsive_crop_widget(qtbot):
     return widget, crop, data
 
 
+def _press_slider_handle(qtbot, slider) -> QPoint:
+    option = QStyleOptionSlider()
+    slider.initStyleOption(option)
+    handle = slider.style().subControlRect(
+        QStyle.CC_Slider,
+        option,
+        QStyle.SC_SliderHandle,
+        slider,
+    )
+    position = handle.center()
+    qtbot.mousePress(slider, Qt.LeftButton, pos=position)
+    assert slider.isSliderDown()
+    return position
+
+
 def _open_crop_top_draft(widget, value: int) -> None:
     control = widget._parameter_widgets["top"]
     control.slider.setValue(value)
@@ -26880,6 +27567,55 @@ def test_responsive_crop_shows_z_controls_only_for_explicit_z(qtbot):
     assert "z_end" not in inferred._parameter_widgets
 
 
+def test_responsive_crop_protects_explicit_channel_axis_without_showing_override(
+    qtbot,
+):
+    data = np.zeros((2, 3, 4, 8, 10), dtype=np.float32)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "TCZYX"}))
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+
+    assert "channel_axis" not in widget._parameter_widgets
+    summary = widget._parameter_widgets["crop_roi_summary"].text()
+    assert "Channel axis C (axis 1) is protected" in summary
+    assert "all 3 channels are retained" in summary
+
+    contextual_notes = []
+    for row in range(widget.parameter_form.rowCount()):
+        item = widget.parameter_form.itemAt(row, QFormLayout.SpanningRole)
+        if item is not None and isinstance(item.widget(), QLabel):
+            contextual_notes.append(item.widget().text())
+    assert not any("Some settings are hidden" in text for text in contextual_notes)
+
+
+def test_responsive_crop_exposes_unresolved_channel_override_as_protection(qtbot):
+    widget = VippWidget(_Viewer(np.zeros((4, 8, 10), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+
+    control = widget._parameter_widgets["channel_axis"]
+    label = widget.parameter_form.labelForField(control)
+    assert label.text() == "Channel axis override (-1 = automatic)"
+    assert "does not crop channels" in control.toolTip().casefold()
+
+
+def test_responsive_crop_summary_rejects_stale_channel_override(qtbot):
+    data = np.zeros((2, 3, 4, 8, 10), dtype=np.float32)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "TCZYX"}))
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget.pipeline.nodes[crop.id].params["channel_axis"] = 7
+    widget._refresh_selected_parameter_controls()
+
+    assert "channel_axis" in widget._parameter_widgets
+    summary = widget._parameter_widgets["crop_roi_summary"].text()
+    assert "override 7 is outside this 5D input" in summary
+    assert "all 3 channels are retained" not in summary
+
+
 def test_responsive_crop_drafts_until_release_then_commits_once(
     qtbot,
     monkeypatch,
@@ -26943,6 +27679,91 @@ def test_responsive_crop_drafts_until_release_then_commits_once(
     assert restored["top"] == 3
     assert restored["left"] == 4
     assert restored["z_start"] == 2
+
+
+def test_responsive_crop_pause_while_mouse_is_held_is_not_an_undo_boundary(
+    qtbot,
+):
+    widget, crop, _data = _responsive_crop_widget(qtbot)
+    widget.resize(1_100, 650)
+    widget.show()
+    control = widget._parameter_widgets["top"]
+    original = int(widget.pipeline.nodes[crop.id].params["top"])
+    press_position = _press_slider_handle(qtbot, control.slider)
+
+    control.slider.setValue(2)
+    qtbot.wait(widget._crop_draft_timer.interval() + 100)
+
+    assert control.slider.isSliderDown()
+    assert widget.pipeline.nodes[crop.id].params["top"] == original
+    assert widget._crop_draft_values["top"] == 2
+    assert widget._undo_stack == []
+
+    control.slider.setValue(3)
+    qtbot.mouseRelease(
+        control.slider,
+        Qt.LeftButton,
+        pos=press_position,
+    )
+
+    assert widget.pipeline.nodes[crop.id].params["top"] == 3
+    assert len(widget._undo_stack) == 1
+    widget._debounce_timer.stop()
+
+    widget.undo()
+    assert widget.pipeline.nodes[crop.id].params["top"] == original
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+
+
+def test_numeric_slider_pause_during_calculation_is_one_undo_gesture(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.resize(1_100, 650)
+    widget.show()
+    widget._select_node("gaussian")
+    widget._debounce_timer.stop()
+    widget._history.clear()
+    control = widget._parameter_widgets["sigma"]
+    node = widget.pipeline.nodes["gaussian"]
+    initial = float(node.params["sigma"])
+    control.value_box.setValue(initial + 0.25)
+    before_mouse_down = float(node.params["sigma"])
+    assert before_mouse_down != initial
+    press_position = _press_slider_handle(qtbot, control.slider)
+
+    control.slider.setValue(control.slider.value() + 5)
+    intermediate = float(node.params["sigma"])
+    assert intermediate != before_mouse_down
+    widget._debounce_timer.stop()
+    widget._finish_debounced_parameter_history_group()
+
+    assert control.slider.isSliderDown()
+    assert len(widget._undo_stack) == 2
+    control.slider.setValue(control.slider.value() + 5)
+    final = float(node.params["sigma"])
+    assert final != intermediate
+    qtbot.mouseRelease(
+        control.slider,
+        Qt.LeftButton,
+        pos=press_position,
+    )
+
+    assert len(widget._undo_stack) == 2
+    widget._debounce_timer.stop()
+    widget.run_pipeline = lambda *_args, **_kwargs: None
+    widget.undo()
+    assert widget.pipeline.nodes["gaussian"].params["sigma"] == before_mouse_down
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
 
 
 def test_responsive_crop_draft_bounds_reserve_one_sample_per_axis(qtbot):
@@ -27197,6 +28018,7 @@ def test_responsive_crop_box_uses_pixel_edges_for_one_sample_roi(qtbot):
     qtbot.addWidget(widget)
     crop = widget.add_node_from_palette("crop_stack")
     widget._connect_nodes("input", crop.id)
+    widget.viewer.dims.ndisplay = 3
     widget._parameter_widgets["z_start"].slider.setValue(5)
     widget._parameter_widgets["top"].slider.setValue(7)
     widget._parameter_widgets["left"].slider.setValue(9)
@@ -27270,14 +28092,17 @@ def test_responsive_crop_real_viewer_tracks_noncanonical_display_plane(qtbot):
     )
 
     assert roi_layer.ndim == 5
-    assert len(roi_layer.data) == 7
+    assert len(roi_layer.data) == 1
+    assert roi_layer.blending == "translucent_no_depth"
+    assert np.allclose(roi_layer.edge_width, [1.25])
+    assert np.all(np.asarray(roi_layer.face_color)[:, 3] > 0)
     assert tuple(viewer.dims.displayed) == (3, 4)
     initial_face = np.asarray(roi_layer.data[-1]).copy()
     initial_step = tuple(int(value) for value in viewer.dims.current_step)
     assert np.all(initial_face[:, 0] == initial_step[0])
     assert np.all(initial_face[:, 1] == initial_step[1])
     assert np.all(initial_face[:, 2] == initial_step[2])
-    assert roi_layer.metadata["geometry"] == "volumetric-box-and-current-slice"
+    assert roi_layer.metadata["geometry"] == "current-slice"
     assert roi_layer.visible is True
     layer_identity = id(roi_layer)
 
@@ -27333,7 +28158,7 @@ def test_responsive_crop_real_viewer_tracks_plane_when_dims_are_unlinked(qtbot):
     initial_step = tuple(int(value) for value in viewer.dims.current_step)
     assert tuple(viewer.dims.displayed) == (1, 2)
     assert np.all(initial_face[:, 0] == initial_step[0])
-    assert roi_layer.metadata["geometry"] == "volumetric-box-and-current-slice"
+    assert roi_layer.metadata["geometry"] == "current-slice"
 
     widget.follow_dims_checkbox.setChecked(False)
     viewer.dims.set_current_step(0, 3)
@@ -27350,6 +28175,28 @@ def test_responsive_crop_real_viewer_tracks_plane_when_dims_are_unlinked(qtbot):
     assert not np.array_equal(current_face, initial_face)
     assert roi_layer.metadata["current_slice_retained"] is True
     assert roi_layer.visible is True
+
+    roi_layer.blending = "opaque"
+    roi_layer.edge_width = 4.0
+    roi_layer.opacity = 0.2
+    viewer.dims.ndisplay = 3
+
+    assert id(roi_layer) == layer_identity
+    assert len(roi_layer.data) == 6
+    assert roi_layer.metadata["geometry"] == "volumetric-box"
+    assert roi_layer.blending == "translucent_no_depth"
+    assert np.allclose(roi_layer.edge_width, [1.0] * 6)
+    assert np.allclose(np.asarray(roi_layer.face_color)[:, 3], 0.0)
+    assert roi_layer.opacity == 0.9
+
+    viewer.dims.ndisplay = 2
+
+    assert id(roi_layer) == layer_identity
+    assert len(roi_layer.data) == 1
+    assert roi_layer.metadata["geometry"] == "current-slice"
+    assert roi_layer.blending == "translucent_no_depth"
+    assert np.allclose(roi_layer.edge_width, [1.25])
+    assert np.all(np.asarray(roi_layer.face_color)[:, 3] > 0)
     widget._crop_draft_timer.stop()
 
 
@@ -27425,11 +28272,15 @@ def test_responsive_crop_shapes_layer_is_owned_without_claiming_same_name_user_l
     assert roi_layer.name == user_layer.name == CROP_ROI_LAYER_NAME
     assert roi_layer.layer_type == "shapes"
     assert roi_layer.shape_type == "polygon"
-    assert len(roi_layer.data) == 7
+    assert len(roi_layer.data) == 1
     assert all(np.asarray(face).shape == (4, 3) for face in roi_layer.data)
-    assert roi_layer.metadata["geometry"] == "volumetric-box-and-current-slice"
+    assert roi_layer.metadata["geometry"] == "current-slice"
     assert roi_layer.metadata["current_z_slice_retained"] is False
     assert roi_layer.edge_color[-1] == "#ef4444"
+    assert roi_layer.face_color[-1] == "#ef444430"
+    assert roi_layer.blending == "translucent_no_depth"
+    assert roi_layer.edge_width == 1.25
+    assert roi_layer.opacity == 0.9
     assert roi_layer.editable is False
     assert widget._is_vipp_generated_layer(roi_layer)
     assert widget._available_layer_names().count(CROP_ROI_LAYER_NAME) == 1
@@ -27438,6 +28289,24 @@ def test_responsive_crop_shapes_layer_is_owned_without_claiming_same_name_user_l
 
     assert roi_layer.metadata["current_z_slice_retained"] is True
     assert roi_layer.edge_color[-1] == "#f59e0b"
+    assert roi_layer.face_color[-1] == "#f59e0b30"
+
+    layer_identity = id(roi_layer)
+    viewer.dims.ndisplay = 3
+
+    assert id(roi_layer) == layer_identity
+    assert len(roi_layer.data) == 6
+    assert roi_layer.metadata["geometry"] == "volumetric-box"
+    assert roi_layer.blending == "translucent_no_depth"
+    assert roi_layer.edge_width == 1.0
+    assert roi_layer.face_color == ["#f59e0b00"] * 6
+
+    viewer.dims.ndisplay = 2
+
+    assert id(roi_layer) == layer_identity
+    assert len(roi_layer.data) == 1
+    assert roi_layer.metadata["geometry"] == "current-slice"
+    assert roi_layer.edge_width == 1.25
 
     widget._discard_crop_presentation_layers()
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from numbers import Rational
 
 import numpy as np
-from qtpy.QtCore import QPointF, QRect, Qt, Signal
+from qtpy.QtCore import QEvent, QPointF, QRect, Qt, Signal
 from qtpy.QtGui import QColor, QImage, QPainter, QPen
 from qtpy.QtWidgets import QWidget
 
@@ -50,8 +50,7 @@ def colocalization_scatter_peak_bytes(bins: int) -> int:
 def colocalization_scatter_requires_background(bins: int) -> bool:
     """Whether histogram allocation alone warrants worker execution."""
     return (
-        colocalization_scatter_peak_bytes(bins)
-        >= SCATTER_DENSITY_BACKGROUND_COST_BYTES
+        colocalization_scatter_peak_bytes(bins) >= SCATTER_DENSITY_BACKGROUND_COST_BYTES
     )
 
 
@@ -88,6 +87,8 @@ class HistogramPlot(QWidget):
     """Compact histogram display for the selected node output."""
 
     markerChanged = Signal(str, float)
+    gestureStarted = Signal()
+    gestureFinished = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,6 +105,7 @@ class HistogramPlot(QWidget):
         self._drag_marker: str | None = None
         self._drag_start_x: float | None = None
         self._drag_moved = False
+        self._gesture_active = False
         self.setMinimumHeight(120)
         self.setMouseTracking(True)
 
@@ -140,9 +142,7 @@ class HistogramPlot(QWidget):
         marker_labels = {label for label, _value, _color in self._markers}
         self._draggable_markers = set(draggable_markers or set()) & marker_labels
         if self._drag_marker not in self._draggable_markers:
-            self._drag_marker = None
-            self._drag_start_x = None
-            self._drag_moved = False
+            self._cancel_marker_drag()
         if x_range is None or self._series_counts.size == 0:
             self._x_min_label = ""
             self._x_max_label = ""
@@ -207,6 +207,7 @@ class HistogramPlot(QWidget):
         self._drag_marker = marker
         self._drag_start_x = float(point.x())
         self._drag_moved = False
+        self._begin_gesture()
         event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
@@ -231,16 +232,32 @@ class HistogramPlot(QWidget):
             return
         if self._drag_moved:
             self._emit_marker_from_point(self._drag_marker, _event_position(event))
+        self._cancel_marker_drag()
+        event.accept()
+
+    def event(self, event) -> bool:
+        if event.type() in {QEvent.Hide, QEvent.UngrabMouse}:
+            self._cancel_marker_drag()
+        return super().event(event)
+
+    def _begin_gesture(self) -> None:
+        if self._gesture_active:
+            return
+        self._gesture_active = True
+        self.gestureStarted.emit()
+
+    def _cancel_marker_drag(self) -> None:
         self._drag_marker = None
         self._drag_start_x = None
         self._drag_moved = False
-        event.accept()
+        if not self._gesture_active:
+            return
+        self._gesture_active = False
+        self.gestureFinished.emit()
 
     def marker_values(self) -> dict[str, Rational | float]:
         """Return the currently displayed marker values by label."""
-        return {
-            str(label): value for label, value, _color in self._markers
-        }
+        return {str(label): value for label, value, _color in self._markers}
 
     def _draw_axes(self, painter: QPainter, plot_rect: QRect) -> None:
         painter.setPen(QPen(QColor("#64748b"), 1.2))
@@ -325,8 +342,7 @@ class HistogramPlot(QWidget):
             shifted_value = min(max(value - int(minimum), 0), shifted_maximum)
             if self._x_scale == "log":
                 return float(
-                    np.log1p(float(shifted_value))
-                    / np.log1p(max(shifted_maximum, 1))
+                    np.log1p(float(shifted_value)) / np.log1p(max(shifted_maximum, 1))
                 )
             return float(shifted_value / shifted_maximum)
         value = float(np.clip(value, minimum, maximum))
@@ -532,6 +548,8 @@ class ColocalizationScatterPlot(QWidget):
     """Interactive two-channel scatter-density plot with threshold guides."""
 
     thresholdChanged = Signal(int, float)
+    gestureStarted = Signal()
+    gestureFinished = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -551,6 +569,7 @@ class ColocalizationScatterPlot(QWidget):
         self._colormap = "Viridis"
         self._summary = ""
         self._drag_axis: int | None = None
+        self._gesture_active = False
         self.setMinimumHeight(300)
         self.setMouseTracking(True)
 
@@ -681,6 +700,7 @@ class ColocalizationScatterPlot(QWidget):
         dx = abs(point.x() - vertical_x)
         dy = abs(point.y() - horizontal_y)
         self._drag_axis = 1 if dx <= dy else 2
+        self._begin_gesture()
         self._emit_threshold_from_point(point, plot_rect)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
@@ -693,7 +713,25 @@ class ColocalizationScatterPlot(QWidget):
         if self._drag_axis is not None:
             point = _event_position(event)
             self._emit_threshold_from_point(point, self._plot_rect())
+        self._cancel_threshold_drag()
+
+    def event(self, event) -> bool:
+        if event.type() in {QEvent.Hide, QEvent.UngrabMouse}:
+            self._cancel_threshold_drag()
+        return super().event(event)
+
+    def _begin_gesture(self) -> None:
+        if self._gesture_active:
+            return
+        self._gesture_active = True
+        self.gestureStarted.emit()
+
+    def _cancel_threshold_drag(self) -> None:
         self._drag_axis = None
+        if not self._gesture_active:
+            return
+        self._gesture_active = False
+        self.gestureFinished.emit()
 
     def _emit_threshold_from_point(self, point, plot_rect: QRect) -> None:
         if self._drag_axis == 1:
@@ -729,9 +767,7 @@ class ColocalizationScatterPlot(QWidget):
         # The Gray mapping preserves the flipped source's non-contiguous
         # strides. PyQt6 cannot construct QImage from that memoryview, so make
         # every colormap cross the Qt boundary with the same packed RGB layout.
-        rgb = np.ascontiguousarray(
-            _apply_monochrome_colormap(gray, self._colormap)
-        )
+        rgb = np.ascontiguousarray(_apply_monochrome_colormap(gray, self._colormap))
         rgb[values <= 0] = (4, 7, 15)
         return QImage(
             rgb.data,
@@ -855,31 +891,23 @@ class ColocalizationScatterPlot(QWidget):
 
     def _x_from_value(self, value: float, plot_rect: QRect) -> int:
         span = self._channel_1_max - self._channel_1_min
-        fraction = float(
-            np.clip((value - self._channel_1_min) / span, 0.0, 1.0)
-        )
+        fraction = float(np.clip((value - self._channel_1_min) / span, 0.0, 1.0))
         return plot_rect.left() + int(round(fraction * max(plot_rect.width(), 1)))
 
     def _y_from_value(self, value: float, plot_rect: QRect) -> int:
         span = self._channel_2_max - self._channel_2_min
-        fraction = float(
-            np.clip((value - self._channel_2_min) / span, 0.0, 1.0)
-        )
+        fraction = float(np.clip((value - self._channel_2_min) / span, 0.0, 1.0))
         return plot_rect.bottom() - int(round(fraction * max(plot_rect.height(), 1)))
 
     def _value_from_x(self, x: int, plot_rect: QRect) -> float:
         fraction = (float(x) - plot_rect.left()) / max(plot_rect.width(), 1)
         span = self._channel_1_max - self._channel_1_min
-        return float(
-            self._channel_1_min + np.clip(fraction, 0.0, 1.0) * span
-        )
+        return float(self._channel_1_min + np.clip(fraction, 0.0, 1.0) * span)
 
     def _value_from_y(self, y: int, plot_rect: QRect) -> float:
         fraction = (plot_rect.bottom() - float(y)) / max(plot_rect.height(), 1)
         span = self._channel_2_max - self._channel_2_min
-        return float(
-            self._channel_2_min + np.clip(fraction, 0.0, 1.0) * span
-        )
+        return float(self._channel_2_min + np.clip(fraction, 0.0, 1.0) * span)
 
 
 def _valid_scatter_axis_range(

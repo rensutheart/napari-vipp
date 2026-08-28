@@ -140,6 +140,20 @@ class WorkflowTabSession:
             self.title = derived
         self._title_is_custom = False
 
+    def detach_path(self, *, title: str | None = None) -> None:
+        """Treat the current clean document as an unsaved template.
+
+        Bundled examples are loaded through the normal workflow reader so they
+        receive the same validation and runtime setup as user files.  Their
+        package path must not, however, become the destination of a later
+        ordinary Save.  Detaching preserves the clean baseline while making
+        the next save choose a user-owned destination.
+        """
+        self.path = None
+        if title is not None:
+            self.title = _validated_title(title)
+        self._title_is_custom = False
+
     def mark_dirty(self) -> None:
         """Explicitly mark uncaptured external state as unsaved."""
         self._saved_baseline = None

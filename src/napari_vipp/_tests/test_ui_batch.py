@@ -554,6 +554,41 @@ def test_batch_source_row_inherits_workflow_axis_choice_and_allows_blank_opt_out
     assert dialog.values()["source_bindings"][0]["axis_declaration"] == ""
 
 
+def test_advanced_axis_mapping_keeps_partial_text_as_uncommitted_draft(qtbot):
+    control = AxisInterpretationControl(
+        allow_automatic=False,
+        save_target="workflow",
+    )
+    qtbot.addWidget(control)
+    changes: list[str] = []
+    control.textChanged.connect(changes.append)
+    custom_index = control.mode_combo.findData(AxisInterpretationControl.CUSTOM)
+    control.mode_combo.setCurrentIndex(custom_index)
+
+    for partial in ("Z", "Z-", "Z ->", "QYX ->"):
+        control.advanced_edit.setText(partial)
+        assert control.text() == ""
+    assert changes == []
+    assert "nothing has been applied" in control.notice_label.text().casefold()
+
+    control.advanced_edit.setText("QYX -> ZYX")
+    assert control.text() == ""
+    assert changes == []
+    assert "ready to apply" in control.notice_label.text().casefold()
+
+    control.advanced_edit.editingFinished.emit()
+
+    assert control.text() == "QYX -> ZYX"
+    assert changes == ["QYX -> ZYX"]
+
+    control.advanced_edit.setText("ZY")
+    control.advanced_edit.editingFinished.emit()
+
+    assert control.text() == "QYX -> ZYX"
+    assert changes == ["QYX -> ZYX"]
+    assert "not applied" in control.notice_label.text().casefold()
+
+
 def test_loaded_blank_axis_choice_is_strict_file_metadata_opt_out(qtbot, tmp_path):
     result = _preview_result(tmp_path)
     dialog = CollectionBatchDialog(actions=_actions(result, []))

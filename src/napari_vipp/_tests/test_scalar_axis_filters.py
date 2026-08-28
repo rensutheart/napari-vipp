@@ -444,7 +444,12 @@ def test_axis_aware_filter_nodes_expose_scalar_default_contract(operation_id: st
         parameter for parameter in spec.parameters if parameter.name == "channel_axis"
     )
 
-    assert parameter.label == "Channel axis (-1 = scalar)"
+    expected_label = (
+        "Channel axis override (-1 = automatic)"
+        if operation_id == "crop_stack"
+        else "Channel axis (-1 = scalar)"
+    )
+    assert parameter.label == expected_label
     assert parameter.default == -1
     assert operation_call_parameter_value(operation_id, "channel_axis", -1) is None
 

@@ -40,6 +40,7 @@ class AxisInterpretationControl(QWidget):
     ) -> None:
         super().__init__(parent)
         self._updating = False
+        self._committed_text = ""
         self._last_text = ""
         self._suggestion_seen = False
         self._suggestion_declined = False
@@ -102,14 +103,11 @@ class AxisInterpretationControl(QWidget):
 
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
         self.advanced_edit.textChanged.connect(self._advanced_changed)
+        self.advanced_edit.editingFinished.connect(self._advanced_edit_finished)
 
     def text(self) -> str:
-        mode = self.mode_combo.currentData()
-        if mode == self.Z_STACK:
-            return self.Z_STACK_DECLARATION
-        if mode == self.CUSTOM:
-            return self.advanced_edit.text().strip()
-        return ""
+        """Return only the last complete declaration accepted for persistence."""
+        return self._committed_text
 
     def setText(self, value: str) -> None:  # noqa: N802 - QLineEdit compatibility
         old_text = self.text()
@@ -127,13 +125,19 @@ class AxisInterpretationControl(QWidget):
         self._updating = True
         try:
             if not raw_value:
+                self._committed_text = ""
                 self.mode_combo.setCurrentIndex(
                     self.mode_combo.findData(self.FILE_METADATA)
                 )
                 self.advanced_edit.clear()
             elif is_z_stack:
+                self._committed_text = self.Z_STACK_DECLARATION
                 self.mode_combo.setCurrentIndex(self.mode_combo.findData(self.Z_STACK))
                 self.advanced_edit.clear()
+            elif declaration is not None:
+                self._committed_text = declaration.display_text
+                self.mode_combo.setCurrentIndex(self.mode_combo.findData(self.CUSTOM))
+                self.advanced_edit.setText(declaration.display_text)
             else:
                 self.mode_combo.setCurrentIndex(self.mode_combo.findData(self.CUSTOM))
                 self.advanced_edit.setText(raw_value)
@@ -150,9 +154,14 @@ class AxisInterpretationControl(QWidget):
                 "Pixel order is unchanged, and this choice is saved with the "
                 f"{self._save_target}."
             )
-        elif raw_value:
+        elif declaration is not None:
             self._show_notice(
                 "Using a saved advanced axis interpretation. Pixel order is unchanged."
+            )
+        elif raw_value:
+            self._show_notice(
+                "This saved axis text is incomplete or invalid. It has not been "
+                "applied; enter a complete mapping such as QYX -> ZYX."
             )
         else:
             self._hide_notice()
@@ -173,6 +182,7 @@ class AxisInterpretationControl(QWidget):
         self._auto_suggestion_active = True
         self._updating = True
         try:
+            self._committed_text = self.Z_STACK_DECLARATION
             self.mode_combo.setCurrentIndex(self.mode_combo.findData(self.Z_STACK))
             self.advanced_edit.hide()
         finally:
@@ -199,6 +209,7 @@ class AxisInterpretationControl(QWidget):
             return
         self._updating = True
         try:
+            self._committed_text = ""
             self.mode_combo.setCurrentIndex(self.mode_combo.findData(self.AUTOMATIC))
             self.advanced_edit.hide()
         finally:
@@ -216,12 +227,14 @@ class AxisInterpretationControl(QWidget):
         self._auto_suggestion_active = False
         self.advanced_edit.setVisible(mode == self.CUSTOM)
         if mode == self.AUTOMATIC:
+            self._committed_text = ""
             self._suggestion_declined = False
             self._show_notice(
                 "VIPP will change this only if the workflow proves that it "
                 "needs a Z stack."
             )
         elif mode == self.FILE_METADATA:
+            self._committed_text = ""
             if self._suggestion_seen:
                 self._suggestion_declined = True
                 self._show_notice(
@@ -231,6 +244,7 @@ class AxisInterpretationControl(QWidget):
             else:
                 self._hide_notice()
         elif mode == self.Z_STACK:
+            self._committed_text = self.Z_STACK_DECLARATION
             self._suggestion_declined = False
             self._show_notice(
                 "Treating the leading stack dimension as depth (Z). Pixel order is "
@@ -239,14 +253,64 @@ class AxisInterpretationControl(QWidget):
             )
         else:
             self._show_notice(
-                "Advanced axis labels are used exactly as entered. Pixel order "
-                "is unchanged."
+                "Enter a complete source-to-result mapping. The previous choice "
+                "remains active until you press Enter or leave this field."
             )
         self._emit_if_changed()
 
-    def _advanced_changed(self, _text: str) -> None:
-        if not self._updating and self.mode_combo.currentData() == self.CUSTOM:
+    def _advanced_changed(self, text: str) -> None:
+        if self._updating or self.mode_combo.currentData() != self.CUSTOM:
+            return
+        raw_value = str(text).strip()
+        if not raw_value:
+            self._show_notice(
+                "No mapping entered. Press Enter or leave the field to use the "
+                "file's labels unchanged."
+            )
+            return
+        try:
+            AxisDeclaration.from_value(raw_value)
+        except ValueError:
+            self._show_notice(
+                "Incomplete axis mapping; nothing has been applied. Complete a "
+                "mapping such as QYX -> ZYX, then press Enter or leave the field."
+            )
+            return
+        self._show_notice(
+            "Valid axis mapping ready to apply. Press Enter or leave the field; "
+            "pixel order will remain unchanged."
+        )
+
+    def _advanced_edit_finished(self) -> None:
+        if self._updating or self.mode_combo.currentData() != self.CUSTOM:
+            return
+        raw_value = self.advanced_edit.text().strip()
+        if not raw_value:
+            self._committed_text = ""
+            self._show_notice(
+                "Using the file's labels unchanged; no advanced mapping is saved."
+            )
             self._emit_if_changed()
+            return
+        try:
+            declaration = AxisDeclaration.from_value(raw_value)
+        except ValueError:
+            self._show_notice(
+                "Axis mapping not applied. Complete a mapping such as "
+                "QYX -> ZYX."
+            )
+            return
+        self._committed_text = declaration.display_text
+        if self.advanced_edit.text() != declaration.display_text:
+            self._updating = True
+            try:
+                self.advanced_edit.setText(declaration.display_text)
+            finally:
+                self._updating = False
+        self._show_notice(
+            "Using this reviewed axis interpretation. Pixel order is unchanged."
+        )
+        self._emit_if_changed()
 
     def _emit_if_changed(self) -> None:
         value = self.text()

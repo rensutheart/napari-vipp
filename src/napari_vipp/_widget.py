@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -286,6 +287,7 @@ from napari_vipp.core.pipeline import (
     _crop_runtime_xy_axis_indices,
     _explicit_crop_channel_axis_index,
     _explicit_crop_z_axis_index,
+    graph_node_from_persisted_params,
     grouped_palette_specs,
     operation_call_parameter_value,
     resolve_parameter_visibility,
@@ -621,6 +623,12 @@ from napari_vipp.ui.view_dims import ViewDimAxis as ViewDimAxis
 from napari_vipp.ui.view_dims import ViewDimAxisControl as ViewDimAxisControl
 from napari_vipp.ui.view_dims import ViewDimsBar as ViewDimsBar
 from napari_vipp.ui.workers import PipelineRunWorker as PipelineRunWorker
+from napari_vipp.ui.workflow_save_settings import (
+    WORKFLOW_SAVE_POLICY_CHOICES,
+    WorkflowSavePolicy,
+    load_workflow_save_policy,
+    save_workflow_save_policy,
+)
 from napari_vipp.ui.workflow_tabs import (
     WorkflowTabBar,
     WorkflowTabModel,
@@ -857,6 +865,63 @@ CACHE_MODE_STATUS_LABELS = {
     CACHE_MODE_LOW_MEMORY: "Low memory",
 }
 CACHE_KEEP_NODE_PARAM = "_vipp_keep_cached"
+_WORKFLOW_SAVE_SERIES_BASE_CACHE_KEY = "_workflow_save_series_base"
+_WORKFLOW_TIMESTAMP_SUFFIX = re.compile(
+    r"^(?P<base>.+)__vipp-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{6}"
+    r"(?:-\d{2})?$"
+)
+
+
+def _workflow_timestamp_now() -> datetime:
+    """Return local wall-clock time behind an injectable test seam."""
+    return datetime.now().astimezone()
+
+
+def _workflow_timestamp_base_path(path: str | Path) -> Path:
+    """Remove only VIPP's distinctive timestamp suffix from a workflow path."""
+    candidate = Path(path).expanduser()
+    match = _WORKFLOW_TIMESTAMP_SUFFIX.fullmatch(candidate.stem)
+    if match is None:
+        return candidate
+    return candidate.with_name(f"{match.group('base')}{candidate.suffix}")
+
+
+def _next_timestamped_workflow_path(
+    base_path: str | Path,
+    *,
+    timestamp: datetime | None = None,
+) -> Path:
+    """Return a new human-readable, collision-free workflow version path."""
+    base = _workflow_timestamp_base_path(base_path)
+    moment = _workflow_timestamp_now() if timestamp is None else timestamp
+    stamp = moment.strftime("%Y-%m-%d_%H-%M-%S-%f")
+    candidate = base.with_name(f"{base.stem}__vipp-{stamp}{base.suffix}")
+    collision = 1
+    while candidate.exists():
+        collision += 1
+        candidate = base.with_name(
+            f"{base.stem}__vipp-{stamp}-{collision:02d}{base.suffix}"
+        )
+    return candidate
+
+
+def _bundled_example_for_path(
+    path: str | Path,
+) -> ExampleWorkflowSpec | None:
+    """Return the bundled example owning ``path``, if any."""
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except OSError:
+        return None
+    for example in EXAMPLE_WORKFLOWS:
+        try:
+            if _example_workflow_path(example).resolve() == resolved:
+                return example
+        except OSError:
+            continue
+    return None
+
+
 CALCULATE_ALL_ATTENTION_STYLE = (
     "QPushButton {"
     " background-color: #78350f;"
@@ -1604,6 +1669,14 @@ class VippWidget(QWidget):
         self._history = WorkflowHistory(limit=self.HISTORY_LIMIT)
         self._workflow_tabs = WorkflowTabModel()
         self._workflow_tab_loading_visible = False
+        self._active_parameter_slider_scrub: (
+            tuple[str, str, str, weakref.ReferenceType] | None
+        ) = None
+        self._active_crop_slider_scrub: (
+            tuple[str, str, str, weakref.ReferenceType] | None
+        ) = None
+        self._workflow_save_in_progress = False
+        self._application_shortcut_filter_installed = False
         # Kept as aliases while downstream tests and integrations transition to
         # the explicit session-history component.
         self._undo_stack = self._history.undo_stack
@@ -1782,6 +1855,23 @@ class VippWidget(QWidget):
                 0,
             )
         )
+        self.workflow_save_policy_combo = QComboBox()
+        for policy_id, label in WORKFLOW_SAVE_POLICY_CHOICES:
+            self.workflow_save_policy_combo.addItem(label, policy_id)
+        self._workflow_save_policy = load_workflow_save_policy()
+        self.workflow_save_policy_combo.setCurrentIndex(
+            max(
+                self.workflow_save_policy_combo.findData(
+                    self._workflow_save_policy.value
+                ),
+                0,
+            )
+        )
+        self.workflow_save_policy_combo.setToolTip(
+            "Choose whether Save replaces the current workflow immediately, "
+            "asks first, or writes a new timestamped version. The first save "
+            "of an untitled workflow always asks for a name and location."
+        )
         for combo in (
             self.preview_mode_combo,
             self.thumbnail_contrast_combo,
@@ -1889,6 +1979,15 @@ class VippWidget(QWidget):
         self.redo_action.setShortcuts(QKeySequence.keyBindings(QKeySequence.Redo))
         self.redo_action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
         self.redo_action.setToolTip("Redo last undone workflow edit")
+        self.save_workflow_action = QAction("Save workflow", self)
+        self.save_workflow_action.setToolTip(
+            "Save the active workflow (Ctrl+S). The Settings save policy "
+            "controls subsequent saves."
+        )
+        self.save_workflow_as_action = QAction("Save workflow as…", self)
+        self.save_workflow_as_action.setToolTip(
+            "Choose a new name and location for the active workflow."
+        )
         self.undo_button = QToolButton()
         self.undo_button.setDefaultAction(self.undo_action)
         self.undo_button.setIconSize(QSize(18, 18))
@@ -1899,7 +1998,13 @@ class VippWidget(QWidget):
         self.redo_button.setFixedSize(24, 24)
         self.addAction(self.undo_action)
         self.addAction(self.redo_action)
-        self.save_workflow_button = QPushButton("Save workflow...")
+        self.addAction(self.save_workflow_action)
+        self.addAction(self.save_workflow_as_action)
+        self.save_workflow_button = QPushButton("Save workflow")
+        self.save_workflow_button.setToolTip(
+            "Save the active workflow (Ctrl+S). Use Settings > Save workflow "
+            "as… to choose another file."
+        )
         self.open_example_button = QPushButton("Open example...")
         self.open_example_button.setToolTip(
             "Open a bundled example workflow with its sample Image Source nodes."
@@ -2376,10 +2481,14 @@ class VippWidget(QWidget):
         self._crop_draft_timer = QTimer(self)
         self._crop_draft_timer.setInterval(350)
         self._crop_draft_timer.setSingleShot(True)
-        self._crop_draft_timer.timeout.connect(self._commit_crop_draft)
+        self._crop_draft_timer.timeout.connect(self._commit_crop_draft_after_idle)
 
         self._build_layout()
         self._connect_signals()
+        application = QApplication.instance()
+        if application is not None:
+            application.installEventFilter(self)
+            self._application_shortcut_filter_installed = True
         self._sync_compute_toolbar_summary()
         self._sync_toolbar_responsive_mode()
         self._autobind_default_image_sources()
@@ -2683,6 +2792,10 @@ class VippWidget(QWidget):
             return
         self._closing = True
         self._discard_crop_draft(remove_layers=True)
+        application = QApplication.instance()
+        if application is not None and self._application_shortcut_filter_installed:
+            application.removeEventFilter(self)
+            self._application_shortcut_filter_installed = False
         self._cancel_active_source_io(invalidate_generation=True)
         self._invalidate_source_preview(remove_layer=True)
         if self._colocalization_scatter_dialog is not None:
@@ -2765,7 +2878,50 @@ class VippWidget(QWidget):
         self._sync_toolbar_responsive_mode()
         self.view_dims_bar.sync_responsive_mode()
 
+    def _workflow_shortcut_belongs_to_this_window(self) -> bool:
+        """Return whether a global Save key belongs to this VIPP host window."""
+        if self._closing or not self.isVisible():
+            return False
+        if QApplication.activeModalWidget() is not None:
+            return False
+        focus = QApplication.focusWidget()
+        if focus is not None:
+            if focus is self or self.isAncestorOf(focus):
+                return True
+            if focus.window() is self.window():
+                return True
+        active = QApplication.activeWindow()
+        return active is not None and active is self.window()
+
+    def _request_workflow_save(self, *, force_choose_path: bool = False) -> bool:
+        """Run one guarded save request from a button, action, or key event."""
+        if self._workflow_save_in_progress:
+            return False
+        self._workflow_save_in_progress = True
+        try:
+            return self._save_workflow_dialog(
+                force_choose_path=force_choose_path,
+            )
+        finally:
+            self._workflow_save_in_progress = False
+
     def eventFilter(self, watched, event):  # noqa: N802
+        if (
+            event.type() in {QEvent.ShortcutOverride, QEvent.KeyPress}
+            and self._workflow_shortcut_belongs_to_this_window()
+        ):
+            save_as = bool(event.matches(QKeySequence.SaveAs))
+            save = bool(event.matches(QKeySequence.Save))
+            if save_as or save:
+                event.accept()
+                if event.type() == QEvent.ShortcutOverride:
+                    # Claim the key before napari's QAction shortcut resolver.
+                    # Registering a second QAction for the same standard key
+                    # makes Qt reject both as an ambiguous shortcut.
+                    return True
+                if not event.isAutoRepeat():
+                    self._request_workflow_save(force_choose_path=save_as)
+                return True
         dock = self._dock_widget()
         if (
             watched is dock
@@ -2860,9 +3016,7 @@ class VippWidget(QWidget):
 
             flags = dock.windowFlags()
             desired_flags = (flags & ~Qt.WindowType_Mask) | Qt.Window
-            desired_flags &= ~(
-                Qt.FramelessWindowHint | Qt.MSWindowsFixedSizeDialogHint
-            )
+            desired_flags &= ~(Qt.FramelessWindowHint | Qt.MSWindowsFixedSizeDialogHint)
             desired_flags |= (
                 Qt.WindowTitleHint
                 | Qt.WindowSystemMenuHint
@@ -2980,11 +3134,7 @@ class VippWidget(QWidget):
             target.updateGeometry()
 
     def _apply_initial_dock_size(self) -> None:
-        if (
-            self._closing
-            or not isalive(self)
-            or self._initial_dock_size_applied
-        ):
+        if self._closing or not isalive(self) or self._initial_dock_size_applied:
             return
         dock = self._dock_widget()
         if dock is None:
@@ -3396,6 +3546,13 @@ class VippWidget(QWidget):
             optimize_action.setToolTip(optimize_reason)
             optimize_action.triggered.connect(self._show_pipeline_optimizer)
         menu.addSeparator()
+        self._add_combo_menu(
+            menu,
+            "Workflow saving",
+            self.workflow_save_policy_combo,
+        )
+        menu.addAction(self.save_workflow_as_action)
+        menu.addSeparator()
         self._add_checkbox_menu_action(
             menu,
             "Save thumbnail visibility in workflows",
@@ -3763,7 +3920,15 @@ class VippWidget(QWidget):
         self.calculate_all_button.clicked.connect(self._calculate_all_nodes)
         self.undo_action.triggered.connect(self.undo)
         self.redo_action.triggered.connect(self.redo)
-        self.save_workflow_button.clicked.connect(self._save_workflow_dialog)
+        self.save_workflow_action.triggered.connect(
+            lambda _checked=False: self._request_workflow_save()
+        )
+        self.save_workflow_as_action.triggered.connect(
+            lambda _checked=False: self._request_workflow_save(force_choose_path=True)
+        )
+        self.save_workflow_button.clicked.connect(
+            lambda _checked=False: self._request_workflow_save()
+        )
         self.load_workflow_button.clicked.connect(self._load_workflow_dialog)
         self.export_button.clicked.connect(self._export_python_dialog)
         self.batch_button.clicked.connect(
@@ -3819,6 +3984,9 @@ class VippWidget(QWidget):
         self.thumbnail_statistics_policy_combo.currentIndexChanged.connect(
             self._on_thumbnail_statistics_policy_changed
         )
+        self.workflow_save_policy_combo.currentIndexChanged.connect(
+            self._on_workflow_save_policy_changed
+        )
         self.follow_dims_checkbox.toggled.connect(self._on_follow_dims_toggled)
         self.graph_zoom_slider.valueChanged.connect(self._on_graph_zoom_slider_changed)
         self.graph_zoom_reset_button.clicked.connect(self._reset_graph_zoom)
@@ -3849,11 +4017,35 @@ class VippWidget(QWidget):
         self.rescale_input_histogram_plot.markerChanged.connect(
             self._on_input_histogram_marker_changed
         )
+        self.rescale_input_histogram_plot.gestureStarted.connect(
+            lambda: self._begin_selected_parameter_scrub(
+                "input_histogram",
+                self.rescale_input_histogram_plot,
+            )
+        )
+        self.rescale_input_histogram_plot.gestureFinished.connect(
+            lambda: self._end_selected_parameter_scrub(
+                "input_histogram",
+                self.rescale_input_histogram_plot,
+            )
+        )
         self.label_volume_log_checkbox.toggled.connect(
             self._update_label_volume_histogram
         )
         self.label_volume_plot.markerChanged.connect(
             self._on_label_volume_marker_changed
+        )
+        self.label_volume_plot.gestureStarted.connect(
+            lambda: self._begin_selected_parameter_scrub(
+                "label_volume_histogram",
+                self.label_volume_plot,
+            )
+        )
+        self.label_volume_plot.gestureFinished.connect(
+            lambda: self._end_selected_parameter_scrub(
+                "label_volume_histogram",
+                self.label_volume_plot,
+            )
         )
         self.colocalization_scatter_log_checkbox.toggled.connect(
             self._update_colocalization_scatter
@@ -3863,6 +4055,18 @@ class VippWidget(QWidget):
         )
         self.colocalization_scatter_plot.thresholdChanged.connect(
             self._on_colocalization_scatter_threshold_changed
+        )
+        self.colocalization_scatter_plot.gestureStarted.connect(
+            lambda: self._begin_selected_parameter_scrub(
+                "colocalization_threshold",
+                self.colocalization_scatter_plot,
+            )
+        )
+        self.colocalization_scatter_plot.gestureFinished.connect(
+            lambda: self._end_selected_parameter_scrub(
+                "colocalization_threshold",
+                self.colocalization_scatter_plot,
+            )
         )
         self.colocalization_scatter_popout_button.clicked.connect(
             self._open_colocalization_scatter_dialog
@@ -3948,6 +4152,10 @@ class VippWidget(QWidget):
             )
             self._lifecycle.connect(
                 self.viewer.dims.events.point,
+                self._on_dims_changed,
+            )
+            self._lifecycle.connect(
+                self.viewer.dims.events.ndisplay,
                 self._on_dims_changed,
             )
         except Exception:
@@ -7427,7 +7635,11 @@ class VippWidget(QWidget):
         snapshot = self._history.undo(current)
         if snapshot is None:
             return
-        self._restore_history_snapshot(snapshot)
+        self._restore_history_snapshot(
+            snapshot,
+            current_snapshot=current,
+            prefer_parameter_restore=True,
+        )
         self._sync_history_actions()
         self._sync_current_workflow_tab_state()
         self.status_label.setText("Undid last workflow edit.")
@@ -7449,7 +7661,11 @@ class VippWidget(QWidget):
         snapshot = self._history.redo(current)
         if snapshot is None:
             return
-        self._restore_history_snapshot(snapshot)
+        self._restore_history_snapshot(
+            snapshot,
+            current_snapshot=current,
+            prefer_parameter_restore=True,
+        )
         self._sync_history_actions()
         self._sync_current_workflow_tab_state()
         self.status_label.setText("Redid workflow edit.")
@@ -7534,13 +7750,98 @@ class VippWidget(QWidget):
             and node_id != self._isolated_tuning_node_id
         ):
             self._finish_parameter_history_group()
+        active_scrub = self._active_parameter_slider_scrub
         key = (node_id, name)
+        if (
+            active_scrub is not None
+            and active_scrub[:2] == (self._crop_current_session_id(), str(node_id))
+            and self._parameter_scrub_is_active(active_scrub)
+        ):
+            # One physical gesture can update coupled authored parameters
+            # (for example threshold mode plus a dragged threshold). Keep all
+            # of them under the interaction's single mouse-down snapshot.
+            key = (node_id, f"scrub:{active_scrub[2]}")
         if not self._history.should_capture_group(key):
             return
         self._push_undo_snapshot()
 
     def _finish_debounced_parameter_history_group(self) -> None:
+        if self._parameter_scrub_is_active(self._active_parameter_slider_scrub):
+            # Calculations may finish while the mouse is still held. Their
+            # completion is not an authoring boundary: the whole press/drag/
+            # release gesture must remain one undoable edit.
+            return
+        self._active_parameter_slider_scrub = None
         self._finish_parameter_history_group(preserve_isolated_tuning=True)
+
+    @staticmethod
+    def _parameter_scrub_is_active(
+        scrub: tuple[str, str, str, weakref.ReferenceType] | None,
+    ) -> bool:
+        if scrub is None:
+            return False
+        control = scrub[3]()
+        if control is None or not isalive(control):
+            return False
+        if isinstance(control, QSlider):
+            return bool(control.isSliderDown())
+        # Specialized controls publish explicit start/finish signals. Their
+        # live marker is authoritative until the finish signal arrives.
+        return True
+
+    def _begin_parameter_slider_scrub(
+        self,
+        node_id: str,
+        name: str,
+        control: QWidget,
+    ) -> None:
+        """Start one undo transaction at the value present on mouse-down."""
+        self._finish_parameter_history_group(preserve_isolated_tuning=True)
+        self._active_parameter_slider_scrub = (
+            self._crop_current_session_id(),
+            str(node_id),
+            str(name),
+            weakref.ref(control),
+        )
+
+    def _end_parameter_slider_scrub(
+        self,
+        node_id: str,
+        name: str,
+        control: QWidget,
+    ) -> None:
+        """Finish a scrub only after its actual interaction has ended."""
+        active = self._active_parameter_slider_scrub
+        if active is None:
+            return
+        active_control = active[3]()
+        if (
+            active[:3] != (self._crop_current_session_id(), str(node_id), str(name))
+            or active_control is not control
+        ):
+            return
+        self._active_parameter_slider_scrub = None
+        self._history.finish_group()
+
+    def _begin_selected_parameter_scrub(
+        self,
+        name: str,
+        control: QWidget,
+    ) -> None:
+        node_id = self._selected_node_id
+        if node_id in self.pipeline.nodes:
+            self._begin_parameter_slider_scrub(node_id, name, control)
+
+    def _end_selected_parameter_scrub(
+        self,
+        name: str,
+        control: QWidget,
+    ) -> None:
+        active = self._active_parameter_slider_scrub
+        if active is not None and active[3]() is control:
+            self._end_parameter_slider_scrub(active[1], active[2], control)
+            return
+        self._end_parameter_slider_scrub(self._selected_node_id, name, control)
 
     def _finish_parameter_history_group(
         self,
@@ -7555,6 +7856,7 @@ class VippWidget(QWidget):
         """
         if not self._crop_draft_committing:
             self._commit_crop_draft(schedule_run=False)
+        self._active_parameter_slider_scrub = None
         if not preserve_isolated_tuning and self._isolated_tuning_node_id is not None:
             had_changes = self._apply_isolated_tuning(
                 run=False,
@@ -7577,7 +7879,207 @@ class VippWidget(QWidget):
         if self._pending_dirty_node_ids & set(self.pipeline.nodes):
             self.run_pipeline()
 
-    def _restore_history_snapshot(self, snapshot: WorkflowHistorySnapshot) -> None:
+    def _parameter_only_history_change(
+        self,
+        current: WorkflowHistorySnapshot,
+        target: WorkflowHistorySnapshot,
+    ) -> (
+        tuple[
+            int,
+            str,
+            dict[str, object],
+            dict[str, object],
+        ]
+        | None
+    ):
+        """Return one node-param restore when every structural field is stable."""
+        current_workflow = current.workflow
+        target_workflow = target.workflow
+        if (
+            current_workflow.positions != target_workflow.positions
+            or current_workflow.notes != target_workflow.notes
+            or current_workflow.metadata != target_workflow.metadata
+            or current_workflow.compute_request != target_workflow.compute_request
+        ):
+            return None
+        current_graph = current_workflow.graph
+        target_graph = target_workflow.graph
+        if (
+            current_graph.connections != target_graph.connections
+            or current_graph.output_tunnels != target_graph.output_tunnels
+            or len(current_graph.nodes) != len(target_graph.nodes)
+        ):
+            return None
+        for attribute in (
+            "preview_disabled_node_ids",
+            "active_pinned_node_id",
+            "compute_mode",
+            "compute_fallback_policy",
+            "compute_node_preferences",
+            "compute_optimizer_locked_node_ids",
+            "inspect_display_profiles",
+        ):
+            if getattr(current, attribute) != getattr(target, attribute):
+                return None
+
+        changed: list[
+            tuple[
+                int,
+                str,
+                dict[str, object],
+                dict[str, object],
+            ]
+        ] = []
+        for index, (current_node, target_node) in enumerate(
+            zip(current_graph.nodes, target_graph.nodes, strict=True)
+        ):
+            if (
+                current_node.id != target_node.id
+                or current_node.operation_id != target_node.operation_id
+            ):
+                return None
+            current_params = current_node.params
+            target_params = target_node.params
+            if current_params != target_params:
+                changed.append(
+                    (
+                        index,
+                        target_node.id,
+                        current_params,
+                        target_params,
+                    )
+                )
+        return changed[0] if len(changed) == 1 else None
+
+    def _prepare_source_parameter_history_restore(
+        self,
+        node_id: str,
+        changed_names: frozenset[str],
+        target_params: dict[str, object],
+    ) -> None:
+        """Reconcile source-owned I/O state without rebuilding the graph UI."""
+        source_revision_names = {
+            "source_mode",
+            "file_path",
+            "series_index",
+            "axis_declaration",
+            "binding_mode",
+        }
+        if changed_names & source_revision_names:
+            self._cancel_active_source_io(invalidate_generation=True)
+            self._invalidate_source_preview(remove_layer=True)
+            self._source_view_modes[node_id] = "analysis"
+            self._source_inspection_errors.pop(node_id, None)
+            self._apply_selected_viewer_surface(select_layer=True)
+            self._refresh_source_resolution_control(node_id)
+
+        target_path = str(target_params.get("file_path", ""))
+        target_binding = str(target_params.get("binding_mode", "single item"))
+        if not (
+            str(target_params.get("source_mode", "")) == "file path"
+            and target_binding == "collection"
+            and not target_path.strip()
+        ):
+            if node_id in self._interactive_collection_source_paths:
+                self._clear_interactive_collection_batch_session()
+        if changed_names & {"file_path", "binding_mode"}:
+            QTimer.singleShot(0, self._refresh_image_source_options)
+
+    def _restore_parameter_history_snapshot(
+        self,
+        current: WorkflowHistorySnapshot,
+        target: WorkflowHistorySnapshot,
+    ) -> bool:
+        """Restore one node edit without destroying unaffected UI or caches."""
+        change = self._parameter_only_history_change(current, target)
+        if change is None:
+            return False
+        index, node_id, current_params, target_params = change
+        live_node = self.pipeline.nodes.get(node_id)
+        if live_node is None:
+            return False
+        restored_node = graph_node_from_persisted_params(
+            node_id,
+            live_node.operation_id,
+            target_params,
+            index=index,
+        )
+        changed_names = frozenset(
+            name
+            for name in set(current_params) | set(target_params)
+            if current_params.get(name) != target_params.get(name)
+        )
+
+        self._discard_crop_draft(remove_layers=False)
+        self._supersede_interaction_for_untraced_edit(
+            node_id,
+            "history_parameter_restore",
+        )
+        self._debounce_timer.stop()
+        with self._history.suspend_recording():
+            live_node.params.clear()
+            live_node.params.update(restored_node.params)
+
+            selected = (
+                target.selected_node_id
+                if target.selected_node_id in self.pipeline.nodes
+                else self._selected_node_id
+            )
+            if selected != self._selected_node_id:
+                self.graph_view.select_node(selected)
+
+            if live_node.operation_id == "input":
+                self._prepare_source_parameter_history_restore(
+                    node_id,
+                    changed_names,
+                    target_params,
+                )
+            self._reconcile_bulk_parameter_change(node_id, changed_names)
+
+            if CACHE_KEEP_NODE_PARAM in changed_names:
+                self._apply_cache_retention()
+                self._sync_keep_cached_ui()
+                self._update_thumbnails()
+
+            scientific_names = set(changed_names)
+            scientific_names.discard(CACHE_KEEP_NODE_PARAM)
+            if live_node.operation_id == "split_channels":
+                scientific_names.discard("preview_channel")
+            if scientific_names:
+                preserve_colocalization_scatter = (
+                    live_node.operation_id in COLOCALIZATION_THRESHOLD_OPERATIONS
+                    and bool(
+                        scientific_names
+                        & {
+                            "threshold_mode",
+                            "channel_1_threshold",
+                            "channel_2_threshold",
+                        }
+                    )
+                )
+                self._mark_pipeline_dirty(
+                    node_id,
+                    preserve_colocalization_scatter=preserve_colocalization_scatter,
+                )
+            self._sync_pin_ui()
+            self._sync_current_workflow_tab_state()
+            if scientific_names:
+                self.run_pipeline()
+        return True
+
+    def _restore_history_snapshot(
+        self,
+        snapshot: WorkflowHistorySnapshot,
+        *,
+        current_snapshot: WorkflowHistorySnapshot | None = None,
+        prefer_parameter_restore: bool = False,
+    ) -> None:
+        if (
+            prefer_parameter_restore
+            and current_snapshot is not None
+            and self._restore_parameter_history_snapshot(current_snapshot, snapshot)
+        ):
+            return
         self._discard_crop_draft(remove_layers=True)
         self._supersede_interaction_for_untraced_edit(
             "workflow_history",
@@ -10064,46 +10566,103 @@ class VippWidget(QWidget):
         )
         return workflow
 
-    def _save_workflow_dialog(self) -> bool:
+    def _choose_workflow_save_path(self, default_path: str | Path) -> Path | None:
+        """Choose and normalize a workflow path without native overwrite UI."""
+        path, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Save VIPP workflow",
+            str(default_path),
+            "VIPP workflow (*.json);;All files (*.*)",
+            options=QFileDialog.Option.DontConfirmOverwrite,
+        )
+        if not path:
+            return None
+        selected = Path(path).expanduser()
+        if selected.suffix.casefold() != ".json":
+            selected = Path(f"{selected}.json")
+        recent_paths.remember_file_directory(
+            recent_paths.WORKFLOW_DIRECTORY,
+            selected,
+        )
+        return selected
+
+    def _confirm_workflow_overwrite(self, target: Path) -> bool:
+        """Ask explicitly after suffix normalization so collisions are exact."""
+        answer = QMessageBox.question(
+            self,
+            "Replace workflow file?",
+            f"A workflow named {target.name} already exists.\n\n"
+            "Replace it with the current workflow?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
+    def _save_workflow_dialog(self, *, force_choose_path: bool = False) -> bool:
+        """Save the active workflow using the user's persistent local policy."""
         self._commit_crop_draft(schedule_run=False)
         include_batch = self._include_batch_workspace_with_workflow()
         if include_batch is None:
             self.status_label.setText("Workflow save cancelled.")
             return False
         session = self._workflow_tabs.current
-        default_path = (
-            str(session.path)
-            if session is not None and session.path is not None
-            else recent_paths.initial_file_path(
-                recent_paths.WORKFLOW_DIRECTORY,
-                "vipp_workflow.json",
+        choose_path = force_choose_path or session is None or session.path is None
+        if choose_path:
+            default_path = (
+                session.path
+                if session is not None and session.path is not None
+                else recent_paths.initial_file_path(
+                    recent_paths.WORKFLOW_DIRECTORY,
+                    "vipp_workflow.json",
+                )
             )
-        )
-        path, _filter = QFileDialog.getSaveFileName(
-            self,
-            "Save VIPP workflow",
-            default_path,
-            "VIPP workflow (*.json);;All files (*.*)",
-        )
-        if not path:
+            chosen_path = self._choose_workflow_save_path(default_path)
+            if chosen_path is None:
+                self.status_label.setText("Workflow save cancelled.")
+                return False
+        else:
+            chosen_path = session.path
+        if chosen_path is None:
+            self._set_status(
+                "Save failed: no workflow path is available.",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return False
-        recent_paths.remember_file_directory(
-            recent_paths.WORKFLOW_DIRECTORY,
-            path,
+
+        timestamp_base: Path | None = None
+        timestamped_version = False
+        if self._workflow_save_policy is WorkflowSavePolicy.TIMESTAMPED:
+            cached_base = (
+                session.runtime_cache.get(_WORKFLOW_SAVE_SERIES_BASE_CACHE_KEY)
+                if session is not None and not choose_path
+                else None
+            )
+            timestamp_base = _workflow_timestamp_base_path(
+                cached_base if isinstance(cached_base, (str, Path)) else chosen_path
+            )
+            target = _next_timestamped_workflow_path(timestamp_base)
+            timestamped_version = True
+        else:
+            target = Path(chosen_path)
+
+        requires_confirmation = target.exists() and (
+            choose_path or self._workflow_save_policy is WorkflowSavePolicy.CONFIRM
         )
-        if not path.lower().endswith(".json"):
-            path += ".json"
+        if requires_confirmation and not self._confirm_workflow_overwrite(target):
+            self.status_label.setText("Workflow save cancelled.")
+            return False
         try:
             positions = self.graph_view.node_positions()
             if include_batch:
                 document = self._workflow_document_with_batch_config(
-                    Path(path).expanduser(),
+                    target,
                     positions,
                 )
-                saved = save_workflow_document(path, document)
+                saved = save_workflow_document(target, document)
             else:
                 saved = save_workflow(
-                    path,
+                    target,
                     self.pipeline,
                     positions,
                     self._graph_note_documents(),
@@ -10123,11 +10682,22 @@ class VippWidget(QWidget):
                 self._current_history_snapshot(),
                 persistence_token=self._workflow_tab_persistence_token(),
             )
+            if self._workflow_save_policy is WorkflowSavePolicy.TIMESTAMPED:
+                series_base = timestamp_base or _workflow_timestamp_base_path(saved)
+                session.runtime_cache[_WORKFLOW_SAVE_SERIES_BASE_CACHE_KEY] = (
+                    series_base
+                )
+            else:
+                session.runtime_cache.pop(
+                    _WORKFLOW_SAVE_SERIES_BASE_CACHE_KEY,
+                    None,
+                )
             self._store_workflow_tab_runtime(session)
             self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         detail = " with its Batch workspace" if include_batch else ""
+        version = " version" if timestamped_version else ""
         self._set_status(
-            f"Workflow{detail} saved to {saved.name}.",
+            f"Saved workflow{version}{detail} to {saved.name}.",
             severity=MessageSeverity.SUCCESS,
         )
         return True
@@ -10232,6 +10802,9 @@ class VippWidget(QWidget):
                     snapshot,
                     persistence_token=self._workflow_tab_persistence_token(),
                 )
+                bundled_example = _bundled_example_for_path(loaded)
+                if bundled_example is not None:
+                    session.detach_path(title=bundled_example.title)
                 self._store_workflow_tab_runtime(session)
                 self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
             return loaded
@@ -10296,6 +10869,9 @@ class VippWidget(QWidget):
             snapshot,
             persistence_token=self._workflow_tab_persistence_token(),
         )
+        bundled_example = _bundled_example_for_path(loaded)
+        if bundled_example is not None:
+            session.detach_path(title=bundled_example.title)
         self._store_workflow_tab_runtime(session)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         return loaded
@@ -16403,14 +16979,40 @@ class VippWidget(QWidget):
                     )
                 )
                 if isinstance(widget, ParameterControl):
-                    widget.slider.sliderReleased.connect(self._commit_crop_draft)
-                    widget.value_box.editingFinished.connect(
-                        self._commit_crop_draft
+                    widget.slider.sliderPressed.connect(
+                        lambda node_id=node.id, name=spec.name, control=widget.slider: (
+                            self._begin_crop_slider_scrub(node_id, name, control)
+                        )
                     )
+                    widget.slider.sliderReleased.connect(
+                        lambda node_id=node.id, name=spec.name, control=widget.slider: (
+                            self._end_crop_slider_scrub(node_id, name, control)
+                        )
+                    )
+                    widget.value_box.editingFinished.connect(self._commit_crop_draft)
             else:
                 widget.valueChanged.connect(
                     lambda value, name=spec.name: self._on_param_changed(name, value)
                 )
+                if isinstance(widget, ParameterControl):
+                    widget.slider.sliderPressed.connect(
+                        lambda node_id=node.id, name=spec.name, control=widget.slider: (
+                            self._begin_parameter_slider_scrub(
+                                node_id,
+                                name,
+                                control,
+                            )
+                        )
+                    )
+                    widget.slider.sliderReleased.connect(
+                        lambda node_id=node.id, name=spec.name, control=widget.slider: (
+                            self._end_parameter_slider_scrub(
+                                node_id,
+                                name,
+                                control,
+                            )
+                        )
+                    )
             self.parameter_form.addRow(spec.label, widget)
             self._apply_parameter_tooltip(spec, widget)
             self._parameter_widgets[spec.name] = widget
@@ -16470,15 +17072,26 @@ class VippWidget(QWidget):
             if context is None
             else context
         )
-        results = [
-            resolve_parameter_visibility(
+        evaluated = [
+            (
                 spec,
-                context=resolved_context,
+                resolve_parameter_visibility(
+                    spec,
+                    context=resolved_context,
+                ),
             )
             for spec in specs
             if str(getattr(spec, "visibility", "always") or "always") != "always"
             and not self._is_colocalization_threshold_value_spec(node_id, spec)
         ]
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "crop_stack":
+            evaluated = [
+                (spec, result)
+                for spec, result in evaluated
+                if not (spec.name == "channel_axis" and not result.visible)
+            ]
+        results = [result for _spec, result in evaluated]
         if any(not result.visible for result in results):
             text = (
                 "Some settings are hidden because explicit input metadata or "
@@ -18253,8 +18866,24 @@ class VippWidget(QWidget):
         self._sync_current_workflow_tab_state()
 
     def _on_image_source_changed(self, value: dict[str, object]) -> None:
-        value = self._normalized_image_source_value(value)
         node = self.pipeline.nodes[self._selected_node_id]
+        value = dict(value)
+        raw_declaration = value.get("axis_declaration", "")
+        try:
+            declaration = AxisDeclaration.from_value(raw_declaration)
+        except ValueError:
+            value["axis_declaration"] = node.params.get("axis_declaration", "")
+            self._set_status(
+                "Incomplete advanced axis mapping was not applied; the last "
+                "complete mapping remains active.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+        else:
+            value["axis_declaration"] = (
+                "" if declaration is None else declaration.display_text
+            )
+        value = self._normalized_image_source_value(value)
         if self._image_source_value(node) == value:
             return
         self._record_parameter_undo(self._selected_node_id, "image_source")
@@ -18667,9 +19296,7 @@ class VippWidget(QWidget):
             try:
                 metadata = layer.metadata
                 profile_key = self._inspect_display_profile_key(metadata)
-                hidden_state = metadata.get(
-                    _INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY
-                )
+                hidden_state = metadata.get(_INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY)
                 if show_preview or crop_active:
                     if not (
                         isinstance(hidden_state, dict)
@@ -19388,6 +20015,20 @@ class VippWidget(QWidget):
         )
         self._apply_select_axis_slice_params(node_id, control.value())
         control.valueChanged.connect(self._on_select_axis_slice_changed)
+        control.gestureStarted.connect(
+            lambda: self._begin_parameter_slider_scrub(
+                node_id,
+                "axis_slice",
+                control,
+            )
+        )
+        control.gestureFinished.connect(
+            lambda: self._end_parameter_slider_scrub(
+                node_id,
+                "axis_slice",
+                control,
+            )
+        )
         self.parameter_form.addRow(control)
         self._parameter_widgets["axis_slice"] = control
 
@@ -19399,6 +20040,20 @@ class VippWidget(QWidget):
         )
         self._apply_reorder_axes_params(node_id, control.value())
         control.valueChanged.connect(self._on_reorder_axes_changed)
+        control.gestureStarted.connect(
+            lambda: self._begin_parameter_slider_scrub(
+                node_id,
+                "order",
+                control,
+            )
+        )
+        control.gestureFinished.connect(
+            lambda: self._end_parameter_slider_scrub(
+                node_id,
+                "order",
+                control,
+            )
+        )
         self.parameter_form.addRow(control)
         self._parameter_widgets["order"] = control
 
@@ -19409,6 +20064,20 @@ class VippWidget(QWidget):
             str(node.params.get("columns", "auto")),
         )
         control.valueChanged.connect(self._on_select_table_columns_changed)
+        control.gestureStarted.connect(
+            lambda: self._begin_parameter_slider_scrub(
+                node_id,
+                "columns",
+                control,
+            )
+        )
+        control.gestureFinished.connect(
+            lambda: self._end_parameter_slider_scrub(
+                node_id,
+                "columns",
+                control,
+            )
+        )
         self.parameter_form.addRow(control)
         self._parameter_widgets["columns"] = control
         self.parameter_group.setHidden(False)
@@ -19444,8 +20113,7 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes[self._selected_node_id]
         if (
             self._crop_draft_node_id == node.id
-            and self._crop_draft_input_signature
-            != self._crop_input_signature(node.id)
+            and self._crop_draft_input_signature != self._crop_input_signature(node.id)
         ):
             self._discard_crop_draft(remove_layers=False)
             self._set_status(
@@ -23253,6 +23921,48 @@ class VippWidget(QWidget):
         session = self._workflow_tabs.current
         return "" if session is None else str(session.session_id)
 
+    def _begin_crop_slider_scrub(
+        self,
+        node_id: str,
+        name: str,
+        control: QSlider,
+    ) -> None:
+        """Keep a Crop drag as a presentation draft until mouse release."""
+        self._finish_parameter_history_group(preserve_isolated_tuning=True)
+        self._active_crop_slider_scrub = (
+            self._crop_current_session_id(),
+            str(node_id),
+            str(name),
+            weakref.ref(control),
+        )
+
+    def _end_crop_slider_scrub(
+        self,
+        node_id: str,
+        name: str,
+        control: QSlider,
+    ) -> None:
+        """Commit the final Crop value once at the end of a drag."""
+        active = self._active_crop_slider_scrub
+        if active is not None:
+            active_control = active[3]()
+            if (
+                active[:3] == (self._crop_current_session_id(), str(node_id), str(name))
+                and active_control is control
+            ):
+                self._active_crop_slider_scrub = None
+        # Programmatic tests and accessibility integrations may publish a
+        # release without a preceding sliderPressed signal. It is still a
+        # valid durable boundary for any open Crop draft.
+        self._commit_crop_draft()
+
+    def _commit_crop_draft_after_idle(self) -> bool:
+        """Commit non-drag Crop edits after idle, never a held slider."""
+        if self._parameter_scrub_is_active(self._active_crop_slider_scrub):
+            return False
+        self._active_crop_slider_scrub = None
+        return self._commit_crop_draft()
+
     def _crop_input_signature(self, node_id: str) -> tuple:
         shape, state = self._crop_input_shape_and_state(node_id)
         data = self.pipeline.input_data_for_node(node_id)
@@ -23283,8 +23993,7 @@ class VippWidget(QWidget):
         if (
             self._crop_draft_node_id == node_id
             and self._crop_draft_session_id == self._crop_current_session_id()
-            and self._crop_draft_input_signature
-            == self._crop_input_signature(node_id)
+            and self._crop_draft_input_signature == self._crop_input_signature(node_id)
         ):
             values.update(self._crop_draft_values)
         return values
@@ -23332,9 +24041,7 @@ class VippWidget(QWidget):
         shape, state = self._crop_input_shape_and_state(node_id)
         axis_index = self._crop_margin_axis_index(name, shape, state)
         if axis_index is not None:
-            opposite = int(
-                self._crop_draft_values.get(CROP_MARGIN_PAIRS[name], 0)
-            )
+            opposite = int(self._crop_draft_values.get(CROP_MARGIN_PAIRS[name], 0))
             resolved = min(resolved, max(int(shape[axis_index]) - 1 - opposite, 0))
         self._crop_draft_values[name] = resolved
         self._crop_draft_revision += 1
@@ -23376,9 +24083,7 @@ class VippWidget(QWidget):
             ("left", "right"),
             ("z_start", "z_end"),
         ):
-            if first.startswith("z") and not (
-                normalized[first] or normalized[second]
-            ):
+            if first.startswith("z") and not (normalized[first] or normalized[second]):
                 continue
             axis_index = self._crop_margin_axis_index(first, shape, state)
             if axis_index is None:
@@ -23436,6 +24141,7 @@ class VippWidget(QWidget):
         self._crop_draft_committing = True
         try:
             self._crop_draft_timer.stop()
+            self._active_crop_slider_scrub = None
             self._history.finish_group()
             before = self._current_history_snapshot()
             self._crop_draft_node_id = None
@@ -23471,6 +24177,7 @@ class VippWidget(QWidget):
 
     def _discard_crop_draft(self, *, remove_layers: bool) -> None:
         self._crop_draft_timer.stop()
+        self._active_crop_slider_scrub = None
         self._crop_draft_node_id = None
         self._crop_draft_session_id = ""
         self._crop_draft_input_signature = None
@@ -23509,16 +24216,75 @@ class VippWidget(QWidget):
                 f"of {int(shape[axis_index])}"
             )
         axes = str(getattr(state, "axis_order", "")) or "shape"
+        channel_summary = self._crop_channel_retention_summary(
+            node_id,
+            shape,
+            state,
+        )
         is_draft = self._crop_draft_node_id == node_id
         prefix = "Draft ROI (presentation only)" if is_draft else "Applied ROI"
         suffix = (
-            " Release the slider or pause briefly to apply once."
+            "Release the slider or pause briefly to apply once."
             if is_draft
-            else " Drag a margin to preview a new ROI."
+            else "Drag a margin to preview a new ROI."
+        )
+        geometry_summary = (
+            f"{prefix}: {', '.join(ranges)}. Retained {axes} "
+            f"{' × '.join(str(size) for size in retained)}."
         )
         note.setText(
-            f"{prefix}: {', '.join(ranges)}. Retained {axes} "
-            f"{' × '.join(str(size) for size in retained)}.{suffix}"
+            " ".join(filter(None, (geometry_summary, channel_summary, suffix)))
+        )
+
+    def _crop_channel_retention_summary(
+        self,
+        node_id: str,
+        shape: tuple[int, ...],
+        state,
+    ) -> str:
+        """Explain Crop Stack's protected channel axis without implying a crop."""
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return ""
+        try:
+            authored_axis = int(node.params.get("channel_axis", -1))
+        except (TypeError, ValueError):
+            authored_axis = -1
+        automatic = authored_axis == -1
+        if authored_axis >= len(shape):
+            return (
+                f"Channel-axis override {authored_axis} is outside this "
+                f"{len(shape)}D input; choose a valid axis."
+            )
+        channel_axis = authored_axis if authored_axis >= 0 else None
+        if automatic:
+            channel_axis = (
+                _explicit_crop_channel_axis_index(state)
+                if isinstance(state, ImageState)
+                else None
+            )
+        if channel_axis is None or not 0 <= channel_axis < len(shape):
+            return ""
+
+        axis_name = ""
+        axes = tuple(getattr(state, "axes", ()))
+        if len(axes) == len(shape):
+            axis_name = str(getattr(axes[channel_axis], "short_label", "")).strip()
+        axis_reference = (
+            f"{axis_name} (axis {channel_axis})"
+            if axis_name
+            else f"axis {channel_axis}"
+        )
+        count = int(shape[channel_axis])
+        noun = "channel" if count == 1 else "channels"
+        if automatic:
+            return (
+                f"Channel axis {axis_reference} is protected; all {count} "
+                f"{noun} are retained."
+            )
+        return (
+            f"The channel-axis override protects {axis_reference}; all {count} "
+            f"positions are retained."
         )
 
     def _owned_crop_presentation_layers(self, kind: str | None = None) -> list:
@@ -23722,8 +24488,7 @@ class VippWidget(QWidget):
             float(int(shape[x_axis]) - right) - 0.5,
         )
         axis_bounds = {
-            index: (-0.5, float(int(size)) - 0.5)
-            for index, size in enumerate(shape)
+            index: (-0.5, float(int(size)) - 0.5) for index, size in enumerate(shape)
         }
         axis_bounds[y_axis] = y_bounds
         axis_bounds[x_axis] = x_bounds
@@ -23819,11 +24584,13 @@ class VippWidget(QWidget):
                 fixed_value=x_bounds[1],
             ),
         ]
-        faces.append(current_face)
+        ndisplay = int(getattr(getattr(self.viewer, "dims", None), "ndisplay", 2) or 2)
+        if ndisplay < 3:
+            return [current_face], [current_edge], [current_face_color], retained
         return (
             faces,
-            ["#f59e0b"] * 6 + [current_edge],
-            ["#f59e0b10"] * 6 + [current_face_color],
+            ["#f59e0b"] * 6,
+            ["#f59e0b00"] * 6,
             retained,
         )
 
@@ -23859,11 +24626,7 @@ class VippWidget(QWidget):
                 "z_end": int(values.get("z_end", 0)),
                 "current_slice_retained": bool(current_slice_retained),
                 "current_z_slice_retained": bool(current_slice_retained),
-                "geometry": (
-                    "volumetric-box-and-current-slice"
-                    if len(faces) > 1
-                    else "current-slice"
-                ),
+                "geometry": ("volumetric-box" if len(faces) > 1 else "current-slice"),
             }
         )
         axes = tuple(getattr(state, "axes", ()))
@@ -23888,6 +24651,10 @@ class VippWidget(QWidget):
                 self._remove_layer(layer)
                 layer = None
         prior_active = self._active_viewer_layer()
+        ndisplay = int(getattr(getattr(self.viewer, "dims", None), "ndisplay", 2) or 2)
+        edge_width = 1.0 if ndisplay >= 3 else 1.25
+        blending = "translucent_no_depth"
+        opacity = 0.9
         if layer is None and hasattr(self.viewer, "add_shapes"):
             kwargs = {
                 "name": CROP_ROI_LAYER_NAME,
@@ -23895,8 +24662,9 @@ class VippWidget(QWidget):
                 "shape_type": "polygon",
                 "edge_color": edge_colors,
                 "face_color": face_colors,
-                "edge_width": 2,
-                "opacity": 0.9,
+                "edge_width": edge_width,
+                "opacity": opacity,
+                "blending": blending,
             }
             kwargs["scale"] = scale
             kwargs["translate"] = translate
@@ -23909,6 +24677,9 @@ class VippWidget(QWidget):
                 layer.data = faces
                 layer.edge_color = edge_colors
                 layer.face_color = face_colors
+                layer.edge_width = edge_width
+                layer.opacity = opacity
+                layer.blending = blending
                 layer.metadata.update(metadata)
                 layer.scale = scale
                 layer.translate = translate
@@ -24129,6 +24900,11 @@ class VippWidget(QWidget):
         return label_volumes(labels, spatial_ndim)
 
     def _clear_parameter_form(self) -> None:
+        if self._active_parameter_slider_scrub is not None:
+            self._active_parameter_slider_scrub = None
+            self._history.finish_group()
+        if self._active_crop_slider_scrub is not None:
+            self._active_crop_slider_scrub = None
         self._parameter_widgets.clear()
         while self.parameter_form.count():
             item = self.parameter_form.takeAt(0)
@@ -27111,6 +27887,19 @@ class VippWidget(QWidget):
             severity=MessageSeverity.INFO,
         )
 
+    def _on_workflow_save_policy_changed(self, index: int) -> None:
+        raw_policy = self.workflow_save_policy_combo.itemData(int(index))
+        if raw_policy is None:
+            return
+        policy = WorkflowSavePolicy.parse(str(raw_policy))
+        if policy is self._workflow_save_policy:
+            return
+        self._workflow_save_policy = save_workflow_save_policy(policy)
+        self._set_status(
+            f"Workflow saving set to {policy.label.lower()}.",
+            severity=MessageSeverity.INFO,
+        )
+
     def _effective_thumbnail_statistics_compute_mode(self) -> ComputeMode:
         if (
             self._compute_runtime_quarantined_reason
@@ -28644,6 +29433,18 @@ class VippWidget(QWidget):
             dialog = ColocalizationScatterDialog(self)
             dialog.thresholdChanged.connect(
                 self._on_colocalization_scatter_threshold_changed
+            )
+            dialog.plot.gestureStarted.connect(
+                lambda: self._begin_selected_parameter_scrub(
+                    "colocalization_threshold",
+                    dialog.plot,
+                )
+            )
+            dialog.plot.gestureFinished.connect(
+                lambda: self._end_selected_parameter_scrub(
+                    "colocalization_threshold",
+                    dialog.plot,
+                )
             )
             dialog.colormapChanged.connect(
                 self._on_colocalization_scatter_colormap_changed
@@ -30645,9 +31446,7 @@ class VippWidget(QWidget):
                 continue
             try:
                 raw_value = getattr(layer, attr)
-                hidden_state = metadata.get(
-                    _INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY
-                )
+                hidden_state = metadata.get(_INSPECT_SOURCE_PREVIEW_VISIBILITY_KEY)
                 if (
                     attr == "visible"
                     and isinstance(hidden_state, dict)

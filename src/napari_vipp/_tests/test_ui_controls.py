@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import pytest
+from qtpy.QtCore import QPoint, Qt
 from qtpy.QtWidgets import QLabel
 
 from napari_vipp.core.pipeline import ParameterSpec
 from napari_vipp.ui import recent_paths
-from napari_vipp.ui.axis_controls import AxisSliceOption, ReorderAxesControl
+from napari_vipp.ui.axis_controls import (
+    AxisSliceControl,
+    AxisSliceOption,
+    ReorderAxesControl,
+    SelectTableColumnsControl,
+)
 from napari_vipp.ui.controls import (
     ImageSourceControl,
     ImageSourceResolutionPresentation,
@@ -33,6 +39,77 @@ def test_reorder_axes_guidance_distinguishes_transpose_from_declaration(qtbot):
     guidance = " ".join(label.text() for label in control.findChildren(QLabel))
     assert "does not rename or reinterpret axes" in guidance
     assert "Declare axes" in guidance
+
+
+def test_axis_slice_drag_and_hide_each_finish_their_gesture_once(qtbot):
+    control = AxisSliceControl([AxisSliceOption(0, "z", "space", 10)])
+    qtbot.addWidget(control)
+    control.resize(420, 180)
+    control.show()
+    qtbot.waitExposed(control)
+    events = []
+    control.gestureStarted.connect(lambda: events.append("started"))
+    control.gestureFinished.connect(lambda: events.append("finished"))
+
+    slider = control._rows[0].range_slider
+    start = QPoint(slider._x_for_value(0), slider.rect().center().y())
+    middle = QPoint(slider._x_for_value(2), slider.rect().center().y())
+    end = QPoint(slider._x_for_value(4), slider.rect().center().y())
+    qtbot.mousePress(slider, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(slider, pos=middle)
+    qtbot.mouseMove(slider, pos=end)
+
+    assert events == ["started"]
+
+    qtbot.mouseRelease(slider, Qt.LeftButton, pos=end)
+    qtbot.mouseRelease(slider, Qt.LeftButton, pos=end)
+
+    assert events == ["started", "finished"]
+
+    start = QPoint(slider._x_for_value(4), slider.rect().center().y())
+    end = QPoint(slider._x_for_value(6), slider.rect().center().y())
+    qtbot.mousePress(slider, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(slider, pos=end)
+    assert events == ["started", "finished", "started"]
+
+    control.hide()
+    control.hide()
+
+    assert events == ["started", "finished", "started", "finished"]
+
+
+@pytest.mark.parametrize("control_kind", ["axes", "table"])
+def test_reorder_lists_forward_one_gesture_pair(control_kind, qtbot):
+    if control_kind == "axes":
+        control = ReorderAxesControl(
+            [
+                AxisSliceOption(0, "z", "space", 3),
+                AxisSliceOption(1, "y", "space", 8),
+                AxisSliceOption(2, "x", "space", 9),
+            ]
+        )
+    else:
+        control = SelectTableColumnsControl(["label", "area", "mean"])
+    qtbot.addWidget(control)
+    control.resize(420, 360)
+    control.show()
+    qtbot.waitExposed(control)
+    events = []
+    control.gestureStarted.connect(lambda: events.append("started"))
+    control.gestureFinished.connect(lambda: events.append("finished"))
+
+    axis_list = control.list_widget
+    first = axis_list.visualItemRect(axis_list.item(0)).center()
+    third = axis_list.visualItemRect(axis_list.item(2)).center()
+    qtbot.mousePress(axis_list.viewport(), Qt.LeftButton, pos=first)
+    qtbot.mouseMove(axis_list.viewport(), pos=third)
+
+    assert events == ["started"]
+
+    qtbot.mouseRelease(axis_list.viewport(), Qt.LeftButton, pos=third)
+    qtbot.mouseRelease(axis_list.viewport(), Qt.LeftButton, pos=third)
+
+    assert events == ["started", "finished"]
 
 
 def test_image_source_choosers_share_recent_input_directory(
