@@ -31,10 +31,10 @@ understand how results were produced.
 > analysis on representative data before scientific interpretation or
 > publication.
 
-![VIPP workspace with a 3D deconvolution workflow](https://raw.githubusercontent.com/rensutheart/napari-vipp/main/docs/assets/user-guide/vipp-3d-deconvolution-workspace.png)
+![VIPP workspace with a calculated 3D deconvolution workflow](https://raw.githubusercontent.com/rensutheart/napari-vipp/main/docs/assets/user-guide/vipp-3d-deconvolution-workspace.png)
 
-*A 3D deconvolution workflow in napari, with node previews, image inspection and
-manual control over computationally intensive stages.*
+*A calculated 3D deconvolution workflow with the node catalogue, thumbnail
+previews and selected-node inspector visible together.*
 
 ## Why VIPP
 

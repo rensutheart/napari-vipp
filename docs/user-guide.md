@@ -62,7 +62,7 @@ The VIPP dock has four working areas:
 | Graph canvas | Typed node graph where outputs connect to compatible inputs. |
 | Inspector | Parameters, execution controls, metadata, histograms, and table previews for the selected node. |
 
-![VIPP workspace with a 3D deconvolution workflow](assets/user-guide/vipp-3d-deconvolution-workspace.png)
+![VIPP workspace with a calculated 3D deconvolution workflow](assets/user-guide/vipp-3d-deconvolution-workspace.png)
 
 Graph direction is usually left to right: sources on the left, processing in
 the middle, analysis or saved outputs on the right. Node cards show a compact
