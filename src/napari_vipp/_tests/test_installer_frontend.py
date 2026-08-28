@@ -167,6 +167,7 @@ def test_gpu_install_explains_that_the_large_download_can_pause(tmp_path):
     assert (
         "at least 15 GiB of free disk space on the installation drive" in status
     )
+    assert "during setup" in status
     assert "Windows temporary files and VIPP installer records" in status
     assert "at least 5 GiB" in status
     assert "every drive they use" in status

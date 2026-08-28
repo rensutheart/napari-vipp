@@ -202,7 +202,7 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
         assert "cuCIM" not in normalized
     assert "exact managed location" in packaging_readme
     assert "CPU or CUDA 13" in packaging_readme
-    assert "installation-drive storage" in packaging_readme
+    assert "15 GiB of free disk space" in packaging_readme
     assert "DEVELOPMENT BUILD — local testing only" in packaging_readme
     assert "embedded channel" in packaging_readme
     assert "5 GiB" in quick_start

@@ -8,10 +8,10 @@ is available, its guided screen links to the official Python 3.12.10 installer
 and lets the user check again without entering terminal commands.
 Its approval screen names the exact managed location, resolved CPU or CUDA 13
 route, and Start Menu/Desktop shortcut scope. The GPU space allowance is
-described as installation-drive storage rather than GPU memory (VRAM). The UI
-and user guide separately explain the 5 GiB GPU (1 GiB CPU) allowance on every
-drive used for Windows temporary files and installer records, and setup names
-the exact failing location.
+described directly as 15 GiB of free disk space on the installation drive. The
+UI and user guide separately explain the 5 GiB GPU (1 GiB CPU) allowance on
+every drive used for Windows temporary files and installer records, and setup
+names the exact failing location.
 
 The same review keeps rounded planning estimates visibly separate from those
 enforced gates:

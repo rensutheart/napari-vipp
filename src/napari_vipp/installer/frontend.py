@@ -958,7 +958,7 @@ def _ready_status(prepared: PreparedInstall) -> str:
     if prepared.track is ComputeTrack.CUDA13:
         return (
             f"Setup will use GPU acceleration and needs at least {gib:.0f} GiB "
-            "of free disk space on the installation drive."
+            "of free disk space on the installation drive during setup."
             f"{temporary_requirement}"
         )
     return (
