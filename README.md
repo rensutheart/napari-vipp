@@ -52,11 +52,6 @@ previews and selected-node inspector visible together.*
   available for supported filtering, restoration, segmentation and measurement
   operations.
 
-![Alternative 3D restoration routes in one visual workflow](https://raw.githubusercontent.com/rensutheart/napari-vipp/main/docs/assets/user-guide/vipp-3d-deconvolution-graph.png)
-
-*The same image and point-spread function can feed alternative restoration
-routes without duplicating their shared preparation stages.*
-
 ## Install
 
 The current published release is
