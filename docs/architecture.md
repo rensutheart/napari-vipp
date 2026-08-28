@@ -154,6 +154,7 @@ quietly changing a scientific result.
 | Live napari revisions | `ui/source_adapter.py`, `_widget.py` | In-memory NumPy layer data and metadata are detached on the GUI thread and tagged with a revision token. Relevant layer events invalidate the token; a background result from an older revision is discarded. Live data that cannot be detached, including lazy arrays, is rejected with an instruction to materialize it or use an immutable file source. Non-axis-aligned napari transforms are rejected rather than ignored. |
 | Axis semantics | `core/metadata.py`, `core/pipeline.py` | Every axis carries `explicit` or `shape-inferred` confidence, with `mixed` available at the image-state level. Operations that need semantic auto-selection of spatial rank, channel axis, projection axes, or PSF parameters reject inferred-only axes with `AmbiguousAxisError`; callers must supply explicit metadata or an explicit supported mode/index. Positional kernels also reject explicit noncanonical layouts instead of treating a `ZX` suffix as `YX`; semantic-capable crop, projection, rescaling, and measurement paths resolve named axes directly. Array shape alone never establishes RGB or Z/Y/X meaning. A batch source may apply an exact raw-to-effective `AxisDeclaration`, but it is provenance-recorded, never transposes pixels, and never manufactures calibration. Malformed declared axes, stale carried shapes, and non-finite or non-positive calibration fail instead of being replaced by inferred/default metadata. |
 | Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. A typed `PipelineNodeResult` may expose one completed node's transient execution-display state immediately, so its card and sampled thumbnail can advance while later nodes run. When the active cache policy already retains that node, its run-scoped presentation payload also keeps inspection, pinning, tables, and metadata synchronized without defeating Low-memory pruning. Normal success replaces the live scientific cache and execution state with the accepted final result. Cancellation or supersession discards transient presentation state. On failure, a verified source boundary may be merged. A cleanup-failed result may additionally merge completed processing output only with matching actual-implementation provenance; otherwise the coherent earlier value is restored. Source ownership remains an explicit upstream responsibility. |
+| Safe Node Bypass | `core/pipeline.py`, `core/workflow.py`, `_widget.py`, `_graph.py` | Bypass is an inherited, topology-aware graph splice: a callable fixed-single-output operation forwards input port 0 only when that actual upstream port type is accepted by every live consumer. Multi-input operations ignore secondary inputs (RL/RL-TV therefore forwards Image, never PSF); sources, Save/Batch Output, multi/dynamic-output nodes, and unsafe splices are excluded. The UI requires an output consumer or tunnel before entering bypass, while persisted/disconnected bypass remains representable so it can always be cleared. Scientific execution aliases main-input data, state, and device residency exactly to the output, records bypass provenance, and performs no node backend work. A bypassed card may independently derive a presentation-only would-run thumbnail when normal inputs are available. That image never enters pipeline outputs, output states, caches, timing, provenance, inspection, pinning, saving, export, batch, or downstream inputs; card metadata continues to describe the forwarded scientific output. Preview failure is non-fatal. |
 | Physical grids | `core/grid.py`, `core/pipeline.py` | Registered multi-image operations compare axis semantics, sizes, scale, unit, and origin for same-shaped inputs. A lower-rank mask is broadcast only through a unique explicit semantic/calibration mapping; coincident dimension sizes are never used to guess omitted axes. Deconvolution separately requires image/PSF axis semantics and sampling to agree while allowing a different PSF extent. Unit aliases are normalized for comparison. VIPP never resamples, reorders, or registers an input implicitly to make grids agree. |
 | Diagnostic calculations | `core/diagnostics.py` | Finite statistics, percentiles, histograms, generated-layer extrema, and label-volume summaries use the complete declared population. Chunking bounds temporary memory but is not sampling. Wide integer histogram placement avoids lossy float conversion, and multichannel behavior requires an explicit `channel_axis` rather than a trailing-size RGB guess. |
 | Scientific parameters and inputs | `core/operations.py`, operation tests | Invalid, ambiguous, unordered, non-finite, or incomplete parameters are rejected where silently clamping, swapping, defaulting, or dropping values would change the requested method. Dynamic choices have persisted grammars rather than accepting arbitrary non-empty text. RGB/luminance behavior requires an explicit channel declaration. Representative operation tests use read-only inputs and verify that upstream buffers are not mutated. |
@@ -387,7 +388,7 @@ documented exceptions are in
 Visibility is excluded from workflow JSON, execution kwargs, cache keys,
 scientific hashes, and undo/redo snapshots. Hidden parameters therefore retain
 their exact stored values and still participate in generated Python and batch
-execution. The current workflow schema is version 5; this visibility boundary
+execution. The current workflow schema is version 6; this visibility boundary
 is unchanged.
 
 ## Node Library
@@ -1306,7 +1307,7 @@ Main classes:
 | --- | --- |
 | `PipelineGraphView` | Canvas, pan/zoom, drag/drop node creation, wire creation/removal, additive node selection, group movement, clipboard/menu requests, delete-key handling, and node/canvas context menus. |
 | `NodeProxy` | Movable graphics item wrapping a `NodeCard`; owns the visual input/output ports (one or more output ports for multi-output nodes). |
-| `NodeCard` | Embedded widget with category tint, title, thumbnail, and compact metadata. Pin state is represented by card styling; Pin/Unpin actions live in the inspector and node context menu. |
+| `NodeCard` | Embedded widget with category tint, title, thumbnail, and compact metadata. Pin state is represented by card styling; Pin/Unpin actions live in the inspector and node context menu. A bypassed card keeps its badge, fades slightly, uses a prominent dotted outline, and paints a non-interactive input-to-output pass-through cue. |
 | `PortItem` | Input/output port circle with hover/drop feedback, optional accent colour/label, and optional tunnel badge. Multi-input and multi-output nodes have several ports. |
 | `ConnectionItem` | Curved visible wire storing source id, target id, `target_port`, and `source_port`. Tunnel-marked connections are not drawn as `ConnectionItem`s. |
 
@@ -1325,14 +1326,15 @@ original wire and positions; releasing in open space remains layout-only.
 
 Right-clicking a node opens a context menu with Copy, exact-operation Paste
 values, Delete, Inspect Code, Duplicate Node, Add note, and Tune node in
-isolation, plus Pin or Unpin for image/mask/label-producing nodes. A multi-node
-menu exposes group Copy and Delete. The canvas menu pastes at the clicked scene
-position, while Ctrl/Cmd+V pastes at the visible viewport centre. Duplicate Node
-copies the node operation and current parameter values into an unconnected node
-near the original; it does not infer connections. Inspect Code opens a
-read-only dialog containing node metadata, connected input references, a
-single-node call shape, and the pure operation function source when available,
-with lightweight Python syntax highlighting.
+isolation, plus Pin or Unpin for image/mask/label-producing nodes. Reviewed
+nodes also expose the same checkable **Bypass node** action as the compact
+inspector checkbox. A multi-node menu exposes group Copy and Delete. The canvas
+menu pastes at the clicked scene position, while Ctrl/Cmd+V pastes at the visible
+viewport centre. Duplicate Node copies the node operation and current parameter
+values into an unconnected node near the original; it does not infer
+connections. Inspect Code opens a read-only dialog containing node metadata,
+connected input references, a single-node call shape, and the pure operation
+function source when available, with lightweight Python syntax highlighting.
 
 Right-clicking an output port can create, rename, or remove a named output
 tunnel. Right-clicking an input port can subscribe that input to any compatible
@@ -1374,6 +1376,7 @@ Signals to `VippWidget`:
 - `node_duplicate_requested(node_id)`
 - `node_code_requested(node_id)`
 - `node_isolation_requested(node_id)`
+- `node_bypass_requested(node_id, bypassed)`
 - `pin_requested(node_id)`
 - `node_create_requested(operation_id, scene_position)`
 - `connection_requested(source_id, target_id, target_port, source_port)`
@@ -1517,14 +1520,14 @@ Workflow persistence:
 - `core/workflow.py` serializes nodes, params, connections including
   `target_port`, `source_port`, optional tunnel names, output tunnel
   definitions, and canvas positions to JSON.
-- Workflow version 5 retains version 4's required `execution.compute` object
-  with portable `mode`, `fallback_policy`, `node_preferences`,
-  `precision_policy`, and `workload_policy` fields. It adds canonical SourceItem
-  evidence to resolved file-source parameters: stable logical selector, reader
-  key/version, normalized axes/shape and metadata, and exact container revision.
-  Version 4 in turn retained version 3's graph notes, VIPP UI metadata, and
-  required scientific controls for threshold/cutoff behavior, explicit channel
-  semantics, and composite intensity mapping.
+- Workflow version 6 retains version 5's portable `execution.compute` object and
+  canonical SourceItem evidence. It adds an optional per-node
+  `execution_mode`; the default `run` value is omitted, while `bypass` is
+  accepted only for callable fixed-single-output operations with a valid main
+  input splice in the materialized graph. Version 5 added stable
+  source selectors, reader identity/version, normalized axes/shape and
+  metadata, and exact container revision to resolved file-source parameters.
+  Version 4 introduced the required portable compute-intent block.
 - Portable `mode` values are `cpu`, `auto`, `prefer_gpu`, and `custom`.
   Prefer GPU requires visible fallback and considers reviewed public Custom
   as well as Auto-candidate providers while bypassing only the CPU-performance
@@ -1532,11 +1535,12 @@ Workflow persistence:
   Custom; this preserves intent when switching modes without changing what
   the other three modes mean.
 - Version-3 documents are accepted and decoded as an explicit CPU
-  `ComputeRequest`; version-4 documents retain their authored request. Resolved
+  `ComputeRequest`; versions 4 and 5 retain their authored request. Resolved
   legacy file sources acquire SourceItem evidence, and a subsequent save emits
-  version 5. Versions 1 and 2 are intentionally rejected instead of receiving
-  inferred scientific parameter migrations; changing only the JSON version
-  number is not a valid migration.
+  version 6. A version-6 bypass cannot therefore be opened by an older VIPP and
+  silently executed as Run. Versions 1 and 2 are intentionally rejected instead
+  of receiving inferred scientific parameter migrations; changing only the JSON
+  version number is not a valid migration.
 - Compute persistence records authored portability intent, not the environment
   that happened to run or benchmark it. `runtime_id`, `device_id`, accelerator
   memory cap/reserve, experimental admission, provider probes, device/runtime
@@ -1559,7 +1563,7 @@ Workflow persistence:
 - Image Source paths and layer names are serialized as literal parameters;
   resolved file sources additionally carry canonical SourceItem evidence. Input
   files are not embedded and paths are not rebased for portable sharing.
-- The loader requires the workflow type, accepts schema versions 3, 4, and 5, and
+- The loader requires the workflow type, accepts schema versions 3, 4, 5, and 6, and
   rejects unknown operations, malformed records, duplicate node ids, invalid
   positions, and dangling or multiply occupied connections. It also rejects
   compute preferences that reference missing graph nodes, duplicate tunnel
@@ -1715,16 +1719,17 @@ Collection batch UI:
   default format, existing-file policy, the required workflow companion, the
   optional runner choice, the workflow hash, resolved output declarations, and
   the full effective `ComputeRequest` plus guarded source-axis declarations.
-  Schema version 4 adds canonical SourceItem inventories and typed per-sample
-  numeric overrides to version 3. Versions 1, 2, and 3 remain loadable. Version
+  Schema version 5 adds typed whole-batch Run/Bypass node directives to version
+  4's canonical SourceItem inventories and per-sample numeric overrides.
+  Versions 1, 2, 3, and 4 remain loadable. Version
   1 migrates to explicit CPU because it had no compute field; version 2 retains
   its saved compute request; version 3 retains source declarations. Older
-  versions contain no overrides, acquire SourceItems when resolved, and are
-  emitted as version 4 only after review/save.
+  versions contain no node-behavior profile, acquire SourceItems when resolved,
+  and are emitted as version 5 only after review/save.
   Load validates the workflow hash so a configuration cannot silently select
   outputs from a different graph.
 - An active workspace may attach the exact versioned config as optional
-  top-level `batch_config` in workflow schema 5. The scientific hash includes
+  top-level `batch_config` in workflow schema 6. The scientific hash includes
   canonical portable compute intent but explicitly excludes `batch_config`,
   preventing self-reference and calculation drift. Canonical CPU intent remains
   hash-compatible with version 3's implicit CPU execution. Load validates the

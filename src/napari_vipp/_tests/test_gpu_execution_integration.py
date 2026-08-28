@@ -68,7 +68,7 @@ from napari_vipp.core.operations import median_filter as cpu_median_filter
 from napari_vipp.core.operations import otsu_threshold as cpu_otsu_threshold
 from napari_vipp.core.pipeline import EXECUTION_READY, PrototypePipeline, SourcePayload
 from napari_vipp.core.tables import TableData, TableState
-from napari_vipp.core.workflow import serialize_workflow
+from napari_vipp.core.workflow import WORKFLOW_VERSION, serialize_workflow
 
 
 @pytest.fixture
@@ -522,6 +522,100 @@ def test_prefer_gpu_then_auto_cpu_comparison_teaches_next_auto_assignment(
     assert decision.performance_evidence_kind == "completed_pipeline_timing"
     assert decision.performance_evidence_digest
     assert "2.000 s for CPU" in decision.reason_text
+
+
+def test_completed_run_timing_excludes_bypass_from_gpu_assignment(
+    tmp_path,
+    validated_windows_compute_host,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", crop.id).success
+    assert pipeline.connect(crop.id, gaussian.id).success
+    assert pipeline.set_node_execution_mode(crop.id, "bypass")
+    data = np.arange(4_096, dtype=np.float32).reshape(64, 64)
+    history_path = tmp_path / "pipeline-timings.json"
+    runtime = _ShapeAwareRuntime()
+    registry, _specs = _test_registry(runtime, (("gaussian_blur", _device_copy),))
+
+    result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            data,
+            ComputeRequest(mode=ComputeMode.PREFER_GPU),
+            performance_history_path=history_path,
+        ),
+        compute_registry=registry,
+    )
+
+    assert not result.error
+    assert result.execution_report is not None
+    decisions = {
+        decision.node_id: decision
+        for decision in result.execution_report.actual_decisions
+    }
+    assert decisions[crop.id].decision_kind is DecisionKind.BYPASSED
+    assert decisions[gaussian.id].runtime_id == "cuda-cupy"
+    assert result.pipeline is not None
+    assert result.pipeline.outputs[crop.id] is data
+    assert (
+        result.pipeline.output_states[crop.id]
+        is result.pipeline.output_states["input"]
+    )
+    assert runtime.host_to_device_count == 1
+    assert runtime.device_to_host_count == 1
+    sample = JsonPipelineTimingStore(history_path).samples()[0]
+    assert [decision.node_id for decision in sample.assignment.decisions] == [
+        gaussian.id
+    ]
+    assert sample.assignment.uses_accelerator
+    registry.close()
+
+
+def test_retained_resident_bypass_reuses_finalized_upstream_state_identity(
+    validated_windows_compute_host,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    before = pipeline.add_node("gaussian_blur")
+    crop = pipeline.add_node("crop_stack")
+    after = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(before.id, "sigma", 0.0)
+    pipeline.set_param(after.id, "sigma", 0.0)
+    assert pipeline.connect("input", before.id).success
+    assert pipeline.connect(before.id, crop.id).success
+    assert pipeline.connect(crop.id, after.id).success
+    assert pipeline.set_node_execution_mode(crop.id, "bypass")
+    data = np.arange(4_096, dtype=np.float32).reshape(64, 64)
+    runtime = _ShapeAwareRuntime()
+    registry, _specs = _test_registry(
+        runtime,
+        (("gaussian_blur", _device_copy),),
+    )
+
+    result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            data,
+            ComputeRequest(mode=ComputeMode.PREFER_GPU),
+        ),
+        compute_registry=registry,
+    )
+
+    assert not result.error
+    assert result.pipeline is not None
+    assert result.pipeline.outputs[crop.id] is result.pipeline.outputs[before.id]
+    assert (
+        result.pipeline.output_states[crop.id]
+        is result.pipeline.output_states[before.id]
+    )
+    assert runtime.host_to_device_count == 1
+    assert runtime.device_to_host_count == 2
+    assert runtime.operation_count == 2
+    registry.close()
 
 
 def test_auto_skips_optional_cpu_comparison_when_host_headroom_is_unsafe(
@@ -2827,7 +2921,7 @@ def test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance(
     module_spec.loader.exec_module(generated)
     embedded = json.loads(generated._WORKFLOW_JSON)
 
-    assert embedded["version"] == 5
+    assert embedded["version"] == WORKFLOW_VERSION
     assert embedded["execution"]["compute"]["mode"] == "custom"
     assert embedded["execution"]["compute"]["node_preferences"] == preferences
 

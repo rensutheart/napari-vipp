@@ -122,6 +122,11 @@ from napari_vipp.core.batch_demo import (
     next_synthetic_batch_demo_root,
     validate_synthetic_batch_demo,
 )
+from napari_vipp.core.batch_execution import (
+    BatchNodeExecutionOverride,
+    batch_node_execution_specs,
+    workflow_with_node_execution_overrides,
+)
 from napari_vipp.core.batch_parameters import (
     is_batch_parameter_override_eligible,
     workflow_with_parameter_overrides,
@@ -178,6 +183,9 @@ from napari_vipp.core.diagnostics import (
 )
 from napari_vipp.core.execution import (
     PipelineNodeResult as PipelineNodeResult,
+)
+from napari_vipp.core.execution import (
+    PipelinePresentationShadowResult as PipelinePresentationShadowResult,
 )
 from napari_vipp.core.execution import (
     PipelineRunRequest as PipelineRunRequest,
@@ -273,6 +281,8 @@ from napari_vipp.core.pipeline import (
     GLOBAL_THRESHOLD_OPERATIONS,
     INTENSITY_CONTRAST_CATEGORY,
     MANUAL_RUN_SKIP,
+    NODE_EXECUTION_BYPASS,
+    NODE_EXECUTION_RUN,
     GraphConnection,
     GraphNode,
     InputSpec,
@@ -331,6 +341,7 @@ from napari_vipp.core.thumbnail_statistics import (
     ThumbnailStatisticsRequest,
 )
 from napari_vipp.core.workflow import (
+    deserialize_workflow,
     load_workflow,
     save_workflow,
     save_workflow_document,
@@ -2177,6 +2188,9 @@ class VippWidget(QWidget):
         self.graph_view.set_connection_insert_validator(
             self._connection_insert_preview_state
         )
+        self.graph_view.set_node_bypass_state_resolver(
+            self._node_bypass_action_state
+        )
         self.graph_view.set_tunnel_reroute_validator(self._tunnel_reroute_preview_state)
         self.graph_view.set_tunnel_insert_validator(self._tunnel_insert_preview_state)
         self.graph_view.setMinimumHeight(80)
@@ -2215,6 +2229,13 @@ class VippWidget(QWidget):
             tuple[int, str, str],
         ] = {}
         self._background_node_result_overrides: dict[str, PipelineNodeResult] = {}
+        self._bypass_shadow_results: dict[
+            str,
+            PipelinePresentationShadowResult,
+        ] = {}
+        self._bypass_shadow_errors: dict[str, str] = {}
+        self._bypass_shadow_pending_node_ids: set[str] = set()
+        self._pipeline_run_shadow_node_ids: dict[int, frozenset[str]] = {}
 
         self.selected_title = QLabel("Gaussian Blur")
         self.selected_title.setStyleSheet("font-weight: 650;")
@@ -2285,6 +2306,13 @@ class VippWidget(QWidget):
         self.apply_isolated_tuning_button = QPushButton("Apply and continue")
         self.cancel_isolated_tuning_button = QPushButton("Cancel tuning")
         self.isolated_tuning_panel.setVisible(False)
+        self.node_bypass_checkbox = QCheckBox("Bypass node")
+        self.node_bypass_checkbox.setAccessibleName("Bypass selected node")
+        self.node_bypass_checkbox.setToolTip(
+            "Skip an eligible operation and forward its exact primary input data "
+            "and metadata unchanged. Availability follows the live graph topology."
+        )
+        self.node_bypass_checkbox.hide()
         self.execution_group = QGroupBox("Execution")
         self.execution_status_label = QLabel("Automatic")
         self.execution_status_label.setWordWrap(True)
@@ -2363,7 +2391,7 @@ class VippWidget(QWidget):
             Qt.TextSelectableByMouse
         )
         self.batch_effective_parameter_label.setAccessibleName(
-            "Effective parameters for selected batch representative"
+            "Effective behavior and parameters for selected batch representative"
         )
         self.batch_effective_parameter_group.setStyleSheet(
             "QGroupBox { color: #fbbf24; font-weight: 600; }"
@@ -3789,6 +3817,7 @@ class VippWidget(QWidget):
         isolated_tuning_actions.addWidget(self.cancel_isolated_tuning_button)
         isolated_tuning_layout.addLayout(isolated_tuning_actions)
         layout.addWidget(self.isolated_tuning_panel)
+        layout.addWidget(self.node_bypass_checkbox)
         execution_layout = QVBoxLayout(self.execution_group)
         execution_layout.addWidget(self.execution_status_label)
         execution_layout.addWidget(self.auto_recalculate_checkbox)
@@ -3950,6 +3979,7 @@ class VippWidget(QWidget):
         self.node_compute_preference_combo.currentIndexChanged.connect(
             self._on_node_compute_preference_changed
         )
+        self.node_bypass_checkbox.toggled.connect(self._on_node_bypass_toggled)
         self.node_compute_optimizer_lock_checkbox.toggled.connect(
             self._on_node_compute_optimizer_lock_toggled
         )
@@ -4107,6 +4137,7 @@ class VippWidget(QWidget):
         self.graph_view.node_isolation_requested.connect(
             self._toggle_node_isolation_from_graph
         )
+        self.graph_view.node_bypass_requested.connect(self._set_node_bypassed)
         self.graph_view.node_moved.connect(self._on_node_moved)
         self.graph_view.nodes_moved.connect(self._on_nodes_moved)
         self.graph_view.node_splice_requested.connect(
@@ -4527,10 +4558,13 @@ class VippWidget(QWidget):
                 )
             )
         custom_editable = editable and self._compute_mode is ComputeMode.CUSTOM
+        selected_bypassed = self.pipeline.node_is_bypassed(self._selected_node_id)
         if hasattr(self, "strict_compute_checkbox"):
             self.strict_compute_checkbox.setEnabled(custom_editable)
         if hasattr(self, "node_compute_preference_combo"):
-            self.node_compute_preference_combo.setEnabled(custom_editable)
+            self.node_compute_preference_combo.setEnabled(
+                custom_editable and not selected_bypassed
+            )
         if hasattr(self, "node_compute_optimizer_lock_checkbox"):
             preference = self._compute_node_preferences.get(
                 self._selected_node_id,
@@ -4538,6 +4572,7 @@ class VippWidget(QWidget):
             )
             self.node_compute_optimizer_lock_checkbox.setEnabled(
                 custom_editable
+                and not selected_bypassed
                 and preference.kind is not NodePreferenceKind.AUTO
                 and self._selected_node_id in self.pipeline.nodes
             )
@@ -4582,18 +4617,28 @@ class VippWidget(QWidget):
         if mode is ComputeMode.CUSTOM:
             current_request = self._current_compute_request()
             previous_report = self._last_execution_report
+            backend_decisions = tuple(
+                decision
+                for decision in self._accepted_compute_decisions.values()
+                if (
+                    decision.decision_kind is not DecisionKind.BYPASSED
+                    and not self.pipeline.node_is_bypassed(decision.node_id)
+                )
+            )
             compatible = bool(
-                self._accepted_compute_decisions
+                backend_decisions
                 and custom_request_satisfied_by_actual_decisions(
                     current_request,
-                    tuple(self._accepted_compute_decisions.values()),
+                    backend_decisions,
                     previous_request=(
                         previous_report.request if previous_report is not None else None
                     ),
                 )
             )
-            if self._accepted_compute_decisions and not compatible:
-                self._mark_compute_badges_stale(self._accepted_compute_decisions)
+            if backend_decisions and not compatible:
+                self._mark_compute_badges_stale(
+                    decision.node_id for decision in backend_decisions
+                )
             self._sync_node_compute_control()
             self._sync_compute_toolbar_summary()
             previous_mode = (
@@ -4692,6 +4737,204 @@ class VippWidget(QWidget):
         )
         self.run_pipeline()
 
+    def _on_node_bypass_toggled(self, checked: bool) -> None:
+        """Apply the selected node's reviewed safe-bypass checkbox."""
+
+        self._set_node_bypassed(self._selected_node_id, checked)
+
+    def _set_node_bypassed(self, node_id: str, bypassed: bool) -> bool:
+        """Author one topology-safe bypass edit from the inspector or graph menu."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            self._sync_node_execution_mode_ui()
+            return False
+        operation = self.pipeline.operation_spec(node.operation_id)
+        if not operation.supports_bypass:
+            self._sync_node_execution_mode_ui()
+            return False
+        if self._isolated_tuning_node_id is not None:
+            self._sync_node_execution_mode_ui()
+            self._set_status(
+                "Apply or cancel isolated tuning before changing Bypass node.",
+                severity=MessageSeverity.WARNING,
+            )
+            return False
+        if bypassed:
+            _visible, enabled, tooltip = self._node_bypass_action_state(node_id)
+            if not enabled:
+                self._sync_node_execution_mode_ui()
+                self._set_status(
+                    tooltip or "This node cannot be bypassed in the current graph.",
+                    severity=MessageSeverity.WARNING,
+                    actionable=True,
+                )
+                return False
+        value = NODE_EXECUTION_BYPASS if bypassed else NODE_EXECUTION_RUN
+        if value == node.execution_mode:
+            self._sync_node_execution_mode_ui()
+            return False
+
+        # Crop drafts are a presentation-only interaction until committed.
+        # Finish that boundary first so the mode change is its own undo step,
+        # then remove the ROI surface before authoring Bypass.
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        if node_id == self._selected_node_id:
+            self._discard_crop_draft(remove_layers=True)
+        try:
+            changed = self.pipeline.set_node_execution_mode(node_id, value)
+        except ValueError as exc:
+            self._sync_node_execution_mode_ui()
+            self._set_status(
+                f"Bypass unavailable: {exc}",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return False
+        if not changed:
+            self._sync_node_execution_mode_ui()
+            return False
+        if not bypassed:
+            self._bypass_shadow_results.pop(node_id, None)
+            self._bypass_shadow_errors.pop(node_id, None)
+            self._bypass_shadow_pending_node_ids.discard(node_id)
+
+        self._mark_pipeline_dirty(node_id)
+        self._push_undo_if_changed(before)
+        if node_id == self._selected_node_id:
+            self._render_parameters(node_id, preserve_authored_values=True)
+        self._sync_node_execution_mode_ui()
+        self.graph_view.set_node_bypassed(node_id, bypassed)
+        self._sync_node_compute_badge(node_id)
+        self._sync_node_compute_control()
+        self._sync_isolated_tuning_ui()
+        if node_id == self._selected_node_id:
+            self._update_crop_roi_presentation(node_id)
+        mode_label = "Bypass" if self.pipeline.node_is_bypassed(node_id) else "Run"
+        primary_phrase = self._node_bypass_primary_input_phrase(operation)
+        detail = (
+            f"The exact {primary_phrase} data and metadata will be forwarded; "
+            f"stored {node.title} settings are inactive. Recalculating this "
+            "branch..."
+            if mode_label == "Bypass"
+            else (
+                f"{node.title} settings are active again. Recalculating this "
+                "branch..."
+            )
+        )
+        self._set_status(
+            f"'{self._node_title(node_id)}' changed to {mode_label}. {detail}",
+            severity=MessageSeverity.INFO,
+        )
+        self.run_pipeline()
+        return True
+
+    def _sync_node_execution_mode_ui(self) -> None:
+        """Present authored bypass intent for live topology-safe operations."""
+
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        operation = (
+            self.pipeline.operation_spec(node.operation_id)
+            if node is not None
+            else None
+        )
+        supported = bool(operation is not None and operation.supports_bypass)
+        self.node_bypass_checkbox.setVisible(supported)
+        if not supported or node is None:
+            with QSignalBlocker(self.node_bypass_checkbox):
+                self.node_bypass_checkbox.setChecked(False)
+            self.parameter_group.setEnabled(True)
+            return
+
+        bypassed = self.pipeline.node_is_bypassed(node_id)
+        _visible, enabled, tooltip = self._node_bypass_action_state(node_id)
+        with QSignalBlocker(self.node_bypass_checkbox):
+            self.node_bypass_checkbox.setChecked(bypassed)
+        self.node_bypass_checkbox.setEnabled(enabled)
+        self.node_bypass_checkbox.setToolTip(tooltip)
+        self.parameter_group.setEnabled(not bypassed)
+
+    @staticmethod
+    def _node_bypass_primary_input_phrase(operation) -> str:
+        primary = getattr(operation, "bypass_primary_input", None)
+        label = str(getattr(primary, "label", "") or "input").strip()
+        secondary_labels = {
+            str(port.label or "").strip().casefold()
+            for port in operation.input_ports[1:]
+        }
+        if label.casefold() == "image" and "psf" in secondary_labels:
+            return "Image/intensity input"
+        if label.casefold() == "input":
+            return "input"
+        return f"{label} input"
+
+    def _node_has_scientific_output_use(self, node_id: str) -> bool:
+        return bool(
+            any(
+                connection.source_id == node_id
+                for connection in self.pipeline.connections
+            )
+            or any(
+                tunnel.source_id == node_id
+                for tunnel in self.pipeline.output_tunnel_list()
+            )
+        )
+
+    def _node_bypass_action_state(self, node_id: str) -> tuple[bool, bool, str]:
+        """Return visibility, enabled state, and live explanatory tooltip."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return False, False, ""
+        operation = self.pipeline.operation_spec(node.operation_id)
+        if not operation.supports_bypass:
+            return False, False, ""
+        primary_phrase = self._node_bypass_primary_input_phrase(operation)
+        bypassed = self.pipeline.node_is_bypassed(node_id)
+        if self._isolated_tuning_node_id is not None:
+            return (
+                True,
+                False,
+                "Apply or cancel isolated tuning before changing Bypass node.",
+            )
+        if bypassed:
+            return (
+                True,
+                True,
+                f"Clear bypass to run {node.title} normally again. Its exact "
+                f"{primary_phrase} is currently forwarded to the output unchanged.",
+            )
+
+        reason = self.pipeline.node_bypass_block_reason(node_id)
+        if reason:
+            return True, False, f"Bypass unavailable: {reason}"
+        if not self._node_has_scientific_output_use(node_id):
+            return (
+                True,
+                False,
+                "This node has no downstream connection or output tunnel, so "
+                "bypassing it would have no effect. Connect its output first.",
+            )
+
+        secondary_ports = tuple(operation.input_ports[1:])
+        secondary_detail = ""
+        if secondary_ports:
+            ignored = ", ".join(port.label for port in secondary_ports)
+            secondary_detail = (
+                f" Only the {primary_phrase} is forwarded; {ignored} remains "
+                "connected but does not affect the bypassed output."
+            )
+        return (
+            True,
+            True,
+            f"Skip {node.title} and forward its exact {primary_phrase} data and "
+            "metadata to the output unchanged. Stored settings remain available "
+            f"but inactive.{secondary_detail} The card thumbnail still previews "
+            "what the operation would produce if run.",
+        )
+
     def _on_node_compute_optimizer_lock_toggled(self, checked: bool) -> None:
         blocked = self._compute_policy_edit_block_reason()
         if blocked:
@@ -4789,8 +5032,9 @@ class VippWidget(QWidget):
                 " Choose a concrete CPU or GPU backend before locking this node; "
                 "the current choice alone is not a lock."
             )
+        bypassed = self.pipeline.node_is_bypassed(node_id)
         decision = self._accepted_compute_decisions.get(node_id)
-        if decision is not None:
+        if decision is not None and not bypassed:
             badge = actual_decision_badge(
                 decision,
                 environment=self._compute_decision_environments.get(node_id),
@@ -4801,6 +5045,12 @@ class VippWidget(QWidget):
                 else "Last run"
             )
             note = f"{note} {state}: {badge.text}."
+        if bypassed:
+            note = (
+                "This node is bypassed, so it has no operation backend to choose, "
+                "lock, or benchmark. Its saved compute preference remains dormant "
+                "until Bypass node is cleared."
+            )
         self.node_compute_note.setText(note)
         benchmark_ready, benchmark_reason = self._can_benchmark_selected_node()
         self.node_benchmark_button.setEnabled(benchmark_ready)
@@ -4842,6 +5092,8 @@ class VippWidget(QWidget):
         )
 
     def _selected_compute_repair(self) -> ComputeRepairSuggestion | None:
+        if self.pipeline.node_is_bypassed(self._selected_node_id):
+            return None
         suggestion = self._compute_repair_suggestions.get(self._selected_node_id)
         if suggestion is None:
             self._refresh_proactive_compute_repairs((self._selected_node_id,))
@@ -4861,7 +5113,11 @@ class VippWidget(QWidget):
         requested = tuple(
             node_id
             for node_id in node_ids
-            if node_id and node_id in self.pipeline.nodes
+            if (
+                node_id
+                and node_id in self.pipeline.nodes
+                and not self.pipeline.node_is_bypassed(node_id)
+            )
         )
         try:
             from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
@@ -4883,6 +5139,9 @@ class VippWidget(QWidget):
             return ()
         accepted: list[ComputeRepairSuggestion] = []
         for suggestion in discovered:
+            if self.pipeline.node_is_bypassed(suggestion.node_id):
+                self._compute_repair_suggestions.pop(suggestion.node_id, None)
+                continue
             existing = self._compute_repair_suggestions.get(suggestion.node_id)
             if existing is not None and self._compute_repair_is_current(existing):
                 accepted.append(existing)
@@ -4956,6 +5215,7 @@ class VippWidget(QWidget):
         if (
             node is None
             or node.operation_id != suggestion.operation_id
+            or self.pipeline.node_is_bypassed(suggestion.node_id)
             or suggestion.action is not ComputeRepairAction.INSERT_CONVERT_DTYPE
             or not suggestion.exact
             or suggestion.current_dtype not in {"uint8", "uint16"}
@@ -5290,6 +5550,12 @@ class VippWidget(QWidget):
             return False, "Choose Custom compute policy to benchmark a node."
         if node_id not in self.pipeline.nodes:
             return False, "Select a workflow node first."
+        if self.pipeline.node_is_bypassed(node_id):
+            return (
+                False,
+                "Bypassed nodes forward their exact input and do not execute an "
+                "operation backend to benchmark.",
+            )
         dialog = self._node_benchmark_dialog
         if dialog is not None and dialog.running:
             return False, "A node benchmark is already running."
@@ -5472,6 +5738,11 @@ class VippWidget(QWidget):
                 or not self.pipeline.operation_spec(node.operation_id).has_input
             ):
                 return None
+            if (
+                decision.decision_kind is DecisionKind.BYPASSED
+                or self.pipeline.node_is_bypassed(node_id)
+            ):
+                continue
             if decision.runtime_id == "cpu-numpy":
                 preferences[node_id] = NodeComputePreference(NodePreferenceKind.CPU)
             else:
@@ -5479,6 +5750,8 @@ class VippWidget(QWidget):
                     NodePreferenceKind.IMPLEMENTATION,
                     decision.implementation_id,
                 )
+        if not preferences:
+            return None
         return ComputeRequest(
             mode=ComputeMode.CUSTOM,
             node_preferences=preferences,
@@ -6514,10 +6787,53 @@ class VippWidget(QWidget):
             return
         node = self.pipeline.nodes.get(node_id)
         decision = self._accepted_compute_decisions.get(node_id)
+        batch_override = self._committed_batch_node_execution_override(node_id)
+        batch_decision = bool(
+            batch_override is not None
+            and decision is not None
+            and node is not None
+            and decision.operation_id == node.operation_id
+        )
+        if batch_decision and decision.decision_kind is DecisionKind.BYPASSED:
+            authored_mode = node.execution_mode.capitalize()
+            stale = bool(
+                node_id in self._stale_compute_badge_node_ids
+                or self._interactive_collection_batch_plan_stale
+            )
+            tooltip = (
+                "This accepted batch representative used the batch-only Bypass "
+                "override and forwarded the exact input without calling the "
+                f"operation. The shared workflow remains {authored_mode}."
+            )
+            if stale:
+                tooltip += " This badge describes the previous reviewed preview."
+            self.graph_view.set_node_compute_badge(
+                node_id,
+                ComputeBadgeKind.BYPASSED,
+                tooltip=tooltip,
+                stale=stale,
+            )
+            return
+        if (
+            not batch_decision
+            and node is not None
+            and self.pipeline.node_is_bypassed(node_id)
+        ):
+            self.graph_view.set_node_compute_badge(
+                node_id,
+                ComputeBadgeKind.BYPASSED,
+                tooltip=(
+                    "The shared workflow intent is Bypass. VIPP forwards this "
+                    "node's exact input data and metadata without calling the "
+                    "operation."
+                ),
+            )
+            return
         if (
             node is None
             or decision is None
             or node.operation_id in {"input", "save_output", "batch_output"}
+            or (decision.decision_kind is DecisionKind.BYPASSED and not batch_decision)
         ):
             self.graph_view.clear_node_compute_badge(node_id)
             return
@@ -6534,7 +6850,17 @@ class VippWidget(QWidget):
         else:
             kind = ComputeBadgeKind.CUPY
         tooltip = presentation.tooltip
-        if node_id in self._stale_compute_badge_node_ids:
+        if batch_decision:
+            authored_mode = node.execution_mode.capitalize()
+            tooltip += (
+                " This accepted batch representative used the batch-only Run "
+                f"override; the shared workflow remains {authored_mode}."
+            )
+        stale = bool(
+            node_id in self._stale_compute_badge_node_ids
+            or (batch_decision and self._interactive_collection_batch_plan_stale)
+        )
+        if stale:
             tooltip = (
                 f"{tooltip} Current intent: "
                 f"{self._planned_compute_intent_text(node_id)}. Calculate or run "
@@ -6544,7 +6870,7 @@ class VippWidget(QWidget):
             node_id,
             kind,
             tooltip=tooltip,
-            stale=node_id in self._stale_compute_badge_node_ids,
+            stale=stale,
         )
 
     def _planned_compute_intent_text(self, node_id: str) -> str:
@@ -6608,10 +6934,19 @@ class VippWidget(QWidget):
         order = {node_id: index for index, node_id in enumerate(self.pipeline.nodes)}
         decisions = tuple(
             sorted(
-                self._accepted_compute_decisions.values(),
+                (
+                    decision
+                    for decision in self._accepted_compute_decisions.values()
+                    if (
+                        decision.decision_kind is not DecisionKind.BYPASSED
+                        and not self.pipeline.node_is_bypassed(decision.node_id)
+                    )
+                ),
                 key=lambda decision: order.get(decision.node_id, len(order)),
             )
         )
+        if not decisions:
+            return None
         return ComputeStatusSnapshot(
             request=(
                 latest.request
@@ -6741,6 +7076,7 @@ class VippWidget(QWidget):
                 node is None
                 or node.operation_id in {"input", "save_output", "batch_output"}
                 or node_id not in self.pipeline.completed_node_ids
+                or self.pipeline.node_is_bypassed(node_id)
             ):
                 continue
             preference = (
@@ -7593,6 +7929,10 @@ class VippWidget(QWidget):
         self._generated_layer_contrast_keys = {}
         self._background_execution_state_overrides = {}
         self._background_node_result_overrides = {}
+        self._bypass_shadow_results = {}
+        self._bypass_shadow_errors = {}
+        self._bypass_shadow_pending_node_ids = set()
+        self._pipeline_run_shadow_node_ids = {}
         self._inflight_dirty_node_ids = None
         self._pipeline_run_pending = False
 
@@ -7889,10 +8229,12 @@ class VippWidget(QWidget):
             str,
             dict[str, object],
             dict[str, object],
+            str,
+            str,
         ]
         | None
     ):
-        """Return one node-param restore when every structural field is stable."""
+        """Return one node-local restore when every structural field is stable."""
         current_workflow = current.workflow
         target_workflow = target.workflow
         if (
@@ -7928,6 +8270,8 @@ class VippWidget(QWidget):
                 str,
                 dict[str, object],
                 dict[str, object],
+                str,
+                str,
             ]
         ] = []
         for index, (current_node, target_node) in enumerate(
@@ -7940,13 +8284,18 @@ class VippWidget(QWidget):
                 return None
             current_params = current_node.params
             target_params = target_node.params
-            if current_params != target_params:
+            if (
+                current_params != target_params
+                or current_node.execution_mode != target_node.execution_mode
+            ):
                 changed.append(
                     (
                         index,
                         target_node.id,
                         current_params,
                         target_params,
+                        current_node.execution_mode,
+                        target_node.execution_mode,
                     )
                 )
         return changed[0] if len(changed) == 1 else None
@@ -7994,7 +8343,14 @@ class VippWidget(QWidget):
         change = self._parameter_only_history_change(current, target)
         if change is None:
             return False
-        index, node_id, current_params, target_params = change
+        (
+            index,
+            node_id,
+            current_params,
+            target_params,
+            current_execution_mode,
+            target_execution_mode,
+        ) = change
         live_node = self.pipeline.nodes.get(node_id)
         if live_node is None:
             return False
@@ -8003,12 +8359,14 @@ class VippWidget(QWidget):
             live_node.operation_id,
             target_params,
             index=index,
+            execution_mode=target_execution_mode,
         )
         changed_names = frozenset(
             name
             for name in set(current_params) | set(target_params)
             if current_params.get(name) != target_params.get(name)
         )
+        execution_mode_changed = current_execution_mode != target_execution_mode
 
         self._discard_crop_draft(remove_layers=False)
         self._supersede_interaction_for_untraced_edit(
@@ -8019,6 +8377,15 @@ class VippWidget(QWidget):
         with self._history.suspend_recording():
             live_node.params.clear()
             live_node.params.update(restored_node.params)
+            if execution_mode_changed:
+                self.pipeline.restore_node_execution_mode(
+                    node_id,
+                    restored_node.execution_mode,
+                )
+                if restored_node.execution_mode != NODE_EXECUTION_BYPASS:
+                    self._bypass_shadow_results.pop(node_id, None)
+                    self._bypass_shadow_errors.pop(node_id, None)
+                    self._bypass_shadow_pending_node_ids.discard(node_id)
 
             selected = (
                 target.selected_node_id
@@ -8035,6 +8402,9 @@ class VippWidget(QWidget):
                     target_params,
                 )
             self._reconcile_bulk_parameter_change(node_id, changed_names)
+            self._sync_node_execution_mode_ui()
+            if execution_mode_changed and live_node.operation_id == "crop_stack":
+                self._update_crop_roi_presentation(node_id)
 
             if CACHE_KEEP_NODE_PARAM in changed_names:
                 self._apply_cache_retention()
@@ -8045,7 +8415,8 @@ class VippWidget(QWidget):
             scientific_names.discard(CACHE_KEEP_NODE_PARAM)
             if live_node.operation_id == "split_channels":
                 scientific_names.discard("preview_channel")
-            if scientific_names:
+            scientific_change = bool(scientific_names or execution_mode_changed)
+            if scientific_change:
                 preserve_colocalization_scatter = (
                     live_node.operation_id in COLOCALIZATION_THRESHOLD_OPERATIONS
                     and bool(
@@ -8063,7 +8434,7 @@ class VippWidget(QWidget):
                 )
             self._sync_pin_ui()
             self._sync_current_workflow_tab_state()
-            if scientific_names:
+            if scientific_change:
                 self.run_pipeline()
         return True
 
@@ -9637,6 +10008,10 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         clone = self.pipeline.add_node(original.operation_id)
         clone.params = deepcopy(original.params)
+        self.pipeline.restore_node_execution_mode(
+            clone.id,
+            original.execution_mode,
+        )
         if node_id in self._compute_node_preferences:
             self._compute_node_preferences[clone.id] = self._compute_node_preferences[
                 node_id
@@ -9787,6 +10162,7 @@ class VippWidget(QWidget):
         for fragment_node in fragment.nodes:
             node = staged.add_node(fragment_node.operation_id)
             node.params = fragment_node.params
+            node.execution_mode = fragment_node.execution_mode
             node_id_by_key[fragment_node.key] = node.id
             new_node_ids.append(node.id)
             positions[node.id] = QPointF(
@@ -9933,6 +10309,20 @@ class VippWidget(QWidget):
                 )
                 if not result.success:
                     raise RuntimeError(result.message)
+
+            # Fragment validation staged the complete topology before accepting
+            # authored bypass intent. Apply that intent only after the same
+            # connections exist live, so the central graph-splice contract is
+            # revalidated and pasted bypass nodes never silently become Run.
+            staged_modes = {
+                node_id: staged.nodes[node_id].execution_mode
+                for node_id in new_node_ids
+                if (
+                    staged.nodes[node_id].execution_mode
+                    != self.pipeline.nodes[node_id].execution_mode
+                )
+            }
+            self.pipeline.restore_node_execution_modes(staged_modes)
 
             for node_id in new_node_ids:
                 node = self.pipeline.nodes[node_id]
@@ -10180,6 +10570,18 @@ class VippWidget(QWidget):
                     f"{connection.source_port} -> input {connection.target_port}"
                 )
             lines.append("")
+
+        if self.pipeline.node_is_bypassed(node_id):
+            source_ref = self._node_code_first_arg(node, connections)
+            lines.extend(
+                [
+                    "# Reviewed safe bypass: the operation function is not called.",
+                    "# Stored parameters above remain authored but inactive.",
+                    f"output = {source_ref}",
+                    "# VIPP also aliases the exact input metadata/state to the output.",
+                ]
+            )
+            return "\n".join(lines).rstrip() + "\n"
 
         function = spec.function
         if function is None:
@@ -11374,6 +11776,7 @@ class VippWidget(QWidget):
             self,
             source_nodes=self._batch_source_rows(),
             actions=self._collection_batch_dialog_actions(),
+            execution_nodes=batch_node_execution_specs(self.pipeline),
         )
         self._active_collection_batch_dialog = dialog
         dialog.rejected.connect(
@@ -11402,6 +11805,14 @@ class VippWidget(QWidget):
         dialog.parameterOverridesChanged.connect(
             lambda overrides, active=dialog: (
                 self._collection_batch_parameter_overrides_changed(
+                    active,
+                    overrides,
+                )
+            )
+        )
+        dialog.nodeExecutionOverridesChanged.connect(
+            lambda overrides, active=dialog: (
+                self._collection_batch_node_execution_overrides_changed(
                     active,
                     overrides,
                 )
@@ -12535,6 +12946,12 @@ class VippWidget(QWidget):
         requested_override_signature = self._batch_item_parameter_override_signature(
             planned_items[index]
         )
+        previous_execution_signature = self._batch_node_execution_override_signature(
+            self._interactive_collection_batch_config
+        )
+        requested_execution_signature = self._batch_node_execution_override_signature(
+            config
+        )
         reuse_representative = bool(
             self._interactive_collection_batch_items
             and self._interactive_collection_batch_index >= 0
@@ -12548,6 +12965,7 @@ class VippWidget(QWidget):
             == self._interactive_collection_source_series_indices
             and previous_declarations == current_declarations
             and previous_override_signature == requested_override_signature
+            and previous_execution_signature == requested_execution_signature
             and scientific_workflow_hash(self._batch_workflow_document())
             == config.workflow_sha256
         )
@@ -12602,6 +13020,49 @@ class VippWidget(QWidget):
                     for override in item.parameter_overrides
                 ],
             }
+        )
+
+    @staticmethod
+    def _batch_node_execution_override_signature(
+        config: BatchConfig | None,
+    ) -> str:
+        """Fingerprint exact whole-batch Run/Bypass directives."""
+
+        if config is None or not config.node_execution_overrides:
+            return ""
+        return canonical_digest(
+            [
+                {
+                    "node_id": override.node_id,
+                    "mode": override.mode.value,
+                }
+                for override in config.node_execution_overrides
+            ]
+        )
+
+    def _committed_batch_node_execution_override(
+        self,
+        node_id: str,
+    ) -> BatchNodeExecutionOverride | None:
+        """Return the profile directive behind the displayed representative."""
+
+        items = self._interactive_collection_batch_items
+        index = self._interactive_collection_batch_index
+        config = self._interactive_collection_batch_config
+        if (
+            config is None
+            or self._interactive_collection_batch_requested_index >= 0
+            or self._interactive_collection_batch_failed_index >= 0
+            or not 0 <= index < len(items)
+        ):
+            return None
+        return next(
+            (
+                override
+                for override in config.node_execution_overrides
+                if override.node_id == node_id
+            ),
+            None,
         )
 
     def _interactive_collection_batch_parameter_overrides(
@@ -12672,7 +13133,7 @@ class VippWidget(QWidget):
         return "; ".join(details)
 
     def _refresh_batch_effective_parameter_panel(self) -> None:
-        """Explain the values used by the committed representative preview."""
+        """Explain the behavior and values used by the committed preview."""
 
         self.batch_effective_parameter_group.hide()
         self.batch_effective_parameter_label.clear()
@@ -12693,22 +13154,28 @@ class VippWidget(QWidget):
             for spec in self.pipeline.node_parameter_specs(node.id)
             if is_batch_parameter_override_eligible(node.operation_id, spec)
         }
-        if not eligible_specs:
-            return
         item = items[index]
         overrides = {
             override.parameter: override
             for override in item.parameter_overrides
             if override.node_id == node.id and override.parameter in eligible_specs
         }
-        if not overrides:
+        execution_override = self._committed_batch_node_execution_override(node.id)
+        if not overrides and execution_override is None:
             # Inheritance is the ordinary workflow behavior, not an exception
             # that needs a second parameter surface. Keep the normal inspector
             # unchanged unless this exact committed representative substituted
-            # at least one value on the selected node.
+            # at least one value or behavior on the selected node.
             return
         item_text = f"Item {index + 1} of {len(items)} ({item.batch_id}). "
         parts: list[str] = []
+        if execution_override is not None:
+            parts.append(
+                "Node behavior: "
+                f"{execution_override.mode.value.capitalize()} — whole-batch "
+                "override (workflow value: "
+                f"{node.execution_mode.capitalize()})."
+            )
         for name, override in overrides.items():
             spec = eligible_specs[name]
             workflow_value = node.params.get(name, spec.default)
@@ -12728,7 +13195,8 @@ class VippWidget(QWidget):
         self.batch_effective_parameter_label.setText(
             item_text
             + detail
-            + " The graph and thumbnails use these effective values; controls "
+            + " The graph and thumbnails use this effective batch preview. "
+            "The backend badge reports its actual Run/Bypass result; controls "
             "below edit and save the shared workflow values." + suffix
         )
         self.batch_effective_parameter_group.setTitle(
@@ -13082,6 +13550,50 @@ class VippWidget(QWidget):
         self._sync_execution_ui()
         self._sync_current_workflow_tab_state()
 
+    def _collection_batch_node_execution_overrides_changed(
+        self,
+        dialog: CollectionBatchDialog,
+        overrides: object,
+    ) -> None:
+        """Invalidate pixels when whole-batch Run/Bypass intent changes."""
+
+        if dialog is not self._active_collection_batch_dialog:
+            return
+        if self._active_pipeline_run_id is not None and (
+            self._interactive_collection_batch_requested_index >= 0
+        ):
+            self._abandon_background_pipeline_run()
+        self._interactive_collection_batch_config_path = None
+        self._interactive_collection_batch_plan_stale = True
+        self._interactive_collection_batch_index = -1
+        self._interactive_collection_batch_requested_index = -1
+        self._interactive_collection_batch_failed_index = -1
+        self._last_pipeline_source_signature = None
+        self.pipeline.mark_manual_descendants_stale(self.pipeline.nodes)
+        self.batch_navigator.set_session_stale(
+            True,
+            message=(
+                "Whole-batch node behavior changed. Preview the batch again "
+                "to calculate a representative with the exact Run/Bypass "
+                "profile before running."
+            ),
+        )
+        dialog.set_representative_pending(True)
+        dialog.show_plan_refresh_required(
+            "Whole-batch node behavior changed. Preview batch again before "
+            "running so the representative uses the exact profile."
+        )
+        if overrides is None:
+            self._set_status(
+                "A whole-batch node behavior value is invalid. Correct it, "
+                "then preview the batch again.",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+        self._refresh_batch_effective_parameter_panel()
+        self._sync_execution_ui()
+        self._sync_current_workflow_tab_state()
+
     def _mark_collection_batch_workflow_stale_if_needed(self) -> None:
         """Invalidate a retained runnable plan after a scientific graph edit."""
         config = self._interactive_collection_batch_config
@@ -13126,6 +13638,14 @@ class VippWidget(QWidget):
         ):
             close_workspace = False
         subtitle_node_ids = self._interactive_collection_source_node_ids()
+        shadow_node_ids = (
+            set(self._bypass_shadow_results)
+            | set(self._bypass_shadow_errors)
+            | set(self._bypass_shadow_pending_node_ids)
+        )
+        self._bypass_shadow_results.clear()
+        self._bypass_shadow_errors.clear()
+        self._bypass_shadow_pending_node_ids.clear()
         self._interactive_collection_source_paths.clear()
         self._interactive_collection_source_series_indices.clear()
         self._interactive_collection_source_refresh_node_ids.clear()
@@ -13141,6 +13661,7 @@ class VippWidget(QWidget):
         self.batch_navigator.clear_session()
         self._refresh_batch_effective_parameter_panel()
         self._sync_input_node_subtitles(subtitle_node_ids)
+        self._refresh_node_presentation_surfaces(shadow_node_ids)
         if self._active_source_load_id is not None:
             self._cancel_active_source_io(invalidate_generation=True)
             self._set_pipeline_busy(False)
@@ -13250,6 +13771,7 @@ class VippWidget(QWidget):
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
+        node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
         expected_items: tuple[BatchItemPlan, ...] | None = None,
         *,
         job_id: int,
@@ -13277,6 +13799,7 @@ class VippWidget(QWidget):
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
             parameter_overrides=parameter_overrides,
+            node_execution_overrides=node_execution_overrides,
             workflow=workflow,
             compute_request=compute_request,
         )
@@ -13326,6 +13849,7 @@ class VippWidget(QWidget):
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
+        node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
         expected_items: tuple[BatchItemPlan, ...] | None = None,
     ) -> BatchRunResult:
         """Run a batch synchronously for the public API and focused tests."""
@@ -13342,6 +13866,7 @@ class VippWidget(QWidget):
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
             parameter_overrides=parameter_overrides,
+            node_execution_overrides=node_execution_overrides,
             expected_items=expected_items,
             job_id=0,
             origin_session_id=(session.session_id if session is not None else ""),
@@ -13477,6 +14002,7 @@ class VippWidget(QWidget):
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
+        node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
         workflow: dict | None = None,
         compute_request: ComputeRequest | None = None,
     ) -> BatchConfig:
@@ -13491,6 +14017,7 @@ class VippWidget(QWidget):
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
             parameter_overrides=parameter_overrides,
+            node_execution_overrides=node_execution_overrides,
             workflow=workflow,
             compute_request=compute_request,
         )
@@ -13556,6 +14083,7 @@ class VippWidget(QWidget):
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
+        node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
     ) -> BatchPreviewResult:
         self._commit_crop_draft(schedule_run=False)
         dialog = self._active_collection_batch_dialog
@@ -13573,6 +14101,7 @@ class VippWidget(QWidget):
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
             parameter_overrides=parameter_overrides,
+            node_execution_overrides=node_execution_overrides,
             compute_request=self._compute_request_for_batch_dialog(
                 self._active_collection_batch_dialog
             ),
@@ -14180,6 +14709,7 @@ class VippWidget(QWidget):
                 - {selected_node_id}
             )
         )
+        selected_bypassed = self.pipeline.node_is_bypassed(selected_node_id)
         with QSignalBlocker(self.isolated_tuning_checkbox):
             self.isolated_tuning_checkbox.setChecked(
                 active_node_id is not None and selected_node_id == active_node_id
@@ -14187,13 +14717,19 @@ class VippWidget(QWidget):
         self.isolated_tuning_checkbox.setEnabled(
             bool(
                 selected_node_id in self.pipeline.nodes
+                and not selected_bypassed
                 and (
                     selected_node_id == active_node_id
                     or (active_node_id is None and has_downstream)
                 )
             )
         )
-        if active_node_id is not None and selected_node_id != active_node_id:
+        if selected_bypassed:
+            self.isolated_tuning_checkbox.setToolTip(
+                "Bypassed nodes have no active parameters to tune. Clear Bypass "
+                "node to enable isolated tuning."
+            )
+        elif active_node_id is not None and selected_node_id != active_node_id:
             self.isolated_tuning_checkbox.setToolTip(
                 f"'{self._node_title(active_node_id)}' is already being tuned. "
                 "Apply or cancel that session before isolating another node."
@@ -14225,6 +14761,7 @@ class VippWidget(QWidget):
                 f"Downstream paused after '{self._node_title(active_node_id)}'.{suffix}"
             )
         self.graph_view.set_isolated_tuning_node(active_node_id)
+        self._sync_node_execution_mode_ui()
 
     def _invalidate_pipeline_cache(self) -> None:
         if self._isolated_tuning_node_id is not None:
@@ -14685,10 +15222,17 @@ class VippWidget(QWidget):
         self,
         dirty_node_ids: set[str],
         node_id: str | None,
+        *,
+        presentation: bool = False,
     ) -> bool:
         if not node_id:
             return True
-        return node_id in self.pipeline.descendants_inclusive(dirty_node_ids)
+        affected = (
+            self.pipeline.presentation_descendants_inclusive(dirty_node_ids)
+            if presentation
+            else self.pipeline.descendants_inclusive(dirty_node_ids)
+        )
+        return node_id in affected
 
     def _hide_input_layer_for_inspection(self, layer) -> None:
         if layer is None or self._is_vipp_generated_layer(layer):
@@ -16166,6 +16710,7 @@ class VippWidget(QWidget):
         )
         self._refresh_tunnel_manager()
         self._refresh_graph_search_matches(reset_index=False)
+        self._sync_node_execution_mode_ui()
 
     def _connect_nodes(
         self,
@@ -16266,6 +16811,9 @@ class VippWidget(QWidget):
             self._source_view_modes.pop(node_id, None)
             self._rescale_auto_output_ranges.pop(node_id, None)
             self._discard_background_node_result_overrides({node_id})
+            self._bypass_shadow_results.pop(node_id, None)
+            self._bypass_shadow_errors.pop(node_id, None)
+            self._bypass_shadow_pending_node_ids.discard(node_id)
         if deleted_input and (
             self._interactive_collection_batch_items
             or self._active_collection_batch_dialog is not None
@@ -16374,6 +16922,10 @@ class VippWidget(QWidget):
         self._clear_empty_inspector()
 
     def _clear_empty_inspector(self) -> None:
+        self.node_bypass_checkbox.setHidden(True)
+        with QSignalBlocker(self.node_bypass_checkbox):
+            self.node_bypass_checkbox.setChecked(False)
+        self.parameter_group.setEnabled(True)
         self.execution_group.setHidden(True)
         self.compute_group.setHidden(True)
         self._sync_thumbnail_statistics_inspector()
@@ -16418,6 +16970,7 @@ class VippWidget(QWidget):
         self._sync_preview_ui()
         self._sync_keep_cached_ui()
         self._render_parameters(node_id)
+        self._sync_node_execution_mode_ui()
         self._refresh_batch_effective_parameter_panel()
         self._sync_auto_contrast_ui()
         self._sync_pin_ui()
@@ -16599,6 +17152,14 @@ class VippWidget(QWidget):
 
     def _sync_execution_ui(self) -> None:
         for node_id in self.pipeline.nodes:
+            self.graph_view.set_node_bypassed(
+                node_id,
+                self.pipeline.node_is_bypassed(node_id),
+            )
+            # ``set_node_bypassed`` presents authored workflow intent. A detached
+            # batch representative may deliberately apply the opposite behavior,
+            # so restore its accepted actual-decision badge after that marker.
+            self._sync_node_compute_badge(node_id)
             manual = self.pipeline.is_manual_node(node_id)
             state, message = self._node_execution_ui_state(node_id)
             auto_recalculate = self.pipeline.node_auto_recalculate(node_id)
@@ -16695,7 +17256,9 @@ class VippWidget(QWidget):
         self._discard_pending_thumbnail_contrast_limit_requests()
         if thumbnails:
             for node_id in affected:
-                data, state, output_port = self._node_display_payload(node_id)
+                data, state, output_port = self._node_thumbnail_display_payload(
+                    node_id
+                )
                 self._update_node_thumbnail(
                     node_id,
                     data,
@@ -16842,6 +17405,8 @@ class VippWidget(QWidget):
                 node = self.pipeline.nodes[node_id]
                 node.params.clear()
                 node.params.update(saved_params)
+            if node_id == self._selected_node_id:
+                self._sync_node_execution_mode_ui()
 
     def _render_parameters_impl(
         self,
@@ -22158,6 +22723,100 @@ class VippWidget(QWidget):
             self.pipeline.node_output_states.get(node_id) or [],
         )
 
+    def _node_thumbnail_display_payload(
+        self,
+        node_id: str,
+        primary_data=None,
+        primary_state=None,
+        outputs=None,
+        output_states=None,
+    ):
+        """Return card pixels, keeping every scientific surface authoritative."""
+
+        shadow = self._bypass_shadow_results.get(node_id)
+        node = self.pipeline.nodes.get(node_id)
+        if (
+            shadow is not None
+            and node is not None
+            and shadow.operation_id == node.operation_id
+            and not shadow.error
+            and self._node_allows_bypass_presentation_shadow(node_id)
+            and not is_table_data(shadow.output)
+        ):
+            return self._node_display_payload_from_values(
+                node_id,
+                shadow.output,
+                shadow.output_state,
+                shadow.node_outputs,
+                shadow.node_output_states,
+            )
+        if outputs is not None or output_states is not None:
+            return self._node_display_payload_from_values(
+                node_id,
+                primary_data,
+                primary_state,
+                outputs or (),
+                output_states or (),
+            )
+        return self._node_display_payload(node_id, primary_data)
+
+    def _node_allows_bypass_presentation_shadow(self, node_id: str) -> bool:
+        """Whether this node's normal result belongs on an image-like card."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return False
+        operation = self.pipeline.operation_spec(node.operation_id)
+        ports = self.pipeline.output_ports(node_id)
+        return bool(
+            operation.supports_bypass
+            and len(ports) == 1
+            and operation.output_type != "table"
+            and ports[0].output_type != "table"
+        )
+
+    def _presentation_shadow_data_kind(
+        self,
+        node_id: str,
+        data,
+        state,
+        output_port: int,
+    ) -> str:
+        """Infer card rendering semantics from the what-if result, not its alias."""
+
+        if is_table_data(data):
+            return "table"
+        state_kind = str(getattr(state, "kind", "") or "").strip().casefold()
+        if "label" in state_kind:
+            return "labels"
+        if "mask" in state_kind or "binary" in state_kind:
+            return "mask"
+        if state_kind:
+            return "image"
+        return self._data_kind(data, node_id, output_port)
+
+    def _node_thumbnail_payload_data_kind(
+        self,
+        node_id: str,
+        data,
+        state,
+        output_port: int,
+    ) -> str:
+        shadow = self._bypass_shadow_results.get(node_id)
+        if (
+            shadow is not None
+            and not shadow.error
+            and data is shadow.output
+            and self._node_allows_bypass_presentation_shadow(node_id)
+        ):
+            return self._presentation_shadow_data_kind(
+                node_id,
+                data,
+                state,
+                output_port,
+            )
+        return self._node_output_type_for_payload(node_id, data, output_port)
+
     def _node_display_payload_from_values(
         self,
         node_id: str,
@@ -22208,9 +22867,11 @@ class VippWidget(QWidget):
         return None, None, index
 
     def _thumbnail_payload_for_node(self, node_id: str, data):
-        preview_data, preview_state, _output_port = self._node_display_payload(
-            node_id,
-            data,
+        preview_data, preview_state, _output_port = (
+            self._node_thumbnail_display_payload(
+                node_id,
+                data,
+            )
         )
         return preview_data, preview_state
 
@@ -23928,6 +24589,8 @@ class VippWidget(QWidget):
         control: QSlider,
     ) -> None:
         """Keep a Crop drag as a presentation draft until mouse release."""
+        if self.pipeline.node_is_bypassed(node_id):
+            return
         self._finish_parameter_history_group(preserve_isolated_tuning=True)
         self._active_crop_slider_scrub = (
             self._crop_current_session_id(),
@@ -24005,6 +24668,7 @@ class VippWidget(QWidget):
             node is None
             or node.operation_id != "crop_stack"
             or name not in CROP_MARGIN_PARAMETERS
+            or self.pipeline.node_is_bypassed(node_id)
         ):
             return
         # A prior committed parameter edit may still have the generic pipeline
@@ -24103,7 +24767,11 @@ class VippWidget(QWidget):
             return False
         node_id = self._crop_draft_node_id
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "crop_stack":
+        if (
+            node is None
+            or node.operation_id != "crop_stack"
+            or self.pipeline.node_is_bypassed(node_id)
+        ):
             self._discard_crop_draft(remove_layers=True)
             return False
         if (
@@ -24190,6 +24858,13 @@ class VippWidget(QWidget):
         note = self._parameter_widgets.get("crop_roi_summary")
         node = self.pipeline.nodes.get(node_id)
         if not isinstance(note, QLabel) or node is None:
+            return
+        if self.pipeline.node_is_bypassed(node_id):
+            note.setText(
+                "Bypassed: the stored ROI is inactive and the complete input is "
+                "forwarded unchanged. Clear Bypass node to apply these margins "
+                "again."
+            )
             return
         shape, state = self._crop_input_shape_and_state(node_id)
         if len(shape) < 2:
@@ -24602,6 +25277,9 @@ class VippWidget(QWidget):
             or node_id != self._selected_node_id
         ):
             return
+        if self.pipeline.node_is_bypassed(node_id):
+            self._discard_crop_presentation_layers()
+            return
         shape, state = self._crop_input_shape_and_state(node_id)
         if len(shape) < 2:
             self._discard_crop_presentation_layers()
@@ -24915,6 +25593,12 @@ class VippWidget(QWidget):
     def _on_param_changed(self, name: str, value) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
         if node is None:
+            return
+        if self.pipeline.node_is_bypassed(node.id):
+            # Bypass deliberately keeps authored values dormant. Disabled Qt
+            # controls cannot reach this path, and this guard also protects
+            # queued or programmatic signals from mutating inactive settings.
+            self._render_parameters(node.id, preserve_authored_values=True)
             return
         if node.operation_id == "crop_stack" and name not in CROP_MARGIN_PARAMETERS:
             self._commit_crop_draft(schedule_run=False)
@@ -25580,12 +26264,27 @@ class VippWidget(QWidget):
             if representative_item is None
             else representative_item.parameter_overrides
         )
+        workflow_node_execution_overrides = (
+            ()
+            if self._interactive_collection_batch_config is None
+            else self._interactive_collection_batch_config.node_execution_overrides
+        )
         if workflow_parameter_overrides:
             source_signature = (
                 *source_signature,
                 (
                     "batch-parameter-overrides-v1",
                     self._batch_item_parameter_override_signature(representative_item),
+                ),
+            )
+        if workflow_node_execution_overrides:
+            source_signature = (
+                *source_signature,
+                (
+                    "batch-node-execution-overrides-v1",
+                    self._batch_node_execution_override_signature(
+                        self._interactive_collection_batch_config
+                    ),
                 ),
             )
         source_unchanged = source_signature == self._last_pipeline_source_signature
@@ -25618,7 +26317,7 @@ class VippWidget(QWidget):
             else:
                 dirty_node_ids.update(manual_node_ids)
         compute_request = self._current_compute_request()
-        if workflow_parameter_overrides:
+        if workflow_parameter_overrides or workflow_node_execution_overrides:
             # A per-item workflow is deliberately never installed into the live
             # graph. The shared worker reconstructs this immutable variant and
             # publishes only its outputs/provenance, while base controls retain
@@ -25638,6 +26337,7 @@ class VippWidget(QWidget):
                     force_sync or compute_request.mode is ComputeMode.AUTO
                 ),
                 workflow_parameter_overrides=workflow_parameter_overrides,
+                workflow_node_execution_overrides=(workflow_node_execution_overrides),
             )
             return
         if self._active_pipeline_run_id is not None or (
@@ -25662,7 +26362,11 @@ class VippWidget(QWidget):
                 target_node_ids,
             )
             return
-        if compute_request.mode is ComputeMode.CPU:
+        has_bypass_presentation = any(
+            self.pipeline.node_is_bypassed(node_id)
+            for node_id in self.pipeline.nodes
+        )
+        if compute_request.mode is ComputeMode.CPU and not has_bypass_presentation:
             # Retain the established low-latency path for small explicit CPU
             # edits. Large/background CPU runs already entered the shared
             # service above and therefore contribute comparable timing history.
@@ -25693,7 +26397,9 @@ class VippWidget(QWidget):
                 manual_node_ids,
                 target_node_ids,
                 execute_synchronously=(
-                    force_sync or compute_request.mode is ComputeMode.AUTO
+                    force_sync
+                    or compute_request.mode is ComputeMode.AUTO
+                    or has_bypass_presentation
                 ),
             )
 
@@ -26210,9 +26916,12 @@ class VippWidget(QWidget):
         manual_node_ids: set[str] | None = None,
         source_payloads: dict[str, SourcePayload] | None = None,
         target_node_ids: set[str] | None = None,
+        *,
+        planning_pipeline: PrototypePipeline | None = None,
     ) -> str | None:
+        pipeline = planning_pipeline or self.pipeline
         manual_node_ids = set(manual_node_ids or set())
-        execution_plan = self.pipeline.plan_execution(
+        execution_plan = pipeline.plan_execution(
             dirty_node_ids,
             manual_mode=MANUAL_RUN_SKIP,
             manual_node_ids=manual_node_ids,
@@ -26222,35 +26931,35 @@ class VippWidget(QWidget):
         if not runnable_node_ids:
             return None
         if manual_node_ids:
-            for node_id in self.pipeline.topological_order():
+            for node_id in pipeline.topological_order():
                 if node_id in runnable_node_ids:
                     return node_id
             return None
 
         if self.background_all_checkbox.isChecked():
-            for node_id in self.pipeline.topological_order():
+            for node_id in pipeline.topological_order():
                 if node_id in runnable_node_ids:
                     return node_id
             return None
 
         large_source_descendants: set[str] = set()
         for source_id, payload in (source_payloads or {}).items():
-            if source_id in self.pipeline.nodes and _should_auto_background_data(
+            if source_id in pipeline.nodes and _should_auto_background_data(
                 payload.data
             ):
                 large_source_descendants.update(
-                    self.pipeline.descendants_inclusive({source_id})
+                    pipeline.descendants_inclusive({source_id})
                 )
-        for node_id in self.pipeline.topological_order():
+        for node_id in pipeline.topological_order():
             if node_id not in runnable_node_ids:
                 continue
-            node = self.pipeline.nodes.get(node_id)
+            node = pipeline.nodes.get(node_id)
             if node is not None and node.operation_id in BACKGROUND_PIPELINE_OPERATIONS:
                 return node_id
             payload = (source_payloads or {}).get(node_id)
             if payload is not None and _should_auto_background_data(payload.data):
                 return node_id
-            inputs = self.pipeline.input_data_by_port_for_node(node_id)
+            inputs = pipeline.input_data_by_port_for_node(node_id)
             if any(_should_auto_background_data(data) for data in inputs.values()):
                 return node_id
             if (
@@ -26259,9 +26968,65 @@ class VippWidget(QWidget):
                 and node_id in large_source_descendants
             ):
                 return node_id
-            if _should_auto_background_data(self.pipeline.outputs.get(node_id)):
+            if _should_auto_background_data(pipeline.outputs.get(node_id)):
                 return node_id
         return None
+
+    def _effective_execution_profile_pipeline(
+        self,
+        workflow: Mapping[str, object],
+    ) -> PrototypePipeline:
+        """Build a lightweight cached planning graph for detached batch intent."""
+
+        parsed = deserialize_workflow(deepcopy(dict(workflow)))
+        profile = PrototypePipeline()
+        profile.restore_graph(
+            parsed["nodes"],
+            parsed["connections"],
+            parsed.get("output_tunnels", ()),
+            atomic_bypass_profile=True,
+        )
+        valid_node_ids = set(profile.nodes) & set(self.pipeline.nodes)
+        profile.outputs = {
+            node_id: self.pipeline.outputs.get(node_id) for node_id in profile.nodes
+        }
+        profile.output_states = {
+            node_id: self.pipeline.output_states.get(node_id)
+            for node_id in profile.nodes
+        }
+        profile.node_outputs = {
+            node_id: list(self.pipeline.node_outputs.get(node_id, ()))
+            for node_id in profile.nodes
+        }
+        profile.node_output_states = {
+            node_id: list(self.pipeline.node_output_states.get(node_id, ()))
+            for node_id in profile.nodes
+        }
+        profile.completed_node_ids = (
+            set(self.pipeline.completed_node_ids) & valid_node_ids
+        )
+        profile.node_compute_provenance = {
+            node_id: provenance
+            for node_id, provenance in self.pipeline.node_compute_provenance.items()
+            if node_id in valid_node_ids
+        }
+        profile.node_cache_lineage = {
+            node_id: provenance
+            for node_id, provenance in self.pipeline.node_cache_lineage.items()
+            if node_id in valid_node_ids
+        }
+        profile.node_execution_states = {
+            node_id: self.pipeline.node_execution_states.get(
+                node_id,
+                EXECUTION_NOT_CALCULATED,
+            )
+            for node_id in profile.nodes
+        }
+        profile.node_execution_messages = {
+            node_id: self.pipeline.node_execution_messages.get(node_id, "")
+            for node_id in profile.nodes
+        }
+        return profile
 
     def _start_background_pipeline_run(
         self,
@@ -26278,14 +27043,36 @@ class VippWidget(QWidget):
         *,
         execute_synchronously: bool = False,
         workflow_parameter_overrides: tuple[BatchParameterOverride, ...] = (),
+        workflow_node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
     ) -> None:
         self._commit_crop_draft(schedule_run=False)
         manual_node_ids = set(manual_node_ids or set())
+        compute_request = self._current_compute_request()
+        workflow_guard = deepcopy(
+            serialize_workflow(
+                self.pipeline,
+                compute_request=compute_request,
+            )
+        )
+        profile_workflow = workflow_with_node_execution_overrides(
+            workflow_guard,
+            tuple(workflow_node_execution_overrides),
+        )
+        workflow = workflow_with_parameter_overrides(
+            profile_workflow,
+            tuple(workflow_parameter_overrides),
+        )
+        planning_pipeline = (
+            self._effective_execution_profile_pipeline(workflow)
+            if workflow_node_execution_overrides
+            else self.pipeline
+        )
         processing_node_id = self._background_processing_node_id(
             dirty_node_ids,
             manual_node_ids,
             source_payloads,
             target_node_ids,
+            planning_pipeline=planning_pipeline,
         )
         if self._active_pipeline_run_id is not None:
             self._record_interaction_phase(
@@ -26342,22 +27129,18 @@ class VippWidget(QWidget):
         self._pipeline_run_serial += 1
         run_id = self._pipeline_run_serial
         interaction_generation = self._interaction_current_generation()
-        compute_request = self._current_compute_request()
-        workflow_guard = deepcopy(
-            serialize_workflow(
-                self.pipeline,
-                compute_request=compute_request,
-            )
-        )
-        workflow = workflow_with_parameter_overrides(
-            workflow_guard,
-            tuple(workflow_parameter_overrides),
-        )
         parameter_override_signature = (
             self._batch_item_parameter_override_signature(
                 self._interactive_collection_batch_target_item()
             )
             if workflow_parameter_overrides
+            else ""
+        )
+        node_execution_override_signature = (
+            self._batch_node_execution_override_signature(
+                self._interactive_collection_batch_config
+            )
+            if workflow_node_execution_overrides
             else ""
         )
         (
@@ -26368,13 +27151,49 @@ class VippWidget(QWidget):
             source_signature,
         )
         cancel_event = threading.Event()
-        execution_plan = self.pipeline.plan_execution(
+        execution_plan = planning_pipeline.plan_execution(
             dirty_node_ids,
             manual_mode=MANUAL_RUN_SKIP,
             manual_node_ids=manual_node_ids,
             target_node_ids=target_node_ids,
         )
         runnable_node_ids = frozenset(execution_plan.runnable_node_ids)
+        shadow_affected_node_ids = (
+            {
+                node_id
+                for node_id in planning_pipeline.nodes
+                if planning_pipeline.node_is_bypassed(node_id)
+            }
+            if dirty_node_ids is None
+            else planning_pipeline.presentation_shadow_nodes_affected_by(
+                dirty_node_ids
+            )
+        )
+        effective_bypass_shadow_node_ids = frozenset(
+            str(node.get("id", "")).strip()
+            for node in workflow.get("nodes", ())
+            if isinstance(node, dict)
+            and str(node.get("execution_mode", "run")).strip().casefold()
+            == NODE_EXECUTION_BYPASS
+            and str(node.get("id", "")).strip() in shadow_affected_node_ids
+            and self._node_allows_bypass_presentation_shadow(
+                str(node.get("id", "")).strip()
+            )
+        )
+        for node_id in (
+            runnable_node_ids | frozenset(shadow_affected_node_ids)
+        ) - effective_bypass_shadow_node_ids:
+            self._bypass_shadow_results.pop(node_id, None)
+            self._bypass_shadow_errors.pop(node_id, None)
+            self._bypass_shadow_pending_node_ids.discard(node_id)
+        self._bypass_shadow_pending_node_ids.update(
+            effective_bypass_shadow_node_ids
+        )
+        for node_id in effective_bypass_shadow_node_ids:
+            # Retain the card's last complete pixmap while calculating, but do
+            # not keep a stale full-resolution what-if array addressable.
+            self._bypass_shadow_results.pop(node_id, None)
+            self._bypass_shadow_errors.pop(node_id, None)
         request = PipelineRunRequest(
             run_id=run_id,
             workflow=workflow,
@@ -26437,6 +27256,8 @@ class VippWidget(QWidget):
                     processing_node_id,
                 )
             ),
+            presentation_shadow_node_ids=effective_bypass_shadow_node_ids,
+            atomic_bypass_profile=bool(workflow_node_execution_overrides),
             device_execution_telemetry=self._interaction_device_execution_config(
                 interaction_generation
             ),
@@ -26458,10 +27279,14 @@ class VippWidget(QWidget):
             compute_request,
             runnable_node_ids,
             workflow_guard,
-            bool(workflow_parameter_overrides),
+            bool(workflow_parameter_overrides or workflow_node_execution_overrides),
             parameter_override_signature,
+            node_execution_override_signature,
         )
         self._pipeline_run_manual_node_ids[run_id] = frozenset(manual_node_ids)
+        self._pipeline_run_shadow_node_ids[run_id] = (
+            effective_bypass_shadow_node_ids
+        )
         self._set_pipeline_busy(True, processing_node_id)
         title = (
             self._node_title(processing_node_id)
@@ -26474,6 +27299,9 @@ class VippWidget(QWidget):
         worker.signals.terminal.connect(self._on_background_pipeline_worker_terminal)
         worker.signals.node_started.connect(self._on_background_pipeline_node_started)
         worker.signals.node_finished.connect(self._on_background_pipeline_node_finished)
+        worker.signals.presentation_shadow_finished.connect(
+            self._on_background_pipeline_presentation_shadow_finished
+        )
         worker.signals.progress.connect(self._on_background_pipeline_progress)
         worker.signals.finished.connect(self._on_background_pipeline_finished)
         completion_loop = None
@@ -26643,7 +27471,25 @@ class VippWidget(QWidget):
         ):
             return
 
+        self._background_execution_state_overrides[result.node_id] = (
+            result.run_id,
+            result.execution_state,
+            result.execution_message,
+        )
+        if result.node_id in self._cache_retention_node_ids():
+            self._background_node_result_overrides[result.node_id] = result
+        else:
+            self._background_node_result_overrides.pop(result.node_id, None)
         preview_data, preview_state, output_port = (
+            self._node_thumbnail_display_payload(
+                result.node_id,
+                result.output,
+                result.output_state,
+                result.node_outputs,
+                result.node_output_states,
+            )
+        )
+        scientific_data, scientific_state, scientific_output_port = (
             self._node_display_payload_from_values(
                 result.node_id,
                 result.output,
@@ -26659,22 +27505,77 @@ class VippWidget(QWidget):
             preview_state,
             output_port,
             queue_stack_contrast=False,
+            scientific_payload=(
+                scientific_data,
+                scientific_state,
+                scientific_output_port,
+            ),
         )
-        self._background_execution_state_overrides[result.node_id] = (
-            result.run_id,
-            result.execution_state,
-            result.execution_message,
-        )
-        if result.node_id in self._cache_retention_node_ids():
-            self._background_node_result_overrides[result.node_id] = result
-        else:
-            self._background_node_result_overrides.pop(result.node_id, None)
         self._sync_execution_ui()
         self._refresh_node_presentation_surfaces(
             {result.node_id},
             thumbnails=False,
         )
         self.graph_view.set_node_processing(result.node_id, False)
+
+    def _on_background_pipeline_presentation_shadow_finished(
+        self,
+        result: PipelinePresentationShadowResult,
+    ) -> None:
+        """Accept only the current run's card-only bypass what-if result."""
+
+        if result.run_id != self._active_pipeline_run_id:
+            return
+        if self._pipeline_user_cancel_requested_run_id == result.run_id:
+            return
+        if not self._background_batch_parameter_override_is_current(result.run_id):
+            return
+        if result.source_revisions and not self._live_source_adapter.tokens_are_current(
+            result.source_revisions
+        ):
+            return
+        node = self.pipeline.nodes.get(result.node_id)
+        if node is None or node.operation_id != result.operation_id:
+            return
+        if result.node_id not in self._pipeline_run_shadow_node_ids.get(
+            result.run_id,
+            frozenset(),
+        ):
+            return
+        pending_dirty = self._pending_dirty_node_ids & set(self.pipeline.nodes)
+        if pending_dirty and self._dirty_nodes_affect_node(
+            pending_dirty,
+            result.node_id,
+            presentation=True,
+        ):
+            return
+
+        self._bypass_shadow_pending_node_ids.discard(result.node_id)
+        if (
+            not self._node_allows_bypass_presentation_shadow(result.node_id)
+            or (not result.error and is_table_data(result.output))
+        ):
+            # Table what-if results have a dedicated inspector surface and must
+            # never displace an image-like exact-alias card. This is a normal
+            # no-shadow case, not a scientific or preview error.
+            self._bypass_shadow_results.pop(result.node_id, None)
+            self._bypass_shadow_errors.pop(result.node_id, None)
+            return
+        if result.error:
+            self._bypass_shadow_results.pop(result.node_id, None)
+            self._bypass_shadow_errors[result.node_id] = result.error
+            self.graph_view.set_thumbnail_pending(
+                result.node_id,
+                "Bypass preview unavailable",
+                accessible_description=(
+                    "The presentation-only what-if preview failed; the exact "
+                    "bypass output and downstream scientific data remain valid. "
+                    f"Reason: {result.error}"
+                ),
+            )
+            return
+        self._bypass_shadow_errors.pop(result.node_id, None)
+        self._bypass_shadow_results[result.node_id] = result
 
     def _background_pipeline_failure_messages(
         self,
@@ -26742,6 +27643,11 @@ class VippWidget(QWidget):
         interaction_generation = self._interaction_pipeline_terminal(result)
         if result.run_id != self._active_pipeline_run_id:
             return
+        shadow_node_ids = self._pipeline_run_shadow_node_ids.pop(
+            result.run_id,
+            frozenset(),
+        )
+        self._bypass_shadow_pending_node_ids.difference_update(shadow_node_ids)
         user_cancel_requested = (
             self._pipeline_user_cancel_requested_run_id == result.run_id
         )
@@ -26776,6 +27682,9 @@ class VippWidget(QWidget):
         )
         parameter_override_signature = (
             str(run_context[9]) if len(run_context) > 9 else ""
+        )
+        node_execution_override_signature = (
+            str(run_context[10]) if len(run_context) > 10 else ""
         )
         cleanup_failed = bool(
             (result.failure is not None and result.failure.cleanup_succeeded is False)
@@ -26949,6 +27858,27 @@ class VippWidget(QWidget):
                 interaction_generation,
                 InteractionLatencyOutcome.CANCELLED,
                 detail="The per-sample parameter override generation changed.",
+            )
+            return
+        if node_execution_override_signature and (
+            node_execution_override_signature
+            != self._batch_node_execution_override_signature(
+                self._interactive_collection_batch_config
+            )
+        ):
+            self._pipeline_run_pending = False
+            self._requeue_inflight_dirty_nodes()
+            cleared_overrides = self._discard_background_node_result_overrides()
+            self._refresh_node_presentation_surfaces(cleared_overrides)
+            self._set_pipeline_busy(False)
+            self.status_label.setText(
+                "Discarded a superseded whole-batch node behavior result. "
+                "Preview the current batch profile to calculate fresh pixels."
+            )
+            self._finish_interaction_generation(
+                interaction_generation,
+                InteractionLatencyOutcome.CANCELLED,
+                detail="The whole-batch node execution profile changed.",
             )
             return
         if result.source_revisions and not self._live_source_adapter.tokens_are_current(
@@ -28005,9 +28935,11 @@ class VippWidget(QWidget):
 
     def _update_thumbnails(self) -> None:
         for node_id, data in self.pipeline.outputs.items():
-            preview_data, preview_state, output_port = self._node_display_payload(
+            preview_data, preview_state, output_port = (
+                self._node_thumbnail_display_payload(
                 node_id,
                 data,
+            )
             )
             self._update_node_thumbnail(
                 node_id,
@@ -28032,13 +28964,16 @@ class VippWidget(QWidget):
         for node_id, data in self.pipeline.outputs.items():
             if not self.graph_view.node_has_thumbnail(node_id):
                 continue
-            preview_data, preview_state, output_port = self._node_display_payload(
+            preview_data, preview_state, output_port = (
+                self._node_thumbnail_display_payload(
                 node_id,
                 data,
             )
-            data_kind = self._node_output_type_for_payload(
+            )
+            data_kind = self._node_thumbnail_payload_data_kind(
                 node_id,
                 preview_data,
+                preview_state,
                 output_port,
             )
             self._sync_node_thumbnail_statistics_presentation(
@@ -28058,17 +28993,32 @@ class VippWidget(QWidget):
         output_port: int,
         *,
         queue_stack_contrast: bool,
+        scientific_payload: tuple[object, object, int] | None = None,
     ) -> None:
         """Render one card without requiring its result in the live pipeline cache."""
         mode = self.preview_mode_combo.currentText()
         contrast_mode = self.thumbnail_contrast_combo.currentText()
         contrast_scope = self.thumbnail_scope_combo.currentText()
+        if scientific_payload is None:
+            scientific_data, scientific_state, scientific_output_port = (
+                self._node_display_payload(node_id)
+            )
+        else:
+            scientific_data, scientific_state, scientific_output_port = (
+                scientific_payload
+            )
         node_output_type = self._node_output_type_for_payload(
             node_id,
+            scientific_data,
+            scientific_output_port,
+        )
+        preview_output_type = self._node_thumbnail_payload_data_kind(
+            node_id,
             preview_data,
+            preview_state,
             output_port,
         )
-        metadata_text = format_compact_metadata(preview_state)
+        metadata_text = format_compact_metadata(scientific_state)
         batch_text = self._interactive_collection_card_metadata(node_id)
         if batch_text:
             metadata_text = (
@@ -28080,12 +29030,38 @@ class VippWidget(QWidget):
         self.graph_view.set_node_output_type(node_id, node_output_type)
         preview_enabled = (
             mode.lower() != "off"
-            and node_output_type != "table"
+            and preview_output_type != "table"
             and node_id not in self._preview_disabled_node_ids
         )
         self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
         if not preview_enabled:
             self.graph_view.set_thumbnail(node_id, None)
+            self._clear_node_thumbnail_statistics_presentation(node_id)
+            return
+        shadow_waiting = node_id in self._bypass_shadow_pending_node_ids
+        shadow_error = self._bypass_shadow_errors.get(node_id, "")
+        if (
+            node_id not in self._bypass_shadow_results
+            and (shadow_waiting or shadow_error)
+        ):
+            self.graph_view.set_thumbnail_pending(
+                node_id,
+                (
+                    "Calculating bypass preview…"
+                    if shadow_waiting
+                    else "Bypass preview unavailable"
+                ),
+                accessible_description=(
+                    "The presentation-only what-if preview is calculating. The "
+                    "node's exact bypass output remains available downstream."
+                    if shadow_waiting
+                    else (
+                        "The presentation-only what-if preview failed; the node's "
+                        "exact bypass output remains available downstream. "
+                        f"Reason: {shadow_error}"
+                    )
+                ),
+            )
             self._clear_node_thumbnail_statistics_presentation(node_id)
             return
 
@@ -28099,7 +29075,7 @@ class VippWidget(QWidget):
                 preview_state,
                 contrast_mode,
                 contrast_scope,
-                node_output_type,
+                preview_output_type,
             )
         if stack_request is not None:
             if stack_request.key in self._thumbnail_contrast_limit_cache:
@@ -28137,7 +29113,7 @@ class VippWidget(QWidget):
                     preview_state,
                     contrast_mode,
                     contrast_scope,
-                    node_output_type,
+                    preview_output_type,
                 )
                 return
         effective_scope_is_slice = (
@@ -28192,7 +29168,7 @@ class VippWidget(QWidget):
                 contrast_limits=(
                     None if preview_consumes_contrast else contrast_limits
                 ),
-                data_kind=node_output_type,
+                data_kind=preview_output_type,
             )
             self.graph_view.set_thumbnail(node_id, thumbnail)
         except Exception as exc:
@@ -28217,7 +29193,7 @@ class VippWidget(QWidget):
             preview_state,
             contrast_mode,
             contrast_scope,
-            node_output_type,
+            preview_output_type,
         )
         if trace_render:
             self._finish_interaction_generation(
@@ -28243,6 +29219,12 @@ class VippWidget(QWidget):
             f"Render detail: {preset.label}.",
             f"Contrast: {contrast_scope} {contrast_mode}.",
         ]
+        if node_id in self._bypass_shadow_results:
+            common.append(
+                "Bypass preview: card pixels show what the stored node settings "
+                "would produce; inspection, metadata, saving, and downstream "
+                "processing use the exact forwarded input."
+            )
         if str(contrast_scope or "").strip().lower().startswith("slice"):
             detail = "\n".join(
                 common

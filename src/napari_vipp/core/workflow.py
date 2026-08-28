@@ -37,9 +37,10 @@ from napari_vipp.core.source_item_persistence import (
     canonicalize_source_item_params,
 )
 
-WORKFLOW_VERSION = 5
+WORKFLOW_VERSION = 6
 LEGACY_COMPUTE_WORKFLOW_VERSION = 3
 LEGACY_SOURCE_ITEM_WORKFLOW_VERSION = 4
+LEGACY_SOURCE_PREVIEW_WORKFLOW_VERSION = 5
 WORKFLOW_TYPE = "napari-vipp-workflow"
 
 Position = tuple[float, float]
@@ -115,6 +116,7 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
     if type(document_version) is not int or document_version not in {
         LEGACY_COMPUTE_WORKFLOW_VERSION,
         LEGACY_SOURCE_ITEM_WORKFLOW_VERSION,
+        LEGACY_SOURCE_PREVIEW_WORKFLOW_VERSION,
         WORKFLOW_VERSION,
     }:
         migration_guidance = ""
@@ -129,7 +131,8 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
         raise ValueError(
             f"Unsupported workflow version: {document_version!r}. "
             f"Expected version {LEGACY_COMPUTE_WORKFLOW_VERSION}, "
-            f"{LEGACY_SOURCE_ITEM_WORKFLOW_VERSION}, or {WORKFLOW_VERSION}."
+            f"{LEGACY_SOURCE_ITEM_WORKFLOW_VERSION}, "
+            f"{LEGACY_SOURCE_PREVIEW_WORKFLOW_VERSION}, or {WORKFLOW_VERSION}."
             f"{migration_guidance}"
         )
 
@@ -308,7 +311,12 @@ def workflow_snapshot_from_document(data: Any) -> WorkflowSnapshot:
     restored = deserialize_workflow(data)
     graph = GraphSnapshot(
         (
-            NodeSnapshot(node.id, node.operation_id, node.params)
+            NodeSnapshot(
+                node.id,
+                node.operation_id,
+                node.params,
+                node.execution_mode,
+            )
             for node in restored["nodes"]
         ),
         restored["connections"],
@@ -411,11 +419,14 @@ def _node_to_dict(node: GraphNode) -> dict[str, Any]:
         if node.operation_id == "input"
         else dict(node.params)
     )
-    return {
+    result = {
         "id": node.id,
         "operation_id": node.operation_id,
         "params": params,
     }
+    if node.execution_mode != "run":
+        result["execution_mode"] = node.execution_mode
+    return result
 
 
 def _node_from_dict(
@@ -426,6 +437,13 @@ def _node_from_dict(
 ) -> GraphNode:
     if not isinstance(raw, dict):
         raise ValueError(f"Node {index} must be an object.")
+    allowed = {"id", "operation_id", "params"}
+    if document_version == WORKFLOW_VERSION:
+        allowed.add("execution_mode")
+    unknown = set(raw) - allowed
+    if unknown:
+        names = ", ".join(sorted(map(str, unknown)))
+        raise ValueError(f"Node {index} has unknown field(s): {names}.")
     operation_id = raw.get("operation_id")
     saved_params = raw.get("params")
     if operation_id == "input" and isinstance(saved_params, Mapping):
@@ -441,6 +459,7 @@ def _node_from_dict(
         operation_id,
         saved_params,
         index=index,
+        execution_mode=raw.get("execution_mode", "run"),
     )
 
 

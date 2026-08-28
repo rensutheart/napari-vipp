@@ -199,13 +199,15 @@ for the exact owning modules and limitations.
   bump or explicitly reject the old schema, update golden tests and bundled
   examples, and avoid an implicit migration that changes scientific meaning.
 - Batch configuration must retain the exact scientific workflow hash and
-  deterministic source/output plan. Current workflow schema 5 adds canonical
-  SourceItem evidence to version 4's portable compute intent. Batch config
-  schema 4 adds SourceItem inventories and typed per-sample overrides to version
-  3's full effective `ComputeRequest` and guarded source-axis declarations;
+  deterministic source/output plan. Current workflow schema 6 adds explicit
+  Safe Node Bypass intent to version 5's canonical SourceItem evidence and
+  version 4's portable compute intent. Batch config schema 5 adds typed
+  whole-batch Run/Bypass directives to version 4's SourceItem inventories and
+  per-sample overrides; version 3 introduced the full effective
+  `ComputeRequest` and guarded source-axis declarations;
   schema 1 migrates to explicit CPU, while schema 2 keeps its compute request.
   Legacy configs acquire SourceItems only after deterministic resolution and
-  contain no per-sample overrides.
+  contain no node-behavior profile.
 - Never publish a batch output before all source-dependent bytes are staged and
   every source identity has been reverified. Preserve collision policy and
   per-item/output provenance. Cleanup proof is an additional publication gate.

@@ -52,6 +52,9 @@ OPERATION_MIME = "application/x-napari-vipp-operation"
 PINNABLE_OUTPUT_TYPES = {"array", "image", "mask", "labels"}
 STALE_EXECUTION_ACCENT = "#f59e0b"
 BLOCKED_EXECUTION_ACCENT = "#b45309"
+BYPASSED_NODE_OUTLINE = "#22d3ee"
+BYPASSED_NODE_PASS_THROUGH = "#67e8f9"
+BYPASSED_NODE_OPACITY = 0.72
 
 
 class PortLabelMode(StrEnum):
@@ -69,6 +72,7 @@ class ComputeBadgeKind(StrEnum):
     CUPY = "cupy"
     CUCIM = "cucim"
     CPU_FALLBACK = "cpu_fallback"
+    BYPASSED = "bypassed"
 
 
 class ThumbnailStatsBadgeKind(StrEnum):
@@ -86,6 +90,7 @@ _COMPUTE_BADGE_LABELS = {
     ComputeBadgeKind.CUPY: "GPU · CuPy",
     ComputeBadgeKind.CUCIM: "GPU · cuCIM",
     ComputeBadgeKind.CPU_FALLBACK: "CPU fallback",
+    ComputeBadgeKind.BYPASSED: "Bypassed",
 }
 
 _COMPUTE_BADGE_COLORS = {
@@ -93,6 +98,7 @@ _COMPUTE_BADGE_COLORS = {
     ComputeBadgeKind.CUPY: ("#1e3a5f", "#bfdbfe", "#3b82f6"),
     ComputeBadgeKind.CUCIM: ("#064e3b", "#bbf7d0", "#10b981"),
     ComputeBadgeKind.CPU_FALLBACK: ("#78350f", "#fde68a", "#f59e0b"),
+    ComputeBadgeKind.BYPASSED: ("#164e63", "#cffafe", "#0891b2"),
 }
 
 
@@ -268,6 +274,78 @@ class ElidedSubtitleLabel(QLabel):
         super().setText(elided)
 
 
+def _bypass_outline_pen() -> QPen:
+    """Return the prominent theme-safe dotted bypass outline."""
+
+    pen = QPen(QColor(BYPASSED_NODE_OUTLINE), 3.0, Qt.DotLine)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setCosmetic(True)
+    return pen
+
+
+def _bypass_pass_through_pen() -> QPen:
+    """Return the subtle input-to-output cue drawn through a bypassed card."""
+
+    color = QColor(BYPASSED_NODE_PASS_THROUGH)
+    color.setAlpha(178)
+    pen = QPen(color, 2.0, Qt.SolidLine)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setCosmetic(True)
+    return pen
+
+
+class BypassCardOverlay(QWidget):
+    """Purely visual, non-interactive bypass treatment above card content."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self._input_y: float | None = None
+        self._output_y: float | None = None
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setAccessibleName("")
+
+    def set_pass_through_positions(
+        self,
+        input_y: float | None,
+        output_y: float | None,
+    ) -> None:
+        """Align the visual alias cue with the primary input and sole output."""
+
+        resolved_input = None if input_y is None else float(input_y)
+        resolved_output = None if output_y is None else float(output_y)
+        if (
+            self._input_y == resolved_input
+            and self._output_y == resolved_output
+        ):
+            return
+        self._input_y = resolved_input
+        self._output_y = resolved_output
+        self.update()
+
+    def paintEvent(self, event):  # noqa: N802
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        # A line through the port axis makes the alias relationship legible at
+        # a glance. This is paint only: it cannot receive hover or mouse input.
+        painter.setPen(_bypass_pass_through_pen())
+        center_y = float(self.rect().center().y())
+        input_y = center_y if self._input_y is None else self._input_y
+        output_y = center_y if self._output_y is None else self._output_y
+        painter.drawLine(
+            QPointF(3.0, input_y),
+            QPointF(float(self.width()) - 3.0, output_y),
+        )
+
+        painter.setPen(_bypass_outline_pen())
+        painter.setBrush(Qt.NoBrush)
+        outline = QRectF(self.rect()).adjusted(2.0, 2.0, -2.0, -2.0)
+        painter.drawRoundedRect(outline, 5.0, 5.0)
+
+
 class NodeCard(QFrame):
     """Small embedded node UI with a thumbnail and graph actions."""
 
@@ -305,6 +383,7 @@ class NodeCard(QFrame):
         self._execution_message = ""
         self._auto_recalculate = False
         self._isolated_tuning = False
+        self._bypassed = False
         self.setObjectName("NodeCard")
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(self.BASE_MINIMUM_WIDTH)
@@ -398,6 +477,9 @@ class NodeCard(QFrame):
         self.card_layout.addWidget(self.metadata_label)
         self.card_layout.addWidget(self.execution_label)
         self.card_layout.addWidget(self.calculate_button)
+        self._bypass_overlay = BypassCardOverlay(self)
+        self._bypass_overlay.setGeometry(self.rect())
+        self._bypass_overlay.hide()
         self._refresh_style()
 
     def set_port_label_gutters(self, left: float, right: float) -> None:
@@ -438,6 +520,19 @@ class NodeCard(QFrame):
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._position_processing_badge()
+        self._bypass_overlay.setGeometry(self.rect())
+
+    @staticmethod
+    def _bypass_outline_pen() -> QPen:
+        """Return the theme-safe dotted pen used for bypassed node cards."""
+
+        return _bypass_outline_pen()
+
+    @staticmethod
+    def _bypass_pass_through_pen() -> QPen:
+        """Return the non-interactive line connecting input and output sides."""
+
+        return _bypass_pass_through_pen()
 
     def set_selected(self, selected: bool) -> None:
         selected = bool(selected)
@@ -502,6 +597,44 @@ class NodeCard(QFrame):
         self._refresh_style()
         self.update()
 
+    def set_bypassed(self, bypassed: bool) -> bool:
+        """Show authored bypass as a neutral, non-backend badge."""
+
+        bypassed = bool(bypassed)
+        state_changed = self._bypassed != bypassed
+        self._bypassed = bypassed
+        self._bypass_overlay.setVisible(bypassed)
+        if bypassed:
+            self._bypass_overlay.raise_()
+        presentation_changed = False
+        if bypassed:
+            presentation_changed = self.set_compute_badge(
+                ComputeBadgeKind.BYPASSED,
+                tooltip=(
+                    "Workflow output forwards this node's exact primary input without "
+                    "calling the operation. Its thumbnail remains a "
+                    "presentation-only preview of what the node would produce "
+                    "if run."
+                ),
+            )
+        elif self._compute_badge_kind is ComputeBadgeKind.BYPASSED:
+            presentation_changed = self.set_compute_badge(None)
+        if not state_changed and not presentation_changed:
+            return False
+        self._refresh_tooltip()
+        self._refresh_style()
+        self.update()
+        return True
+
+    def set_bypass_pass_through_positions(
+        self,
+        input_y: float | None,
+        output_y: float | None,
+    ) -> None:
+        """Place the bypass cue on the graph's primary input/output port axis."""
+
+        self._bypass_overlay.set_pass_through_positions(input_y, output_y)
+
     def set_execution_state(
         self,
         state: str,
@@ -554,6 +687,14 @@ class NodeCard(QFrame):
             self.setToolTip(
                 "Tuning this node in isolation. Its downstream branch remains "
                 "paused until Apply and continue."
+            )
+            return
+        if self._bypassed:
+            self.setToolTip(
+                "Workflow output: Bypass. VIPP forwards this node's exact primary "
+                "input. "
+                "The thumbnail is a presentation-only preview of what this node "
+                "would produce if run."
             )
             return
         if self._execution_state == "stale":
@@ -705,7 +846,11 @@ class NodeCard(QFrame):
         # while moving between the compact badge and its title.
         self.title_row.setToolTip(visible_tooltip)
         accessible_state = "stale previous result" if is_stale else "used"
-        self.compute_badge.setAccessibleName(f"Compute {accessible_state}: {label}")
+        self.compute_badge.setAccessibleName(
+            "Execution mode: Bypassed"
+            if resolved is ComputeBadgeKind.BYPASSED
+            else f"Compute {accessible_state}: {label}"
+        )
         self.compute_badge.setStyleSheet(
             "QLabel#NodeComputeBadge {"
             f" background: {background}; color: {foreground};"
@@ -1478,6 +1623,22 @@ class NodeProxy(QGraphicsProxyWidget):
                     step = (bottom - top) / max(len(self.output_ports) - 1, 1)
                     y = top + step * index
                 port.setPos(rect.right(), y)
+        card = self._card()
+        if card is not None:
+            primary_input_y = (
+                float(self.input_ports[0].pos().y())
+                if self.input_ports
+                else None
+            )
+            sole_output_y = (
+                float(self.output_ports[0].pos().y())
+                if len(self.output_ports) == 1
+                else None
+            )
+            card.set_bypass_pass_through_positions(
+                primary_input_y,
+                sole_output_y,
+            )
         self._refresh_persistent_port_labels(rect)
 
     @property
@@ -2083,6 +2244,7 @@ class PipelineGraphView(QGraphicsView):
     node_code_requested = Signal(str)
     node_note_requested = Signal(str)
     node_isolation_requested = Signal(str)
+    node_bypass_requested = Signal(str, bool)
     node_moved = Signal(str, object, object)
     nodes_moved = Signal(object, object)
     node_splice_requested = Signal(str, object, object, object)
@@ -2138,6 +2300,9 @@ class PipelineGraphView(QGraphicsView):
                 tuple[str, str],
             ]
             | None
+        ) = None
+        self._node_bypass_state_resolver: (
+            Callable[[str], tuple[bool, bool, str]] | None
         ) = None
         self._tunnel_reroute_validator: (
             Callable[
@@ -2641,6 +2806,14 @@ class PipelineGraphView(QGraphicsView):
     ) -> None:
         self._connection_insert_validator = validator
 
+    def set_node_bypass_state_resolver(
+        self,
+        resolver: Callable[[str], tuple[bool, bool, str]] | None,
+    ) -> None:
+        """Set the owner callback for live topology-aware bypass availability."""
+
+        self._node_bypass_state_resolver = resolver
+
     def set_tunnel_reroute_validator(
         self,
         validator: Callable[[str, str, int], tuple[str, str]] | None,
@@ -2813,6 +2986,7 @@ class PipelineGraphView(QGraphicsView):
             node.category,
             can_pin=node.output_type in PINNABLE_OUTPUT_TYPES,
         )
+        card.set_bypassed(getattr(node, "execution_mode", "run") == "bypass")
         card.selected.connect(self._select_node)
         card.pin_requested.connect(self.pin_requested)
         card.calculate_requested.connect(self.node_calculate_requested)
@@ -2845,6 +3019,7 @@ class PipelineGraphView(QGraphicsView):
         self._proxies[node.id] = proxy
         if node.id in self._search_match_node_ids:
             card.set_search_highlight(True)
+        self._apply_graph_focus_opacity()
         self._ensure_scene_space_for_rect(proxy.sceneBoundingRect())
         self._mark_graph_geometry_changed()
         self.reroute_connections(affected_rect=proxy.sceneBoundingRect())
@@ -3059,6 +3234,9 @@ class PipelineGraphView(QGraphicsView):
         search_node_ids = self._search_match_node_ids
         for node_id, proxy in self._proxies.items():
             opacity = 1.0
+            card = self._cards.get(node_id)
+            if card is not None and card._bypassed:
+                opacity = min(opacity, BYPASSED_NODE_OPACITY)
             if active and node_id not in active_tunnel_node_ids:
                 opacity = min(opacity, 0.38)
             if search_node_ids and node_id not in search_node_ids:
@@ -3239,8 +3417,43 @@ class PipelineGraphView(QGraphicsView):
         for connection in proxy.connections:
             connection.update_path()
 
+    def set_node_bypassed(self, node_id: str, bypassed: bool) -> None:
+        """Set one node's authored bypass badge without interpreting policy."""
+
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None or proxy is None:
+            return
+        before = proxy.sceneBoundingRect()
+        if not card.set_bypassed(bypassed):
+            return
+        card.adjustSize()
+        proxy.refresh_ports()
+        self._apply_graph_focus_opacity()
+        after = proxy.sceneBoundingRect()
+        if _rect_changed(before, after):
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=before.united(after))
+            return
+        proxy.update()
+        for connection in proxy.connections:
+            connection.update_path()
+
     def clear_node_compute_badge(self, node_id: str) -> None:
         """Hide one node's accepted-compute presentation."""
+        card = self._cards.get(node_id)
+        if card is not None and card._bypassed:
+            self.set_node_compute_badge(
+                node_id,
+                ComputeBadgeKind.BYPASSED,
+                tooltip=(
+                    "Workflow output forwards this node's exact primary input without "
+                    "calling the operation. Its thumbnail remains a "
+                    "presentation-only preview of what the node would produce "
+                    "if run."
+                ),
+            )
+            return
         self.set_node_compute_badge(node_id, None)
 
     def clear_node_compute_badges(self, node_ids=None) -> None:
@@ -3936,7 +4149,27 @@ class PipelineGraphView(QGraphicsView):
         add_note_action = menu.addAction("Add note") if selected_count == 1 else None
         menu.addSeparator()
         isolation_action = None
+        bypass_action = None
         if selected_count == 1:
+            operation = (
+                NODE_LIBRARY_BY_ID.get(proxy.operation_id)
+                if proxy is not None
+                else None
+            )
+            bypass_visible, bypass_enabled, bypass_tooltip = (
+                self._node_bypass_action_state(
+                    node_id,
+                    operation,
+                    bypassed=card._bypassed,
+                )
+            )
+            if bypass_visible:
+                bypass_action = menu.addAction("Bypass node")
+                bypass_action.setCheckable(True)
+                bypass_action.setChecked(card._bypassed)
+                bypass_action.setEnabled(bypass_enabled)
+                bypass_action.setToolTip(bypass_tooltip)
+                bypass_action.setStatusTip(bypass_tooltip)
             isolation_action = menu.addAction("Tune node in isolation")
             isolation_action.setCheckable(True)
             isolation_action.setChecked(node_id == self._isolated_tuning_node_id)
@@ -3963,10 +4196,91 @@ class PipelineGraphView(QGraphicsView):
             self.node_duplicate_requested.emit(node_id)
         elif add_note_action is not None and action == add_note_action:
             self.node_note_requested.emit(node_id)
+        elif bypass_action is not None and action == bypass_action:
+            self.node_bypass_requested.emit(node_id, not card._bypassed)
         elif isolation_action is not None and action == isolation_action:
             self.node_isolation_requested.emit(node_id)
         elif pin_action is not None and action == pin_action:
             self.pin_requested.emit(node_id)
+
+    def _node_bypass_action_state(
+        self,
+        node_id: str,
+        operation,
+        *,
+        bypassed: bool,
+    ) -> tuple[bool, bool, str]:
+        """Resolve one context-menu action without owning scientific policy."""
+
+        if self._node_bypass_state_resolver is not None:
+            try:
+                visible, enabled, tooltip = self._node_bypass_state_resolver(node_id)
+            except Exception as exc:  # pragma: no cover - defensive UI boundary
+                return (
+                    bool(operation is not None and operation.supports_bypass),
+                    False,
+                    f"Bypass availability could not be checked: {exc}",
+                )
+            return bool(visible), bool(enabled), str(tooltip or "")
+
+        supported = bool(operation is not None and operation.supports_bypass)
+        if not supported:
+            return False, False, ""
+        primary = getattr(operation, "bypass_primary_input", None)
+        primary_label = str(getattr(primary, "label", "") or "Input")
+        if bypassed:
+            enabled = self._isolated_tuning_node_id is None
+            tooltip = (
+                f"Clear bypass to run this node again. Its {primary_label} input "
+                "is currently forwarded unchanged."
+            )
+        elif self._isolated_tuning_node_id is not None:
+            enabled = False
+            tooltip = (
+                "Apply or cancel isolated tuning before changing Bypass node."
+            )
+        elif not self._node_has_primary_bypass_input(node_id):
+            enabled = False
+            tooltip = (
+                f"Connect the {primary_label} input before bypassing this node."
+            )
+        elif not self._node_has_scientific_output_use(node_id):
+            enabled = False
+            tooltip = (
+                "This node has no downstream connection or output tunnel, so "
+                "bypassing it would have no effect. Connect its output first."
+            )
+        else:
+            enabled = True
+            tooltip = (
+                f"Skip this operation and forward its exact {primary_label} "
+                "input to the output unchanged."
+            )
+        return True, enabled, tooltip
+
+    def _node_has_primary_bypass_input(self, node_id: str) -> bool:
+        if any(
+            connection.target_id == node_id and connection.target_port == 0
+            for connection in self._connections
+        ):
+            return True
+        proxy = self._proxies.get(node_id)
+        primary = proxy.input_port_at(0) if proxy is not None else None
+        return bool(
+            primary is not None
+            and any(
+                primary in ports
+                for ports in self._tunnel_subscriber_ports.values()
+            )
+        )
+
+    def _node_has_scientific_output_use(self, node_id: str) -> bool:
+        if any(connection.source_id == node_id for connection in self._connections):
+            return True
+        return any(
+            port.node_id == node_id
+            for port in self._tunnel_source_ports.values()
+        )
 
     def _show_canvas_context_menu(
         self,

@@ -95,6 +95,16 @@ RESPONSIVE_CROP_EXAMPLE_WORKFLOW = (
     / "examples"
     / "responsive-volume-crop-acceptance.json"
 )
+SAFE_NODE_BYPASS_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "safe-node-bypass-acceptance.json"
+)
+GENERAL_NODE_BYPASS_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "general-node-bypass-acceptance.json"
+)
 
 
 def _restore_workflow(pipeline: PrototypePipeline, workflow: dict) -> None:
@@ -232,10 +242,133 @@ def test_responsive_volume_crop_example_is_annotated_and_scientifically_exact():
     note_text = " ".join(note["text"] for note in workflow["notes"])
     assert all(f"TEST {index}" in note_text for index in range(1, 8))
     assert "crop box and current-slice outline" in note_text
-    assert "No intermediate drag positions appear in history" in note_text
+    assert "pause does not commit or create an Undo point" in note_text
     assert "source[:, :, 2:-1, 4:-5, 6:-7]" in note_text
     assert "QYX -> ZYX" in note_text
     assert "Prefer GPU with visible fallback" in note_text
+
+
+def test_safe_node_bypass_example_is_explicit_and_annotated():
+    workflow = load_workflow(SAFE_NODE_BYPASS_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    _restore_workflow(pipeline, workflow)
+
+    assert workflow["compute_request"].mode is ComputeMode.PREFER_GPU
+    assert [
+        pipeline.nodes[node_id].operation_id
+        for node_id in pipeline.topological_order()
+    ] == ["input", "gaussian_blur", "crop_stack", "gaussian_blur"]
+    crop = pipeline.nodes["crop_stack_bypass"]
+    assert crop.execution_mode == "bypass"
+    assert crop.params["left"] == 6
+    assert crop.params["right"] == 7
+
+    source = pipeline.nodes["input"]
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == source.params["sample_name"]
+    )
+    pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+    assert (
+        pipeline.outputs["crop_stack_bypass"]
+        is pipeline.outputs["gaussian_before"]
+    )
+    assert (
+        pipeline.output_states["crop_stack_bypass"]
+        is pipeline.output_states["gaussian_before"]
+    )
+    assert pipeline.outputs["crop_stack_bypass"].shape == (12, 96, 128)
+
+    note_text = " ".join(note["text"] for note in workflow["notes"])
+    assert all(f"TEST {index}" in note_text for index in range(1, 7))
+    assert "compact Bypass node checkbox" in note_text
+    assert "Bypassed badge" in note_text
+    assert "prominent dotted outline" in note_text
+    assert "subtle non-interactive line" in note_text
+    assert "would-run thumbnail" in note_text
+    assert "right-click Crop Stack" in note_text
+    assert "Use workflow, Run, or Bypass" in note_text
+    assert "never as CPU or GPU scientific work" in note_text
+
+
+def test_general_node_bypass_example_forwards_named_primary_inputs():
+    workflow = load_workflow(GENERAL_NODE_BYPASS_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    _restore_workflow(pipeline, workflow)
+
+    gaussian = pipeline.nodes["gaussian_bypass"]
+    rl_tv = pipeline.nodes["rl_tv_bypass"]
+    assert workflow["compute_request"].mode is ComputeMode.AUTO
+    assert gaussian.execution_mode == "bypass"
+    assert rl_tv.execution_mode == "bypass"
+    assert rl_tv.params["iterations"] == 3
+    assert [port.label for port in pipeline.input_ports(rl_tv.id)] == [
+        "Image",
+        "PSF",
+    ]
+    assert {
+        (connection.source_id, connection.target_port)
+        for connection in pipeline.connections
+        if connection.target_id == rl_tv.id
+    } == {("gaussian_bypass", 0), ("prepare_psf", 1)}
+    assert pipeline.node_supports_bypass(gaussian.id)
+    assert pipeline.node_supports_bypass(rl_tv.id)
+
+    incompatible = pipeline.node_bypass_block_reason("incompatible_threshold")
+    assert "Remove Outliers (Binary)" in incompatible
+    assert "requires mask" in incompatible
+    for boundary in (
+        "input",
+        "split_channels",
+        "skeleton_graph_tables",
+        "save_output",
+        "batch_output",
+    ):
+        assert not pipeline.operation_spec(boundary).supports_bypass
+
+    samples = {
+        metadata["name"]: (data, metadata, layer_type)
+        for data, metadata, layer_type in make_sample_data()
+    }
+    image, image_kwargs, _image_layer_type = samples[
+        "VIPP synthetic deconvolution image"
+    ]
+    psf, psf_kwargs, _psf_layer_type = samples["VIPP synthetic measured PSF"]
+    outputs = pipeline.run(
+        image,
+        source_payloads={
+            "image_source": SourcePayload(
+                image,
+                image_kwargs["metadata"],
+                image_kwargs["name"],
+            ),
+            "psf_source": SourcePayload(
+                psf,
+                psf_kwargs["metadata"],
+                psf_kwargs["name"],
+            ),
+        },
+    )
+
+    assert outputs[gaussian.id] is outputs["image_source"]
+    assert outputs[rl_tv.id] is outputs[gaussian.id]
+    assert pipeline.output_states[rl_tv.id] is pipeline.output_states[gaussian.id]
+    assert outputs["downstream_consumer"].shape == image.shape
+    assert outputs["incompatible_threshold"].dtype == bool
+
+    note_text = " ".join(note["text"] for note in workflow["notes"])
+    assert all(f"TEST {index}" in note_text for index in range(1, 6))
+    assert "Image (port 0)" in note_text
+    assert "PSF stays connected but is ignored" in note_text
+    assert "would-run thumbnail is presentation only" in note_text
+    assert "Split Channels" in note_text
+    assert "Save Image and Batch Output" in note_text
+    assert "forwarding image data cannot satisfy the mask input" in note_text
 
 
 def test_gpu_segmentation_bridge_is_portable_annotated_and_scientifically_stable():

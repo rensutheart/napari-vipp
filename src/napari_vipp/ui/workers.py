@@ -34,6 +34,7 @@ class PipelineRunSignals(QObject):
     terminal = Signal(object)
     node_started = Signal(object)
     node_finished = Signal(object)
+    presentation_shadow_finished = Signal(object)
     progress = Signal(object)
     finished = Signal(object)
 
@@ -59,6 +60,9 @@ class PipelineRunWorker(QRunnable):
             self.request,
             node_started_callback=self._emit_node_started,
             node_finished_callback=self.signals.node_finished.emit,
+            presentation_shadow_callback=(
+                self.signals.presentation_shadow_finished.emit
+            ),
             progress_callback=self._emit_progress,
         )
         terminal = _worker_started_timestamp(self.request)

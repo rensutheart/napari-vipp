@@ -303,24 +303,39 @@ class HostExecutionUnit:
 
 
 @dataclass(frozen=True, slots=True)
+class BypassExecutionUnit:
+    """One explicit host-resident primary-input alias with no operation call."""
+
+    node_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class DeviceSegmentUnit:
     """One maximal connected sub-DAG sharing an array runtime/domain."""
 
     segment: ExecutionSegment
-    implementation_specs: tuple[OperationComputeSpec, ...]
+    implementation_specs: tuple[OperationComputeSpec | None, ...]
 
     def __post_init__(self) -> None:
         expected = self.segment.node_ids
-        actual = tuple(spec.operation_id for spec in self.implementation_specs)
+        actual = tuple(
+            node_id if spec is None else spec.operation_id
+            for node_id, spec in zip(
+                expected,
+                self.implementation_specs,
+                strict=True,
+            )
+        )
         if len(expected) != len(actual):
             raise ValueError("Every segment node requires one implementation spec.")
         if any(
-            spec.runtime_id != self.segment.runtime_id
+            spec is not None and spec.runtime_id != self.segment.runtime_id
             for spec in self.implementation_specs
         ):
             raise ValueError("Segment implementations must share its runtime.")
         if any(
-            spec.host_boundary or not spec.supports_device_residency
+            spec is not None
+            and (spec.host_boundary or not spec.supports_device_residency)
             for spec in self.implementation_specs
         ):
             raise ValueError(
@@ -328,7 +343,7 @@ class DeviceSegmentUnit:
             )
 
 
-type ExecutionUnit = HostExecutionUnit | DeviceSegmentUnit
+type ExecutionUnit = HostExecutionUnit | BypassExecutionUnit | DeviceSegmentUnit
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +456,7 @@ class _DeviceValue:
     opaque_value: object = field(repr=False)
     allocation_identity: Hashable = field(repr=False)
     port: OutputPortKey
+    alias_root: OutputPortKey
     remaining_consumers: int
     persistent: bool = False
 
@@ -507,6 +523,7 @@ class _SegmentStore:
             value,
             allocation_identity,
             port,
+            port,
             remaining_consumers,
             persistent,
         )
@@ -524,6 +541,47 @@ class _SegmentStore:
                 f"Device segment has no live value for {port.node_id!r} "
                 f"output {port.port_index}."
             ) from exc
+
+    def alias_root(self, port: OutputPortKey) -> OutputPortKey:
+        try:
+            return self._ports[port].alias_root
+        except KeyError as exc:
+            raise DevicePlanningError(
+                f"Device segment has no live value for {port.node_id!r} "
+                f"output {port.port_index}."
+            ) from exc
+
+    def alias(
+        self,
+        source_port: OutputPortKey,
+        target_port: OutputPortKey,
+        *,
+        remaining_consumers: int,
+        persistent: bool,
+    ) -> None:
+        """Bind a second live port to one exact resident allocation."""
+
+        if target_port in self._ports:
+            raise DevicePlanningError(
+                f"Device port {target_port!r} was produced twice."
+            )
+        try:
+            source = self._ports[source_port]
+        except KeyError as exc:
+            raise DevicePlanningError(
+                f"Device alias source {source_port!r} is not live."
+            ) from exc
+        self._ports[target_port] = _DeviceValue(
+            source.runtime_id,
+            source.device_id,
+            source.opaque_value,
+            source.allocation_identity,
+            target_port,
+            source.alias_root,
+            remaining_consumers,
+            persistent,
+        )
+        self._allocation_refcounts[source.allocation_identity] += 1
 
     def consume(self, port: OutputPortKey) -> None:
         try:
@@ -601,19 +659,33 @@ def plan_device_execution(
     order = tuple(node_id for node_id in graph_order if node_id in runnable)
     order_index = {node_id: index for index, node_id in enumerate(graph_order)}
     retained = _validated_retained_ports(pipeline, retained_ports)
+    scientific_connections = tuple(
+        connection
+        for connection in pipeline.connections
+        if not (
+            pipeline.node_is_bypassed(connection.target_id)
+            and connection.target_port != 0
+        )
+    )
 
     eligible: dict[
         str,
         tuple[
-            NodeExecutionDecision,
-            OperationComputeSpec,
+            NodeExecutionDecision | None,
+            OperationComputeSpec | None,
             tuple[str, str, str, str],
         ],
     ] = {}
     host_units: dict[str, HostExecutionUnit] = {}
+    bypass_units: dict[str, BypassExecutionUnit] = {}
+    bypass_node_ids: set[str] = set()
     for node_id in order:
         node = pipeline.nodes[node_id]
         operation = pipeline.operation_spec(node.operation_id)
+        if pipeline.node_is_bypassed(node_id):
+            bypass_node_ids.add(node_id)
+            bypass_units[node_id] = BypassExecutionUnit(node_id)
+            continue
         cpu_declaration = compute_specs_for(node.operation_id)[0]
         source_boundary = not operation.has_input
         writer_boundary = (
@@ -681,12 +753,75 @@ def plan_device_execution(
         )
         eligible[node_id] = (decision, implementation, key)
 
+    # A bypass is a transparent graph edge, not a host boundary.  Attach each
+    # connected bypass-only island to one compatible neighbouring device
+    # domain.  Islands without a device neighbour remain exact host aliases;
+    # incompatible domains already require a real transfer boundary.
+    if request.mode is not ComputeMode.CPU and bypass_node_ids:
+        pending_bypass = set(bypass_node_ids)
+        while pending_bypass:
+            seed = min(pending_bypass, key=order_index.__getitem__)
+            island = {seed}
+            frontier = [seed]
+            while frontier:
+                current = frontier.pop()
+                for connection in scientific_connections:
+                    neighbour = None
+                    if connection.source_id == current:
+                        neighbour = connection.target_id
+                    elif connection.target_id == current:
+                        neighbour = connection.source_id
+                    if neighbour in pending_bypass and neighbour not in island:
+                        island.add(neighbour)
+                        frontier.append(neighbour)
+            pending_bypass.difference_update(island)
+            neighbours = {
+                candidate
+                for connection in scientific_connections
+                for candidate in (
+                    connection.target_id
+                    if connection.source_id in island
+                    else connection.source_id
+                    if connection.target_id in island
+                    else "",
+                )
+                if candidate in eligible
+            }
+            if not neighbours:
+                continue
+            first = min(neighbours, key=order_index.__getitem__)
+            selected_key = eligible[first][2]
+            if not all(
+                _device_keys_compatible(selected_key, eligible[item][2], registry)
+                for item in neighbours
+            ):
+                continue
+            for bypass_node_id in island:
+                eligible[bypass_node_id] = (None, None, selected_key)
+                bypass_units.pop(bypass_node_id, None)
+
     components = _device_components(
         order,
-        pipeline.connections,
+        scientific_connections,
         eligible,
         registry,
     )
+    detached_bypass = {
+        node_id
+        for component in components
+        if all(eligible[node_id][1] is None for node_id in component)
+        for node_id in component
+    }
+    if detached_bypass:
+        for node_id in detached_bypass:
+            eligible.pop(node_id, None)
+            bypass_units[node_id] = BypassExecutionUnit(node_id)
+        components = _device_components(
+            order,
+            scientific_connections,
+            eligible,
+            registry,
+        )
     component_for_node: dict[str, int] = {}
     for index, component in enumerate(components):
         for node_id in component:
@@ -696,21 +831,26 @@ def plan_device_execution(
     for index, component in enumerate(components, start=1):
         segment_index = index - 1
         specs = tuple(eligible[node_id][1] for node_id in component)
-        runtime_id = specs[0].runtime_id
+        runtime_specs = tuple(spec for spec in specs if spec is not None)
+        if not runtime_specs:
+            raise DevicePlanningError(
+                "A resident bypass component requires a neighbouring device node."
+            )
+        runtime_id = runtime_specs[0].runtime_id
         component_set = set(component)
         entry_ports = {
             OutputPortKey(connection.source_id, connection.source_port)
-            for connection in pipeline.connections
+            for connection in scientific_connections
             if connection.target_id in component_set
             and connection.source_id not in component_set
         }
         exit_ports = {
             OutputPortKey(connection.source_id, connection.source_port)
-            for connection in pipeline.connections
+            for connection in scientific_connections
             if connection.source_id in component_set
             and connection.target_id not in component_set
         }
-        outgoing_nodes = {connection.source_id for connection in pipeline.connections}
+        outgoing_nodes = {connection.source_id for connection in scientific_connections}
         for node_id in component:
             if node_id not in outgoing_nodes:
                 exit_ports.update(
@@ -726,7 +866,7 @@ def plan_device_execution(
         exit_ports.update(component_retained)
 
         consumer_counts: Counter[OutputPortKey] = Counter()
-        for connection in pipeline.connections:
+        for connection in scientific_connections:
             if connection.target_id in component_set:
                 source_port = OutputPortKey(
                     connection.source_id,
@@ -735,7 +875,11 @@ def plan_device_execution(
                 if connection.source_id in component_set or source_port in entry_ports:
                     consumer_counts[source_port] += 1
 
-        decisions_for_component = tuple(eligible[node_id][0] for node_id in component)
+        decisions_for_component = tuple(
+            decision
+            for node_id in component
+            if (decision := eligible[node_id][0]) is not None
+        )
         segment = ExecutionSegment(
             segment_id=f"device-segment-{index:03d}",
             runtime_id=runtime_id,
@@ -758,6 +902,8 @@ def plan_device_execution(
     for node_id in order:
         if node_id in eligible:
             key: tuple[str, object] = ("device", component_for_node[node_id])
+        elif node_id in bypass_units:
+            key = ("bypass", node_id)
         else:
             key = ("host", node_id)
         node_to_unit[node_id] = key
@@ -769,7 +915,7 @@ def plan_device_execution(
     successors: dict[tuple[str, object], set[tuple[str, object]]] = {
         key: set() for key in unit_keys
     }
-    for connection in pipeline.connections:
+    for connection in scientific_connections:
         source_unit = node_to_unit.get(connection.source_id)
         target_unit = node_to_unit.get(connection.target_id)
         if source_unit is None or target_unit is None or source_unit == target_unit:
@@ -795,6 +941,8 @@ def plan_device_execution(
     for kind, identifier in ordered_keys:
         if kind == "host":
             units.append(host_units[str(identifier)])
+        elif kind == "bypass":
+            units.append(bypass_units[str(identifier)])
         else:
             units.append(device_units[int(identifier)])
 
@@ -1153,6 +1301,24 @@ def _execute_device_plan_under_leases(
                 raise
             _ensure_host_only(committed, tuple(runtimes.values()))
             continue
+        if isinstance(unit, BypassExecutionUnit):
+            try:
+                _execute_bypass_unit(
+                    unit,
+                    pipeline,
+                    committed,
+                    prepare_call,
+                    cancel_callback,
+                    node_outputs_callback,
+                )
+            except OperationCancelled as exc:
+                raise DeviceExecutionCancelled(
+                    str(exc),
+                    cleanup_succeeded=cleanup_succeeded,
+                    fallback_records=tuple(fallback_records),
+                ) from None
+            _ensure_host_only(committed, tuple(runtimes.values()))
+            continue
 
         runtime = runtimes[unit.segment.runtime_id]
         segment_cleanup = _CleanupStatus()
@@ -1323,6 +1489,39 @@ def _execute_host_unit(
     committed.update(provisional)
 
 
+def _execute_bypass_unit(
+    unit: BypassExecutionUnit,
+    pipeline: PrototypePipeline,
+    committed: dict[OutputPortKey, object],
+    prepare_call: PrepareNodeCall,
+    cancel_callback: Callable[[], bool] | None,
+    node_outputs_callback: NodeOutputsCallback | None,
+) -> None:
+    """Commit one exact host alias without calling any operation function."""
+
+    inputs, ports = _host_inputs_for_node(pipeline, unit.node_id, committed)
+    if (
+        len(inputs) != 1
+        or len(ports) != 1
+        or len(pipeline.output_ports(unit.node_id)) != 1
+    ):
+        raise DevicePlanningError(
+            f"Bypassed node {unit.node_id!r} requires one input and one output."
+        )
+    call = prepare_call(unit.node_id, inputs)
+    _validate_prepared_call(
+        call,
+        unit.node_id,
+        pipeline.nodes[unit.node_id].operation_id,
+        1,
+    )
+    _check_cancelled(cancel_callback)
+    outputs = (inputs[0],)
+    if node_outputs_callback is not None:
+        node_outputs_callback(unit.node_id, call, outputs, CPU_RUNTIME_ID)
+    committed[OutputPortKey(unit.node_id, 0)] = inputs[0]
+
+
 def _execute_device_segment(
     unit: DeviceSegmentUnit,
     pipeline: PrototypePipeline,
@@ -1403,6 +1602,7 @@ def _execute_device_segment_under_lease(
     )
     store = _SegmentStore(runtime, request.device_id)
     materialized: dict[OutputPortKey, object] = {}
+    materialized_alias_roots: dict[OutputPortKey, object] = {}
     pending_finalizations: list[_PendingHostFinalization] = []
     detached_failure: RuntimeExceptionInfo | None = None
     cancelled_message: str | None = None
@@ -1422,6 +1622,13 @@ def _execute_device_segment_under_lease(
                             f"Segment {segment.segment_id!r} is missing host entry "
                             f"{port.node_id!r} output {port.port_index}."
                         ) from exc
+                    # The entry allocation's alias root already has an exact
+                    # host representation.  Keep that object associated with
+                    # the root while its uploaded allocation travels through
+                    # resident bypass nodes.  A retained bypass output can
+                    # then publish the original host value instead of making
+                    # a scientifically redundant D2H copy.
+                    materialized_alias_roots[port] = host_value
                     transfer_started = None if telemetry is None else telemetry.start()
                     transfer_succeeded = False
                     transfer_synchronized = (
@@ -1484,7 +1691,7 @@ def _execute_device_segment_under_lease(
                     strict=True,
                 ):
                     _check_cancelled(cancel_callback)
-                    connections = pipeline._input_connections(node_id)
+                    connections = pipeline._scientific_input_connections(node_id)
                     input_ports = tuple(
                         OutputPortKey(
                             connection.source_id,
@@ -1500,6 +1707,29 @@ def _execute_device_segment_under_lease(
                         pipeline.nodes[node_id].operation_id,
                         len(pipeline.output_ports(node_id)),
                     )
+                    if implementation is None:
+                        if len(input_ports) != 1 or call.output_port_count != 1:
+                            raise DevicePlanningError(
+                                f"Bypassed node {node_id!r} requires one input "
+                                "and one output inside a device segment."
+                            )
+                        output_port = OutputPortKey(node_id, 0)
+                        store.alias(
+                            input_ports[0],
+                            output_port,
+                            remaining_consumers=counts.get(output_port, 0),
+                            persistent=output_port in persistent,
+                        )
+                        if node_outputs_callback is not None:
+                            node_outputs_callback(
+                                node_id,
+                                call,
+                                (inputs[0],),
+                                segment.runtime_id,
+                            )
+                        store.consume(input_ports[0])
+                        store.release_if_dead(output_port)
+                        continue
                     # Resolution remains lazy and occurs only after preflight and
                     # after the segment's runtime scope has been entered.
                     resolution_started = (
@@ -1645,6 +1875,10 @@ def _execute_device_segment_under_lease(
                     )
                 ):
                     _check_cancelled(cancel_callback)
+                    alias_root = store.alias_root(port)
+                    if alias_root in materialized_alias_roots:
+                        materialized[port] = materialized_alias_roots[alias_root]
+                        continue
                     transfer_started = None if telemetry is None else telemetry.start()
                     transfer_succeeded = False
                     transfer_synchronized = (
@@ -1690,6 +1924,7 @@ def _execute_device_segment_under_lease(
                                 succeeded=transfer_succeeded,
                             )
                     materialized[port] = host_value
+                    materialized_alias_roots[alias_root] = host_value
                 if resident_output_callback is not None:
                     # The scientific outputs have completed their required
                     # D2H transfers and all transient inputs/intermediates are
@@ -1885,6 +2120,9 @@ def _execute_cpu_segment_fallback(
     local: dict[OutputPortKey, object] = {
         port: committed[port] for port in segment.entry_ports
     }
+    implementations_by_node = dict(
+        zip(segment.node_ids, unit.implementation_specs, strict=True)
+    )
     for node_id in segment.node_ids:
         _check_cancelled(cancel_callback)
         inputs, _ports = _host_inputs_for_node(pipeline, node_id, local)
@@ -1895,8 +2133,15 @@ def _execute_cpu_segment_fallback(
             pipeline.nodes[node_id].operation_id,
             len(pipeline.output_ports(node_id)),
         )
-        raw = DEFAULT_CPU_NODE_EXECUTOR.execute(call)
-        outputs = _normalized_outputs(raw, call.output_port_count)
+        if implementations_by_node[node_id] is None:
+            if len(inputs) != 1 or call.output_port_count != 1:
+                raise DevicePlanningError(
+                    f"Bypassed node {node_id!r} requires one input and one output."
+                )
+            outputs = (inputs[0],)
+        else:
+            raw = DEFAULT_CPU_NODE_EXECUTOR.execute(call)
+            outputs = _normalized_outputs(raw, call.output_port_count)
         for value in outputs:
             if runtime.is_device_value(value):
                 raise DevicePlanningError("CPU fallback returned a device-owned value.")
@@ -1911,8 +2156,27 @@ def _execute_cpu_segment_fallback(
     }
 
 
-def _host_finalizer_ref(implementation: OperationComputeSpec) -> str:
+def _host_finalizer_ref(implementation: OperationComputeSpec | None) -> str:
+    if implementation is None:
+        return ""
     return str(getattr(implementation, "host_finalizer_ref", "")).strip()
+
+
+def _device_keys_compatible(
+    source_key: tuple[str, str, str, str],
+    target_key: tuple[str, str, str, str],
+    registry: ComputeRegistry,
+) -> bool:
+    if source_key[:3] != target_key[:3]:
+        return False
+    source_library = source_key[3]
+    target_library = target_key[3]
+    return source_library == target_library or bool(
+        registry.interoperability_contract(
+            source_key[0],
+            (source_library, target_library),
+        )
+    )
 
 
 def _device_components(
@@ -1921,25 +2185,18 @@ def _device_components(
     eligible: Mapping[
         str,
         tuple[
-            NodeExecutionDecision,
-            OperationComputeSpec,
+            NodeExecutionDecision | None,
+            OperationComputeSpec | None,
             tuple[str, str, str, str],
         ],
     ],
     registry: ComputeRegistry,
 ) -> tuple[tuple[str, ...], ...]:
     def compatible(source: str, target: str) -> bool:
-        source_key = eligible[source][2]
-        target_key = eligible[target][2]
-        if source_key[:3] != target_key[:3]:
-            return False
-        source_library = source_key[3]
-        target_library = target_key[3]
-        return source_library == target_library or bool(
-            registry.interoperability_contract(
-                source_key[0],
-                (source_library, target_library),
-            )
+        return _device_keys_compatible(
+            eligible[source][2],
+            eligible[target][2],
+            registry,
         )
 
     # A direct host-finalizer edge advances the downstream residency epoch.  An
@@ -2093,7 +2350,7 @@ def _host_inputs_for_node(
     node_id: str,
     values: Mapping[OutputPortKey, object],
 ) -> tuple[tuple[object, ...], tuple[OutputPortKey, ...]]:
-    connections = pipeline._input_connections(node_id)
+    connections = pipeline._scientific_input_connections(node_id)
     ports = tuple(
         OutputPortKey(connection.source_id, connection.source_port)
         for connection in connections
@@ -2351,6 +2608,7 @@ def _contains_device_value(
 
 
 __all__ = [
+    "BypassExecutionUnit",
     "DeviceExecutionCancelled",
     "DeviceExecutionError",
     "DeviceExecutionResult",

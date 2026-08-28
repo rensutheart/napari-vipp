@@ -30,6 +30,7 @@ from napari_vipp.core.compute import (
     ComputeRepairCandidate,
     ComputeRepairSuggestion,
     ComputeRequest,
+    DecisionKind,
     ExactWorkloadCandidateQualification,
     FallbackPolicy,
     NodeComputePreference,
@@ -331,7 +332,7 @@ def discover_pipeline_compute_repairs(
     suggestions: list[ComputeRepairSuggestion] = []
     for node_id in ordered_node_ids:
         node = pipeline.nodes[node_id]
-        if not node.has_input:
+        if not node.has_input or pipeline.node_is_bypassed(node_id):
             continue
         values_by_port = pipeline.input_data_by_port_for_node(node_id)
         states_by_port = pipeline.input_states_by_port_for_node(node_id)
@@ -523,6 +524,10 @@ class ApplicationPipelineOptimizerCoordinator:
             restored.get("output_tunnels", ()),
         )
         safe_ids, _unsafe_ids = _writer_free_node_ids(pipeline)
+        bypass_ids = frozenset(
+            node_id for node_id in safe_ids if pipeline.node_is_bypassed(node_id)
+        )
+        compute_safe_ids = frozenset(set(safe_ids) - set(bypass_ids))
         # "Find fastest pipeline" is an explicit request to execute the
         # complete writer-free scientific graph.  Manual/cached operations are
         # therefore selected for these private runs instead of becoming silent
@@ -540,6 +545,14 @@ class ApplicationPipelineOptimizerCoordinator:
         if unknown_locks:
             names = ", ".join(sorted(unknown_locks))
             raise ValueError(f"optimizer locks reference unavailable nodes: {names}")
+        bypass_locks = optimizer_locks & bypass_ids
+        if bypass_locks:
+            _refuse(
+                "bypass_optimizer_lock_invalid",
+                "Bypassed nodes have no CPU or GPU implementation to lock: "
+                + ", ".join(sorted(bypass_locks))
+                + ". Return the node to Run mode before choosing a backend.",
+            )
         auto_locks = tuple(
             node_id
             for node_id in optimizer_locks
@@ -577,7 +590,7 @@ class ApplicationPipelineOptimizerCoordinator:
         environment, accelerator_runtime_id = _probe_optimizer_environment_for_pipeline(
             self.registry,
             pipeline,
-            safe_ids,
+            compute_safe_ids,
             compute_request,
         )
         check_abort()
@@ -633,6 +646,7 @@ class ApplicationPipelineOptimizerCoordinator:
                 baseline_plan.repair_suggestions if baseline_plan is not None else ()
             )
             if suggestion.node_id in safe_ids
+            and suggestion.node_id not in bypass_ids
             and suggestion.node_id not in optimizer_locks
         )
 
@@ -640,6 +654,7 @@ class ApplicationPipelineOptimizerCoordinator:
             node_id
             for node_id in baseline_pipeline.topological_order()
             if node_id in safe_ids
+            and node_id not in bypass_ids
             and node_id not in optimizer_locks
             and baseline_pipeline.nodes[node_id].has_input
             and self.registry.implementations_for_operation(
@@ -652,7 +667,9 @@ class ApplicationPipelineOptimizerCoordinator:
         benchmark_plans: dict[str, object] = {}
         reused_node_ids: set[str] = set()
         measured_node_ids: set[str] = set()
-        cpu_only: set[str] = set(safe_ids) - set(eligible_ids) - set(optimizer_locks)
+        cpu_only: set[str] = (
+            set(compute_safe_ids) - set(eligible_ids) - set(optimizer_locks)
+        )
         candidate_refusals: list[EvidenceRefusal] = []
 
         def make_node_progress_forwarder(
@@ -1612,6 +1629,14 @@ def _observable_pipeline_boundaries(
 
     safe_successors = {node_id: set() for node_id in safe_ids}
     for connection in pipeline.connections:
+        if (
+            pipeline.node_is_bypassed(connection.target_id)
+            and connection.target_port != 0
+        ):
+            # A bypassed node forwards only primary input port 0.  Secondary
+            # inputs still feed its card-only presentation shadow, but must not
+            # make that ignored scientific branch appear nonterminal here.
+            continue
         if connection.source_id in safe_ids and connection.target_id in safe_ids:
             safe_successors[connection.source_id].add(connection.target_id)
     terminals = {
@@ -2051,7 +2076,11 @@ def _probe_optimizer_environment_for_pipeline(
     safe_ids: frozenset[str],
     compute_request: ComputeRequest,
 ) -> tuple[ComputeEnvironment, str]:
-    operation_ids = {pipeline.nodes[item].operation_id for item in safe_ids}
+    operation_ids = {
+        pipeline.nodes[item].operation_id
+        for item in safe_ids
+        if not pipeline.node_is_bypassed(item)
+    }
     candidate_specs = tuple(
         spec
         for spec in registry.implementation_specs
@@ -2290,30 +2319,16 @@ def _build_optimizer_graph(
     tuple[PipelineOptimizationEdge, ...],
     Mapping[str, str],
 ]:
-    connections = tuple(
-        item
-        for item in pipeline.connections
-        if item.source_id in safe_ids and item.target_id in safe_ids
-    )
-    edge_pairs = tuple((item.source_id, item.target_id) for item in connections)
-    if len(set(edge_pairs)) != len(edge_pairs):
-        _refuse(
-            "parallel_edges_unsupported",
-            "Whole-pipeline optimization cannot yet model multiple ports between "
-            "the same pair of nodes without over-counting transfers.",
-        )
-    successors = {node_id: set() for node_id in safe_ids}
-    for item in connections:
-        successors[item.source_id].add(item.target_id)
-    tunnel_sources = {
-        item.source_id
-        for item in pipeline.output_tunnel_list()
-        if item.source_id in safe_ids
-    }
+    (
+        compute_ids,
+        edge_pairs,
+        required_host_ids,
+        cache_retained_ids,
+    ) = _contract_optimizer_bypass_topology(pipeline, safe_ids, retained)
     nodes: list[PipelineOptimizationNode] = []
     workloads: dict[str, str] = {}
     for node_id in pipeline.topological_order():
-        if node_id not in safe_ids:
+        if node_id not in compute_ids:
             continue
         check_abort()
         node = pipeline.nodes[node_id]
@@ -2424,9 +2439,7 @@ def _build_optimizer_graph(
                 }
             )
         workloads[node_id] = workload_fingerprint
-        requires_host = (
-            node_id in retained or node_id in tunnel_sources or not successors[node_id]
-        )
+        requires_host = node_id in required_host_ids
         nodes.append(
             PipelineOptimizationNode(
                 node_id,
@@ -2436,14 +2449,144 @@ def _build_optimizer_graph(
                 authored_preference=request.preference_for(node_id),
                 output_bytes=_output_byte_count(pipeline, node_id),
                 requires_host_output=requires_host,
-                cache_retained=node_id in retained,
+                cache_retained=node_id in cache_retained_ids,
                 optimizer_locked=node_id in optimizer_locked_node_ids,
             )
         )
     edges = tuple(
-        PipelineOptimizationEdge(item.source_id, item.target_id) for item in connections
+        PipelineOptimizationEdge(source, target) for source, target in edge_pairs
     )
     return tuple(nodes), edges, MappingProxyType(workloads)
+
+
+def _contract_optimizer_bypass_topology(
+    pipeline: PrototypePipeline,
+    safe_ids: frozenset[str],
+    retained: frozenset[str],
+) -> tuple[
+    frozenset[str],
+    tuple[tuple[str, str], ...],
+    frozenset[str],
+    frozenset[str],
+]:
+    """Remove no-work aliases while preserving their data-flow boundaries."""
+
+    bypass_ids = frozenset(
+        node_id for node_id in safe_ids if pipeline.node_is_bypassed(node_id)
+    )
+    compute_ids = frozenset(set(safe_ids) - set(bypass_ids))
+    outgoing: dict[str, list[str]] = {node_id: [] for node_id in safe_ids}
+    incoming: dict[str, list[str]] = {node_id: [] for node_id in safe_ids}
+    for connection in pipeline.connections:
+        if (
+            connection.target_id in bypass_ids
+            and connection.target_port != 0
+        ):
+            continue
+        if connection.source_id in safe_ids and connection.target_id in safe_ids:
+            outgoing[connection.source_id].append(connection.target_id)
+            incoming[connection.target_id].append(connection.source_id)
+    for node_id in bypass_ids:
+        if len(incoming[node_id]) != 1 or len(pipeline.output_ports(node_id)) != 1:
+            _refuse(
+                "bypass_topology_invalid",
+                "A bypassed node must have primary input port 0 in scope and "
+                "one output before whole-pipeline optimization can contract it.",
+                node_id,
+            )
+
+    def resolve_upstream(node_id: str) -> str:
+        current = node_id
+        visited: set[str] = set()
+        while current in bypass_ids:
+            if current in visited:
+                _refuse(
+                    "bypass_topology_cycle",
+                    "Whole-pipeline optimization found a cycle in bypass lineage.",
+                    current,
+                )
+            visited.add(current)
+            predecessors = incoming[current]
+            if len(predecessors) != 1:
+                _refuse(
+                    "bypass_topology_invalid",
+                    "A bypassed node must have primary input port 0 in scope "
+                    "before whole-pipeline optimization can contract it.",
+                    current,
+                )
+            current = predecessors[0]
+        if current not in compute_ids:
+            _refuse(
+                "bypass_topology_invalid",
+                "Bypass lineage did not resolve to an executable source or node.",
+                node_id,
+            )
+        return current
+
+    def downstream_compute_nodes(
+        node_id: str,
+        lineage: frozenset[str] = frozenset(),
+    ) -> tuple[str, ...]:
+        resolved: list[str] = []
+        for target_id in outgoing[node_id]:
+            if target_id in lineage:
+                _refuse(
+                    "bypass_topology_cycle",
+                    "Whole-pipeline optimization found a cycle in bypass lineage.",
+                    target_id,
+                )
+            if target_id in bypass_ids:
+                resolved.extend(
+                    downstream_compute_nodes(
+                        target_id,
+                        lineage | frozenset({target_id}),
+                    )
+                )
+            elif target_id in compute_ids:
+                resolved.append(target_id)
+        return tuple(resolved)
+
+    edge_pairs = tuple(
+        (source_id, target_id)
+        for source_id in pipeline.topological_order()
+        if source_id in compute_ids
+        for target_id in downstream_compute_nodes(
+            source_id,
+            frozenset({source_id}),
+        )
+    )
+    if len(set(edge_pairs)) != len(edge_pairs):
+        _refuse(
+            "parallel_edges_unsupported",
+            "Whole-pipeline optimization cannot model multiple data paths between "
+            "the same pair of executable nodes after bypass contraction without "
+            "over-counting transfers.",
+        )
+    def effective_compute_ids(node_ids: set[str]) -> set[str]:
+        return {
+            resolve_upstream(node_id) if node_id in bypass_ids else node_id
+            for node_id in node_ids
+            if node_id in safe_ids
+        }
+
+    cache_retained_ids = effective_compute_ids(set(retained))
+    tunnel_ids = effective_compute_ids(
+        {
+            tunnel.source_id
+            for tunnel in pipeline.output_tunnel_list()
+            if tunnel.source_id in safe_ids
+        }
+    )
+    terminal_ids = effective_compute_ids(
+        {node_id for node_id in safe_ids if not outgoing[node_id]}
+    )
+    required_host_ids = cache_retained_ids | tunnel_ids | terminal_ids
+    return (
+        compute_ids,
+        edge_pairs,
+        frozenset(required_host_ids),
+        frozenset(cache_retained_ids),
+    )
 
 
 def _qualified_soft_workload_candidates(
@@ -2833,9 +2976,25 @@ def _successful_exact_pipeline(
             f"Private {label} planning used a different runtime environment.",
         )
 
-    expected_processing_ids = {
-        node_id for node_id in node_ids if reference_pipeline.nodes[node_id].has_input
+    bypass_processing_ids = {
+        node_id
+        for node_id in node_ids
+        if reference_pipeline.nodes[node_id].has_input
+        and reference_pipeline.node_is_bypassed(node_id)
     }
+    expected_processing_ids = {
+        node_id
+        for node_id in node_ids
+        if reference_pipeline.nodes[node_id].has_input
+        and node_id not in bypass_processing_ids
+    }
+    bypass_assignment_ids = set(expected_assignment) & bypass_processing_ids
+    if bypass_assignment_ids:
+        _refuse(
+            f"{code_label}_bypass_assignment_invalid",
+            f"Private {label} supplied a CPU/GPU assignment for bypassed node(s): "
+            + ", ".join(sorted(bypass_assignment_ids)),
+        )
 
     planned_ids = tuple(item.node_id for item in plan.decisions)
     if len(set(planned_ids)) != len(planned_ids):
@@ -2873,7 +3032,7 @@ def _successful_exact_pipeline(
         if item.node_id not in reference_pipeline.nodes
         or (
             reference_pipeline.nodes[item.node_id].has_input
-            and item.node_id not in expected_processing_ids
+            and item.node_id not in (expected_processing_ids | bypass_processing_ids)
         )
     }
     if unexpected_processing_ids:
@@ -2887,6 +3046,24 @@ def _successful_exact_pipeline(
             continue
         node = reference_pipeline.nodes[node_id]
         if not node.has_input:
+            continue
+        if node_id in bypass_processing_ids:
+            actual = actual_decisions.get(node_id)
+            if (
+                actual is None
+                or actual.operation_id != node.operation_id
+                or actual.decision_kind is not DecisionKind.BYPASSED
+                or actual.runtime_id != "vipp-bypass"
+                or actual.implementation_library_id != "vipp-alias"
+                or actual.implementation_id != "vipp-safe-bypass-v1"
+                or actual.fallback_used
+            ):
+                _refuse(
+                    f"{code_label}_bypass_provenance_mismatch",
+                    f"Private {label} did not attest the exact no-work alias for "
+                    f"bypassed node {node.title}.",
+                    node_id,
+                )
             continue
         expected_implementation = expected_assignment.get(node_id)
         declared = {
@@ -3004,7 +3181,11 @@ def _topology_fingerprint(pipeline: PrototypePipeline) -> str:
     return canonical_digest(
         {
             "nodes": [
-                (node_id, pipeline.nodes[node_id].operation_id)
+                (
+                    node_id,
+                    pipeline.nodes[node_id].operation_id,
+                    pipeline.nodes[node_id].execution_mode,
+                )
                 for node_id in pipeline.topological_order()
             ],
             "connections": [

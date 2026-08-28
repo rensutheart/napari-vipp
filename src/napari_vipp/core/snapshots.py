@@ -26,6 +26,7 @@ class NodeSnapshot:
 
     id: str
     operation_id: str
+    execution_mode: str
     _params: dict[str, Any] = field(repr=False)
 
     __hash__ = None
@@ -35,9 +36,11 @@ class NodeSnapshot:
         id: str,
         operation_id: str,
         params: Mapping[str, Any],
+        execution_mode: str = "run",
     ) -> None:
         object.__setattr__(self, "id", id)
         object.__setattr__(self, "operation_id", operation_id)
+        object.__setattr__(self, "execution_mode", str(execution_mode))
         object.__setattr__(self, "_params", deepcopy(dict(params)))
 
     @property
@@ -51,6 +54,7 @@ class NodeSnapshot:
             self.operation_id,
             self.params,
             index=index,
+            execution_mode=self.execution_mode,
         )
 
 
@@ -71,7 +75,13 @@ class GraphSnapshot:
         output_tunnels: Iterable[OutputTunnel] = (),
     ) -> None:
         node_copies = tuple(
-            NodeSnapshot(node.id, node.operation_id, node.params) for node in nodes
+            NodeSnapshot(
+                node.id,
+                node.operation_id,
+                node.params,
+                node.execution_mode,
+            )
+            for node in nodes
         )
         connection_copies = tuple(
             GraphConnection(
@@ -96,7 +106,12 @@ class GraphSnapshot:
         """Capture the persistable graph state of ``pipeline``."""
         return cls(
             (
-                NodeSnapshot(node.id, node.operation_id, node.params)
+                NodeSnapshot(
+                    node.id,
+                    node.operation_id,
+                    node.params,
+                    node.execution_mode,
+                )
                 for node in pipeline.nodes.values()
             ),
             pipeline.connections,

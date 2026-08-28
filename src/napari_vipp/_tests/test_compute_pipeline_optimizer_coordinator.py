@@ -51,10 +51,12 @@ from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
     _adaptive_cpu_stop_is_safe_for_current_assignment,
     _build_optimizer_graph,
     _detach_source_payloads,
+    _observable_pipeline_boundaries,
     _optimizer_validation_node_ids,
     _pipeline_input_peak,
     _pipeline_output_parity,
     _reviewable_pipeline_deviation,
+    _topology_fingerprint,
     discover_pipeline_compute_repairs,
     fingerprint_pipeline_optimizer_sources,
     probe_pipeline_optimizer_environment,
@@ -1417,6 +1419,109 @@ def test_locked_gpu_graph_node_needs_no_comparative_benchmark_record():
         gpu_spec.implementation_id
     ]
     assert median.candidates[0].minimum_workspace_bytes == 2_560
+
+
+def test_optimizer_graph_contracts_bypass_without_benchmarking_it():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    source_id = next(iter(pipeline.nodes))
+    crop = pipeline.add_node("crop_stack")
+    median = pipeline.add_node("median_filter")
+    assert pipeline.connect(source_id, crop.id).success
+    assert pipeline.connect(crop.id, median.id).success
+    assert pipeline.set_node_execution_mode(crop.id, "bypass")
+    pipeline.run(np.arange(64, dtype=np.uint16).reshape(8, 8))
+
+    nodes, edges, workloads = _build_optimizer_graph(
+        ComputeRegistry(),
+        pipeline,
+        frozenset(pipeline.nodes),
+        frozenset({crop.id}),
+        ComputeRequest("custom"),
+        {},
+        {},
+        {},
+        frozenset(),
+        check_abort=lambda: None,
+    )
+
+    assert [node.node_id for node in nodes] == [source_id, median.id]
+    assert [(edge.source_node_id, edge.target_node_id) for edge in edges] == [
+        (source_id, median.id)
+    ]
+    assert set(workloads) == {source_id, median.id}
+    source = next(node for node in nodes if node.node_id == source_id)
+    assert source.cache_retained
+    assert source.requires_host_output
+
+
+def test_optimizer_treats_secondary_bypass_branch_as_observable_terminal():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    psf_source = pipeline.add_node("input")
+    psf_blur = pipeline.add_node("gaussian_blur")
+    restoration = pipeline.add_node("richardson_lucy_tv_deconvolution")
+    result = pipeline.add_node("median_filter")
+    assert pipeline.connect("input", restoration.id, target_port=0).success
+    assert pipeline.connect(psf_source.id, psf_blur.id).success
+    assert pipeline.connect(psf_blur.id, restoration.id, target_port=1).success
+    assert pipeline.connect(restoration.id, result.id).success
+    assert pipeline.set_node_execution_mode(restoration.id, "bypass")
+
+    boundaries = _observable_pipeline_boundaries(
+        pipeline,
+        frozenset(pipeline.nodes),
+        frozenset(),
+    )
+
+    assert psf_blur.id in boundaries
+    assert result.id in boundaries
+
+
+def test_optimizer_identity_changes_when_a_node_enters_bypass_mode():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    source_id = next(iter(pipeline.nodes))
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect(source_id, crop.id).success
+    running = _topology_fingerprint(pipeline)
+
+    assert pipeline.set_node_execution_mode(crop.id, "bypass")
+
+    assert _topology_fingerprint(pipeline) != running
+
+
+def test_optimizer_refuses_a_backend_lock_on_bypassed_node(tmp_path):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    source_id = next(iter(pipeline.nodes))
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect(source_id, crop.id).success
+    assert pipeline.set_node_execution_mode(crop.id, "bypass")
+    document = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest(
+            "custom",
+            {crop.id: NodeComputePreference("cpu")},
+        ),
+    )
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        ComputeRegistry(),
+        tmp_path / "benchmarks.json",
+    )
+
+    with pytest.raises(PipelineOptimizationEvidenceIncomplete) as refused:
+        coordinator.optimize(
+            document,
+            {},
+            ComputeRequest(
+                "custom",
+                {crop.id: NodeComputePreference("cpu")},
+            ),
+            optimizer_locked_node_ids=frozenset({crop.id}),
+        )
+
+    assert refused.value.reasons[0].code == "bypass_optimizer_lock_invalid"
 
 
 def test_application_optimizer_refuses_non_custom_and_missing_sources(tmp_path):

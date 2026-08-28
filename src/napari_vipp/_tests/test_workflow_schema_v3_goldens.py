@@ -9,14 +9,24 @@ import pytest
 
 from napari_vipp.core.batch import scientific_workflow_hash
 from napari_vipp.core.pipeline import PrototypePipeline
-from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
+from napari_vipp.core.workflow import (
+    WORKFLOW_VERSION,
+    deserialize_workflow,
+    serialize_workflow,
+)
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
+    "general-node-bypass-acceptance.json": (
+        "79b42499676ba18da66d3340d53f0328828bf129eb91bf0041bf53b2589c7f69"
+    ),
     "graph-authoring-acceptance.json": (
         "bf6fc43ad7ac57f3bcc01229302c8bea38a934ba2e5cbe72f38e6c05f60dc51f"
     ),
     "responsive-volume-crop-acceptance.json": (
         "59e1bd115aa1def8a9dd8dae06e2e6fe9b14e17d6cf1a68f41c211800a21c216"
+    ),
+    "safe-node-bypass-acceptance.json": (
+        "1df1fb60b068d1c0fd0ec93b36ddd77d865112ac61927f06a9d79a37f7d79daa"
     ),
     "otsu-red-channel-labels.json": (
         "60367b60a9657770ed7bcc2ffacc1ce0474b4d40a4610f57f46e449dfba85faf"
@@ -69,7 +79,7 @@ def _load_example(filename: str) -> dict[str, Any]:
     return json.loads((_EXAMPLE_DIR / filename).read_text(encoding="utf-8"))
 
 
-def test_schema_v3_hash_goldens_cover_every_bundled_example():
+def test_scientific_hash_goldens_cover_every_bundled_example():
     bundled_filenames = {path.name for path in _EXAMPLE_DIR.glob("*.json")}
 
     assert set(EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES) == bundled_filenames
@@ -92,7 +102,7 @@ def _restore_and_reserialize(document: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _canonical_schema_v5_document(document: dict[str, Any]) -> dict[str, Any]:
+def _canonical_schema_v6_document(document: dict[str, Any]) -> dict[str, Any]:
     """Mirror normalization and legacy explicit-CPU migration when needed."""
     canonical = deepcopy(document)
     # ``view`` predates the current core persistence API and is intentionally
@@ -104,7 +114,7 @@ def _canonical_schema_v5_document(document: dict[str, Any]) -> dict[str, Any]:
         canonical.get("tunnels", []),
         key=lambda item: item["name"],
     )
-    canonical["version"] = 5
+    canonical["version"] = WORKFLOW_VERSION
     if document["version"] == 3:
         canonical["execution"] = {
             "compute": {
@@ -122,12 +132,37 @@ def _canonical_schema_v5_document(document: dict[str, Any]) -> dict[str, Any]:
     "filename",
     EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES,
 )
-def test_bundled_examples_restore_to_canonical_schema_v5_structure(filename):
+def test_bundled_examples_restore_to_canonical_schema_v6_structure(filename):
     document = _load_example(filename)
 
     reserialized = _restore_and_reserialize(document)
 
-    assert reserialized == _canonical_schema_v5_document(document)
+    assert reserialized == _canonical_schema_v6_document(document)
+
+
+@pytest.mark.parametrize(
+    ("filename", "legacy_version", "expected_compute_mode"),
+    (
+        ("otsu-red-channel-labels.json", 3, "cpu"),
+        ("graph-authoring-acceptance.json", 4, "auto"),
+        ("responsive-volume-crop-acceptance.json", 5, "prefer_gpu"),
+    ),
+)
+def test_legacy_schema_examples_migrate_explicitly_to_schema_v6(
+    filename: str,
+    legacy_version: int,
+    expected_compute_mode: str,
+):
+    document = _load_example(filename)
+
+    assert document["version"] == legacy_version
+    restored = deserialize_workflow(document)
+    reserialized = _restore_and_reserialize(document)
+
+    assert restored["compute_request"].mode.value == expected_compute_mode
+    assert all(node.execution_mode == "run" for node in restored["nodes"])
+    assert reserialized["version"] == WORKFLOW_VERSION
+    assert reserialized == _canonical_schema_v6_document(document)
 
 
 @pytest.mark.parametrize(

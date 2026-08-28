@@ -41,6 +41,11 @@ from napari_vipp.core.batch import (
     ExistingFilePolicy,
 )
 from napari_vipp.core.batch_demo import SyntheticBatchDemo
+from napari_vipp.core.batch_execution import (
+    BatchNodeExecutionMode,
+    BatchNodeExecutionOverride,
+    BatchNodeExecutionSpec,
+)
 from napari_vipp.core.batch_parameters import BatchSourceParameterOverrides
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.ui import recent_paths
@@ -122,6 +127,7 @@ class CollectionBatchDialog(QDialog):
     cancelRequested = Signal()
     previewInvalidated = Signal()
     parameterOverridesChanged = Signal(object)
+    nodeExecutionOverridesChanged = Signal(object)
 
     def __init__(
         self,
@@ -129,12 +135,15 @@ class CollectionBatchDialog(QDialog):
         source_nodes: list[dict] | None = None,
         *,
         actions: CollectionBatchActions | None = None,
+        execution_nodes: tuple[BatchNodeExecutionSpec, ...] = (),
     ):
         super().__init__(parent)
         self.setWindowTitle("Batch workspace")
         self.setMinimumSize(520, 360)
         self._actions = actions
         self._source_rows: list[dict[str, object]] = []
+        self._node_execution_specs = tuple(execution_nodes)
+        self._node_execution_combos: dict[str, QComboBox] = {}
         self._loaded_config_path: Path | None = None
         self._loaded_compute_request: ComputeRequest | None = None
         self._compute_toolbar_fingerprint_at_load = ""
@@ -313,6 +322,33 @@ class CollectionBatchDialog(QDialog):
         self.source_layout = QVBoxLayout(self.source_group)
         self._set_source_nodes(source_nodes)
 
+        self.node_execution_group = QGroupBox(
+            "Node behavior for all samples (optional)"
+        )
+        node_execution_layout = QFormLayout(self.node_execution_group)
+        node_execution_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        for spec in self._node_execution_specs:
+            combo = QComboBox()
+            workflow_label = spec.workflow_mode.value.capitalize()
+            combo.addItem(f"Use workflow (currently {workflow_label})", None)
+            combo.addItem("Run for all samples", BatchNodeExecutionMode.RUN.value)
+            combo.addItem(
+                "Bypass for all samples",
+                BatchNodeExecutionMode.BYPASS.value,
+            )
+            description = (
+                "Controls this node for every sample in this Batch workspace. "
+                "Use workflow follows the authored node. Run and Bypass are "
+                "batch-only and do not edit the workflow."
+            )
+            combo.setToolTip(description)
+            combo.setAccessibleDescription(description)
+            combo.currentIndexChanged.connect(self._node_execution_overrides_changed)
+            label = f"{spec.title} ({spec.node_id})"
+            node_execution_layout.addRow(label, combo)
+            self._node_execution_combos[spec.node_id] = combo
+        self.node_execution_group.setVisible(bool(self._node_execution_specs))
+
         self.parameter_override_group = QGroupBox("Per-sample parameters (optional)")
         parameter_override_layout = QVBoxLayout(self.parameter_override_group)
         self.parameter_override_editor = BatchParameterOverrideEditor()
@@ -488,6 +524,7 @@ class CollectionBatchDialog(QDialog):
         content_layout.addWidget(self.demo_guide_label)
         content_layout.addWidget(self.demo_path_row)
         content_layout.addWidget(self.source_group)
+        content_layout.addWidget(self.node_execution_group)
         content_layout.addWidget(self.parameter_override_group)
         content_layout.addLayout(form)
         content_layout.addWidget(help_label)
@@ -819,7 +856,29 @@ class CollectionBatchDialog(QDialog):
             # The disabled Run button prevents their use before that contract is
             # verified by ``configure_parameter_overrides``.
             values["parameter_overrides"] = self._pending_parameter_overrides
+        execution_overrides = self.node_execution_overrides()
+        if execution_overrides:
+            values["node_execution_overrides"] = execution_overrides
         return values
+
+    def node_execution_overrides(
+        self,
+    ) -> tuple[BatchNodeExecutionOverride, ...]:
+        """Return explicit whole-batch directives; Use workflow is omitted."""
+
+        overrides: list[BatchNodeExecutionOverride] = []
+        for spec in self._node_execution_specs:
+            combo = self._node_execution_combos[spec.node_id]
+            raw_mode = combo.currentData()
+            if raw_mode is None:
+                continue
+            overrides.append(BatchNodeExecutionOverride(spec.node_id, raw_mode))
+        return tuple(overrides)
+
+    def _node_execution_overrides_changed(self) -> None:
+        self._loaded_config_path = None
+        self._invalidate_preview_plan()
+        self.nodeExecutionOverridesChanged.emit(self.node_execution_overrides())
 
     def configure_parameter_overrides(
         self,
@@ -2010,6 +2069,7 @@ class CollectionBatchDialog(QDialog):
             self.demo_config_button,
             self.preview_button,
             self.preview_item_button,
+            self.node_execution_group,
             self.parameter_override_group,
             self.run_button,
         ]
@@ -2113,6 +2173,24 @@ class CollectionBatchDialog(QDialog):
         self._hide_source_detection_progress()
         self._loaded_compute_request = config.compute_request
         self._pending_parameter_overrides = tuple(config.parameter_overrides)
+        configured_execution = {
+            override.node_id: override.mode.value
+            for override in config.node_execution_overrides
+        }
+        unknown_execution = set(configured_execution) - set(self._node_execution_combos)
+        if unknown_execution:
+            raise ValueError(
+                "Config references batch node behavior not available in this "
+                "workflow: " + ", ".join(sorted(unknown_execution)) + "."
+            )
+        for node_id, combo in self._node_execution_combos.items():
+            combo.blockSignals(True)
+            try:
+                mode = configured_execution.get(node_id)
+                index = combo.findData(mode)
+                combo.setCurrentIndex(max(index, 0))
+            finally:
+                combo.blockSignals(False)
         self.parameter_override_editor.clear_contract()
         if self._pending_parameter_overrides:
             self.parameter_override_group.show()

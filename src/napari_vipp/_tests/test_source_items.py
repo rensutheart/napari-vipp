@@ -171,8 +171,7 @@ def test_canonical_digest_is_independent_of_mapping_and_input_record_order() -> 
         ),
     )
     reordered_document = {
-        key: item.to_dict()[key]
-        for key in reversed(tuple(item.to_dict()))
+        key: item.to_dict()[key] for key in reversed(tuple(item.to_dict()))
     }
 
     assert reversed_item == item
@@ -376,7 +375,7 @@ def test_workflow_v5_writes_and_restores_canonical_source_item() -> None:
         workflow_snapshot_from_document(document)
     )
 
-    assert document["version"] == WORKFLOW_VERSION == 5
+    assert document["version"] == WORKFLOW_VERSION == 6
     assert params[SOURCE_ITEM_PARAMETER] == item.to_dict()
     assert params["series_index"] == 7
     assert source_item_from_params(restored.params) == item
@@ -392,7 +391,7 @@ def test_workflow_source_item_fails_closed_on_future_schema() -> None:
         deserialize_workflow(document)
 
 
-def test_workflow_v4_reads_and_resaves_as_v5_without_inventing_source_item() -> None:
+def test_workflow_v4_reads_and_resaves_as_v6_without_inventing_source_item() -> None:
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     pipeline.nodes["input"].params["series_index"] = 3
@@ -404,7 +403,7 @@ def test_workflow_v4_reads_and_resaves_as_v5_without_inventing_source_item() -> 
 
     assert restored["nodes"][0].params["series_index"] == 3
     assert SOURCE_ITEM_PARAMETER not in restored["nodes"][0].params
-    assert migrated["version"] == 5
+    assert migrated["version"] == 6
     assert SOURCE_ITEM_PARAMETER not in migrated["nodes"][0]["params"]
     assert scientific_workflow_hash(migrated) == scientific_workflow_hash(legacy)
 
@@ -521,13 +520,13 @@ def _source_item_batch_config(item: SourceItem) -> BatchConfig:
     )
 
 
-def test_batch_config_v4_roundtrips_canonical_source_items() -> None:
+def test_batch_config_v5_roundtrips_canonical_source_items() -> None:
     item = _source_item()
     config = _source_item_batch_config(item)
     document = config.to_dict()
     restored = BatchConfig.from_dict(document)
 
-    assert document["version"] == BATCH_CONFIG_VERSION == 4
+    assert document["version"] == BATCH_CONFIG_VERSION == 5
     assert document["sources"][0]["source_items"] == [item.to_dict()]
     assert restored.sources[0].source_items == (item,)
     assert restored.sources[0].source_item_documents == (item.to_dict(),)
@@ -546,7 +545,7 @@ def test_legacy_batch_configs_read_without_inventing_source_items(
     restored = BatchConfig.from_dict(document)
 
     assert restored.sources[0].source_items == ()
-    assert restored.to_dict()["version"] == 4
+    assert restored.to_dict()["version"] == BATCH_CONFIG_VERSION == 5
 
 
 def test_legacy_batch_config_cannot_claim_v4_sourceitem_evidence() -> None:

@@ -54,7 +54,7 @@ intervening correctness record, as detailed in the
 [qualification baseline](release-qualification-baseline.md). The current line
 provides:
 
-- SourceItem v1 through workflow schema 5 and batch config/manifest schema 4,
+- SourceItem v1 through workflow schema 6 and batch config/manifest schema 5,
   with stable selected-item identity, reader evidence, source revision, axes,
   metadata, checkpoints, manifests, and exact implementation provenance;
 - shared execution across interactive, batch, generated Python/CLI, and export;
@@ -785,30 +785,59 @@ save/reopen/export/batch parity, rapid drag events, one committed calculation,
 undo/redo, durable-boundary flushing, and stale/cancelled completion. The
 bundled `responsive-crop` workflow supplies the numbered manual acceptance path.
 
-#### Safe Node Bypass And Batch Execution Profiles
+#### Safe Node Bypass And Batch Execution Profiles — Implemented, Pending Release
 
-Goal: compare workflows and omit preview-only preparation without deleting or
-rewiring nodes or hiding a scientific change.
+The first complete slice is implemented in the current development tree and
+awaits release qualification. It lets users compare workflows and omit
+preview-only preparation without deleting or rewiring nodes or hiding a
+scientific change.
 
-- Add authored **Run / Bypass** only to explicitly reviewed pure unary,
-  single-output, contract-preserving operations. Start with Crop Stack; review
-  Gaussian Blur separately with effective image-kind and downstream-port
-  compatibility. Do not infer safety from a generic type-preservation flag.
-- Exclude sources, Save/Batch Output, multi-input/output operations,
-  image-to-mask type changes, tables, conditionals, and side-effect boundaries
-  unless reviewed separately.
-- Persist and scientifically hash bypass state; make it undoable and invalidate
+- Authored **Run / Bypass** is now inherited topology-aware behavior rather than
+  a per-operation allow-list. A callable node with one fixed output may splice
+  its actual input port 0 to every current consumer when all consumer input
+  contracts accept that type. This live compatibility proof, rather than a
+  generic type-preservation flag, also handles normally type-changing nodes.
+- Multi-input operations forward only their named first/main input; RL and RL-TV
+  therefore forward intensity and ignore PSF. Exclude sources, Save/Batch
+  Output, multi/dynamic-output operations (including Split Channels), unsafe
+  downstream splices, and unused terminal nodes from entering Bypass. Retain a
+  way to clear an existing bypass even after topology changes.
+- Bypass state is persisted and scientifically hashed, is undoable, and invalidates
   the node and descendants when changed.
-- Alias input data, metadata, and device residency to output without calling the
+- Input data, metadata, and device residency are aliased to output without calling the
   operation or forcing a host transfer. Record `bypassed` provenance and exclude
   the node from optimizer timing.
-- Require identical interactive, batch, generated Python/CLI, export, CPU, and
-  supported-GPU behavior.
+- Keep behavior identical across interactive, batch, generated Python/CLI,
+  export, CPU, and supported-GPU execution surfaces.
+- Keep the interactive control compact: reviewed nodes expose one **Bypass
+  node** checkbox alongside the existing inspector checkboxes, with the exact
+  alias contract explained by its tooltip. A bypassed card retains its
+  **Bypassed** badge, fades behind active nodes, gains a prominent dotted
+  outline, and shows a subtle non-interactive input-to-output line. These cues
+  make the transparent execution path recognizable without adding inspector
+  clutter. The same checkable **Bypass node** action is available from the
+  node's context menu.
+- Keep bypassed cards useful for authoring: when the normal inputs are available,
+  the image thumbnail is a presentation-only **would-run** result using the
+  stored parameters. Crop keeps its bounded lightweight evaluator; other nodes
+  reuse their reviewed operation path. Preview absence or failure is non-fatal.
+  Every hypothetical preview remains outside scientific outputs, cache identity,
+  timing, provenance, export, and batch execution. Card shape, axes, dtype, and
+  other output metadata continue to describe the real forwarded main input.
 
-After that contract is stable, add an explicit batch execution-profile override
-with **Use workflow / Run / Bypass**. A whole-batch override comes first;
-per-item bypass may later reuse the typed per-sample resolver. Batch-only behavior
-must never be an invisible intrinsic node setting.
+The Batch workspace now supplies an explicit whole-batch execution-profile
+override with **Use workflow / Run / Bypass**. It is persisted separately,
+applied to detached effective workflows, and recorded in item/manifest
+provenance without mutating authored graph intent. Per-item bypass may later
+reuse the typed per-sample resolver; batch-only behavior must never be an
+invisible intrinsic node setting.
+
+The current batch contract deliberately keeps every authored Image Source in
+sample pairing even when an effective multi-input bypass ignores that source
+scientifically. A later optimization may avoid decoding pixels for an inactive
+secondary binding and label it explicitly in the manifest, but it must retain
+source identity/revision evidence and must not silently change pairing, batch
+IDs, or the behavior of a profile returned to Run.
 
 #### Exact Source-Window Pushdown
 

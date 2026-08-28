@@ -85,6 +85,34 @@ def test_pipeline_worker_emits_no_timing_when_tracing_is_disabled(
     assert finished == [terminal]
 
 
+def test_pipeline_worker_forwards_presentation_shadow_separately(
+    qtbot,
+    monkeypatch,
+) -> None:
+    terminal = object()
+    shadow = object()
+    request = SimpleNamespace(run_id=75, device_execution_telemetry=None)
+
+    def execute(_request, **callbacks):
+        callbacks["presentation_shadow_callback"](shadow)
+        return terminal
+
+    monkeypatch.setattr(workers, "execute_pipeline_request", execute)
+    worker = workers.PipelineRunWorker(request)
+    observed_shadows = []
+    node_results = []
+    finished = []
+    worker.signals.presentation_shadow_finished.connect(observed_shadows.append)
+    worker.signals.node_finished.connect(node_results.append)
+    worker.signals.finished.connect(finished.append)
+
+    worker.run()
+
+    assert observed_shadows == [shadow]
+    assert node_results == []
+    assert finished == [terminal]
+
+
 def _thumbnail_worker(*, clock=None) -> ThumbnailContrastLimitWorker:
     request = ThumbnailContrastLimitRequest(
         ("scalar", "gaussian", 1),

@@ -18,6 +18,7 @@ from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
     ComputeRequest,
+    DecisionKind,
     ExecutionReport,
     NodeComputePreference,
     NodeExecutionDecision,
@@ -344,7 +345,10 @@ def actual_decision_badge(
     if not isinstance(decision, NodeExecutionDecision):
         raise TypeError("decision must be a NodeExecutionDecision.")
     experimental = _decision_is_experimental(decision)
-    if decision.fallback_used:
+    if decision.decision_kind is DecisionKind.BYPASSED:
+        text = "Bypassed"
+        tone = ComputePresentationTone.NEUTRAL
+    elif decision.fallback_used:
         text = "CPU fallback"
         tone = ComputePresentationTone.FALLBACK
     elif decision.runtime_id == "cpu-numpy":
@@ -356,11 +360,22 @@ def actual_decision_badge(
         if experimental:
             text += " · Exp"
 
-    details = [
-        f"Used {decision.implementation_id} via {decision.runtime_id}.",
-        decision.reason_text,
-    ]
-    if decision.runtime_id != "cpu-numpy":
+    details = (
+        [
+            "Safe Node Bypass forwarded the exact input without running a "
+            "CPU or GPU implementation.",
+            decision.reason_text,
+        ]
+        if decision.decision_kind is DecisionKind.BYPASSED
+        else [
+            f"Used {decision.implementation_id} via {decision.runtime_id}.",
+            decision.reason_text,
+        ]
+    )
+    if (
+        decision.decision_kind is not DecisionKind.BYPASSED
+        and decision.runtime_id != "cpu-numpy"
+    ):
         device = _accelerator_device_label(environment)
         if device:
             details.insert(1, f"Device: {device}.")
@@ -437,6 +452,11 @@ def custom_request_satisfied_by_actual_decisions(
         decision = by_node.get(node_id)
         if decision is None:
             return False
+        if decision.decision_kind is DecisionKind.BYPASSED:
+            # A saved compute preference is dormant while the authored node
+            # aliases its input.  It becomes active again if the node returns
+            # to Run mode, but cannot be satisfied or violated by no work.
+            continue
         if preference.kind is NodePreferenceKind.CPU:
             satisfied = decision.runtime_id == "cpu-numpy"
         elif preference.kind is NodePreferenceKind.BEST_GPU:
@@ -463,6 +483,7 @@ class ComputeToolbarSummary:
     gpu_nodes: int = 0
     cpu_nodes: int = 0
     fallback_nodes: int = 0
+    bypass_nodes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -529,10 +550,21 @@ def compute_toolbar_summary(
         )
 
     decisions = tuple(status.actual_decisions)
-    fallback_nodes = sum(decision.fallback_used for decision in decisions)
-    gpu_nodes = sum(decision.runtime_id != "cpu-numpy" for decision in decisions)
-    cpu_nodes = len(decisions) - gpu_nodes
+    bypass_nodes = sum(
+        decision.decision_kind is DecisionKind.BYPASSED for decision in decisions
+    )
+    compute_decisions = tuple(
+        decision
+        for decision in decisions
+        if decision.decision_kind is not DecisionKind.BYPASSED
+    )
+    fallback_nodes = sum(decision.fallback_used for decision in compute_decisions)
+    gpu_nodes = sum(
+        decision.runtime_id != "cpu-numpy" for decision in compute_decisions
+    )
+    cpu_nodes = len(compute_decisions) - gpu_nodes
     mode = compute_mode_label(status.request.mode)
+    bypass_suffix = f" · {bypass_nodes} bypassed" if bypass_nodes else ""
     if fallback_nodes:
         if gpu_nodes or cpu_nodes != fallback_nodes:
             totals = " / ".join(
@@ -543,26 +575,30 @@ def compute_toolbar_summary(
                 )
                 if part
             )
-            text = f"{mode} · {totals} · {fallback_nodes} fallback"
+            text = f"{mode} · {totals} · {fallback_nodes} fallback{bypass_suffix}"
         else:
-            text = f"{mode} · {fallback_nodes} CPU fallback"
+            text = f"{mode} · {fallback_nodes} CPU fallback{bypass_suffix}"
         tone = ComputePresentationTone.FALLBACK
     elif gpu_nodes:
-        text = f"{mode} · {gpu_nodes} GPU / {cpu_nodes} CPU"
+        text = f"{mode} · {gpu_nodes} GPU / {cpu_nodes} CPU{bypass_suffix}"
         tone = ComputePresentationTone.GPU
+    elif not compute_decisions and bypass_nodes:
+        text = f"{mode} · {bypass_nodes} bypassed"
+        tone = ComputePresentationTone.NEUTRAL
     elif status.request.mode in {ComputeMode.AUTO, ComputeMode.PREFER_GPU}:
-        text = f"{mode} · {cpu_nodes} CPU"
+        text = f"{mode} · {cpu_nodes} CPU{bypass_suffix}"
         tone = ComputePresentationTone.CPU
     else:
-        text = f"{mode} · CPU"
+        text = f"{mode} · CPU{bypass_suffix}"
         tone = ComputePresentationTone.CPU
 
     details = [
-        f"Actual decisions: {gpu_nodes} GPU, {cpu_nodes} CPU, "
-        f"{fallback_nodes} fallback.",
+        f"Actual compute: {gpu_nodes} GPU, {cpu_nodes} CPU, "
+        f"{fallback_nodes} fallback; {bypass_nodes} bypassed.",
     ]
     if (
         status.request.mode is ComputeMode.AUTO
+        and compute_decisions
         and not gpu_nodes
         and not fallback_nodes
     ):
@@ -577,6 +613,7 @@ def compute_toolbar_summary(
         )
     elif (
         status.request.mode is ComputeMode.PREFER_GPU
+        and compute_decisions
         and cpu_nodes
         and not gpu_nodes
         and not fallback_nodes
@@ -593,7 +630,7 @@ def compute_toolbar_summary(
         )
     gpu_node_ids = {
         decision.node_id
-        for decision in decisions
+        for decision in compute_decisions
         if decision.runtime_id != "cpu-numpy"
     }
     devices = tuple(
@@ -624,6 +661,7 @@ def compute_toolbar_summary(
         gpu_nodes,
         cpu_nodes,
         fallback_nodes,
+        bypass_nodes,
     )
 
 
@@ -643,7 +681,10 @@ def _request_tooltip(request: ComputeRequest) -> str:
 
 
 def _decision_is_experimental(decision: NodeExecutionDecision) -> bool:
-    if decision.runtime_id == "cpu-numpy":
+    if (
+        decision.decision_kind is DecisionKind.BYPASSED
+        or decision.runtime_id == "cpu-numpy"
+    ):
         return False
     try:
         specs = compute_specs_for(

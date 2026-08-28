@@ -8,6 +8,7 @@ import tifffile
 
 from napari_vipp.core.batch import (
     BATCH_WORKFLOW_FILENAME,
+    BatchNodeExecutionOverride,
     BatchScientificPreflightError,
     build_batch_plan,
 )
@@ -40,6 +41,19 @@ def _axis_sensitive_batch_pipeline() -> PrototypePipeline:
     assert pipeline.connect("input", background.id).success
     assert pipeline.connect(background.id, output.id).success
     return pipeline
+
+
+def _bypassable_batch_pipeline() -> tuple[PrototypePipeline, str]:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.nodes["input"].params["binding_mode"] = "collection"
+    crop = pipeline.add_node("crop_stack")
+    output = pipeline.add_node("batch_output")
+    pipeline.set_param(output.id, "tag", "result")
+    pipeline.set_param(output.id, "format", "npy")
+    assert pipeline.connect("input", crop.id).success
+    assert pipeline.connect(crop.id, output.id).success
+    return pipeline, crop.id
 
 
 def test_controller_previews_one_workflow_snapshot_and_current_pipeline(
@@ -107,6 +121,32 @@ def test_controller_previews_one_workflow_snapshot_and_current_pipeline(
     assert collision[0].output_statuses == ("exists; collision",)
 
 
+def test_attached_preview_normalization_preserves_whole_batch_node_behavior(
+    tmp_path,
+):
+    pipeline, crop_id = _bypassable_batch_pipeline()
+    workflow = serialize_workflow(pipeline)
+    controller = CollectionBatchController(
+        workflow_document_provider=lambda: workflow,
+        pipeline_provider=lambda: pipeline,
+    )
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    config = controller.build_config(
+        input_dir=input_dir,
+        output_dir=tmp_path / "outputs",
+        pattern="*.npy",
+        image_format="npy",
+        node_execution_overrides=(BatchNodeExecutionOverride(crop_id, "bypass"),),
+    )
+
+    prepared = controller.prepare_attached_config_preview(config)
+
+    assert prepared.config.node_execution_overrides == (
+        BatchNodeExecutionOverride(crop_id, "bypass"),
+    )
+
+
 def test_controller_labels_each_series_from_a_collection_container(tmp_path):
     pipeline, _output_id = _explicit_batch_pipeline()
     workflow = serialize_workflow(pipeline)
@@ -163,9 +203,7 @@ def test_controller_saves_companion_and_rejects_a_different_workflow(
     assert saved_workflow == tmp_path / BATCH_WORKFLOW_FILENAME
     loaded = controller.load_config(saved_config)
     assert loaded.workflow_sha256
-    assert [item.selector.key for item in loaded.sources[0].source_items] == [
-        "field"
-    ]
+    assert [item.selector.key for item in loaded.sources[0].source_items] == ["field"]
     np.save(source_path, np.full((3, 4), 2, dtype=np.uint8))
     with pytest.raises(ValueError, match="no longer matches.*SourceItem"):
         build_batch_plan(loaded)

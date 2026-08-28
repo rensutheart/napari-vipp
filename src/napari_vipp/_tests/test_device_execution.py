@@ -719,6 +719,209 @@ def test_linear_segment_keeps_intermediate_on_device_and_returns_host_only():
     registry.close()
 
 
+def test_safe_bypass_keeps_one_exact_alias_inside_a_device_segment():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    crop = pipeline.add_node("crop_stack")
+    median = pipeline.add_node("median_filter")
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, crop.id).success
+    assert pipeline.connect(crop.id, median.id).success
+    pipeline.set_node_execution_mode(crop.id, "bypass")
+
+    runtime = _FakeRuntime()
+    registry, specs = _registry(
+        runtime,
+        (("gaussian_blur", _device_copy), ("median_filter", _device_copy)),
+    )
+    request = _request()
+    retained = (
+        OutputPortKey(gaussian.id, 0),
+        OutputPortKey(crop.id, 0),
+    )
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+        retained_ports=retained,
+    )
+
+    assert [type(unit) for unit in plan.units] == [
+        HostExecutionUnit,
+        DeviceSegmentUnit,
+    ]
+    segment_unit = plan.units[1]
+    assert isinstance(segment_unit, DeviceSegmentUnit)
+    assert segment_unit.segment.node_ids == (gaussian.id, crop.id, median.id)
+    assert segment_unit.implementation_specs[1] is None
+
+    def prepare_call(
+        node_id: str,
+        inputs: tuple[object, ...],
+    ) -> PreparedNodeCall:
+        if pipeline.node_is_bypassed(node_id):
+            return pipeline.prepare_bypass_call(node_id, inputs)
+        return _prepare_call(pipeline)(node_id, inputs)
+
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=prepare_call,
+    )
+
+    gaussian_output = result.host_values[OutputPortKey(gaussian.id, 0)]
+    crop_output = result.host_values[OutputPortKey(crop.id, 0)]
+    assert crop_output is gaussian_output
+    np.testing.assert_array_equal(crop_output, data)
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(median.id, 0)],
+        data,
+    )
+    assert runtime.host_to_device_count == 1
+    # One transfer for the aliased Gaussian/Crop allocation and one for Median.
+    assert runtime.device_to_host_count == 2
+    assert runtime.operation_count == 2
+    assert runtime.live == {}
+    registry.close()
+
+
+def test_multi_input_bypass_device_lineage_uses_only_primary_port_zero():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    psf_source = pipeline.add_node("input")
+    gaussian = pipeline.add_node("gaussian_blur")
+    restoration = pipeline.add_node("richardson_lucy_tv_deconvolution")
+    median = pipeline.add_node("median_filter")
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, restoration.id, target_port=0).success
+    assert pipeline.connect(psf_source.id, restoration.id, target_port=1).success
+    assert pipeline.connect(restoration.id, median.id).success
+    assert pipeline.set_node_execution_mode(restoration.id, "bypass")
+
+    runtime = _FakeRuntime()
+    registry, specs = _registry(
+        runtime,
+        (("gaussian_blur", _device_copy), ("median_filter", _device_copy)),
+    )
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+        target_node_ids={median.id},
+        retained_ports=(
+            OutputPortKey(gaussian.id, 0),
+            OutputPortKey(restoration.id, 0),
+        ),
+    )
+
+    assert psf_source.id not in plan.schedule.candidate_node_ids
+    segment = next(
+        unit for unit in plan.units if isinstance(unit, DeviceSegmentUnit)
+    )
+    assert segment.segment.node_ids == (
+        gaussian.id,
+        restoration.id,
+        median.id,
+    )
+    assert segment.segment.entry_ports == (OutputPortKey("input", 0),)
+    assert segment.implementation_specs[1] is None
+
+    def prepare_call(
+        node_id: str,
+        inputs: tuple[object, ...],
+    ) -> PreparedNodeCall:
+        if pipeline.node_is_bypassed(node_id):
+            return pipeline.prepare_bypass_call(node_id, inputs)
+        return _prepare_call(pipeline)(node_id, inputs)
+
+    intensity = np.arange(25, dtype=np.float32).reshape(5, 5)
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): intensity},
+        prepare_call=prepare_call,
+    )
+
+    gaussian_output = result.host_values[OutputPortKey(gaussian.id, 0)]
+    restored_output = result.host_values[OutputPortKey(restoration.id, 0)]
+    assert restored_output is gaussian_output
+    np.testing.assert_array_equal(restored_output, intensity)
+    assert runtime.host_to_device_count == 1
+    assert runtime.operation_count == 2
+    assert runtime.live == {}
+    registry.close()
+
+
+def test_safe_bypass_at_device_entry_reuses_retained_source_host_alias():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", crop.id).success
+    assert pipeline.connect(crop.id, gaussian.id).success
+    pipeline.set_node_execution_mode(crop.id, "bypass")
+
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+        retained_ports=(OutputPortKey(crop.id, 0),),
+    )
+
+    assert [type(unit) for unit in plan.units] == [
+        HostExecutionUnit,
+        DeviceSegmentUnit,
+    ]
+    segment_unit = plan.units[1]
+    assert isinstance(segment_unit, DeviceSegmentUnit)
+    assert segment_unit.segment.node_ids == (crop.id, gaussian.id)
+    assert segment_unit.segment.entry_ports == (OutputPortKey("input", 0),)
+    assert segment_unit.implementation_specs[0] is None
+
+    def prepare_call(
+        node_id: str,
+        inputs: tuple[object, ...],
+    ) -> PreparedNodeCall:
+        if pipeline.node_is_bypassed(node_id):
+            return pipeline.prepare_bypass_call(node_id, inputs)
+        return _prepare_call(pipeline)(node_id, inputs)
+
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    result = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=prepare_call,
+    )
+
+    assert result.host_values[OutputPortKey(crop.id, 0)] is data
+    np.testing.assert_array_equal(
+        result.host_values[OutputPortKey(gaussian.id, 0)],
+        data,
+    )
+    assert runtime.host_to_device_count == 1
+    assert runtime.device_to_host_count == 1
+    assert runtime.operation_count == 1
+    assert runtime.live == {}
+    registry.close()
+
+
 def test_device_telemetry_observes_directional_transfers_and_device_phases(
     monkeypatch,
 ):
