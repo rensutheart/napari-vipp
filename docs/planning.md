@@ -756,6 +756,46 @@ Those items require later evidence or remain in [product ideas](product-ideas.md
 
 ### Committed Follow-Ups After `0.14.0a2`
 
+#### napari 0.9 Viewer-Model Compatibility
+
+Goal: adopt napari 0.9's public viewer organization and automatic dimension
+labels without dropping the declared `napari>=0.6` support range or allowing
+presentation-only layers to change the viewer's semantic context.
+
+The compatibility audit found no production API break and no reason for a
+broad ViewerModel rewrite. The manifest validates, focused plugin tests pass,
+and the native macOS installer starts with exact napari 0.9.0. Treat the
+remaining work as bounded 0.14-line hardening rather than a reason to reopen
+`0.14.0a2`.
+
+- add explicit compatibility qualification for the retained minimum napari
+  version, exact napari 0.9, and latest supported napari; validate the manifest,
+  run the focused viewer-integration suite under a supported Qt binding, and
+  include an import/start-close smoke;
+- replace documentation-capture and corresponding test reads of deprecated
+  `viewer.camera` with a feature-detected seam that prefers
+  `viewer.scene.camera` and falls back to `viewer.camera` on older supported
+  napari releases;
+- propagate VIPP-carried axis names to newly created and reused generated Image
+  and Labels layers, keep label count aligned with displayed dimensionality,
+  exclude an RGB/RGBA component axis, and ensure hidden or provisional source
+  previews cannot win napari's viewer-label priority;
+- replace documentation capture's private `viewer.window._qt_window` access
+  with Qt parent traversal or another public seam; and
+- qualify a napari-0.9-compatible replacement for the installer-build
+  `PyQt6-Qt6==6.11.0` pin, or keep and document the build environment's
+  isolation before supporting combined app and installer-build extras. Do not
+  raise the `npe2` lower bound merely because napari 0.9 resolves a newer
+  version.
+
+Tests cover generated scalar Image and Labels layers, RGB/RGBA and split-channel
+presentation, layer creation and in-place reuse, hidden source previews, camera
+state preservation, and cross-Qt start/close behavior. The next 0.14 release
+candidate requires green napari 0.9 qualification; the axis-label and capture
+cleanups remain non-scientific compatibility and UX work unless their code
+paths become part of the release artifact. No workflow schema, scientific
+result, or GPU contract changes as part of this item.
+
 #### Responsive Volume Crop — Implemented, Pending Release
 
 Implementation for [issue #50](https://github.com/rensutheart/napari-vipp/issues/50)
