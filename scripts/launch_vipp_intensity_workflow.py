@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> None:
         area="bottom",
         name="VIPP Workflow",
     )
-    widget.load_workflow_file(workflow)
+    _load_selected_workflow(widget, workflow)
     if selected_node:
         widget.graph_view.select_node(selected_node)
     napari.run()
@@ -87,6 +87,22 @@ def _workflow_args(args: list[str]) -> tuple[Path, str | None]:
     raise ValueError(
         f"Unknown example workflow {first!r}. Use --list to show valid ids."
     )
+
+
+def _load_selected_workflow(widget: VippWidget, workflow: Path) -> Path:
+    """Load bundled workflows as templates and external files in place."""
+    example_id = _bundled_example_id(workflow)
+    if example_id is not None:
+        return widget.load_example_workflow(example_id)
+    return widget.load_workflow_file(workflow)
+
+
+def _bundled_example_id(workflow: Path) -> str | None:
+    resolved = workflow.resolve()
+    for spec in EXAMPLE_WORKFLOWS:
+        if _example_workflow_path(spec).resolve() == resolved:
+            return spec.id
+    return None
 
 
 def _example_listing() -> str:

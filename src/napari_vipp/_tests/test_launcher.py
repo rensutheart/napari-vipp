@@ -199,6 +199,44 @@ def test_application_module_is_also_safe_to_import_before_child_start():
     assert "VippWidget" not in app.__dict__
 
 
+class _WorkflowLoader:
+    def __init__(self) -> None:
+        self.example_ids: list[str] = []
+        self.workflow_paths: list[Path] = []
+
+    def load_example_workflow(self, example_id: str) -> Path:
+        self.example_ids.append(example_id)
+        return Path(f"template-{example_id}.json")
+
+    def load_workflow_file(self, path: Path) -> Path:
+        self.workflow_paths.append(path)
+        return path
+
+
+def test_example_launcher_keeps_bundled_workflows_as_templates(tmp_path):
+    from napari_vipp.ui.examples import (
+        EXAMPLE_WORKFLOWS,
+        _example_workflow_path,
+    )
+    from scripts.launch_vipp_intensity_workflow import _load_selected_workflow
+
+    loader = _WorkflowLoader()
+    example = EXAMPLE_WORKFLOWS[0]
+    bundled_path = _example_workflow_path(example)
+
+    assert _load_selected_workflow(loader, bundled_path) == Path(
+        f"template-{example.id}.json"
+    )
+    assert loader.example_ids == [example.id]
+    assert loader.workflow_paths == []
+
+    external = tmp_path / example.filename
+    external.write_text("{}", encoding="utf-8")
+    assert _load_selected_workflow(loader, external) == external
+    assert loader.example_ids == [example.id]
+    assert loader.workflow_paths == [external]
+
+
 class _FakeSignal:
     def __init__(self) -> None:
         self.callbacks = []

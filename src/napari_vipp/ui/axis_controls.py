@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from html import escape
 
 import numpy as np
-from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
+from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtGui import QBrush, QColor, QPainter, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -55,6 +55,8 @@ class AxisIntervalSlider(QWidget):
     """Small two-handle integer range slider for axis slicing."""
 
     valueChanged = Signal(int, int)
+    gestureStarted = Signal()
+    gestureFinished = Signal()
 
     def __init__(self, minimum: int = 0, maximum: int = 0, parent=None):
         super().__init__(parent)
@@ -63,6 +65,7 @@ class AxisIntervalSlider(QWidget):
         self._start = self._minimum
         self._end = self._maximum
         self._active_handle: str | None = None
+        self._gesture_active = False
         self.setMinimumHeight(26)
         self.setMinimumWidth(150)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -112,6 +115,7 @@ class AxisIntervalSlider(QWidget):
         start_x = self._x_for_value(self._start)
         end_x = self._x_for_value(self._end)
         self._active_handle = "start" if abs(x - start_x) <= abs(x - end_x) else "end"
+        self._begin_gesture()
         self._set_active_value_from_x(x)
         event.accept()
 
@@ -123,7 +127,26 @@ class AxisIntervalSlider(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:
         self._active_handle = None
+        self._finish_gesture()
         event.accept()
+
+    def event(self, event) -> bool:
+        if event.type() in {QEvent.Hide, QEvent.UngrabMouse}:
+            self._active_handle = None
+            self._finish_gesture()
+        return super().event(event)
+
+    def _begin_gesture(self) -> None:
+        if self._gesture_active:
+            return
+        self._gesture_active = True
+        self.gestureStarted.emit()
+
+    def _finish_gesture(self) -> None:
+        if not self._gesture_active:
+            return
+        self._gesture_active = False
+        self.gestureFinished.emit()
 
     def _set_active_value_from_x(self, x: float) -> None:
         value = self._value_for_x(x)
@@ -162,6 +185,8 @@ class AxisSelectionRow(QWidget):
     """Explicit keep-range/remove-index controls for one metadata axis."""
 
     valueChanged = Signal()
+    gestureStarted = Signal()
+    gestureFinished = Signal()
 
     def __init__(
         self,
@@ -176,6 +201,7 @@ class AxisSelectionRow(QWidget):
         super().__init__(parent)
         self.option = option
         self._updating = False
+        self._gesture_active = False
         maximum = max(option.size - 1, 0)
 
         self.title_label = QLabel()
@@ -279,9 +305,13 @@ class AxisSelectionRow(QWidget):
         self.keep_button.clicked.connect(lambda: self.set_mode("keep"))
         self.remove_button.clicked.connect(lambda: self.set_mode("remove"))
         self.range_slider.valueChanged.connect(self._on_range_slider_changed)
+        self.range_slider.gestureStarted.connect(self._begin_gesture)
+        self.range_slider.gestureFinished.connect(self._finish_gesture)
         self.start_box.valueChanged.connect(self._on_start_changed)
         self.end_box.valueChanged.connect(self._on_end_changed)
         self.index_slider.valueChanged.connect(self._on_index_changed)
+        self.index_slider.sliderPressed.connect(self._begin_gesture)
+        self.index_slider.sliderReleased.connect(self._finish_gesture)
         self.index_box.valueChanged.connect(self._on_index_changed)
 
     def mode(self) -> str:
@@ -299,6 +329,8 @@ class AxisSelectionRow(QWidget):
 
     def set_mode(self, mode: str, emit: bool = True) -> None:
         mode = "remove" if mode == "remove" else "keep"
+        if mode != self.mode():
+            self._finish_gesture()
         self._updating = True
         with QSignalBlocker(self.keep_button), QSignalBlocker(self.remove_button):
             self.keep_button.setChecked(mode == "keep")
@@ -380,11 +412,29 @@ class AxisSelectionRow(QWidget):
             return
         self.set_index(value)
 
+    def _begin_gesture(self) -> None:
+        if self._gesture_active:
+            return
+        self._gesture_active = True
+        self.gestureStarted.emit()
+
+    def _finish_gesture(self) -> None:
+        if not self._gesture_active:
+            return
+        self._gesture_active = False
+        self.gestureFinished.emit()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._finish_gesture()
+        super().hideEvent(event)
+
 
 class AxisSliceControl(QWidget):
     """Metadata-aware selector for keeping ranges or removing axes."""
 
     valueChanged = Signal(object)
+    gestureStarted = Signal()
+    gestureFinished = Signal()
 
     def __init__(
         self,
@@ -396,6 +446,7 @@ class AxisSliceControl(QWidget):
         self._options: list[AxisSliceOption] = []
         self._rows: dict[int, AxisSelectionRow] = {}
         self._updating = False
+        self._gesture_active = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -510,10 +561,13 @@ class AxisSliceControl(QWidget):
                 index=index,
             )
             row.valueChanged.connect(self._emit_value_changed)
+            row.gestureStarted.connect(self._begin_gesture)
+            row.gestureFinished.connect(self._finish_gesture)
             self._row_layout.addWidget(row)
             self._rows[option.index] = row
 
     def _clear_rows(self) -> None:
+        self._finish_gesture()
         self._rows.clear()
         while self._row_layout.count():
             item = self._row_layout.takeAt(0)
@@ -539,20 +593,41 @@ class AxisSliceControl(QWidget):
         if not self._updating:
             self.valueChanged.emit(self.value())
 
+    def _begin_gesture(self) -> None:
+        if self._gesture_active:
+            return
+        self._gesture_active = True
+        self.gestureStarted.emit()
+
+    def _finish_gesture(self) -> None:
+        if not self._gesture_active:
+            return
+        self._gesture_active = False
+        self.gestureFinished.emit()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._finish_gesture()
+        super().hideEvent(event)
+
 
 class AxisOrderListWidget(QListWidget):
     """QListWidget that emits after a drag/drop reorder."""
 
     orderChanged = Signal()
+    gestureStarted = Signal()
+    gestureFinished = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._drag_row = -1
+        self._gesture_active = False
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             item = self.itemAt(self._event_pos(event))
             self._drag_row = self.row(item) if item is not None else -1
+            if self._drag_row >= 0:
+                self._begin_gesture()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
@@ -572,10 +647,38 @@ class AxisOrderListWidget(QListWidget):
     def mouseReleaseEvent(self, event) -> None:
         self._drag_row = -1
         super().mouseReleaseEvent(event)
+        self._finish_gesture()
 
     def dropEvent(self, event) -> None:
         super().dropEvent(event)
         self.orderChanged.emit()
+        self._drag_row = -1
+        self._finish_gesture()
+
+    def startDrag(self, supported_actions) -> None:  # noqa: N802
+        # QDrag.exec() is synchronous, so returning marks either a completed
+        # drop or a cancelled drag.  This also covers drops outside this list.
+        super().startDrag(supported_actions)
+        self._drag_row = -1
+        self._finish_gesture()
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.Hide:
+            self._drag_row = -1
+            self._finish_gesture()
+        return super().event(event)
+
+    def _begin_gesture(self) -> None:
+        if self._gesture_active:
+            return
+        self._gesture_active = True
+        self.gestureStarted.emit()
+
+    def _finish_gesture(self) -> None:
+        if not self._gesture_active:
+            return
+        self._gesture_active = False
+        self.gestureFinished.emit()
 
     @staticmethod
     def _event_pos(event):
@@ -588,6 +691,8 @@ class ReorderAxesControl(QWidget):
     """Drag-reorder control for transposing image axes."""
 
     valueChanged = Signal(object)
+    gestureStarted = Signal()
+    gestureFinished = Signal()
 
     def __init__(
         self,
@@ -632,6 +737,8 @@ class ReorderAxesControl(QWidget):
         self.list_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.list_widget.setAlternatingRowColors(True)
         self.list_widget.orderChanged.connect(self._emit_value_changed)
+        self.list_widget.gestureStarted.connect(self.gestureStarted.emit)
+        self.list_widget.gestureFinished.connect(self.gestureFinished.emit)
         self.list_widget.itemSelectionChanged.connect(self._sync_button_state)
         layout.addWidget(self.list_widget)
 
@@ -760,6 +867,8 @@ class SelectTableColumnsControl(QWidget):
     """Checklist control for keeping and ordering table columns."""
 
     valueChanged = Signal(object)
+    gestureStarted = Signal()
+    gestureFinished = Signal()
 
     def __init__(
         self,
@@ -799,6 +908,8 @@ class SelectTableColumnsControl(QWidget):
         self.list_widget.setMinimumHeight(130)
         self.list_widget.setMaximumHeight(260)
         self.list_widget.orderChanged.connect(self._emit_value_changed)
+        self.list_widget.gestureStarted.connect(self.gestureStarted.emit)
+        self.list_widget.gestureFinished.connect(self.gestureFinished.emit)
         self.list_widget.itemChanged.connect(self._emit_value_changed)
         self.list_widget.itemSelectionChanged.connect(self._sync_button_state)
         layout.addWidget(self.list_widget)
@@ -871,9 +982,7 @@ class SelectTableColumnsControl(QWidget):
             for column in ordered:
                 item = QListWidgetItem(column)
                 item.setData(Qt.UserRole, column)
-                item.setCheckState(
-                    Qt.Checked if column in selected else Qt.Unchecked
-                )
+                item.setCheckState(Qt.Checked if column in selected else Qt.Unchecked)
                 item.setSizeHint(QSize(180, 28))
                 item.setToolTip(column)
                 item.setFlags(

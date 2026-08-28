@@ -66,7 +66,7 @@
     },
     {
       "id": "note_idle_undo",
-      "text": "TEST 3 - COMMIT ON IDLE, THEN UNDO ONCE\nMove a slider and pause without releasing it, or enter a numeric margin and press Enter/leave the field. PASS: after the short slider idle interval, or when numeric entry is finished, the final draft commits once and calculates once. Press Ctrl+Z once: the complete crop edit and output return to the prior state. Press Ctrl+Shift+Z or Ctrl+Y once: the final crop returns. No intermediate drag positions appear in history.",
+      "text": "TEST 3 - HOLD THROUGH IDLE, THEN UNDO ONCE\nPress and hold a crop slider, move it, pause for at least one second without releasing, move it again, and then release. PASS: the pause does not commit or create an Undo point; release commits only the final value and calculates once. Press Ctrl+Z once: the crop returns directly to the value present at mouse-down. Press Ctrl+Shift+Z or Ctrl+Y once: the final crop returns. Numeric entry still commits when you press Enter or leave the field.",
       "position": [920.0, -170.0],
       "width": 470.0,
       "attached_node": "crop_stack_1"

@@ -96,6 +96,26 @@ def test_capture_marks_only_persisted_editor_changes_dirty_and_save_resets_it(
     assert not session.dirty
 
 
+def test_detach_path_turns_a_loaded_template_into_a_clean_untitled_session(
+    tmp_path,
+):
+    pipeline = PrototypePipeline()
+    source = tmp_path / "packaged-example.json"
+    session = WorkflowTabSession(
+        pipeline,
+        _editor_snapshot(pipeline),
+        path=source,
+        session_id="example-template",
+    )
+
+    session.detach_path(title="Label cleanup example")
+
+    assert session.path is None
+    assert session.title == "Label cleanup example"
+    assert not session.title_is_custom
+    assert not session.dirty
+
+
 def test_save_persistent_state_outside_snapshot_participates_in_dirty_baseline(
     tmp_path,
 ):

@@ -34,7 +34,7 @@ use packaged synthetic data, so they do not require external files.
 3. Review the graph from left to right.
 4. Select nodes to inspect parameters, output metadata, histograms, and manual
    calculation controls.
-5. Use `Save workflow...` once the graph is worth keeping.
+5. Use `Save workflow` or press `Ctrl+S` once the graph is worth keeping.
 
 ![Grouped example workflow chooser](assets/user-guide/vipp-example-chooser.png)
 
@@ -728,6 +728,25 @@ one wire with source-to-node and node-to-target connections as a single
 undoable edit. A drop in open space only changes layout, and a node that already
 has a connection must be disconnected before it can be inserted this way.
 
+### Undo And Redo
+
+Undoing or redoing an ordinary parameter change updates that one node in place.
+VIPP keeps the existing graph cards, thumbnails, viewer layers, and unaffected
+cached branches, then recalculates only the edited node and its descendants.
+This avoids a whole-workflow blank-and-rebuild cycle for routine tuning.
+
+A slider or draggable plot/range control is one edit from mouse-down to mouse-up.
+VIPP may calculate an intermediate preview while the pointer is held, but a
+pause or completed calculation does not create another history point. One Undo
+therefore returns directly to the value that was present before the drag began.
+
+An Image Source parameter also restores in place, but it invalidates the root
+of the scientific graph, so every downstream result must be recalculated; a
+file-owned presentation preview may reload as well. Edits that change graph
+topology, node layout, notes, compute policy, or more than one node use the
+conservative whole-workflow restore path because they can alter execution
+structure rather than one node's settings.
+
 Image Source cards show their current layer, file stem, sample, or collection
 binding below the node title. Long bindings are elided on the card; hover it to
 read the complete source. Collection bindings follow the active item and return
@@ -853,8 +872,32 @@ cancelled, skips later unstarted items, and finalizes the manifests.
 
 ### Save Workflow JSON
 
-`Save workflow...` writes the graph, parameters, connections, positions, named
-tunnels, graph notes, selected inspector state, and portable compute intent.
+`Save workflow` and `Ctrl+S` write the graph, parameters, connections,
+positions, named tunnels, graph notes, selected inspector state, and portable
+compute intent. The first save asks for a name and location. A bundled example
+also starts as an unsaved template, so its first save asks for a destination
+instead of modifying the packaged example. If that chosen file already exists,
+VIPP asks before replacing it, with Cancel as the safe default.
+
+After the first save, the default behavior is the familiar one: `Save workflow`
+or `Ctrl+S` overwrites that workflow file without another dialog and reports
+`Saved workflow` in the status strip. Use `Ctrl+Shift+S` or `Save workflow as`
+in Settings to choose another name or location; replacing an existing file from
+Save As still requires confirmation.
+
+The Settings menu's `Workflow saving` preference persists locally and offers
+three policies:
+
+| Policy | Behavior |
+| --- | --- |
+| `Overwrite current file` | Save directly to the current workflow after its first named save. This is the default. |
+| `Confirm before overwrite` | Ask before replacing the current workflow on every save. |
+| `Save a timestamped version` | Treat the chosen/current name as the series base and write a new timestamp-suffixed workflow on every save, leaving earlier versions intact. |
+
+In timestamped mode an unsaved workflow still asks for the series name and
+location first, but the generated timestamped file is new rather than replacing
+an existing base file. This is lightweight file versioning, not source control:
+review or remove old versions yourself when they are no longer needed.
 
 If a Batch workspace is active, Save asks whether its validated batch config
 should be included in the same workflow JSON. `Yes` stores a top-level
@@ -1097,7 +1140,7 @@ Headless replay uses the saved config request unless an explicit run/CLI
 override is supplied. The manifest records both configured and effective
 requests and hashes the effective override separately.
 
-For interactive convenience, `Save workflow...` can instead attach that
+For interactive convenience, `Save workflow` can instead attach that
 versioned config to the workflow file after a Yes/No/Cancel prompt. A standalone
 config remains the appropriate choice for headless replay, explicit companion
 workflow files, and generated batch runner scripts.
@@ -1488,7 +1531,11 @@ accidentally. Only make a declaration when you have independent knowledge of
 what every position means. To reject VIPP's batch suggestion, choose `Use the
 file's labels unchanged`; that explicit batch choice overrides an inherited
 workflow declaration for the collection. `Something else (advanced)...`
-exposes the original text form only for an uncommon reviewed mapping.
+exposes the original text form only for an uncommon reviewed mapping. While
+typing, incomplete text is only a draft: the last complete declaration remains
+active, and no workflow or Undo entry changes. Press Enter or leave the field
+to apply a complete valid mapping; invalid text remains visible with guidance
+but is not saved.
 
 Page interpretation and `Reorder Axes` solve different problems:
 
@@ -1538,15 +1585,27 @@ such as `QYX -> ZYX`; shape inference alone never turns Q into Z. If a generic
 TIFF really is a depth stack, review and record that fact at Image Source before
 cropping Z.
 
-During slider movement VIPP draws a constant-size full-rank crop box and a
-current-slice outline over the cached image. On 2D slices the outline is orange
-inside the retained Z range and red on an excluded Z plane; napari's 3D view
-shows the retained box faces. The displayed control values are drafts: dragging
-does not launch a full scientific calculation for every intermediate position
-or allocate an image-sized zero mask. Releasing the slider, finishing numeric
-entry, or pausing briefly commits the final margins as one scientific edit and
-starts one calculation. One Undo restores the previous crop; one Redo reapplies
-it.
+Crop Stack never crops individual channels. When the input metadata identifies
+one channel axis, VIPP protects that complete axis automatically and the
+channel-axis override stays hidden. Explicitly scalar inputs hide it as well.
+Only unresolved or ambiguous input axes expose `Channel axis override`; this is
+a manual axis-role fallback, not a channel selector, and every sample along the
+chosen axis remains in the result. Leave it at `-1` to use explicit metadata
+automatically. A previously authored non-negative override remains visible so
+the saved scientific choice can be reviewed or repaired.
+
+During slider movement VIPP overlays the crop ROI on the cached image. On 2D
+slices a thin outline is orange inside the retained Z range and red on an
+excluded Z plane; napari's 3D view uses a transparent, depth-independent
+wireframe so the box remains visible without coloring intersections inside the
+volume. The Crop ROI summary names any protected channel axis and confirms that
+all channels remain in the result. The displayed control values are drafts:
+dragging does not launch a full scientific calculation for every intermediate
+position or allocate an image-sized zero mask. A pause while the mouse remains
+held does not commit the Crop or create an intermediate Undo point. Releasing
+the slider or finishing numeric entry commits the final margins as one
+scientific edit and starts one calculation. One Undo restores the value present
+at mouse-down; one Redo reapplies the final Crop.
 
 Every opposing margin pair must leave at least one sample. Crop preserves T, C,
 and any other nonspatial axes unchanged. It also preserves axis scale and unit,
@@ -1563,7 +1622,7 @@ created before Z margins existed load with `Z start = 0` and `Z end = 0`, so
 their previous pixels and scientific hash remain unchanged.
 
 Open **Responsive Volumetric Crop Acceptance** from `Open example...` (launcher
-ID `responsive-crop`) for numbered checks covering rapid drag, idle commit,
+ID `responsive-crop`) for numbered checks covering rapid drag, held-idle safety,
 undo/redo, physical origins, durable boundaries, QYX safety, and the explained
 CPU assignment under Prefer GPU.
 

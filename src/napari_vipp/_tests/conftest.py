@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from napari_vipp.core.compute_history import PIPELINE_TIMING_HISTORY_PATH_ENV
-from napari_vipp.ui import presentation_settings, recent_paths
+from napari_vipp.ui import (
+    presentation_settings,
+    recent_paths,
+    workflow_save_settings,
+)
 
 
 class _MemorySettings:
@@ -27,6 +31,7 @@ def _isolate_ui_settings(monkeypatch):
     settings = _MemorySettings(values)
     monkeypatch.setattr(recent_paths, "_settings", lambda: settings)
     monkeypatch.setattr(presentation_settings, "_settings", lambda: settings)
+    monkeypatch.setattr(workflow_save_settings, "_settings", lambda: settings)
 
 
 @pytest.fixture(autouse=True)
