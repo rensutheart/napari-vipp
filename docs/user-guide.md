@@ -13,7 +13,7 @@ your data and acquisition settings.
 ## Start VIPP
 
 Begin with the [installer-first quick start](quick-start.md). The official
-`0.14.0a2` prerelease and checksum sidecars are public. Its explicitly unsigned
+`0.14.0a3` prerelease and checksum sidecars are public. Its explicitly unsigned
 Windows `.exe` and architecture-specific macOS `.pkg` files are the recommended
 ordinary-user routes. Always verify the published SHA-256 before accepting
 Windows' **Unknown publisher** warning or macOS's **Open Anyway** override.
@@ -1649,7 +1649,7 @@ CPU assignment under Prefer GPU.
 
 #### Exact Source-Window Pushdown And Low-RAM Repair
 
-In the current development build, an exact direct local OME-Zarr crop does not
+In VIPP `0.14.0a3`, an exact direct local OME-Zarr crop does not
 need to decode the pixels that Crop Stack will discard. VIPP uses this path only
 when all of the following are true:
 

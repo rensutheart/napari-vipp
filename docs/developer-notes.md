@@ -1,6 +1,6 @@
 # VIPP Developer and Architecture Notes
 
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-29
 
 This is the shortest technical entry point for contributors. It identifies the
 owner of each behavior, the scientific contracts that must survive a change,
@@ -49,6 +49,28 @@ not become an end-user napari notification. Other warnings and all import or
 execution errors remain visible. Recheck this narrow filter whenever the
 pinned CuPy version changes.
 
+## napari And Qt Compatibility Seams
+
+Keep napari compatibility feature-detected. `ui/napari_compat.py` prefers
+`viewer.scene.camera` and falls back to the older `viewer.camera`; documentation
+capture resolves its native window by Qt parent traversal before using the one
+bounded legacy fallback required by older supported napari releases. Do not add
+napari-version conditionals or direct binding imports for these seams.
+
+Generated Image and Labels layers receive VIPP-carried axis names only as
+presentation metadata. Keep the number of labels aligned to napari's displayed
+rank, exclude a trailing RGB/RGBA component axis, update labels when a layer is
+reused, and restore the selected scientific layer's labels after manipulating a
+hidden or provisional source preview. Viewer labels must never be promoted back
+into `ImageState` or change an operation's semantic axes.
+
+The compatibility CI intentionally anchors the declared minimum
+`napari==0.6.0`, exact `napari==0.9.0`, and latest supported napari instead of
+building a full cross-product. It uses PyQt6 for Windows/Linux and PySide6 for
+macOS, matching VIPP's distributed platform bindings. Any change to these seams
+must retain import/start-close, manifest, generated-layer, camera, and
+cross-binding coverage without raising the current `napari>=0.6` contract.
+
 ## Ownership Map
 
 | Question | Start in |
@@ -61,6 +83,7 @@ pinned CuPy version changes.
 | How are presentation-only thumbnail contrast statistics selected and calculated? | `core/thumbnail_statistics.py`, `core/gpu/cupy_thumbnail_statistics.py`, `ui/diagnostic_workers.py` |
 | How is a local file/store revision identified and frozen? | `core/source_identity.py`, `core/file_sources.py` |
 | How is a live napari layer revision frozen and invalidated? | `ui/source_adapter.py` |
+| How are napari camera/native-window differences isolated? | `ui/napari_compat.py` |
 | How does background graph execution cross the Qt boundary? | `core/execution.py`, `ui/workers.py` |
 | How do diagnostic requests/results cross Qt workers? | `ui/diagnostic_workers.py` |
 | How is graph/workflow state detached for history or execution? | `core/snapshots.py`, `core/workflow.py` |

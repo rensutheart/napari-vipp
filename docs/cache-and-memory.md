@@ -1,10 +1,10 @@
 # Cache And Memory Policy
 
-Last reviewed: 2026-08-28
+Last reviewed: 2026-08-29
 
 VIPP is primarily an eager, interactive workflow builder. Most nodes calculate
 NumPy-like in-memory outputs so that graph thumbnails, node inspection, pinned
-overlays, and downstream edits feel immediate. The current development build
+overlays, and downstream edits feel immediate. VIPP `0.14.0a3`
 has one deliberately narrow exception: an eligible direct local OME-Zarr
 `Image Source -> Crop Stack` path can read only the exact retained level-0
 window. Other operations remain eager. This is useful while designing a
@@ -184,7 +184,7 @@ pointwise clamp and does not allocate a whole-stack float copy.
 
 The current policy is pragmatic rather than fully lazy. VIPP can slice a
 declared lower local OME-Zarr 0.4/0.5 level for presentation while keeping
-analysis at level 0. The current development build can also materialize an
+analysis at level 0. VIPP `0.14.0a3` can also materialize an
 exact level-0 window for the one strictly eligible direct Crop Stack path. This
 does not make later nodes lazy or permit a branch to consume the omitted
 pixels. Before VIPP can be comfortable on very large scientific graphs, the

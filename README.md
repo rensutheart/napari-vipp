@@ -55,13 +55,13 @@ previews and selected-node inspector visible together.*
 ## Install
 
 The current published release is
-[`v0.14.0a2`](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a2).
+[`v0.14.0a3`](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a3).
 
 | Platform | Recommended route |
 | --- | --- |
-| Windows 64-bit | Download `VIPP-Setup-0.14.0a2-Windows-x86_64-UNSIGNED.exe` from the release page. The setup application creates and manages a dedicated VIPP environment. A supported 64-bit Python is a separate prerequisite. |
-| macOS Apple Silicon | Download `VIPP-0.14.0a2-macOS-arm64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
-| macOS Intel | Download `VIPP-0.14.0a2-macOS-x86_64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
+| Windows 64-bit | Download `VIPP-Setup-0.14.0a3-Windows-x86_64-UNSIGNED.exe` from the release page. The setup application creates and manages a dedicated VIPP environment. A supported 64-bit Python is a separate prerequisite. |
+| macOS Apple Silicon | Download `VIPP-0.14.0a3-macOS-arm64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
+| macOS Intel | Download `VIPP-0.14.0a3-macOS-x86_64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
 | Linux or an existing Python environment | Use the manual installation below. CPU execution is supported. |
 
 The desktop installers are unsigned alpha builds. Download them only from the
@@ -71,7 +71,7 @@ official release, verify the matching SHA-256 file, and follow the
 For a manual installation, use a dedicated CPython 3.12 or 3.13 environment:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.14.0a2"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.14.0a3"
 vipp
 ```
 

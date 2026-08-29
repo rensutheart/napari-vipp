@@ -69,14 +69,14 @@ conda run --prefix .venv-macos-installer \
 conda run --prefix .venv-macos-installer \
   python scripts/package_macos_installer.py build \
   --development \
-  --wheel dist/python/napari_vipp-0.14.0a2-py3-none-any.whl \
+  --wheel dist/python/napari_vipp-0.14.0a3-py3-none-any.whl \
   --output-directory dist/macos-development
 ```
 
 The expected Apple Silicon filename is:
 
 ```text
-VIPP-0.14.0a2-macOS-arm64-DEVELOPMENT.pkg
+VIPP-0.14.0a3-macOS-arm64-DEVELOPMENT.pkg
 ```
 
 Use `x86_64` instead of `arm64` for a package built natively on Intel. A quick
@@ -91,23 +91,23 @@ the wheel with the pinned toolchain, and compares archive contents with the
 supplied release wheel before constructing the PKG.
 
 ```bash
-git switch --detach v0.14.0a2
-test "$(git describe --tags --exact-match)" = "v0.14.0a2"
+git switch --detach v0.14.0a3
+test "$(git describe --tags --exact-match)" = "v0.14.0a3"
 test -z "$(git status --porcelain --untracked-files=all)"
 
 conda run --prefix .venv-macos-installer \
   python -m build --wheel --no-isolation --outdir dist/python
 conda run --prefix .venv-macos-installer \
   python scripts/package_macos_installer.py build \
-  --wheel dist/python/napari_vipp-0.14.0a2-py3-none-any.whl \
+  --wheel dist/python/napari_vipp-0.14.0a3-py3-none-any.whl \
   --output-directory dist/macos-staging
 
 conda run --prefix .venv-macos-installer \
   python scripts/package_macos_installer.py finalize-unsigned \
   --unsigned-staging-installer \
-    dist/macos-staging/VIPP-0.14.0a2-macOS-arm64-SIGNING-STAGING.pkg \
+    dist/macos-staging/VIPP-0.14.0a3-macOS-arm64-SIGNING-STAGING.pkg \
   --build-manifest \
-    dist/macos-staging/VIPP-0.14.0a2-macOS-arm64-SIGNING-STAGING-build.json \
+    dist/macos-staging/VIPP-0.14.0a3-macOS-arm64-SIGNING-STAGING-build.json \
   --output-directory dist/macos-release
 ```
 
@@ -117,13 +117,13 @@ evidence digest. It publishes atomically and refuses to overwrite any output.
 For Apple Silicon the final release directory contains only:
 
 ```text
-VIPP-0.14.0a2-macOS-arm64-UNSIGNED.pkg
-VIPP-0.14.0a2-macOS-arm64-UNSIGNED-release.json
-VIPP-0.14.0a2-macOS-arm64-UNSIGNED-constructor-info.json
-VIPP-0.14.0a2-macOS-arm64-UNSIGNED-licenses.json
-VIPP-0.14.0a2-macOS-arm64-UNSIGNED-lockfile.txt
-VIPP-0.14.0a2-macOS-arm64-UNSIGNED-package-list.txt
-SHA256SUMS-macOS-arm64-0.14.0a2.txt
+VIPP-0.14.0a3-macOS-arm64-UNSIGNED.pkg
+VIPP-0.14.0a3-macOS-arm64-UNSIGNED-release.json
+VIPP-0.14.0a3-macOS-arm64-UNSIGNED-constructor-info.json
+VIPP-0.14.0a3-macOS-arm64-UNSIGNED-licenses.json
+VIPP-0.14.0a3-macOS-arm64-UNSIGNED-lockfile.txt
+VIPP-0.14.0a3-macOS-arm64-UNSIGNED-package-list.txt
+SHA256SUMS-macOS-arm64-0.14.0a3.txt
 ```
 
 The staging PKG and its generic constructor sidecars are review inputs, not
@@ -142,8 +142,8 @@ Download the PKG and matching checksum file only from the official GitHub
 prerelease. In Terminal, from the download directory:
 
 ```bash
-shasum -a 256 -c SHA256SUMS-macOS-arm64-0.14.0a2.txt
-pkgutil --check-signature VIPP-0.14.0a2-macOS-arm64-UNSIGNED.pkg
+shasum -a 256 -c SHA256SUMS-macOS-arm64-0.14.0a3.txt
+pkgutil --check-signature VIPP-0.14.0a3-macOS-arm64-UNSIGNED.pkg
 ```
 
 Every checksum line must report `OK`. Because the alpha is deliberately

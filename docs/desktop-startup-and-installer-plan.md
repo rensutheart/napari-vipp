@@ -1,7 +1,7 @@
 # Desktop Startup And Installer Plan
 
 This document separates the startup and installer implementations in the
-source tree from future code-signing work. VIPP `0.14.0a2` publishes one
+source tree from future code-signing work. VIPP `0.14.0a3` publishes one
 checksum-qualified, explicitly unsigned Windows setup executable plus separate
 native, offline, CPU-only macOS PKGs for Apple Silicon (`arm64`) and Intel
 (`x86_64`). The Windows executable is not Authenticode-signed, and the macOS
@@ -188,7 +188,7 @@ Apply, the incomplete candidate is rolled back without replacing a previous
 working copy. **Try again** reruns checking and resolution for the exact choices
 currently shown, then requires a new review and confirmation instead of reusing
 the failed transaction.
-The explicitly unsigned `0.14.0a2` Windows and macOS installers have been
+The explicitly unsigned `0.14.0a3` Windows and macOS installers have been
 finalized and published from the immutable release tag. Remaining production
 work is platform signing/notarization and the still-unimplemented macOS
 graphical update/uninstall lifecycle, not another alpha publication step.
@@ -210,7 +210,7 @@ Every installer or launcher release should verify:
   visible CPU decisions, cleanup, and fallback reporting;
 - spaces in managed CPU and CUDA paths, Unicode managed CPU paths, and the
   pre-download ASCII-only guidance for managed and existing CUDA paths,
-  introduced in `0.13.0a7` and retained through `0.14.0a2`, including exact
+  introduced in `0.13.0a7` and retained through `0.14.0a3`, including exact
   canonical Local-App-Data roots, rejection of
   custom managed roots, CPU availability when canonical Local App Data makes
   CUDA incompatible, a separate non-mutating existing-environment route, and

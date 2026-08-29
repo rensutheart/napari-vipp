@@ -1,5 +1,104 @@
 # Changelog
 
+## 0.14.0a3 - 2026-08-29
+
+### Features
+
+- Completed responsive volumetric Crop Stack support for issue
+  [#50](https://github.com/rensutheart/napari-vipp/issues/50). Persisted Z-start
+  and Z-end margins apply only to one explicitly declared Z spatial axis; old
+  workflows retain zero-Z behavior, inferred QYX is never promoted to Z, and
+  T/C axes, physical calibration, origins, history, workflow hashes, export,
+  generated execution, and batch behavior remain reproducible.
+- Crop controls now present a lightweight translucent ROI over cached pixels
+  while the user drags. Release commits one undoable scientific edit and one
+  calculation; a pause while the mouse remains held is never an Undo boundary.
+  Pending drafts are flushed before
+  calculation, save, export, batch, workflow-tab, and close boundaries. The
+  bundled `responsive-crop` example provides a numbered TCZYX acceptance path.
+- Crop Stack now hides its channel-axis override when explicit metadata already
+  identifies the preserved channel axis, and also for explicitly scalar data.
+  The fallback remains visible for unresolved axes and saved manual overrides,
+  with wording that makes clear it protects an axis rather than cropping
+  channels.
+- Refined the Crop ROI overlay for each napari display mode: a thinner
+  current-plane guide in 2D and a transparent, depth-independent wireframe in
+  3D, avoiding the thick embedded-looking faces seen against rendered volumes.
+- Added a separate presentation-only outline-thickness control so Crop ROI
+  guides remain legible without overwhelming low-resolution data.
+- Added conventional workflow saving with `Ctrl+S`. The toolbar save action now
+  overwrites the current workflow by default, while first saves and `Save as`
+  request a destination and confirm before replacing an existing file. A
+  persistent Settings choice can instead confirm every overwrite or create a
+  separately timestamped workflow on every save. Bundled examples remain
+  templates, so saving one never overwrites the packaged example.
+- Added topology-aware Safe Node Bypass across callable, fixed-single-output
+  processing nodes. Bypass forwards the exact first/main input while preserving
+  the authored node and its settings; multi-input restoration nodes therefore
+  forward Image/intensity rather than PSF. Sources, writers, unused terminal
+  nodes, dynamic/multi-output operations, and type-incompatible splices fail
+  closed. Bypassed cards retain a presentation-only would-run thumbnail, a
+  faded dotted treatment, badge, and pass-through cue without exposing those
+  hypothetical pixels to downstream analysis.
+- Added matching whole-batch **Use workflow / Run / Bypass** profiles. Profiles
+  are applied atomically to detached effective workflows, remain separate from
+  authored graph intent, and are recorded in saved configuration, generated
+  runners, manifests, hashes, and execution provenance. Workflow schema 6 and
+  batch config/manifest schema 5 carry the new intent while continuing to read
+  their supported earlier schema versions.
+- Added exact level-0 source-window pushdown for a direct **Image Source → Crop Stack** path. Supported local OME-Zarr sources now read only the proven crop window while retaining complete T/C axes, exact source revision and crop identity, full-resolution scientific semantics, and fail-closed fallback when graph topology, axes, reader evidence, or source bytes do not match the verified plan.
+- When an eligible complete source exceeds the safe RAM budget, Image Source can offer an explicit centred fitted Crop Stack as a reviewable starting point. VIPP never crops silently, preserves every T/C position, and retains ordinary actionable memory refusal when an exact safe read cannot be proved.
+- Added a bounded napari compatibility lane covering the retained minimum
+  `napari==0.6.0`, exact `napari==0.9.0`, and the latest supported napari. It
+  validates the plugin manifest and exercises import, start/close, and focused
+  viewer integration with the platform bindings VIPP distributes: PyQt6 on
+  Windows/Linux and PySide6 on macOS. The declared `napari>=0.6` range remains
+  unchanged.
+
+### Bug Fixes
+
+- Hardened Crop selection and presentation-preview updates against napari layer-model re-entrancy, preventing the crash previously triggered by selecting a changed Crop Stack after switching compute preference.
+- Updated generated Image and Labels presentation layers to carry VIPP's axis
+  names into napari when that layer API is available. Labels stay aligned to
+  displayed dimensionality, omit a trailing RGB/RGBA component axis, update on
+  in-place layer reuse, and follow the selected scientific presentation layer;
+  hidden or provisional source previews cannot replace the active viewer
+  labels.
+- Replaced documentation capture's direct use of napari's legacy camera and Qt
+  window layout with feature-detected compatibility seams. Camera access
+  prefers `viewer.scene.camera` and falls back to `viewer.camera`; native-window
+  lookup prefers ordinary Qt parent traversal and retains only a bounded legacy
+  fallback for older supported napari releases. Both paths are binding-neutral
+  across PySide6 and PyQt6.
+- Advanced Image Source axis text now remains an uncommitted editor draft until
+  it is a complete valid mapping and the user presses Enter or leaves the field.
+  Partial keystrokes can no longer enter workflow history or trip strict source
+  validation during an otherwise valid edit.
+- The napari compatibility work is presentation-only: it changes no workflow
+  schema, scientific operation, generated result, provenance, or GPU contract.
+- Undo and Redo now restore a single node's parameter change in
+  place, retain graph cards, thumbnails, viewer layers, and unaffected cached
+  branches, and recalculate only that node and its descendants. Image Source
+  edits also use this path while still refreshing source-owned I/O and preview
+  state. Topology, layout, compute-policy, and multi-node changes retain the
+  audited whole-workflow restore path.
+- Slider, axis-range, histogram-marker, and colocalization-threshold scrubbing
+  now creates one Undo step per completed press-drag-release gesture, even when
+  a recalculation or idle timer finishes while the pointer remains held. Undo
+  returns directly to the value present at mouse-down rather than a calculated
+  intermediate value.
+- `Ctrl+S` is now caught at the active VIPP/napari window boundary, so graph,
+  inspector, and viewer focus cannot prevent workflow saving. VIPP no longer
+  registers a second Qt action shortcut that can collide with napari's own
+  `Ctrl+S`; the window-level handler claims the key before napari resolves its
+  actions. A successful save clears the tab's dirty asterisk and reports
+  `Saved workflow` in the status strip.
+
+### Remaining limitations
+
+- Exact source-window pushdown is deliberately limited to one direct Image Source to Crop Stack path and readers that can prove an exact local level-0 window. Other graph shapes and formats still use the ordinary full-source load path.
+- The macOS installers remain unsigned, unnotarized, CPU-only, and current-user-only. macOS may require the documented **Open Anyway** confirmation after checksum verification.
+
 ## 0.14.0a2 - 2026-08-27
 
 ### Features
@@ -30,75 +129,6 @@
   documented **Open Anyway** confirmation after checksum verification.
 - macOS installation is CPU-only and current-user-only. Automatic update and a
   graphical uninstaller are not included in this alpha.
-
-## Pending release
-
-### Features
-
-- Completed responsive volumetric Crop Stack support for issue
-  [#50](https://github.com/rensutheart/napari-vipp/issues/50). Persisted Z-start
-  and Z-end margins apply only to one explicitly declared Z spatial axis; old
-  workflows retain zero-Z behavior, inferred QYX is never promoted to Z, and
-  T/C axes, physical calibration, origins, history, workflow hashes, export,
-  generated execution, and batch behavior remain reproducible.
-- Crop controls now present a lightweight translucent ROI over cached pixels
-  while the user drags. Release commits one undoable scientific edit and one
-  calculation; a pause while the mouse remains held is never an Undo boundary.
-  Pending drafts are flushed before
-  calculation, save, export, batch, workflow-tab, and close boundaries. The
-  bundled `responsive-crop` example provides a numbered TCZYX acceptance path.
-- Crop Stack now hides its channel-axis override when explicit metadata already
-  identifies the preserved channel axis, and also for explicitly scalar data.
-  The fallback remains visible for unresolved axes and saved manual overrides,
-  with wording that makes clear it protects an axis rather than cropping
-  channels.
-- Refined the Crop ROI overlay for each napari display mode: a thinner
-  current-plane guide in 2D and a transparent, depth-independent wireframe in
-  3D, avoiding the thick embedded-looking faces seen against rendered volumes.
-- Added conventional workflow saving with `Ctrl+S`. The toolbar save action now
-  overwrites the current workflow by default, while first saves and `Save as`
-  request a destination and confirm before replacing an existing file. A
-  persistent Settings choice can instead confirm every overwrite or create a
-  separately timestamped workflow on every save. Bundled examples remain
-  templates, so saving one never overwrites the packaged example.
-- Added topology-aware Safe Node Bypass across callable, fixed-single-output
-  processing nodes. Bypass forwards the exact first/main input while preserving
-  the authored node and its settings; multi-input restoration nodes therefore
-  forward Image/intensity rather than PSF. Sources, writers, unused terminal
-  nodes, dynamic/multi-output operations, and type-incompatible splices fail
-  closed. Bypassed cards retain a presentation-only would-run thumbnail, a
-  faded dotted treatment, badge, and pass-through cue without exposing those
-  hypothetical pixels to downstream analysis.
-- Added matching whole-batch **Use workflow / Run / Bypass** profiles. Profiles
-  are applied atomically to detached effective workflows, remain separate from
-  authored graph intent, and are recorded in saved configuration, generated
-  runners, manifests, hashes, and execution provenance. Workflow schema 6 and
-  batch config/manifest schema 5 carry the new intent while continuing to read
-  their supported earlier schema versions.
-
-### Bug Fixes
-
-- Advanced Image Source axis text now remains an uncommitted editor draft until
-  it is a complete valid mapping and the user presses Enter or leaves the field.
-  Partial keystrokes can no longer enter workflow history or trip strict source
-  validation during an otherwise valid edit.
-- Undo and Redo now restore a single node's parameter change in
-  place, retain graph cards, thumbnails, viewer layers, and unaffected cached
-  branches, and recalculate only that node and its descendants. Image Source
-  edits also use this path while still refreshing source-owned I/O and preview
-  state. Topology, layout, compute-policy, and multi-node changes retain the
-  audited whole-workflow restore path.
-- Slider, axis-range, histogram-marker, and colocalization-threshold scrubbing
-  now creates one Undo step per completed press-drag-release gesture, even when
-  a recalculation or idle timer finishes while the pointer remains held. Undo
-  returns directly to the value present at mouse-down rather than a calculated
-  intermediate value.
-- `Ctrl+S` is now caught at the active VIPP/napari window boundary, so graph,
-  inspector, and viewer focus cannot prevent workflow saving. VIPP no longer
-  registers a second Qt action shortcut that can collide with napari's own
-  `Ctrl+S`; the window-level handler claims the key before napari resolves its
-  actions. A successful save clears the tab's dirty asterisk and reports
-  `Saved workflow` in the status strip.
 
 ## 0.14.0a1 - 2026-08-26
 
