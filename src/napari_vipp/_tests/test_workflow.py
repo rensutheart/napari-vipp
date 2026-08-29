@@ -22,6 +22,7 @@ from napari_vipp.core.operations import (
     COMPOSITE_RGB_PRESERVE_VALUES,
 )
 from napari_vipp.core.pipeline import (
+    CROP_ROI_LINE_WIDTH_SCALE_PARAMETER,
     GraphConnection,
     PrototypePipeline,
     SourcePayload,
@@ -1672,6 +1673,42 @@ def test_crop_workflow_file_roundtrip_preserves_all_volumetric_margins(tmp_path)
     output = restored.run(image, input_metadata={"axes": "ZYX"})[crop.id]
 
     np.testing.assert_array_equal(output, image[1:-2, 2:-3, 4:-2])
+
+
+def test_crop_roi_line_thickness_roundtrips_but_remains_optional_and_validated(
+    tmp_path,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    assert pipeline.connect("input", crop.id).success
+    parameter = CROP_ROI_LINE_WIDTH_SCALE_PARAMETER
+
+    assert parameter.name not in crop.params
+    pipeline.set_param(crop.id, parameter.name, 0.35)
+    path = save_workflow(tmp_path / "crop-roi-thickness.json", pipeline)
+    document = load_workflow(path)
+    restored_crop = next(
+        node for node in document["nodes"] if node.operation_id == "crop_stack"
+    )
+    assert restored_crop.params[parameter.name] == pytest.approx(0.35)
+
+    legacy = serialize_workflow(pipeline)
+    serialized_crop = next(
+        node for node in legacy["nodes"] if node["operation_id"] == "crop_stack"
+    )
+    serialized_crop["params"].pop(parameter.name)
+    legacy_document = deserialize_workflow(legacy)
+    legacy_crop = next(
+        node
+        for node in legacy_document["nodes"]
+        if node.operation_id == "crop_stack"
+    )
+    assert parameter.name not in legacy_crop.params
+
+    for invalid in (0.0, 100.01, float("inf")):
+        with pytest.raises((TypeError, ValueError)):
+            pipeline.set_param(crop.id, parameter.name, invalid)
 
 
 def test_restore_graph_rejects_incompatible_typed_input_connection():

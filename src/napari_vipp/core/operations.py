@@ -126,33 +126,83 @@ def crop_stack(
     carried axis metadata so inferred QYX/ZYX layouts cannot silently acquire
     volumetric meaning.
     """
-    arr = np.asarray(data)
+    shape = tuple(int(size) for size in getattr(data, "shape", ()))
+    dtype = getattr(data, "dtype", None)
+    if not shape or dtype is None:
+        arr = np.asarray(data)
+        shape = tuple(int(size) for size in arr.shape)
+    else:
+        arr = None
+    slices = crop_stack_selection(
+        shape,
+        top=top,
+        bottom=bottom,
+        left=left,
+        right=right,
+        channel_axis=channel_axis,
+        axis_names=axis_names,
+        z_start=z_start,
+        z_end=z_end,
+        z_axis_explicit=z_axis_explicit,
+    )
+    materialize_exact = getattr(data, "materialize_exact", None)
+    if callable(materialize_exact):
+        return materialize_exact(slices)
+    if arr is None:
+        arr = np.asarray(data)
+    if len(shape) < 2:
+        return arr.copy()
+    return np.ascontiguousarray(arr[slices])
+
+
+def crop_stack_selection(
+    shape: Sequence[int],
+    top: int = 0,
+    bottom: int = 0,
+    left: int = 0,
+    right: int = 0,
+    channel_axis: int | None = None,
+    axis_names: Sequence[str] = (),
+    z_start: int = 0,
+    z_end: int = 0,
+    z_axis_explicit: bool | None = None,
+) -> tuple[slice, ...]:
+    """Return Crop Stack's canonical full-rank half-open selection.
+
+    This geometry-only helper is shared by ordinary execution and exact source
+    window planning so the optimization cannot drift from the authored Crop
+    semantics.  It never reads or allocates image pixels.
+    """
+    source_shape = tuple(int(size) for size in shape)
+    if any(size < 0 for size in source_shape):
+        raise ValueError("Crop stack input dimensions must be non-negative.")
     channel_axis = _validated_filter_channel_axis(
         channel_axis,
-        arr.ndim,
+        len(source_shape),
         operation="Crop stack",
     )
-    if arr.ndim < 2:
+    if len(source_shape) < 2:
         if any(
             value != 0
             for value in (top, bottom, left, right, z_start, z_end)
         ):
             raise ValueError("Crop stack requires at least two spatial axes.")
-        return arr.copy()
+        return tuple(slice(0, size, 1) for size in source_shape)
 
     names = tuple(str(name).strip().casefold() for name in axis_names)
-    if names and len(names) != arr.ndim:
+    if names and len(names) != len(source_shape):
         raise ValueError("Declared axis names must match the input array rank.")
+    geometry = _ArrayGeometry(source_shape)
     y_axis, x_axis = _xy_axes(
-        arr,
+        geometry,
         channel_axis=channel_axis,
         axis_names=names,
     )
-    slices = [slice(None)] * arr.ndim
-    top, bottom = _crop_pair(top, bottom, arr.shape[y_axis])
-    left, right = _crop_pair(left, right, arr.shape[x_axis])
-    slices[y_axis] = slice(top, arr.shape[y_axis] - bottom)
-    slices[x_axis] = slice(left, arr.shape[x_axis] - right)
+    slices = [slice(0, size, 1) for size in source_shape]
+    top, bottom = _crop_pair(top, bottom, source_shape[y_axis])
+    left, right = _crop_pair(left, right, source_shape[x_axis])
+    slices[y_axis] = slice(top, source_shape[y_axis] - bottom, 1)
+    slices[x_axis] = slice(left, source_shape[x_axis] - right, 1)
     z_start, z_end = _crop_margin_values(z_start, z_end)
     if z_start != 0 or z_end != 0:
         if names.count("z") != 1 or z_axis_explicit is False:
@@ -166,9 +216,20 @@ def crop_stack(
             raise ValueError(
                 "The declared channel axis cannot also be the Z spatial axis."
             )
-        z_start, z_end = _crop_pair(z_start, z_end, arr.shape[z_axis])
-        slices[z_axis] = slice(z_start, arr.shape[z_axis] - z_end)
-    return np.ascontiguousarray(arr[tuple(slices)])
+        z_start, z_end = _crop_pair(z_start, z_end, source_shape[z_axis])
+        slices[z_axis] = slice(z_start, source_shape[z_axis] - z_end, 1)
+    return tuple(slices)
+
+
+@dataclass(frozen=True, slots=True)
+class _ArrayGeometry:
+    """Tiny array-shape proxy used by geometry-only operation planning."""
+
+    shape: tuple[int, ...]
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
 
 
 def reorder_axes(

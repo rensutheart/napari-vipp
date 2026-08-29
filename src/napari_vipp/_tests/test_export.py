@@ -49,7 +49,72 @@ from napari_vipp.core.pipeline import (
 )
 from napari_vipp.core.source_identity import capture_local_source_identity
 from napari_vipp.core.source_item_persistence import SOURCE_ITEM_PARAMETER
+from napari_vipp.core.source_items import (
+    ResolvedSourceItemIdentity,
+    SourceCapabilities,
+    SourceContainerBundle,
+    SourceContainerMember,
+    SourceItem,
+    SourceItemSelector,
+    SourceReaderDescriptor,
+    SourceRevisionProof,
+)
 from napari_vipp.core.workflow import WORKFLOW_VERSION, serialize_workflow
+
+
+def _export_exact_window_source_item(path: Path, *, available: bool = True):
+    return SourceItem(
+        container=SourceContainerBundle(
+            uri=str(path),
+            format="ome-zarr-0.5",
+            revision=SourceRevisionProof(
+                kind="directory",
+                sha256="a" * 64,
+                regular_file_count=1,
+                size_bytes=1,
+            ),
+            members=(
+                SourceContainerMember(
+                    key="zarr.json",
+                    sha256="b" * 64,
+                    size_bytes=1,
+                    role="metadata",
+                ),
+            ),
+        ),
+        selector=SourceItemSelector(
+            key=".",
+            kind="image",
+            source_axes=("y", "x"),
+            effective_axes=("y", "x"),
+        ),
+        reader=SourceReaderDescriptor(
+            adapter_id="ome-zarr-v1",
+            implementation="ome-zarr",
+            version="0.12.2",
+        ),
+        capabilities=SourceCapabilities(
+            pixel_lazy_inspection=True,
+            lazy_data=True,
+            level_enumeration=True,
+            preview_level_read=True,
+            exact_region_read=available,
+            chunked_read=True,
+            decoded_size_estimate=True,
+        ),
+        resolved=ResolvedSourceItemIdentity(
+            key=".",
+            name="source",
+            kind="image",
+            shape=(20, 30),
+            dtype="uint16",
+            axes=("y", "x"),
+            raw_axes=("y", "x"),
+            analysis_level=0,
+            level_shapes=((20, 30),),
+            estimated_decoded_bytes=1200,
+        ),
+    )
 
 
 def _starter_pipeline() -> PrototypePipeline:
@@ -2837,6 +2902,84 @@ def test_exported_load_helper_returns_the_verified_frozen_payload():
     assert kwargs["cancel_callback"]() is False
     kwargs["progress_callback"](3, 9, "Hashing source bytes")
     assert progress == [("source-load", 3, 9, "Hashing source bytes")]
+
+
+def test_exported_load_helper_pushes_down_one_exact_direct_crop(tmp_path):
+    source = tmp_path / "source.ome.zarr"
+    source_item = _export_exact_window_source_item(source)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.nodes["input"].params[SOURCE_ITEM_PARAMETER] = source_item.to_dict()
+    crop = pipeline.add_node("crop_stack")
+    crop.params.update({"top": 2, "bottom": 3, "left": 4, "right": 5})
+    assert pipeline.connect("input", crop.id).success
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+
+    state = image_state_from_array(
+        np.zeros((20, 30), dtype=np.uint16),
+        axes=(AxisMetadata("y", "space"), AxisMetadata("x", "space")),
+    )
+    selected = SimpleNamespace(index=0)
+    namespace["inspect_image_source"] = lambda _path: object()
+    namespace["select_inspected_item"] = lambda *_args, **_kwargs: selected
+    namespace["inspect_image_state"] = lambda *_args, **_kwargs: state
+    payload = SourcePayload(np.ones((15, 21), dtype=np.uint16))
+    calls = []
+
+    def frozen_snapshot(path, series_index, **kwargs):
+        calls.append((path, series_index, kwargs))
+        return SimpleNamespace(payload=payload)
+
+    namespace["load_frozen_file_source_snapshot"] = frozen_snapshot
+
+    assert namespace["load_image"](source, source_node_id="input") is payload
+    assert len(calls) == 1
+    request = calls[0][2]["exact_window_request"]
+    assert request is not None
+    assert tuple(
+        (selector.start, selector.stop)
+        for selector in request.normalized_selection((20, 30))
+    ) == ((2, 17), (4, 25))
+    assert calls[0][2]["expected_source_item"].digest == source_item.digest
+
+
+@pytest.mark.parametrize("replacement_path", [False, True])
+def test_exported_load_helper_preserves_ordinary_load_when_unqualified(
+    tmp_path,
+    replacement_path,
+):
+    source = tmp_path / "source.ome.zarr"
+    requested = tmp_path / "replacement.ome.zarr" if replacement_path else source
+    source_item = _export_exact_window_source_item(
+        source,
+        available=replacement_path,
+    )
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.nodes["input"].params[SOURCE_ITEM_PARAMETER] = source_item.to_dict()
+    crop = pipeline.add_node("crop_stack")
+    crop.params["top"] = 1
+    assert pipeline.connect("input", crop.id).success
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    namespace["inspect_image_source"] = lambda _path: pytest.fail(
+        "unqualified source reached exact-window inspection"
+    )
+    payload = SourcePayload(np.ones((20, 30), dtype=np.uint16))
+    calls = []
+
+    def frozen_snapshot(path, series_index, **kwargs):
+        calls.append((path, series_index, kwargs))
+        return SimpleNamespace(payload=payload)
+
+    namespace["load_frozen_file_source_snapshot"] = frozen_snapshot
+
+    assert namespace["load_image"](requested, source_node_id="input") is payload
+    assert calls[0][2]["exact_window_request"] is None
+    assert calls[0][2]["expected_source_item"] is None
 
 
 def test_exported_load_helper_uses_authored_source_item_key(tmp_path):

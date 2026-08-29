@@ -21,7 +21,7 @@ body:
     attributes:
       label: Environment
       description: Include operating system, Python version, napari version, and Qt backend.
-      placeholder: Windows 11; Python 3.12; napari 0.6.x; PyQt6
+      placeholder: Windows 11; Python 3.12; napari 0.9.x; PyQt6
     validations:
       required: true
   - type: textarea

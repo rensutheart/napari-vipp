@@ -2280,6 +2280,7 @@ class PipelineGraphView(QGraphicsView):
         self._proxies: dict[str, NodeProxy] = {}
         self._cards: dict[str, NodeCard] = {}
         self._primary_node_id: str | None = None
+        self._node_press_dispatch_depth = 0
         self._clipboard_can_paste = False
         self._clipboard_single_operation_id = ""
         self._clipboard_single_title = ""
@@ -4025,6 +4026,30 @@ class PipelineGraphView(QGraphicsView):
         self._set_node_selection({node_id}, node_id)
 
     def _handle_node_press(
+        self,
+        node_id: str,
+        modifiers,
+        *,
+        preserve_group_for_drag: bool = False,
+    ) -> bool:
+        """Dispatch one node press while exposing its nested Qt event boundary."""
+
+        self._node_press_dispatch_depth += 1
+        try:
+            return self._dispatch_node_press(
+                node_id,
+                modifiers,
+                preserve_group_for_drag=preserve_group_for_drag,
+            )
+        finally:
+            self._node_press_dispatch_depth -= 1
+
+    def node_press_dispatch_active(self) -> bool:
+        """Return whether node-selection signals are inside a mouse press."""
+
+        return self._node_press_dispatch_depth > 0
+
+    def _dispatch_node_press(
         self,
         node_id: str,
         modifiers,

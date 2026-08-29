@@ -72,6 +72,7 @@ from napari_vipp.core.execution_provenance import (
     execution_provenance_digest,
     serialize_execution_provenance,
 )
+from napari_vipp.core.file_sources import load_frozen_file_source_snapshot
 from napari_vipp.core.io import (
     MICROSCOPE_SUFFIXES,
     SourceInspection,
@@ -106,6 +107,7 @@ from napari_vipp.core.source_resolution import (
     select_inspected_item,
     verify_saved_source_item,
 )
+from napari_vipp.core.source_window_planning import plan_exact_source_crop_window
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import deserialize_workflow
 
@@ -1648,6 +1650,17 @@ def run_batch(
         )
         for item in plan.items
     }
+    item_pipelines: dict[int, PrototypePipeline] = {}
+    for index, document in item_workflows.items():
+        restored_item = deserialize_workflow(document)
+        item_pipeline = PrototypePipeline()
+        item_pipeline.restore_graph(
+            restored_item["nodes"],
+            restored_item["connections"],
+            restored_item.get("output_tunnels", ()),
+            atomic_bypass_profile=bool(config.node_execution_overrides),
+        )
+        item_pipelines[index] = item_pipeline
     item_workflow_hashes = {
         index: scientific_workflow_hash(document)
         for index, document in item_workflows.items()
@@ -1765,7 +1778,7 @@ def run_batch(
             sources = list(item_record.sources)
             source_paths: dict[str, Path] = {}
             source_identities: dict[str, LocalSourceIdentity] = {}
-            item_pipeline = pipeline
+            item_pipeline = item_pipelines[item_plan.index]
             (
                 node_started,
                 node_finished,
@@ -1793,7 +1806,7 @@ def run_batch(
                     batch_id=item_plan.batch_id,
                 )
                 payloads, sources = _source_payloads_for_item(
-                    pipeline,
+                    item_pipeline,
                     item_plan,
                     config,
                     source_paths,
@@ -3188,17 +3201,11 @@ def _source_payloads_for_item(
                 else None
             ),
         )
-        dataset = read_image(
+        raw_state = inspect_image_state(
             path,
+            inspection=inspection,
             series_index=selected.index,
         )
-        if dataset.selected_series.key != selected.key:
-            raise RuntimeError(
-                "Reader contract mismatch: batch inspection selected item key "
-                f"{selected.key!r} but the reader returned "
-                f"{dataset.selected_series.key!r}."
-            )
-        raw_state = dataset.image_state
         effective_state, axis_semantics = _declared_batch_source_state(
             raw_state,
             binding,
@@ -3208,7 +3215,7 @@ def _source_payloads_for_item(
         if expected_source_item is None:
             bundle = capture_local_source_bundle(
                 path,
-                source_format=dataset.inspection.format,
+                source_format=inspection.format,
             )
             if local_source_identity_from_bundle(bundle) != identity:
                 raise SourceChangedError(
@@ -3217,8 +3224,8 @@ def _source_payloads_for_item(
                 )
             source_item = resolve_source_item(
                 bundle,
-                dataset.inspection,
-                item_key=dataset.selected_series.key,
+                inspection,
+                item_key=selected.key,
                 image_state=effective_state,
                 axis_declaration=(
                     binding.axis_declaration
@@ -3242,21 +3249,113 @@ def _source_payloads_for_item(
                     expected_source_item.container,
                     uri=str(path.resolve(strict=False)),
                 ),
-                dataset.inspection,
+                inspection,
                 image_state=effective_state,
             )
-        provenance = _json_safe(dataset.provenance)
+
+        window_decision = plan_exact_source_crop_window(
+            pipeline,
+            node_id,
+            source_item,
+            effective_state,
+        )
+        read_strategy = "full-source"
+        source_window: dict[str, object] | None = None
+        source_window_digest = ""
+        if window_decision.plan is not None:
+            declaration = (
+                binding.axis_declaration
+                if binding is not None
+                else node.params.get("axis_declaration")
+            )
+            snapshot = load_frozen_file_source_snapshot(
+                path,
+                series_index=selected.index,
+                item_key=selected.key,
+                axis_declaration=declaration,
+                expected_identity=identity,
+                expected_source_item=source_item,
+                exact_window_request=window_decision.plan.request,
+            )
+            if snapshot.source_item.digest != source_item.digest:
+                raise RuntimeError(
+                    "Exact batch source-window snapshot changed its verified "
+                    "SourceItem. No output was published."
+                )
+            read_strategy = "exact-level-0-window"
+            source_window = dict(
+                snapshot.payload.metadata.get("vipp_source_window", {})
+            )
+            source_window_digest = str(
+                snapshot.payload.metadata.get("vipp_source_window_digest", "")
+            )
+            provenance: object = {
+                "reader": "napari-vipp",
+                "source_uri": str(path),
+                "read_strategy": read_strategy,
+                "source_window": source_window,
+                "source_window_digest": source_window_digest,
+            }
+            payload = replace(
+                snapshot.payload,
+                metadata={
+                    **(snapshot.payload.metadata or {}),
+                    "vipp_axis_semantics": axis_semantics,
+                },
+                name=selected.name or path.name,
+                image_state=effective_state,
+                axis_semantics_resolved=True,
+            )
+        else:
+            dataset = read_image(
+                path,
+                series_index=selected.index,
+            )
+            if dataset.selected_series.key != selected.key:
+                raise RuntimeError(
+                    "Reader contract mismatch: batch inspection selected item key "
+                    f"{selected.key!r} but the reader returned "
+                    f"{dataset.selected_series.key!r}."
+                )
+            provenance = _json_safe(dataset.provenance)
+            payload = SourcePayload(
+                dataset.data,
+                {},
+                dataset.selected_series.name or path.name,
+                effective_state,
+                revision_token=identity,
+                axis_semantics_resolved=True,
+                source_item=source_item,
+            )
+
+        plan_record: dict[str, object] = {
+            "reason_code": window_decision.reason_code.value,
+            "reason": window_decision.reason,
+        }
+        if window_decision.plan is not None:
+            plan_record.update(
+                {
+                    "crop_node_id": window_decision.plan.crop_node_id,
+                    "decoded_output_bytes": (
+                        window_decision.plan.decoded_output_bytes
+                    ),
+                }
+            )
         effective_provenance = (
-            {**provenance, "axis_semantics": axis_semantics}
+            {
+                **provenance,
+                "axis_semantics": axis_semantics,
+            }
             if isinstance(provenance, dict)
             else {
                 "reader_provenance": provenance,
                 "axis_semantics": axis_semantics,
             }
         )
-        payloads[node_id] = SourcePayload(
-            dataset.data,
-            {
+        payloads[node_id] = replace(
+            payload,
+            metadata={
+                **(payload.metadata or {}),
                 "vipp_source_path": str(path),
                 "vipp_source_provenance": effective_provenance,
                 "vipp_axis_semantics": axis_semantics,
@@ -3265,10 +3364,6 @@ def _source_payloads_for_item(
                 "vipp_source_item_digest": source_item.digest,
                 "vipp_source_item": source_item.to_public_dict(),
             },
-            dataset.selected_series.name or path.name,
-            effective_state,
-            revision_token=identity,
-            axis_semantics_resolved=True,
             source_item=source_item,
         )
         identity_record = {
@@ -3282,13 +3377,13 @@ def _source_payloads_for_item(
             "path": str(path),
             "identity": identity_record,
             "series": {
-                "index": dataset.selected_series.index,
-                "key": dataset.selected_series.key,
-                "name": dataset.selected_series.name,
-                "shape": list(dataset.selected_series.shape),
-                "dtype": dataset.selected_series.dtype,
-                "axes": dataset.selected_series.axes,
-                "kind": dataset.selected_series.kind,
+                "index": selected.index,
+                "key": selected.key,
+                "name": selected.name,
+                "shape": list(selected.shape),
+                "dtype": selected.dtype,
+                "axes": selected.axes,
+                "kind": selected.kind,
             },
             "raw_axes": axis_semantics["raw_axes"],
             "effective_axes": axis_semantics["effective_axes"],
@@ -3296,7 +3391,12 @@ def _source_payloads_for_item(
             "axis_semantics": axis_semantics,
             "image_state": effective_state.to_dict(),
             "provenance": effective_provenance,
+            "read_strategy": read_strategy,
+            "source_window_plan": plan_record,
         }
+        if source_window is not None:
+            source_record["source_window"] = source_window
+            source_record["source_window_digest"] = source_window_digest
         source_record["source_item"] = source_item.to_dict()
         records.append(source_record)
     return payloads, records

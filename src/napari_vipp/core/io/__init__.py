@@ -23,6 +23,7 @@ from napari_vipp.core.io.registry import (
     inspect_image_source,
     inspect_image_state,
     read_image,
+    read_image_exact_window,
     write_image,
 )
 
@@ -42,6 +43,7 @@ __all__ = [
     "inspect_image_state",
     "inspect_image_source",
     "read_image",
+    "read_image_exact_window",
     "write_image",
     "write_ome_zarr_analysis_dataset",
 ]

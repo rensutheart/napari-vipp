@@ -879,25 +879,65 @@ secondary binding and label it explicitly in the manifest, but it must retain
 source identity/revision evidence and must not silently change pairing, batch
 IDs, or the behavior of a profile returned to Run.
 
-#### Exact Source-Window Pushdown
+#### Exact Source-Window Pushdown And Low-RAM Crop Repair — Implemented, Pending Release
 
-Goal: avoid decoding pixels that a direct source Crop will discard while keeping
-the authored graph and result exactly equivalent to eager execution.
+The first exact direct-Crop slice is complete in the current development tree
+and awaits release qualification. It avoids decoding pixels that a visible
+Crop Stack will discard while keeping the authored graph and Crop result
+equivalent to eager execution.
 
-- Replace `full read -> direct Crop Stack` with an exact full-resolution region
-  read only when the reader advertises the capability, Crop is the source's sole
-  direct consumer, semantic spatial axes and parameters are fixed, and no branch
-  or tunnel needs the complete source.
-- Preserve the Crop node, history, physical origin, cache identity, scientific
-  hash, and provenance. Verify eager-versus-region bytes and ImageState parity.
-- Include source revision, SourceItem, ROI, reader implementation/version, and
-  axis declaration in the read identity. Fall back to the complete read when any
-  proof is absent or stale.
-- Start with local OME-Zarr. Require real-file evidence before claiming exact
-  region reads for IMS, BioIO, TIFF, or another adapter.
+- The local OME-Zarr 0.4/0.5 reader can slice an exact level-0 region before
+  materialization. Pushdown is used only for one ordinary output-0 to input-0
+  `Image Source -> Crop Stack` edge when Crop is the source's sole consumer and
+  sole input, neither endpoint is connected through a tunnel, Crop is not
+  bypassed, and its nonzero geometry is fixed by explicit Y/X and optional Z
+  semantics. Every T, C, and other non-cropped axis remains complete.
+- Image Source retains the complete logical source shape and immutable
+  SourceItem identity. Crop consumes the reader-verified window, remains a
+  visible authored node, and preserves the same output bytes, ImageState,
+  shifted physical origin, operation history, scientific/cache identity, and
+  provenance as the eager `full read -> Crop Stack` path.
+- The read identity binds source revision, SourceItem, series/item selector,
+  full source shape and dtype, exact bounds, axis declaration, reader key and
+  reader version. Source and item evidence is verified before and after the
+  read; a stale ROI or identity cannot be coerced into a full image.
+- Pushdown saves level-0 pixel decoding and allocation, not the current pinned
+  SourceItem safety pass: VIPP still hashes/verifies the complete local
+  container before and after the read, with progress. Very large stores may
+  therefore remain I/O-bound even when their retained pixel window is small.
+- Interactive execution, batch execution, and generated Python/export use the
+  same strict planner and record the exact source-window identity. When any
+  proof is missing, stale, branched, tunneled, bypassed, ambiguous, or
+  unsupported, VIPP uses the ordinary complete read only if its normal memory
+  preflight permits it. It never advertises a partial result as a complete
+  source.
+- If a complete source does not fit the safe host-RAM budget and an exact local
+  read can be proven, Image Source explains the decoded requirement and offers
+  **Add fitted Crop Stack** (or **Fit existing Crop Stack**). Accepting the
+  action inserts or updates one visible Crop Stack as one undoable edit, using
+  a conservative centred, full-rank starting window that retains every time and
+  channel position. The proposal is deliberately content-agnostic, must be
+  reviewed scientifically, and does not promise that downstream operations
+  will fit. VIPP does not modify the graph without that explicit action.
+- Automatic repair is disabled when a branch or output tunnel still requires
+  the full source, when the existing Crop is bypassed, when the reader lacks an
+  exact-region contract, or when axis/source evidence is insufficient. In an
+  unsafe fallback case VIPP returns to actionable RAM preflight rather than
+  attempting a hidden full allocation.
 
-This depends on SourceItem, reader capability metadata, and the named-axis
-contract from 0.13-E. Branch-aware ROI unions remain an uncommitted idea.
+Automated parity covers the reader contract, planner refusals, ordinary and
+windowed execution, batch manifests, generated execution, metadata, and source
+identity. For manual acceptance, run
+[`scripts/generate_source_window_acceptance.py`](../scripts/generate_source_window_acceptance.py)
+to create `build/manual-acceptance/source-window-pushdown/`. Its crop-free
+workflow and sparse OME-Zarr advertise a 64 GiB decoded ZYX source while keeping
+the on-disk fixture small; the four workflow notes test the RAM hint, one-click
+graph repair, exact pixels, persistence, Undo, and unsafe-topology refusal.
+
+IMS, BioIO, TIFF, remote stores, branch-aware ROI unions, content-aware crop
+selection, and general lazy/chunked operation execution remain outside this
+slice. Those readers need controlled real-file evidence before VIPP can claim
+exact scientific region reads.
 
 #### Selective Lazy And Chunked Scientific Execution
 

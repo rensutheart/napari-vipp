@@ -4,6 +4,7 @@ import threading
 from dataclasses import replace
 
 import numpy as np
+import pytest
 
 import napari_vipp.core.execution as execution_module
 from napari_vipp.core.compute import (
@@ -46,6 +47,10 @@ from napari_vipp.core.source_identity import (
     LocalSourceIdentity,
     SourceRevisionToken,
 )
+from napari_vipp.core.source_window import (
+    ExactSourceWindowData,
+    SourceWindowIdentity,
+)
 from napari_vipp.core.workflow import serialize_workflow
 
 
@@ -74,6 +79,50 @@ def _pipeline_cache_kwargs(pipeline: PrototypePipeline) -> dict[str, object]:
             **pipeline.node_compute_provenance,
         },
     }
+
+
+def _exact_source_window_payload(
+    full_data: np.ndarray,
+    *,
+    bounds: tuple[tuple[int, int], ...],
+) -> SourcePayload:
+    selection = tuple(slice(start, stop) for start, stop in bounds)
+    window = np.ascontiguousarray(full_data[selection]).copy()
+    window.setflags(write=False)
+    full_state = image_state_from_array(
+        full_data,
+        layer_metadata={"axes": "YX"},
+        source_name="exact-window source",
+    )
+    window_state = image_state_from_array(
+        window,
+        layer_metadata={"axes": "YX"},
+        source_name="exact-window source",
+    )
+    identity = SourceWindowIdentity(
+        source_uri="C:/verified/source.ome.zarr",
+        source_format="ome-zarr-0.5",
+        series_index=0,
+        item_key=".",
+        reader_key="ome-zarr-v1",
+        reader_version="0.12.2",
+        source_shape=full_data.shape,
+        source_dtype=full_data.dtype.name,
+        axis_names=("y", "x"),
+        bounds=bounds,
+        source_revision="a" * 64,
+        source_item_digest="b" * 64,
+    )
+    return SourcePayload(
+        ExactSourceWindowData(window, window_state, identity),
+        {
+            "axes": "YX",
+            "vipp_source_window_digest": identity.digest,
+        },
+        "exact-window source",
+        full_state,
+        LocalSourceIdentity("directory", "a" * 64, 1, 1),
+    )
 
 
 def test_execute_pipeline_request_materializes_a_detached_graph():
@@ -1034,6 +1083,125 @@ def test_dirty_request_reuses_owned_exact_source_context_without_byte_scan(
             result.pipeline.outputs[node_id],
             fresh.pipeline.outputs[node_id],
         )
+
+
+@pytest.mark.parametrize(
+    "compute_mode",
+    (ComputeMode.CPU, ComputeMode.AUTO, ComputeMode.PREFER_GPU),
+)
+def test_exact_source_window_executes_crop_before_accelerated_downstream_and_reuses(
+    monkeypatch,
+    compute_mode,
+):
+    full_data = np.linspace(0.0, 1.0, 32 * 40, dtype=np.float32).reshape(32, 40)
+    bounds = ((4, 27), (6, 33))
+    payload = _exact_source_window_payload(full_data, bounds=bounds)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    crop = pipeline.add_node("crop_stack")
+    crop.params.update({"top": 4, "bottom": 5, "left": 6, "right": 7})
+    gaussian = pipeline.add_node("gaussian_blur")
+    gaussian.params["sigma"] = 1.1
+    assert pipeline.connect("input", crop.id).success
+    assert pipeline.connect(crop.id, gaussian.id).success
+
+    baseline = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=1340,
+            workflow=serialize_workflow(pipeline),
+            input_data=full_data,
+            input_metadata={"axes": "YX"},
+            input_name="full source baseline",
+            source_payloads={},
+            compute_request=ComputeRequest(mode=ComputeMode.CPU),
+        )
+    )
+    assert baseline.error == ""
+    assert baseline.pipeline is not None
+
+    initial = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=1341,
+            workflow=serialize_workflow(pipeline),
+            input_data=None,
+            input_metadata=None,
+            input_name="",
+            source_payloads={"input": payload},
+            compute_request=ComputeRequest(mode=compute_mode),
+        )
+    )
+    assert initial.error == ""
+    assert initial.pipeline is not None
+    assert initial.execution_report is not None
+    gaussian_decision = next(
+        decision
+        for decision in initial.execution_report.actual_decisions
+        if decision.node_id == gaussian.id
+    )
+    assert gaussian_decision.operation_id == "gaussian_blur"
+    assert gaussian_decision.runtime_id in {"cpu-numpy", "cuda-cupy"}
+    assert initial.pipeline.outputs["input"] is payload.data
+    assert isinstance(initial.pipeline.outputs["input"], ExactSourceWindowData)
+    cropped = initial.pipeline.outputs[crop.id]
+    downstream = initial.pipeline.outputs[gaussian.id]
+    assert isinstance(cropped, np.ndarray)
+    assert isinstance(downstream, np.ndarray)
+    assert cropped.shape == (23, 27)
+    assert cropped.nbytes == 23 * 27 * np.dtype(np.float32).itemsize
+    assert downstream.shape == cropped.shape
+    assert downstream.nbytes == cropped.nbytes
+    assert initial.pipeline.output_states[crop.id].shape == cropped.shape
+    np.testing.assert_allclose(
+        downstream,
+        baseline.pipeline.outputs[gaussian.id],
+        rtol=2e-5,
+        atol=2e-6,
+    )
+
+    identity_calls = 0
+    original_identity = execution_module._scientific_array_identity
+
+    def counted_identity(*args, **kwargs):
+        nonlocal identity_calls
+        identity_calls += 1
+        return original_identity(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_module,
+        "_scientific_array_identity",
+        counted_identity,
+    )
+    started: list[str] = []
+    repeated = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=1342,
+            workflow=serialize_workflow(initial.pipeline),
+            input_data=None,
+            input_metadata=None,
+            input_name="",
+            source_payloads={"input": payload},
+            compute_request=ComputeRequest(mode=compute_mode),
+            dirty_node_ids=frozenset({gaussian.id}),
+            **_pipeline_cache_kwargs(initial.pipeline),
+        ),
+        node_started_callback=started.append,
+    )
+
+    assert repeated.error == ""
+    assert repeated.pipeline is not None
+    assert identity_calls == 0
+    assert started == [gaussian.id]
+    assert repeated.pipeline.outputs[crop.id] is cropped
+    assert (
+        repeated.pipeline.node_compute_provenance["input"]
+        == initial.pipeline.node_compute_provenance["input"]
+    )
+    np.testing.assert_allclose(
+        repeated.pipeline.outputs[gaussian.id],
+        downstream,
+        rtol=2e-5,
+        atol=2e-6,
+    )
 
 
 def test_source_context_reuse_misses_changed_revision_and_writable_array(

@@ -70,6 +70,7 @@ _RESERVED_FUNCTION_NAMES = {
     "_table_output_path",
     "_workflow_document",
     "_workflow_source_binding",
+    "_workflow_source_window_plan",
     "_write_output_uncommitted",
     "argparse",
     "batch_process",
@@ -99,6 +100,12 @@ _RESERVED_FUNCTION_NAMES = {
     "serialize_execution_provenance",
     "scientific_workflow_hash",
     "source_item_from_params",
+    "plan_exact_source_crop_window",
+    "inspect_image_source",
+    "inspect_image_state",
+    "select_inspected_item",
+    "AxisDeclaration",
+    "apply_axis_declaration",
     "signal",
     "shutil",
     "sys",
@@ -447,11 +454,24 @@ def _build_imports() -> str:
                 "load_frozen_file_source_snapshot"
             ),
             "from napari_vipp.core.io import ImageDataset, write_image",
+            "from napari_vipp.core.io import inspect_image_source, inspect_image_state",
+            "from napari_vipp.core.metadata import (",
+            "    AxisDeclaration,",
+            "    apply_axis_declaration,",
+            ")",
             "from napari_vipp.core.pipeline import SourcePayload",
             "from napari_vipp.core.progress import OperationCancelled",
             (
                 "from napari_vipp.core.source_item_persistence import "
                 "source_item_from_params"
+            ),
+            (
+                "from napari_vipp.core.source_resolution import "
+                "select_inspected_item"
+            ),
+            (
+                "from napari_vipp.core.source_window_planning import "
+                "plan_exact_source_crop_window"
             ),
             "from napari_vipp.core.tables import is_table_data, save_table_output",
             "from napari_vipp.core.workflow import deserialize_workflow",
@@ -969,6 +989,71 @@ def _workflow_source_binding(node_id):
     return int(series_index), item_key, declaration
 
 
+def _workflow_source_window_plan(
+    path,
+    *,
+    source_node_id,
+    series_index,
+    item_key,
+    axis_declaration,
+):
+    """Return one strict embedded Image Source -> Crop Stack read plan.
+
+    Generated scripts may be deliberately called with a replacement input.
+    Such a source has not been qualified by the embedded SourceItem, so it
+    keeps the ordinary complete-source loading path.  Exact-window loading is
+    reserved for the authored local revision and a graph topology proven by
+    the shared Qt-free planner.
+    """
+    pipeline = _new_pipeline()
+    source_node = pipeline.nodes.get(str(source_node_id).strip())
+    if source_node is None or source_node.operation_id != "input":
+        return None, None
+    source_item = source_item_from_params(source_node.params)
+    if source_item is None or not source_item.capabilities.exact_region_read:
+        return None, None
+    try:
+        requested_path = Path(path).expanduser().resolve(strict=False)
+        authored_path = Path(source_item.container.uri).expanduser().resolve(
+            strict=False
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None, None
+    if requested_path != authored_path:
+        return None, None
+
+    try:
+        inspection = inspect_image_source(requested_path)
+        selected = select_inspected_item(
+            inspection,
+            series_index=(None if item_key else int(series_index)),
+            item_key=(item_key or None),
+        )
+        full_state = inspect_image_state(
+            requested_path,
+            inspection=inspection,
+            series_index=selected.index,
+        )
+        declaration = AxisDeclaration.from_value(axis_declaration)
+        if declaration is not None:
+            full_state = apply_axis_declaration(
+                full_state,
+                declaration,
+                declaration_source="saved SourceItem",
+            )
+        decision = plan_exact_source_crop_window(
+            pipeline,
+            source_node.id,
+            source_item,
+            full_state,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, IndexError):
+        return None, None
+    if decision.plan is None:
+        return None, None
+    return decision.plan, source_item
+
+
 def _effective_compute_request(document, override=None):
     """Resolve an explicit full-run override without mutating ``document``."""
     restored = deserialize_workflow(document)
@@ -1410,6 +1495,8 @@ def load_image(
     cancel_event=None,
 ):
     """Load one verified local revision with cooperative progress/cancellation."""
+    exact_window_plan = None
+    expected_source_item = None
     if source_node_id is not None:
         bound_index, bound_key, bound_declaration = _workflow_source_binding(
             source_node_id
@@ -1434,6 +1521,14 @@ def load_image(
         series_index = 0
     item_key = str(item_key or "").strip()
     _raise_if_cancelled(cancel_event, "Source loading cancelled before hashing.")
+    if source_node_id is not None:
+        exact_window_plan, expected_source_item = _workflow_source_window_plan(
+            path,
+            source_node_id=source_node_id,
+            series_index=series_index,
+            item_key=item_key,
+            axis_declaration=axis_declaration,
+        )
     source_progress = None
     if progress_callback is not None:
         def source_progress(current, total, message):
@@ -1450,6 +1545,10 @@ def load_image(
         series_index,
         item_key=(item_key or None),
         axis_declaration=axis_declaration,
+        expected_source_item=expected_source_item,
+        exact_window_request=(
+            None if exact_window_plan is None else exact_window_plan.request
+        ),
         cancel_callback=cancel_callback,
         progress_callback=source_progress,
     ).payload

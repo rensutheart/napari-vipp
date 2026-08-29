@@ -24,7 +24,9 @@ from napari_vipp.core.io import (
     ImageDataset,
     SourceInspection,
     inspect_image_source,
+    inspect_image_state,
     read_image,
+    read_image_exact_window,
 )
 from napari_vipp.core.io.errors import annotate_image_source_exception
 from napari_vipp.core.metadata import (
@@ -46,6 +48,12 @@ from napari_vipp.core.source_resolution import (
     resolve_source_item,
     select_inspected_item,
     verify_saved_source_item,
+)
+from napari_vipp.core.source_window import (
+    ExactSourceWindowData,
+    SourceWindowControl,
+    SourceWindowReadEstimate,
+    SourceWindowRequest,
 )
 
 FILE_SOURCE_SNAPSHOT_POLICY = "pinned until Refresh"
@@ -100,6 +108,7 @@ def load_frozen_file_source_snapshot(
     expected_source_item: SourceItem | None = None,
     reader: ImageReader | None = None,
     inspector: ImageInspector | None = None,
+    exact_window_request: SourceWindowRequest | None = None,
     cancel_callback: CancelCallback | None = None,
     progress_callback: SourceLoadProgressCallback | None = None,
 ) -> SourceFileSnapshot:
@@ -190,7 +199,7 @@ def load_frozen_file_source_snapshot(
     effective_series_index = int(series_index)
     preinspected: SourceInspection | None = None
     preinspected_item = None
-    if inspector is not None or reader is None:
+    if inspector is not None or reader is None or exact_window_request is not None:
         selected_inspector = inspect_image_source if inspector is None else inspector
         try:
             preinspected = selected_inspector(source)
@@ -208,11 +217,12 @@ def load_frozen_file_source_snapshot(
             )
             raise
         effective_series_index = preinspected_item.index
-        _preflight_source_memory(
-            preinspected_item,
-            source=source,
-            progress_callback=progress_callback,
-        )
+        if exact_window_request is None:
+            _preflight_source_memory(
+                preinspected_item,
+                source=source,
+                progress_callback=progress_callback,
+            )
     elif expected_source_item is not None:
         # A UI worker may inject the reader to preserve one deterministic read
         # boundary.  The already verified SourceItem still carries the exact
@@ -221,6 +231,26 @@ def load_frozen_file_source_snapshot(
         _preflight_source_memory(
             expected_source_item,
             source=source,
+            progress_callback=progress_callback,
+        )
+
+    if exact_window_request is not None:
+        if preinspected is None or preinspected_item is None:
+            raise RuntimeError(
+                "Exact source-window loading requires a verified source inspection."
+            )
+        return _load_exact_window_snapshot(
+            source,
+            effective_series_index,
+            container=container,
+            identity=identity,
+            inspection=preinspected,
+            selected=preinspected_item,
+            request=exact_window_request,
+            effective_declaration=effective_declaration,
+            saved_declaration=saved_declaration,
+            expected_source_item=expected_source_item,
+            cancel_callback=cancel_callback,
             progress_callback=progress_callback,
         )
 
@@ -429,6 +459,193 @@ def load_frozen_file_source_snapshot(
     return SourceFileSnapshot(payload, dataset.inspection, identity, source_item)
 
 
+def _load_exact_window_snapshot(
+    source: Path,
+    series_index: int,
+    *,
+    container: SourceContainerBundle,
+    identity: LocalSourceIdentity,
+    inspection: SourceInspection,
+    selected,
+    request: SourceWindowRequest,
+    effective_declaration: AxisDeclaration | None,
+    saved_declaration: AxisDeclaration | None,
+    expected_source_item: SourceItem | None,
+    cancel_callback: CancelCallback | None,
+    progress_callback: SourceLoadProgressCallback | None,
+) -> SourceFileSnapshot:
+    """Resolve a complete SourceItem, then materialize only one exact window."""
+
+    if request.axis_declaration != effective_declaration:
+        raise ValueError(
+            "The exact source-window axis declaration is stale or does not "
+            "match the Image Source declaration. Recalculate the workflow."
+        )
+    raw_state = inspect_image_state(
+        source,
+        inspection=inspection,
+        series_index=series_index,
+    )
+    full_state = raw_state
+    if effective_declaration is not None:
+        full_state = apply_axis_declaration(
+            raw_state,
+            effective_declaration,
+            declaration_source=(
+                "saved SourceItem"
+                if saved_declaration is not None
+                else "Image Source"
+            ),
+        )
+    try:
+        if expected_source_item is None:
+            source_item = resolve_source_item(
+                container,
+                inspection,
+                item_key=selected.key,
+                image_state=full_state,
+                axis_declaration=effective_declaration,
+            )
+        else:
+            source_item = verify_saved_source_item(
+                expected_source_item,
+                container,
+                inspection,
+                image_state=full_state,
+            )
+    except Exception as exc:
+        annotate_image_source_exception(
+            exc,
+            stage="source-item-resolution",
+            path=source,
+            format=inspection.format,
+            backend=selected.reader_key,
+            item=selected.key,
+        )
+        raise
+
+    revision = source_item.container.revision.sha256
+    if request.source_revision and request.source_revision != revision:
+        raise SourceChangedError(
+            "The exact source-window plan was made for a different source "
+            "revision. Refresh and review the source again."
+        )
+    if request.source_item_digest and request.source_item_digest != source_item.digest:
+        raise SourceChangedError(
+            "The exact source-window plan was made for a different SourceItem. "
+            "Refresh and review the selected image again."
+        )
+    bound_request = replace(
+        request,
+        source_revision=revision,
+        source_item_digest=source_item.digest,
+    )
+    _check_boundary_cancelled(
+        cancel_callback,
+        "before reading the exact source window",
+        stage="materialization",
+        source=source,
+        format=inspection.format,
+        backend=selected.reader_key,
+        item=selected.key,
+    )
+    control = SourceWindowControl(
+        cancelled=cancel_callback,
+        reporter=_phase_progress_callback(
+            progress_callback,
+            "Source window materialization 2/3",
+        ),
+        preflight=lambda estimate: _preflight_source_window_memory(
+            selected,
+            bound_request,
+            estimate,
+            source=source,
+            progress_callback=progress_callback,
+        ),
+    )
+    try:
+        result = read_image_exact_window(
+            source,
+            series_index=series_index,
+            request=bound_request,
+            control=control,
+        )
+    except Exception as exc:
+        annotate_image_source_exception(
+            exc,
+            stage="materialization",
+            path=source,
+            format=inspection.format,
+            backend=selected.reader_key,
+            item=selected.key,
+        )
+        raise
+    if (
+        result.identity.source_shape != tuple(source_item.resolved.shape)
+        or result.identity.source_dtype != np.dtype(source_item.resolved.dtype).name
+        or result.identity.axis_names
+        != tuple(axis.name.casefold() for axis in full_state.axes)
+        or result.identity.item_key != source_item.selector.key
+        or result.identity.source_revision != revision
+        or result.identity.source_item_digest != source_item.digest
+    ):
+        raise RuntimeError(
+            "Exact source-window reader evidence does not match the verified "
+            "complete SourceItem. No pixels were published."
+        )
+
+    _check_boundary_cancelled(
+        cancel_callback,
+        "before reverifying the source",
+        stage="source-reverification",
+        source=source,
+        format=inspection.format,
+        backend=selected.reader_key,
+        item=selected.key,
+    )
+    verify_local_source_identity(
+        source,
+        identity,
+        cancel_callback=cancel_callback,
+        progress_callback=_phase_progress_callback(
+            progress_callback,
+            "Source reverification 3/3",
+        ),
+    )
+    wrapped = ExactSourceWindowData(
+        result.data,
+        result.image_state,
+        result.identity,
+    )
+    metadata = {
+        "vipp_source_path": str(source),
+        "vipp_source_identity": identity.to_dict(),
+        "vipp_source_series_index": int(series_index),
+        "vipp_source_item_key": source_item.selector.key,
+        "vipp_source_snapshot_policy": FILE_SOURCE_SNAPSHOT_POLICY,
+        "vipp_source_item_digest": source_item.digest,
+        "vipp_source_item": source_item.to_public_dict(),
+        "vipp_source_window": result.identity.to_dict(include_source_uri=False),
+        "vipp_source_window_digest": result.identity.digest,
+        "vipp_source_window_read_estimate": (
+            None
+            if result.identity.read_estimate is None
+            else result.identity.read_estimate.to_dict()
+        ),
+        "vipp_source_read_strategy": "exact-level-0-window",
+    }
+    payload = SourcePayload(
+        wrapped,
+        metadata,
+        selected.name,
+        full_state,
+        identity,
+        effective_declaration is not None,
+        source_item=source_item,
+    )
+    return SourceFileSnapshot(payload, inspection, identity, source_item)
+
+
 def _materialize_owned_array(
     value,
     *,
@@ -561,6 +778,66 @@ def _preflight_source_memory(
         format="",
         backend=backend,
         item=key,
+    )
+    raise error
+
+
+def _preflight_source_window_memory(
+    selected,
+    request: SourceWindowRequest,
+    estimate: SourceWindowReadEstimate,
+    *,
+    source: Path,
+    progress_callback: SourceLoadProgressCallback | None,
+) -> None:
+    """Preflight the ROI plus every decoded chunk it intersects."""
+
+    shape = tuple(int(size) for size in selected.shape)
+    selection = request.normalized_selection(shape)
+    output_shape = tuple(
+        int(selector.stop) - int(selector.start) for selector in selection
+    )
+    output_bytes = prod(output_shape) * np.dtype(selected.dtype).itemsize
+    if not isinstance(estimate, SourceWindowReadEstimate):
+        raise TypeError("Source-window memory preflight requires a read estimate.")
+    if estimate.requested_decoded_bytes != int(output_bytes):
+        raise RuntimeError(
+            "Source-window read estimate does not match the verified ROI shape."
+        )
+    required = int(estimate.estimated_peak_bytes)
+    if required < _MEMORY_PREFLIGHT_MIN_BYTES:
+        return
+    decision = preflight_host_allocation(
+        capture_host_memory(),
+        required_bytes=required,
+        purpose=(
+            "decoding touched chunks for the retained source window from "
+            f"{selected.name or selected.key}"
+        ),
+    )
+    _report_progress(
+        progress_callback,
+        0,
+        required,
+        "Source-window memory preflight: "
+        f"{estimate.estimated_touched_chunk_count} chunks, "
+        f"{estimate.estimated_touched_chunk_decoded_bytes} decoded chunk bytes; "
+        + decision.reason,
+    )
+    if decision.allowed:
+        return
+    error = MemoryError(
+        "Source-window memory preflight refused the retained crop because its "
+        "intersecting decoded chunks and working buffers do not fit. "
+        + decision.reason
+    )
+    annotate_image_source_exception(
+        error,
+        stage="memory-preflight",
+        path=source,
+        format="",
+        backend=selected.reader_key,
+        item=selected.key,
     )
     raise error
 

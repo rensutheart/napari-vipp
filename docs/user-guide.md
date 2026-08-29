@@ -1647,6 +1647,67 @@ ID `responsive-crop`) for numbered checks covering rapid drag, held-idle safety,
 undo/redo, physical origins, durable boundaries, QYX safety, and the explained
 CPU assignment under Prefer GPU.
 
+#### Exact Source-Window Pushdown And Low-RAM Repair
+
+In the current development build, an exact direct local OME-Zarr crop does not
+need to decode the pixels that Crop Stack will discard. VIPP uses this path only
+when all of the following are true:
+
+- the reader advertises exact level-0 region reads;
+- Image Source has one ordinary direct connection to Crop Stack, no branch or
+  output tunnel, and Crop has no other input;
+- Crop is running rather than bypassed and removes at least one spatial sample;
+- Y and X, plus Z when cropped, are explicitly identified; and
+- the inspected source revision, SourceItem, dtype, shape, axes, and authored
+  crop still match.
+
+T, C, and every other non-cropped axis remain complete. Image Source continues
+to report the full logical source shape and identity, while Crop Stack receives
+only the reader-verified window. Crop history, output bytes, physical scale and
+shifted origin, cache/scientific identity, batch records, and generated Python
+remain equivalent to the ordinary eager `full read -> Crop Stack` workflow.
+Pushdown saves pixel decoding and allocation, but pinned SourceItem safety still
+hashes/verifies the complete local container before and after the read, with
+progress. A very large store may therefore remain I/O-bound even when the
+retained window is small.
+
+If a complete source is larger than the safe RAM budget, select Image Source.
+For a provably eligible local source, an amber explanation shows the complete
+decoded requirement and a conservative proposed window. Click **Add fitted Crop
+Stack** to splice a prefilled Crop onto the existing wire, or **Fit existing
+Crop Stack** to resize the direct Crop already present. This is one undoable
+edit. VIPP never adds it without your click.
+
+The fitted crop is centred and based only on geometry, dtype, the declared
+storage-chunk grid, and current host headroom. It is a safe starting region, not
+content-aware ROI selection or a scientific recommendation. Review the box and
+margins before analysis. The shown conservative peak includes every touched
+decoded chunk, the assembled ROI, and its detached publication copy; the reader
+rechecks it immediately before decoding. If even the smallest centred region
+touches an oversized chunk, VIPP refuses to promise a fitted crop. The source
+read may fit while a later filter, segmentation, or branch still needs more RAM.
+
+If the source is branched or tunneled, the Crop is bypassed, identity or axes
+are stale/ambiguous, or the reader lacks exact support, VIPP refuses pushdown.
+It performs the ordinary complete read only when normal memory preflight allows
+that allocation; otherwise it stops with an actionable RAM message. Current
+exact scientific reads are limited to local OME-Zarr 0.4/0.5. TIFF, IMS,
+BioIO-backed formats, remote stores, multiple-region branch planning, and
+content-aware crop selection are not included.
+
+To generate the intentionally oversized manual test locally, run:
+
+```powershell
+python scripts/generate_source_window_acceptance.py --force
+```
+
+Then open
+`build/manual-acceptance/source-window-pushdown/source-window-pushdown-acceptance.json`.
+The sparse fixture is small on disk but declares a 64 GiB decoded ZYX source.
+Follow its four orange notes to test the memory hint, one-click crop insertion,
+exact central pixels, save/reopen, Undo, and refusal after bypass, removal, or
+unsafe branching. The generator never allocates the full volume.
+
 ### Run Or Safely Bypass A Compatible Node
 
 Most processing nodes include one compact **Bypass node** checkbox alongside the
