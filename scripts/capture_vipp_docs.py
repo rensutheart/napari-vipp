@@ -73,6 +73,7 @@ class CaptureSpec:
         "psf-preflight",
     ] = "standard"
     asset_group: Literal["public", "app-user-guide"] = "public"
+    capture_width: int = 1700
     capture_height: int = 900
 
 
@@ -168,11 +169,13 @@ CAPTURES = (
         "vipp-3d-deconvolution-workspace.png",
         "deconvolution-3d",
         "richardson_lucy_tv_deconvolution_1",
-        54,
-        capture_mode="context",
+        72,
+        capture_mode="workflow",
         show_entire_graph=True,
-        calculate_manual=False,
+        calculate_manual=True,
         asset_group="app-user-guide",
+        capture_width=1800,
+        capture_height=1000,
     ),
     CaptureSpec(
         "vipp-3d-deconvolution-graph.png",
@@ -182,8 +185,10 @@ CAPTURES = (
         capture_mode="graph",
         show_entire_graph=True,
         show_library=False,
-        calculate_manual=False,
+        calculate_manual=True,
         asset_group="app-user-guide",
+        capture_width=2300,
+        capture_height=1080,
     ),
 )
 
@@ -281,7 +286,7 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
     target = output_dir / spec.filename
     if spec.capture_mode == "workflow":
         dock.setFloating(True)
-        dock.resize(1700, spec.capture_height)
+        dock.resize(spec.capture_width, spec.capture_height)
         dock.show()
         widget.splitter.setSizes([260 if spec.show_library else 0, 1020, 420])
         if spec.show_entire_graph:
@@ -298,7 +303,7 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
         dock.grab().save(str(target))
     elif spec.capture_mode == "graph":
         dock.setFloating(True)
-        dock.resize(1700, spec.capture_height)
+        dock.resize(spec.capture_width, spec.capture_height)
         dock.show()
         widget.splitter.setSizes([0, 1280, 0])
         if spec.show_entire_graph:

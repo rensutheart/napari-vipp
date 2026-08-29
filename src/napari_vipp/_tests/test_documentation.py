@@ -35,7 +35,8 @@ def test_014a2_release_version_contract_is_consistent() -> None:
     assert release_notes.startswith("# VIPP 0.14.0a2\n")
     assert "PyPI distribution note" in release_notes
     assert "release candidate" not in release_notes.casefold()
-    assert "VIPP `0.14.0a2` is published" in readme
+    assert "The current published release is" in readme
+    assert "[`v0.14.0a2`]" in readme
 
 
 def test_release_notes_do_not_hard_wrap_prose() -> None:
@@ -170,7 +171,7 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
         REPO_ROOT / "docs" / "windows-installation-planner.md"
     ).read_text(encoding="utf-8")
 
-    assert readme.index("### Windows Installer (Recommended Path)") < readme.index(
+    assert readme.index("| Windows 64-bit |") < readme.index(
         'python -m pip install "napari[pyqt6]>=0.6"'
     )
     assert quick_start.index("## Windows: The Recommended Route") < quick_start.index(
@@ -194,12 +195,13 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     assert "rerun that version's VIPP setup `.exe`" in quick_start
     assert "A supported 64-bit Python is a separate prerequisite" in readme
     assert "separately installed supported 64-bit Python" in packaging_readme
-    for document in (readme, quick_start):
-        normalized = " ".join(document.split())
-        assert "15 GiB" in normalized
-        assert "disk storage, not GPU memory (VRAM)" in normalized
-        assert "standard GPU installation includes every current" in normalized
-        assert "cuCIM" not in normalized
+    assert "VIPP-Setup-0.14.0a2-Windows-x86_64-UNSIGNED.exe" in readme
+    assert "[Quick Start](docs/quick-start.md)" in readme
+    normalized = " ".join(quick_start.split())
+    assert "15 GiB" in normalized
+    assert "disk storage, not GPU memory (VRAM)" in normalized
+    assert "standard GPU installation includes every current" in normalized
+    assert "cuCIM" not in normalized
     assert "exact managed location" in packaging_readme
     assert "CPU or CUDA 13" in packaging_readme
     assert "15 GiB of free disk space" in packaging_readme
@@ -242,9 +244,11 @@ def test_macos_installer_quick_start_is_primary_and_truthful():
     assert "unsigned and not notarized" in normalized
     assert "~/Library/vipp" in quick_start
     assert "~/Applications/VIPP.app" in quick_start
-    assert readme.index("### macOS Installer (Recommended Path)") < readme.index(
+    assert readme.index("| macOS Apple Silicon |") < readme.index(
         'python -m pip install "napari[pyqt6]>=0.6"'
     )
+    assert "VIPP-0.14.0a2-macOS-arm64-UNSIGNED.pkg" in readme
+    assert "VIPP-0.14.0a2-macOS-x86_64-UNSIGNED.pkg" in readme
 
 
 def test_product_tagline_is_consistent_across_primary_surfaces():
