@@ -243,6 +243,7 @@ from napari_vipp.ui.compute_setup import ComputeDeviceOption
 from napari_vipp.ui.controls import ImageSourceResolutionPresentation
 from napari_vipp.ui.diagnostic_workers import ThumbnailContrastProgress
 from napari_vipp.ui.file_sources import SourceFileLoadSpec
+from napari_vipp.ui.napari_compat import viewer_camera
 from napari_vipp.ui.presentation_settings import ThumbnailStatisticsPolicy
 from napari_vipp.ui.workflow_save_settings import WorkflowSavePolicy
 
@@ -5482,6 +5483,54 @@ def test_source_preview_never_masks_selected_analysis_output(qtbot, monkeypatch)
     assert viewer.layers[-1] is pinned
 
 
+def test_hidden_source_preview_cannot_replace_active_viewer_axis_labels(qtbot):
+    data = np.zeros((3, 7, 9), dtype=np.uint16)
+    viewer = ViewerModel()
+    viewer.add_image(data, name="analysis source", metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    widget._select_node("gaussian")
+
+    assert tuple(viewer.dims.axis_labels) == ("Z", "Y", "X")
+
+    preview_state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("t", "time"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    widget._publish_source_preview(
+        "input",
+        ".",
+        SourcePreviewResult(
+            data=data,
+            image_state=preview_state,
+            preview_level=1,
+            level_count=2,
+            message="Presentation preview",
+            metrics=SourcePreviewReadMetrics(requested_decoded_bytes=data.nbytes),
+            generation=1,
+        ),
+    )
+    preview = widget._source_preview_layer("input", ".")
+
+    assert preview is not None
+    assert preview.visible is False
+    assert tuple(preview.axis_labels) == ("T", "Y", "X")
+    assert tuple(viewer.dims.axis_labels) == ("Z", "Y", "X")
+
+    widget._selected_node_id = "input"
+    widget._source_view_modes["input"] = "preview:auto"
+    widget._apply_selected_viewer_surface(select_layer=True)
+
+    assert preview.visible is True
+    assert viewer.layers.selection.active is preview
+    assert tuple(viewer.dims.axis_labels) == ("T", "Y", "X")
+
+
 def test_unsupported_multilevel_source_cannot_enter_preview_mode(
     qtbot,
     tmp_path,
@@ -5492,6 +5541,7 @@ def test_unsupported_multilevel_source_cannot_enter_preview_mode(
     node = widget.pipeline.nodes["input"]
     path = tmp_path / "unsupported.zarr"
     source_item = SimpleNamespace(
+        digest="b" * 64,
         selector=SimpleNamespace(key=".", source_axes=(), effective_axes=()),
         resolved=SimpleNamespace(
             axes=("Z", "Y", "X"),
@@ -7201,6 +7251,7 @@ def test_label_pipeline_inspects_and_pins_integer_labels(qtbot):
     assert inspect.editable is False
     assert inspect.metadata["data_kind"] == "labels"
     assert inspect.metadata["display_kind"] == "labels"
+    assert tuple(inspect.axis_labels) == ("Z", "Y", "X")
     assert widget.pipeline.output_states[filtered.id].kind == "label image"
     labels_output = widget.pipeline.outputs[filtered.id]
     expected_labels = labels_output.copy()
@@ -7214,6 +7265,7 @@ def test_label_pipeline_inspects_and_pins_integer_labels(qtbot):
     assert pinned.data.dtype == np.int32
     assert pinned.editable is False
     assert pinned.metadata["data_kind"] == "labels"
+    assert tuple(pinned.axis_labels) == ("Z", "Y", "X")
     assert np.shares_memory(pinned.data, labels_output)
     assert np.shares_memory(pinned.data, inspect.data)
     assert not pinned.data.flags.writeable
@@ -12224,6 +12276,10 @@ def test_composite_to_rgb_maps_channel_axis(qtbot):
     assert _metadata_value(widget, "Kind") == "RGB image"
     assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6, rgb=3"
     _assert_rgb_channel_layers(viewer, "VIPP Inspect", (2, 4, 5, 6))
+    assert all(
+        tuple(layer.axis_labels) == ("T", "Z", "Y", "X")
+        for layer in widget._rgb_channel_layers("VIPP Inspect")
+    )
     history = widget.history_label.text()
     assert "1. Composite \u2192 RGB: c axis (1)" in history
     assert "native intensity scale retained" in history
@@ -12290,6 +12346,10 @@ def test_skeleton_graph_overlay_inspects_as_rgb_layer(qtbot):
     assert _metadata_value(widget, "Kind") == "RGB image"
     assert _metadata_value(widget, "Dimensions") == "z=3, y=16, x=18, rgb=3"
     _assert_rgb_channel_layers(viewer, "VIPP Inspect", (3, 16, 18))
+    assert all(
+        tuple(layer.axis_labels) == ("Z", "Y", "X")
+        for layer in widget._rgb_channel_layers("VIPP Inspect")
+    )
 
 
 def test_skeleton_graph_overlay_2d_inspects_as_single_rgb_layer(qtbot):
@@ -12310,6 +12370,52 @@ def test_skeleton_graph_overlay_2d_inspects_as_single_rgb_layer(qtbot):
     assert inspect.rgb
     assert inspect.metadata["display_rgb"] is True
     assert inspect.data.shape == (16, 18, 3)
+    assert tuple(inspect.axis_labels) == ("Y", "X")
+
+
+@pytest.mark.parametrize(
+    ("component_count", "component_name", "kind"),
+    [
+        (3, "c", "RGB image"),
+        (4, "rgba", "RGBA image"),
+    ],
+)
+def test_generated_rgb_and_rgba_hide_only_the_component_axis(
+    qtbot,
+    component_count,
+    component_name,
+    kind,
+):
+    data = np.zeros((7, 9, component_count), dtype=np.uint8)
+    state = replace(
+        image_state_from_array(
+            data,
+            axes=(
+                AxisMetadata("y", "space", scale=0.2),
+                AxisMetadata("x", "space", scale=0.3),
+                AxisMetadata(component_name, "channel"),
+            ),
+        ),
+        kind=kind,
+    )
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    metadata = {
+        "napari_vipp_kind": "inspect",
+        "node_id": "manual-rgb",
+        "data_kind": "image",
+        "display_kind": "image",
+        "display_ndim": data.ndim,
+        "display_shape": data.shape,
+        "display_rgb": True,
+        "vipp_image_state": state.to_dict(),
+    }
+
+    layer = widget._add_image_or_labels("Scientific RGB", data, metadata)
+
+    assert layer.rgb is True
+    assert tuple(layer.axis_labels) == ("Y", "X")
+    assert tuple(layer.scale) == (0.2, 0.3)
 
 
 def test_composite_to_rgb_inspector_exposes_auto_manual_channel_mapping(qtbot):
@@ -12900,6 +13006,9 @@ def _assert_split_channel_presentation(
     assert inspect_layer.metadata["node_id"] == node_id
     assert inspect_layer.metadata["output_port"] == output_port
     assert inspect_layer.metadata["vipp_image_state"] == states[output_port].to_dict()
+    assert tuple(inspect_layer.axis_labels) == tuple(
+        axis.short_label for axis in states[output_port].axes
+    )
     assert int(np.max(inspect_layer.data)) == expected_value
 
     port = widget.pipeline.output_ports(node_id)[output_port]
@@ -13367,6 +13476,13 @@ def test_reorder_axes_updates_metadata_axes(qtbot):
         "t(time), z(space), y(space), x(space), c(channel)"
     )
     assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6, c=3"
+    assert tuple(viewer.layers["VIPP Inspect"].axis_labels) == (
+        "T",
+        "Z",
+        "Y",
+        "X",
+        "C",
+    )
     assert "1. Reorder Axes: reordered axes to TZYXC" in widget.history_label.text()
 
     control.reset_order()
@@ -20775,15 +20891,16 @@ def test_isolated_tuning_preserves_napari_camera_slice_and_inspection_layer(qtbo
 
     viewer.dims.ndisplay = 3
     viewer.dims.set_current_step(0, 1)
-    viewer.camera.center = (1.5, 4.0, 4.5)
-    viewer.camera.zoom = 4.25
-    viewer.camera.angles = (18.0, 27.0, 41.0)
-    viewer.camera.perspective = 12.0
+    camera = viewer_camera(viewer)
+    camera.center = (1.5, 4.0, 4.5)
+    camera.zoom = 4.25
+    camera.angles = (18.0, 27.0, 41.0)
+    camera.perspective = 12.0
     camera_before = (
-        viewer.camera.center,
-        viewer.camera.zoom,
-        viewer.camera.angles,
-        viewer.camera.perspective,
+        camera.center,
+        camera.zoom,
+        camera.angles,
+        camera.perspective,
     )
     step_before = tuple(viewer.dims.current_step)
     inspect_layer = viewer.layers[widget._inspect_layer_name]
@@ -20793,10 +20910,10 @@ def test_isolated_tuning_preserves_napari_camera_slice_and_inspection_layer(qtbo
     widget.run_pipeline(force_sync=True)
 
     assert (
-        viewer.camera.center,
-        viewer.camera.zoom,
-        viewer.camera.angles,
-        viewer.camera.perspective,
+        camera.center,
+        camera.zoom,
+        camera.angles,
+        camera.perspective,
     ) == camera_before
     assert tuple(viewer.dims.current_step) == step_before
     assert viewer.layers[widget._inspect_layer_name] is inspect_layer

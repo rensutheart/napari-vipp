@@ -52,6 +52,7 @@ from napari_vipp.ui.controls import (
     ImageSourceResolutionPresentation,
 )
 from napari_vipp.ui.dialogs import ExampleWorkflowDialog
+from napari_vipp.ui.napari_compat import viewer_camera, viewer_qt_window
 
 
 @dataclass(frozen=True)
@@ -233,7 +234,7 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
         area="bottom",
         name="VIPP Workflow",
     )
-    qt_window = viewer.window._qt_window
+    qt_window = viewer_qt_window(viewer, anchor=dock)
     qt_window.resizeDocks([dock], [570], Qt.Vertical)
     widget.load_example_workflow(spec.example_id)
     widget._set_left_panel_visible(spec.show_library)
@@ -320,7 +321,7 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
             viewer.dims.ndisplay = spec.ndisplay
             viewer.reset_view()
             if spec.ndisplay == 3:
-                viewer.camera.angles = (25.0, -35.0, 115.0)
+                viewer_camera(viewer).angles = (25.0, -35.0, 115.0)
             _settle()
         viewer.window.screenshot(
             path=target,
@@ -337,7 +338,7 @@ def _dark_capture_viewer() -> napari.Viewer:
 
     viewer = napari.Viewer(title="VIPP focused documentation capture")
     viewer.theme = "dark"
-    viewer.window._qt_window.hide()
+    viewer_qt_window(viewer).hide()
     _settle(100)
     return viewer
 
@@ -356,7 +357,7 @@ def _capture_image_source_resolution(target: Path) -> None:
     window = QWidget()
     window.setWindowTitle("VIPP documentation capture — Image Source")
     window.setObjectName("ImageSourceDocumentationCapture")
-    window.setStyleSheet(viewer.window._qt_window.styleSheet())
+    window.setStyleSheet(viewer_qt_window(viewer).styleSheet())
     window.setFixedWidth(1240)
     window.move(80, 50)
 
@@ -562,7 +563,7 @@ def _capture_batch_workspace(target: Path) -> None:
         ],
         actions=actions,
     )
-    dialog.setStyleSheet(viewer.window._qt_window.styleSheet())
+    dialog.setStyleSheet(viewer_qt_window(viewer).styleSheet())
     dialog.resize(1740, 980)
     dialog.move(60, 30)
 
@@ -680,7 +681,7 @@ def _capture_example_workflow_chooser(target: Path) -> None:
 
     viewer = _dark_capture_viewer()
     dialog = ExampleWorkflowDialog()
-    dialog.setStyleSheet(viewer.window._qt_window.styleSheet())
+    dialog.setStyleSheet(viewer_qt_window(viewer).styleSheet())
     dialog.resize(1180, 640)
     dialog.select_example("deconvolution-3d")
     dialog.show()

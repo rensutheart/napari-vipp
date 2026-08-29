@@ -20541,6 +20541,7 @@ class VippWidget(QWidget):
                     self._move_layer_to_top(layer)
         if select_layer and target is not None:
             self._select_only_viewer_layer(target)
+            _sync_viewer_axis_labels_from_layer(self.viewer, target)
 
     def _source_resolution_presentation(
         self,
@@ -21152,6 +21153,7 @@ class VippWidget(QWidget):
         """Publish one owned napari layer, never a SourcePayload or graph cache."""
 
         previous_active = self._active_viewer_layer()
+        previous_axis_labels = _viewer_axis_labels(self.viewer)
         previous_active_was_preview = any(
             previous_active is layer for layer in self._owned_source_preview_layers()
         )
@@ -21223,6 +21225,10 @@ class VippWidget(QWidget):
                     axes=tuple(axes),
                     memory=f"{int(data.nbytes):,} bytes",
                 )
+        display_rgb = _image_state_displays_as_rgb(
+            layer_state,
+            tuple(int(size) for size in data.shape),
+        )
         metadata = {
             "napari_vipp_kind": "source_preview",
             "presentation_only": True,
@@ -21238,6 +21244,9 @@ class VippWidget(QWidget):
                 request or SourcePreviewRequest()
             ),
             "vipp_image_state": layer_state.to_dict(),
+            "display_ndim": int(data.ndim),
+            "display_shape": tuple(int(size) for size in data.shape),
+            "display_rgb": display_rgb,
             "source_preview_data_shape": list(preview.data.shape),
             "source_preview_plane_axis": plane_axis,
             "source_preview_display_slab": (
@@ -21257,14 +21266,16 @@ class VippWidget(QWidget):
                 "basis": metrics.basis,
             },
         }
-        scale = tuple(float(axis.scale) for axis in layer_state.axes)
-        translate = tuple(float(axis.translation) for axis in layer_state.axes)
+        scale = _layer_scale_from_metadata(metadata)
+        translate = _layer_translate_from_metadata(metadata)
         kwargs = {
             "name": preview.message,
             "metadata": metadata,
-            "scale": scale,
-            "translate": translate,
         }
+        if scale is not None:
+            kwargs["scale"] = scale
+        if translate is not None:
+            kwargs["translate"] = translate
         if plane_axis is not None:
             kwargs["depiction"] = "volume"
             kwargs["rendering"] = "mip"
@@ -21276,7 +21287,12 @@ class VippWidget(QWidget):
         if preview.preserves_label_semantics and hasattr(self.viewer, "add_labels"):
             layer = self.viewer.add_labels(data, **kwargs)
         else:
-            layer = self.viewer.add_image(data, colormap="gray", **kwargs)
+            if display_rgb:
+                kwargs["rgb"] = True
+                layer = self.viewer.add_image(data, **kwargs)
+            else:
+                layer = self.viewer.add_image(data, colormap="gray", **kwargs)
+        _set_layer_axis_labels(layer, metadata)
         self._make_generated_layer_noneditable(layer)
         selected = self.pipeline.nodes.get(self._selected_node_id)
         explicit_preview = bool(
@@ -21311,6 +21327,11 @@ class VippWidget(QWidget):
                 )
                 if inspect_layers:
                     self._select_only_viewer_layer(inspect_layers[-1])
+            active = self._active_viewer_layer()
+            if active is not None:
+                _sync_viewer_axis_labels_from_layer(self.viewer, active)
+            elif previous_axis_labels is not None:
+                _set_viewer_axis_labels(self.viewer, previous_axis_labels)
         self._refresh_source_resolution_control(node_id)
         self._sync_view_dims_bar()
         if (
@@ -25881,33 +25902,45 @@ class VippWidget(QWidget):
             presentation_state = data.window_state
             metadata["vipp_source_window_digest"] = data.identity.digest
             metadata["vipp_full_source_shape"] = list(data.shape)
-        if presentation_state is not None:
+        if isinstance(presentation_state, ImageState):
             metadata["vipp_image_state"] = presentation_state.to_dict()
-        rank = len(tuple(getattr(presentation_data, "shape", ())))
-        axes = tuple(getattr(presentation_state, "axes", ()))
-        scale = (
-            tuple(float(axis.scale) for axis in axes)
-            if len(axes) == rank
-            else (1.0,) * rank
+        presentation_shape = tuple(
+            int(size) for size in getattr(presentation_data, "shape", ())
         )
-        translate = (
-            tuple(float(axis.translation) for axis in axes)
-            if len(axes) == rank
-            else (0.0,) * rank
+        rank = len(presentation_shape)
+        display_rgb = _image_state_displays_as_rgb(
+            presentation_state,
+            presentation_shape,
         )
+        metadata.update(
+            {
+                "display_ndim": rank,
+                "display_shape": presentation_shape,
+                "display_rgb": display_rgb,
+            }
+        )
+        scale = _layer_scale_from_metadata(metadata)
+        translate = _layer_translate_from_metadata(metadata)
         owned = self._owned_crop_presentation_layers("crop_source")
         layer = owned[0] if owned else None
         for extra in owned[1:]:
             self._remove_layer(extra)
+        if layer is not None and bool(getattr(layer, "rgb", False)) != display_rgb:
+            self._remove_layer(layer)
+            layer = None
         if layer is None:
             kwargs = {
                 "name": CROP_SOURCE_LAYER_NAME,
                 "metadata": metadata,
                 "blending": "translucent",
-                "colormap": "gray",
             }
-            if rank:
+            if display_rgb:
+                kwargs["rgb"] = True
+            else:
+                kwargs["colormap"] = "gray"
+            if scale is not None:
                 kwargs["scale"] = scale
+            if translate is not None:
                 kwargs["translate"] = translate
             try:
                 layer = self.viewer.add_image(presentation_data, **kwargs)
@@ -25917,12 +25950,14 @@ class VippWidget(QWidget):
             try:
                 layer.data = presentation_data
                 layer.metadata.update(metadata)
-                if rank:
+                if scale is not None:
                     layer.scale = scale
+                if translate is not None:
                     layer.translate = translate
                 layer.visible = True
             except Exception:
                 return None
+        _set_layer_axis_labels(layer, metadata)
         self._make_generated_layer_noneditable(layer)
         return layer
 
@@ -26264,8 +26299,13 @@ class VippWidget(QWidget):
                 "current_slice_retained": bool(current_slice_retained),
                 "current_z_slice_retained": bool(current_slice_retained),
                 "geometry": ("volumetric-box" if len(faces) > 1 else "current-slice"),
+                "display_ndim": len(shape),
+                "display_shape": tuple(int(size) for size in shape),
+                "display_rgb": False,
             }
         )
+        if isinstance(state, ImageState):
+            metadata["vipp_image_state"] = state.to_dict()
         axes = tuple(getattr(state, "axes", ()))
         rank = len(shape)
         scale = (
@@ -26326,10 +26366,12 @@ class VippWidget(QWidget):
                 self._remove_layer(layer)
                 layer = None
         if layer is not None:
+            _set_layer_axis_labels(layer, metadata)
             self._make_generated_layer_noneditable(layer)
             self._move_layer_to_top(layer)
         if prior_active is not None and prior_active in self.viewer.layers:
             self._select_only_viewer_layer(prior_active)
+            _sync_viewer_axis_labels_from_layer(self.viewer, prior_active)
 
     def _channel_bounds(self, node_id: str, spec) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
@@ -33018,6 +33060,7 @@ class VippWidget(QWidget):
             if translate is not None:
                 kwargs["translate"] = translate
             layer = self.viewer.add_labels(presentation_data, **kwargs)
+            _set_layer_axis_labels(layer, metadata)
             self._make_generated_layer_noneditable(layer)
             return layer
         kwargs = {"name": name, "metadata": metadata}
@@ -33043,6 +33086,7 @@ class VippWidget(QWidget):
             metadata.update(self._generated_layer_contrast_metadata(plan))
             kwargs["contrast_limits"] = plan.limits
         layer = self.viewer.add_image(presentation_data, **kwargs)
+        _set_layer_axis_labels(layer, metadata)
         self._apply_image_layer_display_defaults(layer)
         self._set_layer_iso_threshold_default(
             layer,
@@ -33195,6 +33239,7 @@ class VippWidget(QWidget):
         metadata.update(self._generated_layer_contrast_metadata(plan))
         kwargs["contrast_limits"] = plan.limits
         layer = self.viewer.add_image(data, **kwargs)
+        _set_layer_axis_labels(layer, metadata)
         self._apply_image_layer_display_defaults(layer)
         self._set_layer_iso_threshold_default(layer, plan.limits)
         self._make_generated_layer_noneditable(layer)
@@ -33210,6 +33255,7 @@ class VippWidget(QWidget):
         channel_index: int,
     ) -> None:
         channel_index = int(metadata["display_rgb_channel_index"])
+        _set_layer_axis_labels(layer, metadata)
         colormap = _RGB_VOLUME_CHANNELS[channel_index][2]
         is_inspect = metadata.get("napari_vipp_kind") == "inspect"
         if is_inspect:
@@ -33618,6 +33664,7 @@ class VippWidget(QWidget):
             pass
 
     def _configure_generated_layer(self, layer, data, metadata: dict) -> None:
+        _set_layer_axis_labels(layer, metadata)
         scale = _layer_scale_from_metadata(metadata)
         if scale is not None:
             try:
@@ -34015,19 +34062,8 @@ class VippWidget(QWidget):
         if data is None or is_table_data(data):
             return False
         arr = np.asarray(data)
-        if arr.ndim < 3 or arr.shape[-1] not in (3, 4):
-            return False
         state = self._node_output_state(node_id, output_port) if node_id else None
-        if state is None or len(getattr(state, "axes", ())) != arr.ndim:
-            return False
-        channel_axis = state.axes[-1]
-        if not _axis_is_explicit(channel_axis) or not (
-            channel_axis.type == "channel"
-            or channel_axis.name.lower() in {"c", "rgb", "rgba"}
-        ):
-            return False
-        kind = str(getattr(state, "kind", "")).lower()
-        return kind in {"rgb image", "rgba image"}
+        return _image_state_displays_as_rgb(state, tuple(arr.shape))
 
     def _display_data(self, data, *, as_labels: bool = False):
         if is_table_data(data):
@@ -35401,10 +35437,128 @@ def _metadata_current_step_axis(state, axis_index: int, current_step=None) -> in
     return axis_index
 
 
+def _image_state_displays_as_rgb(
+    state: ImageState | None,
+    shape: tuple[int, ...],
+) -> bool:
+    """Return whether napari should hide a trailing RGB(A) component axis."""
+
+    if state is None or len(shape) < 3 or shape[-1] not in (3, 4):
+        return False
+    axes = tuple(getattr(state, "axes", ()))
+    if len(axes) != len(shape):
+        return False
+    channel_axis = axes[-1]
+    if not _axis_is_explicit(channel_axis) or not (
+        channel_axis.type == "channel"
+        or channel_axis.name.lower() in {"c", "rgb", "rgba"}
+    ):
+        return False
+    return str(getattr(state, "kind", "")).lower() in {
+        "rgb image",
+        "rgba image",
+    }
+
+
 def _state_axis_hidden_from_napari_dims(axis, metadata: dict) -> bool:
     if not bool(metadata.get("display_rgb")):
         return False
     return str(getattr(axis, "name", "")).lower() in {"rgb", "rgba"}
+
+
+def _state_axes_for_napari_layer(state: ImageState, metadata: dict) -> tuple:
+    """Align carried axes with napari's displayed layer dimensionality."""
+
+    expected_ndim = _napari_layer_transform_ndim(metadata)
+    axes = tuple(getattr(state, "axes", ()))
+    if expected_ndim <= 0:
+        return ()
+    if bool(metadata.get("display_rgb")) and len(axes) == expected_ndim + 1:
+        # VIPP only marks a layer RGB when its explicit component axis is
+        # trailing.  napari hides that component axis from viewer dimensions,
+        # including when its authored name is C rather than RGB/RGBA.
+        axes = axes[:-1]
+    else:
+        axes = tuple(
+            axis
+            for axis in axes
+            if not _state_axis_hidden_from_napari_dims(axis, metadata)
+        )
+    return axes if len(axes) == expected_ndim else ()
+
+
+def _default_napari_axis_labels(ndim: int) -> tuple[str, ...]:
+    return tuple(str(index - ndim) for index in range(max(int(ndim), 0)))
+
+
+def _layer_axis_labels_from_metadata(metadata: dict) -> tuple[str, ...] | None:
+    """Return display-only labels without changing VIPP's scientific state."""
+
+    if not isinstance(metadata, dict):
+        return None
+    expected_ndim = _napari_layer_transform_ndim(metadata)
+    if expected_ndim <= 0:
+        return None
+    carried = metadata.get("vipp_image_state")
+    state = ImageState.from_dict(carried) if isinstance(carried, dict) else None
+    if state is None:
+        return _default_napari_axis_labels(expected_ndim)
+    axes = _state_axes_for_napari_layer(state, metadata)
+    if not axes:
+        return _default_napari_axis_labels(expected_ndim)
+    labels = tuple(str(axis.short_label).strip() for axis in axes)
+    if len(labels) != expected_ndim or any(not label for label in labels):
+        return _default_napari_axis_labels(expected_ndim)
+    return labels
+
+
+def _set_layer_axis_labels(layer, metadata: dict) -> bool:
+    """Apply labels when supported by the installed napari layer model."""
+
+    labels = _layer_axis_labels_from_metadata(metadata)
+    if labels is None or not hasattr(layer, "axis_labels"):
+        return False
+    try:
+        layer.axis_labels = labels
+    except Exception:
+        return False
+    return True
+
+
+def _viewer_axis_labels(viewer) -> tuple[str, ...] | None:
+    try:
+        return tuple(str(label) for label in viewer.dims.axis_labels)
+    except Exception:
+        return None
+
+
+def _set_viewer_axis_labels(viewer, labels: tuple[str, ...]) -> bool:
+    """Set aligned public dims labels when that napari version supports them."""
+
+    try:
+        dims = viewer.dims
+        expected_ndim = len(tuple(dims.axis_labels))
+    except Exception:
+        return False
+    aligned = tuple(str(label) for label in labels)
+    if len(aligned) < expected_ndim:
+        defaults = _default_napari_axis_labels(expected_ndim)
+        aligned = defaults[: expected_ndim - len(aligned)] + aligned
+    elif len(aligned) > expected_ndim:
+        aligned = aligned[-expected_ndim:] if expected_ndim else ()
+    try:
+        dims.axis_labels = aligned
+    except Exception:
+        return False
+    return True
+
+
+def _sync_viewer_axis_labels_from_layer(viewer, layer) -> bool:
+    try:
+        labels = tuple(str(label) for label in layer.axis_labels)
+    except Exception:
+        return False
+    return _set_viewer_axis_labels(viewer, labels)
 
 
 def _layer_scale_from_metadata(metadata: dict) -> tuple[float, ...] | None:
@@ -35420,11 +35574,8 @@ def _layer_scale_from_metadata(metadata: dict) -> tuple[float, ...] | None:
     state = ImageState.from_dict(carried)
     if state is None or not state.axes:
         return default_scale
-    scales = tuple(
-        _positive_scale_float(axis.scale, 1.0)
-        for axis in state.axes
-        if not _state_axis_hidden_from_napari_dims(axis, metadata)
-    )
+    axes = _state_axes_for_napari_layer(state, metadata)
+    scales = tuple(_positive_scale_float(axis.scale, 1.0) for axis in axes)
     if expected_ndim <= 0 or len(scales) != expected_ndim:
         return default_scale
     return scales
@@ -35443,10 +35594,9 @@ def _layer_translate_from_metadata(metadata: dict) -> tuple[float, ...] | None:
     state = ImageState.from_dict(carried)
     if state is None or not state.axes:
         return default_translate
+    axes = _state_axes_for_napari_layer(state, metadata)
     translations = tuple(
-        _finite_translation_float(axis.translation, 0.0)
-        for axis in state.axes
-        if not _state_axis_hidden_from_napari_dims(axis, metadata)
+        _finite_translation_float(axis.translation, 0.0) for axis in axes
     )
     if expected_ndim <= 0 or len(translations) != expected_ndim:
         return default_translate

@@ -193,3 +193,109 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+  napari-compatibility:
+    name: >-
+      napari ${{ matrix.napari-label }} / ${{ matrix.qt-label }}
+      (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # This is deliberately not a complete version x OS x Qt product.
+          # The main test job above retains broad OS/Python coverage.  These
+          # four jobs qualify each compatibility boundary and the native Qt
+          # choices that VIPP distributes on each platform.
+          - os: ubuntu-latest
+            napari-label: minimum-0.6.x
+            napari-spec: napari==0.6.0
+            expected-napari: "0.6.0"
+            qt-label: PyQt6-6.10.2
+            qt-package: PyQt6==6.10.2
+            qt-api: pyqt6
+          - os: windows-latest
+            napari-label: exact-0.9.0
+            napari-spec: napari==0.9.0
+            expected-napari: "0.9.0"
+            qt-label: PyQt6-6.10.2
+            qt-package: PyQt6==6.10.2
+            qt-api: pyqt6
+          - os: macos-latest
+            napari-label: exact-0.9.0
+            napari-spec: napari==0.9.0
+            expected-napari: "0.9.0"
+            qt-label: PySide6-6.9.3
+            qt-package: PySide6==6.9.3
+            qt-api: pyside6
+          - os: ubuntu-latest
+            napari-label: latest-supported
+            napari-spec: napari>=0.6
+            expected-napari: ""
+            qt-label: PyQt6-6.10.2
+            qt-package: PyQt6==6.10.2
+            qt-api: pyqt6
+    env:
+      QT_API: ${{ matrix.qt-api }}
+      PYTEST_QT_API: ${{ matrix.qt-api }}
+      QT_QPA_PLATFORM: offscreen
+      VIPP_EXPECTED_NAPARI: ${{ matrix.expected-napari }}
+      VIPP_EXPECTED_QT_API: ${{ matrix.qt-api }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up compatibility Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Linux Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1 libgl1
+
+      - name: Install the exact compatibility environment
+        run: >-
+          python -m pip install --upgrade
+          -e .
+          "pytest>=8"
+          "pytest-qt>=4.4"
+          "npe2>=0.8"
+          "${{ matrix.napari-spec }}"
+          "${{ matrix.qt-package }}"
+
+      - name: Verify dependency consistency
+        run: python -m pip check
+
+      - name: Verify resolved napari and Qt boundary
+        run: >-
+          python -c
+          "import os;
+          from importlib.metadata import version;
+          from qtpy import API_NAME;
+          actual = version('napari');
+          expected = os.environ['VIPP_EXPECTED_NAPARI'];
+          assert not expected or actual == expected, (actual, expected);
+          expected_qt = os.environ['VIPP_EXPECTED_QT_API'];
+          assert API_NAME.lower() == expected_qt, (API_NAME, expected_qt);
+          print(f'qualified napari={actual}, qt={API_NAME}')"
+
+      - name: Validate napari manifest
+        run: python -m npe2 validate src/napari_vipp/napari.yaml
+
+      - name: Run import, lifecycle, and focused viewer integration tests
+        run: >-
+          python -m pytest -q
+          src/napari_vipp/_tests/test_napari_compat.py
+          src/napari_vipp/_tests/test_napari_runtime_compatibility.py
+          src/napari_vipp/_tests/test_widget.py::test_hidden_source_preview_cannot_replace_active_viewer_axis_labels
+          src/napari_vipp/_tests/test_widget.py::test_label_pipeline_inspects_and_pins_integer_labels
+          src/napari_vipp/_tests/test_widget.py::test_generated_rgb_and_rgba_hide_only_the_component_axis
+          src/napari_vipp/_tests/test_widget.py::test_split_channels_presentation_follows_distinct_used_output_ports
+          src/napari_vipp/_tests/test_widget.py::test_reorder_axes_updates_metadata_axes

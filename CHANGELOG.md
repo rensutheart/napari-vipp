@@ -75,13 +75,34 @@
   runners, manifests, hashes, and execution provenance. Workflow schema 6 and
   batch config/manifest schema 5 carry the new intent while continuing to read
   their supported earlier schema versions.
+- Added exact level-0 source-window pushdown for a direct **Image Source → Crop Stack** path. Supported local OME-Zarr sources now read only the proven crop window while retaining complete T/C axes, exact source revision and crop identity, full-resolution scientific semantics, and fail-closed fallback when graph topology, axes, reader evidence, or source bytes do not match the verified plan.
+- Added a bounded napari compatibility lane covering the retained minimum
+  `napari==0.6.0`, exact `napari==0.9.0`, and the latest supported napari. It
+  validates the plugin manifest and exercises import, start/close, and focused
+  viewer integration with the platform bindings VIPP distributes: PyQt6 on
+  Windows/Linux and PySide6 on macOS. The declared `napari>=0.6` range remains
+  unchanged.
 
 ### Bug Fixes
 
+- Updated generated Image and Labels presentation layers to carry VIPP's axis
+  names into napari when that layer API is available. Labels stay aligned to
+  displayed dimensionality, omit a trailing RGB/RGBA component axis, update on
+  in-place layer reuse, and follow the selected scientific presentation layer;
+  hidden or provisional source previews cannot replace the active viewer
+  labels.
+- Replaced documentation capture's direct use of napari's legacy camera and Qt
+  window layout with feature-detected compatibility seams. Camera access
+  prefers `viewer.scene.camera` and falls back to `viewer.camera`; native-window
+  lookup prefers ordinary Qt parent traversal and retains only a bounded legacy
+  fallback for older supported napari releases. Both paths are binding-neutral
+  across PySide6 and PyQt6.
 - Advanced Image Source axis text now remains an uncommitted editor draft until
   it is a complete valid mapping and the user presses Enter or leaves the field.
   Partial keystrokes can no longer enter workflow history or trip strict source
   validation during an otherwise valid edit.
+- The napari compatibility work is presentation-only: it changes no workflow
+  schema, scientific operation, generated result, provenance, or GPU contract.
 - Undo and Redo now restore a single node's parameter change in
   place, retain graph cards, thumbnails, viewer layers, and unaffected cached
   branches, and recalculate only that node and its descendants. Image Source
