@@ -9,6 +9,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,14 @@ from napari_vipp.core.source_preview import (
     SourcePreviewReadMetrics,
     SourcePreviewRequest,
     SourcePreviewResult,
+)
+from napari_vipp.core.source_window import (
+    SourceWindowControl,
+    SourceWindowIdentity,
+    SourceWindowReadEstimate,
+    SourceWindowRequest,
+    SourceWindowResult,
+    estimate_exact_window_read,
 )
 
 _DEFAULT_CHANNEL_COLORS = (
@@ -98,7 +107,8 @@ def enumerate_ome_zarr_levels(
 ) -> tuple[OmeZarrLevelInfo, ...]:
     """Enumerate declared levels and transforms for one local OME-Zarr item."""
     local_path = _local_preview_path(path)
-    _require_preview_format(_declared_ome_zarr_version(local_path))
+    declared_version = _declared_ome_zarr_version(local_path)
+    _require_preview_format(declared_version)
     location, nodes = _readable_nodes(local_path)
     _require_preview_format(location.version)
     node = _selected_node(nodes, series_index)
@@ -124,7 +134,8 @@ def read_ome_zarr_presentation_preview(
     control.report(0, 4, "Inspecting declared OME-Zarr levels")
 
     local_path = _local_preview_path(path)
-    _require_preview_format(_declared_ome_zarr_version(local_path))
+    declared_version = _declared_ome_zarr_version(local_path)
+    _require_preview_format(declared_version)
     location, nodes = _readable_nodes(local_path)
     _require_preview_format(location.version)
     node = _selected_node(nodes, series_index)
@@ -151,7 +162,12 @@ def read_ome_zarr_presentation_preview(
         str(local_path),
         f"ome-zarr-{location.version}",
         tuple(
-            _series_info(item, index, path=local_path)
+            _series_info(
+                item,
+                index,
+                path=local_path,
+                declared_version=declared_version,
+            )
             for index, item in enumerate(nodes)
         ),
         original_metadata=location.root_attrs,
@@ -186,8 +202,15 @@ def read_ome_zarr_presentation_preview(
 def inspect_ome_zarr(path: Path) -> SourceInspection:
     """Discover image and label groups in an OME-Zarr store."""
     location, nodes = _readable_nodes(path)
+    declared_version = _optional_declared_ome_zarr_version(path)
     series = tuple(
-        _series_info(node, index, path=path) for index, node in enumerate(nodes)
+        _series_info(
+            node,
+            index,
+            path=path,
+            declared_version=declared_version,
+        )
+        for index, node in enumerate(nodes)
     )
     return SourceInspection(
         str(path),
@@ -200,10 +223,19 @@ def inspect_ome_zarr(path: Path) -> SourceInspection:
 def read_ome_zarr(path: Path, series_index: int = 0) -> ImageDataset:
     """Read one OME-Zarr image group as a lazy Dask-backed dataset."""
     location, nodes = _readable_nodes(path)
+    declared_version = _optional_declared_ome_zarr_version(path)
     inspection = SourceInspection(
         str(path),
         f"ome-zarr-{location.version}",
-        tuple(_series_info(node, index, path=path) for index, node in enumerate(nodes)),
+        tuple(
+            _series_info(
+                node,
+                index,
+                path=path,
+                declared_version=declared_version,
+            )
+            for index, node in enumerate(nodes)
+        ),
         original_metadata=location.root_attrs,
     )
     selected = _selected_series(inspection, series_index)
@@ -227,6 +259,103 @@ def read_ome_zarr(path: Path, series_index: int = 0) -> ImageDataset:
         associated_labels=labels,
         provenance={"reader": "napari-vipp", "source_uri": str(path)},
     )
+
+
+def read_ome_zarr_exact_window(
+    path: Path,
+    series_index: int = 0,
+    *,
+    request: SourceWindowRequest,
+    control: SourceWindowControl | None = None,
+) -> SourceWindowResult:
+    """Read one exact level-0 OME-Zarr window for scientific analysis.
+
+    This is intentionally separate from presentation-preview loading.  The
+    full-rank selection is applied to the lazy level-0 array before any Dask
+    graph is computed.  The published array is detached, C-contiguous, and
+    read-only so downstream execution owns a frozen scientific value.
+    """
+    if not isinstance(request, SourceWindowRequest):
+        raise TypeError("request must be a SourceWindowRequest.")
+    if control is None:
+        control = SourceWindowControl()
+    elif not isinstance(control, SourceWindowControl):
+        raise TypeError("control must be a SourceWindowControl or None.")
+    control.report(0, 4, "Inspecting exact level-0 OME-Zarr source")
+
+    local_path = _local_exact_window_path(path)
+    declared_version = _declared_ome_zarr_version(local_path)
+    _require_exact_window_format(declared_version)
+    location, nodes = _readable_nodes(local_path)
+    _require_exact_window_format(location.version)
+    node = _selected_node(nodes, series_index)
+    level_zero = node.data[0]
+    source_shape = tuple(int(size) for size in level_zero.shape)
+    selection = request.normalized_selection(source_shape)
+    control.report(1, 4, "Validated exact level-0 source window")
+
+    inspection = SourceInspection(
+        str(local_path),
+        f"ome-zarr-{location.version}",
+        tuple(
+            _series_info(
+                item,
+                index,
+                path=local_path,
+                declared_version=declared_version,
+            )
+            for index, item in enumerate(nodes)
+        ),
+        original_metadata=location.root_attrs,
+    )
+    selected = _selected_series(inspection, series_index)
+    base_state = _ome_zarr_image_state(
+        local_path,
+        location,
+        inspection,
+        selected,
+        node,
+    )
+    if request.axis_declaration is not None:
+        base_state = apply_axis_declaration(
+            base_state,
+            request.axis_declaration,
+            declaration_source="Image Source",
+        )
+    _require_preserved_time_and_channels(base_state, selection, request)
+
+    read_estimate = _exact_window_read_estimate(level_zero, selection)
+    control.preflight_read(read_estimate)
+    control.report(2, 4, "Reading exact level-0 source chunks")
+    data = _compute_exact_window(level_zero[selection], control)
+    control.report(3, 4, "Preparing exact scientific window metadata")
+    state = _exact_window_image_state(base_state, selection, data)
+    identity = SourceWindowIdentity(
+        source_uri=str(local_path),
+        source_format=inspection.format,
+        series_index=selected.index,
+        item_key=selected.key,
+        reader_key="ome-zarr",
+        reader_version=_ome_zarr_package_version(),
+        source_shape=source_shape,
+        source_dtype=np.dtype(level_zero.dtype).name,
+        axis_names=tuple(axis.name for axis in base_state.axes),
+        bounds=tuple(
+            (int(selector.start), int(selector.stop)) for selector in selection
+        ),
+        read_estimate=read_estimate,
+        source_revision=request.source_revision,
+        source_item_digest=request.source_item_digest,
+    )
+    result = SourceWindowResult(
+        data=data,
+        image_state=state,
+        identity=identity,
+        inspection=inspection,
+        selected_series=selected,
+    )
+    control.report(4, 4, "Exact level-0 source window ready")
+    return result
 
 
 def image_state_from_ome_zarr_inspection(
@@ -523,12 +652,33 @@ def _local_preview_path(path: Path) -> Path:
     return source.resolve(strict=True)
 
 
+def _local_exact_window_path(path: Path) -> Path:
+    source = Path(path).expanduser()
+    if not source.exists():
+        raise FileNotFoundError(f"OME-Zarr source not found: {source}")
+    if not source.is_dir():
+        raise ValueError(
+            "Exact scientific source-window reads support local OME-Zarr "
+            "directories only."
+        )
+    return source.resolve(strict=True)
+
+
 def _require_preview_format(version: object) -> None:
     normalized = str(version)
     if normalized not in {"0.4", "0.5"}:
         raise ValueError(
             "Presentation preview currently supports local OME-Zarr 0.4 and "
             f"0.5 stores, not version {normalized!r}."
+        )
+
+
+def _require_exact_window_format(version: object) -> None:
+    normalized = str(version)
+    if normalized not in {"0.4", "0.5"}:
+        raise ValueError(
+            "Exact scientific source-window reads support local OME-Zarr 0.4 "
+            f"and 0.5 stores, not version {normalized!r}."
         )
 
 
@@ -548,6 +698,15 @@ def _declared_ome_zarr_version(path: Path) -> str:
         if isinstance(first, dict) and first.get("version") is not None:
             return str(first["version"])
     raise ValueError("OME-Zarr source does not declare a supported format version.")
+
+
+def _optional_declared_ome_zarr_version(path: Path) -> str | None:
+    """Return declared evidence, leaving a missing version unsupported."""
+
+    try:
+        return _declared_ome_zarr_version(path)
+    except ValueError:
+        return None
 
 
 def _selected_node(nodes: tuple[Any, ...], series_index: int):
@@ -728,12 +887,18 @@ def _choose_preview_level(
             )
         selected = levels[request.level]
         _mapped_tzc_indices(levels[0], selected, request)
+        _require_preview_level_within_budget(levels, selected, request)
         return selected
 
     requested_y, requested_x = request.display_shape_yx
     lower_candidates: list[OmeZarrLevelInfo] = []
+    over_budget_candidates: list[tuple[OmeZarrLevelInfo, int]] = []
     for level in reversed(levels[1:]):
         if not _requested_indices_fit(levels[0], level, request):
+            continue
+        required_bytes = _preview_level_budget_bytes(levels, level, request)
+        if required_bytes > request.max_decoded_bytes:
+            over_budget_candidates.append((level, required_bytes))
             continue
         lower_candidates.append(level)
         y_slice, x_slice = _mapped_yx_region(
@@ -753,12 +918,81 @@ def _choose_preview_level(
         # still the only safe presentation choice; falling back to level 0
         # would let an optional preview materialize the full scientific image.
         return lower_candidates[0]
+    if over_budget_candidates:
+        smallest_level, required_bytes = min(
+            over_budget_candidates,
+            key=lambda item: item[1],
+        )
+        raise MemoryError(
+            "No declared lower-resolution level fits the bounded source-preview "
+            f"budget of {request.max_decoded_bytes:,} decoded bytes; level "
+            f"{smallest_level.index} still requires about {required_bytes:,} bytes."
+        )
     if len(levels) > 1:
         raise IndexError(
             "No declared lower-resolution level contains the requested "
             "T/Z/C position."
         )
+    _require_preview_level_within_budget(levels, levels[0], request)
     return levels[0]
+
+
+def _require_preview_level_within_budget(
+    levels: tuple[OmeZarrLevelInfo, ...],
+    level: OmeZarrLevelInfo,
+    request: SourcePreviewRequest,
+) -> None:
+    required_bytes = _preview_level_budget_bytes(levels, level, request)
+    if required_bytes <= request.max_decoded_bytes:
+        return
+    raise MemoryError(
+        f"Presentation preview level {level.index} requires about "
+        f"{required_bytes:,} decoded bytes, exceeding the bounded preview "
+        f"budget of {request.max_decoded_bytes:,} bytes. Choose a coarser "
+        "presentation level or a smaller region."
+    )
+
+
+def _preview_level_budget_bytes(
+    levels: tuple[OmeZarrLevelInfo, ...],
+    level: OmeZarrLevelInfo,
+    request: SourcePreviewRequest,
+) -> int:
+    """Return the larger of output bytes and touched decoded chunk bytes."""
+
+    selection = _preview_selection(levels, level, request)
+    selected_shape = tuple(
+        _selected_axis_size(selector, int(size))
+        for selector, size in zip(selection, level.shape, strict=True)
+        if not isinstance(selector, int)
+    )
+    dtype_size = np.dtype(level.dtype).itemsize
+    output_bytes = int(np.prod(selected_shape, dtype=np.int64)) * dtype_size
+    if not level.chunk_grid:
+        return output_bytes
+    touched = tuple(
+        _touched_chunk_sizes(axis_chunks, selector, int(size))
+        for axis_chunks, selector, size in zip(
+            level.chunk_grid,
+            selection,
+            level.shape,
+            strict=True,
+        )
+    )
+    decoded_bytes = (
+        int(np.prod([sum(values) for values in touched], dtype=np.int64))
+        * dtype_size
+    )
+    return max(output_bytes, decoded_bytes)
+
+
+def _selected_axis_size(selector: int | slice, size: int) -> int:
+    if isinstance(selector, int):
+        return 1
+    start, stop, step = selector.indices(int(size))
+    if step != 1:
+        raise ValueError("OME-Zarr presentation preview supports unit-step slices.")
+    return max(int(stop) - int(start), 0)
 
 
 def _validate_requested_indices(
@@ -812,7 +1046,7 @@ def _mapped_tzc_indices(
     mapped: dict[str, int] = {}
     for axis_name, requested in (
         ("t", request.t_index),
-        ("z", request.z_index),
+        ("z", None if request.retain_z else request.z_index),
         ("c", request.c_index),
     ):
         if requested is None:
@@ -1049,6 +1283,19 @@ def _preview_read_metrics(
     )
 
 
+def _exact_window_read_estimate(
+    array,
+    selection: tuple[slice, ...],
+) -> SourceWindowReadEstimate:
+    """Estimate decoded touched chunks plus ROI assembly/publication buffers."""
+    return estimate_exact_window_read(
+        array.shape,
+        array.dtype,
+        selection,
+        chunk_grid=getattr(array, "chunks", None),
+    )
+
+
 def _touched_chunk_sizes(
     chunks: tuple[int, ...],
     selector: int | slice,
@@ -1090,6 +1337,107 @@ def _compute_preview(lazy_preview, control: SourcePreviewControl) -> np.ndarray:
         result = np.asarray(lazy_preview.compute())
     control.check_active()
     return result
+
+
+def _compute_exact_window(
+    lazy_window,
+    control: SourceWindowControl,
+) -> np.ndarray:
+    """Compute only an already-sliced level-0 window and detach its storage."""
+    control.check_active()
+
+    def check_active(*_args: Any, **_kwargs: Any) -> None:
+        control.check_active()
+
+    if hasattr(lazy_window, "compute"):
+        with DaskCallback(pretask=check_active, posttask=check_active):
+            computed = lazy_window.compute()
+    else:
+        computed = lazy_window
+    control.check_active()
+    result = np.array(
+        np.asarray(computed),
+        copy=True,
+        order="C",
+        subok=False,
+    )
+    if not result.flags.c_contiguous:
+        result = np.ascontiguousarray(result)
+    result.setflags(write=False)
+    control.check_active()
+    return result
+
+
+def _require_preserved_time_and_channels(
+    state: ImageState,
+    selection: tuple[slice, ...],
+    request: SourceWindowRequest,
+) -> None:
+    if not request.preserve_time_and_channels:
+        return
+    for index, (axis, selector, size) in enumerate(
+        zip(state.axes, selection, state.shape, strict=True)
+    ):
+        axis_name = axis.name.strip().casefold()
+        axis_type = axis.type.strip().casefold()
+        protected = (
+            axis_name in {"t", "time", "c", "channel", "rgb", "rgba"}
+            or axis_type in {"time", "channel"}
+        )
+        if not protected:
+            continue
+        if int(selector.start) != 0 or int(selector.stop) != int(size):
+            raise ValueError(
+                "exact Crop Stack source-window reads preserve complete T and C "
+                f"axes; dimension {index} ({axis.name}) requested "
+                f"[{selector.start}:{selector.stop}] of {size}."
+            )
+
+
+def _exact_window_image_state(
+    base_state: ImageState,
+    selection: tuple[slice, ...],
+    data: np.ndarray,
+) -> ImageState:
+    axes = tuple(
+        replace(
+            axis,
+            translation=axis.translation + int(selector.start) * axis.scale,
+        )
+        for axis, selector in zip(base_state.axes, selection, strict=True)
+    )
+    channels = base_state.channels
+    channel_index = next(
+        (
+            index
+            for index, axis in enumerate(base_state.axes)
+            if axis.name.strip().casefold() == "c"
+        ),
+        None,
+    )
+    if channel_index is not None and channels:
+        selector = selection[channel_index]
+        channels = channels[int(selector.start) : int(selector.stop)]
+    state = image_state_from_array(
+        data,
+        source_name=base_state.source_name,
+        axes=axes,
+        metadata_source=base_state.metadata_source,
+        history=base_state.history,
+        channels=channels,
+        acquisition=base_state.acquisition,
+        source=base_state.source,
+    )
+    if state is None:
+        raise ValueError("Could not build exact scientific source-window metadata.")
+    return replace(state, kind=base_state.kind)
+
+
+def _ome_zarr_package_version() -> str:
+    try:
+        return version("ome-zarr")
+    except (PackageNotFoundError, ValueError):
+        return "unknown"
 
 
 def _preview_image_state(
@@ -1178,7 +1526,13 @@ def _readable_nodes(path: Path):
     return location, nodes
 
 
-def _series_info(node, index: int, *, path: Path) -> ImageSeriesInfo:
+def _series_info(
+    node,
+    index: int,
+    *,
+    path: Path,
+    declared_version: str | None,
+) -> ImageSeriesInfo:
     data = node.data[0]
     axis_names = tuple(
         str(axis.get("name", "?")).strip() for axis in node.metadata.get("axes", ())
@@ -1202,22 +1556,31 @@ def _series_info(node, index: int, *, path: Path) -> ImageSeriesInfo:
         dtype=np.dtype(data.dtype).name,
         axes=axes,
         kind="labels" if is_label else "image",
-        capabilities=(
-            "pixel_lazy_inspection",
-            "lazy_data",
-            "level_enumeration",
-            "preview_level_read",
-            "exact_region_read",
-            "chunked_read",
-            "decoded_size_estimate",
-        ),
+        capabilities=_series_capabilities(declared_version),
         estimated_decoded_bytes=int(
             np.prod(data.shape) * np.dtype(data.dtype).itemsize
         ),
         level_shapes=tuple(
             tuple(int(size) for size in level.shape) for level in node.data
         ),
+        analysis_chunk_grid=tuple(
+            tuple(int(size) for size in axis_chunks)
+            for axis_chunks in (getattr(data, "chunks", None) or ())
+        ),
     )
+
+
+def _series_capabilities(declared_version: str | None) -> tuple[str, ...]:
+    capabilities = [
+        "pixel_lazy_inspection",
+        "lazy_data",
+        "level_enumeration",
+        "chunked_read",
+        "decoded_size_estimate",
+    ]
+    if str(declared_version) in {"0.4", "0.5"}:
+        capabilities.extend(("preview_level_read", "exact_region_read"))
+    return tuple(capabilities)
 
 
 def _node_item_key(node, path: Path) -> str:

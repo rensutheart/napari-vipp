@@ -23,6 +23,7 @@ from napari_vipp.core.io.ome_zarr import (
     image_state_from_ome_zarr_inspection,
     inspect_ome_zarr,
     read_ome_zarr,
+    read_ome_zarr_exact_window,
     write_ome_zarr,
 )
 from napari_vipp.core.io.raster import (
@@ -43,6 +44,11 @@ from napari_vipp.core.metadata import (
     ImageState,
     SourceMetadata,
     image_state_from_array,
+)
+from napari_vipp.core.source_window import (
+    SourceWindowControl,
+    SourceWindowRequest,
+    SourceWindowResult,
 )
 
 WRITE_FORMATS = (
@@ -180,6 +186,59 @@ def read_image(
     return replace(dataset, inspection=inspection, selected_series=selected)
 
 
+def read_image_exact_window(
+    path: str | Path,
+    *,
+    request: SourceWindowRequest,
+    series_index: int = 0,
+    control: SourceWindowControl | None = None,
+) -> SourceWindowResult:
+    """Read an exact scientific level-0 window through a capable local reader.
+
+    Exact region reads are deliberately opt-in.  The registry currently
+    dispatches only local OME-Zarr 0.4/0.5; unsupported formats fail visibly
+    instead of falling back to a full materialization that could exceed RAM.
+    """
+    source_path = _source_path(path)
+    suffix = source_path.suffix.lower()
+    if suffix != ".zarr":
+        raise ValueError(
+            "Exact scientific source-window reads currently support local "
+            "OME-Zarr 0.4/0.5 sources only."
+        )
+    result = read_ome_zarr_exact_window(
+        source_path,
+        series_index,
+        request=request,
+        control=control,
+    )
+    inspection = _annotated_inspection(result.inspection, suffix=suffix)
+    selected = next(
+        (
+            item
+            for item in inspection.series
+            if item.key == result.selected_series.key
+        ),
+        None,
+    )
+    if selected is None:
+        raise ValueError(
+            "Reader contract mismatch: the exact-window item is absent from "
+            "the annotated source inspection."
+        )
+    identity = replace(
+        result.identity,
+        reader_key=selected.reader_key or result.identity.reader_key,
+        reader_version=selected.reader_version or result.identity.reader_version,
+    )
+    return replace(
+        result,
+        inspection=inspection,
+        selected_series=selected,
+        identity=identity,
+    )
+
+
 def _annotated_inspection(
     inspection: SourceInspection,
     *,
@@ -216,8 +275,6 @@ def _annotated_series(
             {
                 "lazy_data",
                 "level_enumeration",
-                "preview_level_read",
-                "exact_region_read",
                 "chunked_read",
             }
         )

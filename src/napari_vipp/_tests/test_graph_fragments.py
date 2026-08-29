@@ -23,7 +23,10 @@ from napari_vipp.core.graph_fragments import (
     prepare_paste_values,
     validate_graph_fragment,
 )
-from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.pipeline import (
+    CROP_ROI_LINE_WIDTH_SCALE_PARAMETER,
+    PrototypePipeline,
+)
 
 
 def _empty_pipeline() -> PrototypePipeline:
@@ -188,6 +191,21 @@ def test_optional_authored_parameters_copy_but_derived_spatial_hint_does_not() -
     assert transferred["axes"] == "Z"
     assert transferred["indices"] == "4"
     assert "resolved_spatial_ndim" not in transferred
+
+
+def test_crop_roi_line_thickness_is_transferable_authored_display_state() -> None:
+    pipeline = _empty_pipeline()
+    crop = pipeline.add_node("crop_stack")
+    parameter = CROP_ROI_LINE_WIDTH_SCALE_PARAMETER
+    params = dict(crop.params)
+    params[parameter.name] = 0.35
+
+    transferred = extract_transferable_parameters(crop.operation_id, params)
+
+    assert transferred[parameter.name] == pytest.approx(0.35)
+    source = GraphFragmentNode("n0", crop.operation_id, transferred)
+    replacement = prepare_paste_values(source, crop.operation_id, crop.params)
+    assert replacement[parameter.name] == pytest.approx(0.35)
 
 
 def test_paste_values_requires_exact_operation_and_preserves_target_state() -> None:

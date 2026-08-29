@@ -9,15 +9,18 @@ from ome_zarr.format import FormatV04, FormatV05
 from ome_zarr.writer import write_image as write_ome_zarr_image
 from ome_zarr.writer import write_labels as write_ome_zarr_labels
 
+from napari_vipp.core.io import inspect_image_source
 from napari_vipp.core.io.ome_zarr import (
     OmeZarrLevelInfo,
     _choose_preview_level,
     _preview_selection,
     enumerate_ome_zarr_levels,
+    inspect_ome_zarr,
     read_ome_zarr,
     read_ome_zarr_presentation_preview,
 )
 from napari_vipp.core.metadata import AxisDeclaration, AxisMetadata
+from napari_vipp.core.source_identity import capture_local_source_bundle
 from napari_vipp.core.source_preview import (
     SourcePreviewCancelled,
     SourcePreviewControl,
@@ -25,6 +28,7 @@ from napari_vipp.core.source_preview import (
     SourcePreviewRequest,
     StaleSourcePreviewGeneration,
 )
+from napari_vipp.core.source_resolution import resolve_source_item
 
 
 def _write_multiscale(path, fmt, *, storage_options=None) -> np.ndarray:
@@ -163,6 +167,17 @@ def test_indexed_axes_map_from_analysis_coordinates_into_selected_level(
     assert _preview_selection(levels, levels[1], explicit)[0] == 2
 
 
+def test_preview_request_retain_z_is_explicit_and_mutually_exclusive() -> None:
+    request = SourcePreviewRequest(retain_z=True)
+
+    assert request.retain_z is True
+    assert request.max_decoded_bytes == 64 * 1024**2
+    with pytest.raises(ValueError, match="cannot be combined with z_index"):
+        SourcePreviewRequest(retain_z=True, z_index=2)
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        SourcePreviewRequest(max_decoded_bytes=0)
+
+
 def test_auto_preview_never_reads_level_zero_when_lower_levels_do_not_cover_plane():
     analysis_axes = (
         AxisMetadata("z", "space"),
@@ -262,6 +277,81 @@ def test_lower_level_slices_tzc_and_region_before_compute(
     assert result.metrics.requested_decoded_bytes == 12 * 16 * 2
     assert result.metrics.estimated_objects_read == 1
     assert "estimated" in result.metrics.basis
+
+
+def test_bounded_volume_preview_retains_z_but_slices_time_and_channel(
+    tmp_path,
+):
+    path = tmp_path / "bounded-volume.ome.zarr"
+    _write_multiscale(path, FormatV05())
+    loaded = read_ome_zarr(path)
+    expected = loaded.multiscale_levels[1][1, 2].compute()
+
+    result = read_ome_zarr_presentation_preview(
+        path,
+        request=SourcePreviewRequest(
+            t_index=1,
+            c_index=2,
+            retain_z=True,
+            level=1,
+        ),
+    )
+
+    np.testing.assert_array_equal(result.data, expected)
+    assert result.data.shape == (4, 32, 40)
+    assert result.image_state.axis_order == "ZYX"
+    assert result.metrics.requested_decoded_bytes == 4 * 32 * 40 * 2
+
+
+def test_automatic_volume_preview_uses_coarser_level_to_honor_budget(tmp_path):
+    path = tmp_path / "budgeted-volume.ome.zarr"
+    _write_multiscale(path, FormatV05())
+
+    result = read_ome_zarr_presentation_preview(
+        path,
+        request=SourcePreviewRequest(
+            t_index=0,
+            c_index=0,
+            retain_z=True,
+            display_shape_yx=(32, 40),
+            max_decoded_bytes=20_000,
+        ),
+    )
+
+    assert result.preview_level == 2
+    assert result.data.shape == (4, 16, 20)
+    assert result.metrics.requested_decoded_bytes == 4 * 16 * 20 * 2
+
+
+def test_explicit_volume_preview_rejects_unsafe_decode_before_compute(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "unsafe-volume.ome.zarr"
+    _write_multiscale(path, FormatV05())
+    compute_calls = 0
+    original_compute = da.Array.compute
+
+    def tracked_compute(self, *args, **kwargs):
+        nonlocal compute_calls
+        compute_calls += 1
+        return original_compute(self, *args, **kwargs)
+
+    monkeypatch.setattr(da.Array, "compute", tracked_compute)
+
+    with pytest.raises(MemoryError, match="bounded preview budget"):
+        read_ome_zarr_presentation_preview(
+            path,
+            request=SourcePreviewRequest(
+                t_index=0,
+                c_index=0,
+                retain_z=True,
+                level=1,
+                max_decoded_bytes=1_000,
+            ),
+        )
+
+    assert compute_calls == 0
 
 
 def test_region_preview_reads_only_intersecting_lower_level_chunks(tmp_path):
@@ -566,3 +656,35 @@ def test_preview_rejects_unsupported_local_ome_zarr_version(tmp_path):
 
     with pytest.raises(ValueError, match="0.4 and 0.5"):
         enumerate_ome_zarr_levels(path)
+
+
+@pytest.mark.parametrize("declared_version", ["0.3", None])
+def test_inspection_does_not_advertise_bounded_reads_without_supported_version(
+    tmp_path,
+    declared_version,
+):
+    path = tmp_path / f"unsupported-{declared_version or 'unknown'}.ome.zarr"
+    root = zarr.open_group(str(path), mode="w", zarr_format=2)
+    root.create_array("0", data=np.zeros((16, 20), dtype=np.uint8))
+    multiscale = {
+        "axes": ["y", "x"],
+        "datasets": [{"path": "0"}],
+    }
+    if declared_version is not None:
+        multiscale["version"] = declared_version
+    root.attrs["multiscales"] = [multiscale]
+
+    direct_series = inspect_ome_zarr(path).series[0]
+    inspection = inspect_image_source(path)
+    series = inspection.series[0]
+    source_item = resolve_source_item(
+        capture_local_source_bundle(path),
+        inspection,
+    )
+
+    for inspected in (direct_series, series):
+        assert "pixel_lazy_inspection" in inspected.capabilities
+        assert "preview_level_read" not in inspected.capabilities
+        assert "exact_region_read" not in inspected.capabilities
+    assert not source_item.capabilities.preview_level_read
+    assert not source_item.capabilities.exact_region_read

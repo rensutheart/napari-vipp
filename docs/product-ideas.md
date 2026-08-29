@@ -76,8 +76,8 @@ import/export is a simpler possible intermediate step.
 
 A future source planner could union exact regions required by several branches,
 read only those chunks, and progressively refine scientific results. This goes
-beyond the committed first step of presentation pyramids and exact direct-Crop
-pushdown.
+beyond the implemented narrow first steps of presentation pyramids and exact
+sole direct-Crop pushdown.
 
 Before adoption it would need:
 

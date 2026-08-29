@@ -35,6 +35,7 @@ class ImageSeriesInfo:
     capabilities: tuple[str, ...] = ()
     estimated_decoded_bytes: int | None = None
     level_shapes: tuple[tuple[int, ...], ...] = ()
+    analysis_chunk_grid: tuple[tuple[int, ...], ...] = ()
 
     @property
     def label(self) -> str:

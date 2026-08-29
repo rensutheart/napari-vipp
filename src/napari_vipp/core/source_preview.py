@@ -154,8 +154,12 @@ class SourcePreviewRequest:
     ``yx_region`` is ``(y_start, y_stop, x_start, x_stop)`` in level-0 pixel
     coordinates.  T, Z, and C indices refer to their semantic axes and are
     mapped through each level's declared coordinate transform and sliced before
-    any pixels are computed. ``level`` chooses an exact declared presentation
-    level; the default selects a suitable lower-resolution level automatically.
+    any pixels are computed. ``retain_z`` instead keeps the selected preview
+    level's complete Z extent, while T and C remain plane selections.
+    ``max_decoded_bytes`` bounds both the materialized preview and the decoded
+    source chunks it may touch. ``level`` chooses an exact declared
+    presentation level; the default selects a suitable safe lower-resolution
+    level automatically.
     """
 
     display_shape_yx: tuple[int, int] = (512, 512)
@@ -165,6 +169,8 @@ class SourcePreviewRequest:
     yx_region: tuple[int, int, int, int] | None = None
     level: int | None = None
     axis_declaration: AxisDeclaration | None = None
+    retain_z: bool = False
+    max_decoded_bytes: int = 64 * 1024**2
 
     def __post_init__(self) -> None:
         display = _positive_pair(self.display_shape_yx, "display_shape_yx")
@@ -176,6 +182,18 @@ class SourcePreviewRequest:
             if isinstance(value, bool) or int(value) < 0:
                 raise ValueError(f"source preview {name} must be non-negative.")
             object.__setattr__(self, name, int(value))
+        if not isinstance(self.retain_z, bool):
+            raise TypeError("source preview retain_z must be a Boolean.")
+        if self.retain_z and self.z_index is not None:
+            raise ValueError(
+                "source preview retain_z cannot be combined with z_index."
+            )
+        maximum = self.max_decoded_bytes
+        if isinstance(maximum, bool) or int(maximum) <= 0:
+            raise ValueError(
+                "source preview max_decoded_bytes must be a positive integer."
+            )
+        object.__setattr__(self, "max_decoded_bytes", int(maximum))
         if self.yx_region is not None:
             if len(self.yx_region) != 4:
                 raise ValueError("yx_region must contain y0, y1, x0, and x1.")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from qtpy.QtCore import QPoint, Qt
-from qtpy.QtWidgets import QLabel
+from qtpy.QtWidgets import QLabel, QSizePolicy
 
 from napari_vipp.core.pipeline import ParameterSpec
 from napari_vipp.ui import recent_paths
@@ -14,6 +14,7 @@ from napari_vipp.ui.axis_controls import (
 )
 from napari_vipp.ui.controls import (
     ImageSourceControl,
+    ImageSourceMemoryRepairPresentation,
     ImageSourceResolutionPresentation,
 )
 
@@ -252,6 +253,120 @@ def test_image_source_resolution_panel_disables_unsupported_preview(qtbot):
     assert control.viewer_display_combo.count() == 1
     assert control.viewer_display_combo.currentData() == "analysis"
     assert viewer_choices == []
+
+
+def test_image_source_resolution_panel_labels_loaded_exact_crop_window(qtbot):
+    control = ImageSourceControl(
+        {
+            "source_mode": "file path",
+            "file_path": "large.ome.zarr",
+        },
+        layer_names=[],
+        sample_names=[],
+    )
+    qtbot.addWidget(control)
+
+    control.set_resolution_presentation(
+        ImageSourceResolutionPresentation(
+            analysis_axes="ZYX",
+            analysis_shape=(512, 8192, 8192),
+            level_shapes=((512, 8192, 8192),),
+            analysis_window_bounds=((224, 288), (3584, 4608), (3584, 4608)),
+            analysis_window_shape=(64, 1024, 1024),
+        )
+    )
+
+    assert control.resolution_panel.isVisibleTo(control)
+    assert "Loaded Crop Stack window" in control.analysis_resolution_label.text()
+    assert "Z 224:288" in control.analysis_resolution_label.text()
+    assert "Y 3584:4608" in control.analysis_resolution_label.text()
+    assert "64 × 1024 × 1024" in control.analysis_resolution_label.text()
+    assert "Full level 0 was not materialized" in (
+        control.analysis_resolution_label.text()
+    )
+    assert control.viewer_display_combo.currentData() == "analysis"
+    assert "Loaded Crop Stack window" in control.viewer_display_combo.currentText()
+
+
+def test_image_source_resolution_panel_wraps_inside_narrow_inspector(qtbot):
+    control = ImageSourceControl(
+        {
+            "source_mode": "file path",
+            "file_path": "oversized-sparse.ome.zarr",
+        },
+        layer_names=[],
+        sample_names=[],
+    )
+    qtbot.addWidget(control)
+    control.set_resolution_presentation(
+        ImageSourceResolutionPresentation(
+            analysis_axes="ZYX",
+            analysis_shape=(512, 8192, 8192),
+            level_shapes=((512, 8192, 8192), (17, 513, 513)),
+            preview_state="ready",
+            preview_level=1,
+            preview_shape=(17, 513, 513),
+            viewer_choice="preview:auto",
+            can_select_preview=True,
+            analysis_window_bounds=(
+                (229, 282),
+                (2852, 4526),
+                (3665, 4526),
+            ),
+            analysis_window_shape=(53, 1674, 861),
+        )
+    )
+
+    control.resize(340, 900)
+    control.show()
+    qtbot.waitExposed(control)
+
+    assert control.minimumSizeHint().width() <= 340
+    assert control.resolution_panel.width() == control.width()
+    for label in (
+        control.analysis_resolution_label,
+        control.pyramid_levels_label,
+        control.preview_resolution_label,
+    ):
+        assert label.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+        assert label.width() <= control.resolution_panel.width()
+        assert label.height() >= label.heightForWidth(label.width())
+    assert control.viewer_display_combo.width() <= control.resolution_panel.width()
+
+
+def test_image_source_memory_repair_is_explicit_transient_and_read_only(qtbot):
+    control = ImageSourceControl(
+        {"source_mode": "file path", "file_path": "large.ome.zarr"},
+        layer_names=[],
+        sample_names=[],
+    )
+    qtbot.addWidget(control)
+    original = control.value()
+    requested = []
+    dismissed = []
+    control.sourceCropRepairRequested.connect(lambda: requested.append(True))
+    control.sourceCropRepairDismissed.connect(lambda: dismissed.append(True))
+
+    control.set_memory_repair_presentation(
+        ImageSourceMemoryRepairPresentation(
+            visible=True,
+            message="The full source does not fit safe RAM.",
+            action_label="Add fitted Crop Stack",
+            enabled=True,
+            tooltip="Author one visible, undoable crop.",
+        )
+    )
+
+    assert control.memory_repair_panel.isVisibleTo(control)
+    assert "does not fit" in control.memory_repair_label.text()
+    control.memory_repair_button.click()
+    assert requested == [True]
+    assert control.value() == original
+
+    control.memory_repair_dismiss_button.click()
+    assert control.memory_repair_panel.isHidden()
+    assert dismissed == [True]
+    assert control.value() == original
 
 
 def test_image_source_mode_hides_dynamic_fields_and_their_labels(qtbot):

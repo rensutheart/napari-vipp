@@ -230,7 +230,10 @@ from napari_vipp.core.graph_search import (
     GraphSearchMatch,
     find_graph_matches,
 )
-from napari_vipp.core.host_memory import capture_host_memory
+from napari_vipp.core.host_memory import (
+    capture_host_memory,
+    preflight_host_allocation,
+)
 from napari_vipp.core.interaction_telemetry import (
     InteractionLatencyOutcome,
     InteractionLatencyPhase,
@@ -271,6 +274,7 @@ from napari_vipp.core.operations import (
     save_array_output,
 )
 from napari_vipp.core.pipeline import (
+    CROP_ROI_LINE_WIDTH_SCALE_PARAMETER,
     DEFAULT_DYNAMIC_OUTPUT_PORTS,
     EXECUTION_BLOCKED,
     EXECUTION_ERROR,
@@ -333,6 +337,17 @@ from napari_vipp.core.source_resolution import (
     select_inspected_item,
     source_item_with_axis_declaration,
     verify_saved_source_item,
+)
+from napari_vipp.core.source_window import (
+    ExactSourceWindowData,
+    estimate_exact_window_read,
+)
+from napari_vipp.core.source_window_planning import (
+    CenteredCropSuggestion,
+    CropFitUnavailableError,
+    ExactSourceCropWindowPlan,
+    plan_exact_source_crop_window,
+    suggest_centered_memory_fit_crop,
 )
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.thumbnail_statistics import (
@@ -468,6 +483,7 @@ from napari_vipp.ui.controls import (
     BoolControl,
     ChoiceControl,
     ImageSourceControl,
+    ImageSourceMemoryRepairPresentation,
     ImageSourceResolutionPresentation,
     NumericEntryControl,
     ParameterBounds,
@@ -809,6 +825,7 @@ CROP_MARGIN_PAIRS = {
 }
 CROP_ROI_LAYER_NAME = "VIPP Crop ROI"
 CROP_SOURCE_LAYER_NAME = "VIPP Crop Source"
+CROP_ROI_LINE_WIDTH_SCALE_PARAM = CROP_ROI_LINE_WIDTH_SCALE_PARAMETER.name
 QT_SIGNED_INT_MINIMUM = -(2**31)
 QT_SIGNED_INT_MAXIMUM = 2**31 - 1
 # Qt's public macro is not exported consistently by every Python binding.
@@ -1457,6 +1474,7 @@ class VippWidget(QWidget):
         "_source_inspection_errors",
         "_source_preview_errors",
         "_source_view_modes",
+        "_source_memory_crop_dismissals",
         "_psf_preflight_cache",
         "_file_source_payload_cache",
         "_file_source_path_identities",
@@ -1614,6 +1632,9 @@ class VippWidget(QWidget):
         self._source_inspection_errors: dict[str, str] = {}
         self._source_preview_errors: dict[str, str] = {}
         self._source_view_modes: dict[str, str] = {}
+        self._source_memory_crop_dismissals: set[
+            tuple[str, str, tuple[tuple[int, int], ...]]
+        ] = set()
         self._psf_preflight_cache: dict[
             str,
             tuple[tuple[object, ...], PsfPreflightResult],
@@ -2510,6 +2531,12 @@ class VippWidget(QWidget):
         self._crop_draft_timer.setInterval(350)
         self._crop_draft_timer.setSingleShot(True)
         self._crop_draft_timer.timeout.connect(self._commit_crop_draft_after_idle)
+        # Node selection originates inside QGraphicsScene mouse dispatch.  Mutating
+        # napari's layer model from that nested callback can leave its Qt proxy
+        # selection model with stale indexes on Windows.  Selection-bound viewer
+        # publication is therefore coalesced onto the next event-loop turn.
+        self._selected_viewer_refresh_generation = 0
+        self._selected_viewer_refresh_in_progress = False
 
         self._build_layout()
         self._connect_signals()
@@ -2819,6 +2846,7 @@ class VippWidget(QWidget):
             event.ignore()
             return
         self._closing = True
+        self._cancel_selected_viewer_refresh()
         self._discard_crop_draft(remove_layers=True)
         application = QApplication.instance()
         if application is not None and self._application_shortcut_filter_installed:
@@ -4781,7 +4809,8 @@ class VippWidget(QWidget):
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         if node_id == self._selected_node_id:
-            self._discard_crop_draft(remove_layers=True)
+            self._discard_crop_draft(remove_layers=False)
+            self._set_crop_presentation_layers_visible(False)
         try:
             changed = self.pipeline.set_node_execution_mode(node_id, value)
         except ValueError as exc:
@@ -4810,7 +4839,7 @@ class VippWidget(QWidget):
         self._sync_node_compute_control()
         self._sync_isolated_tuning_ui()
         if node_id == self._selected_node_id:
-            self._update_crop_roi_presentation(node_id)
+            self._schedule_selected_viewer_refresh(node_id, select_layer=True)
         mode_label = "Bypass" if self.pipeline.node_is_bypassed(node_id) else "Run"
         primary_phrase = self._node_bypass_primary_input_phrase(operation)
         detail = (
@@ -7344,6 +7373,7 @@ class VippWidget(QWidget):
             "_source_inspection_errors": {},
             "_source_preview_errors": {},
             "_source_view_modes": {},
+            "_source_memory_crop_dismissals": set(),
             "_psf_preflight_cache": {},
             "_file_source_payload_cache": {},
             "_file_source_path_identities": {},
@@ -7698,6 +7728,7 @@ class VippWidget(QWidget):
         # Preview workers and layers are presentation-only globals. Cancel and
         # remove them at the central activation seam so direct/internal tab
         # switches cannot mistake another tab's common input id for their own.
+        self._cancel_selected_viewer_refresh()
         self._invalidate_source_preview(remove_layer=True)
         self._discard_crop_draft(remove_layers=True)
 
@@ -8413,6 +8444,7 @@ class VippWidget(QWidget):
 
             scientific_names = set(changed_names)
             scientific_names.discard(CACHE_KEEP_NODE_PARAM)
+            scientific_names.discard(CROP_ROI_LINE_WIDTH_SCALE_PARAM)
             if live_node.operation_id == "split_channels":
                 scientific_names.discard("preview_channel")
             scientific_change = bool(scientific_names or execution_mode_changed)
@@ -8451,6 +8483,7 @@ class VippWidget(QWidget):
             and self._restore_parameter_history_snapshot(current_snapshot, snapshot)
         ):
             return
+        self._cancel_selected_viewer_refresh()
         self._discard_crop_draft(remove_layers=True)
         self._supersede_interaction_for_untraced_edit(
             "workflow_history",
@@ -10491,6 +10524,11 @@ class VippWidget(QWidget):
 
         if node.operation_id == "split_channels" and "preview_channel" in changed:
             self._refresh_split_channel_display_surfaces({node_id})
+        if (
+            node.operation_id == "crop_stack"
+            and CROP_ROI_LINE_WIDTH_SCALE_PARAM in changed
+        ):
+            self._update_crop_roi_presentation(node_id)
 
         if not selected:
             return
@@ -14896,6 +14934,7 @@ class VippWidget(QWidget):
 
         if payload.source_item is not None:
             item = payload.source_item
+            metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
             return (
                 item.container.uri,
                 item.selector.digest,
@@ -14903,6 +14942,7 @@ class VippWidget(QWidget):
                 item.reader.implementation,
                 item.reader.version,
                 item.resolved.analysis_level,
+                str(metadata.get("vipp_source_window_digest", "")),
             )
 
         metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
@@ -15434,6 +15474,7 @@ class VippWidget(QWidget):
             seen.add(key)
             resolved_path = str(key[0])
             expected_source_item = self._file_source_item_for_node(node)
+            exact_plan = self._exact_source_window_plan_for_node(node)
             specs.append(
                 SourceFileLoadSpec(
                     node_id=node_id,
@@ -15449,6 +15490,9 @@ class VippWidget(QWidget):
                         resolved_path
                     ),
                     expected_source_item=expected_source_item,
+                    exact_window_request=(
+                        None if exact_plan is None else exact_plan.request
+                    ),
                 )
             )
         return tuple(specs)
@@ -15475,7 +15519,246 @@ class VippWidget(QWidget):
             if source_item is not None
             else ("legacy-series", self._file_source_series_index_for_node(node))
         )
-        return (str(source_path), selector)
+        exact_plan = self._exact_source_window_plan_for_node(node)
+        if exact_plan is None:
+            return (str(source_path), selector)
+        return (
+            str(source_path),
+            selector,
+            (
+                "exact-window",
+                exact_plan.crop_node_id,
+                exact_plan.geometry.bounds,
+            ),
+        )
+
+    def _exact_source_window_plan_for_node(
+        self,
+        node,
+    ) -> ExactSourceCropWindowPlan | None:
+        """Return one metadata-only exact plan or preserve ordinary loading."""
+
+        if node is None or node.operation_id != "input":
+            return None
+        source_path = self._file_source_path_for_node(node)
+        source_item = self._file_source_item_for_node(node)
+        if source_path is None or source_item is None:
+            return None
+        try:
+            full_state = self._full_source_state_for_node(node, source_item)
+            decision = plan_exact_source_crop_window(
+                self.pipeline,
+                node.id,
+                source_item,
+                full_state,
+            )
+        except Exception:
+            return None
+        return decision.plan
+
+    def _full_source_state_for_node(self, node, source_item=None) -> ImageState:
+        """Return verified complete metadata without reading source pixels."""
+
+        source_path = self._file_source_path_for_node(node)
+        source_item = source_item or self._file_source_item_for_node(node)
+        if source_path is None or source_item is None:
+            raise ValueError("Image Source metadata is not resolved yet.")
+        resolved_path = str(source_path)
+        verified = self._source_inspection_cache.get(resolved_path)
+        pinned = self._file_source_path_identities.get(resolved_path)
+        if verified is None or (pinned is not None and verified.identity != pinned):
+            raise ValueError("Image Source inspection is unavailable or stale.")
+        selected = select_inspected_item(
+            verified.inspection,
+            item_key=source_item.selector.key,
+        )
+        state = inspect_image_state(
+            source_path,
+            inspection=verified.inspection,
+            series_index=selected.index,
+        )
+        declaration = AxisDeclaration.from_value(node.params.get("axis_declaration"))
+        if source_item.selector.source_axes:
+            declaration = AxisDeclaration(
+                ",".join(source_item.selector.source_axes),
+                ",".join(source_item.selector.effective_axes),
+            )
+        if declaration is not None:
+            state = apply_axis_declaration(
+                state,
+                declaration,
+                declaration_source="saved SourceItem",
+            )
+        return state
+
+    def _source_memory_crop_suggestion(
+        self,
+        node,
+    ) -> CenteredCropSuggestion | None:
+        """Return a conservative repair only when the current read is unsafe."""
+
+        source_item = self._file_source_item_for_node(node)
+        if source_item is None or not source_item.capabilities.exact_region_read:
+            return None
+        try:
+            full_state = self._full_source_state_for_node(node, source_item)
+            source_path = self._file_source_path_for_node(node)
+            verified = (
+                self._source_inspection_cache.get(str(source_path))
+                if source_path is not None
+                else None
+            )
+            selected = (
+                select_inspected_item(
+                    verified.inspection,
+                    item_key=source_item.selector.key,
+                )
+                if verified is not None
+                else None
+            )
+            chunk_grid = (
+                selected.analysis_chunk_grid if selected is not None else ()
+            )
+            full_bytes = source_item.resolved.estimated_decoded_bytes
+            if full_bytes is None:
+                full_bytes = math.prod(full_state.shape) * np.dtype(
+                    source_item.resolved.dtype
+                ).itemsize
+            exact_plan = self._exact_source_window_plan_for_node(node)
+            if exact_plan is not None and chunk_grid:
+                required = estimate_exact_window_read(
+                    full_state.shape,
+                    source_item.resolved.dtype,
+                    exact_plan.request.selection,
+                    chunk_grid=chunk_grid,
+                ).estimated_peak_bytes
+            elif exact_plan is not None:
+                required = int(exact_plan.decoded_output_bytes) * 2
+            else:
+                required = int(full_bytes) * (
+                    1 if source_item.capabilities.lazy_data else 2
+                )
+            snapshot = capture_host_memory()
+            current = preflight_host_allocation(
+                snapshot,
+                required_bytes=required,
+                purpose="loading the selected Image Source",
+            )
+            if current.allowed:
+                return None
+            headroom = preflight_host_allocation(
+                snapshot,
+                required_bytes=0,
+                purpose="planning a fitted source crop",
+            )
+            candidates = tuple(
+                int(value)
+                for value in (
+                    headroom.physical_headroom_after_bytes,
+                    headroom.commit_headroom_after_bytes,
+                )
+                if value is not None and int(value) > 0
+            )
+            if not candidates:
+                return None
+            # Keep the starting scientific window responsive and bounded even
+            # on high-memory workstations. The user can enlarge it afterward.
+            available_budget = min(min(candidates), 512 * 1024 * 1024)
+            suggestion = suggest_centered_memory_fit_crop(
+                source_item,
+                full_state,
+                available_byte_budget=available_budget,
+                analysis_chunk_grid=chunk_grid,
+            )
+        except (CropFitUnavailableError, TypeError, ValueError, OSError):
+            return None
+        return suggestion if suggestion.requires_crop else None
+
+    def _source_memory_repair_presentation(
+        self,
+        node,
+    ) -> ImageSourceMemoryRepairPresentation:
+        suggestion = self._source_memory_crop_suggestion(node)
+        if suggestion is None:
+            return ImageSourceMemoryRepairPresentation()
+        dismissal_key = self._source_memory_crop_dismissal_key(node, suggestion)
+        if dismissal_key in self._source_memory_crop_dismissals:
+            return ImageSourceMemoryRepairPresentation()
+        outgoing = tuple(
+            connection
+            for connection in self.pipeline.connections
+            if connection.source_id == node.id
+        )
+        source_tunnel = any(
+            tunnel.source_id == node.id for tunnel in self.pipeline.output_tunnel_list()
+        )
+        action_label = "Add fitted Crop Stack"
+        enabled = True
+        reason = ""
+        if source_tunnel or len(outgoing) > 1:
+            enabled = False
+            reason = (
+                "Automatic repair is unavailable because another branch or "
+                "output tunnel still requires the complete source."
+            )
+        elif len(outgoing) == 1:
+            target = self.pipeline.nodes.get(outgoing[0].target_id)
+            if target is not None and target.operation_id == "crop_stack":
+                action_label = "Fit existing Crop Stack"
+                if self.pipeline.node_is_bypassed(target.id):
+                    enabled = False
+                    reason = "Clear Bypass on Crop Stack before fitting it to RAM."
+
+        shape_text = " × ".join(
+            str(size) for size in suggestion.geometry.output_shape
+        )
+        message = (
+            f"The current level-0 read needs more safe RAM than is available "
+            f"({_format_byte_count(suggestion.full_decoded_bytes)} decoded). "
+            f"VIPP can use a centered {shape_text} starting region "
+            f"({_format_byte_count(suggestion.decoded_output_bytes)} of pixels; "
+            f"about {_format_byte_count(suggestion.estimated_peak_bytes)} "
+            "conservative peak including touched storage chunks). The reader "
+            "rechecks this immediately before decoding. This starting crop is not "
+            "content-aware; every "
+            "time/channel position is retained, and downstream nodes may need "
+            "additional RAM."
+        )
+        if reason:
+            message = f"{message} {reason}"
+        return ImageSourceMemoryRepairPresentation(
+            visible=True,
+            message=message,
+            action_label=action_label,
+            enabled=enabled,
+            tooltip=(
+                "Insert or update a visible Crop Stack as one undoable edit. "
+                "The exact local OME-Zarr reader will then decode only its "
+                "retained level-0 region."
+            ),
+        )
+
+    def _source_memory_crop_dismissal_key(
+        self,
+        node,
+        suggestion: CenteredCropSuggestion,
+    ) -> tuple[str, str, tuple[tuple[int, int], ...]] | None:
+        """Identify one suggestion without hiding a later changed condition."""
+
+        source_item = self._file_source_item_for_node(node)
+        if source_item is None:
+            return None
+        try:
+            revision = str(source_item.container.revision.sha256).strip()
+            bounds = tuple(
+                (int(start), int(stop))
+                for start, stop in suggestion.geometry.bounds
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if not revision or not bounds:
+            return None
+        return str(node.id), revision, bounds
 
     def _file_source_item_for_node(self, node):
         if node.id in self._interactive_collection_source_refresh_node_ids:
@@ -15624,6 +15907,31 @@ class VippWidget(QWidget):
         fixed non-batch sources) stay materialized; identity records for every
         visited path remain pinned so a changed file is still rejected later.
         """
+        active_exact_keys = {
+            key
+            for node in self.pipeline.nodes.values()
+            if node.operation_id == "input"
+            and (key := self._file_source_cache_key(node)) is not None
+            and len(key) >= 3
+            and isinstance(key[2], tuple)
+            and key[2][:1] == ("exact-window",)
+        }
+        for key in tuple(self._file_source_payload_cache):
+            if (
+                len(key) >= 3
+                and isinstance(key[2], tuple)
+                and key[2][:1] == ("exact-window",)
+                and key not in active_exact_keys
+            ):
+                self._file_source_payload_cache.pop(key, None)
+        for active_key in active_exact_keys:
+            for key in tuple(self._file_source_payload_cache):
+                if key != active_key and key[:2] == active_key[:2]:
+                    # Once Crop Stack makes a bounded read authoritative, do
+                    # not retain an older complete snapshot (or stale window)
+                    # for the same exact SourceItem beside it in RAM.
+                    self._file_source_payload_cache.pop(key, None)
+
         items = self._interactive_collection_batch_items
         if not items:
             return
@@ -15837,6 +16145,7 @@ class VippWidget(QWidget):
                 return None, None
             resolved_path = str(source_path)
             expected_source_item = self._file_source_item_for_node(node)
+            exact_plan = self._exact_source_window_plan_for_node(node)
             snapshot = load_frozen_file_source_snapshot(
                 source_path,
                 self._file_source_series_index_for_node(node),
@@ -15847,6 +16156,9 @@ class VippWidget(QWidget):
                 ),
                 expected_identity=self._file_source_path_identities.get(resolved_path),
                 expected_source_item=expected_source_item,
+                exact_window_request=(
+                    None if exact_plan is None else exact_plan.request
+                ),
                 reader=read_image,
             )
             self._persist_source_item_for_node(node, snapshot)
@@ -16809,6 +17121,14 @@ class VippWidget(QWidget):
             self._preview_disabled_node_ids.discard(node_id)
             self._source_preview_errors.pop(node_id, None)
             self._source_view_modes.pop(node_id, None)
+            deleted_dismissals = tuple(
+                key
+                for key in self._source_memory_crop_dismissals
+                if key[0] == node_id
+            )
+            self._source_memory_crop_dismissals.difference_update(
+                deleted_dismissals
+            )
             self._rescale_auto_output_ranges.pop(node_id, None)
             self._discard_background_node_result_overrides({node_id})
             self._bypass_shadow_results.pop(node_id, None)
@@ -16908,7 +17228,8 @@ class VippWidget(QWidget):
 
     def _clear_node_inspector_selection(self) -> None:
         self._commit_crop_draft(schedule_run=True)
-        self._discard_crop_draft(remove_layers=True)
+        self._discard_crop_draft(remove_layers=False)
+        self._set_crop_presentation_layers_visible(False)
         self._selected_node_id = ""
         self.selected_title.setText("No node selected")
         self._clear_parameter_form()
@@ -16920,6 +17241,69 @@ class VippWidget(QWidget):
         with QSignalBlocker(self.thumbnail_checkbox):
             self.thumbnail_checkbox.setChecked(False)
         self._clear_empty_inspector()
+        self._schedule_selected_viewer_refresh("", select_layer=False)
+
+    def _cancel_selected_viewer_refresh(self) -> None:
+        """Invalidate any queued selection-bound napari presentation update."""
+
+        self._selected_viewer_refresh_generation += 1
+
+    def _schedule_selected_viewer_refresh(
+        self,
+        node_id: str,
+        *,
+        select_layer: bool,
+    ) -> None:
+        """Publish selection layers after the originating Qt input event returns."""
+
+        self._selected_viewer_refresh_generation += 1
+        generation = self._selected_viewer_refresh_generation
+        QTimer.singleShot(
+            0,
+            lambda: self._finish_selected_viewer_refresh(
+                generation,
+                node_id,
+                select_layer=select_layer,
+            ),
+        )
+
+    def _finish_selected_viewer_refresh(
+        self,
+        generation: int,
+        node_id: str,
+        *,
+        select_layer: bool,
+    ) -> None:
+        """Apply the newest queued selection presentation, ignoring stale work."""
+
+        if (
+            self._closing
+            or generation != self._selected_viewer_refresh_generation
+            or node_id != self._selected_node_id
+        ):
+            return
+        self._refresh_selected_viewer_now(node_id, select_layer=select_layer)
+
+    def _refresh_selected_viewer_now(
+        self,
+        node_id: str,
+        *,
+        select_layer: bool,
+    ) -> None:
+        """Synchronize viewer layers outside a graph mouse-press callback."""
+
+        if node_id:
+            self._selected_viewer_refresh_in_progress = True
+            try:
+                self._inspect_selected_node()
+            finally:
+                self._selected_viewer_refresh_in_progress = False
+            if self._closing or node_id != self._selected_node_id:
+                return
+        self._apply_selected_viewer_surface(select_layer=select_layer)
+        if node_id:
+            self._update_crop_roi_presentation(node_id)
+            self._restore_selected_output_for_interactive_cache(node_id)
 
     def _clear_empty_inspector(self) -> None:
         self.node_bypass_checkbox.setHidden(True)
@@ -16958,7 +17342,8 @@ class VippWidget(QWidget):
             return
         if node_id != self._selected_node_id:
             self._commit_crop_draft(schedule_run=True)
-            self._discard_crop_draft(remove_layers=True)
+            self._discard_crop_draft(remove_layers=False)
+            self._set_crop_presentation_layers_visible(False)
         self._selected_node_id = node_id
         # Recompute at a deliberate selection boundary. Subsequent inspector
         # repaints reuse the result while the resolved input identities and
@@ -16974,12 +17359,13 @@ class VippWidget(QWidget):
         self._refresh_batch_effective_parameter_panel()
         self._sync_auto_contrast_ui()
         self._sync_pin_ui()
-        self._inspect_selected_node()
-        self._apply_selected_viewer_surface(select_layer=True)
-        self._update_crop_roi_presentation(node_id)
+        if self.graph_view.node_press_dispatch_active():
+            self._schedule_selected_viewer_refresh(node_id, select_layer=True)
+        else:
+            self._cancel_selected_viewer_refresh()
+            self._refresh_selected_viewer_now(node_id, select_layer=True)
         self._sync_view_dims_bar()
         self._update_metadata_panel()
-        self._restore_selected_output_for_interactive_cache(node_id)
         self._update_histogram()
         self._sync_execution_ui()
         self._sync_isolated_tuning_ui()
@@ -17603,6 +17989,73 @@ class VippWidget(QWidget):
             self.parameter_form.addRow("Crop ROI", note)
             self._parameter_widgets["crop_roi_summary"] = note
             self._update_crop_roi_summary(node_id)
+
+            appearance_separator = QFrame()
+            appearance_separator.setFrameShape(QFrame.HLine)
+            appearance_separator.setFrameShadow(QFrame.Sunken)
+            appearance_separator.setAccessibleName(
+                "Crop ROI appearance settings separator"
+            )
+            self.parameter_form.addRow(appearance_separator)
+            self._parameter_widgets["crop_roi_appearance_separator"] = (
+                appearance_separator
+            )
+
+            appearance_heading = QLabel("ROI appearance · viewer only")
+            appearance_heading.setStyleSheet(
+                "color: #aab3c5; font-weight: 600; padding-top: 2px;"
+            )
+            appearance_heading.setToolTip(
+                "These controls affect only VIPP's crop outline in napari."
+            )
+            self.parameter_form.addRow(appearance_heading)
+            self._parameter_widgets["crop_roi_appearance_heading"] = (
+                appearance_heading
+            )
+
+            line_width_scale = ParameterControl(
+                CROP_ROI_LINE_WIDTH_SCALE_PARAMETER,
+                self._crop_roi_line_width_scale(node_id),
+                self._declared_parameter_bounds(
+                    CROP_ROI_LINE_WIDTH_SCALE_PARAMETER
+                ),
+            )
+            line_width_scale.value_box.setSuffix("×")
+            line_width_scale.valueChanged.connect(
+                lambda value: self._on_param_changed(
+                    CROP_ROI_LINE_WIDTH_SCALE_PARAM,
+                    value,
+                )
+            )
+            line_width_scale.slider.sliderPressed.connect(
+                lambda node_id=node.id, control=line_width_scale.slider: (
+                    self._begin_parameter_slider_scrub(
+                        node_id,
+                        CROP_ROI_LINE_WIDTH_SCALE_PARAM,
+                        control,
+                    )
+                )
+            )
+            line_width_scale.slider.sliderReleased.connect(
+                lambda node_id=node.id, control=line_width_scale.slider: (
+                    self._end_parameter_slider_scrub(
+                        node_id,
+                        CROP_ROI_LINE_WIDTH_SCALE_PARAM,
+                        control,
+                    )
+                )
+            )
+            self.parameter_form.addRow(
+                CROP_ROI_LINE_WIDTH_SCALE_PARAMETER.label,
+                line_width_scale,
+            )
+            self._apply_parameter_tooltip(
+                CROP_ROI_LINE_WIDTH_SCALE_PARAMETER,
+                line_width_scale,
+            )
+            self._parameter_widgets[CROP_ROI_LINE_WIDTH_SCALE_PARAM] = (
+                line_width_scale
+            )
             rendered = True
         if stack_note:
             self._add_operation_note(stack_note)
@@ -19135,6 +19588,9 @@ class VippWidget(QWidget):
             source_summary=self._source_summary(inspection, node),
         )
         control.set_resolution_presentation(self._source_resolution_presentation(node))
+        control.set_memory_repair_presentation(
+            self._source_memory_repair_presentation(node)
+        )
         self._apply_image_source_params(node_id, control.value())
         control.valueChanged.connect(self._on_image_source_changed)
         control.sourceLoadCancelRequested.connect(self._cancel_source_file_load)
@@ -19146,6 +19602,12 @@ class VippWidget(QWidget):
         )
         control.previewReloadRequested.connect(
             lambda node_id=node_id: self._reload_source_preview(node_id)
+        )
+        control.sourceCropRepairRequested.connect(
+            lambda node_id=node_id: self._apply_source_memory_crop_repair(node_id)
+        )
+        control.sourceCropRepairDismissed.connect(
+            lambda node_id=node_id: self._dismiss_source_memory_crop_repair(node_id)
         )
         worker = self._active_source_load_worker
         if (
@@ -19193,6 +19655,180 @@ class VippWidget(QWidget):
             "binding_mode": node.params.get("binding_mode", "single item"),
             "axis_declaration": node.params.get("axis_declaration", ""),
         }
+
+    def _apply_source_memory_crop_repair(self, node_id: str) -> None:
+        """Author the reviewed centered low-RAM Crop as one visible edit."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "input":
+            return
+        suggestion = self._source_memory_crop_suggestion(node)
+        if suggestion is None:
+            self._set_status(
+                "A fitted source crop is no longer needed or cannot be proven "
+                "safe for the current source.",
+                severity=MessageSeverity.INFO,
+            )
+            self._refresh_image_source_options()
+            return
+        if any(
+            tunnel.source_id == node_id
+            for tunnel in self.pipeline.output_tunnel_list()
+        ):
+            self._set_status(
+                "Cannot fit Crop Stack automatically while an output tunnel "
+                "requires the complete Image Source.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        outgoing = tuple(
+            connection
+            for connection in self.pipeline.connections
+            if connection.source_id == node_id
+        )
+        if len(outgoing) > 1:
+            self._set_status(
+                "Cannot fit Crop Stack automatically because multiple branches "
+                "require the Image Source.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        params = suggestion.geometry.margins.as_params()
+        crop = (
+            self.pipeline.nodes.get(outgoing[0].target_id)
+            if len(outgoing) == 1
+            else None
+        )
+        if crop is not None and crop.operation_id == "crop_stack":
+            if self.pipeline.node_is_bypassed(crop.id):
+                self._set_status(
+                    "Clear Bypass on Crop Stack before fitting it to RAM.",
+                    severity=MessageSeverity.WARNING,
+                    actionable=True,
+                )
+                return
+            self._finish_parameter_history_group()
+            before = self._current_history_snapshot()
+            try:
+                for name, value in params.items():
+                    self.pipeline.set_param(crop.id, name, value)
+            except Exception as exc:
+                self._restore_history_snapshot(before)
+                self._set_status(
+                    f"Could not fit Crop Stack: {exc}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+                return
+            self._mark_pipeline_dirty(crop.id)
+            self._push_undo_if_changed(before)
+            self.graph_view.select_node(crop.id)
+            self._sync_current_workflow_tab_state()
+            self._set_status(
+                "Fitted the existing Crop Stack to a conservative centered "
+                "starting region. Loading only that exact level-0 window…",
+                severity=MessageSeverity.INFO,
+            )
+            self.run_pipeline()
+            return
+
+        if len(outgoing) == 1:
+            connection = outgoing[0]
+            source_position = self.graph_view.node_position(node_id)
+            target_position = self.graph_view.node_position(connection.target_id)
+            if source_position is not None and target_position is not None:
+                position = QPointF(
+                    (source_position.x() + target_position.x()) / 2.0,
+                    (source_position.y() + target_position.y()) / 2.0,
+                )
+            else:
+                position = self.graph_view.suggest_node_position()
+            inserted = self._insert_node_on_connection(
+                "crop_stack",
+                (
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    connection.source_port,
+                ),
+                position,
+                params_override=params,
+            )
+            if inserted is not None:
+                self._set_status(
+                    "Added a fitted Crop Stack as one undoable edit. VIPP is "
+                    "loading only its exact centered level-0 window; review and "
+                    "adjust the ROI before analysis.",
+                    severity=MessageSeverity.INFO,
+                )
+            return
+
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        try:
+            crop = self.pipeline.add_node("crop_stack")
+            for name, value in params.items():
+                self.pipeline.set_param(crop.id, name, value)
+            self.graph_view.add_node(crop, self.graph_view.suggest_node_position())
+            self._sync_node_input_ports(crop.id)
+            self._sync_node_output_ports(crop.id)
+            result = self.pipeline.connect(node_id, crop.id)
+            if not result.success:
+                raise RuntimeError(result.message)
+            self._apply_connection_result_to_graph(result)
+            self.graph_view.select_node(crop.id)
+            self._mark_pipeline_branches_dirty({crop.id})
+            self._push_undo_if_changed(before)
+        except Exception as exc:
+            self._restore_history_snapshot(before)
+            self._set_status(
+                f"Could not add fitted Crop Stack: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
+        self._sync_current_workflow_tab_state()
+        self._set_status(
+            "Added a fitted Crop Stack. Review its centered ROI before using "
+            "the result scientifically.",
+            severity=MessageSeverity.INFO,
+        )
+        self.run_pipeline()
+
+    def _dismiss_source_memory_crop_repair(self, node_id: str) -> None:
+        """Hide exactly the currently reviewed suggestion until it changes."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "input":
+            return
+        suggestion = self._source_memory_crop_suggestion(node)
+        if suggestion is None:
+            return
+        key = self._source_memory_crop_dismissal_key(node, suggestion)
+        if key is None:
+            return
+        previous_dismissals = tuple(
+            existing
+            for existing in self._source_memory_crop_dismissals
+            if existing[0] == str(node_id)
+        )
+        self._source_memory_crop_dismissals.difference_update(previous_dismissals)
+        self._source_memory_crop_dismissals.add(key)
+        control = self._parameter_widgets.get("image_source")
+        if node_id == self._selected_node_id and isinstance(
+            control,
+            ImageSourceControl,
+        ):
+            control.set_memory_repair_presentation(
+                ImageSourceMemoryRepairPresentation()
+            )
+        self._set_status(
+            "Dismissed this fitted-crop suggestion. It will return if the "
+            "source revision or safe starting region changes.",
+            severity=MessageSeverity.INFO,
+        )
 
     def _apply_image_source_params(
         self,
@@ -19503,6 +20139,9 @@ class VippWidget(QWidget):
             emit=False,
         )
         control.set_resolution_presentation(self._source_resolution_presentation(node))
+        control.set_memory_repair_presentation(
+            self._source_memory_repair_presentation(node)
+        )
         self._apply_image_source_params(self._selected_node_id, control.value())
 
     def _source_inspection_for_node(self, node) -> SourceInspection | None:
@@ -19776,6 +20415,8 @@ class VippWidget(QWidget):
     def _select_only_viewer_layer(self, layer) -> None:
         try:
             selection = self.viewer.layers.selection
+            if selection.active is layer and len(selection) == 1:
+                return
             if hasattr(selection, "select_only"):
                 selection.select_only(layer)
             else:
@@ -19828,7 +20469,10 @@ class VippWidget(QWidget):
         selected = self.pipeline.nodes.get(self._selected_node_id)
         crop_active = bool(
             selected is not None and selected.operation_id == "crop_stack"
+            and not self.pipeline.node_is_bypassed(selected.id)
         )
+        if not crop_active:
+            self._set_crop_presentation_layers_visible(False)
         crop_source = (
             self._ensure_crop_source_layer(selected.id)
             if crop_active and selected is not None
@@ -19891,8 +20535,10 @@ class VippWidget(QWidget):
             self._move_generated_layers_to_top(self._inspect_layer_name)
             target = inspect_layers[-1]
         self._keep_active_pin_on_top()
-        for layer in self._owned_crop_presentation_layers("crop_roi"):
-            self._move_layer_to_top(layer)
+        if crop_active:
+            for layer in self._owned_crop_presentation_layers("crop_roi"):
+                if bool(getattr(layer, "visible", False)):
+                    self._move_layer_to_top(layer)
         if select_layer and target is not None:
             self._select_only_viewer_layer(target)
 
@@ -19926,13 +20572,21 @@ class VippWidget(QWidget):
             except (TypeError, ValueError):
                 preview_level = 0
             try:
-                preview_shape = tuple(int(size) for size in np.shape(layer.data))
+                reported_shape = metadata.get("source_preview_data_shape")
+                preview_shape = tuple(
+                    int(size)
+                    for size in (
+                        reported_shape
+                        if isinstance(reported_shape, (list, tuple))
+                        else np.shape(layer.data)
+                    )
+                )
             except Exception:
                 preview_shape = ()
         if active is not None and active.spec.node_id == node.id:
             preview_state = "loading"
             detail = (
-                "The current preview remains available while its plane updates."
+                "The current preview remains available while its selection updates."
                 if layer is not None
                 else ""
             )
@@ -19964,6 +20618,20 @@ class VippWidget(QWidget):
             viewer_choice = "analysis"
         self._source_view_modes[node.id] = viewer_choice
         can_retry = bool(preview_state != "loading" and can_select_preview)
+        exact_data = self.pipeline.outputs.get(node.id)
+        if not isinstance(exact_data, ExactSourceWindowData):
+            cache_key = self._file_source_cache_key(node)
+            cached_payload = (
+                self._file_source_payload_cache.get(cache_key)
+                if cache_key is not None
+                else None
+            )
+            exact_data = getattr(cached_payload, "data", None)
+        window_bounds: tuple[tuple[int, int], ...] = ()
+        window_shape: tuple[int, ...] = ()
+        if isinstance(exact_data, ExactSourceWindowData):
+            window_bounds = exact_data.identity.bounds
+            window_shape = exact_data.identity.output_shape
         return ImageSourceResolutionPresentation(
             analysis_axes="".join(str(axis).upper() for axis in axes),
             analysis_shape=tuple(int(size) for size in source_item.resolved.shape),
@@ -19975,6 +20643,8 @@ class VippWidget(QWidget):
             viewer_choice=viewer_choice,
             can_select_preview=can_select_preview,
             can_retry=can_retry,
+            analysis_window_bounds=window_bounds,
+            analysis_window_shape=window_shape,
         )
 
     def _refresh_source_resolution_control(self, node_id: str) -> None:
@@ -20115,6 +20785,8 @@ class VippWidget(QWidget):
         request = self._source_preview_request(
             source_item,
             level=requested_level,
+            node_id=node.id,
+            retain_z=True,
         )
         expected_identity = self._file_source_path_identities.get(str(path))
         request_record = self._source_preview_request_record(request)
@@ -20222,6 +20894,8 @@ class VippWidget(QWidget):
         source_item,
         *,
         level: int | None = None,
+        node_id: str = "",
+        retain_z: bool = False,
     ) -> SourcePreviewRequest:
         raw_axes = source_item.resolved.raw_axes or source_item.resolved.axes
         selection_axes = (
@@ -20231,7 +20905,30 @@ class VippWidget(QWidget):
         )
         shape = source_item.resolved.shape
         step = tuple(self._current_step() or ())
-        offset = max(len(step) - len(shape), 0)
+        nsteps = tuple(self._current_step_nsteps() or ())
+        full_state = self.pipeline.output_states.get(node_id) if node_id else None
+        exact_data = self.pipeline.outputs.get(node_id) if node_id else None
+        exact_bounds = (
+            exact_data.identity.bounds
+            if isinstance(exact_data, ExactSourceWindowData)
+            and tuple(exact_data.identity.source_shape) == tuple(shape)
+            else None
+        )
+        exact_window_shape = (
+            tuple(exact_data.identity.output_shape)
+            if isinstance(exact_data, ExactSourceWindowData)
+            else None
+        )
+        state_shape = tuple(getattr(full_state, "shape", ()))
+        point_uses_window_coordinates = bool(
+            exact_window_shape is not None and state_shape == exact_window_shape
+        )
+        point = ()
+        if self._dims_linked():
+            try:
+                point = tuple(self.viewer.dims.point)
+            except Exception:
+                point = ()
         indices: dict[str, int] = {}
         semantic_names = {
             "t": "t_index",
@@ -20245,8 +20942,61 @@ class VippWidget(QWidget):
             target = semantic_names.get(str(axis_name).casefold())
             if target is None:
                 continue
-            viewer_axis = axis_index + offset
+            if target == "z_index" and retain_z:
+                continue
+            viewer_axis = (
+                self._state_axis_to_step_axis(full_state, axis_index, step)
+                if full_state is not None
+                else None
+            )
+            if viewer_axis is None:
+                viewer_axis = axis_index + max(len(step) - len(shape), 0)
             current = step[viewer_axis] if viewer_axis < len(step) else 0
+            if viewer_axis < len(point) and full_state is not None:
+                try:
+                    axis = full_state.axes[axis_index]
+                    scale = float(axis.scale)
+                    translation = float(axis.translation)
+                    world = float(point[viewer_axis])
+                    if scale != 0.0:
+                        logical = (world - translation) / scale
+                        if all(
+                            math.isfinite(value)
+                            for value in (scale, translation, world, logical)
+                        ):
+                            current = int(math.floor(logical + 0.5))
+                            if (
+                                point_uses_window_coordinates
+                                and exact_bounds is not None
+                                and axis_index < len(exact_bounds)
+                            ):
+                                start, stop = exact_bounds[axis_index]
+                                window_size = int(stop) - int(start)
+                                if window_size != int(shape[axis_index]):
+                                    # ``full_state`` is the loaded exact-window
+                                    # state: its shifted translation maps the
+                                    # viewer's world point to a window-local
+                                    # index.  Presentation requests, however,
+                                    # are expressed in level-0 source
+                                    # coordinates, so restore the exact-window
+                                    # origin before choosing a pyramid plane.
+                                    current += int(start)
+                except (AttributeError, IndexError, TypeError, ValueError):
+                    pass
+            elif exact_bounds is not None and axis_index < len(exact_bounds):
+                start, stop = exact_bounds[axis_index]
+                window_size = int(stop) - int(start)
+                viewer_size = (
+                    int(nsteps[viewer_axis])
+                    if viewer_axis < len(nsteps)
+                    else window_size
+                )
+                if viewer_size != int(shape[axis_index]):
+                    current = int(start) + _local_dim_value_from_viewer(
+                        int(current),
+                        axis_size=window_size,
+                        viewer_axis_size=viewer_size,
+                    )
             indices[target] = int(
                 np.clip(int(current), 0, max(int(shape[axis_index]) - 1, 0))
             )
@@ -20260,6 +21010,10 @@ class VippWidget(QWidget):
             display_shape_yx=(512, 512),
             level=level,
             axis_declaration=declaration,
+            retain_z=retain_z and any(
+                str(axis_name).casefold() in {"z", "depth"}
+                for axis_name in selection_axes
+            ),
             **indices,
         )
 
@@ -20274,6 +21028,8 @@ class VippWidget(QWidget):
                 None if request.yx_region is None else list(request.yx_region)
             ),
             "level": request.level,
+            "retain_z": request.retain_z,
+            "max_decoded_bytes": request.max_decoded_bytes,
             "axis_declaration": (
                 None
                 if request.axis_declaration is None
@@ -20401,6 +21157,72 @@ class VippWidget(QWidget):
         )
         self._remove_owned_source_preview_layers(node_id)
         metrics = preview.metrics
+        data = _read_only_presentation_array(preview.data)
+        layer_state = preview.image_state
+        plane_axis: int | None = None
+        exact_data = self.pipeline.outputs.get(node_id)
+        full_state = self.pipeline.output_states.get(node_id)
+        if (
+            request is not None
+            and request.z_index is not None
+            and isinstance(exact_data, ExactSourceWindowData)
+            and full_state is not None
+        ):
+            full_axes = tuple(getattr(full_state, "axes", ()))
+            preview_axes = tuple(getattr(layer_state, "axes", ()))
+            full_z_axis = next(
+                (
+                    (index, axis)
+                    for index, axis in enumerate(full_axes)
+                    if str(getattr(axis, "name", "")).casefold() in {"z", "depth"}
+                ),
+                None,
+            )
+            preview_axis_names = tuple(
+                str(getattr(axis, "name", "")).casefold() for axis in preview_axes
+            )
+            if (
+                full_z_axis is not None
+                and not any(name in {"z", "depth"} for name in preview_axis_names)
+                and {"y", "x"}.issubset(set(preview_axis_names))
+            ):
+                full_z_index, z_axis = full_z_axis
+                plane_axis = sum(
+                    1
+                    for axis in full_axes[:full_z_index]
+                    if str(getattr(axis, "name", "")).casefold()
+                    in preview_axis_names
+                )
+                # A one-voxel 3D texture is a degenerate volume on some
+                # OpenGL/VisPy paths and can remain black even though napari
+                # reports the layer as visible.  Repeat this already bounded
+                # presentation plane into a three-slice display slab.  The
+                # centre slice remains at the requested physical Z; no
+                # additional source pixels are read and graph execution never
+                # sees these display-only copies.
+                data = np.repeat(
+                    np.expand_dims(data, axis=plane_axis),
+                    3,
+                    axis=plane_axis,
+                )
+                data.setflags(write=False)
+                axes = list(preview_axes)
+                axes.insert(
+                    plane_axis,
+                    replace(
+                        z_axis,
+                        translation=(
+                            float(z_axis.translation)
+                            + (int(request.z_index) - 1) * float(z_axis.scale)
+                        ),
+                    ),
+                )
+                layer_state = replace(
+                    layer_state,
+                    shape=tuple(int(size) for size in data.shape),
+                    axes=tuple(axes),
+                    memory=f"{int(data.nbytes):,} bytes",
+                )
         metadata = {
             "napari_vipp_kind": "source_preview",
             "presentation_only": True,
@@ -20415,7 +21237,19 @@ class VippWidget(QWidget):
             "source_preview_request": self._source_preview_request_record(
                 request or SourcePreviewRequest()
             ),
-            "vipp_image_state": preview.image_state.to_dict(),
+            "vipp_image_state": layer_state.to_dict(),
+            "source_preview_data_shape": list(preview.data.shape),
+            "source_preview_plane_axis": plane_axis,
+            "source_preview_display_slab": (
+                None
+                if plane_axis is None
+                else {
+                    "axis": int(plane_axis),
+                    "copies": 3,
+                    "centre_index": 1,
+                    "presentation_only": True,
+                }
+            ),
             "source_preview_read_metrics": {
                 "requested_decoded_bytes": metrics.requested_decoded_bytes,
                 "estimated_decoded_bytes_read": metrics.estimated_decoded_bytes_read,
@@ -20423,15 +21257,22 @@ class VippWidget(QWidget):
                 "basis": metrics.basis,
             },
         }
-        scale = tuple(float(axis.scale) for axis in preview.image_state.axes)
-        translate = tuple(float(axis.translation) for axis in preview.image_state.axes)
+        scale = tuple(float(axis.scale) for axis in layer_state.axes)
+        translate = tuple(float(axis.translation) for axis in layer_state.axes)
         kwargs = {
             "name": preview.message,
             "metadata": metadata,
             "scale": scale,
             "translate": translate,
         }
-        data = _read_only_presentation_array(preview.data)
+        if plane_axis is not None:
+            kwargs["depiction"] = "volume"
+            kwargs["rendering"] = "mip"
+            kwargs["interpolation3d"] = "nearest"
+        if not preview.preserves_label_semantics:
+            limits = _exact_generated_layer_contrast_limits(preview.data)
+            if limits is not None:
+                kwargs["contrast_limits"] = limits
         if preview.preserves_label_semantics and hasattr(self.viewer, "add_labels"):
             layer = self.viewer.add_labels(data, **kwargs)
         else:
@@ -20471,6 +21312,7 @@ class VippWidget(QWidget):
                 if inspect_layers:
                     self._select_only_viewer_layer(inspect_layers[-1])
         self._refresh_source_resolution_control(node_id)
+        self._sync_view_dims_bar()
         if (
             self._active_source_load_id is None
             and self._active_pipeline_run_id is None
@@ -20842,6 +21684,17 @@ class VippWidget(QWidget):
         if node.operation_id == "fill_holes":
             self._update_fill_holes_scope_note()
         if node.operation_id == "crop_stack":
+            line_width_scale = self._parameter_widgets.get(
+                CROP_ROI_LINE_WIDTH_SCALE_PARAM
+            )
+            if isinstance(line_width_scale, ParameterControl):
+                line_width_scale.set_bounds(
+                    self._declared_parameter_bounds(
+                        CROP_ROI_LINE_WIDTH_SCALE_PARAMETER
+                    ),
+                    self._crop_roi_line_width_scale(node.id),
+                    emit=False,
+                )
             self._update_crop_roi_summary(node.id)
             self._update_crop_roi_presentation(node.id)
         if node.operation_id == "gaussian_blur_3d":
@@ -22706,22 +23559,27 @@ class VippWidget(QWidget):
     def _node_display_payload(self, node_id: str, data=None):
         result = self._background_node_result_override(node_id)
         if result is not None:
-            return self._node_display_payload_from_values(
+            payload = self._node_display_payload_from_values(
                 node_id,
                 result.output,
                 result.output_state,
                 result.node_outputs,
                 result.node_output_states,
             )
-        primary_data = self.pipeline.outputs.get(node_id) if data is None else data
-        primary_state = self.pipeline.output_states.get(node_id)
-        return self._node_display_payload_from_values(
-            node_id,
-            primary_data,
-            primary_state,
-            self.pipeline.node_outputs.get(node_id) or [],
-            self.pipeline.node_output_states.get(node_id) or [],
-        )
+        else:
+            primary_data = self.pipeline.outputs.get(node_id) if data is None else data
+            primary_state = self.pipeline.output_states.get(node_id)
+            payload = self._node_display_payload_from_values(
+                node_id,
+                primary_data,
+                primary_state,
+                self.pipeline.node_outputs.get(node_id) or [],
+                self.pipeline.node_output_states.get(node_id) or [],
+            )
+        display_data, display_state, output_port = payload
+        if isinstance(display_data, ExactSourceWindowData):
+            return display_data.data, display_data.window_state, output_port
+        return payload
 
     def _node_thumbnail_display_payload(
         self,
@@ -22751,14 +23609,19 @@ class VippWidget(QWidget):
                 shadow.node_output_states,
             )
         if outputs is not None or output_states is not None:
-            return self._node_display_payload_from_values(
+            payload = self._node_display_payload_from_values(
                 node_id,
                 primary_data,
                 primary_state,
                 outputs or (),
                 output_states or (),
             )
-        return self._node_display_payload(node_id, primary_data)
+        else:
+            payload = self._node_display_payload(node_id, primary_data)
+        data, state, output_port = payload
+        if isinstance(data, ExactSourceWindowData):
+            return data.data, data.window_state, output_port
+        return payload
 
     def _node_allows_bypass_presentation_shadow(self, node_id: str) -> bool:
         """Whether this node's normal result belongs on an image-like card."""
@@ -24772,7 +25635,8 @@ class VippWidget(QWidget):
             or node.operation_id != "crop_stack"
             or self.pipeline.node_is_bypassed(node_id)
         ):
-            self._discard_crop_draft(remove_layers=True)
+            self._discard_crop_draft(remove_layers=False)
+            self._set_crop_presentation_layers_visible(False)
             return False
         if (
             self._crop_draft_session_id != self._crop_current_session_id()
@@ -24979,6 +25843,20 @@ class VippWidget(QWidget):
         for layer in self._owned_crop_presentation_layers():
             self._remove_layer(layer)
 
+    def _set_crop_presentation_layers_visible(
+        self,
+        visible: bool,
+        *,
+        kind: str | None = None,
+    ) -> None:
+        """Hide or reveal owned Crop layers without changing napari's layer model."""
+
+        for layer in self._owned_crop_presentation_layers(kind):
+            try:
+                layer.visible = bool(visible)
+            except Exception:
+                pass
+
     def _crop_presentation_metadata(self, node_id: str, kind: str) -> dict:
         return {
             "napari_vipp_kind": kind,
@@ -24992,15 +25870,21 @@ class VippWidget(QWidget):
     def _ensure_crop_source_layer(self, node_id: str):
         data = self.pipeline.input_data_for_node(node_id)
         if data is None:
-            for layer in self._owned_crop_presentation_layers("crop_source"):
-                self._remove_layer(layer)
+            self._set_crop_presentation_layers_visible(False, kind="crop_source")
             return None
         metadata = self._crop_presentation_metadata(node_id, "crop_source")
         state = self.pipeline.input_state_for_node(node_id)
-        if state is not None:
-            metadata["vipp_image_state"] = state.to_dict()
-        rank = len(tuple(getattr(data, "shape", ())))
-        axes = tuple(getattr(state, "axes", ()))
+        presentation_data = data
+        presentation_state = state
+        if isinstance(data, ExactSourceWindowData):
+            presentation_data = data.data
+            presentation_state = data.window_state
+            metadata["vipp_source_window_digest"] = data.identity.digest
+            metadata["vipp_full_source_shape"] = list(data.shape)
+        if presentation_state is not None:
+            metadata["vipp_image_state"] = presentation_state.to_dict()
+        rank = len(tuple(getattr(presentation_data, "shape", ())))
+        axes = tuple(getattr(presentation_state, "axes", ()))
         scale = (
             tuple(float(axis.scale) for axis in axes)
             if len(axes) == rank
@@ -25026,12 +25910,12 @@ class VippWidget(QWidget):
                 kwargs["scale"] = scale
                 kwargs["translate"] = translate
             try:
-                layer = self.viewer.add_image(data, **kwargs)
+                layer = self.viewer.add_image(presentation_data, **kwargs)
             except Exception:
                 return None
         else:
             try:
-                layer.data = data
+                layer.data = presentation_data
                 layer.metadata.update(metadata)
                 if rank:
                     layer.scale = scale
@@ -25042,7 +25926,12 @@ class VippWidget(QWidget):
         self._make_generated_layer_noneditable(layer)
         return layer
 
-    def _crop_roi_axis_coordinates(self, shape: tuple[int, ...], state) -> list[float]:
+    def _crop_roi_axis_coordinates(
+        self,
+        node_id: str,
+        shape: tuple[int, ...],
+        state,
+    ) -> list[float]:
         """Return source-local viewer coordinates without reading image pixels."""
         coordinates = [0.0] * len(shape)
         # The presentation overlay belongs to napari's canvas.  It must follow
@@ -25051,16 +25940,62 @@ class VippWidget(QWidget):
         current_step = self._viewer_current_step()
         if current_step is None:
             return coordinates
+        dims = getattr(self.viewer, "dims", None)
+        current_point = tuple(getattr(dims, "point", ()))
         current_nsteps = self._viewer_current_nsteps()
+        input_data = self.pipeline.input_data_for_node(node_id)
+        exact_bounds = (
+            input_data.identity.bounds
+            if isinstance(input_data, ExactSourceWindowData)
+            else None
+        )
         for axis_index, axis_size in enumerate(shape):
             step_axis = self._state_axis_to_step_axis(state, axis_index, current_step)
             if step_axis is None or not 0 <= step_axis < len(current_step):
                 continue
+            if step_axis < len(current_point):
+                try:
+                    axis = state.axes[axis_index]
+                    scale = float(axis.scale)
+                    world = float(current_point[step_axis])
+                    translation = float(axis.translation)
+                    if scale != 0.0 and all(
+                        math.isfinite(value)
+                        for value in (scale, world, translation)
+                    ):
+                        coordinates[axis_index] = float(
+                            np.clip(
+                                (world - translation) / scale,
+                                0,
+                                max(int(axis_size) - 1, 0),
+                            )
+                        )
+                        continue
+                except (AttributeError, IndexError, TypeError, ValueError):
+                    pass
             viewer_size = (
                 int(current_nsteps[step_axis])
                 if current_nsteps is not None and step_axis < len(current_nsteps)
                 else int(axis_size)
             )
+            if exact_bounds is not None and axis_index < len(exact_bounds):
+                start, stop = exact_bounds[axis_index]
+                if viewer_size == int(axis_size):
+                    coordinates[axis_index] = float(
+                        np.clip(
+                            int(current_step[step_axis]),
+                            0,
+                            max(int(axis_size) - 1, 0),
+                        )
+                    )
+                    continue
+                local_value = _local_dim_value_from_viewer(
+                    int(current_step[step_axis]),
+                    axis_size=int(stop) - int(start),
+                    viewer_axis_size=viewer_size,
+                )
+                coordinates[axis_index] = float(int(start) + local_value)
+                continue
             coordinates[axis_index] = float(
                 _local_dim_value_from_viewer(
                     int(current_step[step_axis]),
@@ -25177,7 +26112,7 @@ class VippWidget(QWidget):
                 float(int(shape[z_axis]) - z_end) - 0.5,
             )
             axis_bounds[z_axis] = z_bounds
-        base = self._crop_roi_axis_coordinates(shape, state)
+        base = self._crop_roi_axis_coordinates(node_id, shape, state)
         display_axes = self._crop_roi_display_axis_indices(
             shape,
             state,
@@ -25269,6 +26204,31 @@ class VippWidget(QWidget):
             retained,
         )
 
+    def _crop_roi_line_width_scale(self, node_id: str) -> float:
+        """Return one safe, authored display scale for the Crop ROI outline."""
+        node = self.pipeline.nodes.get(node_id)
+        value = (
+            CROP_ROI_LINE_WIDTH_SCALE_PARAMETER.default
+            if node is None
+            else node.params.get(
+                CROP_ROI_LINE_WIDTH_SCALE_PARAM,
+                CROP_ROI_LINE_WIDTH_SCALE_PARAMETER.default,
+            )
+        )
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = float(CROP_ROI_LINE_WIDTH_SCALE_PARAMETER.default)
+        if not np.isfinite(numeric):
+            numeric = float(CROP_ROI_LINE_WIDTH_SCALE_PARAMETER.default)
+        return float(
+            np.clip(
+                numeric,
+                CROP_ROI_LINE_WIDTH_SCALE_PARAMETER.minimum,
+                CROP_ROI_LINE_WIDTH_SCALE_PARAMETER.maximum,
+            )
+        )
+
     def _update_crop_roi_presentation(self, node_id: str) -> None:
         node = self.pipeline.nodes.get(node_id)
         if (
@@ -25278,11 +26238,11 @@ class VippWidget(QWidget):
         ):
             return
         if self.pipeline.node_is_bypassed(node_id):
-            self._discard_crop_presentation_layers()
+            self._set_crop_presentation_layers_visible(False)
             return
         shape, state = self._crop_input_shape_and_state(node_id)
         if len(shape) < 2:
-            self._discard_crop_presentation_layers()
+            self._set_crop_presentation_layers_visible(False)
             return
         values = self._crop_effective_values(node_id)
         faces, edge_colors, face_colors, current_slice_retained = (
@@ -25294,8 +26254,7 @@ class VippWidget(QWidget):
             )
         )
         if not faces:
-            for owned_layer in self._owned_crop_presentation_layers("crop_roi"):
-                self._remove_layer(owned_layer)
+            self._set_crop_presentation_layers_visible(False, kind="crop_roi")
             return
         metadata = self._crop_presentation_metadata(node_id, "crop_roi")
         metadata.update(
@@ -25330,7 +26289,8 @@ class VippWidget(QWidget):
                 layer = None
         prior_active = self._active_viewer_layer()
         ndisplay = int(getattr(getattr(self.viewer, "dims", None), "ndisplay", 2) or 2)
-        edge_width = 1.0 if ndisplay >= 3 else 1.25
+        base_edge_width = 1.0 if ndisplay >= 3 else 1.25
+        edge_width = base_edge_width * self._crop_roi_line_width_scale(node_id)
         blending = "translucent_no_depth"
         opacity = 0.9
         if layer is None and hasattr(self.viewer, "add_shapes"):
@@ -25620,8 +26580,15 @@ class VippWidget(QWidget):
                 value = int(round(float(value)))
         if node.params.get(name) == value:
             return
-        presentation_only = (
+        split_channel_presentation_only = (
             node.operation_id == "split_channels" and name == "preview_channel"
+        )
+        crop_roi_presentation_only = (
+            node.operation_id == "crop_stack"
+            and name == CROP_ROI_LINE_WIDTH_SCALE_PARAM
+        )
+        presentation_only = (
+            split_channel_presentation_only or crop_roi_presentation_only
         )
         interaction_generation = None
         recorder = self._interaction_latency_recorder
@@ -25661,10 +26628,17 @@ class VippWidget(QWidget):
         ):
             self._refresh_colocalization_threshold_control_states(node.id)
         if presentation_only:
-            self._refresh_split_channel_display_surfaces({node.id})
-            self.status_label.setText(
-                f"Showing channel {int(value) + 1} for '{node.title}'."
-            )
+            if split_channel_presentation_only:
+                self._refresh_split_channel_display_surfaces({node.id})
+                self.status_label.setText(
+                    f"Showing channel {int(value) + 1} for '{node.title}'."
+                )
+            else:
+                self._update_crop_roi_presentation(node.id)
+                self.status_label.setText(
+                    "Crop ROI line thickness set to "
+                    f"{float(value):g}×; processing is unchanged."
+                )
             self._sync_current_workflow_tab_state()
             return
         if name == "tag":
@@ -26146,6 +27120,31 @@ class VippWidget(QWidget):
                 "Calculation queued until thumbnail CPU/GPU statistics release "
                 "their resources.",
                 severity=MessageSeverity.INFO,
+            )
+            return
+        memory_repairs = tuple(
+            node
+            for node in self.pipeline.nodes.values()
+            if node.operation_id == "input"
+            and self._file_source_cache_key(node)
+            not in self._file_source_payload_cache
+            and self._source_memory_crop_suggestion(node) is not None
+        )
+        if memory_repairs:
+            if self._selected_node_id in {node.id for node in memory_repairs}:
+                control = self._parameter_widgets.get("image_source")
+                selected = self.pipeline.nodes.get(self._selected_node_id)
+                if isinstance(control, ImageSourceControl) and selected is not None:
+                    control.set_memory_repair_presentation(
+                        self._source_memory_repair_presentation(selected)
+                    )
+            names = ", ".join(self._node_title(node.id) for node in memory_repairs)
+            self._set_status(
+                f"{names} cannot be loaded safely in available RAM. Select the "
+                "Image Source and use Add fitted Crop Stack to start with an "
+                "exact centered region.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
             )
             return
         source_load_specs = self._uncached_async_file_source_specs()
@@ -28591,6 +29590,22 @@ class VippWidget(QWidget):
             )
             if state is not None and data is not None and not is_table_data(data):
                 return state
+        selected = self.pipeline.nodes.get(self._selected_node_id)
+        if (
+            selected is not None
+            and selected.operation_id == "input"
+            and self._source_view_choice_is_preview(
+                self._source_view_modes.get(selected.id, "analysis")
+            )
+        ):
+            preview_layer = self._source_preview_layer(selected.id)
+            metadata = getattr(preview_layer, "metadata", None)
+            if isinstance(metadata, Mapping):
+                carried = metadata.get("vipp_image_state")
+                if isinstance(carried, dict):
+                    preview_state = ImageState.from_dict(carried)
+                    if preview_state is not None and preview_state.axes:
+                        return preview_state
         data, state, _output_port = self._node_display_payload(self._selected_node_id)
         if state is not None and data is not None and not is_table_data(data):
             return state
@@ -31676,7 +32691,8 @@ class VippWidget(QWidget):
             },
             role="inspect",
         )
-        self._apply_selected_viewer_surface(select_layer=True)
+        if not self._selected_viewer_refresh_in_progress:
+            self._apply_selected_viewer_surface(select_layer=True)
         self._sync_inspect_display_reset_ui()
         self.status_label.setText(f"Inspecting '{title}' in napari.")
 
@@ -31994,16 +33010,21 @@ class VippWidget(QWidget):
             )
         presentation_data = _read_only_presentation_array(display_data)
         scale = _layer_scale_from_metadata(metadata)
+        translate = _layer_translate_from_metadata(metadata)
         if metadata["display_kind"] == "labels" and hasattr(self.viewer, "add_labels"):
             kwargs = {"name": name, "metadata": metadata}
             if scale is not None:
                 kwargs["scale"] = scale
+            if translate is not None:
+                kwargs["translate"] = translate
             layer = self.viewer.add_labels(presentation_data, **kwargs)
             self._make_generated_layer_noneditable(layer)
             return layer
         kwargs = {"name": name, "metadata": metadata}
         if scale is not None:
             kwargs["scale"] = scale
+        if translate is not None:
+            kwargs["translate"] = translate
         if metadata.get("display_rgb"):
             kwargs["rgb"] = True
         kwargs["blending"] = "translucent"
@@ -32162,6 +33183,9 @@ class VippWidget(QWidget):
         scale = _layer_scale_from_metadata(metadata)
         if scale is not None:
             kwargs["scale"] = scale
+        translate = _layer_translate_from_metadata(metadata)
+        if translate is not None:
+            kwargs["translate"] = translate
         plan = self._generated_layer_contrast_plan(
             name,
             data,
@@ -32202,6 +33226,12 @@ class VippWidget(QWidget):
         if scale is not None:
             try:
                 layer.scale = scale
+            except Exception:
+                pass
+        translate = _layer_translate_from_metadata(metadata)
+        if translate is not None:
+            try:
+                layer.translate = translate
             except Exception:
                 pass
         plan = self._generated_layer_contrast_plan(
@@ -32594,6 +33624,12 @@ class VippWidget(QWidget):
                 layer.scale = scale
             except Exception:
                 pass
+        translate = _layer_translate_from_metadata(metadata)
+        if translate is not None:
+            try:
+                layer.translate = translate
+            except Exception:
+                pass
         if metadata["display_kind"] != "image":
             self._make_generated_layer_noneditable(layer)
             return
@@ -32962,6 +33998,12 @@ class VippWidget(QWidget):
                 return "table"
             if ports and ports[port_index].output_type == "labels":
                 return "labels"
+        if isinstance(data, ExactSourceWindowData):
+            # This is presentation classification only.  Inspect the already
+            # materialized reader window without coercing the wrapper, whose
+            # __array__ deliberately refuses to imply that the complete
+            # logical source was loaded.
+            data = data.data
         return "mask" if np.asarray(data).dtype == bool else "image"
 
     def _display_rgb(
@@ -33019,6 +34061,8 @@ class VippWidget(QWidget):
         layers = self.viewer.layers
         try:
             index = list(layers).index(layer)
+            if index == len(layers) - 1:
+                return
             layers.move(index, len(layers))
             return
         except Exception:
@@ -33033,6 +34077,8 @@ class VippWidget(QWidget):
         layers = self.viewer.layers
         try:
             index = list(layers).index(layer)
+            if index == 0:
+                return
             layers.move(index, 0)
             return
         except Exception:
@@ -33499,6 +34545,16 @@ def _positive_scale_float(value, default: float) -> float:
     except Exception:
         return default
     if result <= 0 or not np.isfinite(result):
+        return default
+    return result
+
+
+def _finite_translation_float(value, default: float) -> float:
+    try:
+        result = float(value)
+    except Exception:
+        return default
+    if not np.isfinite(result):
         return default
     return result
 
@@ -34374,6 +35430,29 @@ def _layer_scale_from_metadata(metadata: dict) -> tuple[float, ...] | None:
     return scales
 
 
+def _layer_translate_from_metadata(metadata: dict) -> tuple[float, ...] | None:
+    if not isinstance(metadata, dict):
+        return None
+    expected_ndim = _napari_layer_transform_ndim(metadata)
+    default_translate = (
+        tuple(0.0 for _ in range(expected_ndim)) if expected_ndim > 0 else None
+    )
+    carried = metadata.get("vipp_image_state")
+    if not isinstance(carried, dict):
+        return default_translate
+    state = ImageState.from_dict(carried)
+    if state is None or not state.axes:
+        return default_translate
+    translations = tuple(
+        _finite_translation_float(axis.translation, 0.0)
+        for axis in state.axes
+        if not _state_axis_hidden_from_napari_dims(axis, metadata)
+    )
+    if expected_ndim <= 0 or len(translations) != expected_ndim:
+        return default_translate
+    return translations
+
+
 def _napari_layer_transform_ndim(metadata: dict) -> int:
     shape = tuple(metadata.get("display_shape", ()))
     if shape:
@@ -34483,6 +35562,8 @@ def _object_nbytes(value, seen: set[int]) -> int:
         return 0
     seen.add(value_id)
 
+    if isinstance(value, ExactSourceWindowData):
+        return max(int(value.window_nbytes), 0)
     nbytes = getattr(value, "nbytes", None)
     if nbytes is not None:
         try:

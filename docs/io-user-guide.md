@@ -83,15 +83,17 @@ An external change is therefore not silently mixed into a running graph. Press
 `Refresh` to discard the pinned snapshot, inspect the new revision, and load it
 explicitly.
 
-For a local multiscale OME-Zarr image or label, VIPP may first display a sliced
+For a local multiscale OME-Zarr image or label, VIPP may first display a bounded
 lower level labelled `Preview level N - analysis remains full resolution`.
-That result is presentation-only: it never replaces SourceItem analysis level
-0, scientific cache data, or output provenance. Superseded preview/load work is
-cooperatively cancelled and generation-checked before publication. A
-single-level source reports that no lower-level preview exists. OME-Zarr,
-microscope formats, and large files use the background queue with decoded-memory
-preflight and truthful progress; a monolithic eager reader does not invent an
-internal percentage.
+For a volumetric source, the presentation layer retains that level's Z extent
+when its materialized data and touched decoded chunks fit the 64 MiB preview
+budget; time and channel selections remain explicit. That result is
+presentation-only: it never replaces SourceItem analysis level 0, scientific
+cache data, or output provenance. Superseded preview/load work is cooperatively
+cancelled and generation-checked before publication. A single-level source
+reports that no lower-level preview exists. OME-Zarr, microscope formats, and
+large files use the background queue with decoded-memory preflight and truthful
+progress; a monolithic eager reader does not invent an internal percentage.
 
 `Binding: collection` marks an Image Source node as a per-item source for
 `Batch workspace...`. The graph still represents one scientific item at a

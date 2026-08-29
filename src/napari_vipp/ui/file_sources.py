@@ -21,6 +21,7 @@ from napari_vipp.core.io.errors import (
 from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import LocalSourceIdentity
 from napari_vipp.core.source_items import SourceItem
+from napari_vipp.core.source_window import SourceWindowRequest
 
 
 class SourceLoadPhase(StrEnum):
@@ -97,6 +98,7 @@ class SourceFileLoadSpec:
     item_key: str = ""
     expected_identity: LocalSourceIdentity | None = None
     expected_source_item: SourceItem | None = None
+    exact_window_request: SourceWindowRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +229,7 @@ class SourceFileLoadWorker(QRunnable):
                     item_key=spec.item_key,
                     expected_identity=expected_identity,
                     expected_source_item=spec.expected_source_item,
+                    exact_window_request=spec.exact_window_request,
                     reader=self.reader,
                     cancel_callback=self._cancel_event.is_set,
                     progress_callback=report_core_progress,

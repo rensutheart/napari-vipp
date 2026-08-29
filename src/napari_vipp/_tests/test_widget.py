@@ -62,6 +62,7 @@ from napari_vipp._widget import (
     CACHE_MODE_LOW_MEMORY,
     CACHE_MODE_SMART,
     CROP_ROI_LAYER_NAME,
+    CROP_ROI_LINE_WIDTH_SCALE_PARAM,
     EXAMPLE_WORKFLOWS,
     INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS,
     AutoContrastResult,
@@ -92,6 +93,8 @@ from napari_vipp._widget import (
     _input_histogram_marker_key,
     _input_histogram_markers,
     _macos_memory_bytes,
+    _object_nbytes,
+    _pipeline_cache_nbytes,
     _prepare_colocalization_scatter_density,
     _rescale_dtype_output_range,
     _system_memory_bytes,
@@ -210,7 +213,12 @@ from napari_vipp.core.source_identity import (
 )
 from napari_vipp.core.source_preview import (
     SourcePreviewReadMetrics,
+    SourcePreviewRequest,
     SourcePreviewResult,
+)
+from napari_vipp.core.source_window import (
+    ExactSourceWindowData,
+    SourceWindowIdentity,
 )
 from napari_vipp.core.tables import TableData, TableState
 from napari_vipp.core.thumbnail_statistics import (
@@ -232,6 +240,7 @@ from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     PipelineOptimizerWorkerOutcome,
 )
 from napari_vipp.ui.compute_setup import ComputeDeviceOption
+from napari_vipp.ui.controls import ImageSourceResolutionPresentation
 from napari_vipp.ui.diagnostic_workers import ThumbnailContrastProgress
 from napari_vipp.ui.file_sources import SourceFileLoadSpec
 from napari_vipp.ui.presentation_settings import ThumbnailStatisticsPolicy
@@ -5701,7 +5710,7 @@ def test_rendering_matching_source_does_not_cancel_full_loader(qtbot, tmp_path):
     assert widget._source_load_pending is False
 
 
-def test_changed_preview_plane_supersedes_previous_request(qtbot, tmp_path):
+def test_changed_t_or_c_supersedes_retained_volume_preview_request(qtbot, tmp_path):
     path = tmp_path / "source.zarr"
     path.mkdir()
     member = path / "chunk"
@@ -5750,7 +5759,8 @@ def test_changed_preview_plane_supersedes_previous_request(qtbot, tmp_path):
     assert first.spec.request.t_index == 0
     assert second.spec.request.t_index == 1
     assert second.spec.request.c_index == 2
-    assert second.spec.request.z_index == 3
+    assert second.spec.request.z_index is None
+    assert second.spec.request.retain_z is True
 
 
 def test_dynamic_preview_level_choice_replaces_only_matching_level(
@@ -5775,6 +5785,7 @@ def test_dynamic_preview_level_choice_replaces_only_matching_level(
         member.stat().st_size,
     )
     source_item = SimpleNamespace(
+        digest="preview-level-fixture",
         selector=SimpleNamespace(key=".", source_axes=(), effective_axes=()),
         resolved=SimpleNamespace(
             raw_axes=("T", "C", "Z", "Y", "X"),
@@ -5842,7 +5853,7 @@ def test_dynamic_preview_level_choice_replaces_only_matching_level(
     assert automatic_worker.spec.request.level is None
 
 
-def test_returning_to_retained_preview_cancels_stale_plane_worker(
+def test_z_navigation_reuses_retained_volume_preview(
     qtbot,
     tmp_path,
 ):
@@ -5873,8 +5884,10 @@ def test_returning_to_retained_preview_cancels_stale_plane_worker(
         capabilities=SimpleNamespace(preview_level_read=True),
         container=SimpleNamespace(format="ome-zarr-0.5"),
     )
-    initial_request = widget._source_preview_request(source_item)
-    data = np.zeros((32, 40), dtype=np.uint8)
+    widget._selected_node_id = node.id
+    widget._source_view_modes[node.id] = "preview:auto"
+    initial_request = widget._source_preview_request(source_item, retain_z=True)
+    data = np.zeros((4, 32, 40), dtype=np.uint8)
     widget._publish_source_preview(
         node.id,
         ".",
@@ -5882,7 +5895,7 @@ def test_returning_to_retained_preview_cancels_stale_plane_worker(
             data=data,
             image_state=image_state_from_array(
                 data,
-                layer_metadata={"axes": "YX"},
+                layer_metadata={"axes": "ZYX"},
             ),
             preview_level=1,
             level_count=2,
@@ -5894,17 +5907,14 @@ def test_returning_to_retained_preview_cancels_stale_plane_worker(
         expected_identity=identity,
     )
     retained = widget._source_preview_layer(node.id, ".")
+    assert widget._view_dims_state().shape == data.shape
+    assert [axis.size for axis in widget._view_dim_axes()] == [4]
 
     widget.viewer.dims.current_step = (0, 0, 1)
     widget._start_source_preview(node, path.resolve(), source_item)
-    stale_worker = queued_pool.workers[-1]
-    widget.viewer.dims.current_step = (0, 0, 0)
-    widget._start_source_preview(node, path.resolve(), source_item)
 
-    assert stale_worker.spec.request.z_index == 1
-    assert stale_worker.cancellation_requested
     assert widget._active_source_preview_worker is None
-    assert len(queued_pool.workers) == 1
+    assert queued_pool.workers == []
     assert widget._source_preview_layer(node.id, ".") is retained
 
 
@@ -17959,6 +17969,535 @@ def test_inserting_node_on_wire_reuses_cached_source_side(qtbot, monkeypatch):
     assert "gaussian" not in calls
 
 
+def test_exact_source_window_uses_bounded_pixels_on_all_presentation_surfaces(
+    qtbot,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    window = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    window.setflags(write=False)
+    full_state = image_state_from_array(
+        np.zeros((10, 12), dtype=np.uint16),
+        axes=(AxisMetadata("y", "space"), AxisMetadata("x", "space")),
+    )
+    window_state = image_state_from_array(
+        window,
+        axes=(
+            AxisMetadata("y", "space", translation=2.0),
+            AxisMetadata("x", "space", translation=3.0),
+        ),
+    )
+    exact = ExactSourceWindowData(
+        window,
+        window_state,
+        SourceWindowIdentity(
+            source_uri="C:/fixture/source.ome.zarr",
+            source_format="ome-zarr-0.5",
+            series_index=0,
+            item_key=".",
+            reader_key="ome-zarr",
+            reader_version="test",
+            source_shape=(10, 12),
+            source_dtype="uint16",
+            axis_names=("y", "x"),
+            bounds=((2, 6), (3, 8)),
+        ),
+    )
+    widget.pipeline.outputs["input"] = exact
+    widget.pipeline.output_states["input"] = full_state
+    widget.pipeline.node_outputs["input"] = [exact]
+    widget.pipeline.node_output_states["input"] = [full_state]
+
+    display_data, display_state, _port = widget._node_display_payload("input")
+    assert display_data is window
+    assert display_state is window_state
+    assert widget._node_can_pin("input")
+    assert widget._data_kind(exact, "input") == "image"
+    assert _object_nbytes(exact, set()) == window.nbytes
+    accounting_pipeline = PrototypePipeline()
+    accounting_pipeline.reset_empty_graph()
+    accounting_pipeline.outputs["input"] = exact
+    accounting_pipeline.node_outputs["input"] = [exact]
+    assert _pipeline_cache_nbytes(accounting_pipeline) == window.nbytes
+
+    widget.inspect_node("input")
+    inspect = widget.viewer.layers["VIPP Inspect"]
+    np.testing.assert_array_equal(inspect.data, window)
+    assert inspect.translate == (2.0, 3.0)
+    widget._set_active_pin_layer("input", exact)
+    pinned = next(
+        layer
+        for layer in widget.viewer.layers
+        if getattr(layer, "metadata", {}).get("napari_vipp_kind") == "pinned"
+    )
+    np.testing.assert_array_equal(pinned.data, window)
+    assert pinned.translate == (2.0, 3.0)
+
+
+def test_exact_source_window_thumbnail_classification_never_coerces_full_source(
+    qtbot,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    window = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    window.setflags(write=False)
+    full_state = image_state_from_array(
+        np.zeros((10, 12), dtype=np.uint16),
+        axes=(AxisMetadata("y", "space"), AxisMetadata("x", "space")),
+    )
+    window_state = image_state_from_array(
+        window,
+        axes=(
+            AxisMetadata("y", "space", translation=2.0),
+            AxisMetadata("x", "space", translation=3.0),
+        ),
+    )
+    exact = ExactSourceWindowData(
+        window,
+        window_state,
+        SourceWindowIdentity(
+            source_uri="C:/fixture/source.ome.zarr",
+            source_format="ome-zarr-0.5",
+            series_index=0,
+            item_key=".",
+            reader_key="ome-zarr",
+            reader_version="test",
+            source_shape=(10, 12),
+            source_dtype="uint16",
+            axis_names=("y", "x"),
+            bounds=((2, 6), (3, 8)),
+        ),
+    )
+    widget.pipeline.outputs["input"] = exact
+    widget.pipeline.output_states["input"] = full_state
+
+    widget._update_node_thumbnail(
+        "input",
+        window,
+        window_state,
+        0,
+        queue_stack_contrast=False,
+        scientific_payload=(exact, full_state, 0),
+    )
+
+    assert widget.graph_view._proxies["input"].output_type == "image"
+    assert widget.pipeline.outputs["input"] is exact
+    assert widget.pipeline.output_states["input"] is full_state
+
+
+def test_exact_source_window_maps_viewer_planes_back_to_full_crop_coordinates(
+    qtbot,
+):
+    widget = VippWidget(_Viewer(np.zeros((4, 5, 6), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    window = np.zeros((4, 5, 6), dtype=np.uint16)
+    window.setflags(write=False)
+    full_state = image_state_from_array(
+        np.zeros((10, 12, 14), dtype=np.uint16),
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    window_state = image_state_from_array(
+        window,
+        axes=(
+            AxisMetadata("z", "space", translation=2.0),
+            AxisMetadata("y", "space", translation=3.0),
+            AxisMetadata("x", "space", translation=4.0),
+        ),
+    )
+    exact = ExactSourceWindowData(
+        window,
+        window_state,
+        SourceWindowIdentity(
+            source_uri="C:/fixture/source.ome.zarr",
+            source_format="ome-zarr-0.5",
+            series_index=0,
+            item_key=".",
+            reader_key="ome-zarr",
+            reader_version="test",
+            source_shape=(10, 12, 14),
+            source_dtype="uint16",
+            axis_names=("z", "y", "x"),
+            bounds=((2, 6), (3, 8), (4, 10)),
+        ),
+    )
+    widget.pipeline.outputs["input"] = exact
+    widget.pipeline.output_states["input"] = full_state
+    widget.pipeline.node_outputs["input"] = [exact]
+    widget.pipeline.node_output_states["input"] = [full_state]
+    widget.viewer.dims.nsteps = window.shape
+
+    for step, expected in (
+        ((0, 0, 0), (2.0, 3.0, 4.0)),
+        ((2, 2, 3), (4.0, 5.0, 7.0)),
+        ((3, 4, 5), (5.0, 7.0, 9.0)),
+    ):
+        widget.viewer.dims.current_step = step
+        assert widget._crop_roi_axis_coordinates(
+            "gaussian",
+            exact.shape,
+            full_state,
+        ) == list(expected)
+
+    widget.viewer.dims.current_step = (2, 2, 3)
+    widget.viewer.dims.ndisplay = 3
+    faces, _edges, _fills, retained = widget._crop_roi_geometry(
+        "gaussian",
+        exact.shape,
+        full_state,
+        {
+            "z_start": 2,
+            "z_end": 4,
+            "top": 3,
+            "bottom": 4,
+            "left": 4,
+            "right": 4,
+        },
+    )
+    assert retained
+    assert len(faces) == 6
+    all_vertices = np.concatenate(faces, axis=0)
+    np.testing.assert_allclose(
+        all_vertices.min(axis=0),
+        np.array([1.5, 2.5, 3.5]),
+    )
+    np.testing.assert_allclose(
+        all_vertices.max(axis=0),
+        np.array([5.5, 7.5, 9.5]),
+    )
+
+
+def test_exact_source_window_preview_requests_full_source_planes(qtbot):
+    viewer = _Viewer(np.zeros((4, 5, 6), dtype=np.uint16))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    window = np.zeros((4, 5, 6), dtype=np.uint16)
+    window.setflags(write=False)
+    full_state = image_state_from_array(
+        np.zeros((10, 12, 14), dtype=np.uint16),
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    window_state = image_state_from_array(
+        window,
+        axes=(
+            AxisMetadata("z", "space", translation=2.0),
+            AxisMetadata("y", "space", translation=3.0),
+            AxisMetadata("x", "space", translation=4.0),
+        ),
+    )
+    exact = ExactSourceWindowData(
+        window,
+        window_state,
+        SourceWindowIdentity(
+            source_uri="C:/fixture/source.ome.zarr",
+            source_format="ome-zarr-0.5",
+            series_index=0,
+            item_key=".",
+            reader_key="ome-zarr",
+            reader_version="test",
+            source_shape=(10, 12, 14),
+            source_dtype="uint16",
+            axis_names=("z", "y", "x"),
+            bounds=((2, 6), (3, 8), (4, 10)),
+        ),
+    )
+    widget.pipeline.outputs["input"] = exact
+    widget.pipeline.output_states["input"] = full_state
+    widget.pipeline.node_outputs["input"] = [exact]
+    widget.pipeline.node_output_states["input"] = [full_state]
+    viewer.dims.nsteps = window.shape
+    source_item = SimpleNamespace(
+        selector=SimpleNamespace(source_axes=(), effective_axes=()),
+        resolved=SimpleNamespace(
+            raw_axes=("z", "y", "x"),
+            axes=("z", "y", "x"),
+            shape=(10, 12, 14),
+        ),
+    )
+
+    for local_z, logical_z in ((0, 2), (2, 4), (3, 5)):
+        viewer.dims.current_step = (local_z, 0, 0)
+        request = widget._source_preview_request(source_item, node_id="input")
+        assert request.z_index == logical_z
+
+    # The pipeline deliberately carries the complete source state beside the
+    # exact-window data wrapper. A physical point mapped through that state is
+    # already a full-source coordinate and must not receive the crop origin a
+    # second time.
+    viewer.dims.current_step = (2, 0, 0)
+    viewer.dims.point = (4.0, 3.0, 4.0)
+    request = widget._source_preview_request(source_item, node_id="input")
+    assert request.z_index == 4
+
+    # A real napari viewer exposes a physical world point.  The exact-window
+    # state's shifted translation maps that point to a window-local index; the
+    # preview request still has to restore the full source-window origin.
+    widget.pipeline.output_states["input"] = window_state
+    viewer.dims.current_step = (2, 0, 0)
+    viewer.dims.point = (4.0, 3.0, 4.0)
+    request = widget._source_preview_request(source_item, node_id="input")
+    assert request.z_index == 4
+
+
+def test_source_preview_request_prefers_physical_viewer_point(qtbot):
+    viewer = _Viewer(np.zeros((4, 5, 6), dtype=np.uint16))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    state = image_state_from_array(
+        np.zeros((10, 12, 14), dtype=np.uint16),
+        axes=(
+            AxisMetadata("z", "space", scale=2.0, translation=10.0),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    widget.pipeline.output_states["input"] = state
+    viewer.dims.current_step = (0, 0, 0)
+    viewer.dims.point = (18.0, 0.0, 0.0)
+    source_item = SimpleNamespace(
+        selector=SimpleNamespace(source_axes=(), effective_axes=()),
+        resolved=SimpleNamespace(
+            raw_axes=("z", "y", "x"),
+            axes=("z", "y", "x"),
+            shape=(10, 12, 14),
+        ),
+    )
+
+    request = widget._source_preview_request(source_item, node_id="input")
+
+    assert request.z_index == 4
+
+
+def test_exact_source_window_preview_is_a_positioned_display_slab_in_3d(qtbot):
+    viewer = _Viewer(np.zeros((4, 5, 6), dtype=np.uint16))
+    captured = {}
+    original_add_image = viewer.add_image
+
+    def capture_add_image(data, **kwargs):
+        captured.update(kwargs)
+        return original_add_image(data, **kwargs)
+
+    viewer.add_image = capture_add_image
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    window = np.zeros((4, 5, 6), dtype=np.uint16)
+    window.setflags(write=False)
+    full_state = image_state_from_array(
+        np.zeros((10, 12, 14), dtype=np.uint16),
+        axes=(
+            AxisMetadata("z", "space", scale=2.0, translation=10.0),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    window_state = image_state_from_array(
+        window,
+        axes=(
+            AxisMetadata("z", "space", scale=2.0, translation=14.0),
+            AxisMetadata("y", "space", translation=3.0),
+            AxisMetadata("x", "space", translation=4.0),
+        ),
+    )
+    exact = ExactSourceWindowData(
+        window,
+        window_state,
+        SourceWindowIdentity(
+            source_uri="C:/fixture/source.ome.zarr",
+            source_format="ome-zarr-0.5",
+            series_index=0,
+            item_key=".",
+            reader_key="ome-zarr",
+            reader_version="test",
+            source_shape=(10, 12, 14),
+            source_dtype="uint16",
+            axis_names=("z", "y", "x"),
+            bounds=((2, 6), (3, 8), (4, 10)),
+        ),
+    )
+    widget.pipeline.outputs["input"] = exact
+    widget.pipeline.output_states["input"] = full_state
+    widget._selected_node_id = "input"
+    widget._source_view_modes["input"] = "preview:auto"
+    preview_data = np.ones((5, 6), dtype=np.uint16)
+
+    widget._publish_source_preview(
+        "input",
+        ".",
+        SourcePreviewResult(
+            data=preview_data,
+            image_state=image_state_from_array(
+                preview_data,
+                axes=(AxisMetadata("y", "space"), AxisMetadata("x", "space")),
+            ),
+            preview_level=1,
+            level_count=2,
+            message="Positioned preview",
+            metrics=SourcePreviewReadMetrics(
+                requested_decoded_bytes=preview_data.nbytes
+            ),
+            generation=1,
+        ),
+        request=SourcePreviewRequest(z_index=4, level=1),
+    )
+
+    layer = widget._source_preview_layer("input", ".")
+    assert layer is not None and layer.visible
+    assert layer.data.shape == (3, 5, 6)
+    assert layer.translate == (16.0, 0.0, 0.0)
+    assert not layer.data.flags.writeable
+    np.testing.assert_array_equal(layer.data[0], preview_data)
+    np.testing.assert_array_equal(layer.data[1], preview_data)
+    np.testing.assert_array_equal(layer.data[2], preview_data)
+    assert captured["depiction"] == "volume"
+    assert captured["rendering"] == "mip"
+    assert captured["interpolation3d"] == "nearest"
+    assert captured["contrast_limits"] == (0.0, 1.0)
+    assert layer.metadata["source_preview_data_shape"] == [5, 6]
+    assert layer.metadata["source_preview_display_slab"] == {
+        "axis": 0,
+        "copies": 3,
+        "centre_index": 1,
+        "presentation_only": True,
+    }
+
+
+def test_low_ram_source_repair_splices_one_prefilled_crop_and_undoes(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._history.clear()
+    margins = {
+        "z_start": 0,
+        "z_end": 0,
+        "top": 2,
+        "bottom": 3,
+        "left": 4,
+        "right": 5,
+    }
+    suggestion = SimpleNamespace(
+        geometry=SimpleNamespace(
+            margins=SimpleNamespace(as_params=lambda: dict(margins))
+        )
+    )
+    monkeypatch.setattr(
+        widget,
+        "_source_memory_crop_suggestion",
+        lambda _node: suggestion,
+    )
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+
+    widget._apply_source_memory_crop_repair("input")
+
+    crops = tuple(
+        node
+        for node in widget.pipeline.nodes.values()
+        if node.operation_id == "crop_stack"
+    )
+    assert len(crops) == 1
+    crop = crops[0]
+    assert all(crop.params[name] == value for name, value in margins.items())
+    assert GraphConnection("input", crop.id) in widget.pipeline.connections
+    assert GraphConnection(crop.id, "gaussian") in widget.pipeline.connections
+    assert GraphConnection("input", "gaussian") not in widget.pipeline.connections
+    assert len(widget._undo_stack) == 1
+
+    widget.undo()
+
+    assert crop.id not in widget.pipeline.nodes
+    assert GraphConnection("input", "gaussian") in widget.pipeline.connections
+
+
+def test_low_ram_crop_dismissal_survives_reselect_until_condition_changes(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        {
+            "source_mode": "file path",
+            "file_path": "C:/fixture/large.ome.zarr",
+        }
+    )
+    condition = {
+        "revision": "revision-a",
+        "bounds": ((0, 4), (2, 10), (3, 12)),
+    }
+
+    def source_item(_node):
+        return SimpleNamespace(
+            container=SimpleNamespace(
+                revision=SimpleNamespace(sha256=condition["revision"])
+            )
+        )
+
+    def suggestion(_node):
+        bounds = condition["bounds"]
+        return SimpleNamespace(
+            geometry=SimpleNamespace(
+                bounds=bounds,
+                output_shape=tuple(stop - start for start, stop in bounds),
+            ),
+            full_decoded_bytes=8 * 1024**3,
+            decoded_output_bytes=128 * 1024**2,
+            estimated_peak_bytes=256 * 1024**2,
+        )
+
+    monkeypatch.setattr(widget, "_file_source_item_for_node", source_item)
+    monkeypatch.setattr(widget, "_source_memory_crop_suggestion", suggestion)
+    monkeypatch.setattr(widget, "_source_inspection_for_node", lambda _node: None)
+    monkeypatch.setattr(widget, "_update_metadata_panel", lambda: None)
+    monkeypatch.setattr(
+        widget,
+        "_ensure_selected_source_preview",
+        lambda _node_id: None,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_source_resolution_presentation",
+        lambda _node: ImageSourceResolutionPresentation(),
+    )
+
+    widget.graph_view.select_node("input")
+    first_control = widget._parameter_widgets["image_source"]
+    assert first_control.memory_repair_panel.isVisibleTo(first_control)
+    first_control.memory_repair_dismiss_button.click()
+    assert first_control.memory_repair_panel.isHidden()
+
+    widget.graph_view.select_node("gaussian")
+    widget.graph_view.select_node("input")
+    reselected_control = widget._parameter_widgets["image_source"]
+    assert reselected_control is not first_control
+    assert reselected_control.memory_repair_panel.isHidden()
+
+    condition["bounds"] = ((0, 4), (1, 11), (2, 13))
+    widget.graph_view.select_node("gaussian")
+    widget.graph_view.select_node("input")
+    changed_geometry_control = widget._parameter_widgets["image_source"]
+    assert changed_geometry_control.memory_repair_panel.isVisibleTo(
+        changed_geometry_control
+    )
+    changed_geometry_control.memory_repair_dismiss_button.click()
+
+    condition["revision"] = "revision-b"
+    widget.graph_view.select_node("gaussian")
+    widget.graph_view.select_node("input")
+    changed_revision_control = widget._parameter_widgets["image_source"]
+    assert changed_revision_control.memory_repair_panel.isVisibleTo(
+        changed_revision_control
+    )
+
+
 def test_cache_mode_defaults_to_keep_all_and_reports_memory(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -27670,6 +28209,87 @@ def _responsive_crop_widget(qtbot):
     return widget, crop, data
 
 
+def test_crop_roi_line_thickness_is_separate_persisted_and_viewer_only(
+    qtbot,
+    monkeypatch,
+):
+    widget, crop, _data = _responsive_crop_widget(qtbot)
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    runs = []
+    monkeypatch.setattr(widget, "run_pipeline", lambda: runs.append("run"))
+    output_before = widget.pipeline.outputs[crop.id]
+    pending_before = set(widget._pending_dirty_node_ids)
+    scientific_hash_before = scientific_workflow_hash(
+        serialize_workflow(widget.pipeline)
+    )
+
+    summary = widget._parameter_widgets["crop_roi_summary"]
+    separator = widget._parameter_widgets["crop_roi_appearance_separator"]
+    heading = widget._parameter_widgets["crop_roi_appearance_heading"]
+    control = widget._parameter_widgets[CROP_ROI_LINE_WIDTH_SCALE_PARAM]
+    summary_row, _summary_role = widget.parameter_form.getWidgetPosition(summary)
+    separator_row, _separator_role = widget.parameter_form.getWidgetPosition(separator)
+    heading_row, _heading_role = widget.parameter_form.getWidgetPosition(heading)
+    control_row, _control_role = widget.parameter_form.getWidgetPosition(control)
+
+    assert summary_row < separator_row < heading_row < control_row
+    assert separator.frameShape() == QFrame.HLine
+    assert heading.text() == "ROI appearance · viewer only"
+    assert control.value_box.suffix() == "×"
+    assert control.value_box.minimum() == pytest.approx(0.05)
+    assert control.value_box.maximum() == pytest.approx(100.0)
+    assert control._from_slider(control.slider.minimum()) == pytest.approx(0.1)
+    assert control._from_slider(control.slider.maximum()) == pytest.approx(8.0)
+
+    roi_layer = widget._owned_crop_presentation_layers("crop_roi")[0]
+    roi_identity = id(roi_layer)
+    assert np.allclose(roi_layer.edge_width, 1.25)
+
+    control.slider.sliderPressed.emit()
+    control.slider.setValue(control._to_slider(0.5))
+    control.slider.setValue(control._to_slider(0.35))
+    control.slider.sliderReleased.emit()
+
+    assert widget.pipeline.nodes[crop.id].params[
+        CROP_ROI_LINE_WIDTH_SCALE_PARAM
+    ] == pytest.approx(0.35)
+    assert id(widget._owned_crop_presentation_layers("crop_roi")[0]) == roi_identity
+    assert np.allclose(roi_layer.edge_width, 1.25 * 0.35)
+    assert widget.pipeline.outputs[crop.id] is output_before
+    assert set(widget._pending_dirty_node_ids) == pending_before
+    assert scientific_workflow_hash(serialize_workflow(widget.pipeline)) == (
+        scientific_hash_before
+    )
+    assert runs == []
+    assert len(widget._undo_stack) == 1
+    assert session.dirty
+    assert "processing is unchanged" in widget.status_label.text().casefold()
+
+    widget.viewer.dims.ndisplay = 3
+    assert id(widget._owned_crop_presentation_layers("crop_roi")[0]) == roi_identity
+    assert len(roi_layer.data) == 6
+    assert np.allclose(roi_layer.edge_width, [0.35] * 6)
+
+    widget.undo()
+
+    assert CROP_ROI_LINE_WIDTH_SCALE_PARAM not in widget.pipeline.nodes[crop.id].params
+    assert np.allclose(roi_layer.edge_width, [1.0] * 6)
+    assert runs == []
+
+    widget.redo()
+
+    assert widget.pipeline.nodes[crop.id].params[
+        CROP_ROI_LINE_WIDTH_SCALE_PARAM
+    ] == pytest.approx(0.35)
+    assert np.allclose(roi_layer.edge_width, [0.35] * 6)
+    assert runs == []
+
+
 def test_safe_bypass_inspector_is_shared_and_keeps_parameters_dormant(qtbot):
     widget, crop, data = _responsive_crop_widget(qtbot)
     widget.pipeline.set_param(crop.id, "top", 2)
@@ -27703,7 +28323,9 @@ def test_safe_bypass_inspector_is_shared_and_keeps_parameters_dormant(qtbot):
         "complete input"
         in widget._parameter_widgets["crop_roi_summary"].text().casefold()
     )
-    assert not widget._owned_crop_presentation_layers("crop_roi")
+    retained_roi_layers = widget._owned_crop_presentation_layers("crop_roi")
+    assert retained_roi_layers
+    assert all(not layer.visible for layer in retained_roi_layers)
     assert widget.graph_view._cards[crop.id]._bypassed
     assert (
         widget.graph_view._cards[crop.id]._compute_badge_kind
@@ -29174,7 +29796,7 @@ def test_responsive_crop_box_uses_pixel_edges_for_one_sample_roi(qtbot):
     widget._crop_draft_timer.stop()
 
 
-def test_responsive_crop_disconnect_removes_stale_presentation_layers(qtbot):
+def test_responsive_crop_disconnect_hides_stale_presentation_layers(qtbot):
     widget = VippWidget(
         _Viewer(
             np.zeros((6, 8, 10), dtype=np.float32),
@@ -29190,8 +29812,101 @@ def test_responsive_crop_disconnect_removes_stale_presentation_layers(qtbot):
 
     widget._disconnect_nodes("input", crop.id)
 
-    assert widget._owned_crop_presentation_layers() == []
+    retained_layers = widget._owned_crop_presentation_layers()
+    assert retained_layers
+    assert all(not layer.visible for layer in retained_layers)
     assert widget._crop_draft_node_id is None
+
+
+def test_crop_selection_defers_napari_layer_model_mutation(qtbot, monkeypatch):
+    """Regression for the Windows QSortFilterProxyModel access violation."""
+
+    from napari._qt.containers.qt_layer_list import QtLayerList
+
+    image = np.zeros((8, 12, 12), dtype=np.float32)
+    image[1:4, 1:4, 1:4] = 10
+    image[4:7, 7:10, 7:10] = 20
+    viewer = ViewerModel()
+    viewer.add_image(image, name="Object intensity source", metadata={"axes": "ZYX"})
+    qt_layer_list = QtLayerList(viewer.layers)
+    qtbot.addWidget(qt_layer_list)
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+
+    crop = widget.add_node_from_palette("crop_stack")
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    intensity = widget.add_node_from_palette("measure_objects_intensity")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget.pipeline.set_param(crop.id, "top", 1)
+    widget._connect_nodes("input", crop.id)
+    widget._connect_nodes(crop.id, threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget._connect_nodes(labels.id, intensity.id, target_port=0)
+    widget._connect_nodes(crop.id, intensity.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget._select_node(intensity.id)
+    qtbot.wait(1)
+
+    # Force the Crop click to create fresh presentation layers, matching the
+    # failing user sequence after measurement auto-recalculation and Prefer GPU.
+    widget._discard_inspect_layers()
+    widget._discard_crop_presentation_layers()
+    widget._compute_mode = ComputeMode.PREFER_GPU
+    initial_layer_count = len(viewer.layers)
+    during_node_press = True
+    synchronous_mutations: list[str] = []
+
+    def guarded(name, callback):
+        def invoke(*args, **kwargs):
+            if during_node_press:
+                synchronous_mutations.append(name)
+                raise AssertionError(
+                    f"napari layer-model mutation {name!r} ran inside node press"
+                )
+            return callback(*args, **kwargs)
+
+        return invoke
+
+    monkeypatch.setattr(
+        ViewerModel,
+        "add_image",
+        guarded("add_image", ViewerModel.add_image),
+    )
+    monkeypatch.setattr(
+        ViewerModel,
+        "add_shapes",
+        guarded("add_shapes", ViewerModel.add_shapes),
+    )
+    for method_name in (
+        "_remove_layer",
+        "_move_layer_to_top",
+        "_move_layer_to_bottom",
+        "_select_only_viewer_layer",
+    ):
+        monkeypatch.setattr(
+            widget,
+            method_name,
+            guarded(method_name, getattr(widget, method_name)),
+        )
+
+    try:
+        widget.graph_view._handle_node_press(crop.id, Qt.NoModifier)
+    finally:
+        during_node_press = False
+
+    assert widget._selected_node_id == crop.id
+    assert synchronous_mutations == []
+    assert len(viewer.layers) == initial_layer_count
+
+    qtbot.waitUntil(
+        lambda: bool(widget._owned_crop_presentation_layers("crop_source"))
+        and bool(widget._owned_crop_presentation_layers("crop_roi")),
+        timeout=2_000,
+    )
+    assert all(layer.visible for layer in widget._owned_crop_presentation_layers())
+    assert widget._active_viewer_layer().metadata["napari_vipp_kind"] == "crop_source"
 
 
 def test_responsive_crop_real_viewer_tracks_noncanonical_display_plane(qtbot):

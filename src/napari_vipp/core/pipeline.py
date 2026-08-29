@@ -158,6 +158,7 @@ from napari_vipp.core.operations import (
 )
 from napari_vipp.core.progress import ProgressContext
 from napari_vipp.core.source_items import SourceItem
+from napari_vipp.core.source_window import ExactSourceWindowData
 from napari_vipp.core.tables import TableState, table_state_from_data
 
 
@@ -737,6 +738,24 @@ _RESOLVED_SPATIAL_NDIM_PARAMETER = ParameterSpec(
     1,
 )
 
+CROP_ROI_LINE_WIDTH_SCALE_PARAMETER = ParameterSpec(
+    "_vipp_crop_roi_line_width_scale",
+    "Line thickness",
+    "float",
+    1.0,
+    0.05,
+    100.0,
+    0.05,
+    decimals=2,
+    tooltip=(
+        "Viewer-only thickness of the Crop ROI outline in both 2D and 3D; "
+        "1× is the default. This does not change cropped pixels, processing, "
+        "or export."
+    ),
+    slider_minimum=0.1,
+    slider_maximum=8.0,
+)
+
 _OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
     "input": (
         ParameterSpec(
@@ -749,6 +768,7 @@ _OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
             1,
         ),
     ),
+    "crop_stack": (CROP_ROI_LINE_WIDTH_SCALE_PARAMETER,),
     "select_axis_slice": (
         ParameterSpec("axes", "Selected axes", "text", "", 0, 0, 1),
         ParameterSpec("indices", "Selected indices", "text", "", 0, 0, 1),
@@ -869,6 +889,13 @@ def validate_optional_persisted_parameter(
     if operation_spec.id == "rescale_axes" and parameter.name.endswith("_size"):
         if int(value) < 1:
             raise ValueError(f"{label} must be a positive integer.")
+    if parameter.name == CROP_ROI_LINE_WIDTH_SCALE_PARAMETER.name and not (
+        parameter.minimum <= float(value) <= parameter.maximum
+    ):
+        raise ValueError(
+            f"{label} must be between {parameter.minimum:g} and "
+            f"{parameter.maximum:g}."
+        )
     if operation_spec.id == "input" and parameter.name == "axis_declaration":
         try:
             _metadata.AxisDeclaration.from_value(value)
@@ -9499,7 +9526,10 @@ class PrototypePipeline:
         if payload is None:
             payload = SourcePayload(input_data, input_metadata, input_name)
         state = payload.image_state
-        if state is None or state.value_range == DEFERRED_VALUE_RANGE:
+        exact_window = isinstance(payload.data, ExactSourceWindowData)
+        if state is None or (
+            state.value_range == DEFERRED_VALUE_RANGE and not exact_window
+        ):
             state = image_state_from_array(
                 payload.data,
                 layer_metadata=payload.metadata,

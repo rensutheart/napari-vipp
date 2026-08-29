@@ -98,6 +98,7 @@ from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.source_identity import (
     is_vipp_owned_immutable_source_revision,
 )
+from napari_vipp.core.source_window import ExactSourceWindowData
 from napari_vipp.core.thumbnail_statistics import (
     EXACT_FLOAT32_MINMAX_GPU_ALGORITHM_ID,
     EXACT_FLOAT32_PERCENTILE_GPU_ALGORITHM_ID,
@@ -5433,9 +5434,7 @@ def _reusable_source_scientific_context_fingerprint(
     ):
         return None
     if any(
-        not isinstance(value, np.ndarray)
-        or value.flags.writeable
-        or getattr(type(value), "__cuda_array_interface__", None) is not None
+        not _is_reusable_immutable_source_output(value)
         for value in current_outputs
     ):
         return None
@@ -5455,6 +5454,18 @@ def _reusable_source_scientific_context_fingerprint(
         return None
     _check_scientific_context_cancelled(cancel_callback)
     return scientific_context
+
+
+def _is_reusable_immutable_source_output(value: object) -> bool:
+    """Return whether one identical cached source value is safe to reuse."""
+
+    if isinstance(value, ExactSourceWindowData):
+        value = value.data
+    return bool(
+        isinstance(value, np.ndarray)
+        and not value.flags.writeable
+        and getattr(type(value), "__cuda_array_interface__", None) is None
+    )
 
 
 def _source_scientific_context_fingerprint(
@@ -5634,6 +5645,17 @@ def _scientific_array_identity(
     *,
     cancel_callback: Callable[[], bool] | None,
 ) -> object:
+    if isinstance(value, ExactSourceWindowData):
+        return {
+            "schema_id": "vipp-exact-source-window-array-v1",
+            "logical_source_shape": list(value.shape),
+            "source_dtype": value.dtype.str,
+            "window_identity": value.identity.to_dict(),
+            "window_array": _scientific_array_identity(
+                value.data,
+                cancel_callback=cancel_callback,
+            ),
+        }
     shape, dtype, value = _scientific_array_header(value)
     digest = sha256()
     values_per_chunk = max(
@@ -5659,6 +5681,14 @@ def _scientific_array_identity(
 
 
 def _scientific_array_reuse_envelope(value: object) -> object:
+    if isinstance(value, ExactSourceWindowData):
+        return {
+            "schema_id": "vipp-exact-source-window-array-header-v1",
+            "logical_source_shape": list(value.shape),
+            "source_dtype": value.dtype.str,
+            "window_digest": value.identity.digest,
+            "window_shape": list(value.data.shape),
+        }
     shape, dtype, _value = _scientific_array_header(value)
     return {
         "schema_id": "vipp-exact-host-array-header-v1",

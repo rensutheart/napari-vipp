@@ -997,6 +997,42 @@ def test_crop_qyx_batch_requires_and_accepts_exact_z_declaration(tmp_path):
     )
 
 
+def test_crop_batch_records_and_executes_exact_ome_zarr_source_window(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = np.arange(4 * 12 * 16, dtype=np.uint16).reshape(4, 12, 16)
+    write_image(
+        source,
+        inputs / "volume.ome.zarr",
+        format="ome-zarr",
+    )
+    workflow, output_ids = _crop_batch_workflow()
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, output_ids)
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.zarr"),),
+    )
+
+    result = run_batch(workflow, config)
+
+    assert result.summary["completed"] == 1, result.manifest.items[0]
+    assert len(result.saved_paths) == 1
+    np.testing.assert_array_equal(
+        np.load(result.saved_paths[0]),
+        source[1:-1, 1:, 2:],
+    )
+    source_record = result.manifest.items[0].sources[0]
+    assert source_record["read_strategy"] == "exact-level-0-window"
+    assert source_record["source_window_plan"]["reason_code"] == "eligible"
+    assert source_record["source_window"]["bounds"] == [
+        [1, 3],
+        [1, 12],
+        [2, 16],
+    ]
+    assert len(source_record["source_window_digest"]) == 64
+
+
 def test_qyx_xy_rescale_preflight_matches_second_rescale_execution(
     tmp_path,
     monkeypatch,

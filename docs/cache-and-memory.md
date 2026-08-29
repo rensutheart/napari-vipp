@@ -1,11 +1,14 @@
 # Cache And Memory Policy
 
-Last reviewed: 2026-08-05
+Last reviewed: 2026-08-28
 
-VIPP is currently an eager, interactive workflow builder. Most nodes calculate
+VIPP is primarily an eager, interactive workflow builder. Most nodes calculate
 NumPy-like in-memory outputs so that graph thumbnails, node inspection, pinned
-overlays, and downstream edits feel immediate. This is useful while designing a
-workflow, but it can become expensive on large z-stacks, time series, or
+overlays, and downstream edits feel immediate. The current development build
+has one deliberately narrow exception: an eligible direct local OME-Zarr
+`Image Source -> Crop Stack` path can read only the exact retained level-0
+window. Other operations remain eager. This is useful while designing a
+workflow, but it can still become expensive on large z-stacks, time series, or
 OME-Zarr-derived arrays.
 
 ## Interactive Cache Modes
@@ -109,6 +112,41 @@ only with its matching actual-implementation decision. Prior outputs,
   cleanup failure additionally quarantines new compute in that VIPP process
   until restart.
 
+### Low-RAM Source Crop Repair
+
+Before materializing an inspected file source, VIPP compares the decoded
+level-0 requirement with safe physical and, on Windows, commit headroom. If the
+complete image is unsafe but the local reader can prove an exact scientific
+region read, the Image Source inspector offers **Add fitted Crop Stack** or
+**Fit existing Crop Stack** instead of starting a doomed allocation.
+
+The proposed crop is centred, content-agnostic, and conservatively bounded for
+the current machine. The message distinguishes complete decoded bytes, retained
+pixel bytes, and a conservative peak that includes every touched storage chunk,
+the assembled ROI, and its detached publication copy. The reader rechecks the
+same facts immediately before decoding. If even the smallest centred region
+touches a chunk that exceeds the safe budget, VIPP refuses to promise a fitted
+crop. The message also states that downstream nodes may need additional memory.
+VIPP preserves the complete logical source identity and every T/C position;
+only explicit spatial Z/Y/X margins are proposed.
+
+The action is opt-in. Accepting it authors or updates one visible Crop Stack as
+one undoable graph edit, after which the exact local OME-Zarr reader slices
+level 0 before materialization. VIPP does not silently crop data, infer a
+scientific ROI from image content, or claim that the fitted region is the right
+biological selection. Review and adjust the Crop before analysis.
+
+This saves pixel decoding and allocation, but the pinned SourceItem contract
+still hashes/verifies the complete local container before and after the read,
+with progress. A very large store can therefore remain I/O-bound even when its
+retained window is small.
+
+This repair is unavailable when the source has multiple consumers or an output
+tunnel, the direct Crop is bypassed, axes or immutable SourceItem evidence are
+insufficient, or the reader does not advertise exact-region support. If the
+ordinary full read is also unsafe, VIPP stops with an actionable memory refusal;
+it does not fall back to a hidden complete allocation.
+
 ## Per-Node Keep Cached
 
 Every selected node exposes `Keep output cached` in the inspector. Use it for
@@ -128,7 +166,7 @@ force a node to calculate if the node has no output yet.
 
 | Operation family | Current behavior | Memory notes |
 | --- | --- | --- |
-| Image source and OME-Zarr reads | Readers may expose lazy arrays internally, but an interactive file source is fully materialized into one verified, read-only snapshot before it enters the graph. | The complete selected source stays resident until Refresh; OME-Zarr, microscope, and large-file materialization runs on the background queue. |
+| Image source and OME-Zarr reads | Ordinary file sources materialize one verified, read-only snapshot. An eligible sole direct local OME-Zarr `Image Source -> Crop Stack` path instead slices one exact level-0 window before materialization. | The source remains logically full-size and identity-bound, while only the retained window is resident. Branches, tunnels, bypass, ambiguous axes, stale identity, unsupported readers, and no-op crops use the ordinary full-read contract subject to memory preflight. |
 | Pointwise intensity, threshold, clipping, rescaling, and image math | Eager and usually cache-friendly. | Outputs are often the same shape as the input, so keep-all can multiply memory by pipeline length. |
 | Filtering, background correction, morphology, distance transform, watershed, and axis rescaling | Eager. | Often memory-heavy; 3D background correction, distance maps, label images, and interpolation can create large temporary arrays. |
 | Projection and orthogonal views | Eager. | Usually reduce dimensionality, but orthogonal view generation can increase canvas size depending on physical scaling. |
@@ -144,10 +182,13 @@ pointwise clamp and does not allocate a whole-stack float copy.
 
 ## Large-Data Direction
 
-The current policy is pragmatic rather than fully lazy. VIPP 0.14.0a1
-can slice a declared lower local OME-Zarr 0.4/0.5 level for presentation while
-keeping analysis at level 0. Before VIPP can be comfortable on very large
-scientific graphs, the next scale work should add:
+The current policy is pragmatic rather than fully lazy. VIPP can slice a
+declared lower local OME-Zarr 0.4/0.5 level for presentation while keeping
+analysis at level 0. The current development build can also materialize an
+exact level-0 window for the one strictly eligible direct Crop Stack path. This
+does not make later nodes lazy or permit a branch to consume the omitted
+pixels. Before VIPP can be comfortable on very large scientific graphs, the
+next scale work should add:
 
 - operation capability declarations for eager, lazy-safe, memory-heavy, and
   scale-aware nodes;
@@ -156,6 +197,8 @@ scientific graphs, the next scale work should add:
   (360 × 220), and Very High (720 × 440) backing-detail controls;
 - broader chunked execution beyond the bounded global-threshold and inspector
   histogram paths;
+- branch-aware region unions and halo propagation after exactness can be
+  demonstrated for each participating operation;
 - remote-store and non-OME-Zarr pyramid preview plus pyramid generation;
 - confirmation before eager-only nodes materialize very large lazy arrays.
 

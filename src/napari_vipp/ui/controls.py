@@ -20,8 +20,10 @@ from qtpy.QtWidgets import (
     QMenu,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -61,10 +63,25 @@ class ImageSourceResolutionPresentation:
     viewer_choice: str = "analysis"
     can_select_preview: bool = False
     can_retry: bool = False
+    analysis_window_bounds: tuple[tuple[int, int], ...] = ()
+    analysis_window_shape: tuple[int, ...] = ()
 
     @property
     def visible(self) -> bool:
-        return bool(self.analysis_shape) and len(self.level_shapes) > 1
+        return bool(self.analysis_shape) and (
+            len(self.level_shapes) > 1 or bool(self.analysis_window_bounds)
+        )
+
+
+@dataclass(frozen=True)
+class ImageSourceMemoryRepairPresentation:
+    """Transient, actionable low-memory guidance for one inspected source."""
+
+    visible: bool = False
+    message: str = ""
+    action_label: str = "Add fitted Crop Stack"
+    enabled: bool = False
+    tooltip: str = ""
 
 
 def _slider_safe_bounds(
@@ -819,6 +836,8 @@ class ImageSourceControl(QWidget):
     sourceLoadCancelRequested = Signal(int)
     viewerDisplayChanged = Signal(str)
     previewReloadRequested = Signal()
+    sourceCropRepairRequested = Signal()
+    sourceCropRepairDismissed = Signal()
 
     def __init__(
         self,
@@ -847,6 +866,13 @@ class ImageSourceControl(QWidget):
             allow_automatic=False,
             save_target="workflow",
         )
+        # Choice text remains available in the popup and tooltips, so it must
+        # not impose a desktop-sized minimum width on a narrow inspector.
+        self.axis_control.setMinimumWidth(0)
+        self.axis_control.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
         self.source_summary = QLabel()
         self.source_summary.setWordWrap(True)
         self.source_summary.setStyleSheet("color: #94a3b8;")
@@ -854,11 +880,52 @@ class ImageSourceControl(QWidget):
         self.source_load_status.cancelRequested.connect(
             self.sourceLoadCancelRequested.emit
         )
+        self._memory_repair_presentation = ImageSourceMemoryRepairPresentation()
+        self.memory_repair_panel = QWidget()
+        memory_repair_layout = QVBoxLayout(self.memory_repair_panel)
+        memory_repair_layout.setContentsMargins(8, 6, 8, 6)
+        memory_repair_layout.setSpacing(6)
+        self.memory_repair_label = QLabel()
+        self.memory_repair_label.setWordWrap(True)
+        self.memory_repair_label.setMinimumWidth(0)
+        self.memory_repair_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        self.memory_repair_button = QPushButton("Add fitted Crop Stack")
+        self.memory_repair_dismiss_button = QPushButton("Dismiss")
+        self.memory_repair_dismiss_button.setMaximumWidth(70)
+        memory_repair_actions = QWidget()
+        memory_repair_actions.setMinimumWidth(0)
+        memory_repair_actions.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        memory_repair_actions_layout = QHBoxLayout(memory_repair_actions)
+        memory_repair_actions_layout.setContentsMargins(0, 0, 0, 0)
+        memory_repair_actions_layout.setSpacing(6)
+        memory_repair_actions_layout.addWidget(self.memory_repair_button, 1)
+        memory_repair_actions_layout.addWidget(self.memory_repair_dismiss_button)
+        memory_repair_layout.addWidget(self.memory_repair_label)
+        memory_repair_layout.addWidget(memory_repair_actions)
+        self.memory_repair_panel.setMinimumWidth(0)
+        self.memory_repair_panel.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        self.memory_repair_panel.setStyleSheet(
+            "QWidget { background: #3b2f12; border: 1px solid #a16207; "
+            "border-radius: 4px; } QLabel { border: none; background: transparent; "
+            "color: #fde68a; }"
+        )
+        self.memory_repair_panel.hide()
         self._resolution_presentation = ImageSourceResolutionPresentation()
         self.resolution_panel = QWidget()
-        resolution_layout = QFormLayout(self.resolution_panel)
+        resolution_layout = QVBoxLayout(self.resolution_panel)
         resolution_layout.setContentsMargins(0, 0, 0, 0)
         resolution_layout.setSpacing(4)
+        self.resolution_heading_label = QLabel("Resolution")
+        self.resolution_heading_label.setStyleSheet("font-weight: 600;")
         self.analysis_resolution_label = QLabel()
         self.analysis_resolution_label.setWordWrap(True)
         self.pyramid_levels_label = QLabel()
@@ -866,7 +933,24 @@ class ImageSourceControl(QWidget):
         self.pyramid_levels_label.setStyleSheet("color: #94a3b8;")
         self.preview_resolution_label = QLabel()
         self.preview_resolution_label.setWordWrap(True)
+        for label in (
+            self.analysis_resolution_label,
+            self.pyramid_levels_label,
+            self.preview_resolution_label,
+        ):
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.viewer_display_combo = QComboBox()
+        self.viewer_display_combo.setMinimumWidth(0)
+        self.viewer_display_combo.setMinimumContentsLength(8)
+        self.viewer_display_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.viewer_display_combo.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Fixed,
+        )
+        self.viewer_display_label = QLabel("Show in napari")
         self.viewer_display_combo.setToolTip(
             "Choose what napari displays. Every preview choice is presentation "
             "only; processing and export always use analysis level 0."
@@ -876,11 +960,18 @@ class ImageSourceControl(QWidget):
             "Retry the lower-resolution presentation layer. Scientific "
             "analysis remains unchanged."
         )
-        resolution_layout.addRow("Analysis", self.analysis_resolution_label)
-        resolution_layout.addRow("Pyramid", self.pyramid_levels_label)
-        resolution_layout.addRow("Preview", self.preview_resolution_label)
-        resolution_layout.addRow("Show in napari", self.viewer_display_combo)
-        resolution_layout.addRow(self.preview_reload_button)
+        resolution_layout.addWidget(self.resolution_heading_label)
+        resolution_layout.addWidget(self.analysis_resolution_label)
+        resolution_layout.addWidget(self.pyramid_levels_label)
+        resolution_layout.addWidget(self.preview_resolution_label)
+        resolution_layout.addWidget(self.viewer_display_label)
+        resolution_layout.addWidget(self.viewer_display_combo)
+        resolution_layout.addWidget(self.preview_reload_button)
+        self.resolution_panel.setMinimumWidth(0)
+        self.resolution_panel.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
         self.resolution_panel.setToolTip(
             "The scientific graph always reads level 0. A lower level may be "
             "shown in napari for presentation only."
@@ -918,7 +1009,8 @@ class ImageSourceControl(QWidget):
         self.form_layout.addRow("Image stack", self.axis_control)
         self.form_layout.addRow("Sample", self.sample_row)
         self.form_layout.addRow(self.source_summary)
-        self.form_layout.addRow("Resolution", self.resolution_panel)
+        self.form_layout.addRow(self.resolution_panel)
+        self.form_layout.addRow(self.memory_repair_panel)
         self.form_layout.addRow(self.source_load_status)
 
         self.set_options(
@@ -944,6 +1036,12 @@ class ImageSourceControl(QWidget):
         )
         self.preview_reload_button.clicked.connect(
             self.previewReloadRequested.emit
+        )
+        self.memory_repair_button.clicked.connect(
+            self.sourceCropRepairRequested.emit
+        )
+        self.memory_repair_dismiss_button.clicked.connect(
+            self._dismiss_memory_repair
         )
 
     def value(self) -> dict[str, object]:
@@ -1114,6 +1212,31 @@ class ImageSourceControl(QWidget):
         self.source_load_status.clear()
         self._sync_rows()
 
+    def set_memory_repair_presentation(
+        self,
+        presentation: ImageSourceMemoryRepairPresentation,
+    ) -> None:
+        if not isinstance(presentation, ImageSourceMemoryRepairPresentation):
+            raise TypeError(
+                "presentation must be an ImageSourceMemoryRepairPresentation"
+            )
+        self._memory_repair_presentation = presentation
+        self.memory_repair_label.setText(str(presentation.message))
+        self.memory_repair_button.setText(str(presentation.action_label))
+        self.memory_repair_button.setEnabled(bool(presentation.enabled))
+        tooltip = str(presentation.tooltip)
+        self.memory_repair_panel.setToolTip(tooltip)
+        self.memory_repair_button.setToolTip(tooltip)
+        self._sync_rows()
+
+    def _dismiss_memory_repair(self) -> None:
+        self._memory_repair_presentation = replace(
+            self._memory_repair_presentation,
+            visible=False,
+        )
+        self._sync_rows()
+        self.sourceCropRepairDismissed.emit()
+
     def set_resolution_presentation(
         self,
         presentation: ImageSourceResolutionPresentation,
@@ -1128,11 +1251,42 @@ class ImageSourceControl(QWidget):
         shape = _shape_text(presentation.analysis_shape)
         axes = str(presentation.analysis_axes).strip()
         axis_prefix = f"{axes} " if axes else ""
-        self.analysis_resolution_label.setText(
+        analysis_text = (
             f"Level 0 · {axis_prefix}{shape} · fixed scientific analysis"
         )
+        if presentation.analysis_window_bounds:
+            axis_names = (
+                tuple(axes)
+                if len(axes) == len(presentation.analysis_shape)
+                else ()
+            )
+            cropped_bounds = tuple(
+                (index, int(start), int(stop))
+                for index, ((start, stop), size) in enumerate(
+                    zip(
+                        presentation.analysis_window_bounds,
+                        presentation.analysis_shape,
+                        strict=True,
+                    )
+                )
+                if int(start) != 0 or int(stop) != int(size)
+            )
+            bounds_text = ", ".join(
+                f"{axis_names[index] if axis_names else f'axis {index}'} "
+                f"{start}:{stop}"
+                for index, start, stop in cropped_bounds
+            )
+            if not bounds_text:
+                bounds_text = "complete bounds"
+            analysis_text = (
+                f"{analysis_text}\nLoaded Crop Stack window · {bounds_text} · "
+                f"{_shape_text(presentation.analysis_window_shape)}. Full level 0 "
+                "was not materialized."
+            )
+        self.analysis_resolution_label.setText(f"Analysis · {analysis_text}")
         self.pyramid_levels_label.setText(
-            "; ".join(
+            "Pyramid · "
+            + "; ".join(
                 f"L{index} {_shape_text(level_shape)}"
                 for index, level_shape in enumerate(presentation.level_shapes)
             )
@@ -1166,13 +1320,17 @@ class ImageSourceControl(QWidget):
             )
         if detail:
             preview = f"{preview} {detail}"
-        self.preview_resolution_label.setText(preview)
+        self.preview_resolution_label.setText(f"Preview · {preview}")
         with QSignalBlocker(self.viewer_display_combo):
             self.viewer_display_combo.clear()
-            self.viewer_display_combo.addItem(
-                f"Analysis output — L0 · {_shape_text(presentation.analysis_shape)}",
-                "analysis",
+            analysis_choice = (
+                "Loaded Crop Stack window — L0 · "
+                f"{_shape_text(presentation.analysis_window_shape)}"
+                if presentation.analysis_window_bounds
+                else "Analysis output — L0 · "
+                f"{_shape_text(presentation.analysis_shape)}"
             )
+            self.viewer_display_combo.addItem(analysis_choice, "analysis")
             if presentation.can_select_preview:
                 self.viewer_display_combo.addItem(
                     "Presentation preview — Auto (best fit)",
@@ -1221,6 +1379,10 @@ class ImageSourceControl(QWidget):
             self.source_load_status,
             file_mode and self.source_load_status.has_status,
         )
+        self._set_form_row_visible(
+            self.memory_repair_panel,
+            file_mode and self._memory_repair_presentation.visible,
+        )
         self._set_form_row_visible(self.sample_row, mode == "sample")
 
     def _set_form_row_visible(self, field: QWidget, visible: bool) -> None:
@@ -1256,6 +1418,7 @@ __all__ = [
     "FlexibleDoubleSpinBox",
     "ImageSourceControl",
     "ImageSourceResolutionPresentation",
+    "ImageSourceMemoryRepairPresentation",
     "NumericEntryControl",
     "ParameterBounds",
     "ParameterControl",
