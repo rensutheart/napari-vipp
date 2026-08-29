@@ -1,37 +1,6 @@
 # Changelog
 
-## 0.14.0a2 - 2026-08-27
-
-### Features
-
-- Added separate native macOS installers for Apple Silicon and Intel. Each
-  offline, CPU-only package installs its own managed Python environment for the
-  current user and creates a normal `VIPP.app`, so Python and command-line
-  setup are not required.
-- Added exact-wheel macOS packaging, architecture-specific checksum and build
-  records, and native Cocoa install-and-launch checks. The macOS package joins
-  the Windows executable as an explicitly unsigned alpha convenience artifact.
-
-### Bug Fixes
-
-- Detached VIPP windows now release stale width and height constraints across
-  the complete Qt dock-widget chain, so they can be maximized or resized freely
-  in either direction. Reattaching the window restores napari's original dock
-  constraints and size policies.
-- Corrected PySide6 compatibility in graph dialogs, rendered colocalization
-  previews, settings submenus, dock callbacks, and queued thumbnail work while
-  retaining PyQt6 behavior. Callbacks now avoid Qt objects whose native owners
-  have already been destroyed, and menu wrappers remain alive for as long as
-  their actions are displayed.
-
-### Remaining limitations
-
-- The macOS installers are unsigned and not notarized. macOS may require the
-  documented **Open Anyway** confirmation after checksum verification.
-- macOS installation is CPU-only and current-user-only. Automatic update and a
-  graphical uninstaller are not included in this alpha.
-
-## Pending release
+## 0.14.0a3 - 2026-08-29
 
 ### Features
 
@@ -55,6 +24,8 @@
 - Refined the Crop ROI overlay for each napari display mode: a thinner
   current-plane guide in 2D and a transparent, depth-independent wireframe in
   3D, avoiding the thick embedded-looking faces seen against rendered volumes.
+- Added a separate presentation-only outline-thickness control so Crop ROI
+  guides remain legible without overwhelming low-resolution data.
 - Added conventional workflow saving with `Ctrl+S`. The toolbar save action now
   overwrites the current workflow by default, while first saves and `Save as`
   request a destination and confirm before replacing an existing file. A
@@ -76,6 +47,7 @@
   batch config/manifest schema 5 carry the new intent while continuing to read
   their supported earlier schema versions.
 - Added exact level-0 source-window pushdown for a direct **Image Source → Crop Stack** path. Supported local OME-Zarr sources now read only the proven crop window while retaining complete T/C axes, exact source revision and crop identity, full-resolution scientific semantics, and fail-closed fallback when graph topology, axes, reader evidence, or source bytes do not match the verified plan.
+- When an eligible complete source exceeds the safe RAM budget, Image Source can offer an explicit centred fitted Crop Stack as a reviewable starting point. VIPP never crops silently, preserves every T/C position, and retains ordinary actionable memory refusal when an exact safe read cannot be proved.
 - Added a bounded napari compatibility lane covering the retained minimum
   `napari==0.6.0`, exact `napari==0.9.0`, and the latest supported napari. It
   validates the plugin manifest and exercises import, start/close, and focused
@@ -85,6 +57,7 @@
 
 ### Bug Fixes
 
+- Hardened Crop selection and presentation-preview updates against napari layer-model re-entrancy, preventing the crash previously triggered by selecting a changed Crop Stack after switching compute preference.
 - Updated generated Image and Labels presentation layers to carry VIPP's axis
   names into napari when that layer API is available. Labels stay aligned to
   displayed dimensionality, omit a trailing RGB/RGBA component axis, update on
@@ -120,6 +93,42 @@
   `Ctrl+S`; the window-level handler claims the key before napari resolves its
   actions. A successful save clears the tab's dirty asterisk and reports
   `Saved workflow` in the status strip.
+
+### Remaining limitations
+
+- Exact source-window pushdown is deliberately limited to one direct Image Source to Crop Stack path and readers that can prove an exact local level-0 window. Other graph shapes and formats still use the ordinary full-source load path.
+- The macOS installers remain unsigned, unnotarized, CPU-only, and current-user-only. macOS may require the documented **Open Anyway** confirmation after checksum verification.
+
+## 0.14.0a2 - 2026-08-27
+
+### Features
+
+- Added separate native macOS installers for Apple Silicon and Intel. Each
+  offline, CPU-only package installs its own managed Python environment for the
+  current user and creates a normal `VIPP.app`, so Python and command-line
+  setup are not required.
+- Added exact-wheel macOS packaging, architecture-specific checksum and build
+  records, and native Cocoa install-and-launch checks. The macOS package joins
+  the Windows executable as an explicitly unsigned alpha convenience artifact.
+
+### Bug Fixes
+
+- Detached VIPP windows now release stale width and height constraints across
+  the complete Qt dock-widget chain, so they can be maximized or resized freely
+  in either direction. Reattaching the window restores napari's original dock
+  constraints and size policies.
+- Corrected PySide6 compatibility in graph dialogs, rendered colocalization
+  previews, settings submenus, dock callbacks, and queued thumbnail work while
+  retaining PyQt6 behavior. Callbacks now avoid Qt objects whose native owners
+  have already been destroyed, and menu wrappers remain alive for as long as
+  their actions are displayed.
+
+### Remaining limitations
+
+- The macOS installers are unsigned and not notarized. macOS may require the
+  documented **Open Anyway** confirmation after checksum verification.
+- macOS installation is CPU-only and current-user-only. Automatic update and a
+  graphical uninstaller are not included in this alpha.
 
 ## 0.14.0a1 - 2026-08-26
 

@@ -39,16 +39,16 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.14.0a2` is the current alpha release. Its official
-[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a2),
+`0.14.0a3` is the current alpha release. Its official
+[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a3),
 checksum sidecars,
-[PyPI package](https://pypi.org/project/napari-vipp/0.14.0a2/), and
-[numbered](https://rensutheart.github.io/vipp-mkdocs/0.14.0a2/) and
+[PyPI package](https://pypi.org/project/napari-vipp/0.14.0a3/), and
+[numbered](https://rensutheart.github.io/vipp-mkdocs/0.14.0a3/) and
 [stable](https://rensutheart.github.io/vipp-mkdocs/stable/) documentation are
-the release surfaces. PyPI retains the earlier pre-resize-fix package bytes;
-use the Windows or macOS installer, or the wheel attached to the GitHub release,
-when the detached-window resizing fix is required. The unchanged expensive
-installer-lifecycle and full-GPU evidence remains traceable to `v0.13.0a8`,
+the release surfaces. The unchanged expensive installer-lifecycle evidence
+remains traceable to `v0.13.0a8`, while the shared GPU execution evidence is
+refreshed for a3 because Safe Node Bypass changes residency and provenance.
+The reviewed provider catalogue remains traceable to `v0.13.0a8`,
 while `v0.13.0a9` supplies the
 intervening correctness record, as detailed in the
 [qualification baseline](release-qualification-baseline.md). The current line
@@ -61,13 +61,16 @@ provides:
 - truthful contracts for the qualified ND2, LIF, CZI, OIR/OIB, VSI/IMS, and LSM
   reader routes, including actionable optional-reader failures;
 - local OME-Zarr 0.4/0.5 lower-level presentation preview with level-0 analysis
-  kept unchanged;
+  kept unchanged, plus one exact verified level-0 source-window path for a sole
+  direct Crop Stack;
 - reviewed numeric per-SourceItem batch overrides and retained Batch-workspace
   restore, activity, and overwrite-confirmation behavior;
 - decoded-memory preflight, truthful source-load progress and cancellation, and
   Windows setup capacity, phase, heartbeat, and log presentation;
 - native CPU-only Apple Silicon and Intel installers, plus PySide6/PyQt6
-  compatibility across the normal application UI;
+  compatibility across napari 0.6 through 0.9 in the normal application UI;
+- responsive Z/Y/X Crop Stack interaction, topology-aware Safe Node Bypass,
+  and explicit batch Run/Bypass profiles;
 - PSF/restoration, segmentation and cleanup, measurement, skeleton,
   colocalization, and spatial-association workflows; and
 - a deliberately bounded CuPy/CuPyX CUDA catalogue, including binary Remove
@@ -76,8 +79,10 @@ provides:
 
 Important remaining limits are:
 
-- scientific graph execution still materializes the complete selected level-0
-  image; the lower OME-Zarr level is presentation-only;
+- scientific graph execution remains eager except for one strictly eligible
+  direct local OME-Zarr Image Source to Crop Stack path, which can materialize
+  only its exact verified level-0 window; lower pyramid levels remain
+  presentation-only;
 - presentation preview is limited to local OME-Zarr 0.4/0.5 image and label
   groups; remote stores, HCS traversal, and IMS pyramid preview remain deferred;
 - native LIF, CZI, OIR, OIB, and LSM pixels remain eager, and Bio-Formats-backed
@@ -91,11 +96,11 @@ Important remaining limits are:
 
 ## Active Release Order
 
-The current release is the `0.14.0a2` macOS installer and cross-Qt
-compatibility alpha. It carries the `0.14.0a1` Source-Aware Loading and
-Per-Sample Batch scientific contracts forward unchanged. Both implementation
-records appear below, followed by committed work for later 0.14 alphas. The
-detailed 0.13 sections remain delivered contract records.
+The current release is the `0.14.0a3` responsive crop, safe bypass, bounded
+source-window, workflow-editing, and napari 0.9 compatibility alpha. It carries
+the `0.14.0a2` native macOS installer and `0.14.0a1` Source-Aware Loading and
+Per-Sample Batch contracts forward. The implementation records appear below;
+the detailed 0.13 sections remain delivered contract records.
 
 ### Delivered Record: `0.13.0a9` Correctness Rollup
 
@@ -479,7 +484,7 @@ shipped independently of the optional crop follow-up.
 - Describe measured performance as machine-local unless more than one reviewed
   hardware class supports a broader claim.
 
-### Current Release: `0.14.0a2` macOS Installer And Cross-Qt Compatibility
+### Delivered Record: `0.14.0a2` macOS Installer And Cross-Qt Compatibility
 
 This focused alpha gives non-command-line macOS users separate offline Apple
 Silicon and Intel PKGs. Each package installs a current-user CPU environment
@@ -754,17 +759,16 @@ completion of:
 
 Those items require later evidence or remain in [product ideas](product-ideas.md).
 
-### Committed Follow-Ups After `0.14.0a2`
+### Delivered In `0.14.0a3`
 
-#### napari 0.9 Viewer-Model Compatibility — Implemented, Pending Release
+#### napari 0.9 Viewer-Model Compatibility — Delivered In `0.14.0a3`
 
 Goal: adopt napari 0.9's public viewer organization and automatic dimension
 labels without dropping the declared `napari>=0.6` support range or allowing
 presentation-only layers to change the viewer's semantic context.
 
-Implementation is complete in the current development tree and awaits the next
-0.14 alpha; `0.14.0a2` remains the current release. The audit found no reason
-for a broad ViewerModel rewrite, so the implementation uses small
+This compatibility milestone ships in `0.14.0a3`. The audit found no reason
+for a broad ViewerModel rewrite, so it uses small
 feature-detected seams rather than napari-version branches:
 
 - CI now qualifies the oldest declared boundary (`napari==0.6.0`), exact
@@ -794,12 +798,11 @@ All axis-label propagation is presentation-only. This milestone changes no
 workflow schema, scientific result, provenance, installer scientific payload,
 or CPU/GPU contract.
 
-#### Responsive Volume Crop — Implemented, Pending Release
+#### Responsive Volume Crop — Delivered In `0.14.0a3`
 
 Implementation for [issue #50](https://github.com/rensutheart/napari-vipp/issues/50)
-is complete in the current development tree and awaits release qualification.
-It did not ship in `0.13.0a8`, `0.14.0a1`, or `0.14.0a2` and remains independent
-of `#33`. Crop Stack is now a discoverable volume ROI tool without recalculating
+ships in `0.14.0a3`. It remains independent of `#33`. Crop Stack is now a
+discoverable volume ROI tool without recalculating
 on every drag event:
 
 - The existing operation and old workflows are preserved while persisted
@@ -823,10 +826,9 @@ save/reopen/export/batch parity, rapid drag events, one committed calculation,
 undo/redo, durable-boundary flushing, and stale/cancelled completion. The
 bundled `responsive-crop` workflow supplies the numbered manual acceptance path.
 
-#### Safe Node Bypass And Batch Execution Profiles — Implemented, Pending Release
+#### Safe Node Bypass And Batch Execution Profiles — Delivered In `0.14.0a3`
 
-The first complete slice is implemented in the current development tree and
-awaits release qualification. It lets users compare workflows and omit
+The first complete slice ships in `0.14.0a3`. It lets users compare workflows and omit
 preview-only preparation without deleting or rewiring nodes or hiding a
 scientific change.
 
@@ -877,10 +879,9 @@ secondary binding and label it explicitly in the manifest, but it must retain
 source identity/revision evidence and must not silently change pairing, batch
 IDs, or the behavior of a profile returned to Run.
 
-#### Exact Source-Window Pushdown And Low-RAM Crop Repair — Implemented, Pending Release
+#### Exact Source-Window Pushdown And Low-RAM Crop Repair — Delivered In `0.14.0a3`
 
-The first exact direct-Crop slice is complete in the current development tree
-and awaits release qualification. It avoids decoding pixels that a visible
+The first exact direct-Crop slice ships in `0.14.0a3`. It avoids decoding pixels that a visible
 Crop Stack will discard while keeping the authored graph and Crop result
 equivalent to eager execution.
 

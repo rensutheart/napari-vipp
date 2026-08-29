@@ -119,7 +119,7 @@ def test_development_extra_pins_the_admitted_scientific_stack():
 def test_release_metadata_bounds_cpu_python_support_to_ci_matrix():
     metadata = _project_metadata()
 
-    assert metadata["version"] == "0.14.0a2"
+    assert metadata["version"] == "0.14.0a3"
     assert metadata["requires-python"] == ">=3.12,<3.14"
     assert "Programming Language :: Python :: 3.12" in metadata["classifiers"]
     assert "Programming Language :: Python :: 3.13" in metadata["classifiers"]

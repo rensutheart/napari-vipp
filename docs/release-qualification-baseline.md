@@ -1,6 +1,25 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-29
+
+> **0.14.0a3 candidate declaration (2026-08-29):** This iterative alpha changes core/UI behavior, workflow schema and provenance, source I/O and memory planning, shared CPU/GPU execution coordination, Windows and macOS runtime compatibility, dependencies/toolchain, packaging/release metadata, and documentation. The release candidate must pass exact-main CI, Windows installer smoke, both native macOS architecture smokes, independent exact-tag distribution comparison, exact-tag three-platform installer qualification, and public-byte verification. Safe Node Bypass invalidates the shared GPU execution baseline, so the full RTX 5090 measurements artifact was regenerated and validated on the release candidate (`measurements-cupy-windows-rtx5090.json` SHA-256 `46015e3752e9818bdcc53819328f0fc33b5806607876186c156b61ca12ad8783`); the provider kernels and admitted scientific regions are unchanged and retain their reviewed catalogue baseline. Exact commits, runs, distribution and installer hashes, assets, and companion-documentation evidence will be recorded after publication without moving the immutable tag.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  workflow_schema_provenance: true
+  gpu_scientific_shared_execution: true
+  windows_installer_runtime: true
+  macos_installer_runtime: true
+  dependencies_toolchain: true
+  packaging_release: true
+  documentation: true
+carried_forward:
+  gpu_provider_catalogue: v0.13.0a8
+  windows_transactional_lifecycle: v0.13.0a8
+  source_reader_corpus: v0.14.0a1
+```
 
 > **0.14.0a2 app release record (2026-08-27):** The immutable app tag, GitHub
 > prerelease, refreshed Windows installer, native Apple Silicon and Intel macOS

@@ -1,29 +1,48 @@
-# VIPP 0.14.0a2
+# VIPP 0.14.0a3
 
-> **PyPI distribution note:** The files published to PyPI as `0.14.0a2` were uploaded from the earlier pre-resize-fix build and PyPI does not permit replacing them. For the detached-window resizing fix, use the Windows installer or the wheel attached to this GitHub release.
-
-VIPP 0.14.0a2 makes the normal desktop application and an offline installer available on macOS, refreshes the unsigned Windows installer, and fixes detached-window resizing. It is a focused UI compatibility and packaging alpha; the scientific contracts released in 0.14.0a1 are unchanged.
+VIPP 0.14.0a3 makes volumetric cropping more responsive and memory-aware, adds safe node bypass across compatible workflows, improves ordinary workflow editing, and qualifies VIPP against napari 0.9 while retaining the declared napari 0.6 minimum.
 
 This remains alpha software. Keep original data and workflows, verify the published checksum before running an unsigned installer, and review important outputs before using them for scientific conclusions or publication.
 
-## Easier macOS installation
+## Responsive volumetric cropping and bounded source reads
 
-- Separate Apple Silicon (`arm64`) and Intel (`x86_64`) PKGs install a private, CPU-only environment under `~/Library/vipp` and create `~/Applications/VIPP.app`.
-- The installer is offline and includes its own Python, napari, Qt, and VIPP environment. Users do not need a terminal, a pre-existing Python installation, or a DMG wrapper.
-- Each architecture has its own release manifest and SHA-256 checksum file. The package is explicitly unsigned and not notarized, so the quick start documents macOS's **Open Anyway** path.
+- Crop Stack now supports explicit Z-start and Z-end margins while preserving time, channel, calibration, origin, history, and backward-compatible zero-Z behavior.
+- Crop edits show an immediate 2D or 3D ROI guide, commit one undoable scientific change after interaction, and expose a presentation-only outline-thickness control for low- and high-resolution images.
+- For one strictly eligible direct local OME-Zarr `Image Source → Crop Stack` path, VIPP reads only the exact retained level-0 window while preserving the full logical source identity and the same Crop output, metadata, history, cache identity, provenance, batch behavior, and generated execution as the eager path.
+- When a complete eligible source does not fit the safe RAM budget, Image Source can offer an explicit centred fitted Crop Stack as a reviewable starting point; VIPP never silently crops data or claims that the proposed region is scientifically appropriate.
+- Crop selection and preview handling are hardened against napari layer-model re-entrancy failures.
 
-## Cross-Qt compatibility fixes
+## Safe node bypass and batch execution profiles
 
-- Detached VIPP windows can now be maximized or resized freely in both width and height. Reattaching them restores napari's original dock constraints.
-- Qt dialog result handling and widget rendering now use APIs shared by PyQt6 and PySide6.
-- Settings-menu wrappers are retained while their native actions are visible.
-- Delayed dock and thumbnail callbacks now stop safely after their owning Qt object has been destroyed.
-- Native Cocoa startup and clean shutdown are exercised by the macOS installer checks rather than relying on Qt's headless offscreen backend.
+- Compatible fixed-single-output processing nodes can now be bypassed without deleting or rewiring them; the exact primary input, metadata, and device residency pass through while incompatible sources, writers, terminal nodes, tunnels, and dynamic or multi-output operations fail closed.
+- Bypassed cards retain a presentation-only would-run thumbnail plus a badge, faded dotted treatment, and pass-through cue, while hypothetical preview pixels remain outside downstream analysis, caching, timing, export, batch output, and provenance.
+- The Batch workspace adds explicit **Use workflow / Run / Bypass** profiles recorded separately from authored graph intent.
+- Workflow schema 6 and batch configuration/manifest schema 5 preserve bypass intent and continue to read supported earlier versions.
 
-## Windows and manual installation
+## Workflow editing improvements
 
-The familiar explicitly unsigned Windows setup executable is rebuilt from the exact 0.14.0a2 wheel and remains the recommended Windows route. The wheel attached to this GitHub release is the exact-version manual-installation route that includes the detached-window resizing fix.
+- `Ctrl+S` now saves from graph, inspector, or viewer focus without colliding with napari shortcuts; ordinary saves overwrite the current JSON by default, while Settings can require confirmation or create timestamped versions.
+- Undo and Redo restore parameter edits in place, retain unaffected cards, thumbnails, viewer layers, and caches, and recalculate only the changed node and its descendants.
+- Slider scrubbing creates one Undo step when the gesture completes rather than recording intermediate calculated values.
+- Partial Image Source axis text remains an editor draft until a complete valid mapping is committed.
 
-## Qualification scope
+## napari 0.9 and Qt compatibility
 
-The changed release domains are core/UI compatibility, detached dock sizing, macOS installer and packaging infrastructure, dependency/toolchain inputs for that installer, and documentation. Focused PyQt6/PySide6 dock checks and native Apple Silicon lifecycle tests cover the compatibility delta; the release workflow also builds and tests the Intel package. Unchanged SourceItem, workflow/schema, scientific GPU, and Windows transactional-installer behavior carry forward from their recorded 0.14.0a1 and 0.13.0a8 baselines. Exact 0.14.0a2 wheel, source archive, installer, checksum, version, and public-URL facts are regenerated from the release tag.
+- CI now qualifies the retained `napari==0.6.0` boundary, exact `napari==0.9.0`, and the latest supported napari, including plugin-manifest, import, application start/close, and focused real-viewer integration.
+- VIPP remains binding-neutral through `qtpy`, with PyQt6 exercised on Windows/Linux and PySide6 on macOS.
+- Generated Image and Labels layers carry VIPP axis names when supported, including correct displayed rank, RGB/RGBA component exclusion, in-place layer reuse, and protection against hidden previews replacing the selected scientific layer's labels.
+- Camera and native-window access now use feature-detected public paths with bounded fallbacks for older supported napari versions.
+
+## Installers and packages
+
+- The explicitly unsigned Windows installer is rebuilt from the exact 0.14.0a3 wheel with the napari-0.9-compatible Qt toolchain.
+- Separate explicitly unsigned, unnotarized, CPU-only macOS packages are provided for Apple Silicon and Intel, each with architecture-specific checksums and release evidence.
+- The exact wheel and source archive are available from both the GitHub prerelease and PyPI.
+
+## Qualification scope and remaining limits
+
+The changed release domains are core/UI behavior, workflow schema and provenance, source I/O and memory planning, shared CPU/GPU execution coordination, dependency and Qt compatibility, installers, and documentation. GPU provider kernels and their admitted scientific regions are unchanged and retain their recorded qualification; exact a3 distributions, Windows setup, both macOS packages, checksums, manifests, versions, and public URLs are regenerated from the immutable release tag.
+
+Exact source-window pushdown currently requires one sole direct, non-bypassed local OME-Zarr Crop Stack with explicit compatible axes. Branches, tunnels, unsupported readers, remote stores, and ambiguous or stale evidence use the ordinary full-read path only when memory preflight permits it. General lazy or chunked graph execution remains future work.
+
+The Windows and macOS installers are convenience alpha artifacts and are not code-signed; the macOS packages are also not notarized and remain CPU-only.

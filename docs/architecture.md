@@ -5,14 +5,15 @@ prototype.
 
 Last reviewed: 2026-08-29
 
-It reflects the live codebase through VIPP `0.14.0a2`. The durable SourceItems,
+It reflects the live codebase through VIPP `0.14.0a3`. The durable SourceItems,
 optional microscope-reader routing, local OME-Zarr presentation preview,
 per-sample batch parameters, reproducible collection execution, graph restore
 hardening, unified CPU/GPU execution contract, and graph-fragment authoring
 introduced through `0.14.0a1` remain current. `0.14.0a2` additionally qualifies
 cross-Qt desktop integration and native, offline, CPU-only macOS packages for
-both Apple Silicon (`arm64`) and Intel (`x86_64`). The current unreleased tree
-adds feature-detected napari 0.9 viewer compatibility while retaining the
+both Apple Silicon (`arm64`) and Intel (`x86_64`). `0.14.0a3` adds exact direct
+Crop source-window pushdown, safe node bypass, responsive volume cropping, and
+feature-detected napari 0.9 viewer compatibility while retaining the
 declared `napari>=0.6` boundary; it does not change workflow or scientific
 contracts.
 
@@ -2005,7 +2006,9 @@ Still incomplete or deliberately future-facing:
   cancellation/percentage progress inside long manual calculations;
 - OME-Zarr pyramid writing, label colors/properties, remote stores, and HCS
   plate/well/field browsing; local OME-Zarr lower-level presentation preview is
-  implemented, while scientific analysis still materializes level 0;
+  implemented. Scientific analysis remains fixed to level 0; one strictly
+  eligible direct local OME-Zarr Crop Stack path can materialize only its exact
+  verified level-0 window, while other graph shapes remain eager;
 - operation-level lazy execution, remote URI reads, and collection batch
   execution beyond the local SourceItem-aware folder UI;
 - richer channel/probe naming and colour metadata from real microscopy files;
