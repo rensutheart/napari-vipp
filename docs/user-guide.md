@@ -325,6 +325,10 @@ Otsu, Triangle, Yen, Isodata, and Minimum calculate their cutoff from every
 finite pixel in the selected scope. VIPP does not silently sample a large image
 or substitute a lower-resolution preview. `Stack histogram` fits one cutoff to
 the complete stack; `Slice histogram` fits each processed YX plane separately.
+For encoded RGB/RGBA input, select its declared channel axis to reduce colour to
+luminance first. `-1` is scalar mode for data without encoded-colour semantics;
+VIPP rejects that setting when the input metadata explicitly declares an
+RGB/RGBA axis instead of producing a misleading component-wise mask.
 
 The histogram resolution follows the input dtype:
 
@@ -751,6 +755,15 @@ Image Source cards show their current layer, file stem, sample, or collection
 binding below the node title. Long bindings are elided on the card; hover it to
 read the complete source. Collection bindings follow the active item and return
 to their representative description when the collection run finishes.
+
+To replace a source directly from the desktop, drag one local image file or
+OME-Zarr folder onto an Image Source card. You can also copy an image file or
+image pixels, click the target Image Source, and press `Ctrl+V` (`Cmd+V` on
+macOS). File-backed images keep their original path and reader metadata. Copied
+pixels that have no local path are added as a normal RGB/RGBA napari layer and
+bound to that source with their encoded colour channels preserved in both the
+napari viewer and graph thumbnail. Drops on processing nodes and multi-file
+drops are left unchanged.
 
 ### Search And Focus
 

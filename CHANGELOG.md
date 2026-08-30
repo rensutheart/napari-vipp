@@ -54,9 +54,40 @@
   viewer integration with the platform bindings VIPP distributes: PyQt6 on
   Windows/Linux and PySide6 on macOS. The declared `napari>=0.6` range remains
   unchanged.
+- Image Source nodes now open an image dropped directly onto their graph card.
+  After selecting an Image Source, `Ctrl+V`/`Cmd+V` does the same for a copied
+  image file or copied pixels. Local paths retain their file-backed metadata;
+  raw clipboard pixels become a normal RGB/RGBA napari layer without relying on
+  a temporary file.
 
 ### Bug Fixes
 
+- Preserved explicit RGB/RGBA semantics for pasted image pixels so Image Source
+  thumbnails no longer reinterpret encoded colours as blue/green/red
+  fluorescence channels.
+- Positional spatial-axis errors now distinguish an unselected declared channel
+  from incorrect or out-of-order source metadata and point to the relevant
+  Channel axis, Reorder Axes, or source declaration action.
+- Generated scalar images and masks ending in three or four samples now opt out
+  of napari's automatic RGB inference. Presentation failures retain calculated
+  results, report the display problem, and always clear processing indicators;
+  split RGB inspector layers also refresh in place without being mistaken for
+  encoded-colour layers themselves.
+- Luminance-capable filters and thresholds now reject scalar mode when input
+  metadata explicitly declares an RGB/RGBA axis, and identify the exact channel
+  axis to select instead of calculating a misleading component-wise result.
+- A failed calculation after replacing an Image Source no longer combines the
+  new source card with cached downstream pixels from the previous source.
+  Provenance-safe completed boundaries remain available, while incompatible
+  downstream results are cleared and the error explains what happened.
+- Inspect-layer representation changes are now atomic with respect to napari's
+  layer-list callbacks. Existing duplicate VIPP-owned Inspect layers are also
+  reconciled or removed without touching unrelated user layers with the same
+  visible name.
+- Napari display reslicing no longer counts as a live-source pixel mutation, so
+  inspecting a newly pasted source cannot continuously invalidate and restart
+  its own calculation. Deterministic axis errors are also reported before
+  accelerator probing and workload planning begin.
 - Hardened Crop selection and presentation-preview updates against napari layer-model re-entrancy, preventing the crash previously triggered by selecting a changed Crop Stack after switching compute preference.
 - Updated generated Image and Labels presentation layers to carry VIPP's axis
   names into napari when that layer API is available. Labels stay aligned to

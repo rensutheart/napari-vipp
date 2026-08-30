@@ -162,3 +162,52 @@ def test_real_napari_rgb_component_axis_is_not_a_viewer_dimension(
 
     widget.close()
     QApplication.processEvents()
+
+
+def test_real_napari_scalar_mask_with_trailing_three_axis_stays_three_dimensional(
+    qtbot,
+) -> None:
+    """Do not let napari's shape heuristic override VIPP's scalar metadata."""
+
+    viewer = ViewerModel()
+    widget = VippWidget(viewer, defer_initial_run=True)
+    qtbot.addWidget(widget)
+    # napari only guesses RGB for sufficiently large images, so use dimensions
+    # above its heuristic cutoff to reproduce the reported presentation crash.
+    data = np.zeros((50, 60, 3), dtype=bool)
+    state = replace(
+        image_state_from_array(
+            data,
+            axes=(
+                AxisMetadata("y", "space", scale=0.2, translation=1.0),
+                AxisMetadata("x", "space", scale=0.3, translation=2.0),
+                AxisMetadata("rgb", "channel"),
+            ),
+        ),
+        kind="binary mask",
+    )
+    metadata = {
+        "napari_vipp_kind": "inspect",
+        "node_id": "threshold",
+        "data_kind": "mask",
+        "display_kind": "image",
+        "display_ndim": data.ndim,
+        "display_shape": data.shape,
+        "display_rgb": False,
+        "vipp_image_state": state.to_dict(),
+    }
+
+    layer = widget._add_image_or_labels(  # noqa: SLF001 - compatibility seam
+        "compatibility scalar mask",
+        data,
+        metadata,
+    )
+
+    assert layer.rgb is False
+    assert layer.ndim == 3
+    assert tuple(layer.axis_labels) == ("Y", "X", "rgb")
+    assert tuple(layer.scale) == (0.2, 0.3, 1.0)
+    assert tuple(layer.translate) == (1.0, 2.0, 0.0)
+
+    widget.close()
+    QApplication.processEvents()

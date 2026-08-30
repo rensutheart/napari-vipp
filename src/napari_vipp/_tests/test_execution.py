@@ -670,6 +670,7 @@ def test_compute_preflight_failure_proves_no_device_cleanup_was_required():
     assert detail.kind == "compute_preflight"
     assert detail.reason_code == "compute_preflight_rejected"
     assert detail.cleanup_succeeded is True
+    assert detail.node_ids == ("median-1",)
 
 
 def test_host_memory_error_records_available_physical_and_commit_headroom(
@@ -774,6 +775,51 @@ def test_accelerated_planning_error_preserves_only_resolved_source_boundary():
     np.testing.assert_array_equal(result.pipeline.outputs["input"], data)
     assert result.pipeline.outputs["gaussian"] is None
     assert result.pipeline.outputs["threshold"] is None
+
+
+def test_invalid_rgb_axis_contract_fails_before_accelerated_runtime_planning(
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    pipeline.set_param("gaussian", "channel_axis", 2)
+    pipeline.set_param("threshold", "channel_axis", 64)
+    planning_calls: list[str] = []
+
+    def unexpected_workload_planning(*_args, **_kwargs):
+        planning_calls.append("workload")
+        raise AssertionError("workload planning must not start")
+
+    def unexpected_runtime_probe(*_args, **_kwargs):
+        planning_calls.append("runtime probe")
+        raise AssertionError("runtime probing must not start")
+
+    monkeypatch.setattr(
+        execution_module,
+        "_assemble_workloads",
+        unexpected_workload_planning,
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_planning.probe_compute_environment",
+        unexpected_runtime_probe,
+    )
+
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=120,
+            workflow=serialize_workflow(pipeline),
+            input_data=np.zeros((7, 9, 3), dtype=np.uint8),
+            input_metadata={"axes": "YXC"},
+            input_name="RGB source",
+            source_payloads={},
+            compute_request=ComputeRequest(mode="auto"),
+        )
+    )
+
+    assert "otsu threshold channel_axis 64 is out of range for 3d input" in (
+        result.error.casefold()
+    )
+    assert planning_calls == []
 
 
 def test_dirty_execution_hydrates_and_reuses_clean_cached_outputs():

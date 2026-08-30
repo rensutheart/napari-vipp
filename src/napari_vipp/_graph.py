@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from math import ceil
 
@@ -55,6 +57,113 @@ BLOCKED_EXECUTION_ACCENT = "#b45309"
 BYPASSED_NODE_OUTLINE = "#22d3ee"
 BYPASSED_NODE_PASS_THROUGH = "#67e8f9"
 BYPASSED_NODE_OPACITY = 0.72
+
+
+@dataclass(frozen=True, slots=True)
+class ImageSourceMimePayload:
+    """Detached image input carried by a graph drop or clipboard paste."""
+
+    local_path: str = ""
+    image: QImage | None = None
+    suggested_name: str = ""
+
+
+def _image_source_local_paths(mime_data) -> tuple[tuple[str, ...], str]:
+    """Return distinct local URL paths and the first suggested file name."""
+
+    if mime_data is None:
+        return (), ""
+    try:
+        urls = tuple(mime_data.urls()) if mime_data.hasUrls() else ()
+    except (AttributeError, RuntimeError, TypeError):
+        urls = ()
+
+    local_paths: list[str] = []
+    seen_paths: set[str] = set()
+    suggested_name = ""
+    for url in urls:
+        try:
+            if not suggested_name:
+                suggested_name = str(url.fileName() or "").strip()
+            if not url.isLocalFile():
+                continue
+            local_path = str(url.toLocalFile() or "")
+        except (AttributeError, RuntimeError, TypeError):
+            continue
+        path_key = os.path.normcase(os.path.normpath(local_path))
+        if local_path and path_key not in seen_paths:
+            seen_paths.add(path_key)
+            local_paths.append(local_path)
+    return tuple(local_paths), suggested_name
+
+
+def _image_source_mime_is_eligible(mime_data) -> bool:
+    """Return whether MIME data can feed one source without extracting pixels."""
+
+    local_paths, _suggested_name = _image_source_local_paths(mime_data)
+    if local_paths:
+        # One Image Source has one interactive binding. Refuse a multi-file drop
+        # instead of silently choosing an arbitrary image from it.
+        return len(local_paths) == 1
+    try:
+        return bool(mime_data is not None and mime_data.hasImage())
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+
+
+def _image_source_payload_from_mime(mime_data) -> ImageSourceMimePayload | None:
+    """Return one source-compatible local path or detached bitmap from MIME data."""
+
+    local_paths, suggested_name = _image_source_local_paths(mime_data)
+    if local_paths:
+        if len(local_paths) != 1:
+            return None
+        return ImageSourceMimePayload(
+            local_path=local_paths[0],
+            suggested_name=suggested_name,
+        )
+
+    try:
+        if not mime_data.hasImage():
+            return None
+        image_data = mime_data.imageData()
+    except (AttributeError, RuntimeError, TypeError):
+        return None
+    if isinstance(image_data, QPixmap):
+        image_data = image_data.toImage()
+    if not isinstance(image_data, QImage) or image_data.isNull():
+        return None
+    return ImageSourceMimePayload(
+        image=QImage(image_data).copy(),
+        suggested_name=suggested_name,
+    )
+
+
+def _has_external_image_mime(mime_data) -> bool:
+    """Return whether MIME data claims URL or bitmap content for source import."""
+
+    try:
+        return bool(
+            mime_data is not None
+            and (mime_data.hasUrls() or mime_data.hasImage())
+        )
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+
+
+def _accept_external_image_copy(event) -> bool:
+    """Accept an external image event strictly as a non-destructive copy."""
+
+    try:
+        if not event.possibleActions() & Qt.CopyAction:
+            event.ignore()
+            return False
+        event.setDropAction(Qt.CopyAction)
+        event.accept()
+    except (AttributeError, RuntimeError, TypeError):
+        event.ignore()
+        return False
+    return True
 
 
 class PortLabelMode(StrEnum):
@@ -373,6 +482,7 @@ class NodeCard(QFrame):
         self._selected = False
         self._pinned = False
         self._search_highlight = False
+        self._image_drop_target = False
         self._preview_enabled = True
         self._thumbnail_stats_tooltip = ""
         self._processing = False
@@ -554,6 +664,15 @@ class NodeCard(QFrame):
         if self._search_highlight == highlighted:
             return
         self._search_highlight = highlighted
+        self._refresh_style()
+
+    def set_image_drop_target(self, targeted: bool) -> None:
+        """Present this source card as the active external-image drop target."""
+
+        targeted = bool(targeted)
+        if self._image_drop_target == targeted:
+            return
+        self._image_drop_target = targeted
         self._refresh_style()
 
     def set_can_pin(self, can_pin: bool) -> None:
@@ -938,6 +1057,10 @@ class NodeCard(QFrame):
             border = "#38bdf8"
             border_width = max(border_width, 3)
             background = "#1e2e38"
+        if self._image_drop_target:
+            border = "#34d399"
+            border_width = max(border_width, 4)
+            background = "#17322a"
         accent_color = self._category_color
         category_background = self._category_tint
         category_color = self._category_color
@@ -970,6 +1093,10 @@ class NodeCard(QFrame):
             accent_color = "#94a3b8"
             category_background = "#3a414c"
             category_color = "#d1d5db"
+        if self._image_drop_target:
+            accent_color = "#34d399"
+            category_background = "#064e3b"
+            category_color = "#d1fae5"
         self.setStyleSheet(
             f"""
             QFrame#NodeCard {{
@@ -2240,6 +2367,7 @@ class PipelineGraphView(QGraphicsView):
     nodes_copy_requested = Signal(object)
     paste_requested = Signal(QPointF)
     node_paste_values_requested = Signal(str)
+    image_source_open_requested = Signal(str, object)
     node_duplicate_requested = Signal(str)
     node_code_requested = Signal(str)
     node_note_requested = Signal(str)
@@ -2284,6 +2412,7 @@ class PipelineGraphView(QGraphicsView):
         self._clipboard_can_paste = False
         self._clipboard_single_operation_id = ""
         self._clipboard_single_title = ""
+        self._image_drop_target_node_id: str | None = None
         self._isolated_tuning_node_id: str | None = None
         self._connections: list[ConnectionItem] = []
         self._pending_source: PortItem | None = None
@@ -2369,6 +2498,7 @@ class PipelineGraphView(QGraphicsView):
         self._proxies.clear()
         self._cards.clear()
         self._primary_node_id = None
+        self._image_drop_target_node_id = None
         self._connections.clear()
         self._notes.clear()
         self._pending_source = None
@@ -3724,9 +3854,49 @@ class PipelineGraphView(QGraphicsView):
         center = self.mapToScene(self.viewport().rect().center())
         return center + QPointF(40 + len(self._proxies) * 18, 40)
 
+    def _image_source_node_id_at_view_pos(self, pos: QPoint) -> str | None:
+        node_id = self._node_id_at_view_pos(pos)
+        proxy = self._proxies.get(node_id or "")
+        if proxy is None or proxy.operation_id != "input":
+            return None
+        return proxy.node_id
+
+    def _selected_image_source_node_id(self) -> str | None:
+        node_id = self.primary_node_id()
+        proxy = self._proxies.get(node_id or "")
+        if proxy is None or proxy.operation_id != "input":
+            return None
+        return proxy.node_id
+
+    def _set_image_drop_target(self, node_id: str | None) -> None:
+        if node_id == self._image_drop_target_node_id:
+            return
+        previous = self._cards.get(self._image_drop_target_node_id or "")
+        if previous is not None:
+            previous.set_image_drop_target(False)
+        self._image_drop_target_node_id = (
+            node_id if node_id in self._cards else None
+        )
+        current = self._cards.get(self._image_drop_target_node_id or "")
+        if current is not None:
+            current.set_image_drop_target(True)
+
     def dragEnterEvent(self, event):  # noqa: N802
         if event.mimeData().hasFormat(OPERATION_MIME):
             event.acceptProposedAction()
+            return
+        if _image_source_mime_is_eligible(event.mimeData()):
+            if not _accept_external_image_copy(event):
+                self._set_image_drop_target(None)
+                return
+            node_id = self._image_source_node_id_at_view_pos(
+                _point_from_event(event)
+            )
+            self._set_image_drop_target(node_id)
+            return
+        if _has_external_image_mime(event.mimeData()):
+            self._set_image_drop_target(None)
+            event.ignore()
             return
         super().dragEnterEvent(event)
 
@@ -3744,9 +3914,24 @@ class PipelineGraphView(QGraphicsView):
                 self._update_connection_insert_preview(operation_id, scene_pos)
             event.acceptProposedAction()
             return
+        if _image_source_mime_is_eligible(event.mimeData()):
+            node_id = self._image_source_node_id_at_view_pos(
+                _point_from_event(event)
+            )
+            if node_id is None or not _accept_external_image_copy(event):
+                self._set_image_drop_target(None)
+                event.ignore()
+            else:
+                self._set_image_drop_target(node_id)
+            return
+        if _has_external_image_mime(event.mimeData()):
+            self._set_image_drop_target(None)
+            event.ignore()
+            return
         super().dragMoveEvent(event)
 
     def dragLeaveEvent(self, event):  # noqa: N802
+        self._set_image_drop_target(None)
         self._clear_all_insert_previews()
         super().dragLeaveEvent(event)
 
@@ -3779,6 +3964,25 @@ class PipelineGraphView(QGraphicsView):
             self._clear_all_insert_previews()
             event.acceptProposedAction()
             return
+        if _image_source_mime_is_eligible(event.mimeData()):
+            node_id = self._image_source_node_id_at_view_pos(
+                _point_from_event(event)
+            )
+            self._set_image_drop_target(None)
+            if node_id is None or not _accept_external_image_copy(event):
+                event.ignore()
+                return
+            payload = _image_source_payload_from_mime(event.mimeData())
+            if payload is None:
+                event.ignore()
+                return
+            self._select_node(node_id)
+            self.image_source_open_requested.emit(node_id, payload)
+            return
+        if _has_external_image_mime(event.mimeData()):
+            self._set_image_drop_target(None)
+            event.ignore()
+            return
         super().dropEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802
@@ -3793,10 +3997,25 @@ class PipelineGraphView(QGraphicsView):
                     self.nodes_copy_requested.emit(selected)
                     event.accept()
                     return
-            if event.matches(QKeySequence.Paste) and self._clipboard_can_paste:
-                self.paste_requested.emit(self.viewport_center_scene_position())
-                event.accept()
-                return
+            if event.matches(QKeySequence.Paste):
+                source_node_id = self._selected_image_source_node_id()
+                try:
+                    clipboard_mime = QApplication.clipboard().mimeData()
+                except RuntimeError:
+                    clipboard_mime = None
+                if source_node_id is not None:
+                    payload = _image_source_payload_from_mime(clipboard_mime)
+                    if payload is not None:
+                        self.image_source_open_requested.emit(
+                            source_node_id,
+                            payload,
+                        )
+                        event.accept()
+                        return
+                if self._clipboard_can_paste:
+                    self.paste_requested.emit(self.viewport_center_scene_position())
+                    event.accept()
+                    return
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
             selected_connections = [
                 item
