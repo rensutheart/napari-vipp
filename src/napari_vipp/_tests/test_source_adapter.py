@@ -33,10 +33,12 @@ class _Signal:
 class _Events:
     def __init__(self) -> None:
         self.data = _Signal()
+        self.set_data = _Signal()
         self.metadata = _Signal()
         self.rgb = _Signal()
         self.scale = _Signal()
         self.axis_labels = _Signal()
+        self.labels_update = _Signal()
 
 
 class _Layer:
@@ -107,6 +109,37 @@ def test_source_event_advances_revision_and_creates_one_new_snapshot():
     assert not adapter.token_is_current(first.token)
     assert adapter.token_is_current(second.token)
     np.testing.assert_array_equal(second.data, 7)
+
+
+def test_display_slice_set_data_does_not_invalidate_but_pixel_mutations_do():
+    """Napari ``set_data`` also announces display reslicing, not source edits."""
+
+    invalidated = []
+    layer = _Layer(np.zeros((2, 2), dtype=np.uint8))
+    adapter = LiveLayerSourceAdapter(invalidated.append)
+    initial = adapter.snapshot(layer)
+
+    # Restoring viewer dimensions refreshes each layer's displayed slice and
+    # emits ``set_data`` even though the scientific source array is unchanged.
+    layer.events.set_data.emit()
+
+    assert invalidated == []
+    assert adapter.snapshot(layer) is initial
+    assert adapter.token_is_current(initial.token)
+
+    layer.data = np.full((2, 2), 7, dtype=np.uint8)
+    layer.events.data.emit()
+    after_data = adapter.snapshot(layer)
+    layer.data[0, 0] = 11
+    layer.events.labels_update.emit()
+    after_labels_update = adapter.snapshot(layer)
+
+    assert invalidated == [layer, layer]
+    assert after_data.token.revision == initial.token.revision + 1
+    assert after_labels_update.token.revision == after_data.token.revision + 1
+    assert not adapter.tokens_are_current((initial.token, after_data.token))
+    assert adapter.token_is_current(after_labels_update.token)
+    np.testing.assert_array_equal(after_labels_update.data, [[11, 7], [7, 7]])
 
 
 def test_metadata_and_transform_events_also_invalidate_source_revision():

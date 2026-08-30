@@ -39,6 +39,7 @@ from qtpy.QtGui import (
     QColor,
     QFont,
     QIcon,
+    QImage,
     QKeySequence,
     QPainter,
     QPainterPath,
@@ -86,6 +87,7 @@ from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._graph import (
     STALE_EXECUTION_ACCENT,
     ComputeBadgeKind,
+    ImageSourceMimePayload,
     PipelineGraphView,
     PortLabelMode,
     ThumbnailStatsBadgeKind,
@@ -1593,6 +1595,7 @@ class VippWidget(QWidget):
         super().__init__(parent)
         self.viewer = viewer
         self._closing = False
+        self._viewer_layer_change_suspension = 0
         if interaction_latency_telemetry is not None and not isinstance(
             interaction_latency_telemetry,
             InteractionLatencyTelemetryConfig,
@@ -4158,6 +4161,9 @@ class VippWidget(QWidget):
         self.graph_view.paste_requested.connect(self._paste_graph_fragment)
         self.graph_view.node_paste_values_requested.connect(
             self._paste_graph_node_values
+        )
+        self.graph_view.image_source_open_requested.connect(
+            self._open_image_on_source_node
         )
         self.graph_view.node_duplicate_requested.connect(self._duplicate_node)
         self.graph_view.node_code_requested.connect(self._inspect_node_code)
@@ -14918,6 +14924,80 @@ class VippWidget(QWidget):
             )
         return ("sources", ())
 
+    @staticmethod
+    def _source_signature_entries(signature: object) -> dict[str, tuple] | None:
+        """Return comparable per-source entries from an internal signature."""
+
+        try:
+            parts = tuple(signature)
+        except TypeError:
+            return None
+        if len(parts) < 2:
+            return None
+        marker, raw_entries = parts[:2]
+        if marker != "sources":
+            return None
+        entries: dict[str, tuple] = {}
+        try:
+            for raw_entry in raw_entries:
+                entry = tuple(raw_entry)
+                if len(entry) < 2:
+                    return None
+                node_id = str(entry[0])
+                if not node_id:
+                    return None
+                entries[node_id] = tuple(entry[1:])
+        except TypeError:
+            return None
+        return entries
+
+    def _source_nodes_changed_since_last_run(
+        self,
+        source_signature: object,
+    ) -> set[str]:
+        """Return source nodes whose resolved scientific generation changed."""
+
+        if source_signature == self._last_pipeline_source_signature:
+            return set()
+        current = self._source_signature_entries(source_signature)
+        if current is None:
+            # A missing run context is not evidence that any configured source
+            # changed.  Terminal cleanup must not erase valid results on a guess.
+            return set()
+        previous = self._source_signature_entries(self._last_pipeline_source_signature)
+        if previous is None:
+            candidates = set(current)
+        else:
+            candidates = {
+                node_id
+                for node_id in set(previous) | set(current)
+                if previous.get(node_id) != current.get(node_id)
+            }
+        return {
+            node_id
+            for node_id in candidates
+            if node_id in self.pipeline.nodes
+            and self.pipeline.nodes[node_id].operation_id == "input"
+        }
+
+    def _discard_results_from_previous_source_generation(
+        self,
+        source_signature: object,
+        completed_node_ids: Iterable[str],
+        runnable_node_ids: Iterable[str],
+    ) -> set[str]:
+        """Remove failed-run fallbacks that belong to a replaced source."""
+
+        changed_sources = self._source_nodes_changed_since_last_run(source_signature)
+        if not changed_sources:
+            return set()
+        affected = self.pipeline.descendants_inclusive(changed_sources)
+        # Only nodes from this run's execution frontier (plus the changed source
+        # boundary itself) can prove they describe the new generation.  A clone
+        # may also carry completed manual barriers or unrelated cached nodes.
+        fresh = set(completed_node_ids) & (set(runnable_node_ids) | changed_sources)
+        return self.pipeline.discard_cached_results(affected - fresh)
+
     def _local_source_selector_signature(
         self,
         node_id: str,
@@ -15306,8 +15386,18 @@ class VippWidget(QWidget):
         except Exception:
             return False
 
+    @contextmanager
+    def _suspend_viewer_layer_change_handling(self):
+        """Defer this widget's layer-list reaction during an owned mutation."""
+
+        self._viewer_layer_change_suspension += 1
+        try:
+            yield
+        finally:
+            self._viewer_layer_change_suspension -= 1
+
     def _on_viewer_layers_changed(self, _event=None) -> None:
-        if self._closing:
+        if self._closing or self._viewer_layer_change_suspension:
             return
         self._sync_inspect_display_reset_ui()
         changed_node_ids = self._autobind_default_image_sources()
@@ -15394,13 +15484,29 @@ class VippWidget(QWidget):
         preferred = self._preferred_input_layer_name()
         if preferred:
             return preferred
-        names = self._available_layer_names()
-        return names[0] if names else ""
+        for layer in self.viewer.layers:
+            if self._is_automatic_input_layer(layer):
+                return str(getattr(layer, "name", ""))
+        return ""
+
+    def _is_automatic_input_layer(self, layer) -> bool:
+        """Return whether a blank Image Source may silently choose ``layer``."""
+
+        if self._is_vipp_generated_layer(layer) or not hasattr(layer, "data"):
+            return False
+        try:
+            metadata = getattr(layer, "metadata", None)
+            return not (
+                isinstance(metadata, dict)
+                and metadata.get("napari_vipp_source_import")
+            )
+        except Exception:
+            return True
 
     def _preferred_input_layer_name(self) -> str | None:
         fallback: tuple[int, str] | None = None
         for layer in self.viewer.layers:
-            if self._is_vipp_generated_layer(layer) or not hasattr(layer, "data"):
+            if not self._is_automatic_input_layer(layer):
                 continue
             metadata = getattr(layer, "metadata", None)
             if not isinstance(metadata, dict):
@@ -17657,12 +17763,26 @@ class VippWidget(QWidget):
                     self._node_can_pin(node_id),
                 )
 
-        inspection_layer = self._layer_by_name(self._inspect_layer_name)
-        inspected_node_id = (
-            getattr(inspection_layer, "metadata", {}).get("node_id")
-            if inspection_layer is not None
-            else None
-        )
+        inspection_layers = self._owned_inspect_layers()
+        inspected_node_ids = {
+            getattr(layer, "metadata", {}).get("node_id")
+            for layer in inspection_layers
+        }
+        inspected_affected = inspected_node_ids & affected
+
+        # Inspect is one transient logical presentation, even when an older bug
+        # left multiple scalar layers behind.  If any represented output was
+        # invalidated, discard that inconsistent group before optionally
+        # rebuilding it from the selected node below.  This also handles the
+        # selected node and the stale Inspect layer referring to different
+        # affected descendants.
+        for inspected_node_id in inspected_affected:
+            data, _state, _output_port = self._node_display_payload(inspected_node_id)
+            if data is None or is_table_data(data):
+                self._remember_current_inspect_display_profiles()
+                self._discard_inspect_layers()
+                inspected_affected = set()
+                break
         selected_affected = self._selected_node_id in affected
         if selected_affected:
             self._clear_output_histogram_cache()
@@ -17670,12 +17790,24 @@ class VippWidget(QWidget):
             self._sync_view_dims_bar()
             self._update_metadata_panel()
             self._update_histogram()
-        elif inspected_node_id in affected:
+        elif inspected_affected:
             self._refresh_inspection_layer_if_active()
         if self._active_pinned_node_id in affected:
             self._refresh_pinned_layer_if_active()
             if not selected_affected:
                 self._sync_view_dims_bar()
+
+    def _refresh_node_presentation_surfaces_safely(
+        self,
+        node_ids: Iterable[str],
+    ) -> Exception | None:
+        """Refresh terminal-run displays without preventing busy-state cleanup."""
+
+        try:
+            self._refresh_node_presentation_surfaces(node_ids)
+        except Exception as exc:
+            return exc
+        return None
 
     def _show_optional_reader_error(
         self,
@@ -17871,7 +18003,11 @@ class VippWidget(QWidget):
                 spec,
                 context=visibility_context,
             )
-            bounds = self._parameter_bounds_for(node_id, spec)
+            bounds = self._parameter_bounds_for(
+                node_id,
+                spec,
+                context=visibility_context,
+            )
             locked_split_channel = (
                 node.operation_id == "split_channels"
                 and spec.name == "preview_channel"
@@ -19641,6 +19777,164 @@ class VippWidget(QWidget):
         self.parameter_group.setHidden(False)
         self._render_channel_color_controls(node_id)
 
+    def _open_image_on_source_node(
+        self,
+        node_id: str,
+        payload: ImageSourceMimePayload,
+    ) -> bool:
+        """Bind one dropped or pasted image through the normal source edit path."""
+
+        node = self.pipeline.nodes.get(str(node_id))
+        if node is None or node.operation_id != "input":
+            self._set_status(
+                "Images can only be opened on an Image Source node.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return False
+        if not isinstance(payload, ImageSourceMimePayload):
+            self._set_status(
+                "The dropped or pasted item did not contain a readable image.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return False
+
+        # Selecting first renders the target's source control and makes the
+        # existing node-specific change handler safe to reuse verbatim.
+        self.graph_view.select_node(node.id)
+        if payload.local_path:
+            return self._open_image_path_on_source_node(node, payload.local_path)
+        if payload.image is not None and not payload.image.isNull():
+            return self._open_image_pixels_on_source_node(node, payload)
+        self._set_status(
+            "The dropped or pasted item did not contain a readable image.",
+            severity=MessageSeverity.WARNING,
+            actionable=True,
+        )
+        return False
+
+    def _open_image_path_on_source_node(self, node, local_path: str) -> bool:
+        source_path = Path(local_path).expanduser().resolve(strict=False)
+        if not source_path.exists():
+            self._set_status(
+                f"Cannot open image source because it no longer exists: {source_path}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return False
+
+        value = self._image_source_value(node)
+        value.update(
+            source_mode="file path",
+            file_path=str(source_path),
+            series_index=0,
+            binding_mode="single item",
+            axis_declaration="",
+        )
+        self._on_image_source_changed(value)
+        if source_path.is_dir():
+            recent_paths.remember_directory(
+                recent_paths.INPUT_DIRECTORY,
+                source_path,
+            )
+        else:
+            recent_paths.remember_file_directory(
+                recent_paths.INPUT_DIRECTORY,
+                source_path,
+            )
+        self._set_status(
+            f"Opening '{source_path.name}' on {node.title}.",
+            severity=MessageSeverity.INFO,
+        )
+        return True
+
+    def _open_image_pixels_on_source_node(
+        self,
+        node,
+        payload: ImageSourceMimePayload,
+    ) -> bool:
+        try:
+            data = self._qimage_source_array(payload.image)
+            component_axis = "rgba" if data.shape[-1] == 4 else "rgb"
+            layer_name = self._unique_imported_image_layer_name(
+                payload.suggested_name
+            )
+            with self._suspend_viewer_layer_change_handling():
+                layer = self.viewer.add_image(
+                    data,
+                    name=layer_name,
+                    rgb=True,
+                    metadata={
+                        "axes": f"Y,X,{component_axis}",
+                        "napari_vipp_source_import": "clipboard",
+                    },
+                )
+        except Exception as exc:
+            self._set_status(
+                f"Could not open the dropped or pasted image: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return False
+
+        bound_name = str(getattr(layer, "name", layer_name))
+        value = self._image_source_value(node)
+        value.update(
+            source_mode="napari layer",
+            layer_name=bound_name,
+            series_index=0,
+            binding_mode="single item",
+            axis_declaration="",
+        )
+        # A previously unbound source resolves to the viewer's default layer for
+        # display purposes.  After inserting the pasted layer that effective
+        # value can already match ``value`` even though the authored layer name
+        # is still blank, so force one real, undoable source edit.
+        self._on_image_source_changed(value, force=True)
+        self._refresh_image_source_controls()
+        self._set_status(
+            f"Opened '{bound_name}' on {node.title}.",
+            severity=MessageSeverity.INFO,
+        )
+        return True
+
+    def _unique_imported_image_layer_name(self, suggested_name: str) -> str:
+        raw_name = str(suggested_name or "").strip()
+        base_name = Path(raw_name).stem.strip() if raw_name else ""
+        base_name = base_name or "Pasted image"
+        occupied = {
+            str(getattr(layer, "name", "")).casefold() for layer in self.viewer.layers
+        }
+        if base_name.casefold() not in occupied:
+            return base_name
+        index = 2
+        while f"{base_name} {index}".casefold() in occupied:
+            index += 1
+        return f"{base_name} {index}"
+
+    @staticmethod
+    def _qimage_source_array(image: QImage | None) -> np.ndarray:
+        """Copy a QImage into a binding-independent RGB or RGBA array."""
+
+        if not isinstance(image, QImage) or image.isNull():
+            raise ValueError("Clipboard image data is empty.")
+        has_alpha = image.hasAlphaChannel()
+        image_format = QImage.Format_RGBA8888 if has_alpha else QImage.Format_RGB888
+        converted = image.convertToFormat(image_format)
+        channels = 4 if has_alpha else 3
+        pointer = converted.bits()
+        byte_count = int(converted.sizeInBytes())
+        if hasattr(pointer, "setsize"):
+            pointer.setsize(byte_count)
+        raw = np.frombuffer(pointer, dtype=np.uint8, count=byte_count)
+        rows = raw.reshape(int(converted.height()), int(converted.bytesPerLine()))
+        return rows[:, : int(converted.width()) * channels].reshape(
+            int(converted.height()),
+            int(converted.width()),
+            channels,
+        ).copy()
+
     def _image_source_value(self, node) -> dict[str, object]:
         mode = str(node.params.get("source_mode", "napari layer"))
         layer_name = str(node.params.get("layer_name", "")).strip()
@@ -20066,7 +20360,12 @@ class VippWidget(QWidget):
         self._debounce_timer.start()
         self._sync_current_workflow_tab_state()
 
-    def _on_image_source_changed(self, value: dict[str, object]) -> None:
+    def _on_image_source_changed(
+        self,
+        value: dict[str, object],
+        *,
+        force: bool = False,
+    ) -> None:
         node = self.pipeline.nodes[self._selected_node_id]
         value = dict(value)
         raw_declaration = value.get("axis_declaration", "")
@@ -20085,7 +20384,7 @@ class VippWidget(QWidget):
                 "" if declaration is None else declaration.display_text
             )
         value = self._normalized_image_source_value(value)
-        if self._image_source_value(node) == value:
+        if not force and self._image_source_value(node) == value:
             return
         self._record_parameter_undo(self._selected_node_id, "image_source")
         previous_mode = str(node.params.get("source_mode", ""))
@@ -21287,8 +21586,11 @@ class VippWidget(QWidget):
         if preview.preserves_label_semantics and hasattr(self.viewer, "add_labels"):
             layer = self.viewer.add_labels(data, **kwargs)
         else:
+            # VIPP's carried image state is authoritative.  Passing False is
+            # just as important as passing True because napari otherwise
+            # guesses RGB from a trailing dimension of length three or four.
+            kwargs["rgb"] = bool(display_rgb)
             if display_rgb:
-                kwargs["rgb"] = True
                 layer = self.viewer.add_image(data, **kwargs)
             else:
                 layer = self.viewer.add_image(data, colormap="gray", **kwargs)
@@ -21668,7 +21970,11 @@ class VippWidget(QWidget):
                 )
             if spec.kind == "choice" and previous not in spec.choices:
                 previous = spec.default
-            bounds = self._parameter_bounds_for(self._selected_node_id, spec)
+            bounds = self._parameter_bounds_for(
+                self._selected_node_id,
+                spec,
+                context=visibility_context,
+            )
             locked_split_channel = (
                 node.operation_id == "split_channels"
                 and spec.name == "preview_channel"
@@ -22469,7 +22775,13 @@ class VippWidget(QWidget):
             return 3 if self._input_spatial_count(node_id) >= 3 else 2
         return self._label_filter_spatial_ndim(node_id, np.asarray(data))
 
-    def _parameter_bounds_for(self, node_id: str, spec) -> ParameterBounds:
+    def _parameter_bounds_for(
+        self,
+        node_id: str,
+        spec,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ) -> ParameterBounds:
         if spec.kind == "choice":
             return ParameterBounds(0, max(len(spec.choices) - 1, 0), 1, 0)
         node = self.pipeline.nodes.get(node_id)
@@ -22567,7 +22879,7 @@ class VippWidget(QWidget):
         if spec.name == "index":
             return self._slice_index_bounds(node_id, spec)
         if spec.name == "channel_axis":
-            return self._channel_axis_bounds(node_id, spec)
+            return self._channel_axis_bounds(node_id, spec, context=context)
         if (
             node is not None
             and node.operation_id == "crop_stack"
@@ -23775,7 +24087,8 @@ class VippWidget(QWidget):
             self._refresh_selected_parameter_controls()
         self._discard_pending_thumbnail_contrast_limit_requests()
         self._update_thumbnails()
-        inspection_layer = self._layer_by_name(self._inspect_layer_name)
+        inspection_layers = self._generated_layers_for_name(self._inspect_layer_name)
+        inspection_layer = inspection_layers[0] if inspection_layers else None
         inspected_node_id = (
             getattr(inspection_layer, "metadata", {}).get("node_id")
             if inspection_layer is not None
@@ -25933,10 +26246,11 @@ class VippWidget(QWidget):
                 "name": CROP_SOURCE_LAYER_NAME,
                 "metadata": metadata,
                 "blending": "translucent",
+                # Do not let napari reinterpret a scalar volume ending in
+                # three or four samples as encoded colour.
+                "rgb": bool(display_rgb),
             }
-            if display_rgb:
-                kwargs["rgb"] = True
-            else:
+            if not display_rgb:
                 kwargs["colormap"] = "gray"
             if scale is not None:
                 kwargs["scale"] = scale
@@ -26382,12 +26696,34 @@ class VippWidget(QWidget):
         maximum = arr.shape[axis] - 1 if axis is not None else 0
         return ParameterBounds(spec.minimum, max(maximum, spec.minimum), 1, 0)
 
-    def _channel_axis_bounds(self, node_id: str, spec) -> ParameterBounds:
-        data = self.pipeline.input_data_for_node(node_id)
-        if data is None:
-            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
-        maximum = max(np.asarray(data).ndim - 1, 0)
-        return ParameterBounds(spec.minimum, max(maximum, spec.minimum), 1, 0)
+    def _channel_axis_bounds(
+        self,
+        node_id: str,
+        spec,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ) -> ParameterBounds:
+        data = (
+            context.primary_input_data
+            if context is not None
+            else self.pipeline.input_data_for_node(node_id)
+        )
+        state = (
+            context.primary_input_state
+            if context is not None
+            else self.pipeline.input_state_for_node(node_id)
+        )
+        if data is not None:
+            ndim = np.asarray(data).ndim
+        elif state is not None:
+            ndim = len(state.shape)
+        else:
+            # The declarative maximum is a persistence-validation ceiling, not
+            # a meaningful inspector choice.  Until an input contract exists,
+            # there are no numeric axes to offer beyond the scalar sentinel.
+            ndim = 0
+        maximum = max(ndim - 1, int(spec.minimum))
+        return ParameterBounds(spec.minimum, maximum, 1, 0)
 
     def _selected_channel_axis(self, node_id: str, arr: np.ndarray) -> int | None:
         if arr.ndim <= 0:
@@ -27548,8 +27884,22 @@ class VippWidget(QWidget):
             for node_id in affected_error_nodes:
                 self.pipeline.set_node_execution_error(node_id, str(exc))
             self._sync_execution_ui()
+            result_display_error = None
+            try:
+                self._refresh_node_presentation_surfaces(
+                    synchronous_node_ids | affected_error_nodes
+                )
+            except Exception as display_exc:
+                # A presentation failure must not hide the scientific failure or
+                # leave the synchronous run looking active indefinitely.
+                result_display_error = display_exc
+            display_note = (
+                f" The result display also could not update: {result_display_error}."
+                if result_display_error is not None
+                else ""
+            )
             self._set_status(
-                f"Pipeline error: {exc}",
+                f"Pipeline error: {exc}{display_note}",
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
@@ -27618,60 +27968,66 @@ class VippWidget(QWidget):
     def _finish_pipeline_update(self, primary_layer, source_label: str) -> None:
         self._set_pipeline_busy(True, None, cancelable=False)
         self.pipeline_busy_label.setText("Preparing result display...")
-        self._clear_output_histogram_cache()
-        if not self._retain_compatible_colocalization_scatter_density():
-            self._clear_colocalization_scatter_cache()
-        self._hide_input_layer_for_inspection(primary_layer)
-        self._apply_cache_retention()
-        self._refresh_dynamic_output_ports()
-        self._refresh_selected_parameter_visibility()
-        self._discard_pending_thumbnail_contrast_limit_requests()
-        self._update_thumbnails()
-        selected_data, _selected_state, _selected_port = self._node_display_payload(
-            self._selected_node_id
-        )
-        if selected_data is not None and not is_table_data(selected_data):
-            # Inspecting the selected node replaces or refreshes this layer. Do
-            # not first copy the previously inspected volume only to replace it.
-            self._inspect_selected_node()
-        else:
-            self._refresh_inspection_layer_if_active()
-            self._inspect_selected_node()
-        self._refresh_pinned_layer_if_active()
-        self._sync_view_dims_bar()
-        self._update_metadata_panel()
-        self._update_histogram()
-        self._sync_execution_ui()
-        memory_guard_message = self._enforce_memory_guard()
-        snapshot_note = (
-            " File source snapshots are pinned until Refresh."
-            if self._has_active_file_source_snapshot()
-            else ""
-        )
-        if memory_guard_message:
-            self._set_status(
-                f"{memory_guard_message}{snapshot_note}",
-                severity=MessageSeverity.WARNING,
+        try:
+            self._clear_output_histogram_cache()
+            if not self._retain_compatible_colocalization_scatter_density():
+                self._clear_colocalization_scatter_cache()
+            self._hide_input_layer_for_inspection(primary_layer)
+            self._apply_cache_retention()
+            self._refresh_dynamic_output_ports()
+            self._refresh_selected_parameter_visibility()
+            self._discard_pending_thumbnail_contrast_limit_requests()
+            self._update_thumbnails()
+            selected_data, _selected_state, _selected_port = self._node_display_payload(
+                self._selected_node_id
             )
-        elif (
-            self._isolated_tuning_node_id in self.pipeline.nodes
-            and self._isolated_tuning_has_changes
-        ):
-            node_id = str(self._isolated_tuning_node_id)
-            self.status_label.setText(
-                f"Updated '{self._node_title(node_id)}' only. Downstream nodes "
-                "remain stale until Apply and continue."
+            if selected_data is not None and not is_table_data(selected_data):
+                # Inspecting the selected node replaces or refreshes this layer. Do
+                # not first copy the previously inspected volume only to replace it.
+                self._inspect_selected_node()
+            else:
+                self._refresh_inspection_layer_if_active()
+                self._inspect_selected_node()
+            self._refresh_pinned_layer_if_active()
+            self._sync_view_dims_bar()
+            self._update_metadata_panel()
+            self._update_histogram()
+            self._sync_execution_ui()
+            memory_guard_message = self._enforce_memory_guard()
+            snapshot_note = (
+                " File source snapshots are pinned until Refresh."
+                if self._has_active_file_source_snapshot()
+                else ""
             )
-        elif source_label:
-            self._set_status(
-                f"Graph updated from '{source_label}'. "
-                f"Connect ports to build alternate paths.{snapshot_note}",
-                severity=MessageSeverity.SUCCESS,
-            )
-        else:
-            self.status_label.setText("No image source selected.")
-        self._refresh_cache_status()
-        self._complete_interactive_collection_batch_preview()
+            if memory_guard_message:
+                self._set_status(
+                    f"{memory_guard_message}{snapshot_note}",
+                    severity=MessageSeverity.WARNING,
+                )
+            elif (
+                self._isolated_tuning_node_id in self.pipeline.nodes
+                and self._isolated_tuning_has_changes
+            ):
+                node_id = str(self._isolated_tuning_node_id)
+                self.status_label.setText(
+                    f"Updated '{self._node_title(node_id)}' only. Downstream nodes "
+                    "remain stale until Apply and continue."
+                )
+            elif source_label:
+                self._set_status(
+                    f"Graph updated from '{source_label}'. "
+                    f"Connect ports to build alternate paths.{snapshot_note}",
+                    severity=MessageSeverity.SUCCESS,
+                )
+            else:
+                self.status_label.setText("No image source selected.")
+            self._refresh_cache_status()
+            self._complete_interactive_collection_batch_preview()
+        except Exception as exc:
+            self._discard_pending_thumbnail_contrast_limit_requests()
+            self._set_pipeline_busy(False)
+            self._report_result_display_error(exc)
+            return
         if (
             self._queued_thumbnail_contrast_limit_requests
             or self._pending_thumbnail_contrast_limit_keys
@@ -28521,43 +28877,47 @@ class VippWidget(QWidget):
             self._background_node_result_overrides[result.node_id] = result
         else:
             self._background_node_result_overrides.pop(result.node_id, None)
-        preview_data, preview_state, output_port = (
-            self._node_thumbnail_display_payload(
-                result.node_id,
-                result.output,
-                result.output_state,
-                result.node_outputs,
-                result.node_output_states,
+        try:
+            preview_data, preview_state, output_port = (
+                self._node_thumbnail_display_payload(
+                    result.node_id,
+                    result.output,
+                    result.output_state,
+                    result.node_outputs,
+                    result.node_output_states,
+                )
             )
-        )
-        scientific_data, scientific_state, scientific_output_port = (
-            self._node_display_payload_from_values(
-                result.node_id,
-                result.output,
-                result.output_state,
-                result.node_outputs,
-                result.node_output_states,
+            scientific_data, scientific_state, scientific_output_port = (
+                self._node_display_payload_from_values(
+                    result.node_id,
+                    result.output,
+                    result.output_state,
+                    result.node_outputs,
+                    result.node_output_states,
+                )
             )
-        )
-        self._cache_resident_thumbnail_statistics_from_node_result(result)
-        self._update_node_thumbnail(
-            result.node_id,
-            preview_data,
-            preview_state,
-            output_port,
-            queue_stack_contrast=False,
-            scientific_payload=(
-                scientific_data,
-                scientific_state,
-                scientific_output_port,
-            ),
-        )
-        self._sync_execution_ui()
-        self._refresh_node_presentation_surfaces(
-            {result.node_id},
-            thumbnails=False,
-        )
-        self.graph_view.set_node_processing(result.node_id, False)
+            self._cache_resident_thumbnail_statistics_from_node_result(result)
+            self._update_node_thumbnail(
+                result.node_id,
+                preview_data,
+                preview_state,
+                output_port,
+                queue_stack_contrast=False,
+                scientific_payload=(
+                    scientific_data,
+                    scientific_state,
+                    scientific_output_port,
+                ),
+            )
+            self._sync_execution_ui()
+            self._refresh_node_presentation_surfaces(
+                {result.node_id},
+                thumbnails=False,
+            )
+        except Exception as exc:
+            self._report_result_display_error(exc)
+        finally:
+            self.graph_view.set_node_processing(result.node_id, False)
 
     def _on_background_pipeline_presentation_shadow_finished(
         self,
@@ -28631,7 +28991,10 @@ class VippWidget(QWidget):
         candidates = {
             node_id for node_id in runnable_node_ids if node_id in self.pipeline.nodes
         }
-        if getattr(failure, "kind", "") == "memory_preflight":
+        if getattr(failure, "kind", "") in {
+            "compute_preflight",
+            "memory_preflight",
+        }:
             affected = tuple(
                 node_id
                 for node_id in getattr(failure, "node_ids", ())
@@ -28751,29 +29114,61 @@ class VippWidget(QWidget):
                     "before changing compute policy or calculating again."
                 )
                 self._stop_active_compute_after_runtime_quarantine()
+            incompatible_source_results = (
+                self._discard_results_from_previous_source_generation(
+                    source_signature,
+                    (),
+                    runnable_node_ids,
+                )
+            )
+            source_result_display_error = (
+                self._refresh_node_presentation_surfaces_safely(
+                    incompatible_source_results
+                )
+                if incompatible_source_results
+                else None
+            )
+            previous_result_note = (
+                " Results from the previous source were cleared."
+                if incompatible_source_results
+                else " Previous valid outputs and actual backend badges were retained."
+            )
+            display_note = (
+                " The result display also could not update: "
+                f"{source_result_display_error}."
+                if source_result_display_error is not None
+                else ""
+            )
             self._set_pipeline_busy(False)
             if cleanup_failed:
                 self._set_status(
                     self._compute_runtime_quarantined_reason
-                    + " Previous valid outputs and actual backend badges were "
-                    "retained.",
+                    + previous_result_note
+                    + display_note,
                     severity=MessageSeverity.ERROR,
                     actionable=True,
                 )
             elif quarantine_cancel_requested:
                 self._set_status(
                     self._compute_runtime_quarantined_reason
-                    + " The other active calculation stopped cleanly; its "
-                    "result was not applied and its previous valid outputs and "
-                    "actual backend badges were retained.",
+                    + " The other active calculation stopped cleanly; its result "
+                    "was not applied."
+                    + previous_result_note
+                    + display_note,
                     severity=MessageSeverity.ERROR,
                     actionable=True,
                 )
             else:
                 self._set_status(
-                    "Calculation canceled and CPU/GPU cleanup completed. Previous "
-                    "valid outputs and actual backend badges were retained.",
-                    severity=MessageSeverity.INFO,
+                    "Calculation canceled and CPU/GPU cleanup completed."
+                    + previous_result_note
+                    + display_note,
+                    severity=(
+                        MessageSeverity.ERROR
+                        if source_result_display_error is not None
+                        else MessageSeverity.INFO
+                    ),
+                    actionable=source_result_display_error is not None,
                 )
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
@@ -28826,15 +29221,31 @@ class VippWidget(QWidget):
             )
             if inflight_manual_node_ids:
                 self.pipeline.mark_manual_descendants_stale(inflight_manual_node_ids)
+            failure_messages = {}
             if result.error:
-                for node_id, message in self._background_pipeline_failure_messages(
+                failure_messages = self._background_pipeline_failure_messages(
                     result.pipeline,
                     runnable_node_ids,
                     processing_node_id,
                     result.error,
                     result.failure,
-                ).items():
+                )
+                for node_id, message in failure_messages.items():
                     self.pipeline.set_node_execution_error(node_id, message)
+            incompatible_source_results = (
+                self._discard_results_from_previous_source_generation(
+                    source_signature,
+                    completed,
+                    runnable_node_ids,
+                )
+            )
+            source_result_display_error = (
+                self._refresh_node_presentation_surfaces_safely(
+                    incompatible_source_results | completed | set(failure_messages)
+                )
+                if incompatible_source_results
+                else None
+            )
             self._compute_runtime_quarantined_reason = (
                 "CPU/GPU cleanup failed. Restart VIPP before changing compute "
                 "policy or calculating again."
@@ -28852,9 +29263,21 @@ class VippWidget(QWidget):
                     )
                 )
             self._set_pipeline_busy(False)
+            previous_result_note = (
+                " Results from the previous source were cleared."
+                if incompatible_source_results
+                else " Previous valid outputs and actual backend badges were retained."
+            )
+            display_note = (
+                " The result display also could not update: "
+                f"{source_result_display_error}."
+                if source_result_display_error is not None
+                else ""
+            )
             self._set_status(
                 self._compute_runtime_quarantined_reason
-                + " Previous valid outputs and actual backend badges were retained.",
+                + previous_result_note
+                + display_note,
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
@@ -28985,8 +29408,41 @@ class VippWidget(QWidget):
             )
             if inflight_manual_node_ids:
                 self.pipeline.mark_manual_descendants_stale(inflight_manual_node_ids)
+            incompatible_source_results = (
+                self._discard_results_from_previous_source_generation(
+                    source_signature,
+                    (),
+                    runnable_node_ids,
+                )
+            )
+            source_result_display_error = (
+                self._refresh_node_presentation_surfaces_safely(
+                    incompatible_source_results
+                )
+                if incompatible_source_results
+                else None
+            )
             self._set_pipeline_busy(False)
-            self.status_label.setText("Background processing canceled.")
+            source_note = (
+                " Results from the previous source were cleared."
+                if incompatible_source_results
+                else ""
+            )
+            display_note = (
+                " The result display also could not update: "
+                f"{source_result_display_error}."
+                if source_result_display_error is not None
+                else ""
+            )
+            self._set_status(
+                f"Background processing canceled.{source_note}{display_note}",
+                severity=(
+                    MessageSeverity.ERROR
+                    if source_result_display_error is not None
+                    else MessageSeverity.INFO
+                ),
+                actionable=source_result_display_error is not None,
+            )
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
                 "background processing was canceled",
@@ -29001,7 +29457,7 @@ class VippWidget(QWidget):
             # A failed private clone can contain a mixture of new arrays and
             # uncomputed ``None`` outputs. Publish only nodes the clone actually
             # completed, while retaining the last coherent result for every
-            # failed or uncomputed node.
+            # failed or uncomputed node from the same source generation.
             failure_messages = self._background_pipeline_failure_messages(
                 result.pipeline,
                 runnable_node_ids,
@@ -29022,6 +29478,13 @@ class VippWidget(QWidget):
                 update_params=(
                     can_publish_cpu_partial and not preserve_workflow_params
                 ),
+            )
+            incompatible_source_results = (
+                self._discard_results_from_previous_source_generation(
+                    source_signature,
+                    completed,
+                    runnable_node_ids,
+                )
             )
             if can_publish_cpu_partial:
                 if result.pipeline is not None and not preserve_workflow_params:
@@ -29073,6 +29536,13 @@ class VippWidget(QWidget):
                     )
             for node_id, message in failure_messages.items():
                 self.pipeline.set_node_execution_error(node_id, message)
+            source_result_display_error = (
+                self._refresh_node_presentation_surfaces_safely(
+                    incompatible_source_results | set(failure_messages)
+                )
+                if incompatible_source_results
+                else None
+            )
             if can_publish_cpu_partial and self._selected_node_id in (
                 completed | set(failure_messages)
             ):
@@ -29080,9 +29550,20 @@ class VippWidget(QWidget):
             continue_pending = bool(self._pipeline_run_pending and pending_dirty)
             self._pipeline_run_pending = False
             self._set_pipeline_busy(False)
+            source_note = (
+                " Results from the previous source were cleared."
+                if incompatible_source_results
+                else ""
+            )
+            display_note = (
+                f" The result display also could not update: "
+                f"{source_result_display_error}."
+                if source_result_display_error is not None
+                else ""
+            )
             suffix = "; continuing queued graph edit" if continue_pending else ""
             self._set_status(
-                f"Pipeline error: {result.error}{suffix}",
+                f"Pipeline error: {result.error}{source_note}{display_note}{suffix}",
                 severity=MessageSeverity.ERROR,
                 actionable=not continue_pending,
             )
@@ -29110,12 +29591,39 @@ class VippWidget(QWidget):
                 processing_node_id,
                 "No result returned.",
             )
+            incompatible_source_results = (
+                self._discard_results_from_previous_source_generation(
+                    source_signature,
+                    (),
+                    runnable_node_ids,
+                )
+            )
+            refresh_node_ids = set(incompatible_source_results)
+            if processing_node_id in self.pipeline.nodes:
+                refresh_node_ids.add(processing_node_id)
+            source_result_display_error = (
+                self._refresh_node_presentation_surfaces_safely(refresh_node_ids)
+                if incompatible_source_results
+                else None
+            )
             continue_pending = bool(self._pipeline_run_pending and pending_dirty)
             self._pipeline_run_pending = False
             self._set_pipeline_busy(False)
             suffix = "; continuing queued graph edit" if continue_pending else ""
+            source_note = (
+                " Results from the previous source were cleared."
+                if incompatible_source_results
+                else ""
+            )
+            display_note = (
+                " The result display also could not update: "
+                f"{source_result_display_error}."
+                if source_result_display_error is not None
+                else ""
+            )
             self._set_status(
-                f"Pipeline error: no result returned{suffix}.",
+                "Pipeline error: no result returned"
+                f"{suffix}.{source_note}{display_note}",
                 severity=MessageSeverity.ERROR,
                 actionable=not continue_pending,
             )
@@ -29547,7 +30055,13 @@ class VippWidget(QWidget):
             self.graph_view.clear_node_processing()
             self._active_pipeline_node_id = None
             self._sync_execution_ui()
-            self._refresh_node_presentation_surfaces(cleared_overrides)
+            try:
+                self._refresh_node_presentation_surfaces(cleared_overrides)
+            except Exception as exc:
+                # Busy-state cleanup must be terminal even when a generated
+                # layer cannot be refreshed.  The calculated result remains
+                # available and the display problem is reported separately.
+                self._report_result_display_error(exc)
             self._sync_compute_toolbar_summary()
             self._sync_compute_policy_editability()
             return
@@ -29572,6 +30086,13 @@ class VippWidget(QWidget):
             self._sync_execution_ui()
         else:
             self.pipeline_busy_label.setText("Processing graph")
+
+    def _report_result_display_error(self, error: Exception) -> None:
+        self._set_status(
+            f"Result calculated, but its display could not be updated: {error}",
+            severity=MessageSeverity.ERROR,
+            actionable=True,
+        )
 
     def _sync_view_dims_bar(self) -> None:
         if self._syncing_view_dims_bar:
@@ -29757,7 +30278,8 @@ class VippWidget(QWidget):
         raw_step = self._raw_current_step()
         if raw_step is None:
             return int(step_axis)
-        layer = self._layer_by_name(self._inspect_layer_name)
+        layers = self._generated_layers_for_name(self._inspect_layer_name)
+        layer = layers[0] if layers else None
         metadata = getattr(layer, "metadata", {}) if layer is not None else {}
         if not isinstance(metadata, dict):
             return int(step_axis)
@@ -32896,6 +33418,20 @@ class VippWidget(QWidget):
         metadata: dict,
         role: str,
     ) -> None:
+        # napari emits layer-list events synchronously.  A representation change
+        # (for example scalar -> RGB) removes and then adds layers; treating that
+        # transition as one owned mutation prevents a nested source rebind/run
+        # from creating a second Inspect layer between those two operations.
+        with self._suspend_viewer_layer_change_handling():
+            self._set_or_add_generated_layer_now(name, data, metadata, role)
+
+    def _set_or_add_generated_layer_now(
+        self,
+        name: str,
+        data,
+        metadata: dict,
+        role: str,
+    ) -> None:
         if role == "inspect" and name == self._inspect_layer_name:
             self._remember_current_inspect_display_profiles()
         saved_step = self._raw_current_step()
@@ -32931,8 +33467,20 @@ class VippWidget(QWidget):
         self._remove_rgb_channel_layers(name)
         preserved_display = self._inspect_display_settings_for_metadata(metadata)
         if role == "inspect" and name == self._inspect_layer_name:
-            inspect_layers = self._generated_layers_for_name(name)
-            layer = inspect_layers[0] if inspect_layers else None
+            inspect_layers = self._owned_scalar_inspect_layers()
+            layer = next(
+                (
+                    candidate
+                    for candidate in inspect_layers
+                    if str(getattr(candidate, "name", "")) == name
+                ),
+                inspect_layers[0] if inspect_layers else None,
+            )
+            for extra in inspect_layers:
+                if extra is layer:
+                    continue
+                self._invalidate_generated_layer_contrast(extra)
+                self._remove_layer(extra)
         else:
             layer = self._layer_by_name(name)
         if layer is None:
@@ -33068,8 +33616,10 @@ class VippWidget(QWidget):
             kwargs["scale"] = scale
         if translate is not None:
             kwargs["translate"] = translate
-        if metadata.get("display_rgb"):
-            kwargs["rgb"] = True
+        # Always pass the metadata decision.  Omitting ``rgb`` lets napari
+        # guess from shape and can turn a scalar/mask (..., 3/4) axis into a
+        # hidden colour component, invalidating VIPP's full-rank transforms.
+        kwargs["rgb"] = bool(metadata.get("display_rgb"))
         kwargs["blending"] = "translucent"
         if not metadata.get("display_rgb"):
             kwargs["colormap"] = "gray"
@@ -33110,31 +33660,22 @@ class VippWidget(QWidget):
         metadata: dict,
     ) -> None:
         arr = np.asarray(display_data)
-        base_layer = self._layer_by_name(name)
-        try:
-            base_is_owned_scalar = (
-                base_layer is not None
-                and base_layer.metadata.get("napari_vipp_kind")
-                == metadata.get("napari_vipp_kind")
-                and not bool(base_layer.metadata.get("display_rgb_as_channels"))
-            )
-        except Exception:
-            base_is_owned_scalar = False
-        if not base_is_owned_scalar and name == self._inspect_layer_name:
-            base_layer = None
-            for candidate in list(self.viewer.layers):
-                try:
-                    if candidate.metadata.get(
-                        "napari_vipp_kind"
-                    ) == "inspect" and not candidate.metadata.get(
-                        "display_rgb_as_channels"
-                    ):
-                        base_layer = candidate
-                        base_is_owned_scalar = True
-                        break
-                except Exception:
-                    continue
-        if base_is_owned_scalar:
+        if name == self._inspect_layer_name:
+            base_layers = self._owned_scalar_inspect_layers()
+        else:
+            base_layer = self._layer_by_name(name)
+            try:
+                base_layers = (
+                    [base_layer]
+                    if base_layer is not None
+                    and base_layer.metadata.get("napari_vipp_kind")
+                    == metadata.get("napari_vipp_kind")
+                    and not bool(base_layer.metadata.get("display_rgb_as_channels"))
+                    else []
+                )
+            except Exception:
+                base_layers = []
+        for base_layer in base_layers:
             self._invalidate_generated_layer_contrast(base_layer)
             self._remove_layer(base_layer)
         active_layers = []
@@ -33299,11 +33840,34 @@ class VippWidget(QWidget):
         layers = []
         for layer in list(self.viewer.layers):
             try:
-                if layer.metadata.get("display_rgb_group") == group_name:
+                metadata = layer.metadata
+                if metadata.get("display_rgb_group") == group_name and (
+                    group_name != self._inspect_layer_name
+                    or metadata.get("napari_vipp_kind") == "inspect"
+                ):
                     layers.append(layer)
             except Exception:
                 continue
         return layers
+
+    def _owned_inspect_layers(self) -> list:
+        """Return every layer owned by the transient Inspect presentation."""
+
+        layers = []
+        for layer in list(self.viewer.layers):
+            try:
+                if layer.metadata.get("napari_vipp_kind") == "inspect":
+                    layers.append(layer)
+            except Exception:
+                continue
+        return layers
+
+    def _owned_scalar_inspect_layers(self) -> list:
+        return [
+            layer
+            for layer in self._owned_inspect_layers()
+            if not bool(layer.metadata.get("display_rgb_as_channels"))
+        ]
 
     def _remove_rgb_channel_layers(self, group_name: str) -> None:
         for layer in self._rgb_channel_layers(group_name):
@@ -33321,6 +33885,29 @@ class VippWidget(QWidget):
                 self._remove_layer(layer)
 
     def _generated_layers_for_name(self, name: str) -> list:
+        if name == self._inspect_layer_name:
+            layers = self._rgb_channel_layers(name)
+            if layers:
+                ordered = {
+                    _rgb_channel_layer_name(name, index): index
+                    for index, _channel_name, _colormap in _RGB_VOLUME_CHANNELS
+                }
+                return sorted(layers, key=lambda layer: ordered.get(layer.name, 99))
+            scalar_layers = self._owned_scalar_inspect_layers()
+            if scalar_layers:
+                exact = next(
+                    (
+                        layer
+                        for layer in scalar_layers
+                        if str(getattr(layer, "name", "")) == name
+                    ),
+                    None,
+                )
+                return [exact if exact is not None else scalar_layers[0]]
+            # The Inspect name is user-visible and therefore not an ownership
+            # token.  An unrelated layer may legitimately use it; only VIPP's
+            # metadata identifies a layer that we are allowed to mutate.
+            return []
         layers = self._rgb_channel_layers(name)
         if layers:
             ordered = {
@@ -33328,28 +33915,15 @@ class VippWidget(QWidget):
                 for index, _channel_name, _colormap in _RGB_VOLUME_CHANNELS
             }
             return sorted(layers, key=lambda layer: ordered.get(layer.name, 99))
-        if name == self._inspect_layer_name:
-            for candidate in list(self.viewer.layers):
-                try:
-                    metadata = candidate.metadata
-                    if metadata.get(
-                        "napari_vipp_kind"
-                    ) == "inspect" and not metadata.get("display_rgb_as_channels"):
-                        return [candidate]
-                except Exception:
-                    continue
-            # The Inspect name is user-visible and therefore not an ownership
-            # token.  An unrelated layer may legitimately use it; only VIPP's
-            # metadata identifies a layer that we are allowed to mutate.
-            return []
         layer = self._layer_by_name(name)
         return [layer] if layer is not None else []
 
     def _discard_inspect_layers(self) -> None:
         """Remove only the generated Inspect scalar or RGB layer group."""
-        for layer in self._generated_layers_for_name(self._inspect_layer_name):
-            self._invalidate_generated_layer_contrast(layer)
-            self._remove_layer(layer)
+        with self._suspend_viewer_layer_change_handling():
+            for layer in self._owned_inspect_layers():
+                self._invalidate_generated_layer_contrast(layer)
+                self._remove_layer(layer)
         self._sync_inspect_display_reset_ui()
 
     def _move_generated_layers_to_top(self, name: str) -> None:
@@ -33357,9 +33931,14 @@ class VippWidget(QWidget):
             self._move_layer_to_top(layer)
 
     def _generated_layer_needs_replacement(self, layer, metadata: dict) -> bool:
+        expected_layer_rgb = bool(metadata.get("display_rgb")) and not bool(
+            metadata.get("display_rgb_as_channels")
+        )
         return (
             layer.metadata.get("display_kind") != metadata["display_kind"]
             or layer.metadata.get("display_ndim") != metadata["display_ndim"]
+            or bool(getattr(layer, "rgb", False))
+            != expected_layer_rgb
             or bool(layer.metadata.get("display_rgb"))
             != bool(metadata.get("display_rgb"))
             or bool(layer.metadata.get("display_rgb_as_channels"))
@@ -34493,7 +35072,8 @@ class VippWidget(QWidget):
         *,
         fill_value: int,
     ) -> tuple:
-        layer = self._layer_by_name(self._inspect_layer_name)
+        layers = self._generated_layers_for_name(self._inspect_layer_name)
+        layer = layers[0] if layers else None
         metadata = getattr(layer, "metadata", {}) if layer is not None else {}
         if not isinstance(metadata, dict):
             return tuple(int(value) for value in values)

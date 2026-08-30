@@ -294,8 +294,11 @@ jobs:
           python -m pytest -q
           src/napari_vipp/_tests/test_napari_compat.py
           src/napari_vipp/_tests/test_napari_runtime_compatibility.py
+          src/napari_vipp/_tests/test_graph_clipboard_ui.py
           src/napari_vipp/_tests/test_widget.py::test_hidden_source_preview_cannot_replace_active_viewer_axis_labels
           src/napari_vipp/_tests/test_widget.py::test_label_pipeline_inspects_and_pins_integer_labels
           src/napari_vipp/_tests/test_widget.py::test_generated_rgb_and_rgba_hide_only_the_component_axis
+          src/napari_vipp/_tests/test_widget.py::test_pasted_qimage_becomes_unique_rgb_layer_bound_to_source
+          src/napari_vipp/_tests/test_widget.py::test_pasted_qimage_does_not_autobind_other_empty_sources
           src/napari_vipp/_tests/test_widget.py::test_split_channels_presentation_follows_distinct_used_output_ports
           src/napari_vipp/_tests/test_widget.py::test_reorder_axes_updates_metadata_axes

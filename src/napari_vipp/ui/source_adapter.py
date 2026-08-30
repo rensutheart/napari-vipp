@@ -28,7 +28,6 @@ from napari_vipp.core.source_identity import SourceRevisionToken
 
 SOURCE_REVISION_EVENTS = (
     "data",
-    "set_data",
     "metadata",
     "name",
     "rgb",
@@ -41,6 +40,14 @@ SOURCE_REVISION_EVENTS = (
     "axis_labels",
     "labels_update",
 )
+
+# ``Layer.events.set_data`` is deliberately absent.  In napari this event means
+# that the *displayed slice* should be refreshed; ``Layer._refresh_sync`` emits
+# it while the viewer changes dimensions even when the layer's source array is
+# unchanged.  Treating it as a scientific mutation lets VIPP's own Inspect
+# refresh invalidate an in-flight source snapshot and continuously rerun the
+# graph.  Actual array replacement is reported by ``data`` and in-place Labels
+# edits by ``labels_update``.
 
 
 @dataclass(frozen=True, slots=True, eq=False)

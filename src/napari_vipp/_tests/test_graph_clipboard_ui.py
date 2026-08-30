@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from qtpy.QtCore import QPoint, QPointF, Qt
+from pathlib import Path
 
-from napari_vipp._graph import PipelineGraphView
+from qtpy.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+from qtpy.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QImage
+from qtpy.QtWidgets import QApplication
+
+from napari_vipp._graph import ImageSourceMimePayload, PipelineGraphView
 from napari_vipp.core.pipeline import PrototypePipeline
 
 
@@ -133,6 +137,313 @@ def test_ctrl_v_requests_paste_at_viewport_center(qtbot):
 
     assert len(requested) == 1
     assert (requested[0] - expected).manhattanLength() < 0.01
+
+
+def test_local_image_drop_enters_on_canvas_and_opens_on_source(
+    qtbot,
+    tmp_path,
+):
+    view, _pipeline = _build_view(qtbot)
+    path = tmp_path / "source image.png"
+    path.touch()
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    requested = []
+    view.image_source_open_requested.connect(
+        lambda node_id, payload: requested.append((node_id, payload))
+    )
+    blank_pos = QPoint(view.viewport().width() - 8, view.viewport().height() - 8)
+    source_pos = view.mapFromScene(
+        view._proxies["input"].sceneBoundingRect().center()
+    )
+    assert view.itemAt(blank_pos) is None
+
+    enter = QDragEnterEvent(
+        blank_pos,
+        Qt.CopyAction,
+        mime,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    QApplication.sendEvent(view.viewport(), enter)
+    move = QDragMoveEvent(
+        source_pos,
+        Qt.CopyAction,
+        mime,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    QApplication.sendEvent(view.viewport(), move)
+
+    assert enter.isAccepted()
+    assert move.isAccepted()
+    assert view._cards["input"]._image_drop_target
+
+    drop = QDropEvent(
+        QPointF(source_pos),
+        Qt.CopyAction,
+        mime,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    QApplication.sendEvent(view.viewport(), drop)
+
+    assert drop.isAccepted()
+    assert len(requested) == 1
+    node_id, payload = requested[0]
+    assert node_id == "input"
+    assert isinstance(payload, ImageSourceMimePayload)
+    assert Path(payload.local_path).resolve() == path.resolve()
+    assert payload.image is None
+    assert not view._cards["input"]._image_drop_target
+    assert view.primary_node_id() == "input"
+
+
+def test_external_image_drop_forces_copy_when_move_is_proposed(
+    qtbot,
+    tmp_path,
+):
+    view, _pipeline = _build_view(qtbot)
+    path = tmp_path / "shift-dropped.png"
+    path.touch()
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    requested = []
+    view.image_source_open_requested.connect(
+        lambda node_id, payload: requested.append((node_id, payload))
+    )
+    source_pos = view.mapFromScene(
+        view._proxies["input"].sceneBoundingRect().center()
+    )
+    actions = Qt.CopyAction | Qt.MoveAction
+
+    enter = QDragEnterEvent(
+        source_pos,
+        actions,
+        mime,
+        Qt.LeftButton,
+        Qt.ShiftModifier,
+    )
+    assert enter.proposedAction() == Qt.MoveAction
+    QApplication.sendEvent(view.viewport(), enter)
+
+    move = QDragMoveEvent(
+        source_pos,
+        actions,
+        mime,
+        Qt.LeftButton,
+        Qt.ShiftModifier,
+    )
+    assert move.proposedAction() == Qt.MoveAction
+    QApplication.sendEvent(view.viewport(), move)
+
+    drop = QDropEvent(
+        QPointF(source_pos),
+        actions,
+        mime,
+        Qt.LeftButton,
+        Qt.ShiftModifier,
+    )
+    assert drop.proposedAction() == Qt.MoveAction
+    QApplication.sendEvent(view.viewport(), drop)
+
+    assert enter.isAccepted()
+    assert enter.dropAction() == Qt.CopyAction
+    assert move.isAccepted()
+    assert move.dropAction() == Qt.CopyAction
+    assert drop.isAccepted()
+    assert drop.dropAction() == Qt.CopyAction
+    assert len(requested) == 1
+
+
+def test_external_image_drag_rejects_move_only_action(qtbot, tmp_path):
+    view, _pipeline = _build_view(qtbot)
+    path = tmp_path / "move-only.png"
+    path.touch()
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    source_pos = view.mapFromScene(
+        view._proxies["input"].sceneBoundingRect().center()
+    )
+
+    enter = QDragEnterEvent(
+        source_pos,
+        Qt.MoveAction,
+        mime,
+        Qt.LeftButton,
+        Qt.ShiftModifier,
+    )
+    QApplication.sendEvent(view.viewport(), enter)
+
+    assert not enter.isAccepted()
+    assert not view._cards["input"]._image_drop_target
+
+
+def test_external_image_hover_does_not_extract_payload(qtbot):
+    class CountingImageMimeData(QMimeData):
+        def __init__(self):
+            super().__init__()
+            self.image_data_calls = 0
+
+        def imageData(self):  # noqa: N802
+            self.image_data_calls += 1
+            return super().imageData()
+
+    view, _pipeline = _build_view(qtbot)
+    image = QImage(3, 2, QImage.Format_RGB888)
+    image.fill(Qt.red)
+    mime = CountingImageMimeData()
+    mime.setImageData(image)
+    source_pos = view.mapFromScene(
+        view._proxies["input"].sceneBoundingRect().center()
+    )
+    blank_pos = QPoint(view.viewport().width() - 8, view.viewport().height() - 8)
+    enter = QDragEnterEvent(
+        blank_pos,
+        Qt.CopyAction,
+        mime,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    QApplication.sendEvent(view.viewport(), enter)
+    for _index in range(2):
+        move = QDragMoveEvent(
+            source_pos,
+            Qt.CopyAction,
+            mime,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        QApplication.sendEvent(view.viewport(), move)
+
+    assert enter.isAccepted()
+    assert move.isAccepted()
+    assert mime.image_data_calls == 0
+
+    drop = QDropEvent(
+        QPointF(source_pos),
+        Qt.CopyAction,
+        mime,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    QApplication.sendEvent(view.viewport(), drop)
+
+    assert drop.isAccepted()
+    assert mime.image_data_calls == 1
+
+
+def test_image_drop_is_ignored_on_processing_node(qtbot, tmp_path):
+    view, _pipeline = _build_view(qtbot)
+    path = tmp_path / "source.png"
+    path.touch()
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    requested = []
+    view.image_source_open_requested.connect(
+        lambda node_id, payload: requested.append((node_id, payload))
+    )
+    gaussian_pos = view.mapFromScene(
+        view._proxies["gaussian"].sceneBoundingRect().center()
+    )
+
+    drop = QDropEvent(
+        QPointF(gaussian_pos),
+        Qt.CopyAction,
+        mime,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    QApplication.sendEvent(view.viewport(), drop)
+
+    assert not drop.isAccepted()
+    assert requested == []
+
+
+def test_ctrl_v_opens_copied_pixels_on_selected_source_only(qtbot):
+    view, _pipeline = _build_view(qtbot)
+    requested = []
+    view.image_source_open_requested.connect(
+        lambda node_id, payload: requested.append((node_id, payload))
+    )
+    image = QImage(3, 2, QImage.Format_RGB888)
+    image.fill(Qt.red)
+    mime = QMimeData()
+    mime.setImageData(image)
+    clipboard = QApplication.clipboard()
+    clipboard.setMimeData(mime)
+    try:
+        view.select_node("gaussian")
+        qtbot.keyClick(view, Qt.Key_V, Qt.ControlModifier)
+        assert requested == []
+
+        view.select_node("input")
+        qtbot.keyClick(view, Qt.Key_V, Qt.ControlModifier)
+
+        assert len(requested) == 1
+        node_id, payload = requested[0]
+        assert node_id == "input"
+        assert isinstance(payload, ImageSourceMimePayload)
+        assert payload.local_path == ""
+        assert payload.image is not None
+        assert payload.image.size() == image.size()
+    finally:
+        clipboard.clear()
+
+
+def test_ctrl_v_opens_copied_local_image_file_on_selected_source(
+    qtbot,
+    tmp_path,
+):
+    view, _pipeline = _build_view(qtbot)
+    path = tmp_path / "copied image.tif"
+    path.touch()
+    requested = []
+    view.image_source_open_requested.connect(
+        lambda node_id, payload: requested.append((node_id, payload))
+    )
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    clipboard = QApplication.clipboard()
+    clipboard.setMimeData(mime)
+    try:
+        view.select_node("input")
+        qtbot.keyClick(view, Qt.Key_V, Qt.ControlModifier)
+
+        assert len(requested) == 1
+        node_id, payload = requested[0]
+        assert node_id == "input"
+        assert Path(payload.local_path).resolve() == path.resolve()
+        assert payload.image is None
+    finally:
+        clipboard.clear()
+
+
+def test_multiple_local_image_urls_are_not_accepted_for_one_source(
+    qtbot,
+    tmp_path,
+):
+    view, _pipeline = _build_view(qtbot)
+    paths = [tmp_path / "first.png", tmp_path / "second.png"]
+    for path in paths:
+        path.touch()
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
+    source_pos = view.mapFromScene(
+        view._proxies["input"].sceneBoundingRect().center()
+    )
+
+    enter = QDragEnterEvent(
+        source_pos,
+        Qt.CopyAction,
+        mime,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    QApplication.sendEvent(view.viewport(), enter)
+
+    assert not enter.isAccepted()
+    assert not view._cards["input"]._image_drop_target
 
 
 def test_node_menu_enables_paste_values_only_for_exact_operation(

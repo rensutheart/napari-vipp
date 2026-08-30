@@ -220,8 +220,56 @@ def test_positional_spatial_operations_reject_noncanonical_explicit_axes(
     data = np.zeros((2, 4, 3, 5), dtype=np.float32)
     pipeline, _node_id = _pipeline_with(operation_id)
 
-    with pytest.raises(AmbiguousAxisError, match="positional.*processing"):
+    with pytest.raises(AmbiguousAxisError, match="positional.*processing") as raised:
         pipeline.run(data, input_metadata={"axes": "CYZX"})
+
+    message = str(raised.value)
+    assert "Reorder Axes" in message
+    assert "correct it at the source" in message
+    assert "Declare axes for batch sources" in message
+    assert "Set Channel axis" not in message
+
+
+@pytest.mark.parametrize(
+    ("axes", "detected", "channel_label"),
+    (("YXC", "YXC", "C"), ("Y,X,rgb", "YXrgb", "rgb")),
+)
+def test_positional_spatial_error_suggests_a_solving_channel_axis(
+    axes,
+    detected,
+    channel_label,
+):
+    data = np.zeros((8, 9, 3), dtype=np.float32)
+    pipeline, node_id = _pipeline_with("gaussian_blur")
+
+    with pytest.raises(AmbiguousAxisError) as raised:
+        pipeline.run(data, input_metadata={"axes": axes})
+
+    message = str(raised.value)
+    assert "positional YX processing" in message
+    assert f"Set Channel axis to 2 ({channel_label})" in message
+    assert "Reorder Axes" not in message
+    assert raised.value.code == "positional_spatial_layout"
+    assert raised.value.detected_axes == detected
+    assert raised.value.required_axes == "YX"
+    assert raised.value.failing_node_id == node_id
+
+    pipeline.set_param(node_id, "channel_axis", 2)
+    pipeline.run(data, input_metadata={"axes": axes})
+
+    assert pipeline.outputs[node_id].shape == data.shape
+
+
+def test_positional_spatial_error_does_not_suggest_an_unavailable_channel_axis():
+    data = np.zeros((8, 9, 3), dtype=bool)
+    pipeline, _node_id = _pipeline_with("dilate")
+
+    with pytest.raises(AmbiguousAxisError) as raised:
+        pipeline.run(data, input_metadata={"axes": "YXC"})
+
+    message = str(raised.value)
+    assert "Reorder Axes" in message
+    assert "Set Channel axis" not in message
 
 
 def test_crop_z_requires_explicit_semantics_and_exact_declaration_runs():
@@ -333,7 +381,7 @@ def test_qyx_volume_needs_declaration_before_sequential_zyx_processing():
 
     raw_state = image_state_from_array(data, layer_metadata={"axes": "QYX"})
     rejected, _rejected_output = workflow()
-    with pytest.raises(AmbiguousAxisError, match="Declare axes.*QYX -> ZYX"):
+    with pytest.raises(AmbiguousAxisError, match="Declare axes for batch sources"):
         rejected.run(
             None,
             source_payloads={
@@ -580,7 +628,7 @@ def test_axis_preflight_propagates_through_reorder_and_convert_without_kernels(
         unexpected_kernel,
     )
 
-    with pytest.raises(AmbiguousAxisError, match="Declare axes.*QYX -> ZYX"):
+    with pytest.raises(AmbiguousAxisError, match="Declare axes for batch sources"):
         pipeline.preflight_axis_contract(
             {"input": SourcePayload(data, image_state=raw_state)}
         )
@@ -1038,6 +1086,79 @@ def test_axis_preflight_validates_explicit_luma_channel_contract(
         pipeline.preflight_axis_contract(
             {"input": SourcePayload(data, image_state=state)}
         )
+
+
+@pytest.mark.parametrize(("axis_name", "channel_count"), (("rgb", 3), ("rgba", 4)))
+def test_otsu_scalar_mode_rejects_a_declared_encoded_colour_axis(
+    axis_name,
+    channel_count,
+):
+    data = np.arange(8 * 9 * channel_count, dtype=np.uint8).reshape(
+        8,
+        9,
+        channel_count,
+    )
+    scalar, scalar_node = _pipeline_with("otsu_threshold")
+
+    with pytest.raises(AmbiguousAxisError) as raised:
+        scalar.run(data, input_metadata={"axes": f"Y,X,{axis_name}"})
+
+    message = str(raised.value)
+    assert f"encoded {axis_name.upper()} on axis 2" in message
+    assert "channel axis is -1 (scalar)" in message
+    assert "Set RGB/RGBA channel axis to 2" in message
+    assert raised.value.code == "encoded_color_requires_channel_axis"
+    assert raised.value.detected_axes == f"Y,X,{axis_name}"
+    assert raised.value.failing_node_id == scalar_node
+
+    luma, luma_node = _pipeline_with("otsu_threshold")
+    luma.set_param(luma_node, "channel_axis", 2)
+    luma.run(data, input_metadata={"axes": f"Y,X,{axis_name}"})
+
+    assert luma.outputs[luma_node].shape == data.shape[:2]
+    assert luma.outputs[luma_node].dtype == bool
+    assert luma.output_states[luma_node].axis_order == "YX"
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    ("sobel_filter", "binary_threshold", "adaptive_mean_threshold"),
+)
+def test_luma_operations_reject_scalar_mode_for_declared_rgb(operation_id):
+    data = np.zeros((8, 9, 3), dtype=np.uint8)
+    state = image_state_from_array(data, layer_metadata={"axes": "Y,X,rgb"})
+    pipeline, node_id = _pipeline_with(operation_id)
+
+    with pytest.raises(
+        AmbiguousAxisError,
+        match="Set RGB/RGBA channel axis to 2",
+    ):
+        pipeline.preflight_axis_contract(
+            {"input": SourcePayload(data, image_state=state)}
+        )
+
+    pipeline.set_param(node_id, "channel_axis", 2)
+    pipeline.preflight_axis_contract(
+        {"input": SourcePayload(data, image_state=state)}
+    )
+
+
+@pytest.mark.parametrize(
+    "input_metadata",
+    ({"axes": "YX"}, None),
+    ids=("explicit-scalar", "unresolved"),
+)
+def test_otsu_scalar_mode_remains_available_without_declared_encoded_colour(
+    input_metadata,
+):
+    shape = (8, 9) if input_metadata is not None else (8, 9, 3)
+    data = np.arange(np.prod(shape), dtype=np.uint8).reshape(shape)
+    pipeline, node_id = _pipeline_with("otsu_threshold")
+
+    pipeline.run(data, input_metadata=input_metadata)
+
+    assert pipeline.outputs[node_id].shape == data.shape
+    assert pipeline.outputs[node_id].dtype == bool
 
 
 def test_born_wolf_axis_preflight_requires_resolved_metadata():

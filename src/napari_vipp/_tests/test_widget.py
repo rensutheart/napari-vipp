@@ -22,6 +22,7 @@ from qtpy.QtGui import (
     QAction,
     QCloseEvent,
     QColor,
+    QImage,
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
@@ -52,6 +53,7 @@ from napari_vipp._graph import (
     BLOCKED_EXECUTION_ACCENT,
     STALE_EXECUTION_ACCENT,
     ComputeBadgeKind,
+    ImageSourceMimePayload,
     PortLabelMode,
     ThumbnailStatsBadgeKind,
 )
@@ -2433,6 +2435,29 @@ def test_gpu_memory_preflight_error_is_attached_to_every_affected_node(qtbot):
         "gaussian": failure.message,
         median.id: failure.message,
     }
+
+
+def test_compute_preflight_error_is_attached_to_rejecting_node(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    failure = PipelineExecutionFailure(
+        kind="compute_preflight",
+        error_type="ComputePreflightError",
+        message="Otsu threshold channel_axis 64 is out of range for 3D input.",
+        reason_code="compute_preflight_rejected",
+        node_ids=("threshold",),
+        cleanup_succeeded=True,
+    )
+
+    messages = widget._background_pipeline_failure_messages(
+        None,
+        {"gaussian", "threshold"},
+        "gaussian",
+        failure.message,
+        failure,
+    )
+
+    assert messages == {"threshold": failure.message}
 
 
 def test_small_auto_wait_keeps_qt_cancel_action_responsive(qtbot, monkeypatch):
@@ -6165,6 +6190,608 @@ def test_image_source_node_loads_common_raster_file(qtbot, tmp_path):
     assert widget.pipeline.output_states["input"].source.format == "png"
 
 
+def test_dropped_image_path_uses_normal_source_edit_and_is_undoable(
+    qtbot,
+    tmp_path,
+):
+    data = np.arange(30, dtype=np.uint8).reshape(5, 6)
+    path = tmp_path / "dropped source.png"
+    iio.imwrite(path, data)
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.pipeline.nodes["input"].params.update(
+        series_index=0,
+        binding_mode="collection",
+        axis_declaration="",
+    )
+    before = deepcopy(widget.pipeline.nodes["input"].params)
+    undo_count = len(widget._undo_stack)
+
+    widget.graph_view.image_source_open_requested.emit(
+        "input",
+        ImageSourceMimePayload(local_path=str(path)),
+    )
+
+    node = widget.pipeline.nodes["input"]
+    assert node.params["source_mode"] == "file path"
+    assert Path(node.params["file_path"]) == path.resolve()
+    assert node.params["series_index"] == 0
+    assert node.params["binding_mode"] == "single item"
+    assert node.params["axis_declaration"] == ""
+    assert widget._selected_node_id == "input"
+    assert len(widget._undo_stack) == undo_count + 1
+
+    widget._debounce_timer.stop()
+    widget.run_pipeline()
+
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], data)
+
+    widget.undo()
+
+    restored = widget.pipeline.nodes["input"].params
+    for name, value in before.items():
+        assert restored.get(name) == value
+
+
+def test_pasted_qimage_becomes_unique_rgb_layer_bound_to_source(qtbot):
+    viewer = _Viewer()
+    viewer.add_image(
+        np.zeros((2, 2, 3), dtype=np.uint8),
+        name="Pasted image",
+        rgb=True,
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    image = QImage(3, 2, QImage.Format_RGBA8888)
+    image.fill(QColor(12, 34, 56, 78))
+
+    widget.graph_view.image_source_open_requested.emit(
+        "input",
+        ImageSourceMimePayload(image=image),
+    )
+
+    node = widget.pipeline.nodes["input"]
+    assert node.params["source_mode"] == "napari layer"
+    assert node.params["layer_name"] == "Pasted image 2"
+    layer = viewer.layers["Pasted image 2"]
+    assert layer.rgb
+    assert layer.data.shape == (2, 3, 4)
+    np.testing.assert_array_equal(layer.data[0, 0], [12, 34, 56, 78])
+    assert layer.metadata["axes"] == "Y,X,rgba"
+
+    widget._debounce_timer.stop()
+    widget.run_pipeline()
+
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], layer.data)
+    assert widget.pipeline.output_states["input"].kind == "RGBA image"
+
+
+def test_pasted_source_inspect_refresh_does_not_requeue_live_revision_forever(
+    qtbot,
+    monkeypatch,
+):
+    viewer = ViewerModel()
+    widget = VippWidget(
+        viewer,
+        defer_initial_run=True,
+        initial_compute_mode="auto",
+    )
+    qtbot.addWidget(widget)
+    source = widget.pipeline.nodes["input"]
+    source.params.update(
+        source_mode="sample",
+        sample_name="VIPP synthetic volume",
+    )
+    assert widget.run_initial_pipeline_once()
+    assert widget.pipeline.outputs["input"].shape == (12, 96, 128)
+
+    # Selecting Image Source makes every incremental source result refresh the
+    # Inspect layer. Restoring napari's dimensional step during that refresh
+    # must not make a presentation-only ``set_data`` event look like a new
+    # scientific revision and recursively requeue the same pasted source.
+    widget.graph_view.select_node("input")
+    widget.pipeline.set_param("gaussian", "channel_axis", 2)
+    assert widget.pipeline.nodes["threshold"].params["channel_axis"] == -1
+    widget._mark_pipeline_dirty("gaussian")
+
+    run_attempts: list[frozenset[str]] = []
+    terminal_run_ids: list[int] = []
+    original_start = widget._start_background_pipeline_run
+    original_finished = widget._on_background_pipeline_finished
+
+    def record_start(*args, **kwargs):
+        dirty_node_ids = args[7]
+        run_attempts.append(
+            frozenset(
+                widget.pipeline.nodes
+                if dirty_node_ids is None
+                else dirty_node_ids
+            )
+        )
+        # Bound a regression failure without masking it: three discarded runs
+        # already prove the loop, and the fourth attempted dispatch is dropped
+        # so the Qt test can report normally instead of spinning forever.
+        if len(run_attempts) >= 4:
+            return None
+        return original_start(*args, **kwargs)
+
+    def record_finished(result):
+        terminal_run_ids.append(result.run_id)
+        return original_finished(result)
+
+    monkeypatch.setattr(widget, "_start_background_pipeline_run", record_start)
+    monkeypatch.setattr(widget, "_on_background_pipeline_finished", record_finished)
+
+    image = QImage(20, 16, QImage.Format_RGB888)
+    image.fill(QColor(20, 40, 80))
+    assert widget._open_image_on_source_node(
+        "input",
+        ImageSourceMimePayload(image=image),
+    )
+    qtbot.waitUntil(
+        lambda: (
+            len(run_attempts) >= 4
+            or (
+                "Pipeline error" in widget.status_label.text()
+                and widget._active_pipeline_run_id is None
+            )
+        ),
+        timeout=15_000,
+    )
+    QApplication.processEvents()
+
+    assert run_attempts == [frozenset({"input", "gaussian", "threshold"})]
+    assert len(terminal_run_ids) == 1
+    assert widget._active_pipeline_run_id is None
+    assert not widget._pipeline_run_pending
+    assert widget.pipeline.nodes["input"].params["layer_name"] == "Pasted image"
+    assert "Pipeline error" in widget.status_label.text()
+    assert "channel axis" in widget.status_label.text().lower()
+
+
+def test_failed_rgb_source_replacement_clears_incompatible_downstream_results(
+    qtbot,
+):
+    old = np.zeros((12, 24, 32), dtype=np.uint8)
+    old[:, 9:13, :] = 180
+    viewer = ViewerModel()
+    viewer.add_image(old, name="old", metadata={"axes": "ZYX"})
+    widget = VippWidget(
+        viewer,
+        defer_initial_run=True,
+        initial_compute_mode="auto",
+    )
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and widget._active_thumbnail_contrast_run_id is None
+            and not widget._pipeline_run_pending
+        ),
+        timeout=15_000,
+    )
+    old_gaussian = widget.pipeline.outputs["gaussian"]
+    old_threshold = widget.pipeline.outputs["threshold"]
+    assert old_gaussian is not None
+    assert old_threshold is not None
+
+    widget.pipeline.set_param("gaussian", "channel_axis", 2)
+    # Otsu deliberately remains scalar.  Its explicit-RGB validation fails the
+    # Auto segment after the source boundary has already completed.
+    assert widget.pipeline.nodes["threshold"].params["channel_axis"] == -1
+    widget._mark_pipeline_dirty("gaussian")
+    image = QImage(20, 16, QImage.Format_RGB888)
+    image.fill(QColor(0, 0, 0))
+    for y in range(4, 12):
+        for x in range(5, 15):
+            image.setPixelColor(x, y, QColor(255, 128, 16))
+    assert widget._open_image_on_source_node(
+        "input",
+        ImageSourceMimePayload(image=image, suggested_name="replacement"),
+    )
+    widget._debounce_timer.stop()
+
+    widget.run_pipeline(force_sync=True)
+    QApplication.processEvents()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None and not widget._pipeline_run_pending
+        ),
+        timeout=15_000,
+    )
+
+    assert widget.pipeline.outputs["input"].shape == (16, 20, 3)
+    assert widget.pipeline.outputs["gaussian"] is None
+    assert widget.pipeline.outputs["threshold"] is None
+    assert old_gaussian is not widget.pipeline.outputs["gaussian"]
+    assert old_threshold is not widget.pipeline.outputs["threshold"]
+    assert "Results from the previous source were cleared" in (
+        widget.status_label.text()
+    )
+    assert (
+        sum(
+            layer.metadata.get("napari_vipp_kind") == "inspect"
+            for layer in viewer.layers
+        )
+        <= 1
+    )
+
+    widget.pipeline.set_param("threshold", "channel_axis", 2)
+    widget._mark_pipeline_dirty("threshold")
+    widget.run_pipeline(force_sync=True)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None and not widget._pipeline_run_pending
+        ),
+        timeout=15_000,
+    )
+
+    assert widget.pipeline.outputs["gaussian"].shape == (16, 20, 3)
+    assert widget.pipeline.outputs["threshold"].shape == (16, 20)
+
+
+def test_failed_rgb_source_replacement_refreshes_synchronous_cpu_surfaces(
+    qtbot,
+):
+    old = np.zeros((8, 18, 24), dtype=np.uint8)
+    old[:, 6:11, :] = 180
+    viewer = ViewerModel()
+    viewer.add_image(old, name="old", metadata={"axes": "ZYX"})
+    widget = VippWidget(
+        viewer,
+        defer_initial_run=True,
+        initial_compute_mode="cpu",
+    )
+    qtbot.addWidget(widget)
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
+    widget.run_pipeline(force_sync=True)
+    widget.inspect_node("threshold")
+
+    threshold_card = widget.graph_view._cards["threshold"]
+    assert widget.graph_view.node_has_thumbnail("threshold")
+    assert threshold_card.metadata_label.text() != "No output"
+    assert len(widget._owned_inspect_layers()) == 1
+
+    widget.pipeline.set_param("gaussian", "channel_axis", 2)
+    assert widget.pipeline.nodes["threshold"].params["channel_axis"] == -1
+    widget._mark_pipeline_dirty("gaussian")
+    image = QImage(19, 13, QImage.Format_RGB888)
+    image.fill(QColor(20, 40, 80))
+    assert widget._open_image_on_source_node(
+        "input",
+        ImageSourceMimePayload(image=image, suggested_name="replacement"),
+    )
+    widget._debounce_timer.stop()
+    # Re-inspect the still-cached threshold result after the source edit. The
+    # synchronous failure must retire this old-generation presentation.
+    widget.graph_view.select_node("threshold")
+    assert widget._owned_inspect_layers()[0].metadata.get("node_id") == "threshold"
+
+    # CPU execution is synchronous and publishes the replacement source and
+    # Gaussian result before Otsu rejects its scalar interpretation of RGB.
+    widget.run_pipeline(force_sync=True)
+    QApplication.processEvents()
+
+    assert widget.pipeline.outputs["input"].shape == (13, 19, 3)
+    assert widget.pipeline.outputs["gaussian"].shape == (13, 19, 3)
+    assert widget.pipeline.outputs["threshold"] is None
+    assert not widget.graph_view.node_has_thumbnail("threshold")
+    assert threshold_card.metadata_label.text() == "No output"
+    assert widget._owned_inspect_layers() == []
+    assert "Pipeline error" in widget.status_label.text()
+
+
+def test_source_failure_invalidation_keeps_independent_source_branch(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    independent_source = widget.pipeline.add_node("input")
+    independent_blur = widget.pipeline.add_node("gaussian_blur")
+    assert widget.pipeline.connect(
+        independent_source.id,
+        independent_blur.id,
+    ).success
+    independent_data = np.full((3, 4), 23, dtype=np.uint8)
+    for node_id in (independent_source.id, independent_blur.id):
+        widget.pipeline.outputs[node_id] = independent_data
+        widget.pipeline.node_outputs[node_id] = [independent_data]
+        widget.pipeline.completed_node_ids.add(node_id)
+
+    widget._last_pipeline_source_signature = (
+        "sources",
+        (
+            ("input", "old primary", ("object", 1, 1)),
+            (independent_source.id, "independent", ("object", 2, 2)),
+        ),
+        ("batch-parameter-overrides-v1", "old override"),
+    )
+    replacement_signature = (
+        "sources",
+        (
+            ("input", "new primary", ("object", 3, 3)),
+            (independent_source.id, "independent", ("object", 2, 2)),
+        ),
+        ("batch-parameter-overrides-v1", "new override"),
+    )
+
+    assert widget._source_nodes_changed_since_last_run(replacement_signature) == {
+        "input"
+    }
+    discarded = widget._discard_results_from_previous_source_generation(
+        replacement_signature,
+        {"input"},
+        set(widget.pipeline.nodes),
+    )
+
+    assert {"gaussian", "threshold"} <= discarded
+    assert independent_source.id not in discarded
+    assert independent_blur.id not in discarded
+    assert widget.pipeline.outputs[independent_source.id] is independent_data
+    assert widget.pipeline.outputs[independent_blur.id] is independent_data
+
+
+def test_replaced_source_no_result_clears_mismatched_inspect_group(qtbot):
+    old = np.zeros((7, 16, 20), dtype=np.uint8)
+    old[:, 5:10, :] = 190
+    viewer = ViewerModel()
+    viewer.add_image(old, name="old", metadata={"axes": "ZYX"})
+    widget = VippWidget(
+        viewer,
+        defer_initial_run=True,
+        initial_compute_mode="cpu",
+    )
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+
+    # Keep the selected node distinct from both stale Inspect payloads. This
+    # recreates the inconsistent layer group that an older re-entrant refresh
+    # could leave behind.
+    widget.graph_view.select_node("input")
+    canonical = widget._owned_inspect_layers()[0]
+    canonical.data = np.array(widget.pipeline.outputs["threshold"], copy=True)
+    canonical.metadata = {
+        **dict(canonical.metadata),
+        "napari_vipp_kind": "inspect",
+        "node_id": "threshold",
+    }
+    with widget._suspend_viewer_layer_change_handling():
+        viewer.add_image(
+            np.array(widget.pipeline.outputs["gaussian"], copy=True),
+            name="VIPP Inspect [1]",
+            metadata={
+                **dict(canonical.metadata),
+                "napari_vipp_kind": "inspect",
+                "node_id": "gaussian",
+            },
+        )
+    assert widget._selected_node_id == "input"
+    assert {
+        layer.metadata.get("node_id") for layer in widget._owned_inspect_layers()
+    } == {"gaussian", "threshold"}
+
+    replacement_signature = (
+        "sources",
+        (("input", "replacement", ("object", 501, 502)),),
+        ("batch-parameter-overrides-v1", "replacement override"),
+    )
+    run_id = 704
+    runnable = frozenset({"input", "gaussian", "threshold"})
+    widget._active_pipeline_run_id = run_id
+    widget._pipeline_cancel_events[run_id] = threading.Event()
+    widget._pipeline_run_context[run_id] = (
+        None,
+        "replacement",
+        "input",
+        replacement_signature,
+        set(runnable),
+        ComputeRequest(mode=ComputeMode.CPU),
+        runnable,
+    )
+    widget._begin_pipeline_dispatch(set(runnable))
+    widget._set_pipeline_busy(True, "input")
+
+    widget._on_background_pipeline_finished(PipelineRunResult(run_id, {}))
+
+    for node_id in runnable:
+        assert widget.pipeline.outputs[node_id] is None
+        assert not widget.graph_view.node_has_thumbnail(node_id)
+        assert widget.graph_view._cards[node_id].metadata_label.text() == "No output"
+    assert widget._owned_inspect_layers() == []
+    assert widget.pipeline_busy_bar.isHidden()
+    assert "Results from the previous source were cleared" in (
+        widget.status_label.text()
+    )
+
+
+@pytest.mark.parametrize(
+    "cleanup_failed",
+    (
+        pytest.param(False, id="cancelled"),
+        pytest.param(True, id="cleanup-failed"),
+    ),
+)
+def test_replaced_source_terminal_stop_clears_old_results(
+    qtbot,
+    cleanup_failed,
+):
+    viewer = ViewerModel()
+    viewer.add_image(
+        np.ones((5, 12, 14), dtype=np.uint8) * 96,
+        name="old",
+        metadata={"axes": "ZYX"},
+    )
+    widget = VippWidget(
+        viewer,
+        defer_initial_run=True,
+        initial_compute_mode="cpu",
+    )
+    qtbot.addWidget(widget)
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
+    widget.run_pipeline(force_sync=True)
+    widget.inspect_node("threshold")
+    assert all(
+        widget.pipeline.outputs[node_id] is not None
+        for node_id in ("input", "gaussian", "threshold")
+    )
+    assert len(widget._owned_inspect_layers()) == 1
+
+    replacement_signature = (
+        "sources",
+        (("input", "replacement", ("object", 601, 602)),),
+    )
+    run_id = 705 if cleanup_failed else 706
+    runnable = frozenset({"input", "gaussian", "threshold"})
+    widget._active_pipeline_run_id = run_id
+    widget._pipeline_cancel_events[run_id] = threading.Event()
+    widget._pipeline_run_context[run_id] = (
+        None,
+        "replacement",
+        "threshold",
+        replacement_signature,
+        set(runnable),
+        ComputeRequest(mode=ComputeMode.CPU),
+        runnable,
+    )
+    widget._begin_pipeline_dispatch(set(runnable))
+    widget._set_pipeline_busy(True, "threshold")
+    failure = (
+        PipelineExecutionFailure(
+            kind="cancelled",
+            error_type="RuntimeCleanupError",
+            message="synthetic cleanup failure",
+            cleanup_succeeded=False,
+        )
+        if cleanup_failed
+        else None
+    )
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(
+            run_id,
+            {},
+            cancelled=True,
+            failure=failure,
+        )
+    )
+
+    assert all(widget.pipeline.outputs[node_id] is None for node_id in runnable)
+    assert widget._owned_inspect_layers() == []
+    assert widget._active_pipeline_run_id is None
+    assert widget.pipeline_busy_bar.isHidden()
+    assert "Results from the previous source were cleared" in (
+        widget.status_label.text()
+    )
+
+
+@pytest.mark.parametrize(
+    ("image_format", "component_axis", "image_kind"),
+    (
+        pytest.param(QImage.Format_RGB888, "rgb", "RGB image", id="rgb"),
+        pytest.param(QImage.Format_RGBA8888, "rgba", "RGBA image", id="rgba"),
+    ),
+)
+def test_pasted_qimage_thumbnail_preserves_encoded_channel_order(
+    qtbot,
+    image_format,
+    component_axis,
+    image_kind,
+):
+    viewer = _Viewer()
+    widget = VippWidget(viewer, defer_initial_run=True)
+    qtbot.addWidget(widget)
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
+    image = QImage(3, 2, image_format)
+    image.fill(QColor(0, 0, 0, 255))
+    image.setPixelColor(0, 0, QColor(255, 0, 0, 255))
+    image.setPixelColor(2, 1, QColor(0, 0, 255, 255))
+
+    widget.graph_view.image_source_open_requested.emit(
+        "input",
+        ImageSourceMimePayload(image=image),
+    )
+
+    layer = viewer.layers["Pasted image"]
+    assert layer.metadata["axes"] == f"Y,X,{component_axis}"
+
+    widget._debounce_timer.stop()
+    widget.run_pipeline()
+
+    state = widget.pipeline.output_states["input"]
+    assert state.kind == image_kind
+    assert [axis.name for axis in state.axes] == ["y", "x", component_axis]
+    rendered = widget.graph_view._cards["input"].preview.source_pixmap().toImage()
+    assert rendered.pixelColor(0, 0).getRgb()[:3] == (255, 0, 0)
+    assert rendered.pixelColor(
+        rendered.width() - 1,
+        rendered.height() - 1,
+    ).getRgb()[:3] == (0, 0, 255)
+
+
+def test_pasted_qimage_does_not_autobind_other_empty_sources(qtbot):
+    viewer = _Viewer()
+    viewer.layers.clear()
+    viewer.layers.selection = _LayerSelection(viewer.layers)
+    widget = VippWidget(viewer, defer_initial_run=True)
+    qtbot.addWidget(widget)
+    target = widget.add_node_from_palette("input")
+    other = widget.pipeline.nodes["input"]
+    before_target = deepcopy(target.params)
+    before_other = deepcopy(other.params)
+    widget._history.clear()
+
+    original_add_image = viewer.add_image
+
+    def add_image_with_synchronous_insert_event(data, **kwargs):
+        layer = original_add_image(data, **kwargs)
+        viewer.layers.events.inserted.emit()
+        return layer
+
+    viewer.add_image = add_image_with_synchronous_insert_event
+    image = QImage(3, 2, QImage.Format_RGB888)
+    image.fill(QColor(12, 34, 56))
+
+    widget.graph_view.image_source_open_requested.emit(
+        target.id,
+        ImageSourceMimePayload(image=image),
+    )
+
+    assert target.params["layer_name"] == "Pasted image"
+    assert other.params == before_other
+    target_payload, target_layer = widget._resolve_source_payload(target)
+    other_payload, other_layer = widget._resolve_source_payload(other)
+    assert target_payload is not None
+    assert target_layer is viewer.layers["Pasted image"]
+    assert other_payload is None
+    assert other_layer is None
+    assert len(widget._undo_stack) == 1
+    previous_nodes = {
+        node.id: node.params for node in widget._undo_stack[0].workflow.graph.nodes
+    }
+    assert previous_nodes[target.id] == before_target
+    assert previous_nodes[other.id] == before_other
+
+    widget._debounce_timer.stop()
+    widget.undo()
+
+    assert widget.pipeline.nodes[target.id].params == before_target
+    assert widget.pipeline.nodes[other.id].params == before_other
+    target_payload, target_layer = widget._resolve_source_payload(
+        widget.pipeline.nodes[target.id]
+    )
+    assert target_payload is None
+    assert target_layer is None
+
+    widget.redo()
+
+    assert widget.pipeline.nodes[target.id].params["layer_name"] == "Pasted image"
+    assert widget.pipeline.nodes[other.id].params == before_other
+    target_payload, target_layer = widget._resolve_source_payload(
+        widget.pipeline.nodes[target.id]
+    )
+    assert target_payload is not None
+    assert target_layer is viewer.layers["Pasted image"]
+
+
 def test_file_source_is_one_owned_read_only_snapshot_until_refresh(
     qtbot,
     tmp_path,
@@ -8834,6 +9461,42 @@ def test_rgb_axis_control_does_not_treat_shape_as_explicit_semantics(qtbot):
     widget.graph_view.select_node(node.id)
 
     assert "channel_axis" in widget._parameter_widgets
+
+
+def test_channel_axis_bounds_use_projected_pending_input_contract(qtbot):
+    data = np.zeros((8, 9, 3), dtype=np.uint8)
+    widget = VippWidget(
+        _Viewer(data, metadata={"axes": "Y,X,rgb"}),
+        defer_initial_run=True,
+    )
+    qtbot.addWidget(widget)
+    widget.pipeline.set_param("gaussian", "channel_axis", 2)
+
+    # No pixel result exists yet, and Otsu's scalar default rejects the encoded
+    # RGB contract.  Its inspector can still project Gaussian's input rank from
+    # the detached metadata-only preflight.
+    assert widget.pipeline.input_data_for_node("threshold") is None
+    assert widget.pipeline.input_state_for_node("threshold") is None
+    widget.graph_view.select_node("threshold")
+
+    control = widget._parameter_widgets["channel_axis"]
+    assert control.slider.minimum() == -1
+    assert control.slider.maximum() == 2
+    assert control.value_box.minimum() == -1
+    assert control.value_box.maximum() == 2
+
+
+def test_disconnected_channel_axis_control_has_no_fictitious_axes(qtbot):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("otsu_threshold")
+    widget.graph_view.select_node(node.id)
+
+    control = widget._parameter_widgets["channel_axis"]
+    assert control.slider.minimum() == -1
+    assert control.slider.maximum() == -1
+    assert control.value_box.minimum() == -1
+    assert control.value_box.maximum() == -1
 
 
 def test_parameter_dependent_visibility_refreshes_and_preserves_values(qtbot):
@@ -17945,6 +18608,63 @@ def test_finish_refreshes_selected_inspection_layer_only_once(qtbot, monkeypatch
     widget._finish_pipeline_update(None, "input volume")
 
     assert calls == ["inspect-selected"]
+
+
+def test_finish_clears_busy_state_when_result_display_fails(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.preview_mode_combo.setCurrentText("Off")
+
+    def fail_display():
+        raise RuntimeError("generated layer failed")
+
+    monkeypatch.setattr(widget, "_inspect_selected_node", fail_display)
+
+    widget._finish_pipeline_update(None, "input volume")
+
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+    assert "Result calculated" in widget.status_label.text()
+    assert "generated layer failed" in widget.status_label.text()
+
+
+def test_completed_background_node_clears_processing_when_presentation_fails(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    qtbot.addWidget(widget)
+    data = np.zeros((8, 9), dtype=np.float32)
+    state = image_state_from_array(data, layer_metadata={"axes": "YX"})
+    widget._active_pipeline_run_id = 902
+    widget.graph_view.set_node_processing("gaussian", True)
+    monkeypatch.setattr(widget, "_update_node_thumbnail", lambda *_a, **_k: None)
+
+    def fail_presentation(*_args, **_kwargs):
+        raise RuntimeError("progressive display failed")
+
+    monkeypatch.setattr(
+        widget,
+        "_refresh_node_presentation_surfaces",
+        fail_presentation,
+    )
+
+    widget._on_background_pipeline_node_finished(
+        PipelineNodeResult(
+            run_id=902,
+            node_id="gaussian",
+            operation_id=widget.pipeline.nodes["gaussian"].operation_id,
+            output=data,
+            output_state=state,
+            node_outputs=(data,),
+            node_output_states=(state,),
+            execution_state=EXECUTION_READY,
+        )
+    )
+
+    assert not widget.graph_view._cards["gaussian"].is_processing()
+    assert "Result calculated" in widget.status_label.text()
+    assert "progressive display failed" in widget.status_label.text()
 
 
 def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch):
@@ -27394,6 +28114,72 @@ def test_renamed_inspect_layer_is_reused_and_reset_without_duplicate(qtbot):
         )
         == 1
     )
+
+
+def test_owned_inspect_duplicates_are_reconciled_and_discarded(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    canonical = widget._generated_layers_for_name("VIPP Inspect")[0]
+    duplicate = viewer.add_image(
+        np.array(canonical.data, copy=True),
+        name="VIPP Inspect [1]",
+        metadata=dict(canonical.metadata),
+    )
+    assert duplicate is not canonical
+    assert len(widget._owned_inspect_layers()) == 2
+
+    widget.inspect_node("gaussian")
+
+    assert widget._owned_inspect_layers() == [canonical]
+
+    viewer.add_image(
+        np.array(canonical.data, copy=True),
+        name="VIPP Inspect [1]",
+        metadata=dict(canonical.metadata),
+    )
+    widget._discard_inspect_layers()
+
+    assert widget._owned_inspect_layers() == []
+
+
+def test_inspect_replacement_suppresses_reentrant_layer_list_run(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    changed_binding_checks = []
+    nested_runs = []
+    original_remove = widget._remove_layer
+
+    def remove_and_emit(layer):
+        original_remove(layer)
+        viewer.layers.events.removed.emit()
+
+    def changed_bindings():
+        changed_binding_checks.append(True)
+        return {"input"}
+
+    def nested_run():
+        nested_runs.append(True)
+        widget.inspect_node("gaussian")
+
+    monkeypatch.setattr(widget, "_remove_layer", remove_and_emit)
+    monkeypatch.setattr(widget, "_changed_live_source_bindings", changed_bindings)
+    monkeypatch.setattr(widget, "run_pipeline", nested_run)
+    monkeypatch.setattr(
+        widget,
+        "_generated_layer_needs_replacement",
+        lambda *_args, **_kwargs: True,
+    )
+
+    widget.inspect_node("gaussian")
+
+    assert changed_binding_checks == []
+    assert nested_runs == []
+    assert len(widget._owned_inspect_layers()) == 1
 
 
 def test_inspect_name_collision_does_not_mutate_unrelated_layer(qtbot):

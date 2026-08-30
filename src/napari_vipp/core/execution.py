@@ -1773,6 +1773,11 @@ def _pipeline_execution_failure(
         )
 
     if error_type == "ComputePreflightError":
+        failed_node_ids = tuple(
+            str(getattr(item, "node_id", "")).strip()
+            for item in getattr(exc, "failures", ())
+            if str(getattr(item, "node_id", "")).strip()
+        )
         return PipelineExecutionFailure(
             kind="compute_preflight",
             error_type=error_type,
@@ -1780,6 +1785,7 @@ def _pipeline_execution_failure(
             reason_code="compute_preflight_rejected",
             cleanup_succeeded=True,
             fallback_records=fallback_records,
+            node_ids=failed_node_ids,
         )
 
     if isinstance(exc, MemoryError):
@@ -1978,6 +1984,46 @@ def _execute_accelerated_pipeline(
                 pipeline.commit_node_results(execution, node_id, results)
                 if node_finished_callback is not None:
                     node_finished_callback(node_id)
+            # Axis/rank contracts depend only on detached source metadata and
+            # graph parameters.  Validate the exact runnable frontier before
+            # runtime-library probing or workload/fact planning.  Apart from
+            # avoiding needless accelerator startup, this guarantees that a
+            # source card followed by an invalid downstream axis reports a
+            # terminal graph error immediately instead of appearing to remain
+            # on the Image Source step.
+            preflight_workflow = deserialize_workflow(deepcopy(request.workflow))
+            preflight_pipeline = PrototypePipeline()
+            preflight_pipeline.restore_graph(
+                preflight_workflow["nodes"],
+                preflight_workflow["connections"],
+                preflight_workflow.get("output_tunnels", ()),
+                atomic_bypass_profile=request.atomic_bypass_profile,
+            )
+            preflight_payloads = dict(request.source_payloads)
+            for preflight_node_id, preflight_node in preflight_pipeline.nodes.items():
+                if (
+                    preflight_node_id not in preflight_payloads
+                    and not preflight_pipeline.operation_spec(
+                        preflight_node.operation_id
+                    ).has_input
+                ):
+                    preflight_payloads[preflight_node_id] = SourcePayload(
+                        request.input_data,
+                        request.input_metadata,
+                        request.input_name,
+                    )
+            try:
+                preflight_pipeline.preflight_axis_contract(
+                    preflight_payloads,
+                    target_node_ids=schedule.runnable_node_ids,
+                )
+            except Exception as exc:
+                failing_node_id = str(
+                    getattr(exc, "failing_node_id", "") or ""
+                ).strip()
+                if failing_node_id in pipeline.nodes:
+                    pipeline.set_node_execution_error(failing_node_id, str(exc))
+                raise
         workloads, array_facts, preflight_environment = _build_workloads(
             pipeline,
             schedule.runnable_node_ids,

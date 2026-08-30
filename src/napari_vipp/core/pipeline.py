@@ -5497,6 +5497,14 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
 )
 
 NODE_LIBRARY_BY_ID = {spec.id: spec for spec in NODE_LIBRARY}
+_LUMA_CHANNEL_AXIS_OPERATION_IDS = frozenset(
+    spec.id
+    for spec in NODE_LIBRARY
+    if any(
+        parameter is SCALAR_LUMA_CHANNEL_AXIS_PARAMETER
+        for parameter in spec.parameters
+    )
+)
 _RESOLVED_SPATIAL_PARAMETER_OPERATION_IDS = frozenset(
     spec.id
     for spec in NODE_LIBRARY
@@ -8516,23 +8524,35 @@ class PrototypePipeline:
             for node_id in runnable:
                 node = self.nodes[node_id]
                 spec = self.operation_spec(node.operation_id)
-                if not spec.has_input:
-                    results = self.source_node_results(
-                        node_id,
-                        None,
-                        None,
-                        "",
-                        source_payloads,
-                        defer_statistics=True,
-                    )
-                elif self.node_is_bypassed(node_id):
-                    results = self.bypass_node_results(node_id)
-                else:
-                    call = self.prepare_node_call(
-                        node_id,
-                        axis_contract_only=True,
-                    )
-                    results = self._axis_contract_preflight_results(call)
+                try:
+                    if not spec.has_input:
+                        results = self.source_node_results(
+                            node_id,
+                            None,
+                            None,
+                            "",
+                            source_payloads,
+                            defer_statistics=True,
+                        )
+                    elif self.node_is_bypassed(node_id):
+                        results = self.bypass_node_results(node_id)
+                    else:
+                        call = self.prepare_node_call(
+                            node_id,
+                            axis_contract_only=True,
+                        )
+                        results = self._axis_contract_preflight_results(call)
+                except Exception as exc:
+                    # Preserve the original public exception and message while
+                    # attaching the exact graph boundary for detached/UI error
+                    # attribution.  AmbiguousAxisError already carries this in
+                    # most paths; ordinary bounds validation errors do not.
+                    if not str(getattr(exc, "failing_node_id", "") or ""):
+                        try:
+                            exc.failing_node_id = node_id
+                        except Exception:
+                            pass
+                    raise
                 self.commit_node_results(execution, node_id, results)
 
     def _axis_contract_preflight_results(
@@ -9281,6 +9301,22 @@ class PrototypePipeline:
         for node_id in list(self.nodes):
             if node_id not in retained:
                 self._clear_cached_output(node_id)
+
+    def discard_cached_results(self, node_ids: Iterable[str]) -> set[str]:
+        """Forget cached scientific results that are no longer compatible.
+
+        Unlike ordinary stale marking, this removes the arrays as well as their
+        provenance.  Callers use it when a previous result cannot truthfully be
+        presented as belonging to the current source generation.
+        """
+
+        discarded = {node_id for node_id in node_ids if node_id in self.nodes}
+        for node_id in discarded:
+            self._clear_cached_output(node_id)
+            self.node_cache_lineage.pop(node_id, None)
+            self.node_execution_states[node_id] = EXECUTION_NOT_CALCULATED
+            self.node_execution_messages[node_id] = ""
+        return discarded
 
     def _prune_completed_outputs(
         self,
@@ -10584,6 +10620,8 @@ def _validate_operation_axis_semantics(
     kwargs: dict[str, Any],
 ) -> None:
     image_state = state if isinstance(state, ImageState) else None
+    if node.operation_id in _LUMA_CHANNEL_AXIS_OPERATION_IDS:
+        _validate_luma_channel_axis_semantics(node, image_state, kwargs)
     if node.operation_id == "crop_stack":
         _validate_crop_stack_semantics(
             image_state,
@@ -10640,6 +10678,46 @@ def _validate_operation_axis_semantics(
             operation_title=node.title,
             purpose="derive PSF sampling and channel parameters",
         )
+
+
+def _validate_luma_channel_axis_semantics(
+    node: GraphNode,
+    state: ImageState | None,
+    kwargs: Mapping[str, Any],
+) -> None:
+    """Require luma reduction when metadata declares encoded colour."""
+    if state is None or kwargs.get("channel_axis") is not None:
+        return
+
+    encoded_axes = tuple(
+        (index, axis)
+        for index, axis in enumerate(state.axes)
+        if axis.is_explicit
+        and axis.name.strip().casefold() in {"rgb", "rgba"}
+    )
+    if not encoded_axes:
+        return
+
+    if len(encoded_axes) == 1:
+        index, axis = encoded_axes[0]
+        declaration = f"encoded {axis.name.strip().upper()} on axis {index}"
+        guidance = (
+            f"Set RGB/RGBA channel axis to {index} to reduce it to luminance"
+        )
+    else:
+        declaration = "encoded colour on axes " + ", ".join(
+            str(index) for index, _axis in encoded_axes
+        )
+        guidance = "Select the intended RGB/RGBA channel axis"
+
+    raise AmbiguousAxisError(
+        f"{node.title} input metadata declares {declaration}, but RGB/RGBA "
+        f"channel axis is -1 (scalar). {guidance}, or correct the input axis "
+        "metadata.",
+        code="encoded_color_requires_channel_axis",
+        detected_axes=state.axis_order,
+        failing_node_id=node.id,
+    )
 
 
 def _validate_crop_stack_semantics(
@@ -11003,35 +11081,78 @@ def _validate_positional_spatial_layout(
         effective_axes.pop(int(channel_axis))
 
     required_names = ("z", "y", "x")[-required_rank:]
+    if _matches_positional_spatial_layout(effective_axes, required_names):
+        return
+
+    detected = "".join(axis.short_label for axis in effective_axes) or "scalar"
+    required = "".join(name.upper() for name in required_names)
+    channel_hint = None
+    if (
+        channel_axis is None
+        and node.operation_id in SCALAR_DEFAULT_CHANNEL_AXIS_OPERATIONS
+    ):
+        channel_hint = _unselected_positional_channel_axis(
+            effective_axes,
+            required_names,
+        )
+    if channel_hint is not None:
+        channel_index, channel = channel_hint
+        guidance = (
+            f" Set Channel axis to {channel_index} ({channel.short_label}) so "
+            "the operation excludes it from the spatial layout. If that axis "
+            "metadata is incorrect, correct it at the source; use Declare axes "
+            "for batch sources."
+        )
+    else:
+        guidance = (
+            " Use Reorder Axes when the axis names are correct but out of "
+            "order. If an axis is named incorrectly, correct it at the source; "
+            "use Declare axes for batch sources."
+        )
+    raise AmbiguousAxisError(
+        f"{node.title} uses positional {required} processing, but the explicit "
+        f"effective axis order is {detected}.{guidance}",
+        code="positional_spatial_layout",
+        detected_axes=detected,
+        required_axes=required,
+        failing_node_id=node.id,
+    )
+
+
+def _matches_positional_spatial_layout(
+    effective_axes: list[Any],
+    required_names: tuple[str, ...],
+) -> bool:
+    required_rank = len(required_names)
     suffix = effective_axes[-required_rank:]
     suffix_names = tuple(axis.name.strip().casefold() for axis in suffix)
     suffix_is_spatial = all(axis.type == "space" for axis in suffix)
     extra_leading_space = required_rank == 3 and any(
         axis.type == "space" for axis in effective_axes[:-required_rank]
     )
-    if (
+    return (
         len(suffix) == required_rank
         and suffix_names == required_names
         and suffix_is_spatial
         and not extra_leading_space
-    ):
-        return
-
-    detected = "".join(axis.short_label for axis in effective_axes) or "scalar"
-    required = "".join(name.upper() for name in required_names)
-    raise AmbiguousAxisError(
-        f"{node.title} uses positional {required} processing, but the explicit "
-        f"effective axis order is {detected}. If the source reports a generic "
-        "or incorrect name, use Declare axes on that batch source to record a "
-        f"reviewed mapping such as {detected} -> {required}. Reorder Axes only "
-        "transposes pixels with their existing axis records; it cannot rename "
-        "an axis such as Q to Z. VIPP will not reinterpret differently named "
-        "axes by position without that explicit declaration.",
-        code="positional_spatial_layout",
-        detected_axes=detected,
-        required_axes=required,
-        failing_node_id=node.id,
     )
+
+
+def _unselected_positional_channel_axis(
+    effective_axes: list[Any],
+    required_names: tuple[str, ...],
+) -> tuple[int, Any] | None:
+    candidates = []
+    for index, axis in enumerate(effective_axes):
+        if not axis.is_explicit or not (
+            axis.type == "channel"
+            or axis.name.strip().casefold() in {"c", "channel", "rgb", "rgba"}
+        ):
+            continue
+        without_channel = effective_axes[:index] + effective_axes[index + 1 :]
+        if _matches_positional_spatial_layout(without_channel, required_names):
+            candidates.append((index, axis))
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _positional_spatial_rank(
