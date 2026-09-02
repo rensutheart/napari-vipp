@@ -8,7 +8,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from qtpy.QtCore import QObject, QRunnable, QSignalBlocker, Qt, QThreadPool, Signal
+from qtpy.QtCore import (
+    QEvent,
+    QObject,
+    QRunnable,
+    QSignalBlocker,
+    Qt,
+    QThreadPool,
+    Signal,
+)
+from qtpy.QtGui import QPalette
 from qtpy.QtWidgets import (
     QApplication,
     QComboBox,
@@ -42,6 +51,9 @@ from napari_vipp.ui.compute_setup import (
     compute_setup_not_checked,
     present_compute_setup,
 )
+from napari_vipp.ui.palette_roles import ThemeColors, theme_colors
+
+_COMPUTE_TONE_PROPERTY = "vippComputeTone"
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +125,7 @@ class ComputeSetupDialog(QDialog):
         self._active_serial: int | None = None
         self._last_report: ComputeDoctorReport | None = None
         self._device_selection_editable = True
+        self._refreshing_tone_styles = False
         self._presentation = compute_setup_not_checked(host_memory=self._host_memory())
 
         self.device_combo = QComboBox()
@@ -330,14 +343,20 @@ class ComputeSetupDialog(QDialog):
             self.save_status_label.setText(
                 f"The support report could not be saved: {type(exc).__name__}: {exc}"
             )
-            self.save_status_label.setStyleSheet(
-                _summary_style(ComputeSetupTone.WARNING)
+            _set_tone_style(
+                self.save_status_label,
+                ComputeSetupTone.WARNING,
+                _effective_palette(self),
             )
             return
         self.save_status_label.setText(
             f"Saved privacy-redacted support report: {target.name}"
         )
-        self.save_status_label.setStyleSheet(_summary_style(ComputeSetupTone.SUCCESS))
+        _set_tone_style(
+            self.save_status_label,
+            ComputeSetupTone.SUCCESS,
+            _effective_palette(self),
+        )
 
     def _on_check_finished(self, result: ComputeSetupCheckResult) -> None:
         if result.serial != self._active_serial:
@@ -347,6 +366,20 @@ class ComputeSetupDialog(QDialog):
         self._apply_presentation(
             present_compute_setup(result.report, host_memory=self._host_memory())
         )
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        """Refresh semantic text after napari changes its live theme."""
+
+        super().changeEvent(event)
+        if event.type() not in (QEvent.PaletteChange, QEvent.StyleChange):
+            return
+        if getattr(self, "_refreshing_tone_styles", False):
+            return
+        self._refreshing_tone_styles = True
+        try:
+            _refresh_tone_labels(self)
+        finally:
+            self._refreshing_tone_styles = False
 
     def _on_device_selection_changed(self, index: int) -> None:
         if index < 0:
@@ -359,7 +392,11 @@ class ComputeSetupDialog(QDialog):
         self._presentation = presentation
         self.title_label.setText(presentation.title)
         self.summary_label.setText(presentation.summary)
-        self.summary_label.setStyleSheet(_summary_style(presentation.tone))
+        _set_tone_style(
+            self.summary_label,
+            presentation.tone,
+            _effective_palette(self),
+        )
         self.next_step_label.setText(presentation.next_step)
         self.next_step_label.setVisible(bool(presentation.next_step))
         self.details_label.setText("\n".join(presentation.details))
@@ -410,7 +447,11 @@ class ComputeSetupDialog(QDialog):
         self.export_button.setEnabled(
             bool(export_action is not None and export_action.enabled)
         )
-        _replace_check_rows(self.check_form, presentation)
+        _replace_check_rows(
+            self.check_form,
+            presentation,
+            palette=_effective_palette(self),
+        )
         _replace_memory_rows(self.memory_form, presentation)
         self.presentation_changed.emit(presentation)
 
@@ -488,6 +529,8 @@ class ComputeSetupDialog(QDialog):
 def _replace_check_rows(
     form: QFormLayout,
     presentation: ComputeSetupPresentation,
+    *,
+    palette: QPalette,
 ) -> None:
     while form.rowCount():
         form.removeRow(0)
@@ -495,7 +538,7 @@ def _replace_check_rows(
         value = QLabel(row.value)
         value.setWordWrap(True)
         value.setToolTip(row.detail)
-        value.setStyleSheet(_summary_style(row.tone))
+        _set_tone_style(value, row.tone, palette)
         form.addRow(row.label, value)
 
 
@@ -552,15 +595,43 @@ def _replace_memory_rows(
         form.addRow(row.label, value)
 
 
-def _summary_style(tone: ComputeSetupTone) -> str:
-    color = {
-        ComputeSetupTone.NEUTRAL: "#cbd5e1",
-        ComputeSetupTone.INFO: "#93c5fd",
-        ComputeSetupTone.SUCCESS: "#86efac",
-        ComputeSetupTone.WARNING: "#fde68a",
-        ComputeSetupTone.ERROR: "#fca5a5",
+def _effective_palette(widget: QWidget) -> QPalette:
+    parent = widget.parentWidget()
+    return QWidget.palette(parent) if parent is not None else QWidget.palette(widget)
+
+
+def _tone_color(tone: ComputeSetupTone, colors: ThemeColors):
+    return {
+        ComputeSetupTone.NEUTRAL: colors.muted_text,
+        ComputeSetupTone.INFO: colors.info.foreground,
+        ComputeSetupTone.SUCCESS: colors.success.foreground,
+        ComputeSetupTone.WARNING: colors.warning.foreground,
+        ComputeSetupTone.ERROR: colors.error.foreground,
     }[tone]
-    return f"color: {color};"
+
+
+def _summary_style(tone: ComputeSetupTone, palette: QPalette) -> str:
+    return f"color: {_tone_color(tone, theme_colors(palette)).name()};"
+
+
+def _set_tone_style(
+    label: QLabel,
+    tone: ComputeSetupTone,
+    palette: QPalette,
+) -> None:
+    label.setProperty(_COMPUTE_TONE_PROPERTY, tone.value)
+    label.setStyleSheet(_summary_style(tone, palette))
+
+
+def _refresh_tone_labels(widget: QWidget) -> None:
+    palette = _effective_palette(widget)
+    for label in widget.findChildren(QLabel):
+        raw_tone = label.property(_COMPUTE_TONE_PROPERTY)
+        try:
+            tone = ComputeSetupTone(str(raw_tone))
+        except ValueError:
+            continue
+        _set_tone_style(label, tone, palette)
 
 
 def _failed_doctor_report(exc: Exception, *, track: str) -> ComputeDoctorReport:

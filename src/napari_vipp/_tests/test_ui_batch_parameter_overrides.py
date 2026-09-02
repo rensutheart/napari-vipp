@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 
 import pytest
+from qtpy.QtGui import QColor, QPalette
 
 from napari_vipp.core.batch_parameters import (
     BatchParameterOverride,
@@ -27,6 +28,15 @@ from napari_vipp.ui.batch_overrides import (
     BatchOverrideSourceItem,
     BatchParameterOverrideEditor,
 )
+from napari_vipp.ui.palette_roles import custom_paint_colors
+
+
+def _theme_palette(*, base: str, alternate: str, text: str) -> QPalette:
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.AlternateBase, QColor(alternate))
+    palette.setColor(QPalette.Text, QColor(text))
+    return palette
 
 
 def _sha(value: str) -> str:
@@ -218,6 +228,28 @@ def test_invalid_cell_is_visible_and_cannot_emit(qtbot):
     assert "#ef4444" in cell.styleSheet()
     with pytest.raises(BatchOverrideEditorError, match="whole number"):
         editor.overrides()
+
+
+def test_override_editor_status_follows_runtime_palette_and_keeps_error_tone(qtbot):
+    editor = BatchParameterOverrideEditor()
+    qtbot.addWidget(editor)
+    light = _theme_palette(
+        base="#ffffff", alternate="#f2f4f7", text="#111827"
+    )
+    editor.setPalette(light)
+
+    assert custom_paint_colors(light).muted_text.name() in (
+        editor.help_label.styleSheet()
+    )
+    editor._show_error("Invalid override")
+    assert "#b91c1c" in editor.status_label.styleSheet()
+
+    dark = _theme_palette(
+        base="#111827", alternate="#1f2937", text="#f8fafc"
+    )
+    editor.setPalette(dark)
+
+    assert "#fca5a5" in editor.status_label.styleSheet()
 
 
 def test_data_dependent_threshold_accepts_raw_integer_intensity(qtbot):

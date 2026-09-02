@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from scipy import integrate, special
 from scipy import ndimage as ndi
-from scipy.spatial import ConvexHull, QhullError
+from scipy.spatial import ConvexHull, QhullError, cKDTree
 from skimage import (
     feature,
     filters,
@@ -47,7 +47,12 @@ from napari_vipp.core.sigma_filter import sigma_filter as sigma_filter
 from napari_vipp.core.sigma_filter import (
     sigma_filter_footprint as sigma_filter_footprint,
 )
-from napari_vipp.core.tables import TableData, table_from_columns
+from napari_vipp.core.tables import (
+    HistogramResultMetadata,
+    HistogramSeriesMetadata,
+    TableData,
+    table_from_columns,
+)
 
 NO_TABLE_COLUMNS_VALUE = "__none__"
 
@@ -82,6 +87,24 @@ _COLOC_TARGET_CONTRACT = "fiji_coloc2_3.1"
 _COLOC_VALIDATION_STATUS = "experimental_source_aligned_golden_parity_pending"
 _MAX_NATIVE_INTEGER_HISTOGRAM_BINS = 65_536
 _FLOAT64_EXACT_INTEGER_LIMIT = 2**53
+
+_INTENSITY_HISTOGRAM_COLUMNS = (
+    "bin_index",
+    "bin_left",
+    "bin_right",
+    "bin_center",
+    "bin_width",
+    "count",
+    "fraction",
+    "density",
+    "cumulative_count",
+    "cumulative_fraction",
+)
+_INTENSITY_HISTOGRAM_SERIES_COLUMNS = _INTENSITY_HISTOGRAM_COLUMNS + (
+    "series_index",
+    "series_name",
+    "series_color",
+)
 
 
 @dataclass(frozen=True)
@@ -2087,6 +2110,808 @@ def prune_skeleton_branches(
     return _apply_spatial_blocks(mask, spatial_ndim, prune_block, dtype=bool)
 
 
+@dataclass(frozen=True)
+class _IntensityHistogramPopulation:
+    input_count: int
+    finite_count: int
+    nan_count: int
+    positive_infinite_count: int
+    negative_infinite_count: int
+    nonpositive_count: int
+    eligible_minimum: int | float | None
+    eligible_maximum: int | float | None
+
+
+def intensity_histogram_table_columns(*, multiseries: bool = False) -> tuple[str, ...]:
+    """Return the stable public schema for an intensity histogram table."""
+
+    return (
+        _INTENSITY_HISTOGRAM_SERIES_COLUMNS
+        if multiseries
+        else _INTENSITY_HISTOGRAM_COLUMNS
+    )
+
+
+def intensity_histogram(
+    data,
+    bin_count: int = 256,
+    range_mode: str = "Data range",
+    custom_min: float = 0.0,
+    custom_max: float = 1.0,
+    bin_spacing: str = "Linear",
+    source_name: str = "",
+    channel_axis: int | None = None,
+    channel_axis_name: str = "",
+    channel_names: Sequence[object] = (),
+    channel_colors: Sequence[object] = (),
+    progress=None,
+) -> TableData:
+    """Bin every eligible input value into an exportable histogram table.
+
+    The calculation always inspects the complete input array in bounded
+    chunks. Non-finite values are excluded and counted explicitly. A custom
+    range additionally records finite underflow and overflow, while genuinely
+    logarithmic bins exclude and account for all finite non-positive values.
+    """
+
+    arr = np.asarray(data)
+    if arr.dtype.kind not in {"b", "i", "u", "f"}:
+        if arr.dtype.kind == "c":
+            raise TypeError("Intensity Histogram does not support complex values.")
+        raise TypeError("Intensity Histogram requires real numeric or Boolean data.")
+
+    resolved_bin_count = _validated_intensity_histogram_bin_count(bin_count)
+    resolved_range_mode = _validated_intensity_histogram_range_mode(range_mode)
+    resolved_spacing = _validated_intensity_histogram_spacing(bin_spacing)
+    resolved_channel_axis = _validated_intensity_histogram_channel_axis(
+        channel_axis,
+        arr.ndim,
+    )
+    if resolved_channel_axis is None:
+        series_arrays = (arr,)
+        series_names: tuple[str, ...] = ()
+        series_colors: tuple[str, ...] = ()
+    else:
+        selection = [slice(None)] * arr.ndim
+        series_views = []
+        for index in range(int(arr.shape[resolved_channel_axis])):
+            selection[resolved_channel_axis] = index
+            series_views.append(arr[tuple(selection)])
+        series_arrays = tuple(series_views)
+        series_names, series_colors = _intensity_histogram_series_identity(
+            len(series_arrays),
+            axis_name=channel_axis_name,
+            names=channel_names,
+            colors=channel_colors,
+        )
+
+    progress_total = max(int(arr.size) * 2, 1)
+    populations: list[_IntensityHistogramPopulation] = []
+    population_progress = 0
+    for series_array in series_arrays:
+        populations.append(
+            _intensity_histogram_population(
+                series_array,
+                logarithmic=resolved_spacing == "Logarithmic",
+                progress=progress,
+                progress_offset=population_progress,
+                progress_total=progress_total,
+            )
+        )
+        population_progress += int(series_array.size)
+    population = _combined_intensity_histogram_population(populations)
+    effective_minimum, effective_maximum = _intensity_histogram_range(
+        population,
+        range_mode=resolved_range_mode,
+        custom_min=custom_min,
+        custom_max=custom_max,
+        bin_spacing=resolved_spacing,
+        bin_count=resolved_bin_count,
+    )
+    if effective_minimum is None or effective_maximum is None:
+        if population.finite_count != population.nonpositive_count:
+            raise RuntimeError(
+                "Intensity Histogram found an eligible finite value without "
+                "an effective data range."
+            )
+        series_metadata = _intensity_histogram_series_metadata(
+            populations,
+            series_names,
+            series_colors,
+            binned_counts=(0,) * len(populations),
+            underflow_counts=(0,) * len(populations),
+            overflow_counts=(0,) * len(populations),
+        )
+        metadata = HistogramResultMetadata(
+            input_value_count=population.input_count,
+            finite_value_count=population.finite_count,
+            nan_value_count=population.nan_count,
+            positive_infinite_value_count=population.positive_infinite_count,
+            negative_infinite_value_count=population.negative_infinite_count,
+            binned_value_count=0,
+            underflow_count=0,
+            overflow_count=0,
+            nonpositive_excluded_count=population.nonpositive_count,
+            effective_minimum=None,
+            effective_maximum=None,
+            bin_count=resolved_bin_count,
+            bin_spacing=resolved_spacing,
+            series=series_metadata,
+        )
+        empty_integer = np.empty(0, dtype=np.int64)
+        empty_float = np.empty(0, dtype=np.float64)
+        if progress is not None:
+            progress.check_cancelled()
+            progress.report(progress_total, progress_total, "Histogram table ready")
+        columns: dict[str, Sequence[object] | np.ndarray] = {
+                "bin_index": empty_integer,
+                "bin_left": empty_float,
+                "bin_right": empty_float,
+                "bin_center": empty_float,
+                "bin_width": empty_float,
+                "count": empty_integer,
+                "fraction": empty_float,
+                "density": empty_float,
+                "cumulative_count": empty_integer,
+                "cumulative_fraction": empty_float,
+            }
+        if resolved_channel_axis is not None:
+            columns.update(
+                {
+                    "series_index": empty_integer,
+                    "series_name": np.empty(0, dtype=object),
+                    "series_color": np.empty(0, dtype=object),
+                }
+            )
+        return _intensity_histogram_table(
+            columns,
+            source_name=source_name,
+            metadata=metadata,
+        )
+    edges = _intensity_histogram_edges(
+        effective_minimum,
+        effective_maximum,
+        resolved_bin_count,
+        bin_spacing=resolved_spacing,
+    )
+    series_counts: list[np.ndarray] = []
+    underflow_counts: list[int] = []
+    overflow_counts: list[int] = []
+    count_progress = int(arr.size)
+    for series_array in series_arrays:
+        counts, underflow, overflow = _intensity_histogram_counts(
+            series_array,
+            edges,
+            logarithmic=resolved_spacing == "Logarithmic",
+            progress=progress,
+            progress_offset=count_progress,
+            progress_total=progress_total,
+        )
+        series_counts.append(counts)
+        underflow_counts.append(underflow)
+        overflow_counts.append(overflow)
+        count_progress += int(series_array.size)
+    binned_counts = [int(counts.sum(dtype=np.int64)) for counts in series_counts]
+    binned_count = sum(binned_counts)
+    underflow_count = sum(underflow_counts)
+    overflow_count = sum(overflow_counts)
+    classified_finite = (
+        binned_count
+        + underflow_count
+        + overflow_count
+        + population.nonpositive_count
+    )
+    if classified_finite != population.finite_count:
+        raise RuntimeError(
+            "Intensity Histogram could not classify every finite input value."
+        )
+
+    widths = np.diff(edges)
+    centers = edges[:-1] + widths / 2.0
+    fractions: list[np.ndarray] = []
+    densities: list[np.ndarray] = []
+    cumulative_counts: list[np.ndarray] = []
+    cumulative_fractions: list[np.ndarray] = []
+    for counts, series_binned_count in zip(
+        series_counts,
+        binned_counts,
+        strict=True,
+    ):
+        if series_binned_count:
+            fraction = counts.astype(np.float64) / float(series_binned_count)
+            density = fraction / widths
+            cumulative_fraction = np.cumsum(fraction, dtype=np.float64)
+            # Avoid a harmless accumulated representation error in the public
+            # final row. This is a normalization identity, not count rounding.
+            cumulative_fraction[-1] = 1.0
+        else:
+            fraction = np.full(resolved_bin_count, np.nan, dtype=np.float64)
+            density = np.full(resolved_bin_count, np.nan, dtype=np.float64)
+            cumulative_fraction = np.full(
+                resolved_bin_count,
+                np.nan,
+                dtype=np.float64,
+            )
+        fractions.append(fraction)
+        densities.append(density)
+        cumulative_counts.append(np.cumsum(counts, dtype=np.int64))
+        cumulative_fractions.append(cumulative_fraction)
+
+    series_metadata = _intensity_histogram_series_metadata(
+        populations,
+        series_names,
+        series_colors,
+        binned_counts=binned_counts,
+        underflow_counts=underflow_counts,
+        overflow_counts=overflow_counts,
+    )
+
+    metadata = HistogramResultMetadata(
+        input_value_count=population.input_count,
+        finite_value_count=population.finite_count,
+        nan_value_count=population.nan_count,
+        positive_infinite_value_count=population.positive_infinite_count,
+        negative_infinite_value_count=population.negative_infinite_count,
+        binned_value_count=binned_count,
+        underflow_count=underflow_count,
+        overflow_count=overflow_count,
+        nonpositive_excluded_count=population.nonpositive_count,
+        effective_minimum=float(edges[0]),
+        effective_maximum=float(edges[-1]),
+        bin_count=resolved_bin_count,
+        bin_spacing=resolved_spacing,
+        series=series_metadata,
+    )
+    if progress is not None:
+        progress.check_cancelled()
+        progress.report(progress_total, progress_total, "Histogram table ready")
+    if resolved_channel_axis is None:
+        columns = {
+            "bin_index": np.arange(1, resolved_bin_count + 1, dtype=np.int64),
+            "bin_left": edges[:-1],
+            "bin_right": edges[1:],
+            "bin_center": centers,
+            "bin_width": widths,
+            "count": series_counts[0],
+            "fraction": fractions[0],
+            "density": densities[0],
+            "cumulative_count": cumulative_counts[0],
+            "cumulative_fraction": cumulative_fractions[0],
+        }
+    else:
+        repeated = len(series_counts)
+        columns = {
+            "bin_index": np.tile(
+                np.arange(1, resolved_bin_count + 1, dtype=np.int64),
+                repeated,
+            ),
+            "bin_left": np.tile(edges[:-1], repeated),
+            "bin_right": np.tile(edges[1:], repeated),
+            "bin_center": np.tile(centers, repeated),
+            "bin_width": np.tile(widths, repeated),
+            "count": np.concatenate(series_counts),
+            "fraction": np.concatenate(fractions),
+            "density": np.concatenate(densities),
+            "cumulative_count": np.concatenate(cumulative_counts),
+            "cumulative_fraction": np.concatenate(cumulative_fractions),
+            "series_index": np.repeat(
+                np.arange(repeated, dtype=np.int64),
+                resolved_bin_count,
+            ),
+            "series_name": np.repeat(
+                np.asarray(series_names, dtype=object),
+                resolved_bin_count,
+            ),
+            "series_color": np.repeat(
+                np.asarray(series_colors, dtype=object),
+                resolved_bin_count,
+            ),
+        }
+    return _intensity_histogram_table(
+        columns,
+        source_name=source_name,
+        metadata=metadata,
+    )
+
+
+def _intensity_histogram_table(
+    columns: Mapping[str, Sequence[object] | np.ndarray],
+    *,
+    source_name: str,
+    metadata: HistogramResultMetadata,
+) -> TableData:
+    return table_from_columns(
+        columns,
+        name="Intensity histogram",
+        table_kind="Intensity histogram bins",
+        source_name=source_name,
+        column_units={
+            "bin_left": "a.u.",
+            "bin_right": "a.u.",
+            "bin_center": "a.u.",
+            "bin_width": "a.u.",
+            "count": "values",
+            "fraction": "fraction",
+            "density": "1/a.u.",
+            "cumulative_count": "values",
+            "cumulative_fraction": "fraction",
+        },
+        histogram_metadata=metadata,
+    )
+
+
+def _validated_intensity_histogram_bin_count(value: object) -> int:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError("Histogram bin count must be an integer from 2 to 65,536.")
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            "Histogram bin count must be an integer from 2 to 65,536."
+        ) from exc
+    if isinstance(value, (float, np.floating)) and not float(value).is_integer():
+        raise ValueError("Histogram bin count must be an integer from 2 to 65,536.")
+    if not 2 <= resolved <= 65_536:
+        raise ValueError("Histogram bin count must be an integer from 2 to 65,536.")
+    return resolved
+
+
+def _validated_intensity_histogram_range_mode(value: object) -> str:
+    requested = str(value).strip().casefold()
+    choices = {"data range": "Data range", "custom range": "Custom range"}
+    try:
+        return choices[requested]
+    except KeyError as exc:
+        raise ValueError(
+            "Histogram range mode must be 'Data range' or 'Custom range'."
+        ) from exc
+
+
+def _validated_intensity_histogram_spacing(value: object) -> str:
+    requested = str(value).strip().casefold()
+    choices = {"linear": "Linear", "logarithmic": "Logarithmic"}
+    try:
+        return choices[requested]
+    except KeyError as exc:
+        raise ValueError(
+            "Histogram bin spacing must be 'Linear' or 'Logarithmic'."
+        ) from exc
+
+
+def _validated_intensity_histogram_channel_axis(
+    value: object,
+    ndim: int,
+) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError("Intensity Histogram channel_axis must be an integer or None.")
+    axis = int(value)
+    if axis < -int(ndim) or axis >= int(ndim):
+        raise ValueError(
+            f"Intensity Histogram channel_axis {axis} is outside an array with "
+            f"{ndim} axes."
+        )
+    return axis % int(ndim)
+
+
+def _intensity_histogram_series_identity(
+    count: int,
+    *,
+    axis_name: object,
+    names: Sequence[object],
+    colors: Sequence[object],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    count = max(int(count), 0)
+    normalized_axis_name = str(axis_name or "").strip().casefold()
+    if isinstance(names, str):
+        authored_names = tuple(part.strip() for part in names.split(","))
+    else:
+        authored_names = tuple(str(value).strip() for value in names)
+    if isinstance(colors, str):
+        authored_colors: tuple[object, ...] = tuple(
+            part.strip() for part in colors.split(",")
+        )
+    else:
+        authored_colors = tuple(colors)
+    generic_fallback_colors = tuple(channel_color_table(None, count))
+
+    if normalized_axis_name == "rgb":
+        fallback_names = ("Red", "Green", "Blue")
+        fallback_colors: tuple[object, ...] = ("Red", "Green", "Blue")
+    elif normalized_axis_name == "rgba":
+        fallback_names = ("Red", "Green", "Blue", "Alpha")
+        fallback_colors = ("Red", "Green", "Blue", "#d1d5db")
+    else:
+        fallback_names = tuple(f"Channel {index + 1}" for index in range(count))
+        fallback_colors = generic_fallback_colors
+
+    resolved_names = tuple(
+        (
+            authored_names[index]
+            if index < len(authored_names) and authored_names[index]
+            else (
+                fallback_names[index]
+                if index < len(fallback_names)
+                else f"Channel {index + 1}"
+            )
+        )
+        for index in range(count)
+    )
+    resolved_colors: list[str] = []
+    for index in range(count):
+        authored = authored_colors[index] if index < len(authored_colors) else None
+        rgb = color_value_to_rgb(authored)
+        if rgb is None:
+            fallback = (
+                fallback_colors[index]
+                if index < len(fallback_colors)
+                else generic_fallback_colors[index]
+            )
+            rgb = color_value_to_rgb(fallback)
+        if rgb is None:  # pragma: no cover - shared fallback table is always valid.
+            rgb = np.asarray((0.376, 0.647, 0.98), dtype=np.float32)
+        values = np.clip(np.rint(np.asarray(rgb) * 255.0), 0, 255).astype(np.uint8)
+        resolved_colors.append(
+            f"#{int(values[0]):02x}{int(values[1]):02x}{int(values[2]):02x}"
+        )
+    return resolved_names, tuple(resolved_colors)
+
+
+def _combined_intensity_histogram_population(
+    populations: Sequence[_IntensityHistogramPopulation],
+) -> _IntensityHistogramPopulation:
+    minima = [
+        population.eligible_minimum
+        for population in populations
+        if population.eligible_minimum is not None
+    ]
+    maxima = [
+        population.eligible_maximum
+        for population in populations
+        if population.eligible_maximum is not None
+    ]
+    return _IntensityHistogramPopulation(
+        input_count=sum(population.input_count for population in populations),
+        finite_count=sum(population.finite_count for population in populations),
+        nan_count=sum(population.nan_count for population in populations),
+        positive_infinite_count=sum(
+            population.positive_infinite_count for population in populations
+        ),
+        negative_infinite_count=sum(
+            population.negative_infinite_count for population in populations
+        ),
+        nonpositive_count=sum(
+            population.nonpositive_count for population in populations
+        ),
+        eligible_minimum=min(minima) if minima else None,
+        eligible_maximum=max(maxima) if maxima else None,
+    )
+
+
+def _intensity_histogram_series_metadata(
+    populations: Sequence[_IntensityHistogramPopulation],
+    names: Sequence[str],
+    colors: Sequence[str],
+    *,
+    binned_counts: Sequence[int],
+    underflow_counts: Sequence[int],
+    overflow_counts: Sequence[int],
+) -> tuple[HistogramSeriesMetadata, ...]:
+    if not names and not colors:
+        return ()
+    lengths = {
+        len(populations),
+        len(names),
+        len(colors),
+        len(binned_counts),
+        len(underflow_counts),
+        len(overflow_counts),
+    }
+    if len(lengths) != 1:
+        raise RuntimeError("Histogram series accounting is internally inconsistent.")
+    return tuple(
+        HistogramSeriesMetadata(
+            series_index=index,
+            series_name=str(names[index]),
+            series_color=str(colors[index]),
+            input_value_count=population.input_count,
+            finite_value_count=population.finite_count,
+            nan_value_count=population.nan_count,
+            positive_infinite_value_count=population.positive_infinite_count,
+            negative_infinite_value_count=population.negative_infinite_count,
+            binned_value_count=int(binned_counts[index]),
+            underflow_count=int(underflow_counts[index]),
+            overflow_count=int(overflow_counts[index]),
+            nonpositive_excluded_count=population.nonpositive_count,
+        )
+        for index, population in enumerate(populations)
+    )
+
+
+def _intensity_histogram_population(
+    arr: np.ndarray,
+    *,
+    logarithmic: bool,
+    progress,
+    progress_offset: int = 0,
+    progress_total: int,
+) -> _IntensityHistogramPopulation:
+    finite_count = 0
+    nan_count = 0
+    positive_infinite_count = 0
+    negative_infinite_count = 0
+    nonpositive_count = 0
+    minimum: int | float | None = None
+    maximum: int | float | None = None
+    completed = int(progress_offset)
+    exact_finite_dtype = arr.dtype.kind in {"b", "i", "u"}
+
+    for chunk in _array_chunks(arr):
+        if progress is not None:
+            progress.check_cancelled()
+        if exact_finite_dtype:
+            finite = chunk
+        else:
+            nan_count += int(np.count_nonzero(np.isnan(chunk)))
+            positive_infinite_count += int(np.count_nonzero(np.isposinf(chunk)))
+            negative_infinite_count += int(np.count_nonzero(np.isneginf(chunk)))
+            finite = chunk[np.isfinite(chunk)]
+        finite_count += int(finite.size)
+        eligible = finite
+        if logarithmic and finite.size:
+            positive = finite > 0
+            nonpositive_count += int(finite.size - np.count_nonzero(positive))
+            eligible = finite[positive]
+        if eligible.size:
+            chunk_minimum = eligible.min().item()
+            chunk_maximum = eligible.max().item()
+            minimum = chunk_minimum if minimum is None else min(minimum, chunk_minimum)
+            maximum = chunk_maximum if maximum is None else max(maximum, chunk_maximum)
+        completed += int(chunk.size)
+        if progress is not None:
+            progress.report(completed, progress_total, "Inspecting histogram values")
+
+    return _IntensityHistogramPopulation(
+        input_count=int(arr.size),
+        finite_count=finite_count,
+        nan_count=nan_count,
+        positive_infinite_count=positive_infinite_count,
+        negative_infinite_count=negative_infinite_count,
+        nonpositive_count=nonpositive_count,
+        eligible_minimum=minimum,
+        eligible_maximum=maximum,
+    )
+
+
+def _intensity_histogram_range(
+    population: _IntensityHistogramPopulation,
+    *,
+    range_mode: str,
+    custom_min: object,
+    custom_max: object,
+    bin_spacing: str,
+    bin_count: int,
+) -> tuple[float | None, float | None]:
+    if range_mode == "Custom range":
+        try:
+            minimum = float(custom_min)
+            maximum = float(custom_max)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "Custom histogram range must contain finite numbers."
+            ) from exc
+        if not np.isfinite(minimum) or not np.isfinite(maximum):
+            raise ValueError("Custom histogram range must contain finite numbers.")
+        if maximum <= minimum:
+            raise ValueError("Custom histogram maximum must exceed its minimum.")
+        if bin_spacing == "Logarithmic" and minimum <= 0.0:
+            raise ValueError(
+                "Logarithmic histogram custom minimum must be positive "
+                "(greater than zero)."
+            )
+        return minimum, maximum
+
+    if population.eligible_minimum is None or population.eligible_maximum is None:
+        return None, None
+    minimum = float(population.eligible_minimum)
+    maximum = float(population.eligible_maximum)
+    if minimum == maximum:
+        return _expanded_histogram_constant_range(
+            minimum,
+            logarithmic=bin_spacing == "Logarithmic",
+            bin_count=bin_count,
+        )
+    return minimum, maximum
+
+
+def _expanded_histogram_constant_range(
+    value: float,
+    *,
+    logarithmic: bool,
+    bin_count: int,
+) -> tuple[float, float]:
+    if logarithmic:
+        if value <= 0.0:
+            raise ValueError("Logarithmic histogram values must be greater than zero.")
+        log_value = math.log(value)
+        log_limit = math.log(np.finfo(np.float64).max)
+        log_tiny = math.log(np.nextafter(0.0, 1.0))
+        half_span = min(
+            math.log(10.0) / 2.0,
+            max((log_limit - log_value) * 0.49, 0.0),
+            max((log_value - log_tiny) * 0.49, 0.0),
+        )
+        required_span = abs(float(np.spacing(log_value))) * (bin_count + 1)
+        if not np.isfinite(half_span) or half_span <= required_span:
+            raise ValueError(
+                "The constant positive value is too close to the numeric limit "
+                "for a representable logarithmic histogram range."
+            )
+        return math.exp(log_value - half_span), math.exp(log_value + half_span)
+
+    span = max(abs(value) * 0.01, 1.0)
+    minimum = value - span / 2.0
+    maximum = value + span / 2.0
+    required_step = abs(float(np.spacing(value))) * (bin_count + 1)
+    if maximum - minimum <= required_step:
+        span = required_step * 2.0
+        minimum = value - span / 2.0
+        maximum = value + span / 2.0
+    if not np.isfinite(minimum) or not np.isfinite(maximum) or maximum <= minimum:
+        raise ValueError(
+            "The constant value is too close to the numeric limit for a "
+            "representable histogram range."
+        )
+    return minimum, maximum
+
+
+def _intensity_histogram_edges(
+    minimum: float,
+    maximum: float,
+    bin_count: int,
+    *,
+    bin_spacing: str,
+) -> np.ndarray:
+    if bin_spacing == "Logarithmic":
+        if minimum <= 0.0:
+            raise ValueError("Logarithmic histogram minimum must be positive.")
+        edges = np.geomspace(
+            minimum,
+            maximum,
+            bin_count + 1,
+            dtype=np.float64,
+        )
+    else:
+        edges = np.linspace(
+            minimum,
+            maximum,
+            bin_count + 1,
+            dtype=np.float64,
+        )
+    edges[0] = minimum
+    edges[-1] = maximum
+    if not np.isfinite(edges).all() or np.any(np.diff(edges) <= 0.0):
+        raise ValueError(
+            "The requested histogram range and bin count do not produce "
+            "distinct representable bin edges."
+        )
+    return edges
+
+
+def _intensity_histogram_counts(
+    arr: np.ndarray,
+    edges: np.ndarray,
+    *,
+    logarithmic: bool,
+    progress,
+    progress_offset: int,
+    progress_total: int,
+) -> tuple[np.ndarray, int, int]:
+    counts = np.zeros(edges.size - 1, dtype=np.int64)
+    underflow_count = 0
+    overflow_count = 0
+    completed = int(progress_offset)
+    exact_finite_dtype = arr.dtype.kind in {"b", "i", "u"}
+    minimum = float(edges[0])
+    maximum = float(edges[-1])
+
+    for chunk in _array_chunks(arr):
+        if progress is not None:
+            progress.check_cancelled()
+        values = chunk if exact_finite_dtype else chunk[np.isfinite(chunk)]
+        if values.dtype.kind == "b":
+            values = values.astype(np.uint8, copy=False)
+        if logarithmic and values.size:
+            values = values[values > 0]
+        if values.size:
+            below = values < minimum
+            above = values > maximum
+            underflow_count += int(np.count_nonzero(below))
+            overflow_count += int(np.count_nonzero(above))
+            in_range = values[~(below | above)]
+            if in_range.size:
+                chunk_counts = np.histogram(in_range, bins=edges)[0]
+                if int(chunk_counts.sum()) != int(in_range.size):
+                    raise RuntimeError(
+                        "Histogram bin edges did not classify every in-range value."
+                    )
+                counts += chunk_counts.astype(np.int64, copy=False)
+        completed += int(chunk.size)
+        if progress is not None:
+            progress.report(completed, progress_total, "Counting histogram bins")
+    return counts, underflow_count, overflow_count
+
+
+def measurement_table_columns(
+    *,
+    ndim: int,
+    spatial_ndim: int,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    include_intensity: bool = False,
+    include_shape_descriptors: bool = False,
+    include_axis_descriptors: bool = False,
+    include_2d_boundary_descriptors: bool = False,
+    include_derived_shape_ratios: bool = False,
+    include_2d_shape_moments: bool = False,
+) -> tuple[str, ...]:
+    """Resolve the exact deterministic field schema for object measurements.
+
+    This is the same schema resolver used by the measurement operations, made
+    available to presentation code so the inspector can describe a configured
+    table before an expensive manual calculation has run.
+    """
+
+    ndim = max(int(ndim), 1)
+    spatial_ndim = int(np.clip(int(spatial_ndim), 1, ndim))
+    resolved_axis_names = _measurement_axis_names(ndim, axis_names)
+    resolved_axis_types = _measurement_axis_types(ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(
+        ndim,
+        spatial_ndim,
+        resolved_axis_names,
+        resolved_axis_types,
+    )
+    if len(spatial_axes) != spatial_ndim:
+        spatial_axes = tuple(range(ndim - spatial_ndim, ndim))
+    moved_axis_names = tuple(
+        resolved_axis_names[index]
+        for index in range(ndim)
+        if index not in spatial_axes
+    ) + tuple(resolved_axis_names[index] for index in spatial_axes)
+    moved_axis_scales = _reordered_axis_values(axis_scales, ndim, spatial_axes)
+    moved_axis_units = _reordered_axis_values(axis_units, ndim, spatial_axes)
+    spatial_axis_names = _safe_axis_column_names(
+        moved_axis_names[-spatial_ndim:],
+        fallback=("z", "y", "x")[-spatial_ndim:],
+    )
+    leading_axis_names = _safe_axis_column_names(
+        moved_axis_names[: ndim - spatial_ndim],
+        fallback=tuple(f"axis_{index}" for index in range(ndim - spatial_ndim)),
+    )
+    units = _measurement_units(
+        spatial_ndim,
+        moved_axis_scales[-spatial_ndim:],
+        moved_axis_units[-spatial_ndim:],
+    )
+    columns = _measurement_empty_columns(
+        leading_axis_names,
+        spatial_axis_names,
+        units,
+        include_intensity=include_intensity,
+        include_shape_descriptors=include_shape_descriptors,
+        include_axis_descriptors=include_axis_descriptors,
+        include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        include_derived_shape_ratios=include_derived_shape_ratios,
+        include_2d_shape_moments=include_2d_shape_moments,
+        spatial_ndim=spatial_ndim,
+    )
+    return tuple(columns)
+
+
 def measure_objects(
     data,
     spatial_mode: str = "Auto from axes",
@@ -2503,8 +3328,11 @@ def analyze_skeleton(
     axis_scales: tuple[float, ...] | None = None,
     axis_units: tuple[str | None, ...] | None = None,
     source_name: str = "",
+    progress=None,
 ) -> TableData:
     """Analyze skeleton components into a per-component network table."""
+    if progress is not None:
+        progress.check_cancelled()
     mask = _to_bool_mask(data)
     spatial_ndim = _resolved_spatial_ndim(
         mask,
@@ -2543,16 +3371,30 @@ def analyze_skeleton(
     )
     columns = _skeleton_empty_columns(leading_axis_names, units)
     should_skeletonize = str(input_mode).strip().lower().startswith("skeletonize")
+    block_count = math.prod(leading_shape) if leading_shape else 1
+    progress_total = max(block_count + 1, 1)
+    if progress is not None:
+        progress.report(0, progress_total, "Analyze Skeleton: preparing blocks")
+        progress.check_cancelled()
 
-    for leading_index in np.ndindex(leading_shape or (1,)):
+    for completed, leading_index in enumerate(
+        np.ndindex(leading_shape or (1,)),
+        start=1,
+    ):
         block_index = () if not leading_shape else leading_index
         block = mask_for_analysis[block_index] if leading_shape else mask_for_analysis
+        if progress is not None:
+            progress.check_cancelled()
         skeleton = (
             morphology.skeletonize(block).astype(bool)
             if should_skeletonize
             else block.astype(bool, copy=False)
         )
         block_columns = _analyze_skeleton_block(skeleton, units)
+        if progress is not None:
+            # Skeletonization and graph analysis are the atomic CPU block.
+            # Observe cancellation before copying any rows into the result.
+            progress.check_cancelled()
         row_count = len(block_columns["component_id"])
         for axis_position, axis_name in enumerate(leading_axis_names):
             columns[f"{axis_name}_index"].extend(
@@ -2562,6 +3404,21 @@ def analyze_skeleton(
             columns[name].extend(values)
         if units.physical_column:
             columns["physical_unit"].extend([units.unit_label] * row_count)
+        if progress is not None:
+            progress.report(
+                completed,
+                progress_total,
+                f"Analyze Skeleton: analyzed block {completed}/{block_count}",
+            )
+
+    if progress is not None:
+        progress.check_cancelled()
+        progress.report(
+            progress_total,
+            progress_total,
+            "Analyze Skeleton complete",
+        )
+        progress.check_cancelled()
 
     return table_from_columns(
         columns,
@@ -7491,6 +8348,16 @@ class _SkeletonBranchTrace:
     euclidean_physical_distance: float
 
 
+_SkeletonAdjacency = tuple[
+    np.ndarray,
+    list[list[int]],
+    np.ndarray,
+    int,
+    float,
+    float,
+]
+
+
 def _skeletonize_method(method: str, *, spatial_ndim: int) -> str:
     """Resolve and validate the exact scikit-image thinning implementation."""
     if spatial_ndim not in {2, 3}:
@@ -7514,7 +8381,7 @@ def _skeletonize_method(method: str, *, spatial_ndim: int) -> str:
 def _skeleton_adjacency(
     component: np.ndarray,
     scales: tuple[float, ...] = (),
-) -> tuple[np.ndarray, list[list[int]], np.ndarray, int, float, float]:
+) -> _SkeletonAdjacency:
     component = np.asarray(component, dtype=bool)
     coords = np.argwhere(component)
     voxel_count = int(coords.shape[0])
@@ -7891,6 +8758,34 @@ def _extend_skeleton_block_columns(
         columns[name].extend(values)
 
 
+def _skeleton_component_crops(
+    component_labels: np.ndarray,
+    component_count: int,
+) -> Iterator[tuple[int, np.ndarray, tuple[int, ...]]]:
+    """Yield tight component masks with their origin in the spatial block.
+
+    ``ndi.label`` assigns dense IDs, so ``find_objects`` can discover every
+    component bounding box in one linear pass.  Keeping the graph work inside
+    those boxes avoids rescanning the complete spatial block once per component.
+    """
+
+    if component_count <= 0:
+        return
+    bounds_by_component = ndi.find_objects(
+        component_labels,
+        max_label=int(component_count),
+    )
+    for component_id, bounds in enumerate(bounds_by_component, start=1):
+        if bounds is None:  # pragma: no cover - dense ndi.label IDs cannot skip
+            continue
+        origin = tuple(int(axis_slice.start or 0) for axis_slice in bounds)
+        yield (
+            int(component_id),
+            np.asarray(component_labels[bounds] == component_id, dtype=bool),
+            origin,
+        )
+
+
 def _skeleton_empty_columns(
     leading_axis_names: tuple[str, ...],
     units: _SkeletonUnits,
@@ -7944,9 +8839,16 @@ def _analyze_skeleton_block(
     if units.physical_column:
         columns[units.physical_column] = []
 
-    for component_id in range(1, component_count + 1):
-        component = component_labels == component_id
-        graph = _skeleton_component_graph(component, units.scales)
+    for component_id, component, _origin in _skeleton_component_crops(
+        component_labels,
+        component_count,
+    ):
+        adjacency_data = _skeleton_adjacency(component, units.scales)
+        graph = _skeleton_component_graph(
+            component,
+            units.scales,
+            adjacency_data=adjacency_data,
+        )
         columns["component_id"].append(component_id)
         columns["component_count_in_block"].append(int(component_count))
         columns["component_voxel_fraction"].append(
@@ -8006,9 +8908,16 @@ def _measure_skeleton_branches_block(
     columns = _skeleton_branch_empty_columns((), spatial_axis_names, units)
 
     global_branch_id = 1
-    for component_id in range(1, component_count + 1):
-        component = component_labels == component_id
-        coords, traces = _skeleton_branch_traces(component, units.scales)
+    for component_id, component, origin in _skeleton_component_crops(
+        component_labels,
+        component_count,
+    ):
+        adjacency_data = _skeleton_adjacency(component, units.scales)
+        coords, traces = _skeleton_branch_traces(
+            component,
+            units.scales,
+            adjacency_data=adjacency_data,
+        )
         for trace in traces:
             columns["component_id"].append(int(component_id))
             columns["branch_id"].append(global_branch_id)
@@ -8028,8 +8937,8 @@ def _measure_skeleton_branches_block(
                 columns["branch_euclidean_distance_physical"].append(
                     trace.euclidean_physical_distance
                 )
-            start_coord = _trace_coord(coords, trace.start_node)
-            end_coord = _trace_coord(coords, trace.end_node)
+            start_coord = _trace_coord(coords, trace.start_node, origin=origin)
+            end_coord = _trace_coord(coords, trace.end_node, origin=origin)
             for axis_index, axis_name in enumerate(spatial_axis_names):
                 columns[f"start_{axis_name}"].append(start_coord[axis_index])
             for axis_index, axis_name in enumerate(spatial_axis_names):
@@ -8098,10 +9007,13 @@ def _skeleton_graph_tables_block(
 
     global_node_id = 1
     global_edge_id = 1
-    for component_id in range(1, component_count + 1):
-        component = component_labels == component_id
+    for component_id, component, origin in _skeleton_component_crops(
+        component_labels,
+        component_count,
+    ):
+        adjacency_data = _skeleton_adjacency(component, units.scales)
         coords, adjacency, degrees, _edge_count, _pixel_length, _physical_length = (
-            _skeleton_adjacency(component, units.scales)
+            adjacency_data
         )
         graph_node_by_voxel_index: dict[int, int] = {}
         for voxel_index, degree in enumerate(degrees):
@@ -8109,7 +9021,7 @@ def _skeleton_graph_tables_block(
             if degree == 2:
                 continue
             graph_node_by_voxel_index[int(voxel_index)] = global_node_id
-            coord = _trace_coord(coords, int(voxel_index))
+            coord = _trace_coord(coords, int(voxel_index), origin=origin)
             node_columns["component_id"].append(int(component_id))
             node_columns["node_id"].append(int(global_node_id))
             node_columns["node_type"].append(_skeleton_node_type(degree))
@@ -8119,7 +9031,11 @@ def _skeleton_graph_tables_block(
                 node_columns[f"{axis_name}_coord"].append(coord[axis_index])
             global_node_id += 1
 
-        _coords, traces = _skeleton_branch_traces(component, units.scales)
+        _coords, traces = _skeleton_branch_traces(
+            component,
+            units.scales,
+            adjacency_data=adjacency_data,
+        )
         for trace in traces:
             if trace.edge_count <= 0:
                 continue
@@ -8153,8 +9069,8 @@ def _skeleton_graph_tables_block(
                 edge_columns["branch_euclidean_distance_physical"].append(
                     trace.euclidean_physical_distance
                 )
-            start_coord = _trace_coord(coords, trace.start_node)
-            end_coord = _trace_coord(coords, trace.end_node)
+            start_coord = _trace_coord(coords, trace.start_node, origin=origin)
+            end_coord = _trace_coord(coords, trace.end_node, origin=origin)
             for axis_index, axis_name in enumerate(spatial_axis_names):
                 edge_columns[f"start_{axis_name}"].append(start_coord[axis_index])
             for axis_index, axis_name in enumerate(spatial_axis_names):
@@ -8279,9 +9195,16 @@ def _measure_overall_skeleton_network_block(
         totals[units.physical_column] = 0.0
 
     isolated_component_count = 0
-    for component_id in range(1, component_count + 1):
-        component = component_labels == component_id
-        graph = _skeleton_component_graph(component, units.scales)
+    for _component_id, component, _origin in _skeleton_component_crops(
+        component_labels,
+        component_count,
+    ):
+        adjacency_data = _skeleton_adjacency(component, units.scales)
+        graph = _skeleton_component_graph(
+            component,
+            units.scales,
+            adjacency_data=adjacency_data,
+        )
         component_voxel_counts.append(graph.voxel_count)
         isolated_component_count += int(
             graph.voxel_count == 1 and graph.isolated_node_count == 1
@@ -8298,7 +9221,11 @@ def _measure_overall_skeleton_network_block(
         if units.physical_column:
             totals[units.physical_column] += graph.physical_length
 
-        _coords, traces = _skeleton_branch_traces(component, units.scales)
+        _coords, traces = _skeleton_branch_traces(
+            component,
+            units.scales,
+            adjacency_data=adjacency_data,
+        )
         for trace in traces:
             if trace.edge_count <= 0:
                 continue
@@ -8469,10 +9396,22 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
     return float(numerator) / denominator if denominator > 0 else 0.0
 
 
-def _trace_coord(coords: np.ndarray, node: int | None) -> tuple[int, ...]:
+def _trace_coord(
+    coords: np.ndarray,
+    node: int | None,
+    *,
+    origin: tuple[int, ...] = (),
+) -> tuple[int, ...]:
     if node is None or coords.shape[0] == 0:
         return tuple(0 for _axis in range(coords.shape[1] if coords.ndim == 2 else 0))
-    return tuple(int(value) for value in coords[int(node)])
+    local = tuple(int(value) for value in coords[int(node)])
+    if not origin:
+        return local
+    if len(origin) != len(local):  # pragma: no cover - private dimensionality guard
+        raise ValueError("Skeleton coordinate origin dimensionality does not match.")
+    return tuple(
+        int(value + offset) for value, offset in zip(local, origin, strict=True)
+    )
 
 
 def _branch_length_column(units: _SkeletonUnits) -> str:
@@ -8524,8 +9463,19 @@ class _SkeletonGraphMetrics:
 def _skeleton_component_graph(
     component: np.ndarray,
     scales: tuple[float, ...],
+    *,
+    adjacency_data: _SkeletonAdjacency | None = None,
 ) -> _SkeletonGraphMetrics:
-    coords = np.argwhere(component)
+    if adjacency_data is None:
+        adjacency_data = _skeleton_adjacency(component, scales)
+    (
+        coords,
+        adjacency,
+        degrees,
+        voxel_graph_edge_count,
+        pixel_length,
+        physical_length,
+    ) = adjacency_data
     voxel_count = int(coords.shape[0])
     if voxel_count == 0:
         return _SkeletonGraphMetrics(
@@ -8542,14 +9492,6 @@ def _skeleton_component_graph(
             physical_length=0.0,
         )
 
-    (
-        _coords,
-        adjacency,
-        degrees,
-        voxel_graph_edge_count,
-        pixel_length,
-        physical_length,
-    ) = _skeleton_adjacency(component, scales)
     isolated_node_count = int(np.count_nonzero(degrees == 0))
     endpoint_count = int(np.count_nonzero(degrees == 1))
     junction_count = int(np.count_nonzero(degrees >= 3))
@@ -8608,9 +9550,13 @@ def _skeleton_branch_count(adjacency: list[list[int]], degrees: np.ndarray) -> i
 def _skeleton_branch_traces(
     component: np.ndarray,
     scales: tuple[float, ...],
+    *,
+    adjacency_data: _SkeletonAdjacency | None = None,
 ) -> tuple[np.ndarray, list[_SkeletonBranchTrace]]:
+    if adjacency_data is None:
+        adjacency_data = _skeleton_adjacency(component, scales)
     coords, adjacency, degrees, edge_count, pixel_length, physical_length = (
-        _skeleton_adjacency(component, scales)
+        adjacency_data
     )
     if coords.shape[0] == 0:
         return coords, []
@@ -9525,11 +10471,11 @@ def _measure_3d_mesh_morphology_block(
                 f"Measured label {int(label_id)}",
             )
 
+    label_regions = _mesh_label_regions(block, labels)
     for offset, label_id in enumerate(labels, start=1):
         if progress is not None:
             progress.check_cancelled()
-        mask = block == int(label_id)
-        voxel_count = int(np.count_nonzero(mask))
+        voxel_count, bounds = label_regions[int(label_id)]
         base_values = {
             "label_id": int(label_id),
             "voxel_count": voxel_count,
@@ -9549,6 +10495,10 @@ def _measure_3d_mesh_morphology_block(
             )
             report_label_done(offset, label_id)
             continue
+        if bounds is None:  # pragma: no cover - positive measured labels have bounds
+            raise RuntimeError(f"Measured label {int(label_id)} has no bounds.")
+        local_block = block[bounds]
+        mask = local_block == int(label_id)
         try:
             metrics = _mesh_metrics_for_label_mask(mask, spatial_axis_names, units)
         except Exception as exc:
@@ -9593,6 +10543,69 @@ def _measure_3d_mesh_morphology_block(
         )
         report_label_done(offset, label_id)
     return columns
+
+
+def _mesh_label_regions(
+    block: np.ndarray,
+    label_ids: Sequence[int],
+) -> dict[int, tuple[int, tuple[slice, ...] | None]]:
+    """Find voxel counts and tight bounds in one scan of a label block.
+
+    Label IDs are allowed to be sparse, so ``ndi.find_objects`` cannot be used
+    safely: it allocates an entry for every integer up to the largest ID.  This
+    compact-index reduction scales with the actual positive voxels and objects
+    instead.  Each returned crop is the same tight mask that the mesh routine
+    previously rediscovered after building a full-volume equality mask.
+    """
+
+    block = np.asarray(block)
+    labels = [int(value) for value in label_ids]
+    if len(set(labels)) != len(labels):
+        raise ValueError("Mesh label IDs must be unique within a spatial block.")
+    regions: dict[int, tuple[int, tuple[slice, ...] | None]] = {
+        label_id: (0, None) for label_id in labels
+    }
+    if not labels or block.size == 0:
+        return regions
+
+    flat = block.reshape(-1)
+    positive_positions = np.flatnonzero(flat > 0)
+    if positive_positions.size == 0:
+        return regions
+    positive_labels = flat[positive_positions]
+
+    authored = np.asarray(labels, dtype=block.dtype)
+    sorted_to_authored = np.argsort(authored, kind="stable")
+    sorted_labels = authored[sorted_to_authored]
+    sorted_positions = np.searchsorted(sorted_labels, positive_labels)
+    in_range = sorted_positions < len(sorted_labels)
+    exact = np.zeros(in_range.shape, dtype=bool)
+    exact[in_range] = (
+        sorted_labels[sorted_positions[in_range]] == positive_labels[in_range]
+    )
+    if not np.any(exact):
+        return regions
+
+    positions = positive_positions[exact]
+    dense_ids = sorted_to_authored[sorted_positions[exact]]
+    counts = np.bincount(dense_ids, minlength=len(labels))
+    coordinates = np.unravel_index(positions, block.shape)
+    minimums = np.full((len(labels), block.ndim), block.shape, dtype=np.intp)
+    maximums = np.zeros((len(labels), block.ndim), dtype=np.intp)
+    for axis, coordinate in enumerate(coordinates):
+        np.minimum.at(minimums[:, axis], dense_ids, coordinate)
+        np.maximum.at(maximums[:, axis], dense_ids, coordinate + 1)
+
+    for index, label_id in enumerate(labels):
+        count = int(counts[index])
+        if count == 0:
+            continue
+        bounds = tuple(
+            slice(int(minimums[index, axis]), int(maximums[index, axis]))
+            for axis in range(block.ndim)
+        )
+        regions[label_id] = (count, bounds)
+    return regions
 
 
 def _positive_label_ids(block: np.ndarray) -> list[int]:
@@ -12572,9 +13585,19 @@ def _append_label_overlap_rows(
 ) -> None:
     reference_counts = _positive_label_counts(reference)
     target_counts = _positive_label_counts(target)
-    pair_counts = _positive_pair_counts(reference, target)
-    for reference_id, target_id in sorted(pair_counts):
-        overlap_voxels = int(pair_counts[(reference_id, target_id)])
+    reference_ids, target_ids, overlap_counts = _positive_pair_histogram(
+        reference,
+        target,
+    )
+    for reference_id, target_id, overlap_count in zip(
+        reference_ids,
+        target_ids,
+        overlap_counts,
+        strict=True,
+    ):
+        reference_id = int(reference_id)
+        target_id = int(target_id)
+        overlap_voxels = int(overlap_count)
         reference_voxels = int(reference_counts.get(reference_id, 0))
         target_voxels = int(target_counts.get(target_id, 0))
         union = reference_voxels + target_voxels - overlap_voxels
@@ -12617,28 +13640,24 @@ def _append_nearest_distance_rows(
     reference: np.ndarray,
     target: np.ndarray,
 ) -> None:
-    reference_centroids = _label_centroids(reference)
-    target_centroids = _label_centroids(target)
-    target_ids = sorted(target_centroids)
-    target_points = (
-        np.asarray([target_centroids[label_id] for label_id in target_ids])
-        if target_ids
-        else np.empty((0, context.spatial_ndim), dtype=np.float64)
-    )
+    reference_ids, reference_points = _label_centroid_arrays(reference)
+    target_ids, target_points = _label_centroid_arrays(target)
     scales = np.asarray(context.spatial_scales, dtype=np.float64)
-    for label_id in sorted(reference_centroids):
-        centroid = reference_centroids[label_id]
-        if target_points.size:
-            deltas = target_points - centroid
-            pixel_distances = np.linalg.norm(deltas, axis=1)
-            nearest_index = int(np.argmin(pixel_distances))
-            nearest_label_id = int(target_ids[nearest_index])
-            pixel_distance = float(pixel_distances[nearest_index])
-            physical_distance = float(np.linalg.norm(deltas[nearest_index] * scales))
-        else:
+    nearest_indices, nearest_distances = _nearest_centroid_indices(
+        reference_points,
+        target_points,
+    )
+    for row_index, label_id in enumerate(reference_ids):
+        nearest_index = int(nearest_indices[row_index])
+        if nearest_index < 0:
             nearest_label_id = 0
             pixel_distance = float("nan")
             physical_distance = float("nan")
+        else:
+            nearest_label_id = int(target_ids[nearest_index])
+            pixel_distance = float(nearest_distances[row_index])
+            delta = target_points[nearest_index] - reference_points[row_index]
+            physical_distance = float(np.linalg.norm(delta * scales))
         _append_leading_index_values(
             columns,
             context.leading_axis_names,
@@ -12678,7 +13697,13 @@ def _append_event_localization_rows(
 ) -> None:
     event_counts = _positive_label_counts(events)
     overlaps_by_event: dict[int, list[tuple[int, int]]] = {}
-    for (event_id, region_id), count in _positive_pair_counts(events, regions).items():
+    event_ids, region_ids, overlap_counts = _positive_pair_histogram(events, regions)
+    for event_id, region_id, count in zip(
+        event_ids,
+        region_ids,
+        overlap_counts,
+        strict=True,
+    ):
         overlaps_by_event.setdefault(int(event_id), []).append(
             (int(region_id), int(count))
         )
@@ -12730,27 +13755,148 @@ def _positive_pair_counts(
     first: np.ndarray,
     second: np.ndarray,
 ) -> dict[tuple[int, int], int]:
+    first_ids, second_ids, counts = _positive_pair_histogram(first, second)
+    return {
+        (int(first_id), int(second_id)): int(count)
+        for first_id, second_id, count in zip(
+            first_ids,
+            second_ids,
+            counts,
+            strict=True,
+        )
+    }
+
+
+def _positive_pair_histogram(
+    first: np.ndarray,
+    second: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return lexicographically sorted positive label-pair counts.
+
+    Common 32-bit label images use one packed ``uint64`` key per overlapping
+    voxel.  Wider authored integer IDs fall back to a structured key so sparse
+    values remain exact without allocating through the maximum label ID.
+    """
+
+    first = np.asarray(first)
+    second = np.asarray(second)
     mask = (first > 0) & (second > 0)
     if not np.any(mask):
-        return {}
-    pairs = zip(
-        first[mask].astype(int).flat,
-        second[mask].astype(int).flat,
-        strict=True,
+        empty_ids = np.empty(0, dtype=np.uint64)
+        return empty_ids, empty_ids.copy(), np.empty(0, dtype=np.intp)
+
+    first_positive = np.ascontiguousarray(first[mask])
+    second_positive = np.ascontiguousarray(second[mask])
+    uint32_max = np.iinfo(np.uint32).max
+    packed_32_bit = (
+        int(first_positive.max()) <= uint32_max
+        and int(second_positive.max()) <= uint32_max
     )
-    return dict(Counter((int(left), int(right)) for left, right in pairs))
+    if packed_32_bit:
+        packed = np.left_shift(
+            first_positive.astype(np.uint64, copy=False),
+            np.uint64(32),
+        )
+        packed |= second_positive.astype(np.uint64, copy=False)
+        unique_pairs, counts = np.unique(packed, return_counts=True)
+        return (
+            np.right_shift(unique_pairs, np.uint64(32)),
+            np.bitwise_and(unique_pairs, np.uint64(uint32_max)),
+            counts,
+        )
+
+    pair_dtype = np.dtype(
+        [
+            ("first", first_positive.dtype),
+            ("second", second_positive.dtype),
+        ]
+    )
+    packed = np.empty(first_positive.size, dtype=pair_dtype)
+    packed["first"] = first_positive
+    packed["second"] = second_positive
+    unique_pairs, counts = np.unique(packed, return_counts=True)
+    return unique_pairs["first"], unique_pairs["second"], counts
 
 
 def _label_centroids(block: np.ndarray) -> dict[int, np.ndarray]:
+    label_ids, centroids = _label_centroid_arrays(block)
+    return {int(label_id): centroids[index] for index, label_id in enumerate(label_ids)}
+
+
+def _label_centroid_arrays(
+    block: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return sorted authored IDs and centroids without dense-ID allocation."""
+
+    block = np.asarray(block)
     mask = block > 0
     if not np.any(mask):
-        return {}
-    coords = np.argwhere(mask).astype(np.float64)
-    label_values = block[mask].astype(int)
-    centroids: dict[int, np.ndarray] = {}
-    for label_id in sorted(set(int(value) for value in label_values.flat)):
-        centroids[int(label_id)] = coords[label_values == label_id].mean(axis=0)
-    return centroids
+        return (
+            np.empty(0, dtype=block.dtype),
+            np.empty((0, block.ndim), dtype=np.float64),
+        )
+
+    label_ids, dense_ids, counts = np.unique(
+        block[mask],
+        return_inverse=True,
+        return_counts=True,
+    )
+    coordinates = np.nonzero(mask)
+    coordinate_sums = np.column_stack(
+        tuple(
+            np.bincount(
+                dense_ids,
+                weights=coordinate,
+                minlength=label_ids.size,
+            )
+            for coordinate in coordinates
+        )
+    )
+    centroids = coordinate_sums / counts[:, np.newaxis]
+    return label_ids, np.asarray(centroids, dtype=np.float64)
+
+
+def _nearest_centroid_indices(
+    reference_points: np.ndarray,
+    target_points: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return exact nearest target rows with stable smallest-ID tie order.
+
+    ``target_points`` follows sorted authored label IDs.  The tree supplies a
+    tight candidate radius; NumPy then recomputes distances in target-ID order
+    so the historical first-minimum tie rule remains authoritative.
+    """
+
+    reference_points = np.asarray(reference_points, dtype=np.float64)
+    target_points = np.asarray(target_points, dtype=np.float64)
+    if not len(reference_points):
+        return np.empty(0, dtype=np.intp), np.empty(0, dtype=np.float64)
+    if not len(target_points):
+        return (
+            np.full(len(reference_points), -1, dtype=np.intp),
+            np.full(len(reference_points), np.nan, dtype=np.float64),
+        )
+
+    tree = cKDTree(target_points)
+    tree_distances, tree_indices = tree.query(reference_points, k=1)
+    nearest_indices = np.asarray(tree_indices, dtype=np.intp).reshape(-1)
+    nearest_distances = np.asarray(tree_distances, dtype=np.float64).reshape(-1)
+    candidate_radii = np.nextafter(nearest_distances, np.inf)
+    candidates_by_reference = tree.query_ball_point(
+        reference_points,
+        candidate_radii,
+        return_sorted=True,
+    )
+    for row_index, candidates in enumerate(candidates_by_reference):
+        if not candidates:
+            candidates = [int(nearest_indices[row_index])]
+        candidate_indices = np.asarray(candidates, dtype=np.intp)
+        deltas = target_points[candidate_indices] - reference_points[row_index]
+        distances = np.linalg.norm(deltas, axis=1)
+        local_index = int(np.argmin(distances))
+        nearest_indices[row_index] = int(candidate_indices[local_index])
+        nearest_distances[row_index] = float(distances[local_index])
+    return nearest_indices, nearest_distances
 
 
 def _costes_thresholds(

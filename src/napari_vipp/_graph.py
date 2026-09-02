@@ -9,7 +9,7 @@ from enum import StrEnum
 from math import ceil
 
 import numpy as np
-from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from qtpy.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
     QFont,
@@ -47,12 +47,18 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_vipp._theme import category_color, category_tint
+from napari_vipp._theme import (
+    category_color,
+    category_foreground,
+    category_tint,
+    graph_theme,
+)
 from napari_vipp.core.pipeline import EXECUTION_BLOCKED, NODE_LIBRARY_BY_ID
 
 OPERATION_MIME = "application/x-napari-vipp-operation"
 PINNABLE_OUTPUT_TYPES = {"array", "image", "mask", "labels"}
 STALE_EXECUTION_ACCENT = "#f59e0b"
+ISOLATED_TUNING_ACCENT = "#8b5cf6"
 BLOCKED_EXECUTION_ACCENT = "#b45309"
 BYPASSED_NODE_OUTLINE = "#22d3ee"
 BYPASSED_NODE_PASS_THROUGH = "#67e8f9"
@@ -180,6 +186,7 @@ class ComputeBadgeKind(StrEnum):
     CPU = "cpu"
     CUPY = "cupy"
     CUCIM = "cucim"
+    HYBRID = "hybrid"
     CPU_FALLBACK = "cpu_fallback"
     BYPASSED = "bypassed"
 
@@ -198,6 +205,7 @@ _COMPUTE_BADGE_LABELS = {
     ComputeBadgeKind.CPU: "CPU",
     ComputeBadgeKind.CUPY: "GPU · CuPy",
     ComputeBadgeKind.CUCIM: "GPU · cuCIM",
+    ComputeBadgeKind.HYBRID: "GPU + CPU",
     ComputeBadgeKind.CPU_FALLBACK: "CPU fallback",
     ComputeBadgeKind.BYPASSED: "Bypassed",
 }
@@ -206,6 +214,7 @@ _COMPUTE_BADGE_COLORS = {
     ComputeBadgeKind.CPU: ("#334155", "#e2e8f0", "#64748b"),
     ComputeBadgeKind.CUPY: ("#1e3a5f", "#bfdbfe", "#3b82f6"),
     ComputeBadgeKind.CUCIM: ("#064e3b", "#bbf7d0", "#10b981"),
+    ComputeBadgeKind.HYBRID: ("#164e63", "#cffafe", "#06b6d4"),
     ComputeBadgeKind.CPU_FALLBACK: ("#78350f", "#fde68a", "#f59e0b"),
     ComputeBadgeKind.BYPASSED: ("#164e63", "#cffafe", "#0891b2"),
 }
@@ -222,6 +231,8 @@ def _coerce_compute_badge_kind(
         "gpu_cupy": ComputeBadgeKind.CUPY,
         "gpu_·_cucim": ComputeBadgeKind.CUCIM,
         "gpu_cucim": ComputeBadgeKind.CUCIM,
+        "gpu_+_cpu": ComputeBadgeKind.HYBRID,
+        "gpu_cpu": ComputeBadgeKind.HYBRID,
         "fallback_cpu": ComputeBadgeKind.CPU_FALLBACK,
     }
     if normalized in aliases:
@@ -321,6 +332,7 @@ class ProcessingBadge(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._graph_theme = graph_theme(QApplication.palette())
         self._angle = 0
         self._queued = False
         self.setFixedSize(30, 30)
@@ -335,12 +347,19 @@ class ProcessingBadge(QWidget):
         self._angle = int(angle) % 360
         self.update()
 
+    def set_graph_palette(self, palette) -> None:
+        self._graph_theme = graph_theme(palette)
+        self.update()
+
     def paintEvent(self, event):  # noqa: N802
         super().paintEvent(event)
+        theme = self._graph_theme
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setBrush(QColor(15, 23, 42, 225))
-        painter.setPen(QPen(QColor("#475569"), 1.1))
+        surface = QColor(theme.spinner_surface)
+        surface.setAlpha(225)
+        painter.setBrush(surface)
+        painter.setPen(QPen(QColor(theme.spinner_border), 1.1))
         painter.drawRoundedRect(QRectF(1.0, 1.0, 28.0, 28.0), 8.0, 8.0)
 
         color = QColor("#f59e0b" if self._queued else "#93c5fd")
@@ -383,19 +402,34 @@ class ElidedSubtitleLabel(QLabel):
         super().setText(elided)
 
 
-def _bypass_outline_pen() -> QPen:
+def _bypass_outline_pen(palette=None, *, is_dark: bool | None = None) -> QPen:
     """Return the prominent theme-safe dotted bypass outline."""
 
-    pen = QPen(QColor(BYPASSED_NODE_OUTLINE), 3.0, Qt.DotLine)
+    color = BYPASSED_NODE_OUTLINE
+    resolved_dark = graph_theme(palette).is_dark if palette is not None else True
+    if is_dark is not None:
+        resolved_dark = bool(is_dark)
+    if not resolved_dark:
+        color = "#0891b2"
+    pen = QPen(QColor(color), 3.0, Qt.DotLine)
     pen.setCapStyle(Qt.RoundCap)
     pen.setCosmetic(True)
     return pen
 
 
-def _bypass_pass_through_pen() -> QPen:
+def _bypass_pass_through_pen(
+    palette=None,
+    *,
+    is_dark: bool | None = None,
+) -> QPen:
     """Return the subtle input-to-output cue drawn through a bypassed card."""
 
     color = QColor(BYPASSED_NODE_PASS_THROUGH)
+    resolved_dark = graph_theme(palette).is_dark if palette is not None else True
+    if is_dark is not None:
+        resolved_dark = bool(is_dark)
+    if not resolved_dark:
+        color = QColor("#0e7490")
     color.setAlpha(178)
     pen = QPen(color, 2.0, Qt.SolidLine)
     pen.setCapStyle(Qt.RoundCap)
@@ -408,12 +442,17 @@ class BypassCardOverlay(QWidget):
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
+        self._graph_theme = graph_theme(QApplication.palette())
         self._input_y: float | None = None
         self._output_y: float | None = None
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setFocusPolicy(Qt.NoFocus)
         self.setAccessibleName("")
+
+    def set_graph_palette(self, palette) -> None:
+        self._graph_theme = graph_theme(palette)
+        self.update()
 
     def set_pass_through_positions(
         self,
@@ -440,7 +479,9 @@ class BypassCardOverlay(QWidget):
 
         # A line through the port axis makes the alias relationship legible at
         # a glance. This is paint only: it cannot receive hover or mouse input.
-        painter.setPen(_bypass_pass_through_pen())
+        painter.setPen(
+            _bypass_pass_through_pen(is_dark=self._graph_theme.is_dark)
+        )
         center_y = float(self.rect().center().y())
         input_y = center_y if self._input_y is None else self._input_y
         output_y = center_y if self._output_y is None else self._output_y
@@ -449,7 +490,7 @@ class BypassCardOverlay(QWidget):
             QPointF(float(self.width()) - 3.0, output_y),
         )
 
-        painter.setPen(_bypass_outline_pen())
+        painter.setPen(_bypass_outline_pen(is_dark=self._graph_theme.is_dark))
         painter.setBrush(Qt.NoBrush)
         outline = QRectF(self.rect()).adjusted(2.0, 2.0, -2.0, -2.0)
         painter.drawRoundedRect(outline, 5.0, 5.0)
@@ -483,6 +524,7 @@ class NodeCard(QFrame):
         self._pinned = False
         self._search_highlight = False
         self._image_drop_target = False
+        self._append_drop_state: str | None = None
         self._preview_enabled = True
         self._thumbnail_stats_tooltip = ""
         self._processing = False
@@ -673,6 +715,15 @@ class NodeCard(QFrame):
         if self._image_drop_target == targeted:
             return
         self._image_drop_target = targeted
+        self._refresh_style()
+
+    def set_append_drop_state(self, state: str | None) -> None:
+        """Highlight this terminal node as a compatible append target."""
+
+        state = state if state in {"compatible", "incompatible"} else None
+        if state == self._append_drop_state:
+            return
+        self._append_drop_state = state
         self._refresh_style()
 
     def set_can_pin(self, can_pin: bool) -> None:
@@ -948,12 +999,10 @@ class NodeCard(QFrame):
             return False
         label = _COMPUTE_BADGE_LABELS[resolved]
         if is_stale:
-            background, foreground, border = ("#292524", "#a8a29e", "#78716c")
             visible_tooltip = "Previous result (stale)."
             if detail:
                 visible_tooltip = f"{visible_tooltip} {detail}"
         else:
-            background, foreground, border = _COMPUTE_BADGE_COLORS[resolved]
             visible_tooltip = detail
 
         self._compute_badge_kind = resolved
@@ -970,6 +1019,37 @@ class NodeCard(QFrame):
             if resolved is ComputeBadgeKind.BYPASSED
             else f"Compute {accessible_state}: {label}"
         )
+        self._refresh_compute_badge_style()
+        self.compute_badge.show()
+        return True
+
+    def _refresh_compute_badge_style(self) -> None:
+        kind = self._compute_badge_kind
+        if kind is None:
+            return
+        theme = graph_theme(self.palette())
+        if self._compute_badge_stale:
+            colors = (
+                ("#292524", "#a8a29e", "#78716c")
+                if theme.is_dark
+                else ("#e7e5e4", "#57534e", "#a8a29e")
+            )
+        elif theme.is_dark:
+            colors = _COMPUTE_BADGE_COLORS[kind]
+        else:
+            colors = {
+                ComputeBadgeKind.CPU: ("#e2e8f0", "#334155", "#94a3b8"),
+                ComputeBadgeKind.CUPY: ("#dbeafe", "#1e3a8a", "#3b82f6"),
+                ComputeBadgeKind.CUCIM: ("#dcfce7", "#166534", "#22c55e"),
+                ComputeBadgeKind.HYBRID: ("#cffafe", "#155e75", "#06b6d4"),
+                ComputeBadgeKind.CPU_FALLBACK: (
+                    "#fef3c7",
+                    "#92400e",
+                    "#f59e0b",
+                ),
+                ComputeBadgeKind.BYPASSED: ("#cffafe", "#155e75", "#0891b2"),
+            }[kind]
+        background, foreground, border = colors
         self.compute_badge.setStyleSheet(
             "QLabel#NodeComputeBadge {"
             f" background: {background}; color: {foreground};"
@@ -977,8 +1057,26 @@ class NodeCard(QFrame):
             " font-size: 9px; font-weight: 650; padding: 1px 5px;"
             "}"
         )
-        self.compute_badge.show()
-        return True
+
+    def set_graph_palette(self, palette) -> None:
+        """Apply the owning graph palette to this embedded card and overlays.
+
+        ``QGraphicsProxyWidget`` does not provide ordinary QWidget palette
+        inheritance.  New cards must therefore receive the view's effective
+        napari palette explicitly, including their custom-painted children.
+        """
+
+        self.setPalette(palette)
+        self._bypass_overlay.set_graph_palette(palette)
+        self.processing_badge.set_graph_palette(palette)
+        self._refresh_style()
+        self._refresh_compute_badge_style()
+        # Applying the card stylesheet repolishes its children, so propagate
+        # the palette afterwards. Embedded proxy widgets do not otherwise
+        # inherit a later graph palette reliably.
+        self.calculate_button.setPalette(palette)
+        self.pin_button.setPalette(palette)
+        self.update()
 
     def set_optimization_hint(self, tooltip: str = "") -> bool:
         """Show one derived, presentation-only GPU optimization hint."""
@@ -999,104 +1097,127 @@ class NodeCard(QFrame):
         return True
 
     def _refresh_style(self) -> None:
-        border = "#4b5563"
+        theme = graph_theme(self.palette())
+        border = theme.card_border
         border_width = 2
-        background = "#20242b"
+        background = theme.card
         if self._selected:
-            border = "#60a5fa"
+            border = theme.selected
         if self._pinned:
-            border = "#facc15"
+            border = theme.pinned
             border_width = 4
-            background = "#2a271b"
+            background = theme.pinned_surface
         if self._execution_state == EXECUTION_BLOCKED:
             border = BLOCKED_EXECUTION_ACCENT
-            background = "#21170f"
+            background = theme.blocked_surface
             if self._selected:
                 border_width = 3
             if self._pinned:
-                border = "#facc15"
+                border = theme.pinned
                 border_width = 4
         elif self._execution_state == "stale":
             border = STALE_EXECUTION_ACCENT
-            background = "#2a2416"
+            background = theme.stale_surface
             if self._selected:
                 border_width = 3
             if self._pinned:
-                border = "#facc15"
+                border = theme.pinned
                 border_width = 4
         elif self._manual_execution:
             if self._execution_state == "ready":
                 border = "#22c55e"
-                background = "#182a20"
+                background = theme.ready_surface
             elif self._execution_state == "not_calculated":
                 border = STALE_EXECUTION_ACCENT
-                background = "#2a2416"
+                background = theme.stale_surface
             elif self._execution_state == "error":
                 border = "#ef4444"
-                background = "#2f1d1d"
+                background = theme.error_surface
             if self._selected:
                 border_width = 3
             if self._pinned:
-                border = "#facc15"
+                border = theme.pinned
                 border_width = 4
-        if (
-            self._isolated_tuning
-            and self._execution_state != "error"
-            and not self._pinned
-        ):
-            border = STALE_EXECUTION_ACCENT
-            border_width = max(border_width, 3)
-            background = "#2a2416"
+        isolated_tuning_active = (
+            self._isolated_tuning and self._execution_state != "error"
+        )
+        if isolated_tuning_active:
+            background = theme.tuning_surface
+            if not self._pinned:
+                border = ISOLATED_TUNING_ACCENT
+                border_width = max(border_width, 3)
         if self._processing:
-            background = "#303640"
-            if not self._pinned and not self._selected:
-                border = "#94a3b8"
-            if self._processing_queued and not self._pinned:
-                border = "#f59e0b"
+            if isolated_tuning_active:
+                background = theme.tuning_surface
+                if not self._pinned:
+                    border = ISOLATED_TUNING_ACCENT
+                    border_width = max(border_width, 3)
+            else:
+                background = theme.processing_surface
+                if not self._pinned and not self._selected:
+                    border = "#94a3b8"
+                if self._processing_queued and not self._pinned:
+                    border = STALE_EXECUTION_ACCENT
         if self._search_highlight and not self._selected and not self._pinned:
             border = "#38bdf8"
             border_width = max(border_width, 3)
-            background = "#1e2e38"
+            background = theme.search_surface
         if self._image_drop_target:
             border = "#34d399"
             border_width = max(border_width, 4)
-            background = "#17322a"
+            background = theme.compatible_surface
+        if self._append_drop_state == "compatible":
+            border = "#34d399"
+            border_width = max(border_width, 4)
+            background = theme.compatible_surface
+        elif self._append_drop_state == "incompatible":
+            border = "#fb7185"
+            border_width = max(border_width, 4)
+            background = theme.incompatible_surface
         accent_color = self._category_color
-        category_background = self._category_tint
-        category_color = self._category_color
+        category_background = category_tint(self.category, self.palette())
+        category_text = category_foreground(self.category, self.palette())
         if self._execution_state == EXECUTION_BLOCKED:
             accent_color = BLOCKED_EXECUTION_ACCENT
-            category_background = "#431407"
-            category_color = "#fdba74"
+            category_background = "#431407" if theme.is_dark else "#ffedd5"
+            category_text = "#fdba74" if theme.is_dark else "#9a3412"
         elif self._execution_state == "stale":
             accent_color = STALE_EXECUTION_ACCENT
-            category_background = "#78350f"
-            category_color = "#fde68a"
+            category_background = "#78350f" if theme.is_dark else "#fef3c7"
+            category_text = "#fde68a" if theme.is_dark else "#92400e"
         elif self._manual_execution:
             if self._execution_state == "ready":
                 accent_color = "#22c55e"
-                category_background = "#064e3b"
-                category_color = "#bbf7d0"
+                category_background = "#064e3b" if theme.is_dark else "#dcfce7"
+                category_text = "#bbf7d0" if theme.is_dark else "#166534"
             elif self._execution_state == "not_calculated":
                 accent_color = STALE_EXECUTION_ACCENT
-                category_background = "#78350f"
-                category_color = "#fde68a"
+                category_background = "#78350f" if theme.is_dark else "#fef3c7"
+                category_text = "#fde68a" if theme.is_dark else "#92400e"
             elif self._execution_state == "error":
                 accent_color = "#ef4444"
-                category_background = "#7f1d1d"
-                category_color = "#fecaca"
-        if self._isolated_tuning and self._execution_state != "error":
-            accent_color = STALE_EXECUTION_ACCENT
-            category_background = "#78350f"
-            category_color = "#fde68a"
-        if self._processing:
+                category_background = "#7f1d1d" if theme.is_dark else "#fee2e2"
+                category_text = "#fecaca" if theme.is_dark else "#991b1b"
+        if isolated_tuning_active:
+            accent_color = ISOLATED_TUNING_ACCENT
+            category_background = category_tint(self.category, self.palette())
+            category_text = category_foreground(self.category, self.palette())
+        if self._processing and not isolated_tuning_active:
             accent_color = "#94a3b8"
-            category_background = "#3a414c"
-            category_color = "#d1d5db"
+            category_background = "#3a414c" if theme.is_dark else "#e2e8f0"
+            category_text = "#d1d5db" if theme.is_dark else "#475569"
         if self._image_drop_target:
             accent_color = "#34d399"
-            category_background = "#064e3b"
-            category_color = "#d1fae5"
+            category_background = "#064e3b" if theme.is_dark else "#d1fae5"
+            category_text = "#d1fae5" if theme.is_dark else "#065f46"
+        if self._append_drop_state == "compatible":
+            accent_color = "#34d399"
+            category_background = "#064e3b" if theme.is_dark else "#d1fae5"
+            category_text = "#d1fae5" if theme.is_dark else "#065f46"
+        elif self._append_drop_state == "incompatible":
+            accent_color = "#fb7185"
+            category_background = "#4c0519" if theme.is_dark else "#ffe4e6"
+            category_text = "#fecdd3" if theme.is_dark else "#9f1239"
         self.setStyleSheet(
             f"""
             QFrame#NodeCard {{
@@ -1105,7 +1226,7 @@ class NodeCard(QFrame):
                 border-radius: 6px;
             }}
             QLabel {{
-                color: #f3f4f6;
+                color: {theme.text};
             }}
             QFrame#NodeAccent {{
                 background: {accent_color};
@@ -1121,7 +1242,7 @@ class NodeCard(QFrame):
             f"""
             QLabel#NodeCategory {{
                 background: {category_background};
-                color: {category_color};
+                color: {category_text};
                 border-radius: 4px;
                 font-size: 10px;
                 font-weight: 650;
@@ -1129,8 +1250,92 @@ class NodeCard(QFrame):
             }}
             """
         )
+        optimization_colors = (
+            ("#422006", "#fde68a", "#d97706")
+            if theme.is_dark
+            else ("#fef3c7", "#78350f", "#d97706")
+        )
+        opt_background, opt_text, opt_border = optimization_colors
+        self.optimization_badge.setStyleSheet(
+            "QLabel#NodeOptimizationBadge {"
+            f" background: {opt_background}; color: {opt_text};"
+            f" border: 1px solid {opt_border}; border-radius: 7px;"
+            " font-size: 9px; font-weight: 650; padding: 1px 5px;"
+            "}"
+        )
+        self.subtitle_label.setStyleSheet(
+            f"color: {theme.subtitle}; font-size: 10px; padding-bottom: 1px;"
+        )
+        self.preview.setStyleSheet(
+            f"background: {theme.preview}; color: {theme.preview_text}; "
+            "border-radius: 4px;"
+        )
+        self.metadata_label.setStyleSheet(
+            f"color: {theme.muted_text}; font-size: 10px; padding-top: 2px;"
+        )
+        execution_color = (
+            "#c4b5fd" if theme.is_dark else "#6d28d9"
+        ) if isolated_tuning_active else (
+            "#fbbf24" if theme.is_dark else "#92400e"
+        )
+        self.execution_label.setStyleSheet(
+            f"color: {execution_color}; font-size: 10px; padding-top: 1px;"
+        )
+        self._refresh_button_styles(theme)
         self.pin_button.setVisible(False)
         self.processing_badge.raise_()
+
+    def _refresh_button_styles(self, theme) -> None:
+        """Style proxy-hosted buttons without relying on stale native QSS roles."""
+
+        if theme.is_dark:
+            colors = {
+                "surface": "#334155",
+                "hover": "#3f4f63",
+                "pressed": "#1e293b",
+                "border": "#64748b",
+                "text": "#f8fafc",
+                "disabled_surface": "#2b3038",
+                "disabled_border": "#475569",
+                "disabled_text": "#94a3b8",
+            }
+        else:
+            colors = {
+                "surface": "#e2e8f0",
+                "hover": "#dbeafe",
+                "pressed": "#cbd5e1",
+                "border": "#94a3b8",
+                "text": "#172033",
+                "disabled_surface": "#e5e7eb",
+                "disabled_border": "#cbd5e1",
+                "disabled_text": "#536174",
+            }
+        style = f"""
+            QPushButton {{
+                background-color: {colors["surface"]};
+                color: {colors["text"]};
+                border: 1px solid {colors["border"]};
+                border-radius: 3px;
+                padding: 3px 7px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors["hover"]};
+                border-color: {theme.selected};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors["pressed"]};
+            }}
+            QPushButton:focus {{
+                border-color: {theme.selected};
+            }}
+            QPushButton:disabled {{
+                background-color: {colors["disabled_surface"]};
+                color: {colors["disabled_text"]};
+                border-color: {colors["disabled_border"]};
+            }}
+        """
+        self.calculate_button.setStyleSheet(style)
+        self.pin_button.setStyleSheet(style)
 
     def _execution_summary(self) -> str:
         if self._isolated_tuning:
@@ -1222,17 +1427,22 @@ class TunnelBadgeItem(QGraphicsItem):
 
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setFont(self._font)
-        pen_color = QColor("#93c5fd")
-        fill_color = QColor(15, 23, 42, 210)
+        theme = _theme_for_graphics_item(self)
+        pen_color = QColor(theme.tunnel_border)
+        fill_color = QColor(theme.tunnel_surface)
+        fill_color.setAlpha(210)
         if self._highlight_role == "source":
             pen_color = QColor("#fbbf24")
-            fill_color = QColor(69, 42, 8, 230)
+            fill_color = QColor("#452a08" if theme.is_dark else "#fef3c7")
+            fill_color.setAlpha(230)
         elif self._highlight_role == "subscriber":
             pen_color = QColor("#60a5fa")
-            fill_color = QColor(18, 43, 84, 230)
+            fill_color = QColor("#122b54" if theme.is_dark else "#dbeafe")
+            fill_color.setAlpha(230)
         elif self._highlight_role == "dimmed":
-            pen_color = QColor("#64748b")
-            fill_color = QColor(15, 23, 42, 150)
+            pen_color = QColor(theme.dimmed)
+            fill_color = QColor(theme.tunnel_surface)
+            fill_color.setAlpha(150)
         pen_width = 1.3
         if self._highlight_role in {"source", "subscriber"}:
             pen_width = 1.7
@@ -1297,13 +1507,14 @@ class TunnelBadgeItem(QGraphicsItem):
     ) -> None:
         body_width = width - self._tip_width
         text_rect = QRectF(x + 1.0, y, body_width - 2.0, height)
-        text_color = QColor("#dbeafe")
+        theme = _theme_for_graphics_item(self)
+        text_color = QColor(theme.tunnel_text)
         if self._highlight_role == "source":
-            text_color = QColor("#fef3c7")
+            text_color = QColor("#fef3c7" if theme.is_dark else "#78350f")
         elif self._highlight_role == "subscriber":
-            text_color = QColor("#eff6ff")
+            text_color = QColor("#eff6ff" if theme.is_dark else "#1e3a8a")
         elif self._highlight_role == "dimmed":
-            text_color = QColor("#94a3b8")
+            text_color = QColor(theme.dimmed)
         painter.setPen(text_color)
         painter.drawText(text_rect, Qt.AlignCenter, self._label)
         if self._highlight_role == "source":
@@ -1313,7 +1524,7 @@ class TunnelBadgeItem(QGraphicsItem):
         elif self._highlight_role == "dimmed":
             painter.setPen(QPen(QColor("#64748b"), 1.2))
         else:
-            painter.setPen(QPen(QColor("#93c5fd"), 1.3))
+            painter.setPen(QPen(QColor(theme.tunnel_border), 1.3))
 
 
 class GraphNoteItem(QGraphicsTextItem):
@@ -1339,7 +1550,7 @@ class GraphNoteItem(QGraphicsTextItem):
         font = QFont()
         font.setPointSizeF(9.0)
         self.setFont(font)
-        self.setDefaultTextColor(QColor("#f8fafc"))
+        self.setDefaultTextColor(QColor(_theme_for_graphics_item(self).note_text))
         self.setZValue(80)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
@@ -1352,10 +1563,17 @@ class GraphNoteItem(QGraphicsTextItem):
         self.setPlainText(str(text))
 
     def paint(self, painter, option, widget=None):  # noqa: N802
+        theme = _theme_for_graphics_item(self)
+        self.setDefaultTextColor(QColor(theme.note_text))
         painter.setRenderHint(QPainter.Antialiasing)
         rect = self.boundingRect()
-        fill = QColor(51, 65, 85, 230)
-        border = QColor("#fbbf24") if self.isSelected() else QColor("#64748b")
+        fill = QColor(theme.note_surface)
+        fill.setAlpha(230)
+        border = (
+            QColor(theme.pinned)
+            if self.isSelected()
+            else QColor(theme.note_border)
+        )
         painter.setBrush(fill)
         painter.setPen(QPen(border, 1.4 if self.isSelected() else 1.0))
         painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 5.0, 5.0)
@@ -1448,7 +1666,9 @@ class PortItem(QGraphicsEllipseItem):
         label_font = QFont()
         label_font.setPointSizeF(8.5)
         self.label_item.setFont(label_font)
-        self.label_item.setDefaultTextColor(QColor("#dbe4f0"))
+        self.label_item.setDefaultTextColor(
+            QColor(_theme_for_graphics_item(self).muted_text)
+        )
         self.label_item.setAcceptedMouseButtons(Qt.NoButton)
         self.label_item.setAcceptHoverEvents(False)
         self.label_item.setZValue(2)
@@ -1564,6 +1784,8 @@ class PortItem(QGraphicsEllipseItem):
         super().mouseReleaseEvent(event)
 
     def _refresh_style(self) -> None:
+        theme = _theme_for_graphics_item(self)
+        self.label_item.setDefaultTextColor(QColor(theme.muted_text))
         color = "#22c55e"
         if self.data_type == "mask":
             color = "#c084fc"
@@ -1580,18 +1802,18 @@ class PortItem(QGraphicsEllipseItem):
         if self.accent_color:
             color = self.accent_color
         radius = self.radius
-        pen_color = "#111827"
+        pen_color = theme.port_outline
         pen_width = 1.5
         if self._hovered:
             radius = self.hover_radius
-            pen_color = "#f9fafb"
+            pen_color = theme.port_hover
             pen_width = 2.0
         if self._active:
             radius = self.target_radius
-            pen_color = "#bfdbfe"
+            pen_color = theme.port_active
             pen_width = 2.4
         if self._tunnel_highlight_role == "dimmed":
-            pen_color = "#475569"
+            pen_color = theme.dimmed
             pen_width = 1.4
         elif self._tunnel_highlight_role:
             radius = max(radius, self.hover_radius)
@@ -1601,7 +1823,7 @@ class PortItem(QGraphicsEllipseItem):
             pen_width = 3.0
         if self._drop_state == "compatible":
             radius = self.target_radius
-            pen_color = "#f9fafb"
+            pen_color = theme.port_hover
             pen_width = 3.0
         elif self._drop_state == "incompatible":
             radius = self.hover_radius
@@ -2063,6 +2285,10 @@ class NodeProxy(QGraphicsProxyWidget):
         ):
             view = _view_for_scene(self.scene())
             if view is not None:
+                if view._node_drag_in_progress:
+                    for connection in self.connections:
+                        connection.update_path(obstacle_aware=False)
+                    return result
                 view._mark_graph_geometry_changed()
                 for connection in self.connections:
                     connection.update_path()
@@ -2194,14 +2420,16 @@ class ConnectionItem(QGraphicsPathItem):
         self.source_port = int(source_port)
         self._insert_preview_state: str | None = None
         self._pulse_phase = 0
-        self._last_route_key: tuple[float, float, float, float, int] | None = None
+        self._last_route_key: (
+            tuple[float, float, float, float, int, bool] | None
+        ) = None
         self.setZValue(-10)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
         self._refresh_pen()
         self.update_path()
 
-    def update_path(self) -> None:
+    def update_path(self, *, obstacle_aware: bool = True) -> None:
         start = self.source.port_scene_pos("output", self.source_port)
         end = self.target.port_scene_pos("input", self.target_port)
         view = _view_for_scene(self.scene())
@@ -2212,10 +2440,15 @@ class ConnectionItem(QGraphicsPathItem):
             round(end.x(), 3),
             round(end.y(), 3),
             revision,
+            bool(obstacle_aware),
         )
         if route_key == self._last_route_key:
             return
-        obstacles = view.connection_obstacle_rects(self) if view is not None else ()
+        obstacles = (
+            view.connection_obstacle_rects(self)
+            if view is not None and obstacle_aware
+            else ()
+        )
         self.setPath(_wire_path(start, end, obstacles=obstacles))
         self._last_route_key = route_key
 
@@ -2293,7 +2526,8 @@ class ConnectionItem(QGraphicsPathItem):
             )
 
     def _refresh_pen(self) -> None:
-        color = "#facc15" if self.isSelected() else "#8aa0c8"
+        theme = _theme_for_graphics_item(self)
+        color = theme.pinned if self.isSelected() else theme.wire
         width = 3.0 if self.isSelected() else 2.0
         style = Qt.SolidLine
         if self._insert_preview_state == "incompatible":
@@ -2338,13 +2572,16 @@ class PendingConnectionItem(QGraphicsPathItem):
     def __init__(self, source_port: PortItem, end: QPointF):
         super().__init__()
         self.source_port = source_port
-        pen = QPen(QColor("#d1d5db"), 2.0, Qt.DashLine)
-        self.setPen(pen)
+        self._refresh_pen()
         self.setZValue(-5)
         self.update_end(end)
 
     def update_end(self, end: QPointF) -> None:
         self.setPath(_wire_path(self.source_port.mapToScene(QPointF(0, 0)), end))
+
+    def _refresh_pen(self) -> None:
+        theme = _theme_for_graphics_item(self)
+        self.setPen(QPen(QColor(theme.pending_wire), 2.0, Qt.DashLine))
 
 
 class PipelineGraphView(QGraphicsView):
@@ -2379,6 +2616,7 @@ class PipelineGraphView(QGraphicsView):
     pin_requested = Signal(str)
     node_calculate_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
+    node_append_requested = Signal(str, str, int, QPointF)
     node_insert_requested = Signal(str, object, QPointF)
     connection_insert_requested = Signal(object, QPointF)
     connection_requested = Signal(str, str, int, int)
@@ -2403,7 +2641,7 @@ class PipelineGraphView(QGraphicsView):
         self.setDragMode(QGraphicsView.NoDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setBackgroundBrush(QColor("#151922"))
+        self.setBackgroundBrush(QColor(graph_theme(self.palette()).canvas))
         self.setAcceptDrops(True)
         self._proxies: dict[str, NodeProxy] = {}
         self._cards: dict[str, NodeCard] = {}
@@ -2421,6 +2659,9 @@ class PipelineGraphView(QGraphicsView):
         self._highlighted_connection: ConnectionItem | None = None
         self._highlighted_connection_state: str | None = None
         self._highlighted_connection_operation: str | None = None
+        self._highlighted_append_port: PortItem | None = None
+        self._highlighted_append_state: str | None = None
+        self._highlighted_append_operation = ""
         self._highlighted_tunnel_insert_port: PortItem | None = None
         self._highlighted_tunnel_insert_name = ""
         self._highlighted_tunnel_insert_state: str | None = None
@@ -2431,7 +2672,13 @@ class PipelineGraphView(QGraphicsView):
             ]
             | None
         ) = None
+        self._node_append_validator: (
+            Callable[[str, str, int], tuple[str, str]] | None
+        ) = None
         self._node_bypass_state_resolver: (
+            Callable[[str], tuple[bool, bool, str]] | None
+        ) = None
+        self._node_isolation_state_resolver: (
             Callable[[str], tuple[bool, bool, str]] | None
         ) = None
         self._tunnel_reroute_validator: (
@@ -2456,6 +2703,7 @@ class PipelineGraphView(QGraphicsView):
         self._base_transform = QTransform()
         self._zoom_percent = float(self.DEFAULT_ZOOM)
         self._rerouting_connections = False
+        self._node_drag_in_progress = False
         self._route_revision = 0
         self._processing_timer = QTimer(self)
         self._processing_timer.setInterval(80)
@@ -2478,6 +2726,40 @@ class PipelineGraphView(QGraphicsView):
         self._notes: dict[str, GraphNoteItem] = {}
         self._port_label_mode = PortLabelMode.AMBIGUOUS_ONLY
 
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in {
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.StyleChange,
+        }:
+            self._apply_palette_theme()
+
+    def _apply_palette_theme(self) -> None:
+        """Refresh non-widget graph items after napari changes its palette."""
+
+        self.setBackgroundBrush(QColor(graph_theme(self.palette()).canvas))
+        for card in getattr(self, "_cards", {}).values():
+            card.set_graph_palette(self.palette())
+        scene = getattr(self, "scene", None)
+        if scene is None:
+            return
+        for item in scene.items():
+            if isinstance(item, PortItem):
+                item._refresh_style()
+            elif isinstance(item, ConnectionItem):
+                item._refresh_pen()
+            elif isinstance(item, PendingConnectionItem):
+                item._refresh_pen()
+            elif isinstance(item, GraphNoteItem):
+                item.setDefaultTextColor(
+                    QColor(_theme_for_graphics_item(item).note_text)
+                )
+                item.update()
+            elif isinstance(item, TunnelBadgeItem):
+                item.update()
+        scene.update()
+
     def build_graph(
         self,
         nodes,
@@ -2493,6 +2775,7 @@ class PipelineGraphView(QGraphicsView):
         preserved_base_transform = QTransform(self._base_transform)
         preserved_zoom = float(self._zoom_percent)
         self.clear_node_processing()
+        self._clear_append_preview()
         self._clear_tunnel_insert_preview()
         self.scene.clear()
         self._proxies.clear()
@@ -2899,6 +3182,10 @@ class PipelineGraphView(QGraphicsView):
         start_positions: Mapping[str, QPointF],
         delta: QPointF,
     ) -> None:
+        # Keep pointer tracking independent from graph-wide obstacle routing.
+        # Attached wires still follow their ports during the gesture, while a
+        # single exact obstacle-aware reroute is performed on release.
+        self._node_drag_in_progress = True
         for node_id, start_position in start_positions.items():
             proxy = self._proxies.get(node_id)
             if proxy is None:
@@ -2915,6 +3202,7 @@ class PipelineGraphView(QGraphicsView):
         self,
         start_positions: Mapping[str, QPointF],
     ) -> None:
+        self._node_drag_in_progress = False
         if not start_positions:
             return
         moved_rect = QRectF()
@@ -2937,6 +3225,14 @@ class PipelineGraphView(QGraphicsView):
     ) -> None:
         self._connection_insert_validator = validator
 
+    def set_node_append_validator(
+        self,
+        validator: Callable[[str, str, int], tuple[str, str]] | None,
+    ) -> None:
+        """Set the topology-aware validator for palette append drops."""
+
+        self._node_append_validator = validator
+
     def set_node_bypass_state_resolver(
         self,
         resolver: Callable[[str], tuple[bool, bool, str]] | None,
@@ -2944,6 +3240,14 @@ class PipelineGraphView(QGraphicsView):
         """Set the owner callback for live topology-aware bypass availability."""
 
         self._node_bypass_state_resolver = resolver
+
+    def set_node_isolation_state_resolver(
+        self,
+        resolver: Callable[[str], tuple[bool, bool, str]] | None,
+    ) -> None:
+        """Set the owner callback for live isolated-tuning availability."""
+
+        self._node_isolation_state_resolver = resolver
 
     def set_tunnel_reroute_validator(
         self,
@@ -3117,8 +3421,9 @@ class PipelineGraphView(QGraphicsView):
             node.category,
             can_pin=node.output_type in PINNABLE_OUTPUT_TYPES,
         )
+        card.set_graph_palette(self.palette())
         card.set_bypassed(getattr(node, "execution_mode", "run") == "bypass")
-        card.selected.connect(self._select_node)
+        card.selected.connect(self._select_node_from_embedded_card)
         card.pin_requested.connect(self.pin_requested)
         card.calculate_requested.connect(self.node_calculate_requested)
         proxy = NodeProxy(
@@ -3389,6 +3694,11 @@ class PipelineGraphView(QGraphicsView):
         proxy = self._proxies.get(node_id)
         if proxy is None:
             return
+        if (
+            self._highlighted_append_port is not None
+            and self._highlighted_append_port.node_id == node_id
+        ):
+            self._clear_append_preview()
         was_selected = node_id in self.selected_node_ids()
         affected_rect = proxy.sceneBoundingRect()
         for connection in list(proxy.connections):
@@ -3854,6 +4164,15 @@ class PipelineGraphView(QGraphicsView):
         center = self.mapToScene(self.viewport().rect().center())
         return center + QPointF(40 + len(self._proxies) * 18, 40)
 
+    def suggest_append_position(self, source_id: str) -> QPointF:
+        """Place a newly appended node just beyond its terminal source card."""
+
+        source = self._proxies.get(source_id)
+        if source is None:
+            return self.suggest_node_position()
+        source_rect = source.sceneBoundingRect()
+        return QPointF(source_rect.right() + 80.0, source_rect.top())
+
     def _image_source_node_id_at_view_pos(self, pos: QPoint) -> str | None:
         node_id = self._node_id_at_view_pos(pos)
         proxy = self._proxies.get(node_id or "")
@@ -3909,9 +4228,14 @@ class PipelineGraphView(QGraphicsView):
                 operation_id,
             )
             if tunnel_name:
+                self._clear_append_preview()
                 self._clear_connection_insert_preview()
             else:
                 self._update_connection_insert_preview(operation_id, scene_pos)
+                if self._highlighted_connection is not None:
+                    self._clear_append_preview()
+                else:
+                    self._update_node_append_preview(operation_id, scene_pos)
             event.acceptProposedAction()
             return
         if _image_source_mime_is_eligible(event.mimeData()):
@@ -3959,6 +4283,18 @@ class PipelineGraphView(QGraphicsView):
             connection_key = self._connection_key(connection)
             if connection_key is not None and state != "incompatible":
                 self.node_insert_requested.emit(operation_id, connection_key, scene_pos)
+            elif connection_key is None and self._update_node_append_preview(
+                operation_id,
+                scene_pos,
+            ):
+                port = self._highlighted_append_port
+                if port is not None and self._highlighted_append_state == "compatible":
+                    self.node_append_requested.emit(
+                        operation_id,
+                        port.node_id,
+                        port.port_index,
+                        scene_pos,
+                    )
             else:
                 self.node_create_requested.emit(operation_id, scene_pos)
             self._clear_all_insert_previews()
@@ -4244,6 +4580,15 @@ class PipelineGraphView(QGraphicsView):
             return
         self._set_node_selection({node_id}, node_id)
 
+    def _select_node_from_embedded_card(self, node_id: str) -> None:
+        """Expose a QWidget card click as the same nested press as its proxy."""
+
+        self._node_press_dispatch_depth += 1
+        try:
+            self._select_node(node_id)
+        finally:
+            self._node_press_dispatch_depth -= 1
+
     def _handle_node_press(
         self,
         node_id: str,
@@ -4267,6 +4612,11 @@ class PipelineGraphView(QGraphicsView):
         """Return whether node-selection signals are inside a mouse press."""
 
         return self._node_press_dispatch_depth > 0
+
+    def node_drag_in_progress(self) -> bool:
+        """Return whether nodes are following an active pointer drag."""
+
+        return bool(self._node_drag_in_progress)
 
     def _dispatch_node_press(
         self,
@@ -4414,12 +4764,18 @@ class PipelineGraphView(QGraphicsView):
                 bypass_action.setEnabled(bypass_enabled)
                 bypass_action.setToolTip(bypass_tooltip)
                 bypass_action.setStatusTip(bypass_tooltip)
-            isolation_action = menu.addAction("Tune node in isolation")
-            isolation_action.setCheckable(True)
-            isolation_action.setChecked(node_id == self._isolated_tuning_node_id)
-            isolation_action.setEnabled(
-                self._isolated_tuning_node_id in {None, node_id}
+            isolation_visible, isolation_enabled, isolation_tooltip = (
+                self._node_isolation_action_state(node_id)
             )
+            if isolation_visible:
+                isolation_action = menu.addAction("Tune node in isolation")
+                isolation_action.setCheckable(True)
+                isolation_action.setChecked(
+                    node_id == self._isolated_tuning_node_id
+                )
+                isolation_action.setEnabled(isolation_enabled)
+                isolation_action.setToolTip(isolation_tooltip)
+                isolation_action.setStatusTip(isolation_tooltip)
         pin_action = None
         if selected_count == 1 and card._can_pin:
             menu.addSeparator()
@@ -4502,6 +4858,35 @@ class PipelineGraphView(QGraphicsView):
             )
         return True, enabled, tooltip
 
+    def _node_isolation_action_state(self, node_id: str) -> tuple[bool, bool, str]:
+        """Resolve the context-menu action without owning tuning policy."""
+
+        if self._node_isolation_state_resolver is not None:
+            try:
+                visible, enabled, tooltip = self._node_isolation_state_resolver(
+                    node_id
+                )
+            except Exception as exc:  # pragma: no cover - defensive UI boundary
+                return (
+                    False,
+                    False,
+                    f"Isolated-tuning availability could not be checked: {exc}",
+                )
+            return bool(visible), bool(enabled), str(tooltip or "")
+
+        active = self._isolated_tuning_node_id
+        if active not in {None, node_id}:
+            return (
+                True,
+                False,
+                "Apply or cancel isolated tuning before tuning another node.",
+            )
+        return (
+            True,
+            True,
+            "Recalculate only this node while downstream propagation is paused.",
+        )
+
     def _node_has_primary_bypass_input(self, node_id: str) -> bool:
         if any(
             connection.target_id == node_id and connection.target_port == 0
@@ -4581,6 +4966,36 @@ class PipelineGraphView(QGraphicsView):
             if isinstance(item, PortItem) and item.kind == "output":
                 return item
         return None
+
+    def _node_proxy_at(self, scene_pos: QPointF) -> NodeProxy | None:
+        for item in self.scene.items(scene_pos):
+            current = item
+            while current is not None:
+                if isinstance(current, NodeProxy):
+                    return current
+                current = current.parentItem()
+        return None
+
+    def _append_output_port_at(self, scene_pos: QPointF) -> PortItem | None:
+        port = self._output_port_at(scene_pos)
+        if port is not None:
+            return port
+        proxy = self._node_proxy_at(scene_pos)
+        if proxy is None or len(proxy.output_ports) != 1:
+            return None
+        return proxy.output_ports[0]
+
+    def _append_output_is_available(self, port: PortItem) -> bool:
+        if any(
+            connection.source_id == port.node_id
+            and connection.source_port == port.port_index
+            for connection in self._connections
+        ):
+            return False
+        return all(
+            tunnel_port is not port
+            for tunnel_port in self._tunnel_source_ports.values()
+        )
 
     def _port_at_view_pos(self, pos: QPoint) -> PortItem | None:
         scene_pos = self.mapToScene(pos)
@@ -4705,6 +5120,59 @@ class PipelineGraphView(QGraphicsView):
         if message:
             self.status_message.emit(message)
 
+    def _update_node_append_preview(
+        self,
+        operation_id: str,
+        scene_pos: QPointF,
+    ) -> bool:
+        """Highlight a terminal output that can feed a palette node."""
+
+        port = self._append_output_port_at(scene_pos)
+        if port is None:
+            self._clear_append_preview()
+            return False
+
+        state = "compatible"
+        message = ""
+        if not self._append_output_is_available(port):
+            state = "incompatible"
+            message = "This output already feeds another branch or output tunnel."
+        elif self._node_append_validator is not None:
+            try:
+                state, message = self._node_append_validator(
+                    operation_id,
+                    port.node_id,
+                    port.port_index,
+                )
+            except Exception as exc:
+                state, message = "incompatible", str(exc)
+        state = "compatible" if state == "compatible" else "incompatible"
+        if (
+            port is self._highlighted_append_port
+            and state == self._highlighted_append_state
+            and operation_id == self._highlighted_append_operation
+        ):
+            return True
+
+        self._clear_append_preview()
+        self._highlighted_append_port = port
+        self._highlighted_append_state = state
+        self._highlighted_append_operation = operation_id
+        port.set_drop_state(state)
+        card = self._cards.get(port.node_id)
+        if card is not None:
+            card.set_append_drop_state(state)
+        title = card.title_label.text() if card is not None else port.node_id
+        self.status_message.emit(
+            message
+            or (
+                f"Drop to add the node after '{title}'."
+                if state == "compatible"
+                else f"That node cannot be added after '{title}'."
+            )
+        )
+        return True
+
     def _update_tunnel_insert_preview(
         self,
         scene_pos: QPointF,
@@ -4767,8 +5235,20 @@ class PipelineGraphView(QGraphicsView):
         self._highlighted_tunnel_insert_name = ""
         self._highlighted_tunnel_insert_state = None
 
+    def _clear_append_preview(self) -> None:
+        port = getattr(self, "_highlighted_append_port", None)
+        if port is not None:
+            port.set_drop_state(None)
+            card = self._cards.get(port.node_id)
+            if card is not None:
+                card.set_append_drop_state(None)
+        self._highlighted_append_port = None
+        self._highlighted_append_state = None
+        self._highlighted_append_operation = ""
+
     def _clear_all_insert_previews(self) -> None:
         self._clear_connection_insert_preview()
+        self._clear_append_preview()
         self._clear_tunnel_insert_preview()
 
     def _clear_connection_insert_preview(self) -> None:
@@ -5438,6 +5918,14 @@ def _view_for_scene(scene) -> PipelineGraphView | None:
         return None
     view = scene.views()[0]
     return view if isinstance(view, PipelineGraphView) else None
+
+
+def _theme_for_graphics_item(item):
+    """Resolve an item's theme from its owning graph, or the application."""
+
+    view = _view_for_scene(item.scene())
+    palette = view.palette() if view is not None else QApplication.palette()
+    return graph_theme(palette)
 
 
 def _exec_menu(menu: QMenu, pos):

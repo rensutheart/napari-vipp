@@ -138,6 +138,7 @@ class SweepCase:
             "executed-sweep",
             "fixed-contract",
             "delegated-psf-sweep",
+            "delegated-scientific-contracts",
         }:
             raise SweepConfigurationError(
                 f"Unsupported coverage mode {self.coverage_mode!r}."
@@ -150,7 +151,7 @@ class SweepCase:
             raise SweepConfigurationError(
                 f"Classified case {operation_id!r} must not define sweep lanes."
             )
-        if self.coverage_mode == "delegated-psf-sweep" and not self.delegated_to:
+        if self.coverage_mode.startswith("delegated-") and not self.delegated_to:
             raise SweepConfigurationError(
                 f"Delegated case {operation_id!r} must name its delegated harness."
             )
@@ -215,6 +216,10 @@ EXPECTED_IMPLEMENTATIONS = {
     "remove_binary_outliers": "cupy-remove-binary-outliers-v1",
     "measure_objects": "cupy-measure-objects-basic-v1",
     "measure_objects_intensity": "cupy-measure-objects-intensity-basic-v1",
+    "measure_3d_mesh_morphology": (
+        "cupy-measure-3d-mesh-morphology-hybrid-v1"
+    ),
+    "analyze_skeleton": "cupyx-analyze-skeleton-v1",
 }
 
 _MASK_INPUT_TARGETS = frozenset(
@@ -289,7 +294,7 @@ def _choice_lane(lane_id: str, parameter: str, values: Sequence[object]) -> Swee
 
 
 def sweep_catalog() -> tuple[SweepCase, ...]:
-    """Return the bounded, deterministic coverage plan for all 19 declarations."""
+    """Return the bounded, deterministic coverage plan for all 21 declarations."""
 
     background_base = (
         ("radius", 2.0),
@@ -646,6 +651,55 @@ def sweep_catalog() -> tuple[SweepCase, ...]:
             ),
             fixed_authored_parameters=measurement_flags,
         ),
+        SweepCase(
+            "measure_3d_mesh_morphology",
+            "delegated-mesh-scientific-contracts-v1",
+            (8, 9, 10),
+            "int32",
+            "ZYX",
+            20_260_820,
+            (
+                ("spatial_mode", "3D ZYX"),
+                ("minimum_voxel_count", 16),
+                ("include_convex_hull_metrics", True),
+            ),
+            coverage_mode="delegated-scientific-contracts",
+            classification=(
+                "The hybrid GPU payload and authoritative CPU mesh/hull finalizer "
+                "are covered by dedicated real-provider parity, input-integrity, "
+                "cancellation, memory, and fallback contracts. This row does not "
+                "execute a relative parameter sweep or claim transfer-inclusive "
+                "performance evidence."
+            ),
+            delegated_to=(
+                "src/napari_vipp/_tests/test_gpu_mesh_morphology_provider.py; "
+                "src/napari_vipp/_tests/test_compute_policy_mesh_morphology_gpu.py"
+            ),
+        ),
+        SweepCase(
+            "analyze_skeleton",
+            "delegated-skeleton-scientific-contracts-v1",
+            (8, 9, 10),
+            "bool",
+            "ZYX",
+            20_260_821,
+            (
+                ("spatial_mode", "3D ZYX"),
+                ("input_mode", "Already skeletonized"),
+            ),
+            coverage_mode="delegated-scientific-contracts",
+            classification=(
+                "The GPU graph payload and authoritative CPU table finalizer are "
+                "covered by dedicated real-provider parity, input-integrity, "
+                "cancellation, memory, and fallback contracts. This row does not "
+                "execute a relative parameter sweep or claim transfer-inclusive "
+                "performance evidence."
+            ),
+            delegated_to=(
+                "src/napari_vipp/_tests/test_gpu_analyze_skeleton_provider.py; "
+                "src/napari_vipp/_tests/test_compute_policy_skeleton_gpu.py"
+            ),
+        ),
     )
 
 
@@ -791,6 +845,9 @@ def describe_coverage(
         ),
         "delegated_psf_sweep_count": sum(
             row["coverage_mode"] == "delegated-psf-sweep" for row in rows
+        ),
+        "delegated_scientific_contract_count": sum(
+            row["coverage_mode"] == "delegated-scientific-contracts" for row in rows
         ),
         "rows": rows,
     }

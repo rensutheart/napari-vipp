@@ -275,7 +275,7 @@ def test_batch_profile_rejects_an_unreviewed_node(tmp_path):
         validate_batch_config(workflow, config)
 
 
-def test_batch_profile_rejects_effective_image_through_authored_table_output(
+def test_batch_profile_rejects_non_table_to_table_bypass_override(
     tmp_path,
 ) -> None:
     pipeline = PrototypePipeline()
@@ -318,7 +318,7 @@ def test_batch_profile_rejects_effective_image_through_authored_table_output(
 
     with pytest.raises(
         ValueError,
-        match="Effective Safe Node Bypass.*labels.*expects table.*csv",
+        match="measure_objects.*not eligible for Safe Node Bypass",
     ):
         validate_batch_config(workflow, config)
     assert not (tmp_path / "outputs").exists()

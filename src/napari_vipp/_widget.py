@@ -36,6 +36,7 @@ from qtpy.QtCore import (
 )
 from qtpy.QtGui import (
     QAction,
+    QBrush,
     QColor,
     QFont,
     QIcon,
@@ -43,6 +44,7 @@ from qtpy.QtGui import (
     QKeySequence,
     QPainter,
     QPainterPath,
+    QPalette,
     QPen,
     QPixmap,
     QSyntaxHighlighter,
@@ -51,6 +53,7 @@ from qtpy.QtGui import (
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -59,8 +62,10 @@ from qtpy.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -85,7 +90,6 @@ from qtpy.QtWidgets import (
 
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._graph import (
-    STALE_EXECUTION_ACCENT,
     ComputeBadgeKind,
     ImageSourceMimePayload,
     PipelineGraphView,
@@ -113,6 +117,7 @@ from napari_vipp.core.batch import (
     plan_batch,
     preflight_batch,
     run_batch,
+    safe_batch_filename,
     save_batch_config,
     scientific_workflow_hash,
     validate_batch_config,
@@ -141,6 +146,8 @@ from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_CHOICES,
     CHANNEL_COLOR_HEX,
     channel_color_labels_from_metadata,
+    channel_color_names,
+    channel_color_table,
     color_value_to_rgb,
 )
 from napari_vipp.core.compute import (
@@ -170,6 +177,7 @@ from napari_vipp.core.diagnostics import (
     label_volumes,
     largest_label_volume,
     largest_object_size,
+    object_sizes,
     provisional_generated_layer_contrast_limits,
     psf_preflight,
     widefield_nyquist_sampling,
@@ -251,7 +259,9 @@ from napari_vipp.core.io import (
     SourceInspection,
     inspect_image_source,
     inspect_image_state,
+    normalize_local_image_source_path,
     read_image,
+    validate_local_image_source_path,
     write_ome_zarr_analysis_dataset,
 )
 from napari_vipp.core.io.errors import as_image_source_error
@@ -265,19 +275,26 @@ from napari_vipp.core.metadata import (
     image_state_from_array,
     metadata_history_items,
     metadata_table_rows,
+    table_data_quality_rows,
+    with_channel_colors,
 )
 from napari_vipp.core.operations import (
     BORN_WOLF_PSF_AUTO_PARAMETERS,
     BORN_WOLF_PSF_MANUAL_DEFAULTS,
+    IDENTITY_JOIN_COLUMNS,
+    PROPERTY_FILTER_COLUMN_PRIORITY,
     automatic_threshold_value,
     colocalization_normalized_inputs,
     colocalization_threshold_values,
+    intensity_histogram_table_columns,
+    measurement_table_columns,
     resolve_born_wolf_psf_parameters,
     save_array_output,
 )
 from napari_vipp.core.pipeline import (
     CROP_ROI_LINE_WIDTH_SCALE_PARAMETER,
     DEFAULT_DYNAMIC_OUTPUT_PORTS,
+    DEFAULT_SLICE_WISE_STACK_NOTICE,
     EXECUTION_BLOCKED,
     EXECUTION_ERROR,
     EXECUTION_NOT_CALCULATED,
@@ -289,6 +306,7 @@ from napari_vipp.core.pipeline import (
     MANUAL_RUN_SKIP,
     NODE_EXECUTION_BYPASS,
     NODE_EXECUTION_RUN,
+    SLICE_WISE_STACK_NOTICE,
     GraphConnection,
     GraphNode,
     InputSpec,
@@ -481,6 +499,11 @@ from napari_vipp.ui.compute_setup import (
     HostMemorySnapshot,
 )
 from napari_vipp.ui.compute_setup_dialog import ComputeSetupDialog
+from napari_vipp.ui.connected_inputs import (
+    ConnectedInputBinding,
+    ConnectedInputsCard,
+    connected_input_scientific_summary,
+)
 from napari_vipp.ui.controls import (
     BoolControl,
     ChoiceControl,
@@ -511,6 +534,7 @@ from napari_vipp.ui.diagnostic_workers import (
     ColocalizationScatterWorker,
     GeneratedLayerContrastWorker,
     InputHistogramWorker,
+    LabelVolumeWorker,
     ThumbnailContrastLimitWorker,
 )
 from napari_vipp.ui.diagnostic_workers import (
@@ -536,6 +560,12 @@ from napari_vipp.ui.diagnostic_workers import (
 )
 from napari_vipp.ui.diagnostic_workers import (
     InputHistogramResult as InputHistogramResult,
+)
+from napari_vipp.ui.diagnostic_workers import (
+    LabelVolumeRequest as LabelVolumeRequest,
+)
+from napari_vipp.ui.diagnostic_workers import (
+    LabelVolumeResult as LabelVolumeResult,
 )
 from napari_vipp.ui.diagnostic_workers import (
     ThumbnailContrastLimitRequest as ThumbnailContrastLimitRequest,
@@ -575,9 +605,33 @@ from napari_vipp.ui.file_sources import SourceLoadProgress as SourceLoadProgress
 from napari_vipp.ui.file_sources import (
     SourceLoadProgressUnit as SourceLoadProgressUnit,
 )
+from napari_vipp.ui.histogram_dialog import (
+    HistogramDialog,
+    histogram_arrays_from_table,
+)
 from napari_vipp.ui.history import WorkflowHistory, WorkflowHistorySnapshot
+from napari_vipp.ui.iconography import operation_icon
+from napari_vipp.ui.inspector import (
+    BEHAVIOR_SECTION,
+    COLOCALIZATION_SECTION,
+    COMPUTE_SECTION,
+    HISTOGRAMS_SECTION,
+    HISTORY_SECTION,
+    LABEL_DISTRIBUTION_SECTION,
+    MASK_SUMMARY_SECTION,
+    METADATA_SECTION,
+    OUTPUT_SELECTOR_SECTION,
+    PARAMETERS_SECTION,
+    SOURCE_REPRESENTATION_SECTION,
+    TABLE_RESULTS_SECTION,
+    WRITER_STATUS_SECTION,
+    InspectorSection,
+    inspector_profile,
+)
 from napari_vipp.ui.lifecycle import WidgetLifecycle
-from napari_vipp.ui.palette import NodePalette
+from napari_vipp.ui.palette import NodeLibraryPanel
+from napari_vipp.ui.palette_roles import blend_colors, palette_is_dark, theme_colors
+from napari_vipp.ui.panel_toggle import SidePanelToggleButton
 from napari_vipp.ui.plots import (
     COLOCALIZATION_SCATTER_BINS as COLOCALIZATION_SCATTER_BINS,
 )
@@ -592,6 +646,7 @@ from napari_vipp.ui.plots import (
 from napari_vipp.ui.plots import (
     ColocalizationScatterPlot as ColocalizationScatterPlot,
 )
+from napari_vipp.ui.plots import DetailedHistogramPlot as DetailedHistogramPlot
 from napari_vipp.ui.plots import HistogramPlot as HistogramPlot
 from napari_vipp.ui.plots import (
     _count_colocalization_thresholds as _count_scatter_thresholds,
@@ -618,6 +673,10 @@ from napari_vipp.ui.presentation_settings import (
     save_thumbnail_resolution,
     save_thumbnail_statistics_policy,
     thumbnail_resolution_preset,
+)
+from napari_vipp.ui.result_table_dialog import (
+    ResultTableDialog,
+    choose_table_export_target,
 )
 from napari_vipp.ui.search import (
     _fuzzy_match as _fuzzy_match,
@@ -711,6 +770,8 @@ AUTO_BACKGROUND_MIN_BYTES = 32 * 1024 * 1024
 AUTO_BACKGROUND_MIN_ELEMENTS = 4_000_000
 AUTO_CONTRAST_BACKGROUND_MIN_ELEMENTS = 1_000_000
 INSPECTOR_STATISTICS_CHUNK_ELEMENTS = 1_048_576
+PROPERTY_FILTER_VALUE_CACHE_MAX_BYTES = 64 * 1024 * 1024
+PROPERTY_FILTER_VALUE_CACHE_MAX_ENTRIES = 16
 THUMBNAIL_CONTRAST_CACHE_MAX_ENTRIES = 512
 # Exact CPU statistics below this aggregate scan size are quicker and safer to
 # finish in the queued GUI callback than to occupy the shared worker pool.  The
@@ -846,6 +907,61 @@ INPUT_HISTOGRAM_OPERATIONS = (
     }
     | (GLOBAL_THRESHOLD_OPERATIONS - {"imagej_auto_threshold"})
 )
+PRIMARY_IMAGE_INPUT_HISTOGRAM_OPERATIONS = frozenset(
+    {
+        "mask_image",
+        "richardson_lucy_deconvolution",
+        "richardson_lucy_tv_deconvolution",
+    }
+)
+# Between these breakpoints QFormLayout wraps only a row that genuinely cannot
+# fit.  Full label-over-field stacking is reserved for very narrow inspectors,
+# avoiding the abrupt all-row jump that was especially visible on high-DPI
+# displays while still protecting long controls from clipping.
+INSPECTOR_STACKED_FORM_BREAKPOINT = 320
+INSPECTOR_COMPACT_FORM_BREAKPOINT = 440
+INSPECTOR_DENSE_DIAGNOSTICS_BREAKPOINT = 520
+# The scatter toolbar combines a labeled selector, checkbox and actions; it
+# needs a little more room than paired histogram plots before it can stay on
+# one line without forcing a clipped inspector content width.
+INSPECTOR_COLOCALIZATION_DIAGNOSTICS_BREAKPOINT = 650
+INSPECTOR_HEADER_STACK_BREAKPOINT = 520
+INSPECTOR_HEADER_ACTION_HORIZONTAL_PADDING = 16
+INSPECTOR_LABEL_LOADING_CONTENT_HEIGHT = 190
+INSPECTOR_HISTOGRAM_LOADING_CONTENT_HEIGHT = 150
+INSPECTOR_SCATTER_LOADING_CONTENT_HEIGHT = 300
+SIGMA_FILTER_DESCRIPTION_TOOLTIP = (
+    "Edge-preserving Lee sigma filter compatible with Fiji Sigma Filter Plus. "
+    "Uses clamped edges and supports finite uint8, uint16, and float32 images. "
+    "ROI/mask behavior is not supported."
+)
+SLICE_WISE_PROCESSING_TOOLTIP = (
+    "This is not 3D processing: each YX plane is handled separately without "
+    "adjacent Z slices. Use Reorder Axes to process a different plane."
+)
+DEFAULT_SLICE_WISE_PROCESSING_TOOLTIP = (
+    "Choose 3D ZYX to process the complete volume instead. 3D rolling-ball "
+    "processing can be slow at large radii."
+)
+HIDDEN_SETTINGS_TOOLTIP = (
+    "These settings do not affect the current input or selected mode. Their "
+    "stored values remain available if they become relevant."
+)
+UNRESOLVED_SETTINGS_TOOLTIP = (
+    "Axis metadata or connected-input details are incomplete, so VIPP cannot "
+    "yet determine whether these settings apply."
+)
+ISOLATED_TUNING_STATUS_MESSAGES = (
+    "Change a parameter to begin local recalculation.",
+    "Recalculating this node; downstream remains held.",
+    "Local calculation failed; fix the node or cancel tuning.",
+    "Latest local result is ready to apply.",
+    "Local result is waiting to be recalculated.",
+)
+# A zero-duration timer can run before Qt services the pending inspector Paint
+# event. One display frame gives the newly selected form a deterministic chance
+# to appear before napari layer publication and graph-wide diagnostics begin.
+SELECTION_INSPECTOR_REFRESH_DELAY_MS = 16
 COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "colocalization_metrics",
     "masked_colocalization_metrics",
@@ -855,15 +971,14 @@ COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "masked_colocalized_voxels",
     "racc_index",
     "masked_racc_index",
-}
-COLOCALIZATION_COSTES_OPERATIONS = COLOCALIZATION_THRESHOLD_OPERATIONS | {
     "object_colocalization_metrics",
 }
+COLOCALIZATION_COSTES_OPERATIONS = COLOCALIZATION_THRESHOLD_OPERATIONS
 COLOCALIZATION_THRESHOLD_VALUE_PARAMETERS = {
     "channel_1_threshold",
     "channel_2_threshold",
 }
-COLOCALIZATION_SCATTER_OPERATIONS = COLOCALIZATION_THRESHOLD_OPERATIONS
+COLOCALIZATION_SCATTER_OPERATIONS = COLOCALIZATION_COSTES_OPERATIONS
 BACKGROUND_PIPELINE_OPERATIONS = {
     "auto_watershed_from_mask",
     "born_wolf_psf",
@@ -952,17 +1067,6 @@ def _bundled_example_for_path(
     return None
 
 
-CALCULATE_ALL_ATTENTION_STYLE = (
-    "QPushButton {"
-    " background-color: #78350f;"
-    " color: #fde68a;"
-    f" border: 2px solid {STALE_EXECUTION_ACCENT};"
-    " border-radius: 3px;"
-    " font-weight: 650;"
-    "}"
-    "QPushButton:hover { background-color: #92400e; }"
-    "QPushButton:pressed { background-color: #451a03; }"
-)
 DEFAULT_CACHE_MEMORY_LIMIT_PERCENT = 90
 MEMORY_GUARD_MIN_FREE_BYTES = 512 * 1024 * 1024
 EXPLICIT_OUTPUT_OPERATIONS = {"batch_output", "save_output"}
@@ -973,13 +1077,6 @@ THUMBNAIL_STATS_INSPECTOR_LABELS = {
     ThumbnailStatsBadgeKind.GPU: "GPU · CuPy",
     ThumbnailStatsBadgeKind.CPU_FALLBACK: "CPU fallback",
     ThumbnailStatsBadgeKind.ERROR: "Error",
-}
-THUMBNAIL_STATS_INSPECTOR_COLORS = {
-    ThumbnailStatsBadgeKind.PENDING: "#94a3b8",
-    ThumbnailStatsBadgeKind.CPU: "#cbd5e1",
-    ThumbnailStatsBadgeKind.GPU: "#93c5fd",
-    ThumbnailStatsBadgeKind.CPU_FALLBACK: "#fbbf24",
-    ThumbnailStatsBadgeKind.ERROR: "#f87171",
 }
 THUMBNAIL_STATS_DEFAULT_SUMMARIES = {
     ThumbnailStatsBadgeKind.PENDING: (
@@ -1093,15 +1190,21 @@ def _thumbnail_fallback_status_summary(reason_code: str) -> str:
     return "Thumbnail contrast used CPU after the GPU statistics attempt failed."
 
 
-def _toolbar_icon(kind: str) -> QIcon:
+def _toolbar_icon(kind: str, palette: QPalette | None = None) -> QIcon:
+    if palette is None:
+        application = QApplication.instance()
+        palette = application.palette() if application is not None else QPalette()
     icon = QIcon()
     icon.addPixmap(
-        _toolbar_icon_pixmap(kind, "#d1d5db"),
+        _toolbar_icon_pixmap(kind, palette.color(QPalette.ButtonText).name()),
         QIcon.Normal,
         QIcon.Off,
     )
     icon.addPixmap(
-        _toolbar_icon_pixmap(kind, "#64748b"),
+        _toolbar_icon_pixmap(
+            kind,
+            palette.color(QPalette.Disabled, QPalette.ButtonText).name(),
+        ),
         QIcon.Disabled,
         QIcon.Off,
     )
@@ -1155,6 +1258,88 @@ def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
     return pixmap
 
 
+def _set_palette_text_tone(
+    widget: QWidget,
+    tone: str,
+    *,
+    extra_style: str = "",
+) -> None:
+    """Mark and style auxiliary text so live theme changes can refresh it."""
+
+    widget.setProperty("vippTextTone", str(tone))
+    widget.setProperty("vippTextExtraStyle", str(extra_style))
+    _refresh_palette_text_tone(widget)
+
+
+def _refresh_palette_text_tone(widget: QWidget) -> None:
+    tone = str(widget.property("vippTextTone") or "").strip()
+    if not tone:
+        return
+    # A label with an explicit ``color`` stylesheet can retain the palette it
+    # had when that stylesheet was first applied.  Under napari's QSS themes
+    # this leaves the label's Base role light even while its owning panel is
+    # dark (and vice versa), so using the label's own palette compounds the
+    # stale state on every refresh.  Resolve colors from the first owning VIPP
+    # surface instead; its palette continues to follow napari's live theme.
+    palette_source: QWidget = widget
+    ancestor = widget.parentWidget()
+    if ancestor is not None:
+        palette_source = ancestor
+    while ancestor is not None:
+        if str(ancestor.property("vippColorScheme") or "").strip() in {
+            "dark",
+            "light",
+        }:
+            palette_source = ancestor
+            break
+        ancestor = ancestor.parentWidget()
+    colors = theme_colors(QWidget.palette(palette_source))
+    foreground = {
+        "text": colors.text,
+        "muted": colors.muted_text,
+        # Inspector guidance should remain visually secondary without becoming
+        # difficult to read.  This is intentionally stronger than the muted
+        # captions used for compact section summaries.
+        "secondary": blend_colors(colors.surface, colors.text, 0.82),
+        "info": colors.info.foreground,
+        "success": colors.success.foreground,
+        "warning": colors.warning.foreground,
+        "error": colors.error.foreground,
+    }.get(tone, colors.text)
+    extra = str(widget.property("vippTextExtraStyle") or "")
+    widget.setStyleSheet(f"color: {foreground.name()}; {extra}")
+
+
+def _format_inspector_parameter_value(value) -> str:
+    """Return one concise plain-text value for contextual inspector guidance."""
+
+    if isinstance(value, (bool, np.bool_)):
+        return "On" if bool(value) else "Off"
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)):
+        number = float(value)
+        return f"{number:.6g}" if math.isfinite(number) else str(number)
+    if value is None:
+        return "not set"
+    text = str(value).strip() or "empty"
+    return text if len(text) <= 64 else f"{text[:61]}…"
+
+
+def _hidden_settings_summary(
+    settings: Iterable[tuple[str, object]],
+) -> str:
+    """Return one shared, value-specific summary for hidden parameters."""
+
+    entries = tuple(settings)
+    noun = "setting" if len(entries) == 1 else "settings"
+    values = "; ".join(
+        f"{label}: {_format_inspector_parameter_value(value)}"
+        for label, value in entries
+    )
+    return f"Hidden {noun} preserved: {values}."
+
+
 def _toolbar_separator(width: int = 12) -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.VLine)
@@ -1201,27 +1386,111 @@ class _InspectorNoteLabel(QLabel):
 
     def __init__(self, text: str = "", parent=None):
         super().__init__(parent)
+        self._height_sync_active = False
+        self._height_sync_timer = QTimer(self)
+        self._height_sync_timer.setSingleShot(True)
+        self._height_sync_timer.timeout.connect(
+            self._sync_wrapped_minimum_height
+        )
         self.setWordWrap(True)
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.setText(text)
 
     def setText(self, text: str) -> None:  # noqa: N802
         super().setText(text)
-        self._sync_wrapped_minimum_height()
+        self.setMinimumHeight(0)
+        self.setMaximumHeight((1 << 24) - 1)
+        self.updateGeometry()
+        self._height_sync_timer.start(0)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._sync_wrapped_minimum_height()
+        if not self._height_sync_active:
+            self._height_sync_timer.start(0)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._height_sync_timer.start(0)
 
     def _sync_wrapped_minimum_height(self) -> None:
+        if self._height_sync_active:
+            return
         width = self.contentsRect().width()
+        parent = self.parentWidget()
+        if parent is not None:
+            parent_width = int(parent.contentsRect().width())
+            parent_layout = parent.layout()
+            if parent_layout is not None:
+                margins = parent_layout.contentsMargins()
+                parent_width -= int(margins.left() + margins.right())
+            # Spanning QFormLayout rows are initially created at Qt's default
+            # 100 px child width. Measuring there produces a tall fixed label
+            # that collapses only after another layout pass. The persistent
+            # form widget already knows the real inspector width, so use it for
+            # the first measurement as well as later resize measurements.
+            if parent_width > 0:
+                width = parent_width
         if width <= 0 or not self.hasHeightForWidth():
             return
-        required_height = max(int(self.heightForWidth(width)), 0)
-        if required_height != self.minimumHeight():
-            self.setMinimumHeight(required_height)
+        self._height_sync_active = True
+        try:
+            # QLabel.heightForWidth() includes the current minimum height.  A
+            # value measured at the label's small pre-layout width therefore
+            # becomes a one-way ratchet unless both constraints are cleared
+            # before each measurement.
+            self.setMinimumHeight(0)
+            self.setMaximumHeight((1 << 24) - 1)
+            required_height = max(int(self.heightForWidth(width)), 0)
+            self.setFixedHeight(required_height)
             self.updateGeometry()
+        finally:
+            self._height_sync_active = False
+
+
+class _InspectorParameterLabel(QLabel):
+    """Form label that uses the complete row before wrapping when stacked."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self._stacked_width = 0
+        self.setTextFormat(Qt.PlainText)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+    def set_stacked_width(self, width: int | None) -> None:
+        self._stacked_width = max(int(width or 0), 0)
+        self.setWordWrap(self._stacked_width > 0)
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        hint = super().sizeHint()
+        if self._stacked_width <= 0:
+            return hint
+        height = int(self.heightForWidth(self._stacked_width))
+        if height < 0:
+            height = int(hint.height())
+        return QSize(self._stacked_width, max(height, int(hint.height())))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        hint = super().minimumSizeHint()
+        return QSize(0, int(hint.height()))
+
+
+class _InspectorParameterFormLayout(QFormLayout):
+    """Create predictable, full-row labels for ordinary parameter rows."""
+
+    def addRow(self, label, field=None) -> None:  # noqa: N802
+        if isinstance(label, str) and field is not None:
+            label_widget = _InspectorParameterLabel(label, self.parentWidget())
+            if isinstance(field, QWidget):
+                label_widget.setBuddy(field)
+            super().addRow(label_widget, field)
+            return
+        if field is None:
+            super().addRow(label)
+            return
+        super().addRow(label, field)
 
 
 AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
@@ -1238,6 +1507,23 @@ AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
 
 class PythonSyntaxHighlighter(QSyntaxHighlighter):
     """Small Python syntax highlighter for node-code inspection dialogs."""
+
+    _DARK_TOKEN_COLORS = {
+        "keyword": "#60a5fa",
+        "builtin": "#c084fc",
+        "callable": "#fbbf24",
+        "number": "#fca5a5",
+        "string": "#86efac",
+        "comment": "#94a3b8",
+    }
+    _LIGHT_TOKEN_COLORS = {
+        "keyword": "#1d4ed8",
+        "builtin": "#7e22ce",
+        "callable": "#92400e",
+        "number": "#b91c1c",
+        "string": "#166534",
+        "comment": "#475569",
+    }
 
     _KEYWORDS = (
         "False",
@@ -1291,19 +1577,42 @@ class PythonSyntaxHighlighter(QSyntaxHighlighter):
         "tuple",
     )
 
-    def __init__(self, document):
+    def __init__(self, document, *, palette: QPalette | None = None):
         super().__init__(document)
         self._rules: list[tuple[re.Pattern[str], QTextCharFormat]] = []
+        self._string_format = QTextCharFormat()
+        self._comment_format = QTextCharFormat()
+        if palette is None:
+            application = QApplication.instance()
+            palette = application.palette() if application is not None else QPalette()
+        self.set_palette(palette)
+
+    def set_palette(self, palette: QPalette) -> None:
+        """Rebuild token formats for ``palette`` and refresh existing text."""
+
+        token_colors = (
+            self._DARK_TOKEN_COLORS
+            if palette_is_dark(palette)
+            else self._LIGHT_TOKEN_COLORS
+        )
+        self._rules.clear()
         self._add_rule(
             rf"\b({'|'.join(self._KEYWORDS)})\b",
-            "#60a5fa",
+            token_colors["keyword"],
             bold=True,
         )
-        self._add_rule(rf"\b({'|'.join(self._BUILTINS)})\b", "#c084fc")
-        self._add_rule(r"\b[A-Za-z_]\w*(?=\()", "#fbbf24")
-        self._add_rule(r"\b\d+(\.\d+)?\b", "#fca5a5")
-        self._string_format = self._format("#86efac")
-        self._comment_format = self._format("#94a3b8", italic=True)
+        self._add_rule(
+            rf"\b({'|'.join(self._BUILTINS)})\b",
+            token_colors["builtin"],
+        )
+        self._add_rule(r"\b[A-Za-z_]\w*(?=\()", token_colors["callable"])
+        self._add_rule(r"\b\d+(\.\d+)?\b", token_colors["number"])
+        self._string_format = self._format(token_colors["string"])
+        self._comment_format = self._format(
+            token_colors["comment"],
+            italic=True,
+        )
+        self.rehighlight()
 
     def highlightBlock(self, text: str) -> None:  # noqa: N802
         for pattern, text_format in self._rules:
@@ -1350,6 +1659,18 @@ class PythonSyntaxHighlighter(QSyntaxHighlighter):
         if italic:
             text_format.setFontItalic(True)
         return text_format
+
+
+class _PaletteAwarePythonCodeEditor(QPlainTextEdit):
+    """Read-only code editor that keeps syntax colors in sync with Qt."""
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() not in {QEvent.PaletteChange, QEvent.StyleChange}:
+            return
+        highlighter = getattr(self, "_vipp_python_highlighter", None)
+        if highlighter is not None:
+            highlighter.set_palette(self.palette())
 
 
 def _prepare_colocalization_scatter_density(
@@ -1400,64 +1721,24 @@ def _count_colocalization_scatter_thresholds(
     )
 
 
-class SidePanelToggleButton(QToolButton):
-    """Compact glyph button for showing or hiding a side panel."""
+class _HistogramPanel(QGroupBox):
+    """Layout container whose semantic title is rendered inside its plot."""
 
-    def __init__(self, side: str, parent=None):
-        super().__init__(parent)
-        self._side = side
-        self._expanded = True
-        self.setAutoRaise(False)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFixedSize(36, 26)
-
-    def set_expanded(self, expanded: bool) -> None:
-        self._expanded = expanded
-        self.update()
-
-    def paintEvent(self, event):  # noqa: N802
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        rect = self.rect().adjusted(1, 1, -1, -1)
-        painter.setPen(QPen(QColor("#94a3b8"), 1.2))
-        painter.setBrush(QColor("#27303a"))
-        painter.drawRoundedRect(rect, 4, 4)
-
-        panel_x = rect.left() + 7 if self._side == "left" else rect.right() - 16
-        panel_y = rect.top() + 6
-        panel_w = 11
-        panel_h = 12
-        panel_rect = QRect(panel_x, panel_y, panel_w, panel_h)
-        painter.setPen(QPen(QColor("#cbd5e1"), 1))
-        painter.setBrush(QColor("#111827"))
-        painter.drawRect(panel_rect)
-        strip_x = panel_rect.left() if self._side == "left" else panel_rect.right() - 3
-        painter.fillRect(
-            strip_x,
-            panel_rect.top(),
-            4,
-            panel_rect.height(),
-            QColor("#60a5fa"),
+    def __init__(self, title: str, parent=None):
+        super().__init__("", parent)
+        self._semantic_title = str(title)
+        self.setFlat(True)
+        self.setStyleSheet(
+            "QGroupBox { border: none; margin: 0; padding: 0; }"
         )
+        self.setAccessibleName(self._semantic_title)
 
-        direction = self._direction()
-        cx = rect.right() - 9 if self._side == "left" else rect.left() + 9
-        cy = rect.center().y()
-        painter.setPen(QPen(QColor("#e5e7eb"), 2))
-        if direction < 0:
-            painter.drawLine(cx + 3, cy - 5, cx - 3, cy)
-            painter.drawLine(cx - 3, cy, cx + 3, cy + 5)
-        else:
-            painter.drawLine(cx - 3, cy - 5, cx + 3, cy)
-            painter.drawLine(cx + 3, cy, cx - 3, cy + 5)
-        painter.end()
+    def title(self) -> str:
+        return self._semantic_title
 
-    def _direction(self) -> int:
-        if self._side == "left":
-            return -1 if self._expanded else 1
-        return 1 if self._expanded else -1
+    def setTitle(self, title: str) -> None:  # noqa: N802 - Qt-compatible API
+        self._semantic_title = str(title)
+        self.setAccessibleName(self._semantic_title)
 
 
 class VippWidget(QWidget):
@@ -1471,6 +1752,10 @@ class VippWidget(QWidget):
     TOOLBAR_HIDE_ZOOM_WIDTH = 1100
     TOOLBAR_HIDE_COMPUTE_WIDTH = 1350
     TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH = 1500
+    NODE_LIBRARY_COMPACT_TRIGGER_WIDTH = 220
+    NODE_LIBRARY_EXPAND_TRIGGER_WIDTH = 250
+    NODE_LIBRARY_GRAPH_MINIMUM_WIDTH = 320
+    FLOATING_DOCK_DRAG_RETRY_MS = 40
     WORKFLOW_TAB_RUNTIME_FIELDS = (
         "_source_inspection_cache",
         "_source_inspection_errors",
@@ -1507,9 +1792,11 @@ class VippWidget(QWidget):
         "_input_histogram_cache",
         "_input_histogram_distribution_cache",
         "_label_volume_cache",
+        "_property_filter_value_cache",
         "_output_histogram_cache",
         "_colocalization_scatter_cache",
         "_colocalization_scatter_density_cache",
+        "_inspector_output_port_by_node",
         "_accepted_compute_decisions",
         "_compute_decision_environments",
         "_compute_repair_suggestions",
@@ -1530,6 +1817,9 @@ class VippWidget(QWidget):
         "_pipeline_optimizer_baseline",
         "_pipeline_optimizer_source_signature",
         "_colocalization_scatter_dialog",
+        "_histogram_dialog",
+        "_histogram_dialog_node_id",
+        "_result_table_dialog",
         "_tunnel_manager_dialog",
     )
 
@@ -1593,6 +1883,8 @@ class VippWidget(QWidget):
             )
         initial_device_display_name = str(initial_compute_device_display_name).strip()
         super().__init__(parent)
+        self._theme_refresh_pending = False
+        self._theme_refresh_in_progress = False
         self.viewer = viewer
         self._closing = False
         self._viewer_layer_change_suspension = 0
@@ -1700,6 +1992,12 @@ class VippWidget(QWidget):
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
         self._docked_size_constraints: tuple[_WidgetSizeConstraintState, ...] = ()
+        self._last_docked_area: object | None = None
+        self._floating_dock_configure_timer = QTimer(self)
+        self._floating_dock_configure_timer.setSingleShot(True)
+        self._floating_dock_configure_timer.timeout.connect(
+            self._configure_floating_dock_window
+        )
         self._initial_dock_size_applied = False
         self._history = WorkflowHistory(limit=self.HISTORY_LIMIT)
         self._workflow_tabs = WorkflowTabModel()
@@ -1707,6 +2005,12 @@ class VippWidget(QWidget):
         self._active_parameter_slider_scrub: (
             tuple[str, str, str, weakref.ReferenceType] | None
         ) = None
+        self._colocalization_inspector_height_lock: (
+            tuple[tuple[QWidget, int, int], ...]
+        ) = ()
+        self._colocalization_inspector_layout_was_enabled: bool | None = None
+        self._colocalization_inspector_scroll_value: int | None = None
+        self._colocalization_inspector_sync_deferred = False
         self._active_crop_slider_scrub: (
             tuple[str, str, str, weakref.ReferenceType] | None
         ) = None
@@ -1770,6 +2074,17 @@ class VippWidget(QWidget):
             tuple,
             tuple[weakref.ReferenceType, np.ndarray],
         ] = {}
+        self._property_filter_value_cache: dict[
+            tuple[int, str],
+            tuple[weakref.ReferenceType, np.ndarray],
+        ] = {}
+        self._label_volume_serial = 0
+        self._active_label_volume_run_id: int | None = None
+        self._active_label_volume_key: tuple | None = None
+        self._active_label_volume_cancel_event: threading.Event | None = None
+        self._active_label_volume_request: LabelVolumeRequest | None = None
+        self._pending_label_volume_request: LabelVolumeRequest | None = None
+        self._current_label_volume_key: tuple | None = None
         self._output_histogram_serial = 0
         self._active_output_histogram_run_id: int | None = None
         self._active_output_histogram_key: tuple | None = None
@@ -1795,6 +2110,9 @@ class VippWidget(QWidget):
             ColocalizationScatterDensity,
         ] = {}
         self._colocalization_scatter_dialog: ColocalizationScatterDialog | None = None
+        self._histogram_dialog: HistogramDialog | None = None
+        self._histogram_dialog_node_id = ""
+        self._result_table_dialog: ResultTableDialog | None = None
         self._auto_contrast_serial = 0
         self._active_auto_contrast_run_id: int | None = None
         self._active_auto_contrast_key: tuple | None = None
@@ -2158,7 +2476,7 @@ class VippWidget(QWidget):
         )
         self.view_dims_bar = ViewDimsBar()
         self.pipeline_busy_label = QLabel("Processing")
-        self.pipeline_busy_label.setStyleSheet("color: #93c5fd; font-weight: 650;")
+        self.pipeline_busy_label.setStyleSheet("font-weight: 650;")
         self.pipeline_busy_bar = QProgressBar()
         self.pipeline_busy_bar.setRange(0, 0)
         self.pipeline_busy_bar.setTextVisible(False)
@@ -2173,24 +2491,17 @@ class VippWidget(QWidget):
         self.pipeline_busy_label.setVisible(False)
         self.pipeline_busy_bar.setVisible(False)
         self.cache_status_label = QLabel("Cache: --")
-        self.cache_status_label.setStyleSheet(
-            "color: #94a3b8; font-size: 11px; padding: 2px 4px;"
-        )
+        self.cache_status_label.setStyleSheet("font-size: 11px; padding: 2px 4px;")
         self.cache_status_label.setToolTip("Estimated VIPP cache and system memory.")
         self.version_label = QLabel(f"VIPP {VIPP_VERSION}")
         self.version_label.setStyleSheet(
-            "color: #94a3b8; font-size: 11px; font-weight: 600;"
-            "padding: 2px 8px; border: 1px solid #334155;"
-            "border-radius: 999px; background: #1f2937;"
+            "font-size: 11px; font-weight: 600; padding: 2px 8px;"
         )
         self.version_label.setToolTip(f"napari-vipp {VIPP_VERSION}")
         self.status_label = StatusMessageStrip(
             "Select an Image Source node to choose data for the workflow."
         )
 
-        self.palette_search = QLineEdit()
-        self.palette_search.setPlaceholderText("Search nodes")
-        self.palette_search.setClearButtonEnabled(True)
         self.graph_search_edit = QLineEdit()
         self.graph_search_edit.setPlaceholderText("Search graph")
         self.graph_search_edit.setClearButtonEnabled(True)
@@ -2203,17 +2514,21 @@ class VippWidget(QWidget):
         self.graph_search_focus_button.setEnabled(False)
         self.graph_search_status = QLabel("")
         self.graph_search_status.setMinimumWidth(72)
-        self.graph_search_status.setStyleSheet("color: #94a3b8; font-size: 11px;")
-        self.palette = NodePalette(grouped_palette_specs())
-        self.palette.setMinimumWidth(190)
-        self.palette.setMinimumHeight(0)
+        self.graph_search_status.setStyleSheet("font-size: 11px;")
         self.palette_panel = self._build_palette_panel()
+        # Compatibility aliases retained for integrations and focused tests.
+        self.palette = self.palette_panel.palette
+        self.palette_search = self.palette_panel.search_edit
         self.graph_view = PipelineGraphView()
         self.graph_view.set_connection_insert_validator(
             self._connection_insert_preview_state
         )
+        self.graph_view.set_node_append_validator(self._node_append_preview_state)
         self.graph_view.set_node_bypass_state_resolver(
             self._node_bypass_action_state
+        )
+        self.graph_view.set_node_isolation_state_resolver(
+            self._node_isolation_action_state
         )
         self.graph_view.set_tunnel_reroute_validator(self._tunnel_reroute_preview_state)
         self.graph_view.set_tunnel_insert_validator(self._tunnel_insert_preview_state)
@@ -2224,11 +2539,22 @@ class VippWidget(QWidget):
         self.left_panel_toggle.setObjectName("LeftPanelToggle")
         self.right_panel_toggle = SidePanelToggleButton("right")
         self.right_panel_toggle.setObjectName("RightPanelToggle")
-        self._default_splitter_sizes = [210, 850, 260]
+        self._default_splitter_sizes = [260, 800, 260]
         self._left_panel_last_width = self._default_splitter_sizes[0]
         self._right_panel_last_width = self._default_splitter_sizes[2]
+        self._node_library_last_expanded_width = self._default_splitter_sizes[0]
+        self._node_library_user_compact: bool | None = None
+        self._node_library_auto_reason: str | None = None
+        self._node_library_adjusting_splitter = False
+        self._node_library_sync_timer = QTimer(self)
+        self._node_library_sync_timer.setSingleShot(True)
+        self._node_library_sync_timer.timeout.connect(
+            self._sync_node_library_responsive_mode
+        )
         self._pipeline_thread_pool = QThreadPool(self)
         self._pipeline_thread_pool.setMaxThreadCount(1)
+        self._label_volume_thread_pool = QThreadPool(self)
+        self._label_volume_thread_pool.setMaxThreadCount(1)
         self._collection_batch_thread_pool = QThreadPool(self)
         self._collection_batch_thread_pool.setMaxThreadCount(1)
         self._batch_workspace_preview_thread_pool = QThreadPool(self)
@@ -2268,6 +2594,17 @@ class VippWidget(QWidget):
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
         )
+        self.selected_operation_icon = QLabel()
+        self.selected_operation_icon.setFixedSize(22, 22)
+        self.selected_operation_icon.setAlignment(Qt.AlignCenter)
+        self.selected_operation_icon.setAccessibleName("Selected node type")
+        self.selected_category_label = QLabel("")
+        self.selected_category_label.setWordWrap(True)
+        self.selected_category_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        self.selected_category_label.setStyleSheet("font-size: 10px;")
         self.reset_inspect_display_button = QToolButton()
         self.reset_inspect_display_button.setIcon(_toolbar_icon("reset"))
         self.reset_inspect_display_button.setIconSize(QSize(18, 18))
@@ -2287,18 +2624,10 @@ class VippWidget(QWidget):
         self.thumbnail_contrast_status_panel.setAccessibleName(
             "Thumbnail contrast status for selected node"
         )
-        self.thumbnail_contrast_status_panel.setStyleSheet(
-            "QFrame#ThumbnailContrastStatusPanel {"
-            " background: #181d25; border: 1px solid #374151;"
-            " border-radius: 4px;"
-            "}"
-            "QFrame#ThumbnailContrastStatusPanel:focus {"
-            " border-color: #60a5fa;"
-            "}"
-        )
+        self.thumbnail_contrast_status_panel.setStyleSheet("")
         self.thumbnail_contrast_status_title = QLabel("Thumbnail contrast")
         self.thumbnail_contrast_status_title.setStyleSheet(
-            "color: #cbd5e1; font-size: 10px; border: none;"
+            "font-size: 10px; border: none;"
         )
         self.thumbnail_contrast_status_value = QLabel("")
         self.thumbnail_contrast_status_value.setAlignment(
@@ -2320,13 +2649,10 @@ class VippWidget(QWidget):
         )
         self.isolated_tuning_panel = QFrame()
         self.isolated_tuning_panel.setObjectName("IsolatedTuningPanel")
-        self.isolated_tuning_panel.setStyleSheet(
-            "QFrame#IsolatedTuningPanel { background: #2a2416; "
-            "border: 1px solid #f59e0b; border-radius: 5px; padding: 5px; }"
-        )
+        self.isolated_tuning_panel.setStyleSheet("")
         self.isolated_tuning_status = QLabel("Downstream paused")
         self.isolated_tuning_status.setWordWrap(True)
-        self.isolated_tuning_status.setStyleSheet("color: #fde68a; font-weight: 650;")
+        self.isolated_tuning_status.setStyleSheet("font-weight: 650;")
         self.apply_isolated_tuning_button = QPushButton("Apply and continue")
         self.cancel_isolated_tuning_button = QPushButton("Cancel tuning")
         self.isolated_tuning_panel.setVisible(False)
@@ -2355,7 +2681,7 @@ class VippWidget(QWidget):
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
         )
-        self.auto_recalculate_notice.setStyleSheet("color: #f59e0b;")
+        self.auto_recalculate_notice.setStyleSheet("")
         self.calculate_button = QPushButton("Calculate")
         self.compute_group = QGroupBox("Compute")
         self.node_compute_preference_combo = QComboBox()
@@ -2380,20 +2706,13 @@ class VippWidget(QWidget):
             "Selected node compute preference details"
         )
         self.node_compute_note.setWordWrap(True)
-        self.node_compute_note.setStyleSheet("color: #94a3b8; font-size: 10px;")
+        self.node_compute_note.setStyleSheet("font-size: 10px;")
         self.compute_repair_panel = QFrame()
         self.compute_repair_panel.setObjectName("ComputeRepairPanel")
-        self.compute_repair_panel.setStyleSheet(
-            "QFrame#ComputeRepairPanel {"
-            " background: #29210f; border: 1px solid #a16207;"
-            " border-radius: 5px;"
-            "}"
-        )
+        self.compute_repair_panel.setStyleSheet("")
         self.compute_repair_label = QLabel("")
         self.compute_repair_label.setWordWrap(True)
-        self.compute_repair_label.setStyleSheet(
-            "color: #fde68a; border: none; padding: 1px;"
-        )
+        self.compute_repair_label.setStyleSheet("border: none; padding: 1px;")
         self.compute_repair_label.setAccessibleName(
             "Suggested GPU eligibility improvement"
         )
@@ -2417,15 +2736,57 @@ class VippWidget(QWidget):
         self.batch_effective_parameter_label.setAccessibleName(
             "Effective behavior and parameters for selected batch representative"
         )
-        self.batch_effective_parameter_group.setStyleSheet(
-            "QGroupBox { color: #fbbf24; font-weight: 600; }"
-            "QLabel { color: #fde68a; font-weight: 400; }"
-        )
+        self.batch_effective_parameter_group.setStyleSheet("")
         self.batch_effective_parameter_group.hide()
-        self.parameter_group = QGroupBox("Parameters")
+        self.parameter_group = InspectorSection("Parameters", expanded=True)
         self.parameter_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        self.parameter_form = QFormLayout(self.parameter_group)
+        self.connected_inputs_panel = ConnectedInputsCard()
+        self.connected_inputs_panel.hide()
+        # Retain the public layout alias used by integration tests and
+        # downstream UI automation while the card owns its presentation.
+        self.connected_inputs_form = self.connected_inputs_panel.form_layout
+        self.parameter_form_widget = QWidget()
+        self.parameter_form_widget.setMinimumWidth(0)
+        self.parameter_form_widget.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        self.parameter_form = _InspectorParameterFormLayout(
+            self.parameter_form_widget
+        )
+        self._parameter_form_height_sync_active = False
         self._parameter_widgets: dict[str, QWidget] = {}
+        self.source_representation_section = InspectorSection(
+            "Source & viewer representation",
+            expanded=True,
+        )
+        self.source_representation_label = QLabel("")
+        self.source_representation_label.setWordWrap(True)
+        self.source_representation_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse
+        )
+        self.output_selector_section = InspectorSection(
+            "Displayed output",
+            expanded=True,
+        )
+        self.output_selector_note = QLabel(
+            "This selection changes previews, pinning, and export only. "
+            "Workflow connections keep their authored output ports."
+        )
+        self.output_selector_note.setWordWrap(True)
+        self.output_selector_note.setObjectName(
+            "InspectorHistogramInteractionHint"
+        )
+        self.output_selector_combo = QComboBox()
+        self.output_selector_combo.setAccessibleName(
+            "Displayed output for selected multi-output node"
+        )
+        self.save_all_outputs_button = QPushButton("Export all outputs…")
+        self.save_all_outputs_button.setToolTip(
+            "Export every currently available output port to one folder. "
+            "Image-like outputs use OME-TIFF and tables use CSV."
+        )
+        self._inspector_output_port_by_node: dict[str, int] = {}
         self.auto_contrast_group = QGroupBox("Auto Contrast")
         self.auto_saturation_control = ParameterControl(
             AUTO_CONTRAST_SATURATION_SPEC,
@@ -2444,67 +2805,269 @@ class VippWidget(QWidget):
             "ignored. Unlabelled arrays are treated as scalar data. "
             "Large inputs are calculated in the background."
         )
-        self.metadata_group = QGroupBox("Output Metadata")
-        self.table_group = QGroupBox("Table Preview")
+        self.metadata_group = InspectorSection("Output metadata", expanded=False)
+        self.history_group = InspectorSection("History", expanded=False)
+        self.table_group = InspectorSection(
+            "Results",
+            expanded=True,
+            busy_capable=True,
+        )
         self.table_summary = QLabel("No table output.")
         self.table_summary.setWordWrap(True)
+        self.table_calculate_button = QPushButton("Calculate")
+        self.table_calculate_button.setAccessibleName(
+            "Calculate selected table result"
+        )
+        self.table_calculate_button.hide()
+        self.table_popout_button = QPushButton("Open in window")
+        self.table_popout_button.setEnabled(False)
+        self.table_popout_button.setToolTip(
+            "Open the complete result table in a separate sortable window."
+        )
         self.table_preview = QTableWidget(0, 0)
         self.table_preview.verticalHeader().setVisible(False)
         self.table_preview.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_preview.setSelectionMode(QAbstractItemView.NoSelection)
         self.table_preview.setFocusPolicy(Qt.NoFocus)
-        self.table_preview.setMinimumHeight(180)
-        self.table_preview.setStyleSheet(
-            "QTableWidget { background: #1f242c; color: #e5e7eb; "
-            "gridline-color: #374151; }"
-            "QHeaderView::section { background: #2b313b; color: #f3f4f6; "
-            "padding: 4px; }"
+        self.table_preview.setMinimumHeight(0)
+        self.table_preview.setMaximumHeight(360)
+        self.table_preview.setStyleSheet("")
+        self._table_preview_geometry_timer = QTimer(self)
+        self._table_preview_geometry_timer.setSingleShot(True)
+        self._table_preview_geometry_timer.timeout.connect(
+            self._sync_table_preview_geometry
         )
         self.table_group.setHidden(True)
         self.metadata_table = QTableWidget(0, 2)
         self.metadata_table.setHorizontalHeaderLabels(["Field", "Value"])
         self.metadata_table.verticalHeader().setVisible(False)
+        self.metadata_table.horizontalHeader().setVisible(False)
+        self.metadata_table.horizontalHeader().setSectionResizeMode(
+            0,
+            QHeaderView.Fixed,
+        )
+        self.metadata_table.horizontalHeader().setSectionResizeMode(
+            1,
+            QHeaderView.Stretch,
+        )
         self.metadata_table.horizontalHeader().setStretchLastSection(True)
         self.metadata_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.metadata_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.metadata_table.setFocusPolicy(Qt.NoFocus)
         self.metadata_table.setWordWrap(True)
-        self.metadata_table.setMinimumHeight(260)
-        self.metadata_table.setStyleSheet(
-            "QTableWidget { background: #1f242c; color: #e5e7eb; "
-            "gridline-color: #374151; }"
-            "QHeaderView::section { background: #2b313b; color: #f3f4f6; "
-            "padding: 4px; }"
-        )
+        self.metadata_table.setShowGrid(False)
+        self.metadata_table.setAlternatingRowColors(False)
+        self.metadata_table.setMinimumHeight(0)
+        self.metadata_table.setMaximumHeight(320)
+        self.metadata_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.metadata_table.setStyleSheet("")
         self.history_title = QLabel("History")
         self.history_title.setStyleSheet("font-weight: 650;")
         self.history_label = QLabel("No history yet.")
         self.history_label.setWordWrap(True)
         self.history_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.histogram_group = QGroupBox("Output Histogram")
+        self.history_label.setAccessibleName("Workflow history plain text")
+        self.history_label.hide()
+        self.history_rows_widget = QWidget()
+        self.history_rows_widget.setObjectName("InspectorHistoryRows")
+        self.history_rows_layout = QVBoxLayout(self.history_rows_widget)
+        self.history_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.history_rows_layout.setSpacing(7)
+        self._history_row_widgets: list[QWidget] = []
+        self._metadata_summary_text = ""
+        self.histograms_section = InspectorSection(
+            "Histograms",
+            expanded=True,
+            busy_capable=True,
+        )
+        self.histogram_interaction_hint = QLabel("")
+        self.histogram_interaction_hint.setObjectName(
+            "InspectorHistogramInteractionHint"
+        )
+        self.histogram_interaction_hint.setWordWrap(True)
+        self.histogram_interaction_hint.setAccessibleName(
+            "Interactive histogram guidance"
+        )
+        self.histogram_interaction_hint.hide()
+        self.histogram_group = _HistogramPanel("Output Histogram")
+        self.histogram_semantic_summary = QLabel("")
+        self.histogram_semantic_summary.setWordWrap(True)
+        self.histogram_semantic_summary.setObjectName(
+            "InspectorHistogramSemanticSummary"
+        )
+        self.histogram_semantic_summary.hide()
         self.histogram_scope_combo = QComboBox()
-        self.histogram_scope_combo.addItems(["Slice", "Stack"])
-        self.histogram_log_checkbox = QCheckBox("Log scale")
-        self.histogram_plot = HistogramPlot()
-        self.rescale_input_histogram_group = QGroupBox("Input Histogram")
-        self.rescale_input_histogram_scope_combo = QComboBox()
-        self.rescale_input_histogram_scope_combo.addItems(
+        self.histogram_scope_combo.addItems(
             ["Slice histogram", "Stack histogram"]
         )
-        self.rescale_input_histogram_log_checkbox = QCheckBox("Log scale")
+        self.histogram_scope_combo.setAccessibleName(
+            "Data used by all input and output histograms"
+        )
+        self.histogram_scope_combo.setToolTip(
+            "Choose whether every histogram in this section uses the current "
+            "displayed slice or the complete stack. This changes inspection "
+            "only; it does not change workflow processing."
+        )
+        self.histogram_log_checkbox = QCheckBox("Log scale")
+        self.histogram_log_checkbox.setToolTip(
+            "Use a logarithmic count axis for every input and output histogram."
+        )
+        self.histogram_value_combo = QComboBox()
+        self.histogram_value_combo.addItems(
+            [
+                "Count",
+                "Fraction",
+                "Probability density",
+                "Cumulative count",
+                "Cumulative fraction",
+            ]
+        )
+        self.histogram_value_combo.setAccessibleName("Histogram Y values")
+        self.histogram_value_combo.setToolTip(
+            "Choose the vertical quantity without recalculating the histogram. "
+            "Fraction sums to one; probability density integrates to one over "
+            "the bin widths."
+        )
+        self.histogram_value_combo.hide()
+        self.histogram_popout_button = QPushButton("Open in window")
+        self.histogram_popout_button.setToolTip(
+            "Open this cached histogram in a resizable detailed window."
+        )
+        self.histogram_popout_button.setEnabled(False)
+        self.histogram_popout_button.hide()
+        self.histogram_plot = HistogramPlot()
+        self.histogram_plot.set_plot_labels(
+            title="Output",
+            x_axis_label="Intensity (a.u.)",
+            y_axis_label="Voxels",
+        )
+        self.histogram_result_plot = DetailedHistogramPlot()
+        self.histogram_result_plot.setMinimumHeight(165)
+        self.histogram_result_plot.hide()
+        self.rescale_input_histogram_group = _HistogramPanel("Input Histogram")
+        # Compatibility aliases intentionally point at the single shared
+        # controls.  Input and output plots must never drift to different
+        # presentation scopes or count scales.
+        self.rescale_input_histogram_scope_combo = self.histogram_scope_combo
+        self.rescale_input_histogram_log_checkbox = self.histogram_log_checkbox
         self.rescale_input_histogram_plot = HistogramPlot()
+        self.rescale_input_histogram_plot.set_plot_labels(
+            title="Input",
+            x_axis_label="Intensity (a.u.)",
+            y_axis_label="Voxels",
+        )
         self.rescale_input_histogram_group.setHidden(True)
-        self.label_volume_group = QGroupBox("Label Volume Distribution")
+        # Measurement tables need diagnostics for the scientific inputs that
+        # produced each row, rather than a meaningless histogram of table
+        # cells.  These panels live in the shared responsive histogram row so
+        # they follow the same wide/narrow layout as ordinary Input/Output
+        # histograms while retaining stable public widget attributes.
+        self.measurement_object_size_histogram_group = _HistogramPanel(
+            "Object size input"
+        )
+        self.measurement_object_size_histogram_status = QLabel("")
+        self.measurement_object_size_histogram_status.setWordWrap(True)
+        self.measurement_object_size_histogram_status.setObjectName(
+            "InspectorHistogramInteractionHint"
+        )
+        self.measurement_object_size_histogram_status.hide()
+        self.measurement_object_size_histogram_plot = HistogramPlot()
+        self.measurement_object_size_histogram_plot.set_plot_labels(
+            title="Object area",
+            x_axis_label="Area (pixels)",
+            y_axis_label="Objects",
+        )
+        self.measurement_object_size_histogram_group.hide()
+        self.measurement_intensity_histogram_group = _HistogramPanel(
+            "Intensity input"
+        )
+        self.measurement_intensity_histogram_status = QLabel("")
+        self.measurement_intensity_histogram_status.setWordWrap(True)
+        self.measurement_intensity_histogram_status.setObjectName(
+            "InspectorHistogramInteractionHint"
+        )
+        self.measurement_intensity_histogram_status.hide()
+        self.measurement_intensity_histogram_plot = HistogramPlot()
+        self.measurement_intensity_histogram_plot.set_plot_labels(
+            title="Intensity input",
+            x_axis_label="Intensity (a.u.)",
+            y_axis_label="Voxels",
+        )
+        self.measurement_intensity_histogram_group.hide()
+        self._measurement_object_size_source: tuple | None = None
+        self.colocalization_input_histograms_panel = QWidget()
+        self.colocalization_input_histograms_panel.setHidden(True)
+        self.colocalization_channel_1_histogram_group = _HistogramPanel(
+            "Channel 1 input"
+        )
+        self.colocalization_channel_1_histogram_plot = HistogramPlot()
+        self.colocalization_channel_1_histogram_plot.set_plot_labels(
+            title="Channel 1 input",
+            x_axis_label="Intensity (a.u.)",
+            y_axis_label="Voxels",
+        )
+        self.colocalization_channel_2_histogram_group = _HistogramPanel(
+            "Channel 2 input"
+        )
+        self.colocalization_channel_2_histogram_plot = HistogramPlot()
+        self.colocalization_channel_2_histogram_plot.set_plot_labels(
+            title="Channel 2 input",
+            x_axis_label="Intensity (a.u.)",
+            y_axis_label="Voxels",
+        )
+        self.colocalization_histogram_note = QLabel(
+            "These marginals use the same ROI and visible intensity range as "
+            "the scatter above."
+        )
+        self.colocalization_histogram_note.setWordWrap(True)
+        self.colocalization_histogram_note.setObjectName(
+            "InspectorHistogramInteractionHint"
+        )
+        self.mask_summary_section = InspectorSection("Mask summary", expanded=True)
+        self.mask_summary_label = QLabel("No mask output yet.")
+        self.mask_summary_label.setWordWrap(True)
+        self.mask_summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.mask_summary_section.setHidden(True)
+        self.label_volume_group = InspectorSection(
+            "Label Volume Distribution",
+            expanded=True,
+            busy_capable=True,
+        )
         self.label_volume_summary = QLabel("No labeled objects.")
         self.label_volume_summary.setWordWrap(True)
+        self.label_volume_interaction_hint = QLabel(
+            "Drag the minimum and maximum markers to tune the retained object "
+            "volume range."
+        )
+        self.label_volume_interaction_hint.setWordWrap(True)
+        self.label_volume_interaction_hint.setObjectName(
+            "InspectorHistogramInteractionHint"
+        )
         self.label_volume_log_checkbox = QCheckBox("Log volume axis")
         self.label_volume_log_checkbox.setChecked(True)
         self.label_volume_plot = HistogramPlot()
+        self.label_volume_plot.set_plot_labels(
+            title="Object size",
+            x_axis_label="Size (pixels/voxels)",
+            y_axis_label="Objects",
+        )
         self.label_volume_group.setHidden(True)
-        self.colocalization_scatter_group = QGroupBox("Colocalization Scatter")
+        self.colocalization_scatter_group = InspectorSection(
+            "Colocalization Scatter",
+            expanded=True,
+            busy_capable=True,
+        )
         self.colocalization_scatter_summary = QLabel("Connect two channel inputs.")
         self.colocalization_scatter_summary.setWordWrap(True)
         self.colocalization_scatter_summary.setMinimumHeight(42)
+        self.colocalization_scatter_hint = QLabel(
+            "Drag either threshold line to tune it. If Costes auto is selected, "
+            "dragging switches the node to Manual thresholds."
+        )
+        self.colocalization_scatter_hint.setWordWrap(True)
+        self.colocalization_scatter_hint.setObjectName(
+            "InspectorHistogramInteractionHint"
+        )
         self.colocalization_scatter_colormap_combo = QComboBox()
         self.colocalization_scatter_colormap_combo.addItems(
             COLOCALIZATION_SCATTER_COLORMAPS
@@ -2518,6 +3081,95 @@ class VippWidget(QWidget):
 
         self.pin_button = QPushButton("Pin selected")
         self.save_button = QPushButton("Save selected output...")
+        self.header_calculate_button = QPushButton("Calculate")
+        self.header_calculate_button.setToolTip(
+            "Calculate this manual node with its current inputs and parameters."
+        )
+        self.header_calculate_button.hide()
+        self.behavior_section = InspectorSection("Node behavior", expanded=False)
+        self.compute_section = InspectorSection("Compute", expanded=False)
+        self.writer_status_section = InspectorSection("Output status", expanded=True)
+        self.writer_status_label = QLabel("")
+        self.writer_status_label.setWordWrap(True)
+        self.writer_status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.writer_status_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        _set_palette_text_tone(self.writer_status_label, "text")
+
+        self.batch_output_status_panel = QWidget()
+        self.batch_output_status_panel.setAccessibleName("Batch output status")
+        self.batch_output_status_panel.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        batch_status_layout = QVBoxLayout(self.batch_output_status_panel)
+        batch_status_layout.setContentsMargins(0, 0, 0, 0)
+        batch_status_layout.setSpacing(7)
+
+        self.batch_output_status_description = QLabel(
+            "Written when this workflow runs in the Batch workspace."
+        )
+        self.batch_output_status_description.setWordWrap(True)
+        self.batch_output_status_description.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        _set_palette_text_tone(
+            self.batch_output_status_description,
+            "secondary",
+        )
+        batch_status_layout.addWidget(self.batch_output_status_description)
+
+        batch_status_details = QWidget()
+        self.batch_output_status_grid = QGridLayout(batch_status_details)
+        self.batch_output_status_grid.setContentsMargins(0, 0, 0, 0)
+        self.batch_output_status_grid.setHorizontalSpacing(12)
+        self.batch_output_status_grid.setVerticalSpacing(4)
+        self.batch_output_status_grid.setColumnStretch(1, 1)
+        self.batch_output_status_rows: dict[str, tuple[QLabel, QLabel]] = {}
+        for row, (field_name, field_title) in enumerate(
+            (
+                ("tag", "Tag"),
+                ("format", "Format"),
+                ("folder", "Folder"),
+                ("filename", "Filename"),
+            )
+        ):
+            field_label = QLabel(field_title)
+            field_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            field_font = field_label.font()
+            field_font.setBold(True)
+            field_label.setFont(field_font)
+            _set_palette_text_tone(field_label, "secondary")
+
+            value_label = QLabel("")
+            value_label.setWordWrap(True)
+            value_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            value_label.setMinimumWidth(0)
+            value_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            if field_name == "filename":
+                value_font = value_label.font()
+                value_font.setFamily("monospace")
+                value_font.setStyleHint(QFont.Monospace)
+                value_label.setFont(value_font)
+            _set_palette_text_tone(value_label, "text")
+
+            self.batch_output_status_grid.addWidget(
+                field_label,
+                row,
+                0,
+                Qt.AlignLeft | Qt.AlignTop,
+            )
+            self.batch_output_status_grid.addWidget(value_label, row, 1)
+            self.batch_output_status_rows[field_name] = (
+                field_label,
+                value_label,
+            )
+        batch_status_layout.addWidget(batch_status_details)
+        self.batch_output_status_panel.hide()
         self.inspector_panel = self._build_inspector()
 
         self._debounce_timer = QTimer(self)
@@ -2540,9 +3192,18 @@ class VippWidget(QWidget):
         # publication is therefore coalesced onto the next event-loop turn.
         self._selected_viewer_refresh_generation = 0
         self._selected_viewer_refresh_in_progress = False
+        self._selected_viewer_dims_refresh_pending = False
+        # A graph click must return to Qt before secondary inspector work can
+        # block a paint.  Keep a separate generation so rapid node switches
+        # cannot publish metadata or plots for an earlier selection.
+        self._selected_inspector_refresh_generation = 0
+        self._selection_diagnostics_initializing = False
+        self._primed_diagnostic_node_id = ""
+        self._primed_diagnostic_sections: frozenset[str] = frozenset()
 
         self._build_layout()
         self._connect_signals()
+        self._apply_theme_styles()
         application = QApplication.instance()
         if application is not None:
             application.installEventFilter(self)
@@ -2849,6 +3510,7 @@ class VippWidget(QWidget):
             event.ignore()
             return
         self._closing = True
+        self._cancel_selected_inspector_refresh()
         self._cancel_selected_viewer_refresh()
         self._discard_crop_draft(remove_layers=True)
         application = QApplication.instance()
@@ -2859,6 +3521,10 @@ class VippWidget(QWidget):
         self._invalidate_source_preview(remove_layer=True)
         if self._colocalization_scatter_dialog is not None:
             self._colocalization_scatter_dialog.close()
+        if self._histogram_dialog is not None:
+            self._histogram_dialog.close()
+        if self._result_table_dialog is not None:
+            self._result_table_dialog.close()
         for session in self._workflow_tabs:
             adapter = session.runtime_cache.get("_live_source_adapter")
             if isinstance(adapter, LiveLayerSourceAdapter):
@@ -2932,10 +3598,558 @@ class VippWidget(QWidget):
                 return False
         return True
 
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in {QEvent.PaletteChange, QEvent.StyleChange}:
+            self._schedule_theme_refresh()
+
+    def _schedule_theme_refresh(self) -> None:
+        """Coalesce the cascade of events produced by a napari theme switch."""
+
+        if (
+            getattr(self, "_closing", False)
+            or getattr(self, "_theme_refresh_pending", False)
+            or getattr(self, "_theme_refresh_in_progress", False)
+        ):
+            return
+        self._theme_refresh_pending = True
+        QTimer.singleShot(0, self._apply_theme_styles)
+
+    def _apply_theme_styles(self) -> None:
+        """Apply palette-derived styling to VIPP's non-native UI surfaces."""
+
+        if getattr(self, "_closing", False) or getattr(
+            self, "_theme_refresh_in_progress", False
+        ):
+            self._theme_refresh_pending = False
+            return
+        self._theme_refresh_pending = False
+        self._theme_refresh_in_progress = True
+        try:
+            palette = QWidget.palette(self)
+            colors = theme_colors(palette)
+
+            def color(value: QColor) -> str:
+                return value.name()
+
+            self.setProperty(
+                "vippColorScheme",
+                "dark" if palette_is_dark(palette) else "light",
+            )
+            muted = color(colors.muted_text)
+            self.pipeline_busy_label.setStyleSheet(
+                f"color: {color(colors.info.foreground)}; font-weight: 650;"
+            )
+            self.cache_status_label.setStyleSheet(
+                f"color: {muted}; font-size: 11px; padding: 2px 4px;"
+            )
+            self.graph_search_status.setStyleSheet(
+                f"color: {muted}; font-size: 11px;"
+            )
+            self.node_compute_note.setStyleSheet(
+                f"color: {muted}; font-size: 10px;"
+            )
+            self.selected_category_label.setStyleSheet(
+                f"color: {muted}; font-size: 10px;"
+            )
+            self.histogram_semantic_summary.setStyleSheet(
+                f"color: {color(colors.text)}; font-weight: 600;"
+            )
+            self.inspector_header_panel.setStyleSheet(
+                "QFrame#InspectorHeader {"
+                f" border-bottom: 1px solid {color(colors.border)};"
+                "}"
+            )
+            self.connected_inputs_panel.refresh_theme(palette)
+            if self._result_table_dialog is not None:
+                self._result_table_dialog.refresh_theme(palette)
+            interaction_hint_style = (
+                f"color: {color(colors.info.foreground)};"
+                " font-size: 10px; padding: 2px 3px;"
+            )
+            for hint in (
+                self.histogram_interaction_hint,
+                self.label_volume_interaction_hint,
+                self.colocalization_scatter_hint,
+            ):
+                hint.setStyleSheet(interaction_hint_style)
+            self.version_label.setStyleSheet(
+                f"color: {muted}; font-size: 11px; font-weight: 600;"
+                f" padding: 2px 8px; border: 1px solid {color(colors.border)};"
+                " border-radius: 999px;"
+                f" background: {color(colors.alternate_surface)};"
+            )
+            self.thumbnail_contrast_status_panel.setStyleSheet(
+                "QFrame#ThumbnailContrastStatusPanel {"
+                f" background: {color(colors.alternate_surface)};"
+                f" border: 1px solid {color(colors.border)};"
+                " border-radius: 4px;"
+                "}"
+                "QFrame#ThumbnailContrastStatusPanel:focus {"
+                f" border-color: {color(colors.info.border)};"
+                "}"
+            )
+            self.thumbnail_contrast_status_title.setStyleSheet(
+                f"color: {muted}; font-size: 10px; border: none;"
+            )
+            warning = colors.warning
+            active_mode = colors.active_mode
+            warning_panel = (
+                f"background: {color(warning.surface)};"
+                f" border: 1px solid {color(warning.border)};"
+                " border-radius: 5px;"
+            )
+            self.isolated_tuning_panel.setStyleSheet(
+                "QFrame#IsolatedTuningPanel {"
+                f" background: {color(active_mode.surface)};"
+                f" border: 1px solid {color(active_mode.border)};"
+                " border-radius: 5px; padding: 5px;"
+                "}"
+            )
+            self.isolated_tuning_status.setStyleSheet(
+                f"color: {color(active_mode.foreground)}; font-weight: 650;"
+            )
+            self.auto_recalculate_notice.setStyleSheet(
+                f"color: {color(warning.foreground)};"
+            )
+            self.compute_repair_panel.setStyleSheet(
+                f"QFrame#ComputeRepairPanel {{ {warning_panel} }}"
+            )
+            self.compute_repair_label.setStyleSheet(
+                f"color: {color(warning.foreground)};"
+                " border: none; padding: 1px;"
+            )
+            self.batch_effective_parameter_group.setStyleSheet(
+                f"QGroupBox {{ color: {color(warning.foreground)};"
+                " font-weight: 600; }"
+                f"QLabel {{ color: {color(warning.foreground)};"
+                " font-weight: 400; }"
+            )
+            table_style = (
+                "QTableWidget {"
+                f" background: {color(colors.surface)};"
+                f" alternate-background-color: {color(colors.alternate_surface)};"
+                f" color: {color(colors.text)};"
+                f" gridline-color: {color(colors.border)};"
+                "}"
+                "QHeaderView::section {"
+                f" background: {color(colors.raised_surface)};"
+                f" color: {color(colors.text)};"
+                f" border-color: {color(colors.border)};"
+                " padding: 4px;"
+                "}"
+            )
+            self.table_preview.setAlternatingRowColors(True)
+            self.table_preview.setStyleSheet(table_style)
+            metadata_style = (
+                "QTableWidget {"
+                f" background: {color(colors.surface)};"
+                f" color: {color(colors.text)};"
+                f" border: 1px solid {color(colors.border)};"
+                " gridline-color: transparent;"
+                "}"
+                "QTableWidget::item {"
+                f" border-bottom: 1px solid {color(colors.border)};"
+                " padding: 3px 5px;"
+                "}"
+            )
+            self.metadata_table.setAlternatingRowColors(False)
+            self.metadata_table.setStyleSheet(metadata_style)
+            for row in range(self.metadata_table.rowCount()):
+                label_item = self.metadata_table.item(row, 0)
+                if label_item is not None:
+                    label_item.setForeground(QBrush(colors.muted_text))
+            self.history_rows_widget.setStyleSheet(
+                "QLabel#InspectorHistoryBadge {"
+                f" background: {color(colors.info.surface)};"
+                f" color: {color(colors.info.foreground)};"
+                f" border: 1px solid {color(colors.info.border)};"
+                " border-radius: 11px; font-weight: 650;"
+                "}"
+                "QLabel#InspectorHistoryTitle {"
+                f" color: {color(colors.text)}; font-weight: 600;"
+                "}"
+                "QLabel#InspectorHistoryDetail {"
+                f" color: {color(colors.muted_text)}; font-size: 11px;"
+                "}"
+            )
+            self._sync_metadata_table_geometry()
+
+            for section in getattr(self, "_inspector_sections", {}).values():
+                section.refresh_theme()
+
+            self.graph_view._apply_palette_theme()
+            self.view_dims_bar._apply_palette_styles()
+
+            self.graph_zoom_reset_button.setIcon(_toolbar_icon("reset", palette))
+            self.reset_inspect_display_button.setIcon(
+                _toolbar_icon("reset", palette)
+            )
+            selected = self.pipeline.nodes.get(self._selected_node_id)
+            if selected is not None:
+                self._sync_inspector_header(
+                    self.pipeline.operation_spec(selected.operation_id)
+                )
+            self.undo_action.setIcon(_toolbar_icon("undo", palette))
+            self.redo_action.setIcon(_toolbar_icon("redo", palette))
+            for name, widget in self._parameter_widgets.items():
+                if name.endswith("_reset") and isinstance(widget, QToolButton):
+                    self._style_parameter_reset_button(widget, palette)
+            for styled_text in self.findChildren(QWidget):
+                _refresh_palette_text_tone(styled_text)
+
+            operation_note = self._parameter_widgets.get("operation_notice")
+            if isinstance(operation_note, QLabel) and selected is not None:
+                if selected.operation_id == "born_wolf_psf":
+                    guidance, status = self._born_wolf_psf_guidance(
+                        selected.id,
+                        self._born_wolf_psf_resolution(selected.id),
+                    )
+                    operation_note.setText(guidance)
+                    self._style_operation_note(operation_note, status)
+                elif (
+                    selected.operation_id
+                    in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS
+                ):
+                    self._update_deconvolution_help_note()
+
+            refresh_status = getattr(self.status_label, "refresh_theme", None)
+            if callable(refresh_status):
+                refresh_status()
+            for plot in (
+                self.histogram_plot,
+                self.rescale_input_histogram_plot,
+                self.measurement_object_size_histogram_plot,
+                self.measurement_intensity_histogram_plot,
+                self.label_volume_plot,
+                self.colocalization_scatter_plot,
+            ):
+                plot.update()
+            self._sync_calculate_all_attention(force_style=True)
+            self._sync_table_result_attention(force_style=True)
+            self._sync_compute_toolbar_summary()
+            self._sync_thumbnail_statistics_inspector()
+            if hasattr(self, "isolated_tuning_status"):
+                self._reserve_isolated_tuning_panel_height()
+        finally:
+            self._theme_refresh_in_progress = False
+
     def resizeEvent(self, event):  # noqa: N802
+        if hasattr(self, "palette_panel"):
+            self.palette_panel.dismiss_popup()
         super().resizeEvent(event)
         self._sync_toolbar_responsive_mode()
         self.view_dims_bar.sync_responsive_mode()
+        self._schedule_node_library_responsive_sync()
+        self._sync_inspector_responsive_layout()
+
+    def _sync_inspector_responsive_layout(self) -> None:
+        """Stack dense scientific controls when the inspector becomes narrow."""
+
+        content = getattr(self, "inspector_content", None)
+        controls_layout = getattr(
+            self,
+            "colocalization_scatter_controls_layout",
+            None,
+        )
+        marginals_layout = getattr(
+            self,
+            "colocalization_channel_histograms_layout",
+            None,
+        )
+        histogram_controls_layout = getattr(
+            self,
+            "histogram_controls_layout",
+            None,
+        )
+        histogram_panels_layout = getattr(
+            self,
+            "histogram_panels_layout",
+            None,
+        )
+        table_actions_layout = getattr(self, "table_actions_layout", None)
+        isolated_actions_layout = getattr(
+            self,
+            "isolated_tuning_actions_layout",
+            None,
+        )
+        if content is None:
+            return
+        width_candidates = [max(int(content.width()), 0)]
+        inspector_viewport = getattr(self, "inspector_viewport", None)
+        if inspector_viewport is not None:
+            width_candidates.append(max(int(inspector_viewport.width()), 0))
+        positive_widths = [value for value in width_candidates if value > 0]
+        width = min(positive_widths) if positive_widths else 0
+        stacked_forms = width < INSPECTOR_STACKED_FORM_BREAKPOINT
+        compact_forms = width < INSPECTOR_COMPACT_FORM_BREAKPOINT
+        for form in (
+            getattr(self, "parameter_form", None),
+            getattr(self, "auto_contrast_form", None),
+        ):
+            if isinstance(form, QFormLayout):
+                self._set_inspector_form_stacked(
+                    form,
+                    stacked_forms,
+                    wrap_long_rows=compact_forms,
+                    available_width=width,
+                )
+        source_control = getattr(self, "_parameter_widgets", {}).get(
+            "image_source"
+        )
+        if isinstance(source_control, ImageSourceControl):
+            # ImageSourceControl owns its own binary responsive form API. Keep
+            # its established safe cutoff; the editable parameter form above
+            # can use the more gradual three-state policy.
+            source_control.set_compact_form_mode(compact_forms)
+        header_context_layout = getattr(
+            self,
+            "inspector_context_layout",
+            None,
+        )
+        if header_context_layout is not None:
+            narrow_header = width < INSPECTOR_HEADER_STACK_BREAKPOINT
+            header_context_layout.setDirection(
+                QBoxLayout.TopToBottom
+                if narrow_header
+                else QBoxLayout.LeftToRight
+            )
+            header_context_layout.setContentsMargins(
+                0 if narrow_header else 28,
+                0,
+                0,
+                0,
+            )
+        header_action_layout = getattr(
+            self,
+            "inspector_action_layout",
+            None,
+        )
+        if header_action_layout is not None:
+            action_buttons = tuple(
+                button
+                for button in (
+                    getattr(self, "header_calculate_button", None),
+                    getattr(self, "pin_button", None),
+                    getattr(self, "save_button", None),
+                )
+                if button is not None and not button.isHidden()
+            )
+            required_action_width = sum(
+                max(
+                    int(button.sizeHint().width()),
+                    int(button.minimumSizeHint().width()),
+                )
+                for button in action_buttons
+            ) + max(len(action_buttons) - 1, 0) * int(header_action_layout.spacing())
+            available_action_width = max(
+                width - INSPECTOR_HEADER_ACTION_HORIZONTAL_PADDING,
+                0,
+            )
+            stack_actions = bool(
+                len(action_buttons) > 1
+                and required_action_width > available_action_width
+            )
+            header_action_layout.setDirection(
+                QBoxLayout.TopToBottom
+                if stack_actions
+                else QBoxLayout.LeftToRight
+            )
+        if controls_layout is not None:
+            controls_layout.setDirection(
+                QBoxLayout.TopToBottom
+                if width < INSPECTOR_COLOCALIZATION_DIAGNOSTICS_BREAKPOINT
+                else QBoxLayout.LeftToRight
+            )
+        if marginals_layout is not None:
+            marginals_layout.setDirection(
+                QBoxLayout.TopToBottom
+                if width < INSPECTOR_COLOCALIZATION_DIAGNOSTICS_BREAKPOINT
+                else QBoxLayout.LeftToRight
+            )
+        if histogram_controls_layout is not None:
+            histogram_controls_layout.setDirection(
+                QBoxLayout.TopToBottom
+                if width < INSPECTOR_DENSE_DIAGNOSTICS_BREAKPOINT
+                else QBoxLayout.LeftToRight
+            )
+        if histogram_panels_layout is not None:
+            histogram_panels_layout.setDirection(
+                QBoxLayout.TopToBottom
+                if width < INSPECTOR_DENSE_DIAGNOSTICS_BREAKPOINT
+                else QBoxLayout.LeftToRight
+            )
+        if table_actions_layout is not None:
+            table_actions_layout.setDirection(
+                QBoxLayout.TopToBottom
+                if width < INSPECTOR_COMPACT_FORM_BREAKPOINT
+                else QBoxLayout.LeftToRight
+            )
+        if isolated_actions_layout is not None:
+            isolation_buttons = (
+                self.apply_isolated_tuning_button,
+                self.cancel_isolated_tuning_button,
+            )
+            required_width = sum(
+                max(
+                    int(button.sizeHint().width()),
+                    int(button.minimumSizeHint().width()),
+                )
+                for button in isolation_buttons
+            ) + int(isolated_actions_layout.spacing())
+            panel_width = max(int(self.isolated_tuning_panel.width()), 0)
+            panel_layout = self.isolated_tuning_panel.layout()
+            if panel_width > 0 and panel_layout is not None:
+                margins = panel_layout.contentsMargins()
+                available_width = max(
+                    panel_width - margins.left() - margins.right(),
+                    0,
+                )
+            else:
+                available_width = max(width - 40, 0)
+            isolated_actions_layout.setDirection(
+                QBoxLayout.TopToBottom
+                if required_width > available_width
+                else QBoxLayout.LeftToRight
+            )
+            self._reserve_isolated_tuning_panel_height()
+        if getattr(self, "parameter_form", None) is not None:
+            self._sync_parameter_form_height()
+        if hasattr(self, "table_preview"):
+            self._sync_table_preview_geometry()
+        if hasattr(self, "metadata_table"):
+            self._sync_metadata_table_geometry()
+
+    def _isolated_tuning_status_messages(self, node_id: str) -> tuple[str, ...]:
+        title = self._node_title(node_id)
+        prefix = f"Downstream paused after '{title}'."
+        return tuple(
+            f"{prefix} {message}"
+            for message in ISOLATED_TUNING_STATUS_MESSAGES
+        )
+
+    def _reserve_isolated_tuning_panel_height(self) -> None:
+        """Keep changing tuning status text from moving the parameter form."""
+
+        node_id = self._isolated_tuning_node_id
+        if node_id not in self.pipeline.nodes:
+            return
+        panel_layout = self.isolated_tuning_panel.layout()
+        if panel_layout is None:
+            return
+        panel_width = max(
+            int(self.isolated_tuning_panel.contentsRect().width()),
+            0,
+        )
+        if panel_width <= 0:
+            panel_width = max(int(self.inspector_content.width()) - 40, 0)
+        margins = panel_layout.contentsMargins()
+        text_width = max(
+            panel_width - margins.left() - margins.right() - 4,
+            80,
+        )
+        flags = Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap
+        metrics = self.isolated_tuning_status.fontMetrics()
+        status_height = max(
+            metrics.boundingRect(
+                QRect(0, 0, text_width, 10_000),
+                flags,
+                message,
+            ).height()
+            for message in self._isolated_tuning_status_messages(node_id)
+        )
+        self.isolated_tuning_status.setFixedHeight(status_height + 4)
+        self.isolated_tuning_panel.setMinimumHeight(0)
+        self.isolated_tuning_panel.setMaximumHeight(_QT_WIDGET_SIZE_MAXIMUM)
+        panel_layout.invalidate()
+        panel_layout.activate()
+        self.isolated_tuning_panel.setFixedHeight(
+            self.isolated_tuning_panel.sizeHint().height()
+        )
+
+    @staticmethod
+    def _set_inspector_form_stacked(
+        form: QFormLayout,
+        stacked: bool,
+        *,
+        wrap_long_rows: bool = False,
+        available_width: int = 0,
+    ) -> None:
+        """Change form geometry in place so controls keep signals and state."""
+
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        current_policy = form.rowWrapPolicy()
+        responsive_active = bool(
+            getattr(form, "_vipp_responsive_wrap_active", False)
+        )
+        if not responsive_active:
+            form._vipp_wide_row_wrap_policy = current_policy
+        wide_policy = getattr(
+            form,
+            "_vipp_wide_row_wrap_policy",
+            QFormLayout.DontWrapRows,
+        )
+        if stacked:
+            target_policy = QFormLayout.WrapAllRows
+            responsive_active = True
+        elif wrap_long_rows and wide_policy != QFormLayout.WrapLongRows:
+            target_policy = QFormLayout.WrapLongRows
+            responsive_active = True
+        else:
+            target_policy = wide_policy
+            responsive_active = False
+        form.setRowWrapPolicy(target_policy)
+        form._vipp_responsive_wrap_active = responsive_active
+        parent = form.parentWidget()
+        form_width = (
+            int(parent.contentsRect().width()) if parent is not None else 0
+        )
+        if form_width <= 100:
+            # Freshly rebuilt forms can still have Qt's provisional 100 px
+            # width. The inspector already knows the real responsive width.
+            form_width = max(int(available_width) - 14, form_width)
+        margins = form.contentsMargins()
+        stacked_label_width = max(
+            form_width - int(margins.left() + margins.right()),
+            80,
+        )
+        for row in range(form.rowCount()):
+            label_item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            if label_item is None:
+                continue
+            label = label_item.widget()
+            if not isinstance(label, QLabel):
+                continue
+            field_item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            field = field_item.widget() if field_item is not None else None
+            bool_control = (
+                field
+                if isinstance(field, BoolControl)
+                else field.findChild(BoolControl)
+                if isinstance(field, QWidget)
+                else None
+            )
+            if isinstance(bool_control, BoolControl):
+                bool_control.set_compact_label_mode(
+                    stacked,
+                    label_text=label.text(),
+                )
+                label.setHidden(stacked)
+            label.setMinimumWidth(0)
+            if isinstance(label, _InspectorParameterLabel):
+                label.set_stacked_width(
+                    stacked_label_width if stacked else None
+                )
+            else:
+                label.setWordWrap(stacked)
+            label.setSizePolicy(
+                QSizePolicy.Preferred,
+                QSizePolicy.Preferred,
+            )
+        form.invalidate()
+        parent = form.parentWidget()
+        if parent is not None:
+            parent.updateGeometry()
 
     def _workflow_shortcut_belongs_to_this_window(self) -> bool:
         """Return whether a global Save key belongs to this VIPP host window."""
@@ -2966,6 +4180,21 @@ class VippWidget(QWidget):
 
     def eventFilter(self, watched, event):  # noqa: N802
         if (
+            watched
+            in {
+                getattr(self, "inspector_content", None),
+                getattr(self, "inspector_viewport", None),
+            }
+            and event.type() == QEvent.Resize
+        ):
+            self._sync_inspector_responsive_layout()
+        if watched is QApplication.instance() and event.type() in {
+            QEvent.ApplicationPaletteChange,
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+        }:
+            self._schedule_theme_refresh()
+        if (
             event.type() in {QEvent.ShortcutOverride, QEvent.KeyPress}
             and self._workflow_shortcut_belongs_to_this_window()
         ):
@@ -2982,6 +4211,20 @@ class VippWidget(QWidget):
                     self._request_workflow_save(force_choose_path=save_as)
                 return True
         dock = self._dock_widget()
+        palette_panel = getattr(self, "palette_panel", None)
+        if (
+            palette_panel is not None
+            and palette_panel.popup.isVisible()
+            and (watched is dock or watched is self.window())
+            and event.type()
+            in {
+                QEvent.Move,
+                QEvent.Resize,
+                QEvent.Hide,
+                QEvent.WindowStateChange,
+            }
+        ):
+            palette_panel.dismiss_popup()
         if (
             watched is dock
             and event.type() == QEvent.NonClientAreaMouseButtonDblClick
@@ -3001,6 +4244,7 @@ class VippWidget(QWidget):
         if self._closing:
             return
         self._sync_toolbar_responsive_mode()
+        self._schedule_node_library_responsive_sync()
         if not self._dock_chrome_configured:
             QTimer.singleShot(0, self._ensure_dock_widget_chrome)
         if not self._initial_dock_size_applied:
@@ -3029,6 +4273,10 @@ class VippWidget(QWidget):
                     dock.visibilityChanged,
                     self._on_dock_visibility_changed,
                 )
+                self._lifecycle.connect(
+                    dock.dockLocationChanged,
+                    self._on_dock_location_changed,
+                )
                 self._dock_window_behavior_configured = True
             desired_features = (
                 QDockWidget.DockWidgetClosable
@@ -3045,28 +4293,153 @@ class VippWidget(QWidget):
                 dock.setAllowedAreas(Qt.AllDockWidgetAreas)
             self._dock_chrome_configured = True
             if dock.isFloating():
-                QTimer.singleShot(0, self._configure_floating_dock_window)
+                self._schedule_floating_dock_configuration(
+                    self.FLOATING_DOCK_DRAG_RETRY_MS
+                )
+            else:
+                self._sync_docked_orientation_size_policy(force=True)
         except Exception:
             pass
 
     def _on_dock_top_level_changed(self, floating: bool) -> None:
+        self.palette_panel.dismiss_popup()
         if floating:
             dock = self._dock_widget()
             if dock is not None:
                 self._capture_docked_size_constraints(dock)
-            QTimer.singleShot(0, self._configure_floating_dock_window)
+            self._schedule_floating_dock_configuration(
+                self.FLOATING_DOCK_DRAG_RETRY_MS
+            )
         else:
+            self._floating_dock_configure_timer.stop()
             QTimer.singleShot(0, self._restore_docked_title_bar)
 
+    def _on_dock_location_changed(self, area) -> None:
+        if area == Qt.NoDockWidgetArea:
+            return
+        previous_area = self._last_docked_area
+        # Repair synchronously so QMainWindow sees the flexible policy during
+        # the location change's own layout pass.
+        self._sync_docked_orientation_size_policy(area=area)
+        if area != previous_area:
+            QTimer.singleShot(
+                0,
+                lambda: self._sync_docked_orientation_size_policy(force=True),
+            )
+
     def _on_dock_visibility_changed(self, visible: bool) -> None:
+        if not visible:
+            self.palette_panel.dismiss_popup()
         if visible:
-            QTimer.singleShot(0, self._configure_floating_dock_window)
+            self._schedule_floating_dock_configuration(
+                self.FLOATING_DOCK_DRAG_RETRY_MS
+            )
+            QTimer.singleShot(
+                0,
+                lambda: self._sync_docked_orientation_size_policy(force=True),
+            )
+
+    def _sync_docked_orientation_size_policy(
+        self,
+        *,
+        area=None,
+        force: bool = False,
+    ) -> None:
+        """Keep napari's dock content flexible along its long axis.
+
+        napari applies ``Preferred/Maximum`` to contributed widgets when it
+        first wraps them.  That is harmless for VIPP's initial bottom dock,
+        but the vertical ``Maximum`` policy remains after a move to the left
+        or right and caps the editor at roughly its size hint.  Normalize the
+        complete content chain (including the lazy plugin startup host) while
+        leaving the QDockWidget itself under QMainWindow's control.
+        """
+        if self._closing or not isalive(self):
+            return
+        dock = self._dock_widget()
+        if dock is None or dock.isFloating():
+            return
+        window = self._dock_main_window(dock)
+        if window is None:
+            return
+        if area is None:
+            area = window.dockWidgetArea(dock)
+        side_dock = area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea)
+        horizontal_dock = area in (
+            Qt.TopDockWidgetArea,
+            Qt.BottomDockWidgetArea,
+        )
+        if not side_dock and not horizontal_dock:
+            return
+        if not force and area == self._last_docked_area:
+            return
+        self._last_docked_area = area
+
+        content_targets = tuple(
+            target
+            for target in self._dock_size_constraint_targets(dock)
+            if target is not dock
+        )
+        for target in content_targets:
+            policy = QSizePolicy(target.sizePolicy())
+            policy.setHorizontalPolicy(QSizePolicy.Expanding)
+            policy.setVerticalPolicy(
+                QSizePolicy.Expanding if side_dock else QSizePolicy.Ignored
+            )
+            target.setSizePolicy(policy)
+            if side_dock:
+                target.setMaximumHeight(_QT_WIDGET_SIZE_MAXIMUM)
+            else:
+                target.setMaximumWidth(_QT_WIDGET_SIZE_MAXIMUM)
+            layout = target.layout()
+            if layout is not None:
+                layout.invalidate()
+
+        refresh_targets = (*content_targets, dock)
+        for target in refresh_targets:
+            layout = target.layout()
+            if layout is not None:
+                layout.activate()
+            target.updateGeometry()
+        window_layout = window.layout()
+        if window_layout is not None:
+            window_layout.invalidate()
+            window_layout.activate()
+
+    def _schedule_floating_dock_configuration(self, delay_ms: int = 0) -> None:
+        """Coalesce floating-window setup until Qt's tear-off drag is idle."""
+        if self._closing or not isalive(self):
+            return
+        self._floating_dock_configure_timer.start(max(0, int(delay_ms)))
+
+    def _floating_dock_drag_active(self) -> bool:
+        """Return whether a mouse button still owns the native tear-off drag."""
+        if QApplication.mouseButtons() == Qt.NoButton:
+            return False
+        grabber = QWidget.mouseGrabber()
+        dock = self._dock_widget()
+        if grabber is None or dock is None:
+            return False
+        # QTest and interrupted gestures can leave QApplication's global
+        # button state pressed after the widget that owned the gesture has
+        # already hidden or disappeared.  Only the containing dock (or one of
+        # its children) proves that the native tear-off drag is still active.
+        return grabber is dock or dock.isAncestorOf(grabber)
 
     def _configure_floating_dock_window(self) -> None:
         if self._closing or not isalive(self):
             return
         dock = self._dock_widget()
         if dock is None or not dock.isFloating():
+            self._floating_dock_configure_timer.stop()
+            return
+        if self._floating_dock_drag_active():
+            # setWindowFlags() replaces the native window. Doing that while
+            # QDockWidget still owns the tear-off drag can leave Windows in a
+            # perpetual move operation even after the button is released.
+            self._schedule_floating_dock_configuration(
+                self.FLOATING_DOCK_DRAG_RETRY_MS
+            )
             return
         try:
             self._release_floating_size_constraints(dock)
@@ -3113,6 +4486,7 @@ class VippWidget(QWidget):
             self._restore_docked_size_constraints(dock)
             if dock.titleBarWidget() is not None:
                 dock.setTitleBarWidget(None)
+            self._sync_docked_orientation_size_policy()
         except Exception:
             pass
 
@@ -3432,6 +4806,7 @@ class VippWidget(QWidget):
         self.splitter.setStretchFactor(1, 5)
         self.splitter.setStretchFactor(2, 1)
         self.splitter.setSizes(self._default_splitter_sizes)
+        self.splitter.splitterMoved.connect(self._on_main_splitter_moved)
         self.splitter.setMinimumHeight(0)
         self.splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         root.addWidget(self.splitter, 1)
@@ -3801,28 +5176,60 @@ class VippWidget(QWidget):
         layout.addWidget(self.graph_view, 1)
         return panel
 
-    def _build_palette_panel(self) -> QWidget:
-        panel = QWidget()
-        panel.setMinimumWidth(190)
+    def _build_palette_panel(self) -> NodeLibraryPanel:
+        panel = NodeLibraryPanel(grouped_palette_specs())
         panel.setMinimumHeight(0)
         panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        layout.addWidget(self.palette_search)
-        layout.addWidget(self.palette, 1)
         return panel
 
     def _build_inspector(self) -> QWidget:
         content = QWidget()
         content.setMinimumHeight(0)
         self.inspector_content = content
+        content.installEventFilter(self)
         layout = QVBoxLayout(content)
-        inspector_header = QHBoxLayout()
-        inspector_header.addWidget(self.selected_title, 1)
-        inspector_header.addWidget(self.reset_inspect_display_button)
-        layout.addLayout(inspector_header)
-        layout.addWidget(self.thumbnail_checkbox)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+        self._inspector_layout = layout
+
+        self.inspector_header_panel = QFrame()
+        self.inspector_header_panel.setObjectName("InspectorHeader")
+        inspector_header_layout = QVBoxLayout(self.inspector_header_panel)
+        inspector_header_layout.setContentsMargins(2, 1, 2, 3)
+        inspector_header_layout.setSpacing(2)
+        inspector_title_row = QHBoxLayout()
+        inspector_title_row.setContentsMargins(0, 0, 0, 0)
+        inspector_title_row.setSpacing(6)
+        inspector_title_row.addWidget(self.selected_operation_icon)
+        inspector_title_row.addWidget(self.selected_title, 1)
+        inspector_title_row.addWidget(self.reset_inspect_display_button)
+        inspector_header_layout.addLayout(inspector_title_row)
+        self.inspector_context_layout = QBoxLayout(QBoxLayout.LeftToRight)
+        self.inspector_context_layout.setContentsMargins(28, 0, 0, 0)
+        self.inspector_context_layout.setSpacing(5)
+        self.inspector_context_layout.addWidget(self.selected_category_label, 1)
+        inspector_action_widget = QWidget()
+        inspector_action_widget.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Preferred,
+        )
+        self.inspector_action_layout = QBoxLayout(
+            QBoxLayout.LeftToRight,
+            inspector_action_widget,
+        )
+        self.inspector_action_layout.setContentsMargins(0, 0, 0, 0)
+        self.inspector_action_layout.setSpacing(5)
+        self.inspector_action_layout.addWidget(self.header_calculate_button)
+        self.inspector_action_layout.addWidget(self.pin_button)
+        self.inspector_action_layout.addWidget(self.save_button)
+        self.inspector_context_layout.addWidget(
+            inspector_action_widget,
+            0,
+            Qt.AlignLeft,
+        )
+        inspector_header_layout.addLayout(self.inspector_context_layout)
+        layout.addWidget(self.inspector_header_panel)
+
         thumbnail_contrast_status_layout = QHBoxLayout(
             self.thumbnail_contrast_status_panel
         )
@@ -3837,18 +5244,27 @@ class VippWidget(QWidget):
             0,
             Qt.AlignRight | Qt.AlignVCenter,
         )
-        layout.addWidget(self.thumbnail_contrast_status_panel)
-        layout.addWidget(self.keep_cached_checkbox)
-        layout.addWidget(self.isolated_tuning_checkbox)
         isolated_tuning_layout = QVBoxLayout(self.isolated_tuning_panel)
         isolated_tuning_layout.setContentsMargins(7, 7, 7, 7)
         isolated_tuning_layout.addWidget(self.isolated_tuning_status)
-        isolated_tuning_actions = QHBoxLayout()
-        isolated_tuning_actions.addWidget(self.apply_isolated_tuning_button)
-        isolated_tuning_actions.addWidget(self.cancel_isolated_tuning_button)
-        isolated_tuning_layout.addLayout(isolated_tuning_actions)
-        layout.addWidget(self.isolated_tuning_panel)
-        layout.addWidget(self.node_bypass_checkbox)
+        self.isolated_tuning_actions_layout = QBoxLayout(QBoxLayout.LeftToRight)
+        self.isolated_tuning_actions_layout.addWidget(
+            self.apply_isolated_tuning_button
+        )
+        self.isolated_tuning_actions_layout.addWidget(
+            self.cancel_isolated_tuning_button
+        )
+        isolated_tuning_layout.addLayout(self.isolated_tuning_actions_layout)
+
+        behavior_layout = QVBoxLayout(self.behavior_section.content_widget)
+        behavior_layout.setContentsMargins(7, 5, 7, 7)
+        behavior_layout.setSpacing(5)
+        behavior_layout.addWidget(self.thumbnail_checkbox)
+        behavior_layout.addWidget(self.thumbnail_contrast_status_panel)
+        behavior_layout.addWidget(self.keep_cached_checkbox)
+        behavior_layout.addWidget(self.isolated_tuning_checkbox)
+        behavior_layout.addWidget(self.node_bypass_checkbox)
+
         execution_layout = QVBoxLayout(self.execution_group)
         execution_layout.addWidget(self.execution_status_label)
         execution_layout.addWidget(self.auto_recalculate_checkbox)
@@ -3870,27 +5286,68 @@ class VippWidget(QWidget):
             0,
             Qt.AlignLeft,
         )
-        layout.addWidget(self.compute_repair_panel)
-        layout.addWidget(self.compute_group)
+
+        compute_section_layout = QVBoxLayout(self.compute_section.content_widget)
+        compute_section_layout.setContentsMargins(7, 5, 7, 7)
+        compute_section_layout.setSpacing(6)
+        compute_section_layout.addWidget(self.execution_group)
+        compute_section_layout.addWidget(self.compute_repair_panel)
+        compute_section_layout.addWidget(self.compute_group)
+
         batch_effective_layout = QVBoxLayout(self.batch_effective_parameter_group)
         batch_effective_layout.setContentsMargins(8, 8, 8, 8)
         batch_effective_layout.addWidget(self.batch_effective_parameter_label)
-        layout.addWidget(self.batch_effective_parameter_group)
-        layout.addWidget(self.parameter_group)
         auto_layout = QVBoxLayout(self.auto_contrast_group)
-        auto_form = QFormLayout()
-        auto_form.addRow(
+        self.auto_contrast_form = QFormLayout()
+        self.auto_contrast_form.addRow(
             AUTO_CONTRAST_SATURATION_SPEC.label,
             self.auto_saturation_control,
         )
-        auto_layout.addLayout(auto_form)
+        auto_layout.addLayout(self.auto_contrast_form)
         auto_layout.addWidget(self.auto_contrast_button)
-        layout.addWidget(self.auto_contrast_group)
-        colocalization_scatter_layout = QVBoxLayout(self.colocalization_scatter_group)
+
+        parameters_layout = QVBoxLayout(self.parameter_group.content_widget)
+        parameters_layout.setContentsMargins(7, 5, 7, 7)
+        parameters_layout.setSpacing(6)
+        parameters_layout.addWidget(self.isolated_tuning_panel)
+        parameters_layout.addWidget(self.connected_inputs_panel)
+        parameters_layout.addWidget(self.batch_effective_parameter_group)
+        parameters_layout.addWidget(self.parameter_form_widget)
+        parameters_layout.addWidget(self.auto_contrast_group)
+
+        self.source_representation_layout = QVBoxLayout(
+            self.source_representation_section.content_widget
+        )
+        self.source_representation_layout.setContentsMargins(7, 5, 7, 7)
+        self.source_representation_layout.setSpacing(5)
+        self.source_representation_layout.addWidget(self.source_representation_label)
+
+        output_selector_layout = QVBoxLayout(
+            self.output_selector_section.content_widget
+        )
+        output_selector_layout.setContentsMargins(7, 5, 7, 7)
+        output_selector_layout.setSpacing(5)
+        output_selector_layout.addWidget(self.output_selector_note)
+        output_selector_layout.addWidget(self.output_selector_combo)
+        output_selector_layout.addWidget(
+            self.save_all_outputs_button,
+            0,
+            Qt.AlignLeft,
+        )
+
+        colocalization_scatter_layout = QVBoxLayout(
+            self.colocalization_scatter_group.content_widget
+        )
+        colocalization_scatter_layout.setContentsMargins(7, 5, 7, 7)
+        colocalization_scatter_layout.addWidget(self.colocalization_scatter_hint)
         colocalization_scatter_layout.addWidget(self.colocalization_scatter_summary)
         colocalization_scatter_controls = QWidget()
-        colocalization_scatter_controls_layout = QHBoxLayout(
+        self.colocalization_scatter_controls_layout = QBoxLayout(
+            QBoxLayout.LeftToRight,
             colocalization_scatter_controls
+        )
+        colocalization_scatter_controls_layout = (
+            self.colocalization_scatter_controls_layout
         )
         colocalization_scatter_controls_layout.setContentsMargins(0, 0, 0, 0)
         colocalization_scatter_controls_layout.setSpacing(8)
@@ -3907,64 +5364,213 @@ class VippWidget(QWidget):
         colocalization_scatter_controls_layout.addStretch(1)
         colocalization_scatter_layout.addWidget(colocalization_scatter_controls)
         colocalization_scatter_layout.addWidget(self.colocalization_scatter_plot)
-        layout.addWidget(self.colocalization_scatter_group)
-        label_volume_layout = QVBoxLayout(self.label_volume_group)
+
+        label_volume_layout = QVBoxLayout(self.label_volume_group.content_widget)
+        label_volume_layout.setContentsMargins(7, 5, 7, 7)
         label_volume_layout.addWidget(self.label_volume_summary)
+        label_volume_layout.addWidget(self.label_volume_interaction_hint)
         label_volume_layout.addWidget(self.label_volume_log_checkbox)
         label_volume_layout.addWidget(self.label_volume_plot)
-        layout.addWidget(self.label_volume_group)
+
         rescale_input_histogram_layout = QVBoxLayout(self.rescale_input_histogram_group)
-        self.rescale_input_histogram_scope_row = QWidget()
-        rescale_input_histogram_scope_layout = QHBoxLayout(
-            self.rescale_input_histogram_scope_row
-        )
-        rescale_input_histogram_scope_layout.setContentsMargins(0, 0, 0, 0)
-        rescale_input_histogram_scope_layout.addWidget(QLabel("Histogram uses"))
-        rescale_input_histogram_scope_layout.addWidget(
-            self.rescale_input_histogram_scope_combo,
-            1,
-        )
-        rescale_input_histogram_layout.addWidget(self.rescale_input_histogram_scope_row)
-        rescale_input_histogram_layout.addWidget(
-            self.rescale_input_histogram_log_checkbox
-        )
+        rescale_input_histogram_layout.setContentsMargins(0, 0, 0, 0)
         rescale_input_histogram_layout.addWidget(self.rescale_input_histogram_plot)
         layout.addWidget(self.rescale_input_histogram_group)
-        histogram_layout = QVBoxLayout(self.histogram_group)
-        self.histogram_scope_row = QWidget()
-        histogram_scope_layout = QHBoxLayout(self.histogram_scope_row)
-        histogram_scope_layout.setContentsMargins(0, 0, 0, 0)
-        histogram_scope_layout.addWidget(QLabel("Scope"))
-        histogram_scope_layout.addWidget(self.histogram_scope_combo, 1)
-        histogram_layout.addWidget(self.histogram_scope_row)
-        histogram_layout.addWidget(self.histogram_log_checkbox)
-        histogram_layout.addWidget(self.histogram_plot)
-        layout.addWidget(self.histogram_group)
-        table_layout = QVBoxLayout(self.table_group)
-        table_layout.addWidget(self.table_summary)
-        table_layout.addWidget(self.table_preview)
-        layout.addWidget(self.table_group)
-        metadata_layout = QVBoxLayout(self.metadata_group)
-        metadata_layout.addWidget(self.metadata_table)
-        metadata_layout.addWidget(self.history_title)
-        metadata_layout.addWidget(self.history_label)
-        layout.addWidget(self.metadata_group)
 
-        actions = QHBoxLayout()
-        actions.addWidget(self.pin_button)
-        actions.addWidget(self.save_button)
-        layout.addLayout(actions)
+        colocalization_input_histograms_layout = QVBoxLayout(
+            self.colocalization_input_histograms_panel
+        )
+        colocalization_input_histograms_layout.setContentsMargins(0, 0, 0, 0)
+        colocalization_input_histograms_layout.setSpacing(5)
+        colocalization_input_histograms_layout.addWidget(
+            self.colocalization_histogram_note
+        )
+        channel_histograms_row = QWidget()
+        self.colocalization_channel_histograms_layout = QBoxLayout(
+            QBoxLayout.LeftToRight,
+            channel_histograms_row,
+        )
+        channel_histograms_layout = self.colocalization_channel_histograms_layout
+        channel_histograms_layout.setContentsMargins(0, 0, 0, 0)
+        channel_histograms_layout.setSpacing(5)
+        channel_1_layout = QVBoxLayout(
+            self.colocalization_channel_1_histogram_group
+        )
+        channel_1_layout.addWidget(self.colocalization_channel_1_histogram_plot)
+        channel_2_layout = QVBoxLayout(
+            self.colocalization_channel_2_histogram_group
+        )
+        channel_2_layout.addWidget(self.colocalization_channel_2_histogram_plot)
+        channel_histograms_layout.addWidget(
+            self.colocalization_channel_1_histogram_group,
+            1,
+        )
+        channel_histograms_layout.addWidget(
+            self.colocalization_channel_2_histogram_group,
+            1,
+        )
+        colocalization_input_histograms_layout.addWidget(channel_histograms_row)
+        self._sync_inspector_responsive_layout()
+        histogram_layout = QVBoxLayout(self.histogram_group)
+        histogram_layout.setContentsMargins(0, 0, 0, 0)
+        histogram_layout.addWidget(self.histogram_semantic_summary)
+        histogram_layout.addWidget(self.histogram_plot)
+        histogram_layout.addWidget(self.histogram_result_plot)
+
+        measurement_object_size_layout = QVBoxLayout(
+            self.measurement_object_size_histogram_group
+        )
+        measurement_object_size_layout.setContentsMargins(0, 0, 0, 0)
+        measurement_object_size_layout.addWidget(
+            self.measurement_object_size_histogram_status
+        )
+        measurement_object_size_layout.addWidget(
+            self.measurement_object_size_histogram_plot
+        )
+        measurement_intensity_layout = QVBoxLayout(
+            self.measurement_intensity_histogram_group
+        )
+        measurement_intensity_layout.setContentsMargins(0, 0, 0, 0)
+        measurement_intensity_layout.addWidget(
+            self.measurement_intensity_histogram_status
+        )
+        measurement_intensity_layout.addWidget(
+            self.measurement_intensity_histogram_plot
+        )
+
+        histograms_layout = QVBoxLayout(self.histograms_section.content_widget)
+        histograms_layout.setContentsMargins(7, 5, 7, 7)
+        histograms_layout.setSpacing(6)
+        histograms_layout.addWidget(self.histogram_interaction_hint)
+        self.histogram_controls_row = QWidget()
+        self.histogram_controls_layout = QBoxLayout(
+            QBoxLayout.LeftToRight,
+            self.histogram_controls_row,
+        )
+        self.histogram_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.histogram_controls_layout.setSpacing(8)
+        self.histogram_controls_label = QLabel("Histogram uses")
+        self.histogram_controls_layout.addWidget(self.histogram_controls_label)
+        self.histogram_controls_layout.addWidget(self.histogram_scope_combo, 1)
+        self.histogram_controls_layout.addWidget(self.histogram_value_combo, 1)
+        self.histogram_controls_layout.addWidget(self.histogram_log_checkbox)
+        self.histogram_controls_layout.addWidget(self.histogram_popout_button)
+        histograms_layout.addWidget(self.histogram_controls_row)
+        # Retain the former row attributes for external integrations while
+        # making it impossible for input/output controls to diverge.
+        self.histogram_scope_row = self.histogram_controls_row
+        self.rescale_input_histogram_scope_row = self.histogram_controls_row
+        histograms_layout.addWidget(self.colocalization_input_histograms_panel)
+        self.histogram_panels_row = QWidget()
+        self.histogram_panels_layout = QBoxLayout(
+            QBoxLayout.LeftToRight,
+            self.histogram_panels_row,
+        )
+        self.histogram_panels_layout.setContentsMargins(0, 0, 0, 0)
+        self.histogram_panels_layout.setSpacing(6)
+        self.histogram_panels_layout.addWidget(
+            self.measurement_object_size_histogram_group,
+            1,
+        )
+        self.histogram_panels_layout.addWidget(
+            self.measurement_intensity_histogram_group,
+            1,
+        )
+        self.histogram_panels_layout.addWidget(
+            self.rescale_input_histogram_group,
+            1,
+        )
+        self.histogram_panels_layout.addWidget(self.histogram_group, 1)
+        histograms_layout.addWidget(self.histogram_panels_row)
+        self._sync_inspector_responsive_layout()
+
+        mask_summary_layout = QVBoxLayout(self.mask_summary_section.content_widget)
+        mask_summary_layout.setContentsMargins(7, 5, 7, 7)
+        mask_summary_layout.addWidget(self.mask_summary_label)
+
+        table_layout = QVBoxLayout(self.table_group.content_widget)
+        table_layout.setContentsMargins(7, 5, 7, 7)
+        table_actions_widget = QWidget()
+        self.table_actions_layout = QBoxLayout(
+            QBoxLayout.LeftToRight,
+            table_actions_widget,
+        )
+        self.table_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self.table_actions_layout.setSpacing(6)
+        self.table_actions_layout.addWidget(self.table_summary, 1)
+        self.table_actions_layout.addWidget(
+            self.table_calculate_button,
+            0,
+            Qt.AlignLeft,
+        )
+        self.table_actions_layout.addWidget(
+            self.table_popout_button,
+            0,
+            Qt.AlignLeft,
+        )
+        table_layout.addWidget(table_actions_widget)
+        table_layout.addWidget(self.table_preview)
+        self._sync_inspector_responsive_layout()
+
+        metadata_layout = QVBoxLayout(self.metadata_group.content_widget)
+        metadata_layout.setContentsMargins(7, 5, 7, 7)
+        metadata_layout.addWidget(self.metadata_table)
+        history_layout = QVBoxLayout(self.history_group.content_widget)
+        history_layout.setContentsMargins(7, 5, 7, 7)
+        history_layout.addWidget(self.history_rows_widget)
+        history_layout.addWidget(self.history_label)
+
+        writer_status_layout = QVBoxLayout(
+            self.writer_status_section.content_widget
+        )
+        writer_status_layout.setContentsMargins(7, 5, 7, 7)
+        writer_status_layout.addWidget(self.writer_status_label)
+        writer_status_layout.addWidget(self.batch_output_status_panel)
+
+        self._inspector_sections = {
+            PARAMETERS_SECTION: self.parameter_group,
+            SOURCE_REPRESENTATION_SECTION: self.source_representation_section,
+            OUTPUT_SELECTOR_SECTION: self.output_selector_section,
+            COLOCALIZATION_SECTION: self.colocalization_scatter_group,
+            LABEL_DISTRIBUTION_SECTION: self.label_volume_group,
+            TABLE_RESULTS_SECTION: self.table_group,
+            HISTOGRAMS_SECTION: self.histograms_section,
+            MASK_SUMMARY_SECTION: self.mask_summary_section,
+            WRITER_STATUS_SECTION: self.writer_status_section,
+            BEHAVIOR_SECTION: self.behavior_section,
+            COMPUTE_SECTION: self.compute_section,
+            METADATA_SECTION: self.metadata_group,
+            HISTORY_SECTION: self.history_group,
+        }
+        for section in self._inspector_sections.values():
+            layout.addWidget(section)
         layout.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Keep the content width stable while deferred diagnostic sections
+        # appear. A transient vertical bar used to move the form across its
+        # responsive breakpoint immediately after a node selection.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         scroll.setWidget(content)
-        scroll.setMinimumWidth(230)
+        self.inspector_viewport = scroll.viewport()
+        self.inspector_viewport.installEventFilter(self)
+        # The stacked histogram frame plus scroll-bar chrome requires roughly
+        # 240 px.  Advertise a truthful minimum because horizontal scrolling
+        # is intentionally disabled for the inspector.
+        scroll.setMinimumWidth(250)
         scroll.setMinimumHeight(0)
         scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
         return scroll
 
     def _connect_signals(self) -> None:
+        self.metadata_group.toggle_button.toggled.connect(
+            self._on_metadata_section_toggled
+        )
+        self.table_preview.horizontalScrollBar().rangeChanged.connect(
+            self._schedule_table_preview_geometry_sync
+        )
         self.new_workflow_button.clicked.connect(self._new_workflow_dialog)
         self.workflow_tab_bar.newTabRequested.connect(self._new_workflow_dialog)
         self.workflow_tab_bar.activateTabRequested.connect(
@@ -4053,6 +5659,9 @@ class VippWidget(QWidget):
         self.graph_zoom_reset_button.clicked.connect(self._reset_graph_zoom)
         self.view_dims_bar.value_changed.connect(self._on_view_dim_changed)
         self.calculate_button.clicked.connect(self._calculate_selected_node)
+        self.header_calculate_button.clicked.connect(
+            self._calculate_selected_node
+        )
         self.isolated_tuning_checkbox.toggled.connect(self._on_isolated_tuning_toggled)
         self.apply_isolated_tuning_button.clicked.connect(self._apply_isolated_tuning)
         self.cancel_isolated_tuning_button.clicked.connect(self._cancel_isolated_tuning)
@@ -4060,6 +5669,12 @@ class VippWidget(QWidget):
             self._on_auto_recalculate_toggled
         )
         self.pin_button.clicked.connect(lambda: self.pin_node(self._selected_node_id))
+        self.output_selector_combo.currentIndexChanged.connect(
+            self._on_inspector_output_selector_changed
+        )
+        self.save_all_outputs_button.clicked.connect(
+            self._save_all_selected_node_outputs_dialog
+        )
         self.reset_inspect_display_button.clicked.connect(
             self._reset_selected_inspect_display
         )
@@ -4069,11 +5684,11 @@ class VippWidget(QWidget):
         self.keep_cached_checkbox.toggled.connect(self._on_keep_cached_toggled)
         self.histogram_log_checkbox.toggled.connect(self._update_histogram)
         self.histogram_scope_combo.currentTextChanged.connect(self._update_histogram)
-        self.rescale_input_histogram_scope_combo.currentTextChanged.connect(
+        self.histogram_value_combo.currentTextChanged.connect(
             self._update_histogram
         )
-        self.rescale_input_histogram_log_checkbox.toggled.connect(
-            self._update_histogram
+        self.histogram_popout_button.clicked.connect(
+            self._open_histogram_dialog
         )
         self.rescale_input_histogram_plot.markerChanged.connect(
             self._on_input_histogram_marker_changed
@@ -4118,25 +5733,24 @@ class VippWidget(QWidget):
             self._on_colocalization_scatter_threshold_changed
         )
         self.colocalization_scatter_plot.gestureStarted.connect(
-            lambda: self._begin_selected_parameter_scrub(
-                "colocalization_threshold",
-                self.colocalization_scatter_plot,
+            lambda: self._begin_colocalization_threshold_scrub(
+                self.colocalization_scatter_plot
             )
         )
         self.colocalization_scatter_plot.gestureFinished.connect(
-            lambda: self._end_selected_parameter_scrub(
-                "colocalization_threshold",
-                self.colocalization_scatter_plot,
+            lambda: self._end_colocalization_threshold_scrub(
+                self.colocalization_scatter_plot
             )
         )
         self.colocalization_scatter_popout_button.clicked.connect(
             self._open_colocalization_scatter_dialog
         )
+        self.table_popout_button.clicked.connect(self._open_result_table_dialog)
+        self.table_calculate_button.clicked.connect(self._calculate_selected_node)
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
         self.save_button.clicked.connect(self._save_selected_output_dialog)
         self.left_panel_toggle.clicked.connect(self._toggle_left_panel)
         self.right_panel_toggle.clicked.connect(self._toggle_right_panel)
-        self.palette_search.textChanged.connect(self.palette.set_filter_text)
         self.graph_search_edit.textChanged.connect(self._on_graph_search_changed)
         self.graph_search_edit.returnPressed.connect(
             self._focus_next_graph_search_match
@@ -4145,8 +5759,12 @@ class VippWidget(QWidget):
             self._focus_next_graph_search_match
         )
 
-        self.palette.operation_requested.connect(self.add_node_from_palette)
+        self.palette_panel.operation_requested.connect(self.add_node_from_palette)
+        self.palette_panel.compact_requested.connect(
+            self._on_node_library_compact_requested
+        )
         self.graph_view.node_create_requested.connect(self._add_node_at)
+        self.graph_view.node_append_requested.connect(self._append_node_to_output)
         self.graph_view.node_insert_requested.connect(self._insert_node_on_connection)
         self.graph_view.connection_insert_requested.connect(
             self._insert_node_from_connection_menu
@@ -4845,6 +6463,7 @@ class VippWidget(QWidget):
         self._sync_node_compute_control()
         self._sync_isolated_tuning_ui()
         if node_id == self._selected_node_id:
+            self._sync_inspector_presentation()
             self._schedule_selected_viewer_refresh(node_id, select_layer=True)
         mode_label = "Bypass" if self.pipeline.node_is_bypassed(node_id) else "Run"
         primary_phrase = self._node_bypass_primary_input_phrase(operation)
@@ -4881,6 +6500,8 @@ class VippWidget(QWidget):
             with QSignalBlocker(self.node_bypass_checkbox):
                 self.node_bypass_checkbox.setChecked(False)
             self.parameter_group.setEnabled(True)
+            self.parameter_form_widget.setEnabled(True)
+            self.auto_contrast_group.setEnabled(True)
             return
 
         bypassed = self.pipeline.node_is_bypassed(node_id)
@@ -4889,7 +6510,10 @@ class VippWidget(QWidget):
             self.node_bypass_checkbox.setChecked(bypassed)
         self.node_bypass_checkbox.setEnabled(enabled)
         self.node_bypass_checkbox.setToolTip(tooltip)
-        self.parameter_group.setEnabled(not bypassed)
+        keep_tuning_actions_enabled = self._isolated_tuning_node_id is not None
+        self.parameter_group.setEnabled(not bypassed or keep_tuning_actions_enabled)
+        self.parameter_form_widget.setEnabled(not bypassed)
+        self.auto_contrast_group.setEnabled(not bypassed)
 
     @staticmethod
     def _node_bypass_primary_input_phrase(operation) -> str:
@@ -6880,11 +8504,32 @@ class VippWidget(QWidget):
             kind = ComputeBadgeKind.CPU_FALLBACK
         elif decision.runtime_id == "cpu-numpy":
             kind = ComputeBadgeKind.CPU
+        elif node.operation_id == "measure_3d_mesh_morphology":
+            kind = ComputeBadgeKind.HYBRID
         elif "cucim" in decision.implementation_library_id.casefold():
             kind = ComputeBadgeKind.CUCIM
         else:
             kind = ComputeBadgeKind.CUPY
         tooltip = presentation.tooltip
+        if kind in {ComputeBadgeKind.CPU, ComputeBadgeKind.CPU_FALLBACK} and (
+            compute_specs_for(
+                node.operation_id,
+                include_cpu=False,
+                allow_experimental=False,
+            )
+        ):
+            tooltip += (
+                " This badge reports the backend used for this accepted result, "
+                "not every available implementation. This operation also has a "
+                "GPU implementation for eligible inputs; the decision above "
+                "explains why this calculation used CPU."
+            )
+        if kind is ComputeBadgeKind.HYBRID:
+            tooltip += (
+                " The GPU discovers objects and packs their tight crops; exact "
+                "Lewiner marching-cubes is finalized on CPU; Qhull convex-hull "
+                "geometry is also finalized there when convex-hull metrics are enabled."
+            )
         if batch_decision:
             authored_mode = node.execution_mode.capitalize()
             tooltip += (
@@ -7040,13 +8685,29 @@ class VippWidget(QWidget):
             tone = summary.tone
         self.compute_status_label.setText(status_text)
         self.compute_status_label.setToolTip(tooltip)
-        colors = {
-            ComputePresentationTone.NEUTRAL: ("#1f2937", "#cbd5e1", "#475569"),
-            ComputePresentationTone.CPU: ("#1f2937", "#e2e8f0", "#64748b"),
-            ComputePresentationTone.GPU: ("#064e3b", "#bbf7d0", "#10b981"),
-            ComputePresentationTone.FALLBACK: ("#78350f", "#fde68a", "#f59e0b"),
+        palette_colors = theme_colors(QWidget.palette(self))
+        neutral = (
+            palette_colors.alternate_surface,
+            palette_colors.text,
+            palette_colors.border,
+        )
+        status_colors = {
+            ComputePresentationTone.NEUTRAL: neutral,
+            ComputePresentationTone.CPU: neutral,
+            ComputePresentationTone.GPU: (
+                palette_colors.success.surface,
+                palette_colors.success.foreground,
+                palette_colors.success.border,
+            ),
+            ComputePresentationTone.FALLBACK: (
+                palette_colors.warning.surface,
+                palette_colors.warning.foreground,
+                palette_colors.warning.border,
+            ),
         }
-        background, foreground, border = colors[tone]
+        background, foreground, border = (
+            color.name() for color in status_colors[tone]
+        )
         self.compute_status_label.setStyleSheet(
             "QLabel#ComputeStatusPill {"
             f" background: {background}; color: {foreground};"
@@ -7410,9 +9071,11 @@ class VippWidget(QWidget):
             "_input_histogram_cache": {},
             "_input_histogram_distribution_cache": {},
             "_label_volume_cache": {},
+            "_property_filter_value_cache": {},
             "_output_histogram_cache": {},
             "_colocalization_scatter_cache": {},
             "_colocalization_scatter_density_cache": {},
+            "_inspector_output_port_by_node": {},
             "_accepted_compute_decisions": {},
             "_compute_decision_environments": {},
             "_compute_repair_suggestions": {},
@@ -7433,6 +9096,9 @@ class VippWidget(QWidget):
             "_pipeline_optimizer_baseline": None,
             "_pipeline_optimizer_source_signature": None,
             "_colocalization_scatter_dialog": None,
+            "_histogram_dialog": None,
+            "_histogram_dialog_node_id": "",
+            "_result_table_dialog": None,
             "_tunnel_manager_dialog": None,
             "_live_source_adapter": self._new_tab_live_source_adapter(
                 session.session_id
@@ -7524,6 +9190,8 @@ class VippWidget(QWidget):
             self._thumbnail_contrast_busy_visible = False
         if self._active_input_histogram_run_id is None:
             self._pending_input_histogram_request = None
+        if self._active_label_volume_run_id is None:
+            self._pending_label_volume_request = None
         if self._active_output_histogram_run_id is None:
             self._pending_output_histogram_request = None
         if self._active_colocalization_scatter_run_id is None:
@@ -7543,6 +9211,8 @@ class VippWidget(QWidget):
         if (
             self._active_input_histogram_run_id is not None
             or self._pending_input_histogram_request is not None
+            or self._active_label_volume_run_id is not None
+            or self._pending_label_volume_request is not None
             or self._active_output_histogram_run_id is not None
             or self._pending_output_histogram_request is not None
         ):
@@ -7734,6 +9404,7 @@ class VippWidget(QWidget):
         # Preview workers and layers are presentation-only globals. Cancel and
         # remove them at the central activation seam so direct/internal tab
         # switches cannot mistake another tab's common input id for their own.
+        self._cancel_selected_inspector_refresh()
         self._cancel_selected_viewer_refresh()
         self._invalidate_source_preview(remove_layer=True)
         self._discard_crop_draft(remove_layers=True)
@@ -7749,6 +9420,8 @@ class VippWidget(QWidget):
                 "_node_benchmark_dialog",
                 "_pipeline_optimizer_dialog",
                 "_colocalization_scatter_dialog",
+                "_histogram_dialog",
+                "_result_table_dialog",
                 "_tunnel_manager_dialog",
             ):
                 dialog = getattr(self, name, None)
@@ -7950,6 +9623,12 @@ class VippWidget(QWidget):
         self._active_input_histogram_run_id = None
         self._pending_input_histogram_request = None
         self._current_input_histogram_key = None
+        self._active_label_volume_run_id = None
+        self._active_label_volume_key = None
+        self._active_label_volume_cancel_event = None
+        self._active_label_volume_request = None
+        self._pending_label_volume_request = None
+        self._current_label_volume_key = None
         self._active_output_histogram_run_id = None
         self._pending_output_histogram_request = None
         self._current_output_histogram_key = None
@@ -8209,6 +9888,59 @@ class VippWidget(QWidget):
         if node_id in self.pipeline.nodes:
             self._begin_parameter_slider_scrub(node_id, name, control)
 
+    def _begin_colocalization_threshold_scrub(self, control: QWidget) -> None:
+        """Keep the decision surface stationary for one threshold gesture."""
+
+        self._begin_selected_parameter_scrub("colocalization_threshold", control)
+        self._lock_colocalization_inspector_geometry()
+
+    def _lock_colocalization_inspector_geometry(self) -> None:
+        if self._colocalization_inspector_height_lock:
+            return
+        candidates = [
+            getattr(self, "inspector_content", None),
+            getattr(self, "inspector_header_panel", None),
+            *getattr(self, "_inspector_sections", {}).values(),
+            getattr(self, "colocalization_scatter_summary", None),
+            getattr(self, "colocalization_scatter_plot", None),
+        ]
+        snapshots: list[tuple[QWidget, int, int]] = []
+        seen: set[int] = set()
+        for widget in candidates:
+            if (
+                not isinstance(widget, QWidget)
+                or id(widget) in seen
+                or widget.isHidden()
+                or widget.height() <= 0
+            ):
+                continue
+            seen.add(id(widget))
+            snapshots.append(
+                (widget, widget.minimumHeight(), widget.maximumHeight())
+            )
+        if not snapshots:
+            return
+        self._colocalization_inspector_height_lock = tuple(snapshots)
+        self._colocalization_inspector_sync_deferred = False
+        panel = getattr(self, "inspector_panel", None)
+        self._colocalization_inspector_scroll_value = (
+            panel.verticalScrollBar().value()
+            if isinstance(panel, QScrollArea)
+            else None
+        )
+        layout = getattr(self, "_inspector_layout", None)
+        if layout is not None:
+            self._colocalization_inspector_layout_was_enabled = layout.isEnabled()
+            layout.setEnabled(False)
+        for widget, _minimum, _maximum in snapshots:
+            widget.setFixedHeight(widget.height())
+
+    def _restore_colocalization_inspector_scroll(self) -> None:
+        value = self._colocalization_inspector_scroll_value
+        panel = getattr(self, "inspector_panel", None)
+        if value is not None and isinstance(panel, QScrollArea):
+            panel.verticalScrollBar().setValue(value)
+
     def _end_selected_parameter_scrub(
         self,
         name: str,
@@ -8219,6 +9951,46 @@ class VippWidget(QWidget):
             self._end_parameter_slider_scrub(active[1], active[2], control)
             return
         self._end_parameter_slider_scrub(self._selected_node_id, name, control)
+
+    def _end_colocalization_threshold_scrub(self, control: QWidget) -> None:
+        self._end_selected_parameter_scrub("colocalization_threshold", control)
+        self._release_colocalization_inspector_geometry()
+
+    def _release_colocalization_inspector_geometry(self) -> None:
+        """Restore normal inspector layout after a scatter interaction ends."""
+
+        snapshots = self._colocalization_inspector_height_lock
+        if not snapshots:
+            return
+        deferred = self._colocalization_inspector_sync_deferred
+        scroll_value = self._colocalization_inspector_scroll_value
+        self._colocalization_inspector_height_lock = ()
+        self._colocalization_inspector_sync_deferred = False
+        self._colocalization_inspector_scroll_value = None
+        for widget, minimum, maximum in reversed(snapshots):
+            if not isalive(widget):
+                continue
+            widget.setMaximumHeight(maximum)
+            widget.setMinimumHeight(minimum)
+            widget.updateGeometry()
+        layout = getattr(self, "_inspector_layout", None)
+        layout_was_enabled = self._colocalization_inspector_layout_was_enabled
+        self._colocalization_inspector_layout_was_enabled = None
+        if layout is not None and layout_was_enabled is not None:
+            layout.setEnabled(layout_was_enabled)
+        if deferred:
+            self._sync_inspector_presentation()
+        panel = getattr(self, "inspector_panel", None)
+        if scroll_value is not None and isinstance(panel, QScrollArea):
+            panel.verticalScrollBar().setValue(scroll_value)
+            QTimer.singleShot(
+                0,
+                lambda value=scroll_value, panel=panel: (
+                    panel.verticalScrollBar().setValue(value)
+                    if isalive(panel)
+                    else None
+                ),
+            )
 
     def _finish_parameter_history_group(
         self,
@@ -8231,6 +10003,7 @@ class VippWidget(QWidget):
         active isolated-tuning session first. This keeps Cancel from restoring
         execution dictionaries and history stacks captured for an older graph.
         """
+        self._release_colocalization_inspector_geometry()
         if not self._crop_draft_committing:
             self._commit_crop_draft(schedule_run=False)
         self._active_parameter_slider_scrub = None
@@ -8439,6 +10212,8 @@ class VippWidget(QWidget):
                     target_params,
                 )
             self._reconcile_bulk_parameter_change(node_id, changed_names)
+            if live_node.operation_id == "intensity_histogram":
+                self._sync_histogram_dialog_calculation_parameters(node_id)
             self._sync_node_execution_mode_ui()
             if execution_mode_changed and live_node.operation_id == "crop_stack":
                 self._update_crop_roi_presentation(node_id)
@@ -8489,6 +10264,7 @@ class VippWidget(QWidget):
             and self._restore_parameter_history_snapshot(current_snapshot, snapshot)
         ):
             return
+        self._cancel_selected_inspector_refresh()
         self._cancel_selected_viewer_refresh()
         self._discard_crop_draft(remove_layers=True)
         self._supersede_interaction_for_untraced_edit(
@@ -8508,6 +10284,12 @@ class VippWidget(QWidget):
             self._remember_current_inspect_display_profiles()
             self._discard_inspect_layers()
             self._clear_thumbnail_statistics_presentations()
+            if self._histogram_dialog is not None:
+                # A full graph restore can reuse a node id for a different
+                # logical node.  Do not let a detached window keep an ambiguous
+                # owner across that replacement.
+                self._histogram_dialog.close()
+                self._histogram_dialog_node_id = ""
             pinned_layer = self._active_pinned_layer()
             if pinned_layer is not None:
                 self._remove_layer(pinned_layer)
@@ -8585,6 +10367,10 @@ class VippWidget(QWidget):
                 self.graph_view.select_node(selected)
             else:
                 self._select_first_available_node()
+            if self._histogram_dialog_node_id in self.pipeline.nodes:
+                self._sync_histogram_dialog_calculation_parameters(
+                    self._histogram_dialog_node_id
+                )
 
     def _sync_history_actions(self) -> None:
         blocked = self._compute_policy_edit_block_reason()
@@ -8614,6 +10400,177 @@ class VippWidget(QWidget):
         if abs(correction.x()) > 0.25 or abs(correction.y()) > 0.25:
             self.graph_view.centerOn(target + correction)
 
+    def _schedule_node_library_responsive_sync(self) -> None:
+        timer = getattr(self, "_node_library_sync_timer", None)
+        if timer is not None and not timer.isActive():
+            timer.start(0)
+
+    def _on_main_splitter_moved(self, _position: int, index: int) -> None:
+        if self._node_library_adjusting_splitter or self.palette_panel.isHidden():
+            return
+        self.palette_panel.dismiss_popup()
+        if index != 1:
+            self._schedule_node_library_responsive_sync()
+            return
+        sizes = self._current_splitter_sizes()
+        left = sizes[0]
+        if self.palette_panel.is_compact:
+            if left >= self.NODE_LIBRARY_EXPAND_TRIGGER_WIDTH:
+                self._node_library_user_compact = False
+                if self._node_library_has_expanded_room(sizes):
+                    self._node_library_auto_reason = None
+                    self._node_library_last_expanded_width = left
+                    self._left_panel_last_width = left
+                    self.palette_panel.set_compact(False)
+                else:
+                    self._node_library_auto_reason = "space"
+        elif left <= self.NODE_LIBRARY_COMPACT_TRIGGER_WIDTH:
+            self._node_library_user_compact = None
+            self._node_library_auto_reason = "width"
+            self.palette_panel.set_compact(True)
+            self._set_node_library_splitter_width(self.palette_panel.COMPACT_WIDTH)
+        elif left >= self.palette_panel.EXPANDED_MINIMUM_WIDTH:
+            self._node_library_last_expanded_width = left
+            self._left_panel_last_width = left
+        self._schedule_node_library_responsive_sync()
+
+    def _on_node_library_compact_requested(
+        self,
+        compact: bool,
+    ) -> None:
+        sizes = self._current_splitter_sizes()
+        if compact:
+            if sizes[0] >= self.palette_panel.EXPANDED_MINIMUM_WIDTH:
+                self._node_library_last_expanded_width = sizes[0]
+                self._left_panel_last_width = sizes[0]
+            self._node_library_user_compact = True
+            self._node_library_auto_reason = None
+            self._set_node_library_splitter_width(self.palette_panel.COMPACT_WIDTH)
+        else:
+            self._node_library_user_compact = False
+            if not self._node_library_has_expanded_room(sizes):
+                self._node_library_auto_reason = "space"
+                self.palette_panel.set_compact(True)
+                QTimer.singleShot(
+                    0,
+                    self._open_node_library_popup_for_narrow_layout,
+                )
+                self.status_label.setText(
+                    "The dock is too narrow for the labelled node tree; opened "
+                    "the full searchable node list instead."
+                )
+            else:
+                self._node_library_auto_reason = None
+                self.palette_panel.set_compact(False)
+                self._set_node_library_splitter_width(
+                    self._node_library_expanded_target_width(sizes)
+                )
+        self._schedule_node_library_responsive_sync()
+
+    def _open_node_library_popup_for_narrow_layout(self) -> None:
+        if (
+            self._closing
+            or self.palette_panel.isHidden()
+            or not self.palette_panel.is_compact
+        ):
+            return
+        self.palette_panel.open_global_search(
+            self.palette_panel.compact_rail.expand_button
+        )
+
+    def _node_library_available_width(self, sizes: list[int] | None = None) -> int:
+        current = self._current_splitter_sizes() if sizes is None else sizes
+        total = self.splitter.width() if self.splitter.width() > 0 else sum(current)
+        handles = max(self.splitter.handleWidth(), 0) * 2
+        return max(
+            total - current[2] - handles - self.NODE_LIBRARY_GRAPH_MINIMUM_WIDTH,
+            0,
+        )
+
+    def _node_library_has_expanded_room(
+        self,
+        sizes: list[int] | None = None,
+    ) -> bool:
+        return (
+            self._node_library_available_width(sizes)
+            >= self.palette_panel.EXPANDED_MINIMUM_WIDTH
+        )
+
+    def _node_library_expanded_target_width(
+        self,
+        sizes: list[int] | None = None,
+    ) -> int:
+        available = self._node_library_available_width(sizes)
+        desired = max(
+            self._node_library_last_expanded_width,
+            self.palette_panel.EXPANDED_MINIMUM_WIDTH,
+        )
+        return min(desired, max(available, self.palette_panel.EXPANDED_MINIMUM_WIDTH))
+
+    def _set_node_library_splitter_width(self, width: int) -> None:
+        if not hasattr(self, "splitter") or self.palette_panel.isHidden():
+            return
+        sizes = self._current_splitter_sizes()
+        total = self.splitter.width() if self.splitter.width() > 0 else sum(sizes)
+        target = max(int(width), self.palette_panel.COMPACT_WIDTH)
+        right = sizes[2]
+        middle = max(total - target - right, 1)
+        self._node_library_adjusting_splitter = True
+        try:
+            self.splitter.setSizes([target, middle, right])
+        finally:
+            self._node_library_adjusting_splitter = False
+
+    def _sync_node_library_responsive_mode(self) -> None:
+        if (
+            not hasattr(self, "splitter")
+            or self.palette_panel.isHidden()
+            or self._node_library_adjusting_splitter
+        ):
+            return
+        sizes = self._current_splitter_sizes()
+        left, _middle, _right = sizes
+        room_for_expanded = self._node_library_has_expanded_room(sizes)
+
+        if self._node_library_user_compact is True:
+            desired_compact = True
+        elif not room_for_expanded:
+            desired_compact = True
+            self._node_library_auto_reason = "space"
+        elif self._node_library_user_compact is False:
+            desired_compact = False
+        elif self.palette_panel.is_compact:
+            desired_compact = (
+                self._node_library_auto_reason == "width"
+                and left < self.NODE_LIBRARY_EXPAND_TRIGGER_WIDTH
+            )
+        else:
+            desired_compact = left <= self.NODE_LIBRARY_COMPACT_TRIGGER_WIDTH
+            if desired_compact:
+                self._node_library_auto_reason = "width"
+
+        if desired_compact == self.palette_panel.is_compact:
+            if (
+                not desired_compact
+                and left >= self.palette_panel.EXPANDED_MINIMUM_WIDTH
+            ):
+                self._node_library_last_expanded_width = left
+                self._left_panel_last_width = left
+            return
+
+        if desired_compact:
+            if left >= self.palette_panel.EXPANDED_MINIMUM_WIDTH:
+                self._node_library_last_expanded_width = left
+                self._left_panel_last_width = left
+            self.palette_panel.set_compact(True)
+            self._set_node_library_splitter_width(self.palette_panel.COMPACT_WIDTH)
+        else:
+            self._node_library_auto_reason = None
+            self.palette_panel.set_compact(False)
+            self._set_node_library_splitter_width(
+                self._node_library_expanded_target_width(sizes)
+            )
+
     def _set_left_panel_visible(self, visible: bool) -> None:
         self._set_side_panel_visible("left", visible)
 
@@ -8625,8 +10582,12 @@ class VippWidget(QWidget):
         if side == "left":
             widget = self.palette_panel
             index = 0
-            if not visible and sizes[index] > 0:
+            if (
+                not visible
+                and sizes[index] >= self.palette_panel.EXPANDED_MINIMUM_WIDTH
+            ):
                 self._left_panel_last_width = sizes[index]
+                self._node_library_last_expanded_width = sizes[index]
         else:
             widget = self.inspector_panel
             index = 2
@@ -8636,9 +10597,10 @@ class VippWidget(QWidget):
         widget.setVisible(visible)
         self._apply_splitter_panel_sizes()
         self._sync_side_panel_toggles()
-        action = "shown" if visible else "hidden"
-        panel = "node library" if side == "left" else "inspector"
-        self.status_label.setText(f"{panel.capitalize()} {action}.")
+        self._schedule_node_library_responsive_sync()
+        if side == "right":
+            action = "shown" if visible else "hidden"
+            self.status_label.setText(f"Inspector {action}.")
 
     def _current_splitter_sizes(self) -> list[int]:
         sizes = self.splitter.sizes()
@@ -8649,7 +10611,12 @@ class VippWidget(QWidget):
     def _apply_splitter_panel_sizes(self) -> None:
         current = self._current_splitter_sizes()
         total = max(sum(current), sum(self._default_splitter_sizes))
-        left = 0 if self.palette_panel.isHidden() else self._left_panel_last_width
+        if self.palette_panel.isHidden():
+            left = 0
+        elif self.palette_panel.is_compact:
+            left = self.palette_panel.COMPACT_WIDTH
+        else:
+            left = self._node_library_last_expanded_width
         right = 0 if self.inspector_panel.isHidden() else self._right_panel_last_width
         middle = max(total - left - right, 320)
         self.splitter.setSizes([left, middle, right])
@@ -8729,6 +10696,90 @@ class VippWidget(QWidget):
             self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Added '{node.title}'.")
+        return node
+
+    def _append_node_to_output(
+        self,
+        operation_id: str,
+        source_id: str,
+        source_port: int,
+        _drop_position,
+    ) -> object | None:
+        """Add and connect a palette node after one terminal output atomically."""
+
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        input_index, reason = self._append_node_input_plan(
+            operation_id,
+            source_id,
+            source_port,
+        )
+        if input_index is None:
+            self.status_label.setText(reason)
+            return None
+
+        try:
+            position = self.graph_view.suggest_append_position(source_id)
+            node = self.pipeline.add_node(operation_id)
+            self.graph_view.add_node(node, position)
+            self._sync_node_input_ports(node.id)
+            self._sync_node_output_ports(node.id)
+
+            # Re-resolve against the instantiated node so dynamic input layouts
+            # cannot make the hover preview disagree with the actual connection.
+            resolved_input, reason = self._append_node_input_plan(
+                operation_id,
+                source_id,
+                source_port,
+                inserted_node_id=node.id,
+            )
+            if resolved_input is None:
+                raise RuntimeError(reason)
+            result = self.pipeline.connect(
+                source_id,
+                node.id,
+                target_port=resolved_input,
+                source_port=source_port,
+            )
+            if not result.success:
+                raise RuntimeError(result.message)
+            self._apply_connection_result_to_graph(result)
+            self._sync_node_output_ports(node.id)
+            self._sync_input_node_subtitle(node.id)
+            self.graph_view.select_node(node.id)
+            self._sync_pin_ui()
+            self._refresh_graph_search_matches(reset_index=True)
+            if self._mark_pipeline_dirty(node.id):
+                self.run_pipeline()
+            self._push_undo_if_changed(before)
+        except Exception as exc:
+            self._restore_history_snapshot(before)
+            self._set_status(
+                f"Append failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return None
+
+        source_ports = self.pipeline.output_ports(source_id)
+        input_ports = self.pipeline.input_ports(node.id)
+        source_label = (
+            str(
+                source_ports[int(source_port)].label
+                or f"Output {int(source_port) + 1}"
+            )
+            if 0 <= int(source_port) < len(source_ports)
+            else f"Output {int(source_port) + 1}"
+        )
+        input_label = (
+            str(input_ports[resolved_input].label or f"Input {resolved_input + 1}")
+            if 0 <= resolved_input < len(input_ports)
+            else f"Input {resolved_input + 1}"
+        )
+        self.status_label.setText(
+            f"Added '{node.title}' after '{self._node_title(source_id)}' and "
+            f"connected {source_label} to {input_label}."
+        )
         return node
 
     def _insert_node_on_connection(
@@ -9719,6 +11770,96 @@ class VippWidget(QWidget):
             )
         return "incompatible", reason
 
+    def _append_node_input_plan(
+        self,
+        operation_id: str,
+        source_id: str,
+        source_port: int,
+        *,
+        inserted_node_id: str | None = None,
+    ) -> tuple[int | None, str]:
+        """Resolve the input used when a palette node is dropped on an endpoint."""
+
+        try:
+            spec = self.pipeline.operation_spec(operation_id)
+        except Exception as exc:
+            return None, f"Cannot add that node here: {exc}"
+        if source_id not in self.pipeline.nodes:
+            return None, "The branch endpoint no longer exists."
+        source_ports = self.pipeline.output_ports(source_id)
+        if not 0 <= int(source_port) < len(source_ports):
+            return None, "The branch endpoint output no longer exists."
+        if any(
+            connection.source_id == source_id
+            and connection.source_port == int(source_port)
+            for connection in self.pipeline.connections
+        ):
+            return None, "That output already feeds another node."
+        if (
+            self.pipeline.output_tunnel_for_port(source_id, int(source_port))
+            is not None
+        ):
+            return None, "That output is already exposed through an output tunnel."
+
+        input_ports = self._operation_insert_input_ports(
+            spec,
+            inserted_node_id=inserted_node_id,
+        )
+        if not input_ports:
+            return None, f"'{spec.title}' does not accept an upstream input."
+
+        source_type = source_ports[int(source_port)].output_type
+        normal_source_type = (
+            self.pipeline._normal_output_type(source_id, int(source_port))
+            if self.pipeline.node_is_bypassed(source_id)
+            else source_type
+        )
+        compatible_inputs = [
+            index
+            for index, port in enumerate(input_ports)
+            if self.pipeline._types_compatible(source_type, port.input_type)
+            and self.pipeline._types_compatible(normal_source_type, port.input_type)
+        ]
+        if not compatible_inputs:
+            source_description = source_type
+            if normal_source_type != source_type:
+                source_description += f" (normal output {normal_source_type})"
+            return (
+                None,
+                f"Cannot feed {source_description} output into '{spec.title}'.",
+            )
+
+        # Appending has no downstream mapping to preserve. The first compatible
+        # declared input is therefore the operation's primary input; any other
+        # inputs remain available for the user to connect afterwards.
+        return compatible_inputs[0], ""
+
+    def _node_append_preview_state(
+        self,
+        operation_id: str,
+        source_id: str,
+        source_port: int,
+    ) -> tuple[str, str]:
+        input_index, reason = self._append_node_input_plan(
+            operation_id,
+            source_id,
+            source_port,
+        )
+        if input_index is None:
+            return "incompatible", reason
+        try:
+            spec = self.pipeline.operation_spec(operation_id)
+            input_port = self._operation_insert_input_ports(spec)[input_index]
+            input_label = str(input_port.label or f"Input {input_index + 1}")
+            source_title = self._node_title(source_id)
+        except Exception as exc:
+            return "incompatible", f"Cannot add that node here: {exc}"
+        return (
+            "compatible",
+            f"Drop to add '{spec.title}' after '{source_title}' and connect "
+            f"its {input_label} input.",
+        )
+
     def _connection_insert_mode(
         self,
         operation_id: str,
@@ -10546,6 +12687,19 @@ class VippWidget(QWidget):
             "spatial_mode",
         }:
             self._update_label_volume_histogram()
+        if node.operation_id == "remove_small_objects" and changed & {
+            "min_size",
+            "spatial_mode",
+            "connectivity",
+        }:
+            self._update_label_volume_histogram()
+        if node.operation_id == "filter_labels_by_property" and changed & {
+            "property_column",
+            "min_value",
+            "max_value",
+            "keep_mode",
+        }:
+            self._update_label_volume_histogram()
         if node.operation_id in INPUT_HISTOGRAM_OPERATIONS:
             self._update_rescale_input_histogram(node_id, self._current_step())
 
@@ -10557,14 +12711,17 @@ class VippWidget(QWidget):
         dialog.setWindowTitle(f"VIPP node code: {self._node_title(node_id)}")
         dialog.setAttribute(Qt.WA_DeleteOnClose, True)
         layout = QVBoxLayout(dialog)
-        editor = QPlainTextEdit()
+        editor = _PaletteAwarePythonCodeEditor()
         editor.setReadOnly(True)
         editor.setLineWrapMode(QPlainTextEdit.NoWrap)
         editor.setPlainText(self._node_code_text(node_id))
         editor.setStyleSheet(
             "font-family: Menlo, Monaco, Consolas, monospace; font-size: 12px;"
         )
-        editor._vipp_python_highlighter = PythonSyntaxHighlighter(editor.document())
+        editor._vipp_python_highlighter = PythonSyntaxHighlighter(
+            editor.document(),
+            palette=editor.palette(),
+        )
         layout.addWidget(editor)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.clicked.connect(lambda _button: dialog.accept())
@@ -10860,6 +13017,8 @@ class VippWidget(QWidget):
             "_node_benchmark_dialog",
             "_pipeline_optimizer_dialog",
             "_colocalization_scatter_dialog",
+            "_histogram_dialog",
+            "_result_table_dialog",
             "_tunnel_manager_dialog",
         ):
             dialog = session.runtime_cache.get(name)
@@ -14031,7 +16190,9 @@ class VippWidget(QWidget):
                 continue
             raw_path = str(params.get("file_path", "")).strip()
             if raw_path:
-                params["file_path"] = str(Path(raw_path).expanduser().resolve())
+                params["file_path"] = str(
+                    normalize_local_image_source_path(raw_path)
+                )
         return workflow
 
     def _collection_batch_config(
@@ -14471,6 +16632,7 @@ class VippWidget(QWidget):
         self.pipeline.mark_manual_descendants_stale(valid_node_ids)
         self._sync_execution_ui()
         self._refresh_node_presentation_surfaces(cleared_overrides)
+        self._refresh_histogram_dialog_from_owner(affected_node_ids)
         self._mark_collection_batch_workflow_stale_if_needed()
         return True
 
@@ -14508,6 +16670,7 @@ class VippWidget(QWidget):
         self._isolated_tuning_has_changes = True
         self._sync_execution_ui()
         self._refresh_node_presentation_surfaces(cleared_overrides)
+        self._refresh_histogram_dialog_from_owner(descendants | {node_id})
         self._mark_collection_batch_workflow_stale_if_needed()
         return True
 
@@ -14526,24 +16689,61 @@ class VippWidget(QWidget):
             return
         self._start_isolated_tuning(node_id)
 
-    def _start_isolated_tuning(self, node_id: str) -> bool:
-        if node_id not in self.pipeline.nodes:
-            self._sync_isolated_tuning_ui()
+    def _node_supports_isolated_tuning(self, node_id: str) -> bool:
+        """Whether isolated tuning is a meaningful capability for this node."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
             return False
-        if self._isolated_tuning_node_id is not None:
-            self.status_label.setText(
-                "Finish the current isolated tuning session with Apply and "
-                "continue or Cancel tuning first."
+        operation = self.pipeline.operation_spec(node.operation_id)
+        if (
+            operation.function is None
+            or operation.id in {"input", "save_output", "batch_output"}
+        ):
+            return False
+        ports = self.pipeline.output_ports(node_id)
+        if ports and all(port.output_type == "table" for port in ports):
+            return False
+        return bool(self.pipeline.node_parameter_specs(node_id))
+
+    def _node_isolation_action_state(
+        self,
+        node_id: str,
+    ) -> tuple[bool, bool, str]:
+        """Return permanent capability and temporary isolated-tuning state."""
+
+        active_node_id = self._isolated_tuning_node_id
+        if node_id == active_node_id and node_id in self.pipeline.nodes:
+            return (
+                True,
+                True,
+                "Apply the latest isolated result and continue downstream, or "
+                "use Cancel tuning to restore the previous result.",
             )
-            self._sync_isolated_tuning_ui()
-            return False
+        if not self._node_supports_isolated_tuning(node_id):
+            return False, False, ""
+        if active_node_id is not None:
+            return (
+                True,
+                False,
+                f"'{self._node_title(active_node_id)}' is already being tuned. "
+                "Apply or cancel that session before isolating another node.",
+            )
+        if self.pipeline.node_is_bypassed(node_id):
+            return (
+                True,
+                False,
+                "Bypassed nodes have no active parameters to tune. Clear "
+                "Bypass node first.",
+            )
         descendants = self.pipeline.descendants_inclusive({node_id}) - {node_id}
         if not descendants:
-            self.status_label.setText(
-                f"'{self._node_title(node_id)}' has no downstream nodes to pause."
+            return (
+                True,
+                False,
+                "This node has no downstream branch to pause. Connect its "
+                "output before using isolated tuning.",
             )
-            self._sync_isolated_tuning_ui()
-            return False
         if (
             self._active_pipeline_run_id is not None
             or self._active_source_load_id is not None
@@ -14555,22 +16755,39 @@ class VippWidget(QWidget):
                 )
             )
         ):
-            self.status_label.setText(
-                "Wait for the current calculation or source load to finish before "
-                "starting isolated tuning."
+            return (
+                True,
+                False,
+                "Wait for the current calculation or source load to finish "
+                "before starting isolated tuning.",
             )
-            self._sync_isolated_tuning_ui()
-            return False
         if (
             self._last_pipeline_source_signature is None
             or self._pending_dirty_node_ids
             or self._inflight_dirty_node_ids is not None
             or not self.pipeline._has_cached_output(node_id)
         ):
-            self.status_label.setText(
-                "Calculate the current graph before starting isolated tuning so "
-                "Cancel tuning has a coherent result to restore."
+            return (
+                True,
+                False,
+                "Calculate the current graph first so Cancel tuning has a "
+                "coherent result to restore.",
             )
+        return (
+            True,
+            True,
+            "Recalculate only this node while you tune its parameters. "
+            "Downstream nodes stay stale until Apply and continue.",
+        )
+
+    def _start_isolated_tuning(self, node_id: str) -> bool:
+        if node_id == self._isolated_tuning_node_id:
+            self._sync_isolated_tuning_ui()
+            return False
+        visible, enabled, tooltip = self._node_isolation_action_state(node_id)
+        if not visible or not enabled:
+            if tooltip:
+                self.status_label.setText(tooltip)
             self._sync_isolated_tuning_ui()
             return False
 
@@ -14599,7 +16816,9 @@ class VippWidget(QWidget):
         )
         self._isolated_tuning_node_id = node_id
         self._isolated_tuning_has_changes = False
+        self.parameter_group.setExpanded(True)
         self._sync_isolated_tuning_ui()
+        self._sync_inspector_presentation()
         self.status_label.setText(
             f"Tuning '{self._node_title(node_id)}' in isolation. Downstream "
             "propagation will pause after the first parameter change."
@@ -14746,45 +16965,19 @@ class VippWidget(QWidget):
             self._isolated_tuning_snapshot = None
             self._isolated_tuning_has_changes = False
         selected_node_id = self._selected_node_id
-        has_downstream = bool(
-            selected_node_id in self.pipeline.nodes
-            and (
-                self.pipeline.descendants_inclusive({selected_node_id})
-                - {selected_node_id}
-            )
+        visible, enabled, tooltip = self._node_isolation_action_state(
+            selected_node_id
         )
-        selected_bypassed = self.pipeline.node_is_bypassed(selected_node_id)
+        self.isolated_tuning_checkbox.setVisible(visible)
         with QSignalBlocker(self.isolated_tuning_checkbox):
             self.isolated_tuning_checkbox.setChecked(
                 active_node_id is not None and selected_node_id == active_node_id
             )
-        self.isolated_tuning_checkbox.setEnabled(
-            bool(
-                selected_node_id in self.pipeline.nodes
-                and not selected_bypassed
-                and (
-                    selected_node_id == active_node_id
-                    or (active_node_id is None and has_downstream)
-                )
-            )
-        )
-        if selected_bypassed:
-            self.isolated_tuning_checkbox.setToolTip(
-                "Bypassed nodes have no active parameters to tune. Clear Bypass "
-                "node to enable isolated tuning."
-            )
-        elif active_node_id is not None and selected_node_id != active_node_id:
-            self.isolated_tuning_checkbox.setToolTip(
-                f"'{self._node_title(active_node_id)}' is already being tuned. "
-                "Apply or cancel that session before isolating another node."
-            )
-        else:
-            self.isolated_tuning_checkbox.setToolTip(
-                "Recalculate only this node while you tune its parameters. "
-                "Downstream nodes stay stale until Apply and continue."
-            )
+        self.isolated_tuning_checkbox.setEnabled(enabled)
+        self.isolated_tuning_checkbox.setToolTip(tooltip)
         self.isolated_tuning_panel.setVisible(active_node_id is not None)
         if active_node_id is not None:
+            status_messages = self._isolated_tuning_status_messages(active_node_id)
             state, _message = self._node_execution_ui_state(active_node_id)
             result_in_flight = bool(
                 self._active_pipeline_run_id is not None
@@ -14792,20 +16985,19 @@ class VippWidget(QWidget):
                 and active_node_id in self._inflight_dirty_node_ids
             )
             if not self._isolated_tuning_has_changes:
-                suffix = " Change a parameter to begin local recalculation."
+                status_index = 0
             elif result_in_flight or state == EXECUTION_RUNNING:
-                suffix = " Recalculating this node; downstream remains held."
+                status_index = 1
             elif state == EXECUTION_ERROR:
-                suffix = " Local calculation failed; fix the node or cancel tuning."
+                status_index = 2
             elif state == EXECUTION_READY:
-                suffix = " Latest local result is ready to apply."
+                status_index = 3
             else:
-                suffix = " Local result is waiting to be recalculated."
-            self.isolated_tuning_status.setText(
-                f"Downstream paused after '{self._node_title(active_node_id)}'.{suffix}"
-            )
+                status_index = 4
+            self.isolated_tuning_status.setText(status_messages[status_index])
         self.graph_view.set_isolated_tuning_node(active_node_id)
         self._sync_node_execution_mode_ui()
+        self._sync_inspector_responsive_layout()
 
     def _invalidate_pipeline_cache(self) -> None:
         if self._isolated_tuning_node_id is not None:
@@ -14820,7 +17012,7 @@ class VippWidget(QWidget):
         self._clear_thumbnail_contrast_limit_state()
         self._clear_input_histogram_cache()
         self._clear_output_histogram_cache()
-        self._label_volume_cache.clear()
+        self._clear_label_volume_cache()
         self._clear_colocalization_scatter_cache()
         self._clear_generated_layer_contrast_state()
         self.pipeline.completed_node_ids.clear()
@@ -15095,6 +17287,7 @@ class VippWidget(QWidget):
         self._update_metadata_panel()
         self._update_histogram()
         self._sync_execution_ui()
+        self._sync_inspector_presentation()
         self._refresh_cache_status()
         self.status_label.setText(f"Cache mode set to {self._cache_mode()}.")
 
@@ -15171,6 +17364,17 @@ class VippWidget(QWidget):
             nodes.add(self._selected_node_id)
         if self._active_pinned_node_id in self.pipeline.nodes:
             nodes.add(str(self._active_pinned_node_id))
+        histogram_dialog = self._histogram_dialog
+        if (
+            histogram_dialog is not None
+            and histogram_dialog.isVisible()
+            and self._histogram_dialog_node_id in self.pipeline.nodes
+        ):
+            # A detached histogram is an active scientific presentation even
+            # while its owner is not selected.  Retain that node's accepted
+            # result so background publication can refresh the window without
+            # routing through the selected inspector.
+            nodes.add(str(self._histogram_dialog_node_id))
         return nodes
 
     def _direct_input_cache_nodes(self, node_ids: set[str]) -> set[str]:
@@ -15249,6 +17453,7 @@ class VippWidget(QWidget):
         self._update_metadata_panel()
         self._update_histogram()
         self._sync_execution_ui()
+        self._sync_inspector_presentation()
         message = (
             "Memory guard switched cache mode to Smart interactive cache. "
             f"{reason} Mark critical intermediates with Keep output cached if "
@@ -15437,7 +17642,7 @@ class VippWidget(QWidget):
         self._clear_thumbnail_contrast_limit_state()
         self._clear_input_histogram_cache()
         self._clear_output_histogram_cache()
-        self._label_volume_cache.clear()
+        self._clear_label_volume_cache()
         self._clear_generated_layer_contrast_state()
         active_run_id = self._active_pipeline_run_id
         if active_run_id is not None:
@@ -15898,7 +18103,7 @@ class VippWidget(QWidget):
             return None
         if not path_text:
             return None
-        return Path(path_text).expanduser().resolve(strict=False)
+        return normalize_local_image_source_path(path_text)
 
     def _cached_file_source_payload(self, node) -> SourcePayload | None:
         key = self._file_source_cache_key(node)
@@ -16539,7 +18744,7 @@ class VippWidget(QWidget):
         return replace(state, axes=axes)
 
     def _inspect_source_file(self, path: str) -> SourceInspection | None:
-        source_path = Path(path).expanduser().resolve(strict=False)
+        source_path = validate_local_image_source_path(path)
         cache_key = str(source_path)
         cached = self._source_inspection_cache.get(cache_key)
         if cached is not None:
@@ -17004,6 +19209,9 @@ class VippWidget(QWidget):
         }
         if self._selected_node_id in relevant_node_ids:
             self._refresh_selected_parameter_controls()
+        self._refresh_selected_connected_inputs(
+            changed_node_id=tunnel.source_id
+        )
         if self._mark_pipeline_branches_dirty(subscriber_ids):
             self.run_pipeline()
         self._push_undo_if_changed(before)
@@ -17041,6 +19249,10 @@ class VippWidget(QWidget):
         )
         self.graph_view.clear_tunnel_highlight(sticky=True)
         if removed:
+            for target_id in {connection.target_id for connection in removed}:
+                self._refresh_selected_connected_inputs(
+                    changed_node_id=target_id
+                )
             self._mark_pipeline_branches_dirty(
                 {connection.target_id for connection in removed}
             )
@@ -17066,6 +19278,7 @@ class VippWidget(QWidget):
             affected.add(result.connection.source_id)
         if self._selected_node_id in affected:
             self._refresh_selected_parameter_controls()
+        self._refresh_selected_connected_inputs(changed_node_id=node_id)
         if self._mark_pipeline_dirty(node_id):
             self.run_pipeline()
         self._push_undo_if_changed(before)
@@ -17086,6 +19299,7 @@ class VippWidget(QWidget):
             self._refresh_split_channel_display_surfaces({connection.source_id})
             if self._selected_node_id in {node_id, connection.source_id}:
                 self._refresh_selected_parameter_controls()
+            self._refresh_selected_connected_inputs(changed_node_id=node_id)
             if self._mark_pipeline_dirty(node_id):
                 self.run_pipeline()
             self._push_undo_if_changed(before)
@@ -17147,6 +19361,7 @@ class VippWidget(QWidget):
         self._sync_node_output_ports(target_id)
         if self._selected_node_id in {source_id, target_id}:
             self._refresh_selected_parameter_controls()
+            self._sync_inspector_presentation()
         if self._mark_pipeline_dirty(target_id):
             self.run_pipeline()
         self._push_undo_if_changed(before)
@@ -17165,6 +19380,7 @@ class VippWidget(QWidget):
             self._refresh_split_channel_display_surfaces({source_id})
             if self._selected_node_id in {source_id, target_id}:
                 self._refresh_selected_parameter_controls()
+                self._sync_inspector_presentation()
             if self._mark_pipeline_dirty(target_id):
                 self.run_pipeline()
             self._push_undo_if_changed(before)
@@ -17190,6 +19406,16 @@ class VippWidget(QWidget):
         )
         deleted = set(ordered_ids)
         selected_was_deleted = self._selected_node_id in deleted
+        if (
+            self._result_table_dialog is not None
+            and self._result_table_dialog.context_key is not None
+            and self._result_table_dialog.context_key[0] in deleted
+        ):
+            self._result_table_dialog.close()
+        if self._histogram_dialog_node_id in deleted:
+            if self._histogram_dialog is not None:
+                self._histogram_dialog.close()
+            self._histogram_dialog_node_id = ""
         if self._isolated_tuning_node_id in deleted:
             self._apply_isolated_tuning(run=False, announce=False)
         self._finish_parameter_history_group()
@@ -17227,6 +19453,7 @@ class VippWidget(QWidget):
             self._preview_disabled_node_ids.discard(node_id)
             self._source_preview_errors.pop(node_id, None)
             self._source_view_modes.pop(node_id, None)
+            self._inspector_output_port_by_node.pop(node_id, None)
             deleted_dismissals = tuple(
                 key
                 for key in self._source_memory_crop_dismissals
@@ -17266,6 +19493,12 @@ class VippWidget(QWidget):
             self._clear_active_pin(status=False)
         if selected_was_deleted:
             self._select_first_available_node()
+        elif self._selected_node_id in dirty_targets:
+            # Removing an upstream node also removes its graph edges. Keep the
+            # still-selected target's input card and metadata-dependent
+            # controls synchronized with that disconnected state.
+            self._refresh_selected_parameter_controls()
+            self._sync_inspector_presentation()
         if self._mark_pipeline_branches_dirty(dirty_targets):
             self.run_pipeline()
         self._sync_execution_ui()
@@ -17333,11 +19566,14 @@ class VippWidget(QWidget):
         self._clear_node_inspector_selection()
 
     def _clear_node_inspector_selection(self) -> None:
+        self._cancel_selected_inspector_refresh()
         self._commit_crop_draft(schedule_run=True)
         self._discard_crop_draft(remove_layers=False)
         self._set_crop_presentation_layers_visible(False)
         self._selected_node_id = ""
         self.selected_title.setText("No node selected")
+        self.selected_operation_icon.clear()
+        self.selected_category_label.clear()
         self._clear_parameter_form()
         self._refresh_batch_effective_parameter_panel()
         self.parameter_group.setHidden(True)
@@ -17353,6 +19589,75 @@ class VippWidget(QWidget):
         """Invalidate any queued selection-bound napari presentation update."""
 
         self._selected_viewer_refresh_generation += 1
+
+    def _cancel_selected_inspector_refresh(self) -> None:
+        """Invalidate queued secondary work for an earlier node selection."""
+
+        self._selected_inspector_refresh_generation += 1
+
+    def _schedule_selected_inspector_refresh(
+        self,
+        node_id: str,
+        *,
+        select_layer: bool,
+    ) -> None:
+        """Finish one graph-click selection after Qt can paint its new form."""
+
+        self._selected_inspector_refresh_generation += 1
+        generation = self._selected_inspector_refresh_generation
+        QTimer.singleShot(
+            SELECTION_INSPECTOR_REFRESH_DELAY_MS,
+            lambda: self._finish_selected_inspector_refresh(
+                generation,
+                node_id,
+                select_layer=select_layer,
+            ),
+        )
+
+    def _finish_selected_inspector_refresh(
+        self,
+        generation: int,
+        node_id: str,
+        *,
+        select_layer: bool,
+    ) -> None:
+        """Populate secondary inspector surfaces for only the latest selection."""
+
+        if (
+            self._closing
+            or generation != self._selected_inspector_refresh_generation
+            or node_id != self._selected_node_id
+        ):
+            return
+        if self.graph_view.node_drag_in_progress():
+            # The title and parameters are already current. Keep metadata,
+            # viewer publication, connected summaries, and diagnostics out of
+            # the pointer-critical path; the same generation resumes after the
+            # drag releases without rebuilding the form.
+            QTimer.singleShot(
+                SELECTION_INSPECTOR_REFRESH_DELAY_MS,
+                lambda: self._finish_selected_inspector_refresh(
+                    generation,
+                    node_id,
+                    select_layer=select_layer,
+                ),
+            )
+            return
+        self._selection_diagnostics_initializing = True
+        try:
+            self._refresh_selected_inspector_after_selection(
+                node_id,
+                select_layer=select_layer,
+            )
+        finally:
+            self._selection_diagnostics_initializing = False
+            if self._primed_diagnostic_node_id == node_id:
+                # Viewer or metadata work can fail before histogram dispatch.
+                # Selection ownership still guarantees that a placeholder can
+                # never remain busy indefinitely in that case.
+                self._primed_diagnostic_node_id = ""
+                self._primed_diagnostic_sections = frozenset()
+                self._sync_inspector_diagnostic_busy_state()
 
     def _schedule_selected_viewer_refresh(
         self,
@@ -17388,30 +19693,297 @@ class VippWidget(QWidget):
             or node_id != self._selected_node_id
         ):
             return
-        self._refresh_selected_viewer_now(node_id, select_layer=select_layer)
+        dims_changed = self._refresh_selected_viewer_now(
+            node_id,
+            select_layer=select_layer,
+        )
+        if dims_changed and not self._closing and node_id == self._selected_node_id:
+            self._on_dims_changed()
 
     def _refresh_selected_viewer_now(
         self,
         node_id: str,
         *,
         select_layer: bool,
-    ) -> None:
+    ) -> bool:
         """Synchronize viewer layers outside a graph mouse-press callback."""
 
+        dims_changed = False
         if node_id:
             self._selected_viewer_refresh_in_progress = True
             try:
                 self._inspect_selected_node()
             finally:
                 self._selected_viewer_refresh_in_progress = False
+                dims_changed = self._selected_viewer_dims_refresh_pending
+                self._selected_viewer_dims_refresh_pending = False
             if self._closing or node_id != self._selected_node_id:
-                return
+                return dims_changed
         self._apply_selected_viewer_surface(select_layer=select_layer)
         if node_id:
             self._update_crop_roi_presentation(node_id)
             self._restore_selected_output_for_interactive_cache(node_id)
+        return dims_changed
+
+    def _refresh_selected_inspector_after_selection(
+        self,
+        node_id: str,
+        *,
+        select_layer: bool,
+    ) -> None:
+        """Populate the non-form selection surfaces for ``node_id``."""
+
+        if self._closing or node_id != self._selected_node_id:
+            return
+        dims_changed = self._refresh_selected_viewer_now(
+            node_id,
+            select_layer=select_layer,
+        )
+        if self._closing or node_id != self._selected_node_id:
+            return
+        if dims_changed and self._dims_linked():
+            self._capture_vipp_dims_from_viewer()
+            self._sync_view_dims_bar()
+            self._update_thumbnails()
+            self._source_preview_dims_timer.start()
+        else:
+            self._sync_view_dims_bar()
+        self._update_metadata_panel()
+        try:
+            self._update_histogram()
+        finally:
+            if self._primed_diagnostic_node_id == node_id:
+                # Request-key ownership takes over once this node's first
+                # diagnostic pass has either queued work or found a cached
+                # result. A failed pass must not leave an indefinite spinner.
+                self._primed_diagnostic_node_id = ""
+                self._primed_diagnostic_sections = frozenset()
+            self._sync_inspector_diagnostic_busy_state()
+        self._sync_execution_ui()
+        self._sync_isolated_tuning_ui()
+        self._sync_node_compute_control()
+        self._sync_inspector_presentation()
+        self._sync_current_workflow_tab_state()
+
+    def _prime_selected_inspector_diagnostics(self, node_id: str) -> None:
+        """Reserve slow evidence surfaces before their calculations begin."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return
+        profile = self._inspector_profile_for_node(node_id)
+        if profile is None:
+            return
+        for section in (
+            self.label_volume_group,
+            self.histograms_section,
+            self.colocalization_scatter_group,
+            self.table_group,
+        ):
+            section.setBusy(False)
+
+        primary = set(profile.primary_sections)
+        primed_sections: set[str] = set()
+        display_data, _display_state, _display_port = self._node_display_payload(
+            node_id
+        )
+        input_data = self.pipeline.input_data_for_node(node_id)
+        if LABEL_DISTRIBUTION_SECTION in primary:
+            is_filter = node.operation_id in {
+                "filter_labels_by_volume",
+                "remove_small_objects",
+            }
+            if node.operation_id == "remove_small_objects":
+                self.label_volume_group.setTitle("Input Object Size Distribution")
+                self.label_volume_log_checkbox.setText("Log size axis")
+                self.label_volume_interaction_hint.setText(
+                    "Drag the minimum marker to tune the retained object size."
+                )
+            elif is_filter:
+                self.label_volume_group.setTitle("Input Object Volume Distribution")
+                self.label_volume_log_checkbox.setText("Log volume axis")
+                self.label_volume_interaction_hint.setText(
+                    "Drag the minimum and maximum markers to tune the retained "
+                    "object volume range."
+                )
+            else:
+                self.label_volume_group.setTitle("Object Size Distribution")
+                self.label_volume_log_checkbox.setText("Log volume axis")
+            data = (
+                input_data
+                if is_filter
+                else display_data
+            )
+            self.label_volume_group.show()
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            self.label_volume_interaction_hint.setVisible(is_filter)
+            self.label_volume_log_checkbox.setVisible(data is not None)
+            self.label_volume_log_checkbox.setEnabled(False)
+            if data is None:
+                self.label_volume_summary.setText(
+                    "No connected object input."
+                    if is_filter
+                    else "No label output yet."
+                )
+                self.label_volume_group.setSummary("Waiting for data")
+            else:
+                self.label_volume_summary.setText("Loading object distribution…")
+                self.label_volume_group.setSummary("Loading…")
+                self.label_volume_group.setBusy(
+                    True,
+                    minimum_content_height=INSPECTOR_LABEL_LOADING_CONTENT_HEIGHT,
+                )
+                primed_sections.add(LABEL_DISTRIBUTION_SECTION)
+
+        measurement_distributions = node.operation_id in {
+            "measure_objects",
+            "measure_objects_intensity",
+        }
+        histogram_data_available = display_data is not None or input_data is not None
+        if (
+            HISTOGRAMS_SECTION in primary or measurement_distributions
+        ) and histogram_data_available:
+            self.histograms_section.show()
+            self.histograms_section.setSummary("Loading…")
+            self.histograms_section.setBusy(
+                True,
+                minimum_content_height=INSPECTOR_HISTOGRAM_LOADING_CONTENT_HEIGHT,
+            )
+            primed_sections.add(HISTOGRAMS_SECTION)
+
+        if (
+            COLOCALIZATION_SECTION in primary
+            and self._colocalization_inputs_for_node(node_id) is not None
+        ):
+            self.colocalization_scatter_group.show()
+            self.colocalization_scatter_group.setSummary("Loading…")
+            self.colocalization_scatter_group.setBusy(
+                True,
+                minimum_content_height=INSPECTOR_SCATTER_LOADING_CONTENT_HEIGHT,
+            )
+            primed_sections.add(COLOCALIZATION_SECTION)
+
+        if TABLE_RESULTS_SECTION in primary and is_table_data(display_data):
+            self.table_group.show()
+            self.table_summary.setText("Loading results…")
+            self.table_group.setSummary("Loading…")
+            self.table_group.setBusy(True, minimum_content_height=80)
+            primed_sections.add(TABLE_RESULTS_SECTION)
+
+        self._primed_diagnostic_node_id = node_id if primed_sections else ""
+        self._primed_diagnostic_sections = frozenset(primed_sections)
+
+    @staticmethod
+    def _diagnostic_request_matches(current_key, active_key, pending) -> bool:
+        return bool(
+            current_key is not None
+            and (
+                active_key == current_key
+                or (pending is not None and pending.key == current_key)
+            )
+        )
+
+    def _sync_inspector_diagnostic_busy_state(self) -> None:
+        """Keep loading indicators owned by the current request keys only."""
+
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        profile = (
+            self._inspector_profile_for_node(node.id) if node is not None else None
+        )
+        if profile is None:
+            for section in (
+                self.label_volume_group,
+                self.histograms_section,
+                self.colocalization_scatter_group,
+                self.table_group,
+            ):
+                section.setBusy(False)
+            return
+
+        label_busy = self._diagnostic_request_matches(
+            self._current_label_volume_key,
+            self._active_label_volume_key,
+            self._pending_label_volume_request,
+        )
+        input_busy = self._diagnostic_request_matches(
+            self._current_input_histogram_key,
+            self._active_input_histogram_key,
+            self._pending_input_histogram_request,
+        )
+        output_busy = self._diagnostic_request_matches(
+            self._current_output_histogram_key,
+            self._active_output_histogram_key,
+            self._pending_output_histogram_request,
+        )
+        scatter_busy = self._diagnostic_request_matches(
+            self._current_colocalization_scatter_key,
+            self._active_colocalization_scatter_key,
+            self._pending_colocalization_scatter_request,
+        )
+        measurement_distributions = node.operation_id in {
+            "measure_objects",
+            "measure_objects_intensity",
+        }
+        primed = self._primed_diagnostic_node_id == node.id
+        primed_sections = (
+            self._primed_diagnostic_sections if primed else frozenset()
+        )
+        primed_label = LABEL_DISTRIBUTION_SECTION in primed_sections
+        primed_histograms = HISTOGRAMS_SECTION in primed_sections
+        primed_scatter = COLOCALIZATION_SECTION in primed_sections
+        primed_table = TABLE_RESULTS_SECTION in primed_sections
+        effective_label_busy = label_busy or primed_label
+        label_section_busy = effective_label_busy and not measurement_distributions
+        histogram_section_busy = bool(
+            input_busy
+            or output_busy
+            or primed_histograms
+            or (label_busy and measurement_distributions)
+        )
+        scatter_section_busy = scatter_busy or primed_scatter
+        self.label_volume_group.setBusy(
+            label_section_busy,
+            minimum_content_height=INSPECTOR_LABEL_LOADING_CONTENT_HEIGHT,
+        )
+        self.label_volume_log_checkbox.setEnabled(not effective_label_busy)
+        self.histograms_section.setBusy(
+            histogram_section_busy,
+            minimum_content_height=INSPECTOR_HISTOGRAM_LOADING_CONTENT_HEIGHT,
+        )
+        self.colocalization_scatter_group.setBusy(
+            scatter_section_busy,
+            minimum_content_height=INSPECTOR_SCATTER_LOADING_CONTENT_HEIGHT,
+        )
+        # Table construction is synchronous but deliberately follows the
+        # parameter form's first paint. Keep the primed state authoritative
+        # until that first deferred pass starts.
+        self.table_group.setBusy(primed_table, minimum_content_height=80)
+        if label_section_busy:
+            self.label_volume_group.show()
+        if histogram_section_busy:
+            self.histograms_section.show()
+        if scatter_section_busy:
+            self.colocalization_scatter_group.show()
+        if primed_table:
+            self.table_group.show()
 
     def _clear_empty_inspector(self) -> None:
+        self._primed_diagnostic_node_id = ""
+        self._primed_diagnostic_sections = frozenset()
+        self._current_input_histogram_key = None
+        self._pending_input_histogram_request = None
+        if self._active_input_histogram_cancel_event is not None:
+            self._active_input_histogram_cancel_event.set()
+        self._current_label_volume_key = None
+        self._pending_label_volume_request = None
+        if self._active_label_volume_cancel_event is not None:
+            self._active_label_volume_cancel_event.set()
+        self._current_output_histogram_key = None
+        self._pending_output_histogram_request = None
+        self._current_colocalization_scatter_key = None
+        self._pending_colocalization_scatter_request = None
+        if self._active_colocalization_scatter_cancel_event is not None:
+            self._active_colocalization_scatter_cancel_event.set()
         self.node_bypass_checkbox.setHidden(True)
         with QSignalBlocker(self.node_bypass_checkbox):
             self.node_bypass_checkbox.setChecked(False)
@@ -17420,10 +19992,15 @@ class VippWidget(QWidget):
         self.compute_group.setHidden(True)
         self._sync_thumbnail_statistics_inspector()
         self.metadata_table.setRowCount(0)
+        self._metadata_summary_text = ""
+        self._sync_metadata_table_geometry()
         self.table_group.setHidden(True)
+        self.table_summary.clear()
         self.table_preview.setRowCount(0)
         self.table_preview.setColumnCount(0)
+        self.table_popout_button.setEnabled(False)
         self.history_label.setText("No history yet.")
+        self._render_history_rows(())
         self.label_volume_group.setHidden(True)
         self.label_volume_plot.set_histogram(None, log_scale=False)
         self.colocalization_scatter_group.setHidden(True)
@@ -17432,24 +20009,752 @@ class VippWidget(QWidget):
         self.colocalization_scatter_plot.clear()
         self._displayed_colocalization_scatter_density_key = None
         self.rescale_input_histogram_group.setHidden(True)
-        self.rescale_input_histogram_scope_row.setHidden(True)
         self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+        self.measurement_object_size_histogram_group.hide()
+        self.measurement_object_size_histogram_status.clear()
+        self.measurement_object_size_histogram_status.hide()
+        self.measurement_object_size_histogram_plot.set_histogram(
+            None,
+            log_scale=False,
+        )
+        self.measurement_intensity_histogram_group.hide()
+        self.measurement_intensity_histogram_status.clear()
+        self.measurement_intensity_histogram_status.hide()
+        self.measurement_intensity_histogram_plot.set_histogram(
+            None,
+            log_scale=False,
+        )
+        self._measurement_object_size_source = None
         self.histogram_group.setTitle("Output Histogram")
-        self.histogram_scope_row.setHidden(True)
+        self.histogram_semantic_summary.clear()
+        self.histogram_semantic_summary.hide()
+        self.mask_summary_label.setText("No mask output yet.")
+        self.mask_summary_section.hide()
+        self.colocalization_input_histograms_panel.hide()
+        self.colocalization_channel_1_histogram_plot.set_histogram(
+            None,
+            log_scale=False,
+        )
+        self.colocalization_channel_2_histogram_plot.set_histogram(
+            None,
+            log_scale=False,
+        )
+        self.histogram_controls_row.setHidden(True)
         self.histogram_plot.set_histogram(None, log_scale=False)
+        self.histogram_result_plot.clear()
+        self.histogram_result_plot.hide()
+        self.histogram_plot.show()
+        self.histogram_value_combo.hide()
+        self.histogram_popout_button.setEnabled(False)
+        self.histogram_popout_button.hide()
+        self.histogram_log_checkbox.setText("Log scale")
         self.keep_cached_checkbox.setVisible(False)
         self.keep_cached_checkbox.setEnabled(False)
         with QSignalBlocker(self.keep_cached_checkbox):
             self.keep_cached_checkbox.setChecked(False)
         self._sync_isolated_tuning_ui()
+        self.pin_button.hide()
+        self.save_button.hide()
+        self.save_all_outputs_button.hide()
+        self.header_calculate_button.hide()
+        self.connected_inputs_panel.hide()
+        self.histogram_interaction_hint.hide()
+        for section in getattr(self, "_inspector_sections", {}).values():
+            section.setBusy(False)
+            section.hide()
+
+    def _sync_inspector_presentation(self) -> None:
+        """Apply node-specific inspector order without changing node science."""
+
+        if self._colocalization_inspector_height_lock:
+            self._colocalization_inspector_sync_deferred = True
+            self._restore_colocalization_inspector_scroll()
+            return
+
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is None:
+            self._clear_empty_inspector()
+            return
+        spec = self.pipeline.operation_spec(node.operation_id)
+        profile = self._inspector_profile_for_node(node.id)
+        self._active_inspector_profile = profile
+        self._sync_inspector_header(spec)
+        self._sync_connected_inputs_ui(profile)
+        self._sync_source_representation_ui(profile)
+        self._sync_output_selector_ui(profile)
+        self._sync_writer_status_ui(profile)
+        self._sync_histogram_interaction_hint()
+        self._sync_output_actions_ui(profile)
+        self.header_calculate_button.setVisible(
+            profile.execution_is_manual and not self.calculate_button.isHidden()
+        )
+        self.header_calculate_button.setEnabled(
+            profile.execution_is_manual and self.calculate_button.isEnabled()
+        )
+        self.parameter_group.setTitle(
+            "Workflow parameters"
+            if not self.batch_effective_parameter_group.isHidden()
+            else profile.parameter_title
+        )
+        authored_parameter_names = {
+            parameter.name
+            for parameter in self.pipeline.node_parameter_specs(node.id)
+        }
+        if node.operation_id == "crop_stack":
+            authored_parameter_names.add(CROP_ROI_LINE_WIDTH_SCALE_PARAM)
+        parameter_count = sum(
+            name in self._parameter_widgets for name in authored_parameter_names
+        )
+        # Rendering can attach contextual guidance to the compact Parameters
+        # summary (for example, a sole preserved channel-axis setting).  Keep
+        # that guidance distinct from the visible value-count summary: the
+        # generic ``setSummary`` call quite reasonably uses its text as the
+        # default tooltip, but must not overwrite the more useful explanation.
+        parameter_summary_guidance = str(
+            self.parameter_group.summary_label.property(
+                "vippParameterSummaryGuidance"
+            )
+            or ""
+        ).strip()
+        self.parameter_group.setSummary(
+            f"{parameter_count} "
+            f"{'value' if parameter_count == 1 else 'values'}"
+            if parameter_count
+            else ""
+        )
+        if parameter_summary_guidance:
+            self.parameter_group.summary_label.setToolTip(
+                parameter_summary_guidance
+            )
+            self.parameter_group.summary_label.setAccessibleDescription(
+                parameter_summary_guidance
+            )
+
+        measurement_distributions = node.operation_id in {
+            "measure_objects",
+            "measure_objects_intensity",
+        }
+        self.histograms_section.setTitle(
+            "Input distributions"
+            if measurement_distributions
+            else "Histogram"
+            if node.operation_id == "intensity_histogram"
+            else "Histograms"
+        )
+
+        section_order = list(profile.section_order)
+        display_data, _display_state, _display_port = self._node_display_payload(
+            node.id
+        )
+        if is_table_data(display_data) and TABLE_RESULTS_SECTION not in section_order:
+            try:
+                results_index = section_order.index(WRITER_STATUS_SECTION)
+            except ValueError:
+                results_index = len(section_order)
+            section_order.insert(results_index, TABLE_RESULTS_SECTION)
+        if measurement_distributions and HISTOGRAMS_SECTION not in section_order:
+            try:
+                results_index = section_order.index(TABLE_RESULTS_SECTION)
+            except ValueError:
+                results_index = len(section_order)
+            section_order.insert(results_index, HISTOGRAMS_SECTION)
+
+        desired_sections: list[QWidget] = []
+        inserted_sections: set[int] = set()
+        for section_name in section_order:
+            section = self._inspector_sections.get(section_name)
+            if section is None:
+                continue
+            if id(section) in inserted_sections:
+                continue
+            desired_sections.append(section)
+            inserted_sections.add(id(section))
+        current_sections = [
+            item.widget()
+            for index in range(self._inspector_layout.count())
+            if (item := self._inspector_layout.itemAt(index)).widget()
+            in self._inspector_sections.values()
+        ]
+        if current_sections != desired_sections:
+            for section in self._inspector_sections.values():
+                self._inspector_layout.removeWidget(section)
+            for insertion_index, section in enumerate(desired_sections, start=1):
+                self._inspector_layout.insertWidget(insertion_index, section)
+
+        allowed = set(section_order)
+        _metadata_data, metadata_state, _metadata_port = self._node_display_payload(
+            node.id
+        )
+        history_entries = metadata_history_items(metadata_state)
+        behavior_visible = any(
+            not widget.isHidden()
+            for widget in (
+                self.thumbnail_checkbox,
+                self.thumbnail_contrast_status_panel,
+                self.keep_cached_checkbox,
+                self.isolated_tuning_checkbox,
+                self.node_bypass_checkbox,
+            )
+        )
+        primary_visibility = {
+            PARAMETERS_SECTION: (
+                not self.parameter_group.isHidden()
+                or not self.connected_inputs_panel.isHidden()
+                or not self.isolated_tuning_panel.isHidden()
+            ),
+            COLOCALIZATION_SECTION: (
+                not self.colocalization_scatter_group.isHidden()
+            ),
+            LABEL_DISTRIBUTION_SECTION: (
+                not self.label_volume_group.isHidden()
+            ),
+            TABLE_RESULTS_SECTION: not self.table_group.isHidden(),
+            HISTOGRAMS_SECTION: (
+                self.histograms_section.isBusy()
+                or not self.colocalization_input_histograms_panel.isHidden()
+                or not self.measurement_object_size_histogram_group.isHidden()
+                or not self.measurement_intensity_histogram_group.isHidden()
+                or not self.rescale_input_histogram_group.isHidden()
+                or not self.histogram_group.isHidden()
+            ),
+            MASK_SUMMARY_SECTION: not self.mask_summary_section.isHidden(),
+            SOURCE_REPRESENTATION_SECTION: (
+                not self.source_representation_section.isHidden()
+            ),
+            OUTPUT_SELECTOR_SECTION: (
+                profile.show_output_selector
+                and not self.output_selector_section.isHidden()
+            ),
+            WRITER_STATUS_SECTION: (
+                profile.output_action_kind == "none"
+                and not self.writer_status_section.isHidden()
+            ),
+            BEHAVIOR_SECTION: behavior_visible,
+            COMPUTE_SECTION: (
+                not self.execution_group.isHidden()
+                or not self.compute_repair_panel.isHidden()
+                or not self.compute_group.isHidden()
+            ),
+            METADATA_SECTION: True,
+            HISTORY_SECTION: bool(history_entries),
+        }
+        for section_name, section in self._inspector_sections.items():
+            section.setVisible(
+                section_name in allowed
+                and bool(primary_visibility.get(section_name, False))
+            )
+
+        self.table_group.setSummary(
+            "Loading…"
+            if self.table_group.isBusy()
+            else self.table_summary.text()
+            if not self.table_group.isHidden()
+            else ""
+        )
+        if node.operation_id == "intensity_histogram":
+            histogram_metadata = getattr(display_data, "histogram_metadata", None)
+            self.histograms_section.setSummary(
+                f"{int(histogram_metadata.bin_count):,} bins · "
+                f"{self.histogram_value_combo.currentText()}"
+                if histogram_metadata is not None
+                else "Not calculated"
+            )
+        elif measurement_distributions:
+            self.histograms_section.setSummary(
+                "Labels + intensity"
+                if node.operation_id == "measure_objects_intensity"
+                else "Labels"
+            )
+        elif not self.colocalization_input_histograms_panel.isHidden():
+            self.histograms_section.setSummary("Channel 1 + channel 2")
+        else:
+            input_visible = not self.rescale_input_histogram_group.isHidden()
+            output_visible = not self.histogram_group.isHidden()
+            output_kind = self._node_output_type(node.id)
+            if node.operation_id == "input" and output_visible:
+                histogram_summary = "Source data · Level 0"
+            elif input_visible and output_visible and output_kind == "mask":
+                histogram_summary = "Intensity → binary mask"
+            elif input_visible and output_visible:
+                histogram_summary = "Input + output · intensity"
+            elif input_visible:
+                histogram_summary = "Input · intensity"
+            elif output_visible and output_kind == "mask":
+                histogram_summary = "Output · binary mask"
+            elif output_visible:
+                histogram_summary = "Output · intensity"
+            else:
+                histogram_summary = ""
+            self.histograms_section.setSummary(histogram_summary)
+        metadata_count = self.metadata_table.rowCount()
+        self.metadata_group.setSummary(
+            self._metadata_summary_text
+            or (f"{metadata_count} fields" if metadata_count else "")
+        )
+        history_count = len(history_entries)
+        history_summary = (
+            f"{history_count} {'step' if history_count == 1 else 'steps'}"
+            if history_count
+            else ""
+        )
+        self.history_group.setSummary(history_summary)
+        behavior_summary = []
+        if (
+            not self.node_bypass_checkbox.isHidden()
+            and self.pipeline.node_is_bypassed(node.id)
+        ):
+            behavior_summary.append("Bypassed")
+        if (
+            self._node_supports_explicit_cache_retention(node.id)
+            and bool(node.params.get(CACHE_KEEP_NODE_PARAM, False))
+        ):
+            behavior_summary.append("Cached")
+        self.behavior_section.setSummary(" · ".join(behavior_summary))
+        self.compute_section.setSummary(
+            "Manual" if profile.execution_is_manual else "Automatic"
+        )
+        # Action text and visibility are node-specific, so their real size
+        # hints—not a coarse global breakpoint—must decide whether they stack.
+        self._sync_inspector_responsive_layout()
+
+    def _inspector_profile_for_node(self, node_id: str):
+        """Resolve inspector semantics from the selected *actual* output kind."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return None
+        data, _state, output_port = self._node_display_payload(node_id)
+        output_kind = self._node_output_type_for_payload(
+            node_id,
+            data,
+            output_port,
+        )
+        return inspector_profile(
+            self.pipeline.operation_spec(node.operation_id),
+            effective_output_type=output_kind,
+        )
+
+    def _sync_inspector_header(self, spec: OperationSpec) -> None:
+        icon = operation_icon(spec, QWidget.palette(self), 18)
+        self.selected_operation_icon.setPixmap(icon.pixmap(18, 18))
+        self.selected_operation_icon.setToolTip(spec.category)
+        execution = "manual" if spec.execution_policy == "manual" else "automatic"
+        data, _state, output_port = self._node_display_payload(
+            self._selected_node_id
+        )
+        output_label = self._node_output_type_for_payload(
+            self._selected_node_id,
+            data,
+            output_port,
+        ).replace("_", " ")
+        self.selected_category_label.setText(
+            f"{spec.category} · {output_label} output · {execution}"
+        )
+        self.selected_category_label.setToolTip(
+            f"{spec.category}; {output_label} output; {execution} execution."
+        )
+        description = (
+            SIGMA_FILTER_DESCRIPTION_TOOLTIP if spec.id == "sigma_filter" else ""
+        )
+        self.selected_title.setToolTip(description)
+        self.selected_title.setAccessibleDescription(description)
+
+    def _sync_connected_inputs_ui(self, profile) -> None:
+        if not profile.show_connected_inputs:
+            self.connected_inputs_panel.set_bindings([])
+            self.connected_inputs_panel.hide()
+            return
+        ports = self.pipeline.input_ports(self._selected_node_id)
+        selected_node = self.pipeline.nodes.get(self._selected_node_id)
+        combine_colors = (
+            self._combine_channels_colors(selected_node)
+            if selected_node is not None
+            and selected_node.operation_id == "combine_channels"
+            else []
+        )
+        connections = {
+            connection.target_port: connection
+            for connection in self.pipeline._input_connections(self._selected_node_id)
+        }
+        input_states = self.pipeline.input_states_by_port_for_node(
+            self._selected_node_id
+        )
+        bindings: list[ConnectedInputBinding] = []
+        for port_index, port in enumerate(ports):
+            port_label = (
+                f"Channel {port_index + 1}: {combine_colors[port_index]}"
+                if port_index < len(combine_colors)
+                else port.label
+            )
+            connection = connections.get(port_index)
+            if connection is None:
+                binding = ConnectedInputBinding(
+                    port_label=port_label,
+                    input_type=port.input_type,
+                )
+            else:
+                source_node = self.pipeline.nodes.get(connection.source_id)
+                source_title = (
+                    source_node.title
+                    if source_node is not None
+                    else connection.source_id
+                )
+                source_ports = self.pipeline.output_ports(connection.source_id)
+                source_port_label = (
+                    source_ports[connection.source_port].label
+                    if 0 <= connection.source_port < len(source_ports)
+                    else f"Output {connection.source_port + 1}"
+                )
+                binding = ConnectedInputBinding(
+                    port_label=port_label,
+                    input_type=port.input_type,
+                    source_title=source_title,
+                    source_port_label=source_port_label,
+                    scientific_summary=connected_input_scientific_summary(
+                        None,
+                        input_states.get(port_index),
+                    ),
+                )
+            bindings.append(binding)
+        self.connected_inputs_panel.set_bindings(bindings)
+        if ports:
+            self.parameter_group.show()
+
+    def _sync_source_representation_ui(self, profile) -> None:
+        visible = profile.operation_id == "input"
+        control = self._parameter_widgets.get("image_source")
+        if not visible:
+            if isinstance(control, ImageSourceControl):
+                control.restore_source_representation_panel()
+            self.source_representation_label.clear()
+            self.source_representation_label.hide()
+            self.source_representation_section.setSummary("")
+            self.source_representation_section.hide()
+            return
+        if isinstance(control, ImageSourceControl):
+            control.set_source_representation_host(
+                self.source_representation_section.content_widget
+            )
+            # The hosted control already shows Source, Pyramid, Preview, and
+            # the napari display selector. Do not repeat that information in a
+            # second prose block immediately above it.
+            self.source_representation_label.clear()
+            self.source_representation_label.hide()
+            self._sync_source_representation_section_visibility(control)
+            return
+        data, state, _output_port = self._node_display_payload(
+            self._selected_node_id
+        )
+        shape = tuple(getattr(state, "shape", ()) or getattr(data, "shape", ()))
+        shape_text = (
+            " × ".join(str(int(size)) for size in shape) if shape else "pending"
+        )
+        self.source_representation_label.setText(
+            "Processing and export use the exact source representation: Level 0 "
+            "or the exact source window requested by a downstream Crop Stack. "
+            f"Current processing shape: {shape_text}. ‘Show in napari’ selects a "
+            "presentation-only layer for display; it never changes any downstream "
+            "calculation."
+        )
+        self.source_representation_label.show()
+        self.source_representation_section.setSummary("Processing uses level 0")
+        self.source_representation_section.show()
+
+    def _sync_source_representation_section_visibility(
+        self,
+        control: ImageSourceControl,
+    ) -> None:
+        """Show the source section only when its hosted panel has content."""
+
+        has_content = not control.resolution_panel.isHidden()
+        self.source_representation_section.setSummary(
+            "Processing uses level 0" if has_content else ""
+        )
+        self.source_representation_section.setVisible(has_content)
+
+    def _sync_output_selector_ui(self, profile) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is None or not profile.show_output_selector:
+            self.output_selector_section.hide()
+            self.save_all_outputs_button.hide()
+            return
+        ports = self.pipeline.output_ports(node.id)
+        if len(ports) <= 1:
+            self.output_selector_section.hide()
+            self.save_all_outputs_button.hide()
+            return
+        selected_port = int(
+            self._inspector_output_port_by_node.get(
+                node.id,
+                self._split_channel_display_port(node.id, len(ports))
+                if node.operation_id == "split_channels"
+                else 0,
+            )
+        )
+        selected_port = int(np.clip(selected_port, 0, len(ports) - 1))
+        self._inspector_output_port_by_node[node.id] = selected_port
+        with QSignalBlocker(self.output_selector_combo):
+            self.output_selector_combo.clear()
+            for port_index, port in enumerate(ports):
+                label = port.label or f"Output {port_index + 1}"
+                self.output_selector_combo.addItem(
+                    f"{label} · {port.output_type}",
+                    port_index,
+                )
+            self.output_selector_combo.setCurrentIndex(selected_port)
+        self.output_selector_combo.setEnabled(True)
+        self.output_selector_note.setText(
+            "This selection changes previews, pinning, and export only. "
+            "Workflow connections keep their authored output ports."
+        )
+        self.save_all_outputs_button.setVisible(
+            profile.supports_all_outputs_action and len(ports) > 1
+        )
+        available_outputs = self.pipeline.node_outputs.get(node.id, ())
+        self.save_all_outputs_button.setEnabled(
+            any(output is not None for output in available_outputs)
+            or self.pipeline.outputs.get(node.id) is not None
+        )
+        self.output_selector_section.setSummary(ports[selected_port].label)
+        self.output_selector_section.show()
+
+    def _on_inspector_output_selector_changed(self, index: int) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is None or index < 0:
+            return
+        output_port = self.output_selector_combo.itemData(index)
+        try:
+            output_port = int(output_port)
+        except (TypeError, ValueError):
+            return
+        if self._inspector_output_port_by_node.get(node.id) == output_port:
+            return
+        self._inspector_output_port_by_node[node.id] = output_port
+        if node.operation_id == "split_channels":
+            self._record_parameter_undo(node.id, "preview_channel")
+            self.pipeline.set_param(node.id, "preview_channel", output_port)
+            self._sync_current_workflow_tab_state()
+            self._refresh_split_channel_display_surfaces({node.id})
+        else:
+            self._update_thumbnails()
+        self._schedule_selected_viewer_refresh(node.id, select_layer=True)
+        if self._active_pinned_node_id == node.id:
+            self._refresh_pinned_layer_if_active()
+        self._update_metadata_panel()
+        self._update_histogram()
+        self._sync_pin_ui()
+        self._sync_inspector_presentation()
+
+    def _sync_writer_status_ui(self, profile) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        visible = node is not None and profile.operation_id in {
+            "save_output",
+            "batch_output",
+        }
+        self.writer_status_section.setVisible(visible)
+        if not visible or node is None:
+            self.writer_status_label.clear()
+            self.writer_status_label.hide()
+            self.batch_output_status_panel.hide()
+            self.writer_status_section.setAccessibleDescription("")
+            return
+        state = str(
+            self.pipeline.node_execution_states.get(node.id, EXECUTION_NOT_CALCULATED)
+        )
+        detail = str(self.pipeline.node_execution_messages.get(node.id, "") or "")
+        state_label = state.replace("_", " ").title()
+        show_batch_details = False
+        if state == EXECUTION_ERROR or detail:
+            status_text = state_label + (f"\n{detail}" if detail else "")
+            summary = state_label
+        elif node.operation_id == "save_output":
+            enabled = str(node.params.get("enabled", "off")).casefold() == "on"
+            path = str(node.params.get("path", "") or "").strip()
+            output_format = str(node.params.get("format", "auto") or "auto")
+            overwrite = str(node.params.get("overwrite", "no") or "no")
+            if enabled and path:
+                status_text = (
+                    f"{state_label}\nAuto-save is on. VIPP writes to {path} using "
+                    f"{output_format}; overwrite: {overwrite}."
+                )
+                summary = "Auto-save on"
+            elif enabled:
+                status_text = (
+                    f"{state_label}\nAuto-save is on, but no output path is set. "
+                    "The node currently passes its input through without writing."
+                )
+                summary = "Path required"
+            else:
+                status_text = (
+                    f"{state_label}\nAuto-save is off. The node passes its input "
+                    "through and writes nothing until Auto-save on update is enabled."
+                )
+                summary = "Auto-save off"
+        else:
+            tag = str(node.params.get("tag", "output") or "output")
+            output_format = str(
+                node.params.get("format", "batch default") or "batch default"
+            )
+            template = str(
+                node.params.get("filename_template", "{source_stem}__{tag}")
+                or "{source_stem}__{tag}"
+            )
+            subfolder = str(node.params.get("subfolder", "") or "").strip()
+            display_format = (
+                "Batch default"
+                if output_format.casefold() == "batch default"
+                else output_format
+            )
+            values = {
+                "tag": tag,
+                "format": display_format,
+                "folder": subfolder,
+                "filename": template,
+            }
+            for field_name, (field_label, value_label) in (
+                self.batch_output_status_rows.items()
+            ):
+                value = values[field_name]
+                row_visible = field_name != "folder" or bool(value)
+                field_label.setVisible(row_visible)
+                value_label.setVisible(row_visible)
+                value_label.setText(value)
+                value_label.setToolTip(value)
+                value_label.setAccessibleName(
+                    f"Batch output {field_name}: {value}"
+                )
+            accessible_parts = [
+                f"{state_label}. Batch workspace only.",
+                f"Tag: {tag}.",
+                f"Format: {display_format}.",
+            ]
+            if subfolder:
+                accessible_parts.append(f"Folder: {subfolder}.")
+            accessible_parts.append(f"Filename: {template}.")
+            self.writer_status_section.setAccessibleDescription(
+                " ".join(accessible_parts)
+            )
+            summary = f"{state_label} · Batch only"
+            status_text = ""
+            show_batch_details = True
+        self.writer_status_label.setText(status_text)
+        self.writer_status_label.setVisible(not show_batch_details)
+        self.batch_output_status_panel.setVisible(show_batch_details)
+        if not show_batch_details:
+            self.writer_status_section.setAccessibleDescription(status_text)
+        self.writer_status_section.setSummary(summary)
+
+    def _sync_histogram_interaction_hint(self) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is None or self.rescale_input_histogram_group.isHidden():
+            self.histogram_interaction_hint.hide()
+            return
+        markers = _input_histogram_draggable_markers(
+            node.operation_id,
+            node.params,
+        )
+        if not markers:
+            self.histogram_interaction_hint.hide()
+            return
+        if node.operation_id == "binary_threshold":
+            text = "Drag the orange threshold line to tune the threshold."
+        elif node.operation_id == "hysteresis_threshold":
+            text = "Drag the orange and blue lines to tune the low and high thresholds."
+        elif node.operation_id == "rescale_intensity":
+            text = (
+                "Drag either cutoff line to tune the input range. Percentile "
+                "cutoffs become explicit values when dragged."
+            )
+        else:
+            text = "Drag either cutoff line to tune the input range."
+        self.histogram_interaction_hint.setText(text)
+        self.histogram_interaction_hint.setVisible(True)
+
+    def _sync_output_actions_ui(self, profile=None) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is None:
+            self.pin_button.setEnabled(False)
+            self.pin_button.hide()
+            self.save_button.setEnabled(False)
+            self.save_button.hide()
+            return
+        if profile is None:
+            profile = self._inspector_profile_for_node(node.id)
+        data, _state, _output_port = self._node_display_payload(node.id)
+        can_pin = profile.supports_pin and self._node_can_pin(node.id)
+        self.pin_button.setEnabled(can_pin)
+        self.pin_button.setVisible(can_pin)
+        if can_pin:
+            pinned = node.id == self._active_pinned_node_id
+            noun = "source" if profile.output_action_kind == "source" else "node"
+            self.pin_button.setText(
+                f"Unpin {noun}" if pinned else f"Pin {noun}"
+            )
+            self.pin_button.setToolTip(
+                "Remove this pinned napari layer."
+                if pinned
+                else (
+                    "Keep this source data as an independent napari layer."
+                    if profile.output_action_kind == "source"
+                    else "Keep this output as an independent napari layer."
+                )
+            )
+
+        action_labels = {
+            "source": "Save source…",
+            "table": "Export table…",
+            "image": "Save image…",
+            "mask": "Save mask…",
+            "labels": "Save labels…",
+            "runtime": "Save output…",
+            "multi": "Save output…",
+            "multi_image": "Save image…",
+            "multi_mask": "Save mask…",
+            "multi_labels": "Save labels…",
+            "multi_runtime": "Save output…",
+            "multi_table": "Export table…",
+        }
+        action_label = action_labels.get(profile.output_action_kind)
+        self.save_button.setVisible(action_label is not None)
+        self.save_button.setEnabled(action_label is not None and data is not None)
+        if action_label is not None:
+            self.save_button.setText(action_label)
+            self.save_button.setToolTip(
+                "Export the selected table."
+                if profile.output_action_kind in {"table", "multi_table"}
+                else (
+                    "Save the exact source data used by this workflow."
+                    if profile.output_action_kind == "source"
+                    else "Save the exact selected node output."
+                )
+            )
 
     def _select_node(self, node_id: str) -> None:
         if node_id not in self.pipeline.nodes:
             return
-        if node_id != self._selected_node_id:
+        if (
+            node_id == self._selected_node_id
+            and self.graph_view.node_press_dispatch_active()
+        ):
+            # Pressing the current node to start a drag must not rebuild its
+            # inspector or reset its scroll position. Programmatic reselection
+            # remains available outside the graph mouse-press boundary.
+            return
+        self._cancel_selected_inspector_refresh()
+        selection_changed = node_id != self._selected_node_id
+        if selection_changed:
             self._commit_crop_draft(schedule_run=True)
             self._discard_crop_draft(remove_layers=False)
             self._set_crop_presentation_layers_visible(False)
+            # Retire the old node's controls before exposing any part of the
+            # new inspector identity. QFormLayout.takeAt() alone leaves its
+            # child widgets paintable until DeferredDelete is processed, which
+            # can otherwise produce a new title above the previous node's form.
+            self._clear_parameter_form()
+            # Scientific panels are populated later in this method. Never use
+            # the previous node's metadata, plots, or results as a temporary
+            # loading state if a nested Qt repaint occurs during that work.
+            self._clear_empty_inspector()
         self._selected_node_id = node_id
         # Recompute at a deliberate selection boundary. Subsequent inspector
         # repaints reuse the result while the resolved input identities and
@@ -17465,18 +20770,30 @@ class VippWidget(QWidget):
         self._refresh_batch_effective_parameter_panel()
         self._sync_auto_contrast_ui()
         self._sync_pin_ui()
+        if selection_changed:
+            self._prime_selected_inspector_diagnostics(node_id)
         if self.graph_view.node_press_dispatch_active():
-            self._schedule_selected_viewer_refresh(node_id, select_layer=True)
-        else:
-            self._cancel_selected_viewer_refresh()
-            self._refresh_selected_viewer_now(node_id, select_layer=True)
-        self._sync_view_dims_bar()
-        self._update_metadata_panel()
-        self._update_histogram()
-        self._sync_execution_ui()
-        self._sync_isolated_tuning_ui()
-        self._sync_node_compute_control()
-        self._sync_current_workflow_tab_state()
+            # Present the new form as one coherent first frame. Scientific
+            # plots, metadata, graph-wide status, workflow persistence, and
+            # napari layer publication follow after Qt has painted it.
+            self._sync_isolated_tuning_ui()
+            self._sync_node_compute_control()
+            self._sync_inspector_presentation()
+            self.inspector_panel.verticalScrollBar().setValue(0)
+            self.parameter_group.update()
+            self.inspector_viewport.update()
+            self._schedule_selected_inspector_refresh(
+                node_id,
+                select_layer=True,
+            )
+            return
+        self._cancel_selected_viewer_refresh()
+        self._refresh_selected_inspector_after_selection(
+            node_id,
+            select_layer=True,
+        )
+        if selection_changed:
+            self.inspector_panel.verticalScrollBar().setValue(0)
 
     def _restore_selected_output_for_interactive_cache(self, node_id: str) -> None:
         if self._workflow_load_selection_in_progress:
@@ -17538,7 +20855,58 @@ class VippWidget(QWidget):
         self.pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
         self.pipeline.node_execution_messages[node_id] = ""
         self._sync_execution_ui()
+        if self._queue_manual_nodes_after_active_run({node_id}):
+            return
         self.run_pipeline(manual_node_ids={node_id})
+
+    def _queue_manual_nodes_after_active_run(self, node_ids: set[str]) -> bool:
+        """Queue manual frontiers without rescheduling the active calculation.
+
+        A cold-source run has no accepted source signature until its result is
+        published. Sending an explicit manual request through ``run_pipeline``
+        during that window would therefore look like a new full-graph request,
+        cancel the active worker, and recompute already completed upstream nodes.
+        Keep the request as pending intent instead. The normal completion handoff
+        will publish the current upstream result, then start at these frontiers.
+        """
+
+        run_id = self._active_pipeline_run_id
+        if run_id is None:
+            return False
+        requested = {
+            node_id
+            for node_id in node_ids
+            if self.pipeline.is_manual_node(node_id)
+        }
+        already_requested = set(
+            self._pipeline_run_manual_node_ids.get(run_id, frozenset())
+        ) | set(self._pending_manual_node_ids)
+        queued = requested - already_requested
+        if queued:
+            self._pending_manual_node_ids.update(queued)
+            # Manual frontiers double as incremental recomputation roots. This
+            # lets the completion handoff retain the active run's valid upstream
+            # cache and execute only the requested nodes and their descendants.
+            self._pending_dirty_node_ids.update(queued)
+            self._pipeline_run_pending = True
+
+        active_title = (
+            self._node_title(self._active_pipeline_node_id)
+            if self._active_pipeline_node_id in self.pipeline.nodes
+            else "the current calculation"
+        )
+        if queued:
+            count = len(queued)
+            self.status_label.setText(
+                f"Queued {count} manual node{'' if count == 1 else 's'}; "
+                f"finishing '{active_title}' without restarting upstream work."
+            )
+        else:
+            self.status_label.setText(
+                f"The requested manual calculation is already queued; "
+                f"finishing '{active_title}'."
+            )
+        return True
 
     def _calculate_all_nodes(self) -> None:
         self._commit_crop_draft(schedule_run=False)
@@ -17558,6 +20926,12 @@ class VippWidget(QWidget):
             self.pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
             self.pipeline.node_execution_messages[node_id] = ""
         self._sync_execution_ui()
+        if (
+            self._active_pipeline_run_id is not None
+            and (node_ids or self._pending_manual_node_ids)
+            and self._queue_manual_nodes_after_active_run(node_ids)
+        ):
+            return
         if had_isolation:
             self.status_label.setText(
                 "Isolated tuning disabled; applying the latest result and "
@@ -17594,17 +20968,21 @@ class VippWidget(QWidget):
             and not self.pipeline.node_auto_recalculate(node_id)
         }
 
-    def _sync_calculate_all_attention(self) -> None:
+    def _sync_calculate_all_attention(self, *, force_style: bool = False) -> None:
         attention_required = bool(self._manual_node_ids_requiring_attention())
         current = self.calculate_all_button.property("attentionRequired")
-        if current is not None and bool(current) == attention_required:
+        if (
+            not force_style
+            and current is not None
+            and bool(current) == attention_required
+        ):
             return
         self.calculate_all_button.setProperty(
             "attentionRequired",
             attention_required,
         )
         self.calculate_all_button.setStyleSheet(
-            CALCULATE_ALL_ATTENTION_STYLE if attention_required else ""
+            self._calculate_all_attention_style() if attention_required else ""
         )
         self.calculate_all_button.setToolTip(
             (
@@ -17614,6 +20992,153 @@ class VippWidget(QWidget):
             if attention_required
             else "Calculate every manual node that is not current."
         )
+
+    def _calculate_all_attention_style(self) -> str:
+        warning = theme_colors(QWidget.palette(self)).warning
+        return (
+            "QPushButton {"
+            f" background-color: {warning.surface.name()};"
+            f" color: {warning.foreground.name()};"
+            f" border: 2px solid {warning.border.name()};"
+            " border-radius: 3px; font-weight: 650;"
+            "}"
+            "QPushButton:hover {"
+            f" background-color: {warning.surface.lighter(108).name()};"
+            "}"
+            "QPushButton:pressed {"
+            f" background-color: {warning.surface.darker(108).name()};"
+            "}"
+        )
+
+    def _table_result_summary_text(
+        self,
+        data,
+        execution_state: str,
+        *,
+        row_limit: int = 200,
+    ) -> str:
+        """Describe whether the selected table is current without hiding it."""
+
+        if not is_table_data(data):
+            return {
+                EXECUTION_NOT_CALCULATED: "No result yet.",
+                EXECUTION_RUNNING: "Calculating table…",
+                EXECUTION_STALE: "No current result. Recalculate to create the table.",
+                EXECUTION_BLOCKED: "Waiting for upstream inputs.",
+                EXECUTION_ERROR: "No result. The last calculation failed.",
+            }.get(execution_state, "No table output.")
+
+        shown_rows = min(data.row_count, row_limit)
+        dimensions = (
+            f"{data.row_count} rows x {data.column_count} columns"
+            + (f" (showing first {shown_rows})" if data.row_count > row_limit else "")
+        )
+        prefix = {
+            EXECUTION_NOT_CALCULATED: (
+                "Previous cached result · not calculated for the current workflow"
+            ),
+            EXECUTION_RUNNING: "Recalculating · showing previous cached result",
+            EXECUTION_STALE: "Stale cached result",
+            EXECUTION_BLOCKED: "Previous cached result · waiting upstream",
+            EXECUTION_ERROR: "Previous cached result · last calculation failed",
+        }.get(execution_state, "")
+        return f"{prefix} · {dimensions}" if prefix else dimensions
+
+    def _sync_table_result_attention(self, *, force_style: bool = False) -> None:
+        """Keep the local table action aligned with manual execution state."""
+
+        button = getattr(self, "table_calculate_button", None)
+        if not isinstance(button, QPushButton):
+            return
+
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        data = None
+        output_port = 0
+        expected_table = False
+        if node is not None:
+            data, _output_state, output_port = self._node_display_payload(node_id)
+            expected_table = (
+                self._node_output_type_for_payload(node_id, data, output_port)
+                == "table"
+            )
+
+        state, message = (
+            self._node_execution_ui_state(node_id)
+            if node is not None
+            else (EXECUTION_NOT_CALCULATED, "")
+        )
+        eligible = bool(
+            expected_table
+            and self.pipeline.is_manual_node(node_id)
+            and not self.pipeline.node_auto_recalculate(node_id)
+        )
+        visible = eligible and state != EXECUTION_READY
+        enabled = visible and state not in {EXECUTION_RUNNING, EXECUTION_BLOCKED}
+        if state == EXECUTION_NOT_CALCULATED:
+            text = "Calculate"
+            tooltip = "Calculate this table before using or exporting its results."
+        elif state == EXECUTION_STALE:
+            text = "Recalculate"
+            tooltip = (
+                "These rows are from earlier inputs or parameters and are stale. "
+                "Recalculate before using or exporting them."
+            )
+        elif state == EXECUTION_RUNNING:
+            text = "Calculating…"
+            tooltip = (
+                "The table is being calculated. Any visible rows are the previous "
+                "cached result."
+            )
+        elif state == EXECUTION_BLOCKED:
+            text = "Waiting upstream"
+            tooltip = message or "This table is waiting for an upstream calculation."
+        elif state == EXECUTION_ERROR:
+            text = "Recalculate"
+            tooltip = (
+                f"The last calculation failed: {message} Recalculate to try again."
+                if message
+                else "The last calculation failed. Recalculate to try again."
+            )
+        else:
+            text = "Recalculate"
+            tooltip = "Recalculate this table from the current workflow."
+
+        attention_required = bool(
+            visible and node_id in self._manual_node_ids_requiring_attention()
+        )
+        current_attention = button.property("attentionRequired")
+        style_changed = (
+            current_attention is None
+            or bool(current_attention) != attention_required
+        )
+        button.setProperty("attentionRequired", attention_required)
+        if force_style or style_changed:
+            button.setStyleSheet(
+                self._calculate_all_attention_style()
+                if attention_required
+                else ""
+            )
+        button.setText(text)
+        button.setToolTip(tooltip)
+        button.setEnabled(enabled)
+        button.setVisible(visible)
+
+        if expected_table:
+            summary = self._table_result_summary_text(data, state)
+            self.table_summary.setText(summary)
+            self.table_group.setSummary(summary)
+            if is_table_data(data):
+                if state == EXECUTION_READY:
+                    popout_tooltip = (
+                        "Open the complete result table in a separate sortable window."
+                    )
+                else:
+                    popout_tooltip = (
+                        "Open the retained cached table in a separate sortable "
+                        "window. This result is not current."
+                    )
+                self.table_popout_button.setToolTip(popout_tooltip)
 
     def _on_auto_recalculate_toggled(self, checked: bool) -> None:
         node_id = self._selected_node_id
@@ -17664,6 +21189,8 @@ class VippWidget(QWidget):
             )
 
         self._sync_calculate_all_attention()
+        self._sync_table_result_attention()
+        self._sync_result_table_dialog_attention()
         self._sync_isolated_tuning_ui()
 
         node_id = self._selected_node_id
@@ -17671,6 +21198,7 @@ class VippWidget(QWidget):
             node_id
         ):
             self.execution_group.setHidden(True)
+            self.header_calculate_button.hide()
             return
         state, message = self._node_execution_ui_state(node_id)
         auto_recalculate = self.pipeline.node_auto_recalculate(node_id)
@@ -17690,6 +21218,9 @@ class VippWidget(QWidget):
             self.calculate_button.setText(
                 "Calculate" if state == EXECUTION_NOT_CALCULATED else "Recalculate",
             )
+        self.header_calculate_button.setVisible(not auto_recalculate)
+        self.header_calculate_button.setEnabled(self.calculate_button.isEnabled())
+        self.header_calculate_button.setText(self.calculate_button.text())
 
     def _node_execution_ui_state(self, node_id: str) -> tuple[str, str]:
         """Return live state plus an accepted active-run presentation overlay."""
@@ -17790,12 +21321,32 @@ class VippWidget(QWidget):
             self._sync_view_dims_bar()
             self._update_metadata_panel()
             self._update_histogram()
+            self._sync_inspector_presentation()
         elif inspected_affected:
             self._refresh_inspection_layer_if_active()
         if self._active_pinned_node_id in affected:
             self._refresh_pinned_layer_if_active()
             if not selected_affected:
                 self._sync_view_dims_bar()
+        dialog = self._result_table_dialog
+        dialog_context = dialog.context_key if dialog is not None else None
+        if (
+            dialog is not None
+            and dialog.isVisible()
+            and dialog_context is not None
+            and dialog_context[0] in affected
+        ):
+            dialog_node_id, expected_port = dialog_context
+            data, _state, output_port = self._node_display_payload(dialog_node_id)
+            if is_table_data(data) and int(output_port) == int(expected_port):
+                self._sync_result_table_dialog(
+                    data,
+                    output_port,
+                    node_id=dialog_node_id,
+                )
+            else:
+                dialog.close()
+        self._refresh_histogram_dialog_from_owner(affected)
 
     def _refresh_node_presentation_surfaces_safely(
         self,
@@ -17925,6 +21476,8 @@ class VippWidget(QWidget):
                 node.params.update(saved_params)
             if node_id == self._selected_node_id:
                 self._sync_node_execution_mode_ui()
+                self._sync_inspector_responsive_layout()
+                self._present_parameter_form()
 
     def _render_parameters_impl(
         self,
@@ -17933,15 +21486,24 @@ class VippWidget(QWidget):
         preserve_authored_values: bool,
     ) -> None:
         self._clear_parameter_form()
+        self.parameter_group.summary_label.setProperty(
+            "vippParameterSummaryGuidance",
+            "",
+        )
+        self.parameter_group.summary_label.setToolTip("")
+        self.parameter_group.summary_label.setAccessibleDescription("")
         node = self.pipeline.nodes[node_id]
         compact_deconvolution_form = (
             node.operation_id in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS
         )
-        self.parameter_form.setRowWrapPolicy(
+        wide_row_policy = (
             QFormLayout.WrapLongRows
             if compact_deconvolution_form
             else QFormLayout.DontWrapRows
         )
+        self.parameter_form.setRowWrapPolicy(wide_row_policy)
+        self.parameter_form._vipp_wide_row_wrap_policy = wide_row_policy
+        self.parameter_form._vipp_responsive_wrap_active = False
         if node.operation_id == "input":
             self.parameter_group.setHidden(False)
             self._render_image_source_parameters(node_id)
@@ -17950,13 +21512,21 @@ class VippWidget(QWidget):
         stack_note = self._stack_processing_note(node_id)
         help_note = self._operation_help_note(node_id)
         help_status = self._operation_help_note_status(node_id)
+        help_tooltip = self._operation_help_note_tooltip(node_id)
         self.parameter_group.setHidden(not specs and not stack_note and not help_note)
         if not specs:
             if stack_note:
-                self._add_operation_note(stack_note)
+                self._add_operation_note(
+                    stack_note,
+                    tooltip=self._stack_processing_note_tooltip(node_id),
+                )
                 self.parameter_group.setHidden(False)
             if help_note:
-                self._add_operation_note(help_note, status=help_status)
+                self._add_operation_note(
+                    help_note,
+                    status=help_status,
+                    tooltip=help_tooltip,
+                )
                 self.parameter_group.setHidden(False)
             return
         if node.operation_id == "select_axis_slice":
@@ -18118,10 +21688,10 @@ class VippWidget(QWidget):
             self._update_fill_holes_scope_note()
             rendered = True
         if node.operation_id == "crop_stack":
-            note = QLabel()
+            note = QLabel(self.parameter_form_widget)
             note.setWordWrap(True)
             note.setTextFormat(Qt.PlainText)
-            note.setStyleSheet("color: #fbbf24;")
+            _set_palette_text_tone(note, "warning")
             self.parameter_form.addRow("Crop ROI", note)
             self._parameter_widgets["crop_roi_summary"] = note
             self._update_crop_roi_summary(node_id)
@@ -18137,9 +21707,19 @@ class VippWidget(QWidget):
                 appearance_separator
             )
 
-            appearance_heading = QLabel("ROI appearance · viewer only")
-            appearance_heading.setStyleSheet(
-                "color: #aab3c5; font-weight: 600; padding-top: 2px;"
+            appearance_heading = QLabel(
+                "ROI appearance · viewer only",
+                self.parameter_form_widget,
+            )
+            appearance_heading.setMinimumWidth(0)
+            appearance_heading.setSizePolicy(
+                QSizePolicy.Ignored,
+                QSizePolicy.Preferred,
+            )
+            _set_palette_text_tone(
+                appearance_heading,
+                "muted",
+                extra_style="font-weight: 600; padding-top: 2px;",
             )
             appearance_heading.setToolTip(
                 "These controls affect only VIPP's crop outline in napari."
@@ -18194,10 +21774,17 @@ class VippWidget(QWidget):
             )
             rendered = True
         if stack_note:
-            self._add_operation_note(stack_note)
+            self._add_operation_note(
+                stack_note,
+                tooltip=self._stack_processing_note_tooltip(node_id),
+            )
             rendered = True
         if help_note:
-            self._add_operation_note(help_note, status=help_status)
+            self._add_operation_note(
+                help_note,
+                status=help_status,
+                tooltip=help_tooltip,
+            )
             rendered = True
         self.parameter_group.setHidden(not rendered)
 
@@ -18246,24 +21833,62 @@ class VippWidget(QWidget):
                 if not (spec.name == "channel_axis" and not result.visible)
             ]
         results = [result for _spec, result in evaluated]
-        if any(not result.visible for result in results):
-            text = (
-                "Some settings are hidden because explicit input metadata or "
-                "the selected mode proves they have no effect. Their stored "
-                "values are preserved."
+        hidden = [
+            (spec, result)
+            for spec, result in evaluated
+            if not result.visible
+        ]
+        hidden_values = tuple(
+            (
+                spec.label,
+                node.params.get(spec.name, spec.default)
+                if node is not None
+                else spec.default,
             )
+            for spec, _result in hidden
+        )
+        hidden_reasons = " ".join(
+            dict.fromkeys(
+                result.reason.strip()
+                for _spec, result in hidden
+                if result.reason.strip()
+            )
+        )
+        hidden_tooltip = " ".join(
+            part for part in (HIDDEN_SETTINGS_TOOLTIP, hidden_reasons) if part
+        )
+        if (
+            len(hidden) == 1
+            and hidden[0][0].name == "channel_axis"
+        ):
+            detail = " ".join(
+                (
+                    _hidden_settings_summary(hidden_values),
+                    hidden_tooltip,
+                )
+            )
+            self.parameter_group.summary_label.setProperty(
+                "vippParameterSummaryGuidance",
+                detail,
+            )
+            self.parameter_group.summary_label.setToolTip(detail)
+            self.parameter_group.summary_label.setAccessibleDescription(detail)
+            return False
+        if hidden:
+            text = _hidden_settings_summary(hidden_values)
+            tooltip = hidden_tooltip
         elif any(
             result.visible and "unresolved" in result.reason.casefold()
             for result in results
         ):
-            text = (
-                "Input context is unresolved, so potentially relevant settings "
-                "remain available until metadata is resolved."
-            )
+            text = "Input details are unresolved; related settings remain available."
+            tooltip = UNRESOLVED_SETTINGS_TOOLTIP
         else:
             return False
-        note = _InspectorNoteLabel(text)
-        note.setStyleSheet("color: #94a3b8;")
+        note = _InspectorNoteLabel(text, self.parameter_form_widget)
+        note.setToolTip(tooltip)
+        note.setAccessibleDescription(tooltip)
+        _set_palette_text_tone(note, "secondary")
         self.parameter_form.addRow(note)
         return True
 
@@ -18307,15 +21932,23 @@ class VippWidget(QWidget):
         )
         inferred_axis_warning = self._rescale_axes_inferred_axis_warning(node_id)
         if inferred_axis_warning:
-            note = _InspectorNoteLabel(inferred_axis_warning)
-            note.setStyleSheet("color: #f59e0b;")
+            note = _InspectorNoteLabel(
+                inferred_axis_warning,
+                self.parameter_form_widget,
+            )
+            _set_palette_text_tone(note, "warning")
             self.parameter_form.addRow(note)
             self._parameter_widgets["rescale_axes_axis_notice"] = note
         self.parameter_group.setHidden(False)
 
     @staticmethod
     def _configure_rescale_axis_control(widget: NumericEntryControl) -> None:
-        widget.layout().setSpacing(3)
+        layout = widget.layout()
+        layout.setSpacing(3)
+        # NumericEntryControl normally lets its only field consume the row.
+        # Rescale adds a compact reset action, so keep the capped spin box and
+        # reset button adjacent and leave any spare width after both controls.
+        layout.setStretch(0, 0)
         widget.value_box.setMinimumWidth(112)
         widget.value_box.setMaximumWidth(122)
         widget.value_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -18394,9 +22027,11 @@ class VippWidget(QWidget):
         option = self._rescale_axis_options_by_role(node_id).get(role)
         reset_value = int(option.size) if name.endswith("_size") and option else 1.0
         button = QToolButton(widget)
-        button.setIcon(_toolbar_icon("reset"))
         button.setIconSize(QSize(14, 14))
         button.setFixedSize(20, 20)
+        button.setAutoRaise(True)
+        button.setAccessibleName(f"Reset {role.upper()} axis value")
+        self._style_parameter_reset_button(button)
         if name.endswith("_size"):
             button.setToolTip(f"Reset {role.upper()} to its input size.")
         else:
@@ -18404,8 +22039,40 @@ class VippWidget(QWidget):
         button.clicked.connect(
             lambda _checked=False, value=reset_value: widget.value_box.setValue(value)
         )
-        widget.layout().addWidget(button)
+        layout = widget.layout()
+        layout.addWidget(button, 0, Qt.AlignVCenter)
+        layout.addStretch(1)
         self._parameter_widgets[f"{name}_reset"] = button
+
+    def _style_parameter_reset_button(
+        self,
+        button: QToolButton,
+        palette: QPalette | None = None,
+    ) -> None:
+        """Give inline reset actions a subtle, theme-safe treatment."""
+
+        owner_palette = QWidget.palette(self) if palette is None else palette
+        colors = theme_colors(owner_palette)
+        icon_palette = QPalette(owner_palette)
+        icon_palette.setColor(QPalette.ButtonText, colors.muted_text)
+        icon_palette.setColor(
+            QPalette.Disabled,
+            QPalette.ButtonText,
+            blend_colors(colors.surface, colors.text, 0.34),
+        )
+        button.setIcon(_toolbar_icon("reset", icon_palette))
+        button.setStyleSheet(
+            "QToolButton {"
+            " background: transparent; border: none; border-radius: 3px;"
+            " padding: 0px;"
+            "}"
+            "QToolButton:hover {"
+            f" background: {colors.raised_surface.name()};"
+            "}"
+            "QToolButton:pressed {"
+            f" background: {colors.alternate_surface.name()};"
+            "}"
+        )
 
     def _render_born_wolf_psf_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -18465,7 +22132,7 @@ class VippWidget(QWidget):
                     lambda value, param=name: self._on_param_changed(param, value)
                 )
 
-            label_widget = QLabel(spec.label)
+            label_widget = QLabel(spec.label, self.parameter_form_widget)
             field_widget: QWidget = widget
             if name in annotated_names:
                 result = resolution.parameters.get(name)
@@ -18484,13 +22151,14 @@ class VippWidget(QWidget):
                     )
                 else:
                     status_text = self._born_wolf_psf_status_text(result, auto=auto)
-                status = QLabel(status_text)
+                status = QLabel(status_text, self.parameter_form_widget)
                 status.setWordWrap(True)
-                status.setStyleSheet(
-                    "color: #f87171;" if unresolved else "color: #94a3b8;"
+                _set_palette_text_tone(
+                    status,
+                    "error" if unresolved else "muted",
                 )
                 if unresolved:
-                    label_widget.setStyleSheet("color: #f87171;")
+                    _set_palette_text_tone(label_widget, "error")
                 if (
                     name == "channel"
                     and auto
@@ -18498,7 +22166,7 @@ class VippWidget(QWidget):
                     and auto_channel_count > 1
                 ):
                     status.setText(f"all channels ({auto_channel_count})")
-                row = QWidget()
+                row = QWidget(self.parameter_form_widget)
                 layout = QHBoxLayout(row)
                 layout.setContentsMargins(0, 0, 0, 0)
                 layout.setSpacing(6)
@@ -18715,6 +22383,11 @@ class VippWidget(QWidget):
 
     def _born_wolf_psf_guidance(self, node_id: str, resolution) -> tuple[str, str]:
         node = self.pipeline.nodes[node_id]
+        palette_colors = theme_colors(QWidget.palette(self))
+        info_color = palette_colors.info.foreground.name()
+        muted_color = palette_colors.muted_text.name()
+        success_color = palette_colors.success.foreground.name()
+        warning_color = palette_colors.warning.foreground.name()
         data = self.pipeline.input_data_for_node(node_id)
         shape = tuple(int(size) for size in getattr(data, "shape", ()) or ())
         spatial_ndim = int(resolution.spatial_ndim)
@@ -18744,7 +22417,7 @@ class VippWidget(QWidget):
             else ""
         )
         sections = [
-            '<p><span style="color:#60a5fa"><b>SUPPORT</b></span><br>'
+            f'<p><span style="color:{info_color}"><b>SUPPORT</b></span><br>'
             f"Requested PSF: {support_text} samples. Support is user-set."
             + physical_text
             + " Use the tail check after calculation to assess this window.</p>"
@@ -18755,7 +22428,7 @@ class VippWidget(QWidget):
         if nyquist is None:
             sections.insert(
                 0,
-                '<p><span style="color:#94a3b8"><b>SAMPLING CHECK PENDING</b>'
+                f'<p><span style="color:{muted_color}"><b>SAMPLING CHECK PENDING</b>'
                 "</span><br>Resolve wavelength, NA, refractive index, and "
                 "physical sample spacing to estimate Nyquist sampling.</p>",
             )
@@ -18764,7 +22437,7 @@ class VippWidget(QWidget):
             if nyquist.met:
                 sections.insert(
                     0,
-                    '<p><span style="color:#34d399"><b>&#10003; WIDEFIELD '
+                    f'<p><span style="color:{success_color}"><b>&#10003; WIDEFIELD '
                     "NYQUIST ESTIMATE MET</b></span><br>"
                     + html.escape(sampling_text)
                     + ".</p>",
@@ -18773,7 +22446,7 @@ class VippWidget(QWidget):
                 status = "Warning"
                 sections.insert(
                     0,
-                    '<p><span style="color:#f59e0b"><b>! WIDEFIELD NYQUIST '
+                    f'<p><span style="color:{warning_color}"><b>! WIDEFIELD NYQUIST '
                     "ESTIMATE NOT MET</b></span><br>"
                     + html.escape(sampling_text)
                     + ". Changing PSF support cannot recover frequencies missing "
@@ -18787,7 +22460,7 @@ class VippWidget(QWidget):
         edge_mass = None if tail_report is None else tail_report.edge_mass_fraction
         if edge_mass is None:
             sections.append(
-                '<p><span style="color:#94a3b8"><b>TAIL CHECK PENDING</b>'
+                f'<p><span style="color:{muted_color}"><b>TAIL CHECK PENDING</b>'
                 "</span><br>Calculate this node to evaluate tail containment.</p>"
             )
         elif edge_mass > PSF_EDGE_MASS_WARNING_FRACTION:
@@ -18799,7 +22472,7 @@ class VippWidget(QWidget):
                 for label, fraction in zip(labels, by_axis, strict=False)
             )
             sections.append(
-                '<p><span style="color:#f59e0b"><b>! TAIL REACHES THE '
+                f'<p><span style="color:{warning_color}"><b>! TAIL REACHES THE '
                 "WINDOW EDGE</b></span><br>"
                 f"The outermost samples contain {edge_mass:.1%} of normalized "
                 "PSF intensity"
@@ -18810,7 +22483,7 @@ class VippWidget(QWidget):
             )
         else:
             sections.append(
-                '<p><span style="color:#34d399"><b>&#10003; TAIL CONTAINMENT '
+                f'<p><span style="color:{success_color}"><b>&#10003; TAIL CONTAINMENT '
                 "CHECK PASSED</b></span><br>"
                 f"The outermost samples contain {edge_mass:.1%} of normalized "
                 f"PSF intensity, at or below the "
@@ -18838,7 +22511,7 @@ class VippWidget(QWidget):
                 for label, psf_size, image_size in oversized
             )
             sections.append(
-                '<p><span style="color:#f59e0b"><b>! IMAGE EXTENT '
+                f'<p><span style="color:{warning_color}"><b>! IMAGE EXTENT '
                 "WARNING</b></span><br>"
                 + html.escape(comparisons)
                 + ". Review image extent, boundary assumptions, and processing "
@@ -18846,7 +22519,7 @@ class VippWidget(QWidget):
                 "warning.</p>"
             )
         sections.append(
-            '<p><span style="color:#94a3b8"><b>MORE GUIDANCE</b></span><br>'
+            f'<p><span style="color:{muted_color}"><b>MORE GUIDANCE</b></span><br>'
             "Confirm that the conventional-widefield model matches the "
             'acquisition. See the <a href="https://rensutheart.github.io/'
             "vipp-mkdocs/workflows/psf-deconvolution/"
@@ -18918,22 +22591,29 @@ class VippWidget(QWidget):
             )
             node.params[name] = value
 
-    def _add_operation_note(self, text: str, *, status: str = "") -> None:
-        note = _InspectorNoteLabel(text)
+    def _add_operation_note(
+        self,
+        text: str,
+        *,
+        status: str = "",
+        tooltip: str = "",
+    ) -> None:
+        note = _InspectorNoteLabel(text, self.parameter_form_widget)
         note.setTextInteractionFlags(
             Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
         )
         note.setOpenExternalLinks(True)
         if status:
             note.setTextFormat(Qt.RichText)
+        note.setToolTip(tooltip)
+        note.setAccessibleDescription(tooltip)
         self._style_operation_note(note, status)
         self.parameter_form.addRow(note)
         self._parameter_widgets["operation_notice"] = note
 
     @staticmethod
     def _style_operation_note(note: QLabel, status: str) -> None:
-        color = "#cbd5e1" if status else "#f59e0b"
-        note.setStyleSheet(f"color: {color};")
+        _set_palette_text_tone(note, "muted" if status else "warning")
         if status:
             note.setProperty("preflightStatus", status.lower())
 
@@ -18961,6 +22641,10 @@ class VippWidget(QWidget):
         spec = self.pipeline.operation_spec(node.operation_id)
         if not spec.stack_processing_note:
             return ""
+        if spec.stack_processing_note == DEFAULT_SLICE_WISE_STACK_NOTICE:
+            mode = str(node.params.get("spatial_mode", "2D YX")).casefold()
+            if not mode.startswith("2d"):
+                return ""
         if (
             self.pipeline.input_state_for_node(node_id) is None
             and self.pipeline.input_data_for_node(node_id) is None
@@ -18969,6 +22653,17 @@ class VippWidget(QWidget):
         if self._input_spatial_count(node_id) < 3:
             return ""
         return spec.stack_processing_note
+
+    def _stack_processing_note_tooltip(self, node_id: str) -> str:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return ""
+        note = self.pipeline.operation_spec(node.operation_id).stack_processing_note
+        if note == SLICE_WISE_STACK_NOTICE:
+            return SLICE_WISE_PROCESSING_TOOLTIP
+        if note == DEFAULT_SLICE_WISE_STACK_NOTICE:
+            return DEFAULT_SLICE_WISE_PROCESSING_TOOLTIP
+        return ""
 
     def _operation_help_note(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
@@ -18992,22 +22687,21 @@ class VippWidget(QWidget):
                 "- Markers: non-negative integer seed labels.\n"
                 "- Mask: foreground constraint region (>0 = inside)."
             )
-        if node.operation_id == "sigma_filter":
-            return (
-                "Edge-preserving Lee sigma filter compatible with the documented "
-                "behavior of Fiji Sigma Filter Plus. It processes resolved YX "
-                "planes independently with clamped edges and supports finite "
-                "uint8, uint16, and float32 images. ROI/mask behavior is not part "
-                "of this v1 node."
-            )
         if node.operation_id == "measure_3d_mesh_morphology":
-            return (
-                "3D mesh morphology requires true 3D label input. It uses "
-                "spatial scale metadata for anisotropic Z/Y/X spacing, skips "
-                "tiny objects below the minimum voxel count, and reports failed "
-                "mesh or convex-hull metrics as NaN with a status message."
-            )
+            return "3D-only measurement: verify Z/Y/X axes and voxel spacing."
         return ""
+
+    def _operation_help_note_tooltip(self, node_id: str) -> str:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "measure_3d_mesh_morphology":
+            return ""
+        return (
+            "Each label is reconstructed as a surface mesh using its Z/Y/X "
+            "voxel spacing. Labels below Minimum voxel count remain in the "
+            "results, with mesh fields set to NaN. Calculation failures are "
+            "recorded in mesh_status and mesh_error; if only the convex hull "
+            "fails, the base mesh measurements remain available."
+        )
 
     def _operation_help_note_status(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
@@ -19025,11 +22719,17 @@ class VippWidget(QWidget):
         nyquist = self._deconvolution_psf_nyquist(node_id)
         display_status = self._deconvolution_psf_display_status(node_id, report)
         sections: list[str] = []
+        palette_colors = theme_colors(QWidget.palette(self))
+        success_color = palette_colors.success.foreground.name()
+        warning_color = palette_colors.warning.foreground.name()
+        error_color = palette_colors.error.foreground.name()
+        muted_color = palette_colors.muted_text.name()
+        info_color = palette_colors.info.foreground.name()
         status_color = {
-            "Ready": "#34d399",
-            "Warning": "#f59e0b",
-            "Invalid": "#f87171",
-            "Unknown": "#94a3b8",
+            "Ready": success_color,
+            "Warning": warning_color,
+            "Invalid": error_color,
+            "Unknown": muted_color,
         }[display_status]
         status_summary = {
             "Ready": (
@@ -19051,7 +22751,7 @@ class VippWidget(QWidget):
         if passed:
             items = "<br>".join(f"&#10003; {html.escape(item)}" for item in passed)
             sections.append(
-                '<p><span style="color:#34d399"><b>CHECKS PASSED</b></span>'
+                f'<p><span style="color:{success_color}"><b>CHECKS PASSED</b></span>'
                 f"<br>{items}</p>"
             )
 
@@ -19082,13 +22782,13 @@ class VippWidget(QWidget):
         if attention:
             items = "<br><br>".join(
                 '<span style="color:'
-                + ("#f87171" if severity == "invalid" else "#f59e0b")
+                + (error_color if severity == "invalid" else warning_color)
                 + f'"><b>! {html.escape(title)}</b></span><br>'
                 + html.escape(detail)
                 for severity, title, detail in attention
             )
             sections.append(
-                '<p><span style="color:#f59e0b"><b>NEEDS ATTENTION</b></span>'
+                f'<p><span style="color:{warning_color}"><b>NEEDS ATTENTION</b></span>'
                 f"<br>{items}</p>"
             )
         if unknown:
@@ -19100,7 +22800,7 @@ class VippWidget(QWidget):
                 for issue in unknown
             )
             sections.append(
-                '<p><span style="color:#94a3b8"><b>COULD NOT CHECK</b></span>'
+                f'<p><span style="color:{muted_color}"><b>COULD NOT CHECK</b></span>'
                 f"<br>{items}</p>"
             )
 
@@ -19111,12 +22811,12 @@ class VippWidget(QWidget):
                 for index, action in enumerate(actions, start=1)
             )
             sections.append(
-                '<p><span style="color:#60a5fa"><b>WHAT TO DO NEXT</b></span>'
+                f'<p><span style="color:{info_color}"><b>WHAT TO DO NEXT</b></span>'
                 f"<br>{items}</p>"
             )
         if node.operation_id == "richardson_lucy_tv_deconvolution":
             sections.append(
-                '<p><span style="color:#94a3b8"><b>SCIENTIFIC CAUTION</b>'
+                f'<p><span style="color:{muted_color}"><b>SCIENTIFIC CAUTION</b>'
                 "</span><br>Excessive TV regularization may remove fine or dim "
                 "structures. Early low-iteration outputs may be under-converged. "
                 "Validate PSF sampling and centering before tuning "
@@ -19582,10 +23282,14 @@ class VippWidget(QWidget):
         self._apply_parameter_tooltip(axis_spec, axis_widget)
         self._parameter_widgets[axis_spec.name] = axis_widget
 
-        axis_status = QLabel(self._composite_axis_status(node_id, axis_mode, axis))
+        axis_status = QLabel(
+            self._composite_axis_status(node_id, axis_mode, axis),
+            self.parameter_form_widget,
+        )
         axis_status.setWordWrap(True)
-        axis_status.setStyleSheet(
-            "color: #94a3b8;" if axis is not None else "color: #f59e0b;"
+        _set_palette_text_tone(
+            axis_status,
+            "muted" if axis is not None else "warning",
         )
         axis_status.setToolTip(axis_mode_spec.tooltip)
         self.parameter_form.addRow(axis_status)
@@ -19664,11 +23368,13 @@ class VippWidget(QWidget):
                 channel_labels,
                 assignments,
                 mapping_warning,
-            )
+            ),
+            self.parameter_form_widget,
         )
         mapping_status.setWordWrap(True)
-        mapping_status.setStyleSheet(
-            "color: #f59e0b;" if mapping_warning else "color: #94a3b8;"
+        _set_palette_text_tone(
+            mapping_status,
+            "warning" if mapping_warning else "muted",
         )
         mapping_status.setToolTip(mapping_mode_spec.tooltip)
         self.parameter_form.addRow(mapping_status)
@@ -19699,10 +23405,11 @@ class VippWidget(QWidget):
 
         note = QLabel(
             "The legacy Red/Green/Blue index fields remain load-compatible but "
-            "are represented here as one assignment per source channel."
+            "are represented here as one assignment per source channel.",
+            self.parameter_form_widget,
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: #94a3b8;")
+        _set_palette_text_tone(note, "muted")
         self.parameter_form.addRow(note)
         self._parameter_widgets["composite_mapping_note"] = note
         self.parameter_group.setHidden(False)
@@ -19720,15 +23427,22 @@ class VippWidget(QWidget):
             self._image_source_value(node),
             layer_names=self._available_layer_names(),
             sample_names=self._sample_names(),
-            series_options=self._source_series_options(inspection),
+            series_options=self._source_series_options_for_node(node, inspection),
             source_summary=self._source_summary(inspection, node),
         )
         control.set_resolution_presentation(self._source_resolution_presentation(node))
+        self._sync_source_representation_section_visibility(control)
         control.set_memory_repair_presentation(
             self._source_memory_repair_presentation(node)
         )
         self._apply_image_source_params(node_id, control.value())
         control.valueChanged.connect(self._on_image_source_changed)
+        control.pathCommitted.connect(
+            lambda value: self._on_image_source_changed(
+                value,
+                validate_path=True,
+            )
+        )
         control.sourceLoadCancelRequested.connect(self._cancel_source_file_load)
         control.viewerDisplayChanged.connect(
             lambda mode, node_id=node_id: self._on_source_viewer_display_changed(
@@ -19815,10 +23529,11 @@ class VippWidget(QWidget):
         return False
 
     def _open_image_path_on_source_node(self, node, local_path: str) -> bool:
-        source_path = Path(local_path).expanduser().resolve(strict=False)
-        if not source_path.exists():
+        try:
+            source_path = validate_local_image_source_path(local_path)
+        except (OSError, ValueError) as exc:
             self._set_status(
-                f"Cannot open image source because it no longer exists: {source_path}",
+                f"Cannot open image source: {exc}",
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
@@ -20229,9 +23944,12 @@ class VippWidget(QWidget):
         if count <= 0:
             if self.pipeline.nodes[node_id].operation_id == "input":
                 return
-            note = QLabel("No channel axis detected for colour assignment.")
+            note = QLabel(
+                "No channel axis detected for colour assignment.",
+                self.parameter_form_widget,
+            )
             note.setWordWrap(True)
-            note.setStyleSheet("color: #94a3b8;")
+            _set_palette_text_tone(note, "muted")
             self.parameter_form.addRow(note)
             return
         state = self._channel_color_reference_state(node_id)
@@ -20300,6 +24018,12 @@ class VippWidget(QWidget):
         value: dict[str, object],
     ) -> dict[str, object]:
         normalized = dict(value)
+        if str(normalized.get("source_mode", "")) == "file path":
+            raw_path = str(normalized.get("file_path", "")).strip()
+            if raw_path:
+                normalized["file_path"] = str(
+                    normalize_local_image_source_path(raw_path)
+                )
         if (
             str(normalized.get("source_mode", "napari layer")) == "napari layer"
             and not str(normalized.get("layer_name", "")).strip()
@@ -20356,7 +24080,7 @@ class VippWidget(QWidget):
         colors[slot] = str(value)
         node.params["channel_colors"] = ",".join(colors)
         self._mark_pipeline_dirty(node_id)
-        self._update_thumbnails()
+        self._refresh_channel_color_presentations(node_id)
         self._debounce_timer.start()
         self._sync_current_workflow_tab_state()
 
@@ -20365,6 +24089,7 @@ class VippWidget(QWidget):
         value: dict[str, object],
         *,
         force: bool = False,
+        validate_path: bool = False,
     ) -> None:
         node = self.pipeline.nodes[self._selected_node_id]
         value = dict(value)
@@ -20383,12 +24108,63 @@ class VippWidget(QWidget):
             value["axis_declaration"] = (
                 "" if declaration is None else declaration.display_text
             )
-        value = self._normalized_image_source_value(value)
+        raw_path = str(value.get("file_path", ""))
+        try:
+            value = self._normalized_image_source_value(value)
+        except (OSError, ValueError) as exc:
+            self._set_status(
+                f"Cannot use image source: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
+        previous_mode = str(node.params.get("source_mode", ""))
+        previous_path = str(node.params.get("file_path", ""))
+        normalized_path = str(value.get("file_path", ""))
+        previous_normalized_path = previous_path
+        if previous_path.strip():
+            try:
+                previous_normalized_path = str(
+                    normalize_local_image_source_path(previous_path)
+                )
+            except (OSError, ValueError):
+                pass
+        path_binding_changed = (
+            str(value.get("source_mode", "")) == "file path"
+            and bool(normalized_path.strip())
+            and (
+                previous_mode != "file path"
+                or normalized_path != previous_normalized_path
+            )
+        )
+        should_validate_path = (
+            str(value.get("source_mode", "")) == "file path"
+            and bool(normalized_path.strip())
+            and (validate_path or path_binding_changed)
+        )
+        if should_validate_path:
+            try:
+                normalized_path = str(
+                    validate_local_image_source_path(normalized_path)
+                )
+            except (OSError, ValueError) as exc:
+                self._set_status(
+                    f"Cannot use image source: {exc}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+                return
+            value["file_path"] = normalized_path
+        control = self._parameter_widgets.get("image_source")
+        if (
+            isinstance(control, ImageSourceControl)
+            and normalized_path
+            and raw_path != normalized_path
+        ):
+            control.set_path_text(normalized_path)
         if not force and self._image_source_value(node) == value:
             return
         self._record_parameter_undo(self._selected_node_id, "image_source")
-        previous_mode = str(node.params.get("source_mode", ""))
-        previous_path = str(node.params.get("file_path", ""))
         previous_series = int(node.params.get("series_index", 0) or 0)
         previous_axes = str(node.params.get("axis_declaration", ""))
         previous_binding = str(node.params.get("binding_mode", "single item"))
@@ -20432,12 +24208,13 @@ class VippWidget(QWidget):
         control.set_options(
             self._available_layer_names(),
             self._sample_names(),
-            series_options=self._source_series_options(inspection),
+            series_options=self._source_series_options_for_node(node, inspection),
             source_summary=self._source_summary(inspection, node),
             value=self._image_source_value(node),
             emit=False,
         )
         control.set_resolution_presentation(self._source_resolution_presentation(node))
+        self._sync_source_representation_section_visibility(control)
         control.set_memory_repair_presentation(
             self._source_memory_repair_presentation(node)
         )
@@ -20461,6 +24238,20 @@ class VippWidget(QWidget):
                 return cached.inspection
             except Exception as exc:
                 return self._handle_source_inspection_error(node, path, exc)
+        saved = self._file_source_item_for_node(node)
+        if (
+            saved is not None
+            and path.suffix.casefold() == ".czi"
+            and saved.reader.implementation == "czifile"
+            and not saved.capabilities.exact_region_read
+        ):
+            # A durable SourceItem already carries enough historical evidence
+            # for the first inspector frame.  Do not hash and reopen the source
+            # merely to render controls; the full loader will verify the current
+            # revision and publish its real inspection together with the pixels.
+            # Exact-region readers retain their inspection path because crop
+            # pushdown planning currently needs verified chunk-grid metadata.
+            return None
         if self._file_source_should_load_async(node):
             try:
                 self._start_source_inspection(node, path)
@@ -20955,6 +24746,7 @@ class VippWidget(QWidget):
         if node is None or not isinstance(control, ImageSourceControl):
             return
         control.set_resolution_presentation(self._source_resolution_presentation(node))
+        self._sync_source_representation_section_visibility(control)
 
     def _ensure_selected_source_preview(self, node_id: str) -> None:
         """Start an absent preview after its Image Source becomes selected."""
@@ -21646,7 +25438,7 @@ class VippWidget(QWidget):
                 "processing and export still use level 0."
                 if explicit_preview
                 else f"Presentation preview level {preview.preview_level} is ready; "
-                "Analysis output remains selected."
+                "the level-0 source representation remains selected."
             )
             self._set_status(status, severity=MessageSeverity.INFO)
 
@@ -21715,12 +25507,68 @@ class VippWidget(QWidget):
             return []
         return [(series.index, series.label) for series in inspection.series]
 
+    def _source_series_options_for_node(
+        self,
+        node,
+        inspection: SourceInspection | None,
+    ) -> list[tuple[int, str]]:
+        """Return verified options or one presentation-only saved option."""
+
+        options = self._source_series_options(inspection)
+        if options:
+            return options
+        source_item = self._file_source_item_for_node(node)
+        if source_item is None:
+            return []
+        index = self._file_source_series_index_for_node(node)
+        resolved = getattr(source_item, "resolved", None)
+        if resolved is None:
+            return [
+                (
+                    index,
+                    f"Series {index + 1} | Saved selection; metadata pending "
+                    "verification",
+                )
+            ]
+
+        name = str(getattr(resolved, "name", "") or "").strip()
+        name = name or f"Series {index + 1}"
+        try:
+            resolved_axes = tuple(getattr(resolved, "axes", ()) or ())
+        except TypeError:
+            resolved_axes = ()
+        try:
+            resolved_shape = tuple(getattr(resolved, "shape", ()) or ())
+        except TypeError:
+            resolved_shape = ()
+        axes = "".join(str(axis).upper() for axis in resolved_axes)
+        dimensions = " x ".join(str(size) for size in resolved_shape)
+        details = []
+        if axes and dimensions:
+            details.append(f"{axes}: {dimensions}")
+        elif dimensions:
+            details.append(dimensions)
+        for value in (
+            getattr(resolved, "dtype", ""),
+            getattr(resolved, "kind", ""),
+            getattr(getattr(source_item, "reader", None), "implementation", ""),
+        ):
+            detail = str(value or "").strip()
+            if detail:
+                details.append(detail)
+        if not details:
+            details.append("Saved selection; metadata pending verification")
+        return [(index, f"{name} | " + " | ".join(details))]
+
     def _source_summary(self, inspection: SourceInspection | None, node) -> str:
         batch_prefix = self._interactive_collection_source_summary(node.id)
         if inspection is None:
             error = self._source_inspection_errors.get(node.id, "")
             if error:
                 detail = f"Inspection failed: {error}"
+                return f"{batch_prefix} {detail}".strip()
+            if self._file_source_item_for_node(node) is not None:
+                detail = "Saved metadata shown · verified with pixels on load."
                 return f"{batch_prefix} {detail}".strip()
         return batch_prefix
 
@@ -21864,16 +25712,15 @@ class VippWidget(QWidget):
             widget = self._parameter_widgets.get("image_source")
             if isinstance(widget, ImageSourceControl):
                 previous = dict(node.params)
+                inspection = self._source_inspection_for_node(node)
                 widget.set_options(
                     self._available_layer_names(),
                     self._sample_names(),
-                    series_options=self._source_series_options(
-                        self._source_inspection_for_node(node)
-                    ),
-                    source_summary=self._source_summary(
-                        self._source_inspection_for_node(node),
+                    series_options=self._source_series_options_for_node(
                         node,
+                        inspection,
                     ),
+                    source_summary=self._source_summary(inspection, node),
                     value=self._image_source_value(node),
                     emit=False,
                 )
@@ -22042,6 +25889,8 @@ class VippWidget(QWidget):
             )
         if node.operation_id in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS:
             self._update_deconvolution_help_note()
+        if node.operation_id == "intensity_histogram":
+            self._sync_histogram_dialog_calculation_parameters(node.id)
         return changed
 
     def _parameter_numeric_control_kind_changed(self, node_id: str) -> bool:
@@ -22186,6 +26035,11 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return False
+        if node.operation_id == "split_channels" and spec.name == "preview_channel":
+            # The capability-driven Displayed output section is the single
+            # presentation selector. Keeping the legacy parameter as a second
+            # control is both redundant and easy to misread as graph routing.
+            return True
         if self._is_colocalization_threshold_value_spec(node_id, spec):
             # Costes owns these values while it is selected, but they remain
             # useful scientific output and become the starting point when the
@@ -22243,6 +26097,10 @@ class VippWidget(QWidget):
             (
                 node.operation_id == "set_pixel_size"
                 and spec.name in {"x_size", "y_size", "z_size"}
+            )
+            or (
+                node.operation_id == "intensity_histogram"
+                and spec.name in {"custom_min", "custom_max"}
             )
             or (
                 node.operation_id == "set_microscope_metadata"
@@ -23699,7 +27557,7 @@ class VippWidget(QWidget):
         node.params["channel_colors"] = ",".join(colors)
         self._sync_combine_channels_graph_ports(node_id)
         self._mark_pipeline_dirty(node_id)
-        self._update_thumbnails()
+        self._refresh_channel_color_presentations(node_id)
         self._debounce_timer.start()
         self._sync_current_workflow_tab_state()
 
@@ -23718,6 +27576,7 @@ class VippWidget(QWidget):
             [node.input_type or "array"] * len(colors),
         )
         self._sync_port_tunnels()
+        self._refresh_selected_connected_inputs(changed_node_id=node_id)
 
     def _sync_node_input_ports(self, node_id: str) -> None:
         node = self.pipeline.nodes.get(node_id)
@@ -23735,6 +27594,7 @@ class VippWidget(QWidget):
             [port.input_type for port in input_ports],
         )
         self._sync_port_tunnels()
+        self._refresh_selected_connected_inputs(changed_node_id=node_id)
 
     def _sync_node_output_ports(self, node_id: str) -> None:
         spec = self.pipeline.operation_spec(self.pipeline.nodes[node_id].operation_id)
@@ -23754,6 +27614,26 @@ class VippWidget(QWidget):
             data_types,
         )
         self._sync_port_tunnels()
+        self._refresh_selected_connected_inputs(changed_node_id=node_id)
+
+    def _refresh_selected_connected_inputs(self, *, changed_node_id: str) -> None:
+        """Refresh a visible binding card affected by a port-schema change."""
+
+        if not hasattr(self, "connected_inputs_panel"):
+            return
+        selected_id = getattr(self, "_selected_node_id", "")
+        selected = self.pipeline.nodes.get(selected_id)
+        if selected is None:
+            return
+        affected = selected_id == changed_node_id or any(
+            connection.source_id == changed_node_id
+            for connection in self.pipeline._input_connections(selected_id)
+        )
+        if not affected:
+            return
+        profile = self._inspector_profile_for_node(selected_id)
+        if profile is not None:
+            self._sync_connected_inputs_ui(profile)
 
     @staticmethod
     def _output_port_color(index: int, port) -> str | None:
@@ -23792,7 +27672,9 @@ class VippWidget(QWidget):
             spec = self.pipeline.operation_spec(node.operation_id)
             if spec.output_factory is None:
                 continue
+            removed_targets: set[str] = set()
             for connection in self.pipeline.trim_invalid_output_connections(node_id):
+                removed_targets.add(connection.target_id)
                 self.graph_view.remove_connection(
                     connection.source_id,
                     connection.target_id,
@@ -23800,6 +27682,15 @@ class VippWidget(QWidget):
                     notify=False,
                 )
             self._sync_node_output_ports(node_id)
+            for target_id in removed_targets:
+                self._refresh_selected_connected_inputs(
+                    changed_node_id=target_id
+                )
+        selected = self.pipeline.nodes.get(self._selected_node_id)
+        if selected is not None:
+            selected_spec = self.pipeline.operation_spec(selected.operation_id)
+            if selected_spec.output_factory is not None:
+                self._sync_inspector_presentation()
 
     def _combine_channels_input_count(self, node) -> int:
         maximum = node.max_inputs if node.max_inputs is not None else 12
@@ -23824,10 +27715,75 @@ class VippWidget(QWidget):
         return normalized
 
     def _node_preview_channel_colors(self, node_id: str) -> list[str] | None:
+        return self._node_presentation_channel_colors(node_id)
+
+    def _node_presentation_channel_colors(
+        self,
+        node_id: str,
+        state: ImageState | None = None,
+    ) -> list[str] | None:
+        """Return the currently authored palette for a node's image output."""
+
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "combine_channels":
+        if node is None:
             return None
-        return self._combine_channels_colors(node)
+        if node.operation_id == "combine_channels":
+            return self._combine_channels_colors(node)
+        if node.operation_id not in {"input", "assign_channel_colors"}:
+            return None
+        raw = str(node.params.get("channel_colors", "")).strip()
+        if not raw:
+            return None
+        reference_state = state or self._channel_color_reference_state(node_id)
+        count = _explicit_channel_count(reference_state)
+        if count <= 0:
+            count = len(channel_color_names(raw))
+        if count <= 0:
+            return None
+        return self._node_channel_color_choices(node_id, count, reference_state)
+
+    def _presentation_image_state(
+        self,
+        node_id: str,
+        state: ImageState | None,
+    ) -> ImageState | None:
+        """Overlay pending presentation-only palette edits on carried metadata."""
+
+        colors = self._node_presentation_channel_colors(node_id, state)
+        if state is None or not colors:
+            return state
+        try:
+            return with_channel_colors(state, colors)
+        except ValueError:
+            # Scalar outputs may carry one source-channel record after their
+            # channel axis was removed. Their carried colour is already final.
+            return state
+
+    def _refresh_channel_color_presentations(self, node_id: str) -> None:
+        """Repaint every visible colour surface without recomputing image data."""
+
+        self._update_thumbnails()
+        if self._selected_node_id == node_id:
+            self._refresh_selected_histogram_channel_colors(node_id)
+        self._refresh_inspection_layer_if_active()
+        self._refresh_pinned_layer_if_active()
+
+    def _refresh_selected_histogram_channel_colors(self, node_id: str) -> None:
+        counts = np.asarray(self.histogram_plot._series_counts)
+        if counts.size == 0:
+            self._update_histogram()
+            return
+        _data, state, _output_port = self._node_display_payload(node_id)
+        state = self._presentation_image_state(node_id, state)
+        self.histogram_plot.set_histogram(
+            counts,
+            log_scale=self.histogram_plot._log_scale,
+            x_range=self.histogram_plot._x_range,
+            colors=_histogram_colors_for_state(counts, state),
+            markers=list(self.histogram_plot._markers),
+            x_scale=self.histogram_plot._x_scale,
+            draggable_markers=set(self.histogram_plot._draggable_markers),
+        )
 
     def _used_split_channel_ports(self, node_id: str) -> tuple[int, ...]:
         node = self.pipeline.nodes.get(node_id)
@@ -23863,11 +27819,13 @@ class VippWidget(QWidget):
             len(self.pipeline.output_ports(node_id)),
             1,
         )
-        single_used = self._single_used_split_channel_port(node_id)
-        if single_used is not None:
-            return int(np.clip(single_used, 0, port_count - 1))
         try:
-            index = int(node.params.get("preview_channel", 0))
+            index = int(
+                self._inspector_output_port_by_node.get(
+                    node_id,
+                    node.params.get("preview_channel", 0),
+                )
+            )
         except Exception:
             index = 0
         return int(np.clip(index, 0, port_count - 1))
@@ -24022,13 +27980,26 @@ class VippWidget(QWidget):
         output_states,
     ):
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "split_channels":
+        if node is None:
+            return primary_data, primary_state, 0
+        operation = self.pipeline.operation_spec(node.operation_id)
+        if not operation.is_multi_output:
             return primary_data, primary_state, 0
         outputs = list(outputs or [])
         output_states = list(output_states or [])
-        if not outputs:
+        if not outputs and primary_data is None:
             return primary_data, primary_state, 0
-        index = self._split_channel_display_port(node_id, len(outputs))
+        port_count = max(len(outputs), len(self.pipeline.output_ports(node_id)), 1)
+        if node.operation_id == "split_channels":
+            index = self._split_channel_display_port(node_id, port_count)
+        else:
+            index = int(
+                np.clip(
+                    self._inspector_output_port_by_node.get(node_id, 0),
+                    0,
+                    port_count - 1,
+                )
+            )
 
         def state_for_port(output_port: int):
             if 0 <= int(output_port) < len(output_states):
@@ -24040,18 +28011,12 @@ class VippWidget(QWidget):
         if 0 <= index < len(outputs) and outputs[index] is not None:
             return outputs[index], state_for_port(index), index
 
-        # A connected port is an explicit presentation choice. If its cached
-        # output is unavailable, leave the surface empty instead of silently
-        # presenting a different channel with mismatched scientific meaning.
-        if self._single_used_split_channel_port(node_id) is not None:
-            return None, None, index
-
         available = [
             (output_index, output)
             for output_index, output in enumerate(outputs)
             if output is not None
         ]
-        if len(available) == 1:
+        if len(available) == 1 and node.operation_id == "split_channels":
             output_index, output = available[0]
             return (
                 output,
@@ -24102,6 +28067,7 @@ class VippWidget(QWidget):
             self._sync_view_dims_bar()
             self._update_metadata_panel()
             self._update_histogram()
+            self._sync_inspector_presentation()
         if self._active_pinned_node_id in affected:
             self._refresh_pinned_layer_if_active()
 
@@ -24325,6 +28291,20 @@ class VippWidget(QWidget):
         self._output_histogram_cache.clear()
         self._current_output_histogram_key = None
         self._pending_output_histogram_request = None
+
+    def _clear_label_volume_cache(self) -> None:
+        """Invalidate exact object-volume inspector work and cached results."""
+        if self._active_label_volume_cancel_event is not None:
+            self._active_label_volume_cancel_event.set()
+        self._label_volume_serial += 1
+        self._active_label_volume_run_id = None
+        self._active_label_volume_key = None
+        self._active_label_volume_cancel_event = None
+        self._active_label_volume_request = None
+        self._pending_label_volume_request = None
+        self._current_label_volume_key = None
+        self._label_volume_cache.clear()
+        self._property_filter_value_cache.clear()
 
     def _clear_colocalization_scatter_cache(self) -> None:
         """Invalidate cached and in-flight colocalization inspector results."""
@@ -26777,24 +30757,45 @@ class VippWidget(QWidget):
         data = self.pipeline.input_data_for_node(node_id)
         maximum = max(int(spec.default) * 10, 100)
         if data is not None:
-            arr = np.asarray(data)
+            array_like = _histogram_array_like(data)
+            shape = tuple(getattr(array_like, "shape", ()))
+            ndim = int(getattr(array_like, "ndim", len(shape)))
             node = self.pipeline.nodes[node_id]
             spatial_ndim = int(
                 np.clip(
                     node.params.get(
                         "resolved_spatial_ndim",
-                        3 if arr.ndim >= 3 else 2,
+                        3 if ndim >= 3 else 2,
                     ),
                     1,
-                    max(arr.ndim, 1),
+                    max(ndim, 1),
                 )
             )
-            volumes = self._cached_label_volumes(arr, spatial_ndim)
-            maximum = max(
-                int(volumes.max()) if volumes.size else 0,
-                int(spec.default),
-                1,
+            connectivity = "Label IDs"
+            volumes = self._cached_label_volume_result(
+                data,
+                spatial_ndim,
+                connectivity,
             )
+            if volumes is not None:
+                maximum = max(
+                    int(volumes.max()) if volumes.size else 0,
+                    int(spec.default),
+                    1,
+                )
+            else:
+                # Form construction is a presentation boundary, never a place
+                # to scan every label. The full spatial block is a safe initial
+                # upper bound; the diagnostic worker/cache supplies exact
+                # object sizes without delaying the parameter controls.
+                spatial_shape = shape[-spatial_ndim:] if shape else ()
+                maximum = max(
+                    int(np.prod(spatial_shape, dtype=np.int64))
+                    if spatial_shape
+                    else 1,
+                    int(spec.default),
+                    1,
+                )
         return ParameterBounds(
             0,
             maximum,
@@ -26849,7 +30850,8 @@ class VippWidget(QWidget):
         data = self.pipeline.input_data_for_node(node_id)
         maximum = max(int(spec.default) * 10, 100)
         if data is not None:
-            arr = np.asarray(data)
+            array_like = _histogram_array_like(data)
+            shape = tuple(getattr(array_like, "shape", ()))
             spatial_ndim = self._selected_spatial_ndim(node_id)
             connectivity = str(
                 self.pipeline.nodes[node_id].params.get(
@@ -26857,11 +30859,36 @@ class VippWidget(QWidget):
                     "Face connected",
                 )
             )
-            maximum = max(
-                self._largest_object_size(arr, spatial_ndim, connectivity),
-                int(spec.default),
-                1,
+            sizes = self._cached_label_volume_result(
+                data,
+                spatial_ndim,
+                connectivity,
             )
+            if sizes is not None:
+                exact_maximum = int(sizes.max()) if sizes.size else 0
+            elif _should_auto_background_data(data):
+                spatial_shape = shape[-spatial_ndim:] if shape else ()
+                exact_maximum = (
+                    int(np.prod(spatial_shape, dtype=np.int64))
+                    if spatial_shape
+                    else 1
+                )
+            else:
+                arr = np.asarray(data)
+                sizes = self._cached_label_volumes(
+                    arr,
+                    spatial_ndim,
+                    connectivity,
+                )
+                if arr is not data:
+                    sizes = self._cache_label_volumes(
+                        data,
+                        spatial_ndim,
+                        sizes,
+                        connectivity,
+                    )
+                exact_maximum = int(sizes.max()) if sizes.size else 0
+            maximum = max(exact_maximum, int(spec.default), 1)
         return ParameterBounds(
             0,
             maximum,
@@ -26884,49 +30911,184 @@ class VippWidget(QWidget):
     def _largest_label_volume(labels: np.ndarray, spatial_ndim: int) -> int:
         return largest_label_volume(labels, spatial_ndim)
 
-    def _cached_label_volumes(
-        self,
-        labels: np.ndarray,
+    @staticmethod
+    def _label_volume_cache_key(
+        labels,
         spatial_ndim: int,
-    ) -> np.ndarray:
-        key = (
+        connectivity: str = "Face connected",
+    ) -> tuple:
+        return (
             id(labels),
-            tuple(labels.shape),
-            str(labels.dtype),
+            tuple(getattr(labels, "shape", ())),
+            str(getattr(labels, "dtype", "")),
             int(spatial_ndim),
+            str(connectivity).strip().casefold(),
         )
+
+    def _cached_label_volume_result(
+        self,
+        labels,
+        spatial_ndim: int,
+        connectivity: str = "Face connected",
+    ) -> np.ndarray | None:
+        key = self._label_volume_cache_key(labels, spatial_ndim, connectivity)
         cached = self._label_volume_cache.get(key)
         if cached is not None:
             identity_ref, volumes = cached
             if identity_ref() is labels:
                 return volumes
             self._label_volume_cache.pop(key, None)
-        volumes = self._label_volumes(labels, spatial_ndim)
+        return None
+
+    def _cache_label_volumes(
+        self,
+        labels,
+        spatial_ndim: int,
+        volumes,
+        connectivity: str = "Face connected",
+    ) -> np.ndarray:
+        normalized = np.asarray(volumes, dtype=np.int64)
+        key = self._label_volume_cache_key(labels, spatial_ndim, connectivity)
         try:
             identity_ref = weakref.ref(labels)
         except TypeError:
-            return volumes
-        self._label_volume_cache[key] = (identity_ref, volumes)
+            return normalized
+        self._label_volume_cache[key] = (identity_ref, normalized)
         while len(self._label_volume_cache) > 16:
             self._label_volume_cache.pop(next(iter(self._label_volume_cache)))
-        return volumes
+        return normalized
+
+    def _cached_label_volumes(
+        self,
+        labels,
+        spatial_ndim: int,
+        connectivity: str = "Face connected",
+    ) -> np.ndarray:
+        cached = self._cached_label_volume_result(
+            labels,
+            spatial_ndim,
+            connectivity,
+        )
+        if cached is not None:
+            return cached
+        volumes = self._object_sizes(labels, spatial_ndim, connectivity)
+        return self._cache_label_volumes(
+            labels,
+            spatial_ndim,
+            volumes,
+            connectivity,
+        )
 
     @staticmethod
     def _label_volumes(labels: np.ndarray, spatial_ndim: int) -> np.ndarray:
         return label_volumes(labels, spatial_ndim)
 
+    @staticmethod
+    def _object_sizes(
+        objects: np.ndarray,
+        spatial_ndim: int,
+        connectivity: str = "Face connected",
+        *,
+        progress=None,
+    ) -> np.ndarray:
+        return object_sizes(
+            objects,
+            spatial_ndim,
+            connectivity,
+            progress=progress,
+        )
+
     def _clear_parameter_form(self) -> None:
+        self._release_colocalization_inspector_geometry()
         if self._active_parameter_slider_scrub is not None:
             self._active_parameter_slider_scrub = None
             self._history.finish_group()
         if self._active_crop_slider_scrub is not None:
             self._active_crop_slider_scrub = None
+        for control in self._parameter_widgets.values():
+            if isinstance(control, ImageSourceControl):
+                control.restore_source_representation_panel()
         self._parameter_widgets.clear()
-        while self.parameter_form.count():
-            item = self.parameter_form.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
+        while self.parameter_form.rowCount():
+            row = self.parameter_form.takeRow(0)
+            for item in (row.labelItem, row.fieldItem):
+                if item is None:
+                    continue
+                widget = item.widget()
+                if widget is None:
+                    continue
+                # ``deleteLater`` does not make a removed child invisible. Hide
+                # and detach it now so no subsequent repaint can mix retired
+                # controls with a newly selected node's header or sections.
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
+        self.parameter_form.invalidate()
+        self.parameter_form_widget.setFixedHeight(0)
+
+    def _present_parameter_form(self) -> None:
+        """Expose every newly authored row before deferred selection work starts."""
+
+        self.parameter_form.invalidate()
+        self.parameter_form.activate()
+        for index in range(self.parameter_form.count()):
+            widget = self.parameter_form.itemAt(index).widget()
+            if widget is not None:
+                widget.show()
+        self.parameter_form_widget.show()
+        self._sync_parameter_form_height()
+        self.parameter_form_widget.updateGeometry()
+
+    def _sync_parameter_form_height(self) -> None:
+        """Commit the form's final responsive height in the current event turn."""
+
+        if (
+            not hasattr(self, "parameter_form")
+            or self._parameter_form_height_sync_active
+        ):
+            return
+        self._parameter_form_height_sync_active = True
+        try:
+            if self.parameter_form.rowCount() <= 0:
+                self.parameter_form_widget.setFixedHeight(0)
+                return
+            parent = self.parameter_form_widget.parentWidget()
+            width = 0
+            if parent is not None:
+                width = int(parent.contentsRect().width())
+                parent_layout = parent.layout()
+                if parent_layout is not None:
+                    margins = parent_layout.contentsMargins()
+                    width -= int(margins.left() + margins.right())
+            viewport = getattr(self, "inspector_viewport", None)
+            if width <= 100 and viewport is not None:
+                width = max(int(viewport.width()) - 26, width)
+            if width <= 0:
+                width = max(int(self.parameter_form_widget.width()), 1)
+            # Spanning guidance rows use a fixed height so Qt cannot grow the
+            # form a frame later when their queued QLabel resize arrives.
+            # Measure those rows at the real form width before asking the form
+            # for its aggregate height-for-width.
+            for index in range(self.parameter_form.count()):
+                widget = self.parameter_form.itemAt(index).widget()
+                if isinstance(widget, _InspectorNoteLabel):
+                    widget._sync_wrapped_minimum_height()
+            self.parameter_form.invalidate()
+            required_height = int(self.parameter_form.totalHeightForWidth(width))
+            if required_height < 0:
+                required_height = int(self.parameter_form.sizeHint().height())
+            self.parameter_form_widget.setFixedHeight(max(required_height, 0))
+            for layout in (
+                self.parameter_form,
+                parent.layout() if parent is not None else None,
+                self.parameter_group.layout(),
+                getattr(self, "_inspector_layout", None),
+            ):
+                if layout is not None:
+                    layout.invalidate()
+                    layout.activate()
+        finally:
+            self._parameter_form_height_sync_active = False
 
     def _on_param_changed(self, name: str, value) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
@@ -27142,7 +31304,24 @@ class VippWidget(QWidget):
             "channel",
         }:
             self._sync_node_output_ports(self._selected_node_id)
-        if name in {"min_volume", "max_volume", "spatial_mode"}:
+        if (
+            node.operation_id == "filter_labels_by_volume"
+            and name in {"min_volume", "max_volume", "spatial_mode"}
+        ) or (
+            node.operation_id == "remove_small_objects"
+            and name in {"min_size", "spatial_mode", "connectivity"}
+        ):
+            self._update_label_volume_histogram()
+        elif (
+            node.operation_id == "filter_labels_by_property"
+            and name
+            in {
+                "property_column",
+                "min_value",
+                "max_value",
+                "keep_mode",
+            }
+        ):
             self._update_label_volume_histogram()
         if node.operation_id == "rescale_intensity" and name == (
             RESCALE_CUTOFF_MODE_PARAMETER
@@ -27156,6 +31335,11 @@ class VippWidget(QWidget):
                 self._selected_node_id,
                 self._current_step(),
             )
+        if (
+            node.operation_id in {"clip_intensity", "rescale_intensity"}
+            and name == RESCALE_CUTOFF_MODE_PARAMETER
+        ):
+            self._sync_histogram_interaction_hint()
         elif (
             node.operation_id == "rescale_intensity"
             and name in RESCALE_CUTOFF_PARAMETERS
@@ -27186,6 +31370,8 @@ class VippWidget(QWidget):
                 self._selected_node_id,
                 self._current_step(),
             )
+        if node.operation_id == "intensity_histogram":
+            self._sync_histogram_dialog_calculation_parameters(node.id)
         self._record_interaction_phase(
             interaction_generation,
             InteractionLatencyPhase.PARAMETER_INVALIDATION_FINISHED,
@@ -27211,24 +31397,36 @@ class VippWidget(QWidget):
                 "Auto from axes is unavailable because axis meaning is inferred. "
                 "Choose the explicit 2D or 3D mode before calculating."
             )
-            color = "#f59e0b"
+            tone = "warning"
         elif self._input_spatial_count(node.id) < 3:
-            text = "Holes are evaluated in the connected YX image."
-            color = "#94a3b8"
+            text = (
+                "This input has one YX plane, so holes are evaluated in 2D. "
+                "The 3D z-stack recommendation does not apply."
+            )
+            tone = "muted"
         elif mode.startswith("2d"):
             text = (
-                "Advanced mode: each XY slice is filled independently. "
-                "A region that is open to background along Z can still be filled."
+                "2D YX treats each slice as a separate image. A cavity can be "
+                "filled even when it opens to background through another Z "
+                "slice. For a z-stack, use 3D ZYX unless slice-independent "
+                "filling is intended."
             )
-            color = "#f59e0b"
+            tone = "warning"
         else:
-            text = (
-                "Recommended for z-stacks: holes are enclosed cavities in the "
-                "complete ZYX volume."
+            auto_detail = (
+                " Auto selected it from the explicit axes."
+                if mode.startswith("auto")
+                else ""
             )
-            color = "#94a3b8"
+            text = (
+                "Recommended for z-stacks: use 3D ZYX. A hole is filled only "
+                "when it is an enclosed background cavity in the complete "
+                "volume; any path to a Z, Y, or X boundary keeps it unfilled."
+                f"{auto_detail}"
+            )
+            tone = "muted"
         note.setText(text)
-        note.setStyleSheet(f"color: {color};")
+        _set_palette_text_tone(note, tone)
 
     def _apply_auto_contrast(self) -> None:
         node_id = self._selected_node_id
@@ -27609,7 +31807,9 @@ class VippWidget(QWidget):
             self._sync_view_dims_bar()
             self._update_metadata_panel()
             self._update_histogram()
+            self._refresh_histogram_dialog_from_owner()
             self._sync_execution_ui()
+            self._sync_inspector_presentation()
             self._refresh_cache_status()
             self.status_label.setText("No Image Source node has a selected source.")
             self._show_interactive_collection_batch_preview_error(
@@ -27992,7 +32192,9 @@ class VippWidget(QWidget):
             self._sync_view_dims_bar()
             self._update_metadata_panel()
             self._update_histogram()
+            self._refresh_histogram_dialog_from_owner()
             self._sync_execution_ui()
+            self._sync_inspector_presentation()
             memory_guard_message = self._enforce_memory_guard()
             snapshot_note = (
                 " File source snapshots are pinned until Refresh."
@@ -29663,8 +33865,7 @@ class VippWidget(QWidget):
         self._apply_pipeline_run_result(
             result.pipeline,
             update_params=(
-                not can_apply_before_pending
-                and not preserve_workflow_params
+                not preserve_workflow_params
                 and not self._interactive_collection_source_paths
             ),
             exclude_node_ids=excluded_pending_nodes,
@@ -30314,6 +34515,9 @@ class VippWidget(QWidget):
     def _on_dims_changed(self, _event=None) -> None:
         if self._closing:
             return
+        if self._selected_viewer_refresh_in_progress:
+            self._selected_viewer_dims_refresh_pending = True
+            return
         if self._selected_node_id in self.pipeline.nodes:
             self._update_crop_roi_presentation(self._selected_node_id)
         if not self._dims_linked():
@@ -30703,6 +34907,13 @@ class VippWidget(QWidget):
             preview_data,
             preview_state,
         )
+        preview_state = self._presentation_image_state(node_id, preview_state)
+        thumbnail_colormap = self.thumbnail_colormap_combo.currentText()
+        scalar_channel_color = _scalar_channel_color_from_state(preview_state)
+        if scalar_channel_color is not None:
+            authored_colormap = _napari_channel_colormap(scalar_channel_color)
+            if isinstance(authored_colormap, str) and authored_colormap != "gray":
+                thumbnail_colormap = authored_colormap
         thumbnail_size = self._thumbnail_render_size()
         recorder = self._interaction_latency_recorder
         interaction_generation = (
@@ -30741,7 +34952,7 @@ class VippWidget(QWidget):
             thumbnail = normalize_thumbnail_with_colormap(
                 preview,
                 size=thumbnail_size,
-                colormap=self.thumbnail_colormap_combo.currentText(),
+                colormap=thumbnail_colormap,
                 contrast_mode=contrast_mode,
                 contrast_reference=(preview if effective_scope_is_slice else None),
                 contrast_limits=(
@@ -31108,9 +35319,14 @@ class VippWidget(QWidget):
         if self._selected_node_id not in self.pipeline.nodes:
             self._clear_empty_inspector()
             return
-        _data, state, _output_port = self._node_display_payload(self._selected_node_id)
-        rows = metadata_table_rows(state)
+        data, state, output_port = self._node_display_payload(self._selected_node_id)
         node = self.pipeline.nodes[self._selected_node_id]
+        rows = self._selected_output_metadata_rows(
+            node,
+            data,
+            state,
+            output_port,
+        )
         if node.operation_id == "input" and self._file_source_path_for_node(node):
             source_item = self._file_source_item_for_node(node)
             if source_item is None:
@@ -31121,15 +35337,20 @@ class VippWidget(QWidget):
         if current_view:
             rows.insert(4, MetadataRow("Current view", current_view))
         self.metadata_table.setRowCount(len(rows))
+        colors = theme_colors(QWidget.palette(self.metadata_table))
         for row_index, row in enumerate(rows):
             label_item = QTableWidgetItem(row.label)
             value_item = QTableWidgetItem(row.value)
             label_item.setFlags(label_item.flags() & ~Qt.ItemIsEditable)
             value_item.setFlags(value_item.flags() & ~Qt.ItemIsEditable)
+            top_left = int(Qt.AlignLeft | Qt.AlignTop)
+            label_item.setTextAlignment(top_left)
+            value_item.setTextAlignment(top_left)
+            label_item.setForeground(QBrush(colors.muted_text))
             self.metadata_table.setItem(row_index, 0, label_item)
             self.metadata_table.setItem(row_index, 1, value_item)
-        self.metadata_table.resizeRowsToContents()
-        self.metadata_table.resizeColumnToContents(0)
+        self._metadata_summary_text = self._metadata_summary(rows, state)
+        self._sync_metadata_table_geometry()
 
         history = metadata_history_items(state)
         if history:
@@ -31138,7 +35359,329 @@ class VippWidget(QWidget):
             )
         else:
             self.history_label.setText("No history yet.")
+        self._render_history_rows(history)
         self._update_table_preview()
+
+    def _selected_output_metadata_rows(
+        self,
+        node: GraphNode,
+        data,
+        state,
+        output_port: int,
+    ) -> list[MetadataRow]:
+        """Return status-aware metadata for the selected output."""
+
+        output_kind = self._node_output_type_for_payload(
+            node.id,
+            data,
+            output_port,
+        )
+        if output_kind != "table":
+            return metadata_table_rows(state)
+
+        if state is None and not is_table_data(data):
+            return self._pending_table_metadata_rows(node)
+
+        rows = metadata_table_rows(state if state is not None else data)
+        execution_state, execution_message = self._node_execution_ui_state(node.id)
+        if execution_state == EXECUTION_STALE:
+            rows.insert(
+                0,
+                MetadataRow(
+                    "Status",
+                    "Cached output is stale; recalculate for the current inputs.",
+                ),
+            )
+        elif execution_state == EXECUTION_RUNNING:
+            rows.insert(
+                0,
+                MetadataRow(
+                    "Status",
+                    "Recalculating; the values below describe the previous output.",
+                ),
+            )
+        elif execution_state == EXECUTION_ERROR:
+            detail = str(execution_message or "Calculation failed.").strip()
+            rows.insert(0, MetadataRow("Status", f"Error: {detail}"))
+
+        if is_table_data(data) and not any(
+            row.label == "Numeric values" for row in rows
+        ):
+            rows.extend(table_data_quality_rows(data))
+        elif not is_table_data(data):
+            rows.append(
+                MetadataRow(
+                    "Data quality",
+                    "Output values are not resident; recalculate to inspect them.",
+                )
+            )
+        return rows
+
+    def _pending_table_metadata_rows(self, node: GraphNode) -> list[MetadataRow]:
+        """Describe a configured table output before its manual calculation."""
+
+        execution_state, execution_message = self._node_execution_ui_state(node.id)
+        status_labels = {
+            EXECUTION_NOT_CALCULATED: "Not calculated",
+            EXECUTION_RUNNING: "Calculating",
+            EXECUTION_BLOCKED: "Waiting for required upstream calculation",
+            EXECUTION_STALE: "Needs recalculation for the current inputs",
+            EXECUTION_READY: "Calculated output is not resident",
+        }
+        if execution_state == EXECUTION_ERROR:
+            detail = str(execution_message or "Calculation failed").strip()
+            status = f"Error: {detail}"
+        else:
+            status = status_labels.get(execution_state, "Not calculated")
+
+        rows = [MetadataRow("Status", status)]
+        if node.operation_id == "intensity_histogram":
+            input_state = self.pipeline.input_state_for_node(node.id)
+            channel_count = _explicit_channel_count(
+                input_state if isinstance(input_state, ImageState) else None
+            )
+            multiseries = channel_count > 0
+            columns = intensity_histogram_table_columns(multiseries=multiseries)
+            bin_count = int(node.params.get("bin_count", 256))
+            rows.extend(
+                [
+                    MetadataRow("Kind", "Intensity histogram table"),
+                    MetadataRow(
+                        "Expected rows",
+                        str(bin_count * channel_count if multiseries else bin_count),
+                    ),
+                    MetadataRow("Expected fields", str(len(columns))),
+                    MetadataRow("Expected field names", ", ".join(columns)),
+                    MetadataRow(
+                        "Populations",
+                        (
+                            f"{channel_count} declared "
+                            f"{'channel' if channel_count == 1 else 'channels'} "
+                            "on shared bins"
+                            if multiseries
+                            else "One combined input population"
+                        ),
+                    ),
+                    MetadataRow(
+                        "Population accounting",
+                        "Available after calculation",
+                    ),
+                ]
+            )
+        elif node.operation_id in {"measure_objects", "measure_objects_intensity"}:
+            rows.extend(self._measurement_projection_metadata_rows(node))
+        else:
+            rows.extend(
+                [
+                    MetadataRow("Kind", "Table output"),
+                    MetadataRow("Rows", "Available after calculation"),
+                    MetadataRow("Fields", "Available after calculation"),
+                    MetadataRow("NaN values", "Available after calculation"),
+                    MetadataRow(
+                        "Infinite values",
+                        "Available after calculation",
+                    ),
+                ]
+            )
+        return rows
+
+    def _measurement_projection_metadata_rows(
+        self,
+        node: GraphNode,
+    ) -> list[MetadataRow]:
+        """Return exact configured schema and known object-count projections."""
+
+        data_by_port = self.pipeline.input_data_by_port_for_node(node.id)
+        states_by_port = self.pipeline.input_states_by_port_for_node(node.id)
+        labels = data_by_port.get(0)
+        labels_state = states_by_port.get(0)
+        expected_rows = "Connect the Labels input"
+        columns: tuple[str, ...] = ()
+
+        if labels is not None:
+            labels_source, spatial_ndim = self._measurement_object_size_source_for(
+                node.id,
+                labels,
+                labels_state,
+            )
+            volumes = self._cached_label_volume_result(
+                labels_source,
+                spatial_ndim,
+                "Label IDs",
+            )
+            if volumes is not None:
+                expected_rows = str(int(np.asarray(volumes).size))
+            elif _should_auto_background_data(labels_source):
+                expected_rows = "Calculating from connected labels…"
+            else:
+                expected_rows = "Inspecting connected labels…"
+
+            axes = tuple(getattr(labels_state, "axes", ()))
+            axis_names = (
+                tuple(str(axis.name) for axis in axes)
+                if len(axes) == labels_source.ndim
+                else None
+            )
+            axis_types = (
+                tuple(str(axis.type) for axis in axes)
+                if len(axes) == labels_source.ndim
+                else None
+            )
+            axis_scales = (
+                tuple(float(axis.scale) for axis in axes)
+                if len(axes) == labels_source.ndim
+                else None
+            )
+            axis_units = (
+                tuple(axis.unit for axis in axes)
+                if len(axes) == labels_source.ndim
+                else None
+            )
+            columns = measurement_table_columns(
+                ndim=labels_source.ndim,
+                spatial_ndim=spatial_ndim,
+                axis_names=axis_names,
+                axis_types=axis_types,
+                axis_scales=axis_scales,
+                axis_units=axis_units,
+                include_intensity=(
+                    node.operation_id == "measure_objects_intensity"
+                ),
+                include_shape_descriptors=bool(
+                    node.params.get("include_shape_descriptors", False)
+                ),
+                include_axis_descriptors=bool(
+                    node.params.get("include_axis_descriptors", False)
+                ),
+                include_2d_boundary_descriptors=bool(
+                    node.params.get("include_2d_boundary_descriptors", False)
+                ),
+                include_derived_shape_ratios=bool(
+                    node.params.get("include_derived_shape_ratios", False)
+                ),
+                include_2d_shape_moments=bool(
+                    node.params.get("include_2d_shape_moments", False)
+                ),
+            )
+
+        return [
+            MetadataRow("Kind", "Object measurement table"),
+            MetadataRow("Expected rows", expected_rows),
+            MetadataRow(
+                "Expected fields",
+                str(len(columns)) if columns else "Connect the Labels input",
+            ),
+            MetadataRow(
+                "Measurement set",
+                str(node.params.get("measurement_set", "Basic morphology")),
+            ),
+            MetadataRow(
+                "Expected field names",
+                ", ".join(columns) if columns else "Available after connection",
+            ),
+            MetadataRow("NaN values", "Available after calculation"),
+            MetadataRow("Infinite values", "Available after calculation"),
+        ]
+
+    @staticmethod
+    def _metadata_summary(rows, state) -> str:
+        values = {str(row.label).casefold(): str(row.value) for row in rows}
+        kind = values.get("kind", "")
+        axes = ""
+        if state is not None:
+            axes = "".join(
+                str(getattr(axis, "name", "")).upper()
+                for axis in getattr(state, "axes", ())
+            )
+        if not axes:
+            axes_value = values.get("axes", "")
+            axes = "".join(
+                match.upper()
+                for match in re.findall(
+                    r"(?:^|[, ]+)([A-Za-z]+)(?=\(|[, ]|$)",
+                    axes_value,
+                )
+            )
+        if "table" in kind.casefold():
+            row_count = values.get("rows", values.get("expected rows", ""))
+            field_count = values.get(
+                "fields",
+                values.get("expected fields", values.get("columns", "")),
+            )
+            table_parts = [part for part in (row_count, field_count) if part]
+            return " · ".join(table_parts) or kind
+        summary_parts = [part for part in (kind, axes) if part]
+        dtype = values.get("dtype", "")
+        if dtype and len(summary_parts) < 2:
+            summary_parts.append(dtype)
+        return " · ".join(summary_parts)
+
+    def _sync_metadata_table_geometry(self) -> None:
+        table = self.metadata_table
+        viewport_width = max(table.viewport().width(), table.width() - 4, 180)
+        key_width = int(np.clip(round(viewport_width * 0.36), 92, 180))
+        table.setColumnWidth(0, key_width)
+        # Row height depends on the wrapped value-column width.  Resizing rows
+        # before the inspector has assigned that width leaves long metadata
+        # (notably table field names) measured against Qt's provisional narrow
+        # column, so the row remains hundreds of pixels taller than its text.
+        table.resizeRowsToContents()
+        content_height = sum(table.rowHeight(row) for row in range(table.rowCount()))
+        table.setFixedHeight(int(np.clip(content_height + 4, 30, 320)))
+
+    def _on_metadata_section_toggled(self, expanded: bool) -> None:
+        """Remeasure wrapped rows after the section receives its visible width."""
+
+        if expanded:
+            QTimer.singleShot(0, self._sync_metadata_table_geometry)
+
+    def _render_history_rows(self, history) -> None:
+        while self.history_rows_layout.count():
+            item = self.history_rows_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._history_row_widgets.clear()
+
+        if not history:
+            empty = QLabel("No history yet.", self.history_rows_widget)
+            empty.setObjectName("InspectorHistoryDetail")
+            self.history_rows_layout.addWidget(empty)
+            self._history_row_widgets.append(empty)
+            return
+
+        for index, entry in enumerate(history, 1):
+            text = str(entry)
+            title, separator, detail = text.partition(": ")
+            row = QWidget(self.history_rows_widget)
+            row.setAccessibleName(f"History step {index}: {text}")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(9)
+            badge = QLabel(str(index), row)
+            badge.setObjectName("InspectorHistoryBadge")
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setFixedSize(22, 22)
+            row_layout.addWidget(badge, 0, Qt.AlignTop)
+            text_panel = QWidget(row)
+            text_layout = QVBoxLayout(text_panel)
+            text_layout.setContentsMargins(0, 0, 0, 0)
+            text_layout.setSpacing(1)
+            title_label = QLabel(title if separator else text, text_panel)
+            title_label.setObjectName("InspectorHistoryTitle")
+            title_label.setWordWrap(True)
+            title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            text_layout.addWidget(title_label)
+            if separator and detail:
+                detail_label = QLabel(detail, text_panel)
+                detail_label.setObjectName("InspectorHistoryDetail")
+                detail_label.setWordWrap(True)
+                detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                text_layout.addWidget(detail_label)
+            row_layout.addWidget(text_panel, 1)
+            self.history_rows_layout.addWidget(row)
+            self._history_row_widgets.append(row)
 
     def _current_view_label(self, state) -> str:
         if state is None or not hasattr(state, "axes"):
@@ -31174,6 +35717,14 @@ class VippWidget(QWidget):
         return int(np.clip(step, 0, max(axis_size - 1, 0)))
 
     def _update_histogram(self) -> None:
+        """Refresh diagnostics and always reconcile section loading state."""
+
+        try:
+            self._update_histogram_impl()
+        finally:
+            self._sync_inspector_diagnostic_busy_state()
+
+    def _update_histogram_impl(self) -> None:
         self._update_label_volume_histogram()
         self._update_colocalization_scatter()
         node = self.pipeline.nodes.get(self._selected_node_id)
@@ -31181,33 +35732,168 @@ class VippWidget(QWidget):
             self._current_output_histogram_key = None
             self._pending_output_histogram_request = None
             self.rescale_input_histogram_group.setHidden(True)
-            self.rescale_input_histogram_scope_row.setHidden(True)
+            self.histogram_controls_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+            self.measurement_object_size_histogram_group.hide()
+            self.measurement_object_size_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+            self.measurement_intensity_histogram_group.hide()
+            self.measurement_intensity_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+            self.colocalization_input_histograms_panel.hide()
+            self.mask_summary_section.hide()
             self.histogram_plot.set_histogram(None, log_scale=False)
+            self.histogram_result_plot.clear()
+            self.histogram_result_plot.hide()
+            self.histogram_value_combo.hide()
+            self.histogram_popout_button.setEnabled(False)
+            self.histogram_popout_button.hide()
             return
+        profile = self._inspector_profile_for_node(node.id)
         data, state, output_port = self._node_display_payload(self._selected_node_id)
+        state = self._presentation_image_state(node.id, state)
+        self._sync_shared_histogram_controls(node, data, state)
+        if node.operation_id == "intensity_histogram":
+            self._current_input_histogram_key = None
+            self._pending_input_histogram_request = None
+            self._current_output_histogram_key = None
+            self._pending_output_histogram_request = None
+            self.rescale_input_histogram_group.hide()
+            self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+            self.measurement_object_size_histogram_group.hide()
+            self.measurement_intensity_histogram_group.hide()
+            self.colocalization_input_histograms_panel.hide()
+            self.mask_summary_section.hide()
+            self.histogram_plot.set_histogram(None, log_scale=False)
+            self.histogram_plot.hide()
+            self._update_intensity_histogram_result(node, data, state)
+            return
+
+        self.histogram_result_plot.clear()
+        self.histogram_result_plot.hide()
+        self.histogram_plot.show()
+        self.histogram_value_combo.hide()
+        self.histogram_popout_button.setEnabled(False)
+        self.histogram_popout_button.hide()
+        self.histogram_log_checkbox.setText("Log scale")
+        self.histogram_log_checkbox.setToolTip(
+            "Use a logarithmic count axis for every input and output histogram."
+        )
+        if node.operation_id in {"measure_objects", "measure_objects_intensity"}:
+            self._current_output_histogram_key = None
+            self._pending_output_histogram_request = None
+            # Measurement distributions always describe the full scientific
+            # inputs, so a slice/stack choice would be misleading.  Keep the
+            # one shared count-scale control visible and apply it to both
+            # measurement plots.
+            self.histogram_controls_row.show()
+            self.histogram_controls_label.hide()
+            self.histogram_scope_combo.hide()
+            self.histogram_log_checkbox.show()
+            self.rescale_input_histogram_group.hide()
+            self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+            self.histogram_group.hide()
+            self.histogram_plot.set_histogram(None, log_scale=False)
+            self.histogram_semantic_summary.hide()
+            self.colocalization_input_histograms_panel.hide()
+            self.mask_summary_section.hide()
+            self._update_measurement_input_distributions(node)
+            return
+        self.measurement_object_size_histogram_group.hide()
+        self.measurement_object_size_histogram_status.hide()
+        self.measurement_object_size_histogram_plot.set_histogram(
+            None,
+            log_scale=False,
+        )
+        self.measurement_intensity_histogram_group.hide()
+        self.measurement_intensity_histogram_status.hide()
+        self.measurement_intensity_histogram_plot.set_histogram(
+            None,
+            log_scale=False,
+        )
         if is_table_data(data):
             self._current_output_histogram_key = None
             self._pending_output_histogram_request = None
             self.rescale_input_histogram_group.setHidden(True)
-            self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             self.histogram_group.setHidden(True)
             self.histogram_plot.set_histogram(None, log_scale=False)
+            self.mask_summary_section.hide()
+            if profile.distribution_kind != "colocalization_inputs":
+                self.colocalization_input_histograms_panel.hide()
             return
         current_step = self._current_step()
         current_step_nsteps = self._current_step_nsteps()
-        self._update_rescale_input_histogram(node.id, current_step)
-        self.histogram_group.setHidden(False)
-        histogram_title = "Output Histogram"
-        if node.operation_id == "split_channels":
+        if profile.distribution_kind in {
+            "analysis_intensity",
+            "intensity",
+            "runtime",
+            "threshold",
+        }:
+            self._update_rescale_input_histogram(node.id, current_step)
+        else:
+            self._current_input_histogram_key = None
+            self._pending_input_histogram_request = None
+            self.rescale_input_histogram_group.hide()
+            self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+
+        output_kind = self._node_output_type_for_payload(node.id, data, output_port)
+        self.mask_summary_section.setVisible(output_kind == "mask")
+        if output_kind == "mask":
+            self.mask_summary_label.setText("Calculating exact foreground occupancy…")
+            self.mask_summary_section.setSummary("Calculating…")
+        suppress_output_histogram = bool(
+            profile.distribution_kind
+            in {"labels", "property_filter", "metadata"}
+            or (
+                profile.distribution_kind == "object_sizes"
+                and output_kind != "mask"
+            )
+        )
+        if suppress_output_histogram:
+            self._current_output_histogram_key = None
+            self._pending_output_histogram_request = None
+            self.histogram_group.hide()
+            self.histogram_plot.set_histogram(None, log_scale=False)
+            self.histogram_semantic_summary.hide()
+            return
+        # Binary outputs still benefit from the paired Output distribution in
+        # the approved inspector design.  Keep the exact occupancy summary as
+        # a complementary statistic rather than replacing the histogram.
+        self.histogram_group.show()
+        if output_kind == "mask":
+            histogram_title = "Foreground Occupancy"
+        elif node.operation_id == "input":
+            histogram_title = "Source Histogram"
+        else:
+            histogram_title = "Output Histogram"
+        if len(self.pipeline.output_ports(node.id)) > 1:
             ports = self.pipeline.output_ports(node.id)
             if 0 <= output_port < len(ports):
-                histogram_title = f"Output Histogram — {ports[output_port].label}"
+                histogram_title = f"{histogram_title} — {ports[output_port].label}"
+        plot_title = "Source data" if node.operation_id == "input" else "Output"
+        if len(self.pipeline.output_ports(node.id)) > 1:
+            ports = self.pipeline.output_ports(node.id)
+            if 0 <= output_port < len(ports):
+                plot_title = ports[output_port].label
+        self.histogram_plot.set_plot_labels(
+            title=plot_title,
+            x_axis_label=(
+                "Mask value" if output_kind == "mask" else "Intensity (a.u.)"
+            ),
+            y_axis_label="Voxels",
+        )
         self.histogram_group.setTitle(histogram_title)
         scope_available = _histogram_has_stack_scope(data, state)
-        self.histogram_scope_row.setHidden(not scope_available)
-        scope = self.histogram_scope_combo.currentText() if scope_available else "Slice"
+        scope = (
+            self.histogram_scope_combo.currentText()
+            if scope_available
+            else "Slice histogram"
+        )
         histogram_source = _histogram_source(
             data,
             state=state,
@@ -31215,9 +35901,14 @@ class VippWidget(QWidget):
             current_step=current_step,
             current_step_nsteps=current_step_nsteps,
         )
-        if histogram_source is not None and _should_auto_background_data(
-            histogram_source[0]
+        if histogram_source is not None and (
+            self._selection_diagnostics_initializing
+            or _should_auto_background_data(histogram_source[0])
         ):
+            if output_kind == "mask":
+                self.histogram_semantic_summary.hide()
+            else:
+                self.histogram_semantic_summary.hide()
             self._queue_output_histogram(
                 node_id=node.id,
                 data=data,
@@ -31238,6 +35929,7 @@ class VippWidget(QWidget):
             current_step=current_step,
             current_step_nsteps=current_step_nsteps,
         )
+        self._set_output_histogram_semantic_summary(output_kind, counts)
         self.histogram_plot.set_histogram(
             counts,
             log_scale=self.histogram_log_checkbox.isChecked(),
@@ -31254,6 +35946,563 @@ class VippWidget(QWidget):
                 int(np.asarray(counts).shape[-1]) if counts is not None else 0
             ),
         )
+
+    def _update_measurement_input_distributions(self, node) -> None:
+        """Render the exact inputs that define basic object measurements."""
+
+        data_by_port = self.pipeline.input_data_by_port_for_node(node.id)
+        states_by_port = self.pipeline.input_states_by_port_for_node(node.id)
+        labels = data_by_port.get(0)
+        labels_state = states_by_port.get(0)
+
+        self.measurement_object_size_histogram_group.show()
+        if labels is None:
+            self._current_label_volume_key = None
+            self.measurement_object_size_histogram_status.setText(
+                "Connect a labels input to inspect object sizes."
+            )
+            self.measurement_object_size_histogram_status.show()
+            self.measurement_object_size_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+        else:
+            labels_source, spatial_ndim = self._measurement_object_size_source_for(
+                node.id,
+                labels,
+                labels_state,
+            )
+            connectivity = "Label IDs"
+            key = self._label_volume_cache_key(
+                labels_source,
+                spatial_ndim,
+                connectivity,
+            )
+            self._current_label_volume_key = key
+            volumes = self._cached_label_volume_result(
+                labels_source,
+                spatial_ndim,
+                connectivity,
+            )
+            if volumes is None and (
+                self._selection_diagnostics_initializing
+                or _should_auto_background_data(labels_source)
+            ):
+                self.measurement_object_size_histogram_status.setText(
+                    "Calculating exact object sizes from the full labels input…"
+                )
+                self.measurement_object_size_histogram_status.show()
+                self.measurement_object_size_histogram_plot.set_histogram(
+                    None,
+                    log_scale=False,
+                )
+                self._queue_label_volume_request(
+                    node_id=node.id,
+                    data=labels_source,
+                    spatial_ndim=spatial_ndim,
+                    connectivity=connectivity,
+                )
+            else:
+                self._pending_label_volume_request = None
+                if volumes is None:
+                    volumes = self._cached_label_volumes(
+                        labels_source,
+                        spatial_ndim,
+                        connectivity,
+                    )
+                self._render_measurement_object_size_histogram(
+                    volumes,
+                    spatial_ndim=spatial_ndim,
+                )
+
+        show_intensity = node.operation_id == "measure_objects_intensity"
+        self.measurement_intensity_histogram_group.setVisible(show_intensity)
+        if show_intensity:
+            self._update_measurement_intensity_histogram(
+                node,
+                data_by_port.get(1),
+                states_by_port.get(1),
+            )
+        else:
+            self._current_input_histogram_key = None
+            self._pending_input_histogram_request = None
+            self.measurement_intensity_histogram_status.hide()
+            self.measurement_intensity_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+        if node.id == self._selected_node_id:
+            self._update_metadata_panel()
+
+    def _measurement_object_size_source_for(self, node_id, data, state):
+        """Return labels with the operation's spatial axes trailing."""
+
+        arr = _histogram_array_like(data)
+        spatial_ndim = self._label_filter_spatial_ndim(node_id, arr)
+        axes = tuple(getattr(state, "axes", ()))
+        spatial_axes = tuple(
+            index
+            for index, axis in enumerate(axes)
+            if str(getattr(axis, "type", "")).casefold() == "space"
+        )
+        if len(axes) != arr.ndim or len(spatial_axes) < spatial_ndim:
+            spatial_axes = tuple(range(arr.ndim - spatial_ndim, arr.ndim))
+        else:
+            spatial_axes = spatial_axes[-spatial_ndim:]
+        target_axes = tuple(range(arr.ndim - spatial_ndim, arr.ndim))
+        signature = (
+            str(node_id),
+            id(data),
+            tuple(getattr(arr, "shape", ())),
+            str(getattr(arr, "dtype", "")),
+            int(spatial_ndim),
+            tuple(spatial_axes),
+        )
+        cached = self._measurement_object_size_source
+        if cached is not None and cached[:-1] == signature:
+            return cached[-1], spatial_ndim
+        source = (
+            data
+            if tuple(spatial_axes) == target_axes
+            else np.moveaxis(arr, spatial_axes, target_axes)
+        )
+        self._measurement_object_size_source = (*signature, source)
+        return source, spatial_ndim
+
+    def _render_measurement_object_size_histogram(
+        self,
+        volumes,
+        *,
+        spatial_ndim: int,
+    ) -> None:
+        """Show one object-count distribution from the full labels input."""
+
+        values = np.asarray(volumes, dtype=np.int64)
+        size_name = "Area" if int(spatial_ndim) == 2 else "Volume"
+        unit = "pixels" if int(spatial_ndim) == 2 else "voxels"
+        self.measurement_object_size_histogram_group.setTitle(
+            f"Object {size_name.lower()}"
+        )
+        self.measurement_object_size_histogram_plot.set_plot_labels(
+            title=f"Object {size_name.lower()}",
+            x_axis_label=f"{size_name} ({unit})",
+            y_axis_label="Objects",
+        )
+        if values.size == 0:
+            self.measurement_object_size_histogram_status.setText(
+                "No labeled objects in the connected labels input."
+            )
+            self.measurement_object_size_histogram_status.show()
+            self.measurement_object_size_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+            return
+        largest = int(values.max())
+        bin_count = int(np.clip(np.ceil(np.sqrt(values.size)) * 2, 8, 64))
+        counts, _edges = np.histogram(
+            values.astype(np.float64),
+            bins=bin_count,
+            range=(0.0, float(max(largest, 1))),
+        )
+        self.measurement_object_size_histogram_status.hide()
+        self.measurement_object_size_histogram_plot.set_histogram(
+            counts,
+            log_scale=self.histogram_log_checkbox.isChecked(),
+            x_range=(0.0, float(max(largest, 1))),
+            colors=[QColor("#bef264")],
+        )
+        self._set_histogram_explanation(
+            self.measurement_object_size_histogram_group,
+            total_values=int(values.size),
+            finite_values=int(values.size),
+            display_bins=int(counts.size),
+        )
+
+    def _update_measurement_intensity_histogram(self, node, data, state) -> None:
+        """Show the exact complete intensity input used by the measurement."""
+
+        self.measurement_intensity_histogram_plot.set_plot_labels(
+            title="Intensity input",
+            x_axis_label="Intensity (a.u.)",
+            y_axis_label="Voxels",
+        )
+        if data is None or is_table_data(data):
+            self._current_input_histogram_key = None
+            self._pending_input_histogram_request = None
+            self.measurement_intensity_histogram_status.setText(
+                "Connect an intensity image to inspect its distribution."
+            )
+            self.measurement_intensity_histogram_status.show()
+            self.measurement_intensity_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+            return
+
+        scope = "Stack histogram"
+        distribution_key, key = self._input_histogram_keys(
+            node.id,
+            node.operation_id,
+            data,
+            state,
+            scope,
+            None,
+            None,
+            node.params,
+        )
+        self._current_input_histogram_key = key
+        distribution = self._cached_input_histogram_distribution(
+            distribution_key,
+            data,
+        )
+        cached = self._input_histogram_cache.get(key)
+        if cached is not None and distribution is not None:
+            self._apply_input_histogram_result(cached)
+            return
+
+        if distribution is None and (
+            self._selection_diagnostics_initializing
+            or _should_auto_background_data(data)
+        ):
+            self.measurement_intensity_histogram_status.setText(
+                "Calculating the exact full-input intensity distribution…"
+            )
+            self.measurement_intensity_histogram_status.show()
+            self.measurement_intensity_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+            self._queue_input_histogram(
+                node_id=node.id,
+                operation_id=node.operation_id,
+                data=data,
+                state=state,
+                scope=scope,
+                current_step=None,
+                current_step_nsteps=None,
+                params=node.params,
+                title="Intensity input",
+            )
+            return
+
+        self._pending_input_histogram_request = None
+        if distribution is None:
+            distribution = self._calculate_input_histogram_distribution(
+                data,
+                state=state,
+                scope=scope,
+                current_step=None,
+                current_step_nsteps=None,
+            )
+            self._cache_input_histogram_distribution(distribution_key, distribution)
+        result = self._input_histogram_result(
+            key=key,
+            distribution_key=distribution_key,
+            node_id=node.id,
+            operation_id=node.operation_id,
+            data=data,
+            state=state,
+            scope=scope,
+            current_step=None,
+            current_step_nsteps=None,
+            params=node.params,
+            title="Intensity input",
+            distribution=distribution,
+        )
+        self._cache_input_histogram_result(result)
+        self._apply_input_histogram_result(result)
+
+    def _sync_shared_histogram_controls(self, node, data, state) -> None:
+        """Keep one inspector-only scope and count scale for every histogram."""
+
+        input_data = self.pipeline.input_data_for_node(node.id)
+        input_state = self.pipeline.input_state_for_node(node.id)
+        scope_available = bool(
+            (
+                data is not None
+                and not is_table_data(data)
+                and _histogram_has_stack_scope(data, state)
+            )
+            or (
+                input_data is not None
+                and not is_table_data(input_data)
+                and _histogram_has_stack_scope(input_data, input_state)
+            )
+        )
+        self.histogram_controls_row.show()
+        self.histogram_controls_label.show()
+        self.histogram_scope_combo.show()
+        self.histogram_log_checkbox.show()
+        self.histogram_scope_combo.setEnabled(scope_available)
+        if scope_available:
+            scope_note = (
+                "Choose whether every histogram in this section uses the "
+                "current displayed slice or the complete stack."
+            )
+        else:
+            scope_note = "Only a slice histogram is available for these data."
+        self.histogram_scope_combo.setToolTip(
+            f"{scope_note} This changes inspection only; it does not change "
+            "workflow processing."
+        )
+
+    def _intensity_histogram_summary_presentation(
+        self,
+        node_id: str,
+        data,
+    ) -> tuple[str, str, bool]:
+        """Describe one authored histogram from its owner, not the inspector."""
+
+        metadata = getattr(data, "histogram_metadata", None)
+        if not is_table_data(data) or metadata is None:
+            return (
+                "Calculate this node to generate an exact full-input histogram.",
+                "",
+                False,
+            )
+
+        ignored_nonfinite = (
+            int(metadata.nan_value_count)
+            + int(metadata.positive_infinite_value_count)
+            + int(metadata.negative_infinite_value_count)
+        )
+        summary_parts = [
+            f"{int(metadata.bin_count):,} bins",
+            (
+                f"{len(metadata.series):,} "
+                f"{'channel' if len(metadata.series) == 1 else 'channels'}"
+                if getattr(metadata, "series", ())
+                else "one combined population"
+            ),
+            f"{int(metadata.binned_value_count):,} of "
+            f"{int(metadata.input_value_count):,} values binned",
+        ]
+        excluded = (
+            ignored_nonfinite
+            + int(metadata.underflow_count)
+            + int(metadata.overflow_count)
+            + int(metadata.nonpositive_excluded_count)
+        )
+        if excluded:
+            summary_parts.append(f"{excluded:,} excluded")
+        execution_state, _message = self._node_execution_ui_state(node_id)
+        retained_not_current = execution_state in {
+            EXECUTION_NOT_CALCULATED,
+            EXECUTION_RUNNING,
+            EXECUTION_STALE,
+            EXECUTION_BLOCKED,
+            EXECUTION_ERROR,
+        }
+        if retained_not_current:
+            summary_parts.append("stale — recalculate before use")
+        summary = " · ".join(summary_parts)
+        tooltip = (
+            "NaN: "
+            f"{int(metadata.nan_value_count):,}; +Inf: "
+            f"{int(metadata.positive_infinite_value_count):,}; -Inf: "
+            f"{int(metadata.negative_infinite_value_count):,}; below range: "
+            f"{int(metadata.underflow_count):,}; above range: "
+            f"{int(metadata.overflow_count):,}; non-positive excluded: "
+            f"{int(metadata.nonpositive_excluded_count):,}."
+        )
+        series_tooltips = []
+        for series in tuple(getattr(metadata, "series", ()))[:16]:
+            series_excluded = (
+                int(series.nan_value_count)
+                + int(series.positive_infinite_value_count)
+                + int(series.negative_infinite_value_count)
+                + int(series.underflow_count)
+                + int(series.overflow_count)
+                + int(series.nonpositive_excluded_count)
+            )
+            series_tooltips.append(
+                f"{series.series_name}: {int(series.binned_value_count):,} binned, "
+                f"{series_excluded:,} excluded"
+            )
+        if series_tooltips:
+            tooltip += "\n" + "\n".join(series_tooltips)
+        return summary, tooltip, retained_not_current
+
+    def _update_intensity_histogram_result(self, node, data, _state) -> None:
+        """Render an authored histogram table without rereading its input."""
+
+        self.histogram_controls_row.show()
+        self.histogram_controls_label.setText("Y values")
+        self.histogram_controls_label.show()
+        self.histogram_scope_combo.hide()
+        self.histogram_value_combo.show()
+        self.histogram_log_checkbox.setText("Log Y axis")
+        self.histogram_log_checkbox.setToolTip(
+            "Use a true base-10 vertical axis. Empty bins remain absent because "
+            "zero has no logarithm."
+        )
+        self.histogram_log_checkbox.show()
+        self.histogram_popout_button.show()
+        self.histogram_group.setTitle("Histogram")
+        self.histogram_group.show()
+        self.histogram_result_plot.show()
+
+        metadata = getattr(data, "histogram_metadata", None)
+        if not is_table_data(data) or metadata is None:
+            self.histogram_result_plot.clear(
+                "Calculate this node to generate its histogram."
+            )
+            self.histogram_semantic_summary.setText(
+                "Calculate this node to generate an exact full-input histogram."
+            )
+            self.histogram_semantic_summary.show()
+            _set_palette_text_tone(self.histogram_semantic_summary, "secondary")
+            self.histogram_popout_button.setEnabled(False)
+            return
+
+        summary, tooltip, retained_not_current = (
+            self._intensity_histogram_summary_presentation(node.id, data)
+        )
+        self.histogram_semantic_summary.setText(summary)
+        self.histogram_semantic_summary.setToolTip(tooltip)
+        self.histogram_semantic_summary.show()
+        _set_palette_text_tone(
+            self.histogram_semantic_summary,
+            "warning" if retained_not_current else "text",
+        )
+
+        extracted = (
+            None
+            if int(metadata.binned_value_count) == 0
+            else self._intensity_histogram_plot_data(data)
+        )
+        if extracted is None:
+            self.histogram_result_plot.clear(
+                "No finite values fall within the histogram range."
+            )
+            self.histogram_popout_button.setEnabled(False)
+            return
+        (
+            edges,
+            values,
+            y_axis_label,
+            hover_details,
+            series_labels,
+            series_colors,
+        ) = extracted
+        x_scale = (
+            "log10"
+            if str(metadata.bin_spacing).casefold() == "logarithmic"
+            else "linear"
+        )
+        y_scale = "log10" if self.histogram_log_checkbox.isChecked() else "linear"
+        self.histogram_result_plot.set_histogram(
+            edges,
+            values,
+            title=node.title,
+            x_axis_label="Input value (a.u.)",
+            y_axis_label=y_axis_label,
+            x_scale=x_scale,
+            y_scale=y_scale,
+            series_labels=series_labels or None,
+            colors=series_colors or [QColor("#38bdf8")],
+            hover_details=hover_details,
+        )
+        self.histogram_popout_button.setEnabled(True)
+        self._sync_open_histogram_dialog(node.id, data)
+
+    def _intensity_histogram_plot_data(self, data):
+        """Extract exact edge and ordinate vectors from a histogram table."""
+
+        if not is_table_data(data) or data.row_count <= 0:
+            return None
+        try:
+            edges, columns, series_labels, series_colors = (
+                histogram_arrays_from_table(data)
+            )
+        except (TypeError, ValueError):
+            return None
+        choices = {
+            "Count": ("count", "Count"),
+            "Fraction": ("fraction", "Fraction"),
+            "Probability density": ("density", "Probability density"),
+            "Cumulative count": ("cumulative_count", "Cumulative count"),
+            "Cumulative fraction": (
+                "cumulative_fraction",
+                "Cumulative fraction",
+            ),
+        }
+        column_name, label = choices.get(
+            self.histogram_value_combo.currentText(),
+            choices["Count"],
+        )
+        values = columns[column_name]
+        if not np.isfinite(edges).all():
+            return None
+        matrix = values.reshape(1, -1) if values.ndim == 1 else values
+        visible = np.all(np.isfinite(matrix), axis=1)
+        if not np.any(visible):
+            return None
+        values = matrix[visible]
+        visible_labels = (
+            tuple(
+                value
+                for index, value in enumerate(series_labels)
+                if visible[index]
+            )
+            if series_labels
+            else ()
+        )
+        visible_colors = (
+            tuple(
+                value
+                for index, value in enumerate(series_colors)
+                if visible[index]
+            )
+            if series_colors
+            else ()
+        )
+        details = {}
+        for detail_label, detail_name in (
+            ("Count", "count"),
+            ("Fraction", "fraction"),
+            ("Density", "density"),
+        ):
+            detail_values = columns[detail_name]
+            detail_matrix = (
+                detail_values.reshape(1, -1)
+                if detail_values.ndim == 1
+                else detail_values
+            )[visible]
+            if np.isfinite(detail_matrix).all():
+                details[detail_label] = detail_matrix
+        return edges, values, label, details, visible_labels, visible_colors
+
+    def _set_output_histogram_semantic_summary(self, output_kind: str, counts) -> None:
+        if output_kind != "mask" or counts is None:
+            self.histogram_semantic_summary.clear()
+            self.histogram_semantic_summary.hide()
+            if output_kind != "mask":
+                self.mask_summary_section.hide()
+            return
+        values = np.asarray(counts, dtype=np.int64)
+        if values.ndim > 1:
+            values = values.sum(axis=0)
+        if values.size < 2:
+            self.histogram_semantic_summary.clear()
+            self.histogram_semantic_summary.hide()
+            self.mask_summary_label.setText("Mask occupancy is unavailable.")
+            self.mask_summary_section.setSummary("Unavailable")
+            return
+        background = int(values[0])
+        foreground = int(values[1])
+        total = background + foreground
+        fraction = (100.0 * foreground / total) if total else 0.0
+        summary = f"Foreground {fraction:.2f}% · {foreground:,} of {total:,} values"
+        self.histogram_semantic_summary.setText(summary)
+        self.histogram_semantic_summary.hide()
+        self.mask_summary_label.setText(
+            f"{summary}. Background: {background:,} values. Counts use the exact "
+            "selected output scope and do not alter processing."
+        )
+        self.mask_summary_section.setSummary(f"{fraction:.2f}% foreground")
+        self.mask_summary_section.show()
 
     def _on_colocalization_scatter_colormap_changed(self, colormap: str) -> None:
         """Keep inspector and active pop-out presentation colors synchronized."""
@@ -31285,6 +36534,7 @@ class VippWidget(QWidget):
             node is not None and node.operation_id in COLOCALIZATION_SCATTER_OPERATIONS
         )
         self.colocalization_scatter_group.setHidden(not visible)
+        self.colocalization_input_histograms_panel.setVisible(visible)
         if not visible or node is None:
             self._current_colocalization_scatter_key = None
             self._pending_colocalization_scatter_request = None
@@ -31293,6 +36543,14 @@ class VippWidget(QWidget):
             self.colocalization_scatter_summary.setText("Connect two channel inputs.")
             self.colocalization_scatter_summary.setToolTip("")
             self.colocalization_scatter_plot.clear()
+            self.colocalization_channel_1_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+            self.colocalization_channel_2_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
             self.colocalization_scatter_plot.setToolTip("")
             if self._colocalization_scatter_dialog is not None:
                 self._colocalization_scatter_dialog.close()
@@ -31310,6 +36568,17 @@ class VippWidget(QWidget):
             self.colocalization_scatter_summary.setToolTip("")
             self.colocalization_scatter_plot.clear(
                 "Connect all required channel and ROI inputs."
+            )
+            self.colocalization_histogram_note.setText(
+                "Connect both channel inputs to show their ROI distributions."
+            )
+            self.colocalization_channel_1_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+            self.colocalization_channel_2_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
             )
             self.colocalization_scatter_plot.setToolTip("")
             if self._colocalization_scatter_dialog is not None:
@@ -31359,7 +36628,8 @@ class VippWidget(QWidget):
             self._defer_unresolved_colocalization_scatter(density_key)
             return
         if (
-            unresolved_costes
+            self._selection_diagnostics_initializing
+            or unresolved_costes
             or colocalization_scatter_requires_background(bins)
             or any(_should_auto_background_data(value) for value in inputs)
         ):
@@ -31667,10 +36937,12 @@ class VippWidget(QWidget):
                     self._pending_colocalization_scatter_request = None
                 else:
                     self._pending_colocalization_scatter_request = request
+                self._sync_inspector_diagnostic_busy_state()
                 return
             if self._active_colocalization_scatter_cancel_event is not None:
                 self._active_colocalization_scatter_cancel_event.set()
             self._pending_colocalization_scatter_request = request
+            self._sync_inspector_diagnostic_busy_state()
             return
         self._start_colocalization_scatter_request(request)
 
@@ -31702,6 +36974,7 @@ class VippWidget(QWidget):
             self.colocalization_scatter_popout_button.setEnabled(False)
             if self._colocalization_scatter_dialog is not None:
                 self._colocalization_scatter_dialog.close()
+        self._sync_inspector_diagnostic_busy_state()
 
     def _start_colocalization_scatter_request(
         self,
@@ -31721,6 +36994,7 @@ class VippWidget(QWidget):
         self._active_colocalization_scatter_key = request.key
         self._active_colocalization_scatter_density_key = request.density_key
         self._active_colocalization_scatter_cancel_event = cancel_event
+        self._sync_inspector_diagnostic_busy_state()
         worker = ColocalizationScatterWorker(
             request,
             normalized_inputs=colocalization_normalized_inputs,
@@ -31753,6 +37027,7 @@ class VippWidget(QWidget):
             and pending.key == self._current_colocalization_scatter_key
         ):
             self._start_colocalization_scatter_request(pending)
+        self._sync_inspector_diagnostic_busy_state()
 
     def _cache_colocalization_scatter_result(
         self,
@@ -31841,12 +37116,22 @@ class VippWidget(QWidget):
             self.colocalization_scatter_summary.setText(message)
             self.colocalization_scatter_summary.setToolTip(message)
             self.colocalization_scatter_plot.clear(message)
+            self.colocalization_histogram_note.setText(message)
+            self.colocalization_channel_1_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
+            self.colocalization_channel_2_histogram_plot.set_histogram(
+                None,
+                log_scale=False,
+            )
             self._displayed_colocalization_scatter_density_key = None
             self.colocalization_scatter_popout_button.setEnabled(False)
             self.colocalization_scatter_plot.setToolTip(message)
             if self._colocalization_scatter_dialog is not None:
                 self._colocalization_scatter_dialog.close()
             return
+        self._apply_colocalization_input_histograms(result, node)
         if (
             str(result.threshold_mode).lower().startswith("costes")
             and str(node.params.get("threshold_mode", "")).lower().startswith("costes")
@@ -31942,6 +37227,51 @@ class VippWidget(QWidget):
         self.colocalization_scatter_plot.setToolTip(tooltip)
         if self._colocalization_scatter_dialog is not None:
             self._sync_colocalization_scatter_dialog(result, node)
+        self._sync_inspector_presentation()
+
+    def _apply_colocalization_input_histograms(self, result, node) -> None:
+        """Render the scatter's exact binned ROI marginals below the scatter."""
+
+        density = np.asarray(result.density_counts, dtype=np.float64)
+        if density.ndim != 2 or density.size == 0:
+            self.colocalization_input_histograms_panel.hide()
+            return
+        channel_1_counts = density.sum(axis=1)
+        channel_2_counts = density.sum(axis=0)
+        channel_1_range, channel_2_range = self._scatter_result_axis_ranges(result)
+        self.colocalization_channel_1_histogram_plot.set_histogram(
+            channel_1_counts,
+            log_scale=self.histogram_log_checkbox.isChecked(),
+            x_range=channel_1_range,
+            colors=[
+                _qcolor_from_channel_color(
+                    node.params.get("channel_1_color", "Red"),
+                    fallback="#ef4444",
+                )
+            ],
+        )
+        self.colocalization_channel_2_histogram_plot.set_histogram(
+            channel_2_counts,
+            log_scale=self.histogram_log_checkbox.isChecked(),
+            x_range=channel_2_range,
+            colors=[
+                _qcolor_from_channel_color(
+                    node.params.get("channel_2_color", "Green"),
+                    fallback="#22c55e",
+                )
+            ],
+        )
+        note = (
+            "Channel marginals use the same ROI and intensity range as the "
+            "scientific scatter above."
+        )
+        if float(result.range_percentile) < 100.0:
+            note += (
+                f" The outer tails are hidden by its {result.range_percentile:g}% "
+                "display range; processing remains exact."
+            )
+        self.colocalization_histogram_note.setText(note)
+        self.colocalization_input_histograms_panel.show()
 
     @staticmethod
     def _rebind_colocalization_scatter_result(
@@ -31996,15 +37326,13 @@ class VippWidget(QWidget):
                 self._on_colocalization_scatter_threshold_changed
             )
             dialog.plot.gestureStarted.connect(
-                lambda: self._begin_selected_parameter_scrub(
-                    "colocalization_threshold",
-                    dialog.plot,
+                lambda: self._begin_colocalization_threshold_scrub(
+                    dialog.plot
                 )
             )
             dialog.plot.gestureFinished.connect(
-                lambda: self._end_selected_parameter_scrub(
-                    "colocalization_threshold",
-                    dialog.plot,
+                lambda: self._end_colocalization_threshold_scrub(
+                    dialog.plot
                 )
             )
             dialog.colormapChanged.connect(
@@ -32061,6 +37389,13 @@ class VippWidget(QWidget):
         inputs = [data_by_port.get(index) for index in range(required)]
         if any(value is None for value in inputs):
             return None
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "object_colocalization_metrics":
+            # The operation consumes labels, channel 1, channel 2. The shared
+            # scatter diagnostics consume channel 1, channel 2, optional ROI.
+            # Passing the label image as the ROI is exact: non-zero labels are
+            # precisely the per-object foreground used by the operation.
+            return [inputs[1], inputs[2], inputs[0]]
         return inputs
 
     def _set_parameter_control_value(
@@ -32117,6 +37452,7 @@ class VippWidget(QWidget):
             preserve_colocalization_scatter=True,
         )
         self._update_colocalization_scatter()
+        self._restore_colocalization_inspector_scroll()
         self._debounce_timer.start()
         self._sync_current_workflow_tab_state()
 
@@ -32199,9 +37535,16 @@ class VippWidget(QWidget):
     def _on_label_volume_marker_changed(self, label: str, value: float) -> None:
         node_id = self._selected_node_id
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "filter_labels_by_volume":
+        if node is None:
             return
-        name = {"min": "min_volume", "max": "max_volume"}.get(str(label))
+        if node.operation_id == "filter_labels_by_volume":
+            name = {"min": "min_volume", "max": "max_volume"}.get(str(label))
+        elif node.operation_id == "filter_labels_by_property":
+            name = {"min": "min_value", "max": "max_value"}.get(str(label))
+        elif node.operation_id == "remove_small_objects":
+            name = {"min": "min_size"}.get(str(label))
+        else:
+            return
         if name is None:
             return
         value = self._paired_histogram_marker_value(node_id, name, value)
@@ -32261,6 +37604,8 @@ class VippWidget(QWidget):
             "high_threshold": ("low_threshold", "high"),
             "min_volume": ("max_volume", "low"),
             "max_volume": ("min_volume", "high"),
+            "min_value": ("max_value", "low"),
+            "max_value": ("min_value", "high"),
         }.get(name)
         if pair is None:
             return float(value)
@@ -32271,7 +37616,7 @@ class VippWidget(QWidget):
         other_value = _safe_float(other, np.nan)
         if not np.isfinite(other_value):
             return float(value)
-        if name == "min_volume" and int(round(other_value)) <= 0:
+        if name in {"min_volume", "min_value"} and other_value <= 0:
             return float(value)
         if role == "low":
             return float(min(float(value), other_value))
@@ -32472,13 +37817,29 @@ class VippWidget(QWidget):
             self._current_step_nsteps() if current_step is not None else None
         )
         node = self.pipeline.nodes.get(node_id)
-        visible = node is not None and node.operation_id in INPUT_HISTOGRAM_OPERATIONS
+        visible = False
+        if node is not None:
+            operation = self.pipeline.operation_spec(node.operation_id)
+            input_ports = operation.input_ports
+            generic_intensity_input = bool(
+                len(input_ports) == 1
+                and operation.max_inputs == 1
+                and input_ports[0].input_type in {"array", "image", "any"}
+                and operation.output_type != "table"
+                and node.operation_id
+                not in {"save_output", "batch_output", "born_wolf_psf"}
+                and node.operation_id not in COLOCALIZATION_SCATTER_OPERATIONS
+            )
+            visible = bool(
+                node.operation_id in INPUT_HISTOGRAM_OPERATIONS
+                or node.operation_id in PRIMARY_IMAGE_INPUT_HISTOGRAM_OPERATIONS
+                or generic_intensity_input
+            )
         self.rescale_input_histogram_group.setHidden(not visible)
         if not visible:
             self._current_input_histogram_key = None
             self._pending_input_histogram_request = None
             self.rescale_input_histogram_group.setTitle("Input Histogram")
-            self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             return
 
@@ -32487,29 +37848,26 @@ class VippWidget(QWidget):
             self._current_input_histogram_key = None
             self._pending_input_histogram_request = None
             self.rescale_input_histogram_group.setTitle("Input Histogram")
-            self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             return
 
         state = self.pipeline.input_state_for_node(node_id)
         scope_available = _histogram_has_stack_scope(data, state)
-        if node.operation_id in GLOBAL_THRESHOLD_OPERATIONS:
-            if scope_available:
-                scope = str(node.params.get("threshold_scope", "Stack histogram"))
-                scope_label = _threshold_histogram_scope_label(scope)
-                title = f"Input Histogram ({scope_label})"
-            else:
-                scope = "Slice histogram"
-                title = "Input Histogram"
-            self.rescale_input_histogram_scope_row.setHidden(True)
-        else:
-            title = "Input Histogram"
-            self.rescale_input_histogram_scope_row.setHidden(not scope_available)
-            scope = (
-                self.rescale_input_histogram_scope_combo.currentText()
-                if scope_available
-                else "Slice"
-            )
+        title = (
+            "Image Input Histogram"
+            if node.operation_id in PRIMARY_IMAGE_INPUT_HISTOGRAM_OPERATIONS
+            else "Input Histogram"
+        )
+        self.rescale_input_histogram_plot.set_plot_labels(
+            title="Input",
+            x_axis_label="Intensity (a.u.)",
+            y_axis_label="Voxels",
+        )
+        scope = (
+            self.histogram_scope_combo.currentText()
+            if scope_available
+            else "Slice histogram"
+        )
         self.rescale_input_histogram_group.setTitle(title)
         histogram_source = _histogram_source(
             data,
@@ -32549,7 +37907,11 @@ class VippWidget(QWidget):
             data,
             histogram_source,
         )
-        if distribution_requires_background or marker_requires_background:
+        if (
+            self._selection_diagnostics_initializing
+            or distribution_requires_background
+            or marker_requires_background
+        ):
             self._queue_input_histogram(
                 node_id=node.id,
                 operation_id=node.operation_id,
@@ -32663,10 +38025,12 @@ class VippWidget(QWidget):
                     self._pending_input_histogram_request = None
                 else:
                     self._pending_input_histogram_request = request
+                self._sync_inspector_diagnostic_busy_state()
                 return
             if self._active_input_histogram_cancel_event is not None:
                 self._active_input_histogram_cancel_event.set()
             self._pending_input_histogram_request = request
+            self._sync_inspector_diagnostic_busy_state()
             return
         self._start_input_histogram_request(request)
 
@@ -32684,6 +38048,7 @@ class VippWidget(QWidget):
         self._active_input_histogram_run_id = request.run_id
         self._active_input_histogram_key = request.key
         self._active_input_histogram_cancel_event = cancel_event
+        self._sync_inspector_diagnostic_busy_state()
         worker = InputHistogramWorker(
             request,
             histogram_summary=_histogram_summary,
@@ -32722,6 +38087,7 @@ class VippWidget(QWidget):
             if distribution is not None:
                 pending = replace(pending, distribution=distribution)
             self._start_input_histogram_request(pending)
+        self._sync_inspector_diagnostic_busy_state()
 
     def _apply_input_histogram_result(
         self,
@@ -32731,6 +38097,32 @@ class VippWidget(QWidget):
             return
         node = self.pipeline.nodes.get(result.node_id)
         if node is None:
+            return
+        if node.operation_id == "measure_objects_intensity":
+            if result.error:
+                self.measurement_intensity_histogram_status.setText(
+                    "Intensity distribution failed: " + result.error
+                )
+                self.measurement_intensity_histogram_status.show()
+                self.measurement_intensity_histogram_plot.set_histogram(
+                    None,
+                    log_scale=False,
+                )
+                return
+            self.measurement_intensity_histogram_status.hide()
+            self.measurement_intensity_histogram_plot.set_histogram(
+                result.counts,
+                log_scale=self.histogram_log_checkbox.isChecked(),
+                x_range=result.x_range,
+                colors=result.colors,
+            )
+            self._set_histogram_explanation(
+                self.measurement_intensity_histogram_group,
+                total_values=result.total_values,
+                finite_values=result.finite_values,
+                display_bins=result.display_bins,
+                marker_error=result.marker_error,
+            )
             return
         self.rescale_input_histogram_group.setTitle(
             f"{result.title} (marker unavailable)"
@@ -32829,8 +38221,10 @@ class VippWidget(QWidget):
         if self._active_output_histogram_run_id is not None:
             if self._active_output_histogram_key == key:
                 self._pending_output_histogram_request = None
+                self._sync_inspector_diagnostic_busy_state()
                 return
             self._pending_output_histogram_request = request
+            self._sync_inspector_diagnostic_busy_state()
             return
         self._start_output_histogram_request(request)
 
@@ -32842,6 +38236,7 @@ class VippWidget(QWidget):
         request = replace(request, run_id=self._output_histogram_serial)
         self._active_output_histogram_run_id = request.run_id
         self._active_output_histogram_key = request.key
+        self._sync_inspector_diagnostic_busy_state()
         worker = InputHistogramWorker(
             request,
             histogram_summary=_histogram_summary,
@@ -32872,6 +38267,7 @@ class VippWidget(QWidget):
         self._pending_output_histogram_request = None
         if pending is not None and pending.key == self._current_output_histogram_key:
             self._start_output_histogram_request(pending)
+        self._sync_inspector_diagnostic_busy_state()
 
     def _apply_output_histogram_result(
         self,
@@ -32882,12 +38278,28 @@ class VippWidget(QWidget):
         self.histogram_group.setTitle(result.title)
         if result.error:
             self.histogram_plot.set_histogram(None, log_scale=False)
+            if self._node_output_type(result.node_id) == "mask":
+                self.mask_summary_label.setText(
+                    f"Mask occupancy could not be calculated: {result.error}"
+                )
+                self.mask_summary_section.setSummary("Unavailable")
+            self._sync_inspector_presentation()
             return
+        node = self.pipeline.nodes.get(result.node_id)
+        output_kind = (
+            self._node_output_type(result.node_id)
+            if node is not None
+            else "image"
+        )
+        self._set_output_histogram_semantic_summary(output_kind, result.counts)
+        _data, state, _output_port = self._node_display_payload(result.node_id)
+        state = self._presentation_image_state(result.node_id, state)
+        colors = _histogram_colors_for_state(result.counts, state)
         self.histogram_plot.set_histogram(
             result.counts,
             log_scale=self.histogram_log_checkbox.isChecked(),
             x_range=result.x_range,
-            colors=result.colors,
+            colors=colors,
         )
         self._set_histogram_explanation(
             self.histogram_group,
@@ -32895,23 +38307,452 @@ class VippWidget(QWidget):
             finite_values=result.finite_values,
             display_bins=result.display_bins,
         )
+        self._sync_inspector_presentation()
+
+    def _open_histogram_dialog(self) -> None:
+        """Open the selected cached histogram in a reusable detailed window."""
+
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        data, _state, _output_port = self._node_display_payload(
+            self._selected_node_id
+        )
+        metadata = getattr(data, "histogram_metadata", None)
+        if (
+            node is None
+            or node.operation_id != "intensity_histogram"
+            or not is_table_data(data)
+            or metadata is None
+            or int(metadata.binned_value_count) <= 0
+            or data.row_count <= 0
+        ):
+            self._set_status(
+                "Calculate a histogram containing at least one binned value "
+                "before opening it.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+        if self._histogram_dialog is None:
+            dialog = HistogramDialog(self)
+            dialog.presentationChanged.connect(
+                self._on_histogram_dialog_presentation_changed
+            )
+            dialog.calculationParametersChanged.connect(
+                self._on_histogram_dialog_calculation_parameters_changed
+            )
+            dialog.exportCompleted.connect(
+                lambda path: self._set_status(
+                    f"Exported histogram plot to {path}.",
+                    severity=MessageSeverity.SUCCESS,
+                )
+            )
+            self._histogram_dialog = dialog
+        self._sync_histogram_dialog(
+            node.id,
+            data,
+            initialize_presentation=(self._histogram_dialog_node_id != node.id),
+        )
+        self._histogram_dialog.refresh_theme(QWidget.palette(self))
+        self._histogram_dialog.show()
+        self._histogram_dialog.raise_()
+        self._histogram_dialog.activateWindow()
+
+    def _sync_open_histogram_dialog(self, node_id: str, data) -> None:
+        dialog = self._histogram_dialog
+        if (
+            dialog is None
+            or not dialog.isVisible()
+            or self._histogram_dialog_node_id != node_id
+        ):
+            return
+        self._sync_histogram_dialog(node_id, data, initialize_presentation=False)
+
+    def _refresh_histogram_dialog_from_owner(
+        self,
+        affected_node_ids: Iterable[str] | None = None,
+    ) -> None:
+        """Refresh the detached histogram from the node that opened it."""
+
+        dialog = self._histogram_dialog
+        owner_id = str(self._histogram_dialog_node_id)
+        if dialog is None or not dialog.isVisible() or not owner_id:
+            return
+        if affected_node_ids is not None and owner_id not in set(affected_node_ids):
+            return
+        owner = self.pipeline.nodes.get(owner_id)
+        if owner is None or owner.operation_id != "intensity_histogram":
+            dialog.close()
+            self._histogram_dialog_node_id = ""
+            return
+        data, _state, _output_port = self._node_display_payload(owner_id)
+        self._sync_histogram_dialog(
+            owner_id,
+            data,
+            initialize_presentation=False,
+        )
+
+    def _sync_histogram_dialog(
+        self,
+        node_id: str,
+        data,
+        *,
+        initialize_presentation: bool,
+    ) -> None:
+        dialog = self._histogram_dialog
+        node = self.pipeline.nodes.get(node_id)
+        metadata = getattr(data, "histogram_metadata", None)
+        if (
+            dialog is None
+            or node is None
+            or not is_table_data(data)
+            or metadata is None
+            or int(metadata.binned_value_count) <= 0
+            or data.row_count <= 0
+        ):
+            if dialog is not None and self._histogram_dialog_node_id == node_id:
+                dialog.clear("No binned histogram result is available.")
+            return
+
+        prior_y = dialog.y_value_name
+        prior_log_x = dialog.log_x_checkbox.isChecked()
+        prior_log_y = dialog.log_y_checkbox.isChecked()
+        summary, tooltip, _retained_not_current = (
+            self._intensity_histogram_summary_presentation(node_id, data)
+        )
+        dialog.set_histogram(
+            data,
+            title=node.title,
+            x_axis_label="Input value (a.u.)",
+            summary=summary,
+        )
+        dialog.summary_label.setToolTip(tooltip)
+        self._histogram_dialog_node_id = node_id
+        self._sync_histogram_dialog_calculation_parameters(node_id)
+        if initialize_presentation:
+            y_values = self.histogram_value_combo.currentText()
+            log_x = str(metadata.bin_spacing).casefold() == "logarithmic"
+            log_y = self.histogram_log_checkbox.isChecked()
+        else:
+            y_values = prior_y
+            log_x = prior_log_x
+            log_y = prior_log_y
+        dialog.set_presentation(
+            y_values=y_values,
+            log_x=log_x,
+            log_y=log_y,
+        )
+
+    def _sync_histogram_dialog_calculation_parameters(
+        self,
+        node_id: str,
+    ) -> None:
+        """Mirror one histogram node into its detached calculation controls."""
+
+        dialog = self._histogram_dialog
+        node = self.pipeline.nodes.get(node_id)
+        if (
+            dialog is None
+            or node is None
+            or node.operation_id != "intensity_histogram"
+            or self._histogram_dialog_node_id != node_id
+        ):
+            return
+        dialog.set_calculation_parameters(
+            {
+                spec.name: node.params.get(spec.name, spec.default)
+                for spec in self.pipeline.node_parameter_specs(node_id)
+            }
+        )
+
+    def _on_histogram_dialog_calculation_parameters_changed(
+        self,
+        parameters: dict[str, object],
+    ) -> None:
+        """Commit one detached histogram edit to the dialog's owning node."""
+
+        node_id = self._histogram_dialog_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "intensity_histogram":
+            return
+        specs = self.pipeline.node_parameter_specs(node_id)
+        expected = {spec.name for spec in specs}
+        if set(parameters) != expected:
+            self._sync_histogram_dialog_calculation_parameters(node_id)
+            self._set_status(
+                "Histogram calculation settings could not be applied because "
+                "their schema no longer matches this node.",
+                severity=MessageSeverity.ERROR,
+            )
+            return
+        changed = {
+            spec.name: parameters[spec.name]
+            for spec in specs
+            if node.params.get(spec.name, spec.default) != parameters[spec.name]
+        }
+        if not changed:
+            return
+
+        history_key = (
+            next(iter(changed))
+            if len(changed) == 1
+            else "histogram_calculation"
+        )
+        self._record_parameter_undo(node_id, history_key)
+        previous = {name: node.params.get(name) for name in changed}
+        try:
+            for spec in specs:
+                if spec.name in changed:
+                    self.pipeline.set_param(
+                        node_id,
+                        spec.name,
+                        changed[spec.name],
+                    )
+        except Exception as exc:
+            for name, value in previous.items():
+                node.params[name] = value
+            self._sync_histogram_dialog_calculation_parameters(node_id)
+            self._set_status(
+                f"Histogram calculation settings were not changed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
+
+        if node_id == self._selected_node_id:
+            if self._parameter_visibility_controls_changed(node_id):
+                self._render_parameters(node_id, preserve_authored_values=True)
+            else:
+                self._refresh_selected_parameter_controls()
+        if not self._mark_pipeline_dirty(node_id):
+            self._sync_histogram_dialog_calculation_parameters(node_id)
+            return
+        self._sync_histogram_dialog_calculation_parameters(node_id)
+        self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
+
+    def _on_histogram_dialog_presentation_changed(
+        self,
+        y_values: str,
+        _log_x: bool,
+        log_y: bool,
+    ) -> None:
+        """Keep the compact result aligned with detached Y presentation."""
+
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if (
+            node is None
+            or node.id != self._histogram_dialog_node_id
+            or node.operation_id != "intensity_histogram"
+        ):
+            return
+        with QSignalBlocker(self.histogram_value_combo):
+            self.histogram_value_combo.setCurrentText(str(y_values))
+        with QSignalBlocker(self.histogram_log_checkbox):
+            self.histogram_log_checkbox.setChecked(bool(log_y))
+        self._update_histogram()
+        self._sync_inspector_presentation()
+
+    def _open_result_table_dialog(self) -> None:
+        """Open the selected complete table in a reusable nonmodal window."""
+
+        data, _state, output_port = self._node_display_payload(
+            self._selected_node_id
+        )
+        if not is_table_data(data):
+            self._set_status(
+                "Calculate or select a table output before opening it.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+        if self._result_table_dialog is None:
+            dialog = ResultTableDialog(self)
+            dialog.exportCompleted.connect(
+                lambda path: self._set_status(
+                    f"Exported table to {path}.",
+                    severity=MessageSeverity.SUCCESS,
+                )
+            )
+            dialog.recalculationRequested.connect(
+                self._calculate_result_table_dialog_node
+            )
+            self._result_table_dialog = dialog
+        self._sync_result_table_dialog(data, output_port)
+        self._result_table_dialog.refresh_theme(QWidget.palette(self))
+        self._result_table_dialog.show()
+        self._result_table_dialog.raise_()
+        self._result_table_dialog.activateWindow()
+
+    def _sync_result_table_dialog(
+        self,
+        data,
+        output_port: int,
+        *,
+        node_id: str | None = None,
+    ) -> None:
+        dialog = self._result_table_dialog
+        node = self.pipeline.nodes.get(node_id or self._selected_node_id)
+        if dialog is None or node is None or not is_table_data(data):
+            return
+        ports = self.pipeline.output_ports(node.id)
+        port_label = (
+            str(ports[output_port].label or ports[output_port].name)
+            if len(ports) > 1 and 0 <= output_port < len(ports)
+            else ""
+        )
+        title = f"{node.title} — {port_label}" if port_label else node.title
+        suffix = f"_{safe_batch_filename(port_label)}" if port_label else ""
+        default_name = f"{safe_batch_filename(node.title)}{suffix}.csv"
+        dialog.set_table(
+            data,
+            title=title,
+            default_export_name=default_name,
+            context_key=(node.id, int(output_port)),
+        )
+        self._sync_result_table_dialog_attention(node.id)
+
+    def _calculate_result_table_dialog_node(self) -> None:
+        dialog = self._result_table_dialog
+        context = dialog.context_key if dialog is not None else None
+        if context is None:
+            return
+        self._commit_crop_draft(schedule_run=False)
+        self._calculate_node(context[0])
+
+    def _sync_result_table_dialog_attention(
+        self,
+        node_id: str | None = None,
+    ) -> None:
+        """Keep a detached retained table explicit about result currentness."""
+
+        dialog = self._result_table_dialog
+        context = dialog.context_key if dialog is not None else None
+        if dialog is None or context is None:
+            return
+        dialog_node_id = context[0]
+        if node_id is not None and node_id != dialog_node_id:
+            return
+        node = self.pipeline.nodes.get(dialog_node_id)
+        if node is None:
+            dialog.set_result_status()
+            return
+
+        state, detail = self._node_execution_ui_state(dialog_node_id)
+        if state == EXECUTION_READY:
+            dialog.set_result_status()
+            return
+
+        manual_action = bool(
+            self.pipeline.is_manual_node(dialog_node_id)
+            and not self.pipeline.node_auto_recalculate(dialog_node_id)
+        )
+        action_text = ""
+        action_enabled = False
+        if manual_action:
+            if state == EXECUTION_NOT_CALCULATED:
+                action_text = "Calculate"
+                action_enabled = True
+            elif state in {EXECUTION_STALE, EXECUTION_ERROR}:
+                action_text = "Recalculate"
+                action_enabled = True
+            elif state == EXECUTION_RUNNING:
+                action_text = "Calculating…"
+            elif state == EXECUTION_BLOCKED:
+                action_text = "Waiting upstream"
+
+        message = {
+            EXECUTION_NOT_CALCULATED: (
+                "This cached table has not been calculated for the current workflow."
+            ),
+            EXECUTION_RUNNING: (
+                "Recalculating now. The table below is the previous cached result."
+            ),
+            EXECUTION_STALE: (
+                "This is a stale cached result from earlier inputs or parameters."
+            ),
+            EXECUTION_BLOCKED: (
+                detail
+                or "This cached result is waiting for an upstream calculation."
+            ),
+            EXECUTION_ERROR: (
+                f"The last calculation failed: {detail}"
+                if detail
+                else "The last calculation failed; the table below is cached."
+            ),
+        }.get(state, "This retained table is not current.")
+        dialog.set_result_status(
+            message,
+            action_text=action_text,
+            action_enabled=action_enabled,
+            attention_required=bool(
+                action_enabled
+                and state
+                in {
+                    EXECUTION_NOT_CALCULATED,
+                    EXECUTION_STALE,
+                    EXECUTION_ERROR,
+                }
+            ),
+        )
 
     def _update_table_preview(self) -> None:
-        data, _state, _output_port = self._node_display_payload(self._selected_node_id)
-        if not is_table_data(data):
+        data, _output_state, output_port = self._node_display_payload(
+            self._selected_node_id
+        )
+        is_table_output = (
+            self._node_output_type_for_payload(
+                self._selected_node_id,
+                data,
+                output_port,
+            )
+            == "table"
+        )
+        execution_state, _message = self._node_execution_ui_state(
+            self._selected_node_id
+        )
+        if not is_table_output:
             self.table_group.setHidden(True)
+            self.table_popout_button.setEnabled(False)
             self.table_preview.setRowCount(0)
             self.table_preview.setColumnCount(0)
+            self._sync_table_preview_geometry()
             self.table_summary.setText("No table output.")
+            self.table_group.setSummary("")
+            self._sync_table_result_attention()
+            if (
+                self._result_table_dialog is not None
+                and self._result_table_dialog.context_key
+                == (self._selected_node_id, int(output_port))
+            ):
+                self._result_table_dialog.close()
             return
 
         self.table_group.setHidden(False)
         row_limit = 200
-        shown_rows = min(data.row_count, row_limit)
-        self.table_summary.setText(
-            f"{data.row_count} rows x {data.column_count} columns"
-            + (f" (showing first {shown_rows})" if data.row_count > row_limit else "")
+        summary = self._table_result_summary_text(
+            data,
+            execution_state,
+            row_limit=row_limit,
         )
+        self.table_summary.setText(summary)
+        self.table_group.setSummary(summary)
+        if not is_table_data(data):
+            self.table_popout_button.setEnabled(False)
+            self.table_popout_button.setToolTip(
+                "The complete result table will be available after calculation."
+            )
+            self.table_preview.setRowCount(0)
+            self.table_preview.setColumnCount(0)
+            self._sync_table_preview_geometry()
+            self._sync_table_result_attention()
+            if (
+                self._result_table_dialog is not None
+                and self._result_table_dialog.context_key
+                == (self._selected_node_id, int(output_port))
+            ):
+                self._result_table_dialog.close()
+            return
+
+        self.table_popout_button.setEnabled(True)
+        shown_rows = min(data.row_count, row_limit)
         self.table_preview.setColumnCount(data.column_count)
         self.table_preview.setRowCount(shown_rows)
         headers = [
@@ -32926,29 +38767,412 @@ class VippWidget(QWidget):
                 self.table_preview.setItem(row_index, column_index, item)
         self.table_preview.resizeColumnsToContents()
         self.table_preview.resizeRowsToContents()
+        self._sync_table_preview_geometry()
+        self._sync_table_result_attention()
+        if (
+            self._result_table_dialog is not None
+            and self._result_table_dialog.context_key
+            == (self._selected_node_id, int(output_port))
+        ):
+            self._sync_result_table_dialog(data, output_port)
+
+    def _sync_table_preview_geometry(self) -> None:
+        """Content-size short results while capping long scrollable tables."""
+
+        table = self.table_preview
+        if table.rowCount() <= 0 or table.columnCount() <= 0:
+            table.setFixedHeight(0)
+            return
+        header_height = max(
+            int(table.horizontalHeader().height()),
+            int(table.horizontalHeader().sizeHint().height()),
+        )
+        rows_height = sum(table.rowHeight(row) for row in range(table.rowCount()))
+        frame = int(table.frameWidth()) * 2
+        scrollbar = table.horizontalScrollBar()
+        scrollbar_policy = table.horizontalScrollBarPolicy()
+        horizontal_overflow = bool(
+            scrollbar_policy == Qt.ScrollBarAlwaysOn
+            or (
+                scrollbar_policy != Qt.ScrollBarAlwaysOff
+                and (
+                    scrollbar.maximum() > scrollbar.minimum()
+                    or table.horizontalHeader().length() > table.viewport().width()
+                )
+            )
+        )
+        scrollbar_height = (
+            int(scrollbar.sizeHint().height()) if horizontal_overflow else 0
+        )
+        if horizontal_overflow and scrollbar_height <= 0:
+            scrollbar_height = max(int(scrollbar.height()), 0)
+        target_height = int(
+            np.clip(
+                header_height + rows_height + frame + scrollbar_height,
+                54,
+                360,
+            )
+        )
+        if table.height() != target_height:
+            table.setFixedHeight(target_height)
+
+    def _schedule_table_preview_geometry_sync(self, *_args) -> None:
+        """Remeasure after Qt resolves whether the horizontal bar is needed."""
+
+        self._table_preview_geometry_timer.start(0)
 
     def _update_label_volume_histogram(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
-        visible = node is not None and node.operation_id == "filter_labels_by_volume"
+        profile = (
+            self._inspector_profile_for_node(node.id)
+            if node is not None
+            else None
+        )
+        distribution_kind = profile.distribution_kind if profile is not None else ""
+        visible = distribution_kind in {"labels", "object_sizes", "property_filter"}
         self.label_volume_group.setHidden(not visible)
         if not visible:
+            self._current_label_volume_key = None
+            self._pending_label_volume_request = None
+            if self._active_label_volume_cancel_event is not None:
+                self._active_label_volume_cancel_event.set()
             self.label_volume_plot.set_histogram(None, log_scale=False)
             return
 
-        data = self.pipeline.input_data_for_node(self._selected_node_id)
+        if distribution_kind == "property_filter":
+            self._current_label_volume_key = None
+            self._pending_label_volume_request = None
+            if self._active_label_volume_cancel_event is not None:
+                self._active_label_volume_cancel_event.set()
+            self._update_property_filter_histogram(node)
+            return
+
+        self.label_volume_group.setSummary("")
+        is_filter = node.operation_id in {
+            "filter_labels_by_volume",
+            "remove_small_objects",
+        }
+        if node.operation_id == "remove_small_objects":
+            self.label_volume_log_checkbox.setText("Log size axis")
+            self.label_volume_interaction_hint.setText(
+                "Drag the minimum marker to tune the retained object size."
+            )
+        else:
+            self.label_volume_log_checkbox.setText("Log volume axis")
+            self.label_volume_interaction_hint.setText(
+                "Drag the minimum and maximum markers to tune the retained "
+                "object volume range."
+            )
+        if is_filter:
+            data = self.pipeline.input_data_for_node(self._selected_node_id)
+            self.label_volume_group.setTitle(
+                "Input Object Size Distribution"
+                if node.operation_id == "remove_small_objects"
+                else "Input Object Volume Distribution"
+            )
+        else:
+            data, _state, _output_port = self._node_display_payload(
+                self._selected_node_id
+            )
+            self.label_volume_group.setTitle("Object Size Distribution")
         if data is None:
-            self.label_volume_summary.setText("No connected label input.")
+            self._current_label_volume_key = None
+            self._pending_label_volume_request = None
+            self.label_volume_summary.setText(
+                "No connected object input." if is_filter else "No label output yet."
+            )
+            self.label_volume_interaction_hint.hide()
+            self.label_volume_log_checkbox.hide()
             self.label_volume_plot.set_histogram(None, log_scale=False)
             return
 
-        arr = np.asarray(data)
+        array_like = _histogram_array_like(data)
         spatial_ndim = self._label_filter_spatial_ndim(
             self._selected_node_id,
-            arr,
+            array_like,
         )
-        volumes = self._cached_label_volumes(arr, spatial_ndim)
+        size_name = "Area" if spatial_ndim == 2 else "Volume"
+        size_unit = "pixels" if spatial_ndim == 2 else "voxels"
+        self.label_volume_plot.set_plot_labels(
+            title=f"{'Input object' if is_filter else 'Object'} {size_name.lower()}",
+            x_axis_label=f"{size_name} ({size_unit})",
+            y_axis_label="Objects",
+        )
+        connectivity = (
+            str(node.params.get("connectivity", "Face connected"))
+            if node.operation_id == "remove_small_objects"
+            else "Label IDs"
+        )
+        key = self._label_volume_cache_key(data, spatial_ndim, connectivity)
+        self._current_label_volume_key = key
+        volumes = self._cached_label_volume_result(
+            data,
+            spatial_ndim,
+            connectivity,
+        )
+        if volumes is None and (
+            self._selection_diagnostics_initializing
+            or _should_auto_background_data(data)
+        ):
+            self.label_volume_summary.setText(
+                "Calculating exact object sizes in the background…"
+            )
+            self.label_volume_interaction_hint.setVisible(is_filter)
+            self.label_volume_log_checkbox.show()
+            self.label_volume_log_checkbox.setEnabled(False)
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            self._queue_label_volume_request(
+                node_id=node.id,
+                data=data,
+                spatial_ndim=spatial_ndim,
+                connectivity=connectivity,
+            )
+            return
+
+        self._pending_label_volume_request = None
+        if volumes is None:
+            arr = np.asarray(data)
+            volumes = self._cached_label_volumes(
+                arr,
+                spatial_ndim,
+                connectivity,
+            )
+            if arr is not data:
+                volumes = self._cache_label_volumes(
+                    data,
+                    spatial_ndim,
+                    volumes,
+                    connectivity,
+                )
+        self._render_label_volume_histogram(
+            node=node,
+            volumes=volumes,
+            spatial_ndim=spatial_ndim,
+            is_filter=is_filter,
+        )
+
+    def _update_property_filter_histogram(self, node) -> None:
+        """Show the measurement property that actually drives label filtering."""
+
+        self.label_volume_group.setTitle("Measurement Property Distribution")
+        self.label_volume_log_checkbox.hide()
+        self.label_volume_interaction_hint.setText(
+            "Drag a range marker to tune the measurement filter."
+        )
+
+        inputs = self.pipeline.input_data_by_port_for_node(node.id)
+        table = inputs.get(1)
+        if not is_table_data(table):
+            self.label_volume_group.setSummary("Table required")
+            self.label_volume_summary.setText(
+                "Connect a measurements table to inspect the selected property."
+            )
+            self.label_volume_interaction_hint.hide()
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            return
+
+        requested = str(node.params.get("property_column", "auto")).strip()
+        column, values, error = self._property_filter_table_values(table, requested)
+        if error:
+            self.label_volume_group.setSummary("Unavailable")
+            self.label_volume_summary.setText(error)
+            self.label_volume_interaction_hint.hide()
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            return
+
+        assert column is not None
+        assert values is not None
+        if values.size == 0:
+            self.label_volume_group.setSummary(column)
+            self.label_volume_summary.setText(
+                f"{column} has no finite numeric measurement values."
+            )
+            self.label_volume_interaction_hint.hide()
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            return
+
+        minimum = float(node.params.get("min_value", 0.0))
+        maximum = float(node.params.get("max_value", 0.0))
+        has_maximum = maximum > 0 and maximum > minimum
+        inside = values >= minimum
+        if has_maximum:
+            inside &= values <= maximum
+        remove_inside = (
+            str(node.params.get("keep_mode", "Keep inside range"))
+            .strip()
+            .lower()
+            .startswith("remove")
+        )
+        matching_finite_rows = int((~inside if remove_inside else inside).sum())
+
+        unit = str(table.unit_for(column) or "").strip()
+        column_label = f"{column} ({unit})" if unit else column
+        self.label_volume_plot.set_plot_labels(
+            title=column,
+            x_axis_label=column_label,
+            y_axis_label="Objects",
+        )
+        auto_note = "Auto selected · " if requested.casefold() in {"", "auto"} else ""
+        self.label_volume_summary.setText(
+            f"{auto_note}{column_label} · {values.size} finite values from "
+            f"{table.row_count} rows · {matching_finite_rows} finite rows "
+            "match the current rule"
+        )
+        self.label_volume_group.setSummary(column_label)
+        self.label_volume_interaction_hint.show()
+
+        data_minimum = float(values.min())
+        data_maximum = float(values.max())
+        display_minimum = min(data_minimum, minimum)
+        display_maximum = max(
+            data_maximum,
+            maximum if has_maximum else data_maximum,
+        )
+        if not display_maximum > display_minimum:
+            padding = max(abs(display_minimum) * 0.05, 0.5)
+            display_minimum -= padding
+            display_maximum += padding
+        bin_count = int(np.clip(np.ceil(np.sqrt(values.size)) * 2, 8, 64))
+        counts, _edges = np.histogram(
+            values,
+            bins=bin_count,
+            range=(display_minimum, display_maximum),
+        )
+        markers = [("min", minimum, QColor("#f59e0b"))]
+        draggable_markers = {"min"}
+        if has_maximum:
+            markers.append(("max", maximum, QColor("#38bdf8")))
+            draggable_markers.add("max")
+        self.label_volume_plot.set_histogram(
+            counts,
+            log_scale=False,
+            x_range=(display_minimum, display_maximum),
+            colors=[QColor("#a78bfa")],
+            markers=markers,
+            x_scale="linear",
+            draggable_markers=draggable_markers,
+        )
+
+    def _cached_property_filter_column_values(
+        self,
+        table,
+        column: str,
+    ) -> np.ndarray | None:
+        key = (id(table), str(column))
+        cached = self._property_filter_value_cache.pop(key, None)
+        if cached is None:
+            return None
+        identity_ref, values = cached
+        if identity_ref() is not table:
+            return None
+        # Reinsert on access so the bounded dict behaves as a small LRU.
+        self._property_filter_value_cache[key] = cached
+        return values
+
+    def _cache_property_filter_column_values(
+        self,
+        table,
+        column: str,
+        values: np.ndarray,
+    ) -> np.ndarray:
+        normalized = np.asarray(values, dtype=np.float64)
+        normalized.setflags(write=False)
+        if normalized.nbytes > PROPERTY_FILTER_VALUE_CACHE_MAX_BYTES:
+            return normalized
+        try:
+            identity_ref = weakref.ref(table)
+        except TypeError:
+            return normalized
+        key = (id(table), str(column))
+        self._property_filter_value_cache.pop(key, None)
+        self._property_filter_value_cache[key] = (identity_ref, normalized)
+        while self._property_filter_value_cache and (
+            len(self._property_filter_value_cache)
+            > PROPERTY_FILTER_VALUE_CACHE_MAX_ENTRIES
+            or sum(
+                cached_values.nbytes
+                for _identity, cached_values in (
+                    self._property_filter_value_cache.values()
+                )
+            )
+            > PROPERTY_FILTER_VALUE_CACHE_MAX_BYTES
+        ):
+            self._property_filter_value_cache.pop(
+                next(iter(self._property_filter_value_cache))
+            )
+        return normalized
+
+    @staticmethod
+    def _extract_property_filter_column_values(table, column: str) -> np.ndarray:
+        column_index = table.columns.index(column)
+        numeric_values: list[float] = []
+        for row in table.rows:
+            try:
+                value = float(row[column_index])
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(value):
+                numeric_values.append(value)
+        return np.asarray(numeric_values, dtype=np.float64)
+
+    def _property_filter_table_values(self, table, requested: str):
+        """Resolve the same finite property values used by the operation."""
+
+        text = str(requested).strip()
+        if text and text.casefold() != "auto":
+            if text not in table.columns:
+                return None, None, f"Property column {text!r} is not in the table."
+            candidates = (text,)
+        else:
+            candidates = tuple(
+                dict.fromkeys(
+                    [
+                        *(
+                            column
+                            for column in PROPERTY_FILTER_COLUMN_PRIORITY
+                            if column in table.columns
+                        ),
+                        *(
+                            column
+                            for column in table.columns
+                            if column not in IDENTITY_JOIN_COLUMNS
+                            and not column.endswith("_index")
+                        ),
+                    ]
+                )
+            )
+
+        for column in candidates:
+            values = self._cached_property_filter_column_values(table, column)
+            if values is None:
+                values = self._cache_property_filter_column_values(
+                    table,
+                    column,
+                    self._extract_property_filter_column_values(table, column),
+                )
+            if values.size:
+                return column, values, ""
+            if text and text.casefold() != "auto":
+                return (
+                    column,
+                    None,
+                    f"Property column {column!r} has no numeric values.",
+                )
+        return None, None, "Could not find a numeric property column in the table."
+
+    def _render_label_volume_histogram(
+        self,
+        *,
+        node,
+        volumes,
+        spatial_ndim: int,
+        is_filter: bool,
+    ) -> None:
+        volumes = np.asarray(volumes, dtype=np.int64)
         if volumes.size == 0:
             self.label_volume_summary.setText("No labeled objects.")
+            self.label_volume_interaction_hint.setVisible(is_filter)
+            self.label_volume_log_checkbox.hide()
             self.label_volume_plot.set_histogram(None, log_scale=False)
             return
 
@@ -32959,6 +39183,9 @@ class VippWidget(QWidget):
             f"{volumes.size} objects | median {_format_histogram_label(median)} "
             f"| largest {largest} {unit}"
         )
+        self.label_volume_log_checkbox.show()
+        self.label_volume_log_checkbox.setEnabled(True)
+        self.label_volume_interaction_hint.setVisible(is_filter)
         bin_count = int(np.clip(np.ceil(np.sqrt(volumes.size)) * 2, 8, 64))
         logarithmic = self.label_volume_log_checkbox.isChecked()
         if logarithmic:
@@ -32974,11 +39201,23 @@ class VippWidget(QWidget):
             bins=bin_count,
             range=histogram_range,
         )
-        minimum = max(int(node.params.get("min_volume", 0)), 0)
-        maximum = max(int(node.params.get("max_volume", 0)), 0)
-        markers = [("min", float(minimum), QColor("#f59e0b"))]
-        if maximum > 0:
-            markers.append(("max", float(maximum), QColor("#38bdf8")))
+        markers = []
+        draggable_markers: set[str] = set()
+        if is_filter:
+            if node.operation_id == "remove_small_objects":
+                minimum = max(int(node.params.get("min_size", 0)), 0)
+                maximum = 0
+            else:
+                minimum = max(int(node.params.get("min_volume", 0)), 0)
+                maximum = max(int(node.params.get("max_volume", 0)), 0)
+            markers = [("min", float(minimum), QColor("#f59e0b"))]
+            if maximum > 0:
+                markers.append(("max", float(maximum), QColor("#38bdf8")))
+            draggable_markers = (
+                {"min"}
+                if node.operation_id == "remove_small_objects"
+                else {"min", "max"}
+            )
         self.label_volume_plot.set_histogram(
             counts,
             log_scale=False,
@@ -32986,13 +39225,180 @@ class VippWidget(QWidget):
             colors=[QColor("#f472b6")],
             markers=markers,
             x_scale=x_scale,
-            draggable_markers={"min", "max"},
+            draggable_markers=draggable_markers,
         )
+
+    def _queue_label_volume_request(
+        self,
+        *,
+        node_id: str,
+        data,
+        spatial_ndim: int,
+        connectivity: str,
+    ) -> None:
+        key = self._label_volume_cache_key(data, spatial_ndim, connectivity)
+        self._current_label_volume_key = key
+        cached = self._cached_label_volume_result(
+            data,
+            spatial_ndim,
+            connectivity,
+        )
+        if cached is not None:
+            selected = self.pipeline.nodes.get(self._selected_node_id)
+            if (
+                selected is not None
+                and selected.id == node_id
+                and selected.operation_id
+                in {"measure_objects", "measure_objects_intensity"}
+            ):
+                self._render_measurement_object_size_histogram(
+                    cached,
+                    spatial_ndim=spatial_ndim,
+                )
+            else:
+                self._update_label_volume_histogram()
+            return
+        request = LabelVolumeRequest(
+            0,
+            key,
+            node_id,
+            data,
+            int(spatial_ndim),
+            connectivity=connectivity,
+        )
+        if self._active_label_volume_run_id is not None:
+            active_request = self._active_label_volume_request
+            if (
+                self._active_label_volume_key == key
+                and active_request is not None
+                and active_request.data is data
+            ):
+                if (
+                    self._active_label_volume_cancel_event is None
+                    or not self._active_label_volume_cancel_event.is_set()
+                ):
+                    self._pending_label_volume_request = None
+                else:
+                    self._pending_label_volume_request = request
+                self._sync_inspector_diagnostic_busy_state()
+                return
+            if self._active_label_volume_cancel_event is not None:
+                self._active_label_volume_cancel_event.set()
+            self._pending_label_volume_request = request
+            self._sync_inspector_diagnostic_busy_state()
+            return
+        self._start_label_volume_request(request)
+
+    def _start_label_volume_request(
+        self,
+        request: LabelVolumeRequest,
+    ) -> None:
+        self._label_volume_serial += 1
+        cancel_event = threading.Event()
+        request = replace(
+            request,
+            run_id=self._label_volume_serial,
+            cancel_event=cancel_event,
+        )
+        self._active_label_volume_run_id = request.run_id
+        self._active_label_volume_key = request.key
+        self._active_label_volume_cancel_event = cancel_event
+        self._active_label_volume_request = request
+        self._sync_inspector_diagnostic_busy_state()
+        worker = LabelVolumeWorker(
+            request,
+            label_volumes=self._object_sizes,
+        )
+        worker.signals.finished.connect(self._on_label_volume_finished)
+        self._label_volume_thread_pool.start(worker, -1)
+
+    def _on_label_volume_finished(self, result: LabelVolumeResult) -> None:
+        if result.run_id != self._active_label_volume_run_id:
+            return
+        request = self._active_label_volume_request
+        self._active_label_volume_run_id = None
+        self._active_label_volume_key = None
+        self._active_label_volume_cancel_event = None
+        self._active_label_volume_request = None
+
+        volumes = None
+        if (
+            request is not None
+            and not result.cancelled
+            and not result.error
+            and result.volumes is not None
+        ):
+            volumes = self._cache_label_volumes(
+                request.data,
+                request.spatial_ndim,
+                result.volumes,
+                request.connectivity,
+            )
+
+        if result.key == self._current_label_volume_key:
+            selected = self.pipeline.nodes.get(self._selected_node_id)
+            selected_profile = (
+                self._inspector_profile_for_node(selected.id)
+                if selected is not None
+                else None
+            )
+            measurement_selected = bool(
+                selected is not None
+                and selected.operation_id
+                in {"measure_objects", "measure_objects_intensity"}
+            )
+            label_distribution_selected = bool(
+                selected_profile is not None
+                and selected_profile.distribution_kind
+                in {"labels", "object_sizes"}
+            )
+            if result.error and measurement_selected:
+                self.measurement_object_size_histogram_status.setText(
+                    f"Object-size calculation failed: {result.error}"
+                )
+                self.measurement_object_size_histogram_status.show()
+                self.measurement_object_size_histogram_plot.set_histogram(
+                    None,
+                    log_scale=False,
+                )
+            elif result.error and label_distribution_selected:
+                self.label_volume_summary.setText(
+                    f"Object-size calculation failed: {result.error}"
+                )
+                self.label_volume_log_checkbox.hide()
+                self.label_volume_plot.set_histogram(None, log_scale=False)
+            elif volumes is not None and request is not None:
+                if measurement_selected:
+                    self._render_measurement_object_size_histogram(
+                        volumes,
+                        spatial_ndim=request.spatial_ndim,
+                    )
+                    self._update_metadata_panel()
+                    self._sync_inspector_presentation()
+                elif selected is not None and label_distribution_selected:
+                    self._render_label_volume_histogram(
+                        node=selected,
+                        volumes=volumes,
+                        spatial_ndim=request.spatial_ndim,
+                        is_filter=(
+                            selected.operation_id
+                            in {
+                                "filter_labels_by_volume",
+                                "remove_small_objects",
+                            }
+                        ),
+                    )
+
+        pending = self._pending_label_volume_request
+        self._pending_label_volume_request = None
+        if pending is not None and pending.key == self._current_label_volume_key:
+            self._start_label_volume_request(pending)
+        self._sync_inspector_diagnostic_busy_state()
 
     def _label_filter_spatial_ndim(
         self,
         node_id: str,
-        data: np.ndarray,
+        data,
     ) -> int:
         node = self.pipeline.nodes[node_id]
         mode = str(node.params.get("spatial_mode", "Auto from axes")).lower()
@@ -33023,23 +39429,34 @@ class VippWidget(QWidget):
             action="Save output",
         ):
             return
-        selected_data, _selected_state, _output_port = self._node_display_payload(
+        selected_data, _selected_state, output_port = self._node_display_payload(
             node_id
         )
+        ports = self.pipeline.output_ports(node_id)
+        port_suffix = (
+            f"_{safe_batch_filename(ports[output_port].label)}"
+            if len(ports) > 1 and 0 <= output_port < len(ports)
+            else ""
+        )
         if is_table_data(selected_data):
-            default_name = f"{self._node_title(node_id).replace(' ', '_')}.csv"
-            path, selected_filter = QFileDialog.getSaveFileName(
-                self,
-                "Save selected table output",
-                default_name,
-                "CSV table (*.csv);;TSV table (*.tsv);;All files (*.*)",
+            default_name = (
+                f"{safe_batch_filename(self._node_title(node_id))}"
+                f"{port_suffix}.csv"
             )
-            if path:
-                format = "tsv" if selected_filter.startswith("TSV") else "csv"
-                self._save_node_output(node_id, path, format=format)
+            request = choose_table_export_target(
+                self,
+                default_name=default_name,
+                caption="Save selected table output",
+            )
+            if request is not None:
+                path, format = request
+                self._save_node_output(node_id, str(path), format=format)
             return
 
-        default_name = f"{self._node_title(node_id).replace(' ', '_')}.ome.tif"
+        default_name = (
+            f"{safe_batch_filename(self._node_title(node_id))}"
+            f"{port_suffix}.ome.tif"
+        )
         filters = (
             "OME-TIFF (*.ome.tif *.ome.tiff);;"
             "OME-Zarr (*.ome.zarr);;"
@@ -33088,6 +39505,112 @@ class VippWidget(QWidget):
                 "auto",
             )
             self._save_node_output(node_id, path, format=format)
+
+    def _save_all_selected_node_outputs_dialog(self) -> None:
+        """Export every available selected-node port without changing routing."""
+
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        ports = self.pipeline.output_ports(node_id)
+        if node is None or len(ports) <= 1:
+            return
+        if not self._prepare_crop_pixel_output_boundary(
+            {node_id},
+            action="Export all outputs",
+        ):
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Export all node outputs",
+            "",
+        )
+        if not directory:
+            return
+        root = Path(directory)
+        written: list[Path] = []
+        for output_port, port in enumerate(ports):
+            data, state = self._node_output_payload_for_port(node_id, output_port)
+            if data is None:
+                continue
+            stem = safe_batch_filename(
+                f"{self._node_title(node_id)}_{port.label or port.name}"
+            )
+            try:
+                if is_table_data(data):
+                    output_path = save_table_output(
+                        data,
+                        root / f"{stem}.csv",
+                        format="csv",
+                        overwrite=True,
+                    )
+                else:
+                    output_path = save_array_output(
+                        data,
+                        root / f"{stem}.ome.tif",
+                        format="ome-tiff",
+                        overwrite=True,
+                        image_state=state,
+                    )
+            except Exception as exc:
+                self._set_status(
+                    f"Export all outputs stopped at '{port.label}': {exc}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+                return
+            written.append(Path(output_path))
+        if not written:
+            self._set_status(
+                "No currently available output ports could be exported.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        self._set_status(
+            f"Exported {len(written)} outputs from '{node.title}' to {root}.",
+            severity=MessageSeverity.SUCCESS,
+        )
+
+    def _node_output_payload_for_port(
+        self,
+        node_id: str,
+        output_port: int,
+    ) -> tuple[object | None, object | None]:
+        """Return one exact output port without mutating the display selector."""
+
+        result = self._background_node_result_override(node_id)
+        primary_data = (
+            result.output if result is not None else self.pipeline.outputs.get(node_id)
+        )
+        primary_state = (
+            result.output_state
+            if result is not None
+            else self.pipeline.output_states.get(node_id)
+        )
+        outputs = list(
+            result.node_outputs
+            if result is not None
+            else self.pipeline.node_outputs.get(node_id) or []
+        )
+        output_states = list(
+            result.node_output_states
+            if result is not None
+            else self.pipeline.node_output_states.get(node_id) or []
+        )
+        output_port = int(output_port)
+        data = (
+            outputs[output_port]
+            if 0 <= output_port < len(outputs)
+            else primary_data if output_port == 0 else None
+        )
+        state = (
+            output_states[output_port]
+            if 0 <= output_port < len(output_states)
+            else primary_state if output_port == 0 else None
+        )
+        if isinstance(data, ExactSourceWindowData):
+            return data.data, data.window_state
+        return data, state
 
     def _can_save_selected_output_as_raster(self, node_id: str) -> bool:
         data, _state, _output_port = self._node_display_payload(node_id)
@@ -33461,11 +39984,35 @@ class VippWidget(QWidget):
             ),
         }
         if self._display_rgb_as_channel_layers(display_data, metadata):
+            self._remove_colored_channel_axis_layers(name)
             self._set_or_add_rgb_channel_layers(name, display_data, metadata)
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
+        channel_axis_spec = self._colored_channel_axis_spec(display_data, metadata)
+        if channel_axis_spec is not None:
+            self._remove_rgb_channel_layers(name)
+            self._set_or_add_colored_channel_axis_layers(
+                name,
+                display_data,
+                metadata,
+                channel_axis_spec,
+            )
+            self._restore_viewer_step(saved_step, saved_nsteps)
+            return
         self._remove_rgb_channel_layers(name)
+        self._remove_colored_channel_axis_layers(name)
+        scalar_channel_color = _scalar_channel_color_from_metadata(metadata)
+        if scalar_channel_color is not None:
+            metadata = {
+                **metadata,
+                "display_channel_color": tuple(
+                    float(value) for value in scalar_channel_color
+                ),
+            }
         preserved_display = self._inspect_display_settings_for_metadata(metadata)
+        if scalar_channel_color is not None:
+            preserved_display = dict(preserved_display or {})
+            preserved_display.pop("colormap", None)
         if role == "inspect" and name == self._inspect_layer_name:
             inspect_layers = self._owned_scalar_inspect_layers()
             layer = next(
@@ -33622,7 +40169,9 @@ class VippWidget(QWidget):
         kwargs["rgb"] = bool(metadata.get("display_rgb"))
         kwargs["blending"] = "translucent"
         if not metadata.get("display_rgb"):
-            kwargs["colormap"] = "gray"
+            kwargs["colormap"] = _napari_channel_colormap(
+                metadata.get("display_channel_color")
+            )
         if metadata["data_kind"] == "mask":
             kwargs.update(
                 {
@@ -33652,6 +40201,150 @@ class VippWidget(QWidget):
             and arr.ndim > 3
             and arr.shape[-1] in (3, 4)
         )
+
+    @staticmethod
+    def _colored_channel_axis_spec(display_data, metadata: dict):
+        """Describe an authored fluorescence channel axis for napari layers."""
+
+        if metadata.get("display_kind") != "image" or metadata.get("display_rgb"):
+            return None
+        carried = metadata.get("vipp_image_state")
+        state = ImageState.from_dict(carried) if isinstance(carried, dict) else None
+        arr = np.asarray(display_data)
+        channel_axis = _explicit_channel_axis(state)
+        if (
+            state is None
+            or channel_axis is None
+            or len(state.axes) != arr.ndim
+            or int(arr.shape[channel_axis]) <= 1
+        ):
+            return None
+        count = int(arr.shape[channel_axis])
+        channels = tuple(getattr(state, "channels", ()))
+        metadata_colors = tuple(
+            getattr(channel, "color", None) for channel in channels[:count]
+        )
+        if not any(color_value_to_rgb(color) is not None for color in metadata_colors):
+            return None
+        colors = channel_color_table(
+            None,
+            count,
+            metadata_colors=metadata_colors,
+        )
+        labels = tuple(
+            (
+                str(getattr(channels[index], "name", "")).strip()
+                if index < len(channels)
+                else ""
+            )
+            or f"Channel {index + 1}"
+            for index in range(count)
+        )
+        return channel_axis, labels, colors
+
+    def _set_or_add_colored_channel_axis_layers(
+        self,
+        name: str,
+        display_data,
+        metadata: dict,
+        channel_axis_spec,
+    ) -> None:
+        arr = np.asarray(display_data)
+        channel_axis, labels, colors = channel_axis_spec
+        if name == self._inspect_layer_name:
+            base_layers = self._owned_scalar_inspect_layers()
+        else:
+            base_layer = self._layer_by_name(name)
+            try:
+                base_layers = (
+                    [base_layer]
+                    if base_layer is not None
+                    and base_layer.metadata.get("napari_vipp_kind")
+                    == metadata.get("napari_vipp_kind")
+                    and not bool(
+                        base_layer.metadata.get("display_channel_axis_as_layers")
+                    )
+                    else []
+                )
+            except Exception:
+                base_layers = []
+        for base_layer in base_layers:
+            self._invalidate_generated_layer_contrast(base_layer)
+            self._remove_layer(base_layer)
+
+        existing_layers = self._colored_channel_axis_layers(name)
+        active_layers = []
+        for index, (channel_name, color) in enumerate(zip(labels, colors, strict=True)):
+            selection = [slice(None)] * arr.ndim
+            selection[int(channel_axis)] = index
+            channel_data = _read_only_presentation_array(arr[tuple(selection)])
+            layer_name = (
+                name if index == 0 else f"{name} — {index + 1}: {channel_name}"
+            )
+            channel_metadata = {
+                **metadata,
+                "display_channel_axis_as_layers": True,
+                "display_channel_group": name,
+                "display_channel_axis_index": int(channel_axis),
+                "display_channel_index": index,
+                "display_channel_name": channel_name,
+                "display_channel_color": tuple(float(value) for value in color),
+                "display_dtype": str(channel_data.dtype),
+                "display_ndim": channel_data.ndim,
+                "display_shape": tuple(channel_data.shape),
+            }
+            layer = next(
+                (
+                    candidate
+                    for candidate in existing_layers
+                    if candidate.metadata.get("napari_vipp_kind")
+                    == metadata.get("napari_vipp_kind")
+                    and int(candidate.metadata.get("display_channel_index", -1))
+                    == index
+                ),
+                None,
+            )
+            if layer is not None and self._generated_layer_needs_replacement(
+                layer,
+                channel_metadata,
+            ):
+                self._invalidate_generated_layer_contrast(layer)
+                self._remove_layer(layer)
+                layer = None
+            preserved_display = self._inspect_display_settings_for_metadata(
+                channel_metadata
+            )
+            preserved_display = dict(preserved_display or {})
+            # The authored channel palette is scientific presentation metadata,
+            # so a stale per-layer colormap profile must not override it.
+            preserved_display.pop("colormap", None)
+            colormap = _napari_channel_colormap(color)
+            if layer is None:
+                layer = self._add_rgb_channel_layer(
+                    layer_name,
+                    channel_data,
+                    channel_metadata,
+                    colormap,
+                    identity_data=arr,
+                    channel_index=index,
+                )
+            else:
+                self._invalidate_generated_layer_contrast(layer)
+                layer.data = channel_data
+                layer.name = layer_name
+                layer.metadata.update(channel_metadata)
+                layer.visible = True
+                self._configure_additive_channel_layer(
+                    layer,
+                    channel_data,
+                    channel_metadata,
+                    colormap=colormap,
+                    identity_data=arr,
+                    channel_index=index,
+                )
+            self._restore_inspect_layer_display_settings(layer, preserved_display)
+            active_layers.append(layer)
+        self._remove_extra_colored_channel_axis_layers(name, active_layers)
 
     def _set_or_add_rgb_channel_layers(
         self,
@@ -33754,7 +40447,7 @@ class VippWidget(QWidget):
         name: str,
         data,
         metadata: dict,
-        colormap: str,
+        colormap,
         *,
         identity_data,
         channel_index: int,
@@ -33796,8 +40489,27 @@ class VippWidget(QWidget):
         channel_index: int,
     ) -> None:
         channel_index = int(metadata["display_rgb_channel_index"])
-        _set_layer_axis_labels(layer, metadata)
         colormap = _RGB_VOLUME_CHANNELS[channel_index][2]
+        self._configure_additive_channel_layer(
+            layer,
+            data,
+            metadata,
+            colormap=colormap,
+            identity_data=identity_data,
+            channel_index=channel_index,
+        )
+
+    def _configure_additive_channel_layer(
+        self,
+        layer,
+        data,
+        metadata: dict,
+        *,
+        colormap,
+        identity_data,
+        channel_index: int,
+    ) -> None:
+        _set_layer_axis_labels(layer, metadata)
         is_inspect = metadata.get("napari_vipp_kind") == "inspect"
         if is_inspect:
             self._apply_image_layer_display_defaults(layer)
@@ -33850,6 +40562,20 @@ class VippWidget(QWidget):
                 continue
         return layers
 
+    def _colored_channel_axis_layers(self, group_name: str) -> list:
+        layers = []
+        for layer in list(self.viewer.layers):
+            try:
+                metadata = layer.metadata
+                if metadata.get("display_channel_group") == group_name and (
+                    group_name != self._inspect_layer_name
+                    or metadata.get("napari_vipp_kind") == "inspect"
+                ):
+                    layers.append(layer)
+            except Exception:
+                continue
+        return layers
+
     def _owned_inspect_layers(self) -> list:
         """Return every layer owned by the transient Inspect presentation."""
 
@@ -33867,10 +40593,16 @@ class VippWidget(QWidget):
             layer
             for layer in self._owned_inspect_layers()
             if not bool(layer.metadata.get("display_rgb_as_channels"))
+            and not bool(layer.metadata.get("display_channel_axis_as_layers"))
         ]
 
     def _remove_rgb_channel_layers(self, group_name: str) -> None:
         for layer in self._rgb_channel_layers(group_name):
+            self._invalidate_generated_layer_contrast(layer)
+            self._remove_layer(layer)
+
+    def _remove_colored_channel_axis_layers(self, group_name: str) -> None:
+        for layer in self._colored_channel_axis_layers(group_name):
             self._invalidate_generated_layer_contrast(layer)
             self._remove_layer(layer)
 
@@ -33884,6 +40616,16 @@ class VippWidget(QWidget):
                 self._invalidate_generated_layer_contrast(layer)
                 self._remove_layer(layer)
 
+    def _remove_extra_colored_channel_axis_layers(
+        self,
+        group_name: str,
+        active_layers: list,
+    ) -> None:
+        for layer in self._colored_channel_axis_layers(group_name):
+            if not any(layer is active for active in active_layers):
+                self._invalidate_generated_layer_contrast(layer)
+                self._remove_layer(layer)
+
     def _generated_layers_for_name(self, name: str) -> list:
         if name == self._inspect_layer_name:
             layers = self._rgb_channel_layers(name)
@@ -33893,6 +40635,14 @@ class VippWidget(QWidget):
                     for index, _channel_name, _colormap in _RGB_VOLUME_CHANNELS
                 }
                 return sorted(layers, key=lambda layer: ordered.get(layer.name, 99))
+            layers = self._colored_channel_axis_layers(name)
+            if layers:
+                return sorted(
+                    layers,
+                    key=lambda layer: int(
+                        layer.metadata.get("display_channel_index", 99)
+                    ),
+                )
             scalar_layers = self._owned_scalar_inspect_layers()
             if scalar_layers:
                 exact = next(
@@ -33915,6 +40665,12 @@ class VippWidget(QWidget):
                 for index, _channel_name, _colormap in _RGB_VOLUME_CHANNELS
             }
             return sorted(layers, key=lambda layer: ordered.get(layer.name, 99))
+        layers = self._colored_channel_axis_layers(name)
+        if layers:
+            return sorted(
+                layers,
+                key=lambda layer: int(layer.metadata.get("display_channel_index", 99)),
+            )
         layer = self._layer_by_name(name)
         return [layer] if layer is not None else []
 
@@ -33945,6 +40701,12 @@ class VippWidget(QWidget):
             != bool(metadata.get("display_rgb_as_channels"))
             or layer.metadata.get("display_rgb_channel_index")
             != metadata.get("display_rgb_channel_index")
+            or bool(layer.metadata.get("display_channel_axis_as_layers"))
+            != bool(metadata.get("display_channel_axis_as_layers"))
+            or layer.metadata.get("display_channel_axis_index")
+            != metadata.get("display_channel_axis_index")
+            or layer.metadata.get("display_channel_index")
+            != metadata.get("display_channel_index")
         )
 
     @staticmethod
@@ -33966,6 +40728,12 @@ class VippWidget(QWidget):
                 == bool(metadata.get("display_rgb_as_channels"))
                 and current.get("display_rgb_channel_index")
                 == metadata.get("display_rgb_channel_index")
+                and bool(current.get("display_channel_axis_as_layers"))
+                == bool(metadata.get("display_channel_axis_as_layers"))
+                and current.get("display_channel_axis_index")
+                == metadata.get("display_channel_axis_index")
+                and current.get("display_channel_index")
+                == metadata.get("display_channel_index")
                 and int(current.get("display_ndim", 0) or 0)
                 == int(metadata.get("display_ndim", 0) or 0)
             )
@@ -34016,7 +40784,13 @@ class VippWidget(QWidget):
             node_id = str(metadata.get("node_id", "") or "").strip()
             if not node_id:
                 return None
+            display_rgb_as_channels = bool(metadata.get("display_rgb_as_channels"))
+            display_channel_axis_as_layers = bool(
+                metadata.get("display_channel_axis_as_layers")
+            )
             channel_index = metadata.get("display_rgb_channel_index")
+            if channel_index is None:
+                channel_index = metadata.get("display_channel_index")
             if channel_index is not None:
                 channel_index = int(channel_index)
             return (
@@ -34025,7 +40799,7 @@ class VippWidget(QWidget):
                 str(metadata.get("data_kind", "")),
                 str(metadata.get("display_kind", "")),
                 bool(metadata.get("display_rgb")),
-                bool(metadata.get("display_rgb_as_channels")),
+                display_rgb_as_channels or display_channel_axis_as_layers,
                 channel_index,
                 int(metadata.get("display_ndim", 0) or 0),
             )
@@ -34040,11 +40814,15 @@ class VippWidget(QWidget):
             "data_kind": key[2],
             "display_kind": key[3],
             "display_rgb": key[4],
-            "display_rgb_as_channels": key[5],
+            "display_rgb_as_channels": bool(key[5] and key[4]),
             "display_ndim": key[7],
         }
         if key[6] is not None:
-            profile["display_rgb_channel_index"] = key[6]
+            if key[4]:
+                profile["display_rgb_channel_index"] = key[6]
+            else:
+                profile["display_channel_axis_as_layers"] = True
+                profile["display_channel_index"] = key[6]
         return profile
 
     @staticmethod
@@ -34283,7 +41061,9 @@ class VippWidget(QWidget):
                     pass
             if not metadata.get("display_rgb"):
                 try:
-                    layer.colormap = "gray"
+                    layer.colormap = _napari_channel_colormap(
+                        metadata.get("display_channel_color")
+                    )
                 except Exception:
                     pass
             plan = self._generated_layer_contrast_plan(layer.name, data)
@@ -34710,14 +41490,13 @@ class VippWidget(QWidget):
 
     def _sync_pin_ui(self) -> None:
         self.graph_view.set_pinned_node(self._active_pinned_node_id)
-        can_pin = self._node_can_pin(self._selected_node_id)
-        self.pin_button.setVisible(can_pin)
-        if not can_pin:
-            self.pin_button.setText("Pin selected")
-        elif self._selected_node_id == self._active_pinned_node_id:
-            self.pin_button.setText("Unpin selected")
-        else:
-            self.pin_button.setText("Pin selected")
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        profile = (
+            self._inspector_profile_for_node(node.id)
+            if node is not None
+            else None
+        )
+        self._sync_output_actions_ui(profile)
         self._sync_inspect_display_reset_ui()
 
     def _sync_inspect_display_reset_ui(self) -> None:
@@ -34853,7 +41632,16 @@ class VippWidget(QWidget):
 
         assert presentation is not None
         label = THUMBNAIL_STATS_INSPECTOR_LABELS[presentation.kind]
-        foreground = THUMBNAIL_STATS_INSPECTOR_COLORS[presentation.kind]
+        palette_colors = theme_colors(QWidget.palette(self))
+        foreground = {
+            ThumbnailStatsBadgeKind.PENDING: palette_colors.muted_text.name(),
+            ThumbnailStatsBadgeKind.CPU: palette_colors.text.name(),
+            ThumbnailStatsBadgeKind.GPU: palette_colors.info.foreground.name(),
+            ThumbnailStatsBadgeKind.CPU_FALLBACK: (
+                palette_colors.warning.foreground.name()
+            ),
+            ThumbnailStatsBadgeKind.ERROR: palette_colors.error.foreground.name(),
+        }[presentation.kind]
         weight = (
             650
             if presentation.kind
@@ -34902,7 +41690,9 @@ class VippWidget(QWidget):
 
     def _sync_keep_cached_ui(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
-        available = node is not None
+        available = self._node_supports_explicit_cache_retention(
+            self._selected_node_id
+        )
         self.keep_cached_checkbox.setVisible(available)
         self.keep_cached_checkbox.setEnabled(available)
         with QSignalBlocker(self.keep_cached_checkbox):
@@ -34911,6 +41701,18 @@ class VippWidget(QWidget):
                 if node is not None
                 else False
             )
+
+    def _node_supports_explicit_cache_retention(self, node_id: str) -> bool:
+        """Whether the cache checkbox can change retention for this node."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return False
+        operation = self.pipeline.operation_spec(node.operation_id)
+        return bool(
+            operation.execution_policy != "manual"
+            and operation.id not in {"save_output", "batch_output"}
+        )
 
     def _on_keep_cached_toggled(self, checked: bool) -> None:
         node_id = self._selected_node_id
@@ -34923,6 +41725,7 @@ class VippWidget(QWidget):
         node.params[CACHE_KEEP_NODE_PARAM] = bool(checked)
         self._apply_cache_retention()
         self._update_thumbnails()
+        self._sync_inspector_presentation()
         state = "kept" if checked else "not forced"
         self.status_label.setText(f"Cache retention for '{node.title}' is {state}.")
         self._sync_current_workflow_tab_state()
@@ -34954,7 +41757,7 @@ class VippWidget(QWidget):
                 )
                 != "table"
             )
-        return node.output_type != "table"
+        return False
 
     def _node_output_type(self, node_id: str) -> str:
         data, _state, output_port = self._node_display_payload(node_id)
@@ -34966,20 +41769,25 @@ class VippWidget(QWidget):
         data,
         output_port: int,
     ) -> str:
+        if is_table_data(data):
+            return "table"
         node = self.pipeline.nodes.get(node_id)
         ports = self.pipeline.output_ports(node_id)
         output_port = int(np.clip(output_port, 0, max(len(ports) - 1, 0)))
+        resolved_output_type = ports[output_port].output_type if ports else ""
         if (
             node is not None
             and ports
             and (
                 self.pipeline.operation_spec(node.operation_id).preserves_input_type
-                or ports[output_port].output_type == "labels"
+                or resolved_output_type == "labels"
             )
         ):
-            return ports[output_port].output_type
+            return resolved_output_type
         if data is not None:
             return self._data_kind(data, node_id, output_port)
+        if resolved_output_type not in {"", "any"}:
+            return resolved_output_type
         return node.output_type if node is not None else "image"
 
     def _remove_layer(self, layer) -> None:
@@ -35127,6 +41935,7 @@ class VippWidget(QWidget):
                 _data, state, output_port = self._node_display_payload(node_id)
             else:
                 state = self._node_output_state(node_id, output_port)
+        state = self._presentation_image_state(node_id, state)
         return state.to_dict() if state is not None else None
 
     def _is_vipp_generated_layer(self, layer) -> bool:
@@ -35423,6 +42232,32 @@ def _histogram_counts(
     return counts
 
 
+def _explicit_channel_axis(state: ImageState | None) -> int | None:
+    if state is None:
+        return None
+    axes = tuple(getattr(state, "axes", ()))
+    shape = tuple(getattr(state, "shape", ()))
+    if len(axes) != len(shape):
+        return None
+    for index, axis in enumerate(axes):
+        if _axis_is_explicit(axis) and (
+            str(getattr(axis, "type", "")).casefold() == "channel"
+            or str(getattr(axis, "name", "")).casefold() in {"c", "rgb", "rgba"}
+        ):
+            return index
+    return None
+
+
+def _explicit_channel_count(state: ImageState | None) -> int:
+    channel_axis = _explicit_channel_axis(state)
+    if channel_axis is None:
+        return 0
+    try:
+        return max(int(state.shape[channel_axis]), 0)
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return 0
+
+
 def _histogram_summary(
     data,
     state=None,
@@ -35449,15 +42284,56 @@ def _histogram_summary(
     counts, x_range = exact_histogram(arr, channel_axis=channel_axis)
     if counts is None:
         return None, None, None
-    series_count = counts.shape[0] if counts.ndim > 1 else 1
-    colors = _histogram_series_colors(series_count, channel_axis_name)
+    colors = _histogram_colors_for_state(
+        counts,
+        state,
+        channel_axis_name=channel_axis_name,
+    )
     return counts, x_range, colors
+
+
+def _histogram_colors_for_state(
+    counts,
+    state: ImageState | None,
+    *,
+    channel_axis_name: str = "",
+) -> list[QColor]:
+    """Resolve plot colours from the same carried channel metadata as previews."""
+
+    count_array = np.asarray(counts)
+    series_count = count_array.shape[0] if count_array.ndim > 1 else 1
+    axis_name = str(channel_axis_name).strip().casefold()
+    if not axis_name:
+        channel_axis = _explicit_channel_axis(state)
+        if channel_axis is not None:
+            axis_name = str(state.axes[channel_axis].name).strip().casefold()
+    metadata_colors: tuple[int | None, ...] = ()
+    if axis_name not in {"rgb", "rgba"} and state is not None:
+        metadata_colors = tuple(
+            getattr(channel, "color", None)
+            for channel in tuple(getattr(state, "channels", ()))
+        )
+    return _histogram_series_colors(
+        series_count,
+        axis_name,
+        channel_colors=metadata_colors,
+    )
+
+
+def _histogram_array_like(data):
+    """Return shape/index capable data without eagerly realizing lazy sources."""
+
+    if isinstance(data, ExactSourceWindowData):
+        return data.data
+    if all(hasattr(data, attribute) for attribute in ("shape", "ndim", "dtype")):
+        return data
+    return np.asarray(data)
 
 
 def _histogram_has_stack_scope(data, state=None) -> bool:
     if data is None:
         return False
-    arr = np.asarray(data)
+    arr = _histogram_array_like(data)
     if arr.ndim <= 2:
         return False
     axes = tuple(getattr(state, "axes", ()))
@@ -35496,7 +42372,7 @@ def _histogram_slice_signature(
     current_step,
     current_step_nsteps,
 ) -> tuple:
-    arr = np.asarray(data)
+    arr = _histogram_array_like(data)
     axes = tuple(getattr(state, "axes", ()))
     if len(axes) == arr.ndim:
         y_axis = _metadata_axis_index_by_name(state, "y")
@@ -35550,7 +42426,9 @@ def _input_histogram_marker_key(operation_id: str, params: dict | None) -> tuple
     if operation_id == "hysteresis_threshold":
         return selected("low_threshold", "high_threshold")
     if operation_id in GLOBAL_THRESHOLD_OPERATIONS:
-        names = ["histogram_bins"] if "histogram_bins" in values else []
+        names = ["threshold_scope"]
+        if "histogram_bins" in values:
+            names.append("histogram_bins")
         if operation_id == "minimum_threshold":
             names.append("max_iterations")
         if "channel_axis" in values:
@@ -35634,7 +42512,9 @@ def _input_histogram_markers(
             data,
             channel_axis=channel_axis,
             state=state,
-            scope=scope,
+            # The plot scope is an inspector-only shared choice.  The marker
+            # must continue to show the threshold actually used by the node.
+            scope=str((params or {}).get("threshold_scope", scope)),
             current_step=current_step,
             current_step_nsteps=current_step_nsteps,
         )
@@ -35861,6 +42741,50 @@ def _rgb_channel_layer_name(base_name: str, channel_index: int) -> str:
     return f"{base_name} {channel_name}"
 
 
+def _napari_channel_colormap(color):
+    """Return a napari colormap matching one authored fluorescence colour."""
+
+    rgb = color_value_to_rgb(color)
+    if rgb is None:
+        return "gray"
+    for name in CHANNEL_COLOR_CHOICES:
+        named_rgb = color_value_to_rgb(name)
+        if named_rgb is not None and np.allclose(rgb, named_rgb, atol=1 / 255):
+            return name.casefold()
+    try:
+        from napari.utils.colormaps import Colormap
+
+        rgba = np.asarray(
+            [
+                (0.0, 0.0, 0.0, 1.0),
+                (float(rgb[0]), float(rgb[1]), float(rgb[2]), 1.0),
+            ],
+            dtype=np.float32,
+        )
+        values = np.clip(np.rint(np.asarray(rgb) * 255.0), 0, 255).astype(np.uint8)
+        hex_name = "".join(f"{int(value):02x}" for value in values)
+        return Colormap(rgba, name=f"vipp-{hex_name}")
+    except Exception:
+        return "gray"
+
+
+def _scalar_channel_color_from_metadata(metadata: dict) -> np.ndarray | None:
+    if metadata.get("display_kind") != "image" or metadata.get("display_rgb"):
+        return None
+    carried = metadata.get("vipp_image_state")
+    state = ImageState.from_dict(carried) if isinstance(carried, dict) else None
+    return _scalar_channel_color_from_state(state)
+
+
+def _scalar_channel_color_from_state(state: ImageState | None) -> np.ndarray | None:
+    if state is None or _explicit_channel_axis(state) is not None:
+        return None
+    channels = tuple(getattr(state, "channels", ()))
+    if len(channels) != 1:
+        return None
+    return color_value_to_rgb(getattr(channels[0], "color", None))
+
+
 def _local_dim_value_from_viewer(
     viewer_value: int,
     *,
@@ -35904,8 +42828,8 @@ def _histogram_source(
     scope: str = "Slice",
     current_step=None,
     current_step_nsteps=None,
-) -> tuple[np.ndarray, int | None, str] | None:
-    arr = np.asarray(data)
+) -> tuple[object, int | None, str] | None:
+    arr = _histogram_array_like(data)
     channel_axis, channel_axis_name = _histogram_channel_axis(arr, state)
     if str(scope).strip().lower().startswith("stack"):
         return arr, channel_axis, channel_axis_name
@@ -35922,7 +42846,7 @@ def _histogram_source(
             return source[0], source[1], channel_axis_name
 
     preview = make_preview(
-        data,
+        arr,
         mode="slice",
         current_step=current_step,
         current_step_nsteps=current_step_nsteps,
@@ -35936,13 +42860,13 @@ def _histogram_source(
 
 
 def _state_histogram_slice(
-    arr: np.ndarray,
+    arr,
     state,
     channel_axis: int | None,
     *,
     current_step=None,
     current_step_nsteps=None,
-) -> tuple[np.ndarray, int | None] | None:
+) -> tuple[object, int | None] | None:
     if len(state.axes) != arr.ndim:
         return None
     y_axis = _metadata_axis_index_by_name(state, "y")
@@ -35979,7 +42903,7 @@ def _state_histogram_slice(
     return result, remaining.index(channel_axis)
 
 
-def _histogram_channel_axis(arr: np.ndarray, state) -> tuple[int | None, str]:
+def _histogram_channel_axis(arr, state) -> tuple[int | None, str]:
     if state is not None and len(getattr(state, "axes", ())) == arr.ndim:
         for index, axis in enumerate(state.axes):
             if (
@@ -36053,7 +42977,18 @@ def _state_axes_for_napari_layer(state: ImageState, metadata: dict) -> tuple:
     axes = tuple(getattr(state, "axes", ()))
     if expected_ndim <= 0:
         return ()
-    if bool(metadata.get("display_rgb")) and len(axes) == expected_ndim + 1:
+    if (
+        bool(metadata.get("display_channel_axis_as_layers"))
+        and len(axes) == expected_ndim + 1
+    ):
+        try:
+            channel_axis = int(metadata.get("display_channel_axis_index"))
+        except (TypeError, ValueError):
+            return ()
+        if not 0 <= channel_axis < len(axes):
+            return ()
+        axes = axes[:channel_axis] + axes[channel_axis + 1 :]
+    elif bool(metadata.get("display_rgb")) and len(axes) == expected_ndim + 1:
         # VIPP only marks a layer RGB when its explicit component axis is
         # trailing.  napari hides that component axis from viewer dimensions,
         # including when its authored name is C rather than RGB/RGBA.
@@ -36236,7 +43171,7 @@ def _histogram_axis_index(
     return int(np.clip(step, 0, max(axis_size - 1, 0)))
 
 
-def _axis_index_view(arr: np.ndarray, axis: int, index: int) -> np.ndarray:
+def _axis_index_view(arr, axis: int, index: int):
     selection = [slice(None)] * arr.ndim
     selection[int(axis)] = int(index)
     return arr[tuple(selection)]

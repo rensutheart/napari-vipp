@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import Signal
+from qtpy.QtCore import QEvent, Signal
 from qtpy.QtWidgets import (
     QComboBox,
     QLabel,
@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.metadata import AxisDeclaration
+from napari_vipp.ui.palette_roles import theme_colors
 
 if TYPE_CHECKING:
     from napari_vipp.core.batch import BatchAxisSuggestion
@@ -39,6 +40,7 @@ class AxisInterpretationControl(QWidget):
         save_target: str = "batch",
     ) -> None:
         super().__init__(parent)
+        self._applying_theme_style = False
         self._updating = False
         self._committed_text = ""
         self._last_text = ""
@@ -75,10 +77,7 @@ class AxisInterpretationControl(QWidget):
         self.notice_label.setWordWrap(True)
         self.notice_label.setMinimumWidth(0)
         self.notice_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.notice_label.setStyleSheet(
-            "QLabel { color: #fbbf24; background: #422006; "
-            "border: 1px solid #92400e; border-radius: 4px; padding: 5px; }"
-        )
+        self._apply_theme_style()
         self.notice_label.hide()
 
         layout = QVBoxLayout(self)
@@ -104,6 +103,37 @@ class AxisInterpretationControl(QWidget):
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
         self.advanced_edit.textChanged.connect(self._advanced_changed)
         self.advanced_edit.editingFinished.connect(self._advanced_edit_finished)
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if not self._applying_theme_style and event.type() in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+        ):
+            self._apply_theme_style()
+
+    def _apply_theme_style(self) -> None:
+        if self._applying_theme_style:
+            return
+        self._applying_theme_style = True
+        try:
+            parent = self.parentWidget()
+            palette = (
+                QWidget.palette(parent)
+                if parent is not None
+                else QWidget.palette(self)
+            )
+            warning = theme_colors(palette).warning
+            self.notice_label.setStyleSheet(
+                "QLabel {"
+                f" color: {warning.foreground.name()};"
+                f" background: {warning.surface.name()};"
+                f" border: 1px solid {warning.border.name()};"
+                " border-radius: 4px; padding: 5px;"
+                " }"
+            )
+        finally:
+            self._applying_theme_style = False
 
     def text(self) -> str:
         """Return only the last complete declaration accepted for persistence."""

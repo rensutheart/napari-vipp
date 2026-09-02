@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, replace
 
 import numpy as np
-from qtpy.QtCore import QLocale, QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QEvent, QLocale, QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QAction, QValidator
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -35,6 +35,7 @@ from napari_vipp.ui.file_sources import (
     SourceLoadProgress,
     SourceLoadProgressUnit,
 )
+from napari_vipp.ui.palette_roles import theme_colors
 
 
 @dataclass(frozen=True)
@@ -229,7 +230,9 @@ class ParameterControl(QWidget):
         self._entry_maximum = bounds.maximum
         self._scale = self._scale_for(bounds)
         self.slider = QSlider(Qt.Horizontal)
-        self.slider.setMinimumWidth(120)
+        # The slider remains comfortably draggable at 80 px, while avoiding a
+        # large hard minimum when an inspector form stacks labels above fields.
+        self.slider.setMinimumWidth(80)
         if self._is_integer:
             self.value_box = ResettableSpinBox()
         else:
@@ -238,6 +241,11 @@ class ParameterControl(QWidget):
         self.value_box.setDefaultValue(spec.default)
         _configure_numeric_spin_box(self.value_box)
         self.value_box.setMinimumWidth(74)
+        slider_height = max(int(self.slider.sizeHint().height()), 14)
+        self.slider.setMinimumHeight(slider_height)
+        self.setMinimumHeight(
+            max(slider_height, int(self.value_box.sizeHint().height()))
+        )
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -634,14 +642,80 @@ class BoolControl(QWidget):
     def __init__(self, spec, value, _bounds: ParameterBounds, parent=None):
         super().__init__(parent)
         self.spec = spec
+        self._compact_label_mode = False
+        self.inline_label = QLabel(str(spec.label), self)
+        self.inline_label.setTextFormat(Qt.PlainText)
+        self.inline_label.setWordWrap(True)
+        self.inline_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.inline_label.setMinimumWidth(0)
+        self.inline_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        self.inline_label.hide()
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(bool(spec.default if value is None else value))
+        self.checkbox.setAccessibleName(str(spec.label))
+        self.inline_label.setBuddy(self.checkbox)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.checkbox)
-        layout.addStretch(1)
+        layout.setSpacing(8)
+        layout.addWidget(self.inline_label, 1)
+        layout.addWidget(self.checkbox, 0, Qt.AlignVCenter)
         self.checkbox.toggled.connect(self.valueChanged.emit)
+
+    @property
+    def compact_label_mode(self) -> bool:
+        """Whether the wrapped label is shown inside the checkbox row."""
+
+        return self._compact_label_mode
+
+    def set_compact_label_mode(
+        self,
+        enabled: bool,
+        *,
+        label_text: str | None = None,
+    ) -> None:
+        """Keep the label beside the checkbox when a form stacks other rows."""
+
+        if label_text is not None:
+            self.inline_label.setText(str(label_text))
+            self.checkbox.setAccessibleName(str(label_text))
+        enabled = bool(enabled)
+        self._compact_label_mode = enabled
+        self.inline_label.setVisible(enabled)
+        policy = self.sizePolicy()
+        policy.setHeightForWidth(enabled)
+        self.setSizePolicy(policy)
+        self.updateGeometry()
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        """Reserve enough height for a narrow inline label to wrap."""
+
+        return self._compact_label_mode
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        """Return the compact row height for the available label width."""
+
+        margins = self.layout().contentsMargins()
+        checkbox_hint = self.checkbox.sizeHint()
+        available_label_width = max(
+            int(width)
+            - margins.left()
+            - margins.right()
+            - checkbox_hint.width()
+            - self.layout().spacing(),
+            1,
+        )
+        label_height = self.inline_label.heightForWidth(available_label_width)
+        if label_height < 0:
+            label_height = self.inline_label.sizeHint().height()
+        return (
+            margins.top()
+            + margins.bottom()
+            + max(label_height, checkbox_hint.height())
+        )
 
     def value(self):
         return self.checkbox.isChecked()
@@ -833,6 +907,7 @@ class ImageSourceControl(QWidget):
     """Source selector for explicit graph input nodes."""
 
     valueChanged = Signal(object)
+    pathCommitted = Signal(object)
     sourceLoadCancelRequested = Signal(int)
     viewerDisplayChanged = Signal(str)
     previewReloadRequested = Signal()
@@ -850,6 +925,7 @@ class ImageSourceControl(QWidget):
         parent=None,
     ):
         super().__init__(parent)
+        self._applying_theme_style = False
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["napari layer", "file path", "sample"])
         self.layer_combo = QComboBox()
@@ -875,7 +951,6 @@ class ImageSourceControl(QWidget):
         )
         self.source_summary = QLabel()
         self.source_summary.setWordWrap(True)
-        self.source_summary.setStyleSheet("color: #94a3b8;")
         self.source_load_status = SourceLoadStatusControl()
         self.source_load_status.cancelRequested.connect(
             self.sourceLoadCancelRequested.emit
@@ -913,11 +988,6 @@ class ImageSourceControl(QWidget):
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
         )
-        self.memory_repair_panel.setStyleSheet(
-            "QWidget { background: #3b2f12; border: 1px solid #a16207; "
-            "border-radius: 4px; } QLabel { border: none; background: transparent; "
-            "color: #fde68a; }"
-        )
         self.memory_repair_panel.hide()
         self._resolution_presentation = ImageSourceResolutionPresentation()
         self.resolution_panel = QWidget()
@@ -930,7 +1000,6 @@ class ImageSourceControl(QWidget):
         self.analysis_resolution_label.setWordWrap(True)
         self.pyramid_levels_label = QLabel()
         self.pyramid_levels_label.setWordWrap(True)
-        self.pyramid_levels_label.setStyleSheet("color: #94a3b8;")
         self.preview_resolution_label = QLabel()
         self.preview_resolution_label.setWordWrap(True)
         for label in (
@@ -953,7 +1022,7 @@ class ImageSourceControl(QWidget):
         self.viewer_display_label = QLabel("Show in napari")
         self.viewer_display_combo.setToolTip(
             "Choose what napari displays. Every preview choice is presentation "
-            "only; processing and export always use analysis level 0."
+            "only; processing and export always use source level 0."
         )
         self.preview_reload_button = QPushButton("Try loading preview again")
         self.preview_reload_button.setToolTip(
@@ -975,6 +1044,26 @@ class ImageSourceControl(QWidget):
         self.resolution_panel.setToolTip(
             "The scientific graph always reads level 0. A lower level may be "
             "shown in napari for presentation only."
+        )
+        self.resolution_panel.installEventFilter(self)
+
+        # Keep one stable home for the source-representation controls.  The
+        # inspector may temporarily move the existing panel into its dedicated
+        # section, then restore it here before tearing this control down.  A
+        # zero-margin wrapper preserves the former spanning-row geometry when
+        # no external host is used.
+        self._source_representation_host: QWidget | None = None
+        self._source_representation_home = QWidget(self)
+        source_representation_home_layout = QVBoxLayout(
+            self._source_representation_home
+        )
+        source_representation_home_layout.setContentsMargins(0, 0, 0, 0)
+        source_representation_home_layout.setSpacing(0)
+        source_representation_home_layout.addWidget(self.resolution_panel)
+        self._source_representation_home.setMinimumWidth(0)
+        self._source_representation_home.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
         )
 
         self.layer_row = QWidget()
@@ -1009,7 +1098,7 @@ class ImageSourceControl(QWidget):
         self.form_layout.addRow("Image stack", self.axis_control)
         self.form_layout.addRow("Sample", self.sample_row)
         self.form_layout.addRow(self.source_summary)
-        self.form_layout.addRow(self.resolution_panel)
+        self.form_layout.addRow(self._source_representation_home)
         self.form_layout.addRow(self.memory_repair_panel)
         self.form_layout.addRow(self.source_load_status)
 
@@ -1025,7 +1114,8 @@ class ImageSourceControl(QWidget):
         self.mode_combo.currentTextChanged.connect(self._on_changed)
         self.layer_combo.currentTextChanged.connect(self._on_changed)
         self.sample_combo.currentTextChanged.connect(self._on_changed)
-        self.path_edit.textChanged.connect(self._on_changed)
+        self.path_edit.textChanged.connect(self._sync_rows)
+        self.path_edit.editingFinished.connect(self._commit_path)
         self.series_combo.currentIndexChanged.connect(self._on_changed)
         self.binding_combo.currentTextChanged.connect(self._on_changed)
         self.axis_control.textChanged.connect(self._on_changed)
@@ -1043,6 +1133,107 @@ class ImageSourceControl(QWidget):
         self.memory_repair_dismiss_button.clicked.connect(
             self._dismiss_memory_repair
         )
+        self._apply_theme_style()
+
+    def set_compact_form_mode(self, compact: bool) -> None:
+        """Stack source labels above fields without rebuilding any controls."""
+
+        compact = bool(compact)
+        self.form_layout.setFieldGrowthPolicy(
+            QFormLayout.AllNonFixedFieldsGrow
+        )
+        current_policy = self.form_layout.rowWrapPolicy()
+        if compact:
+            if current_policy != QFormLayout.WrapAllRows:
+                self._wide_row_wrap_policy = current_policy
+            self.form_layout.setRowWrapPolicy(QFormLayout.WrapAllRows)
+        else:
+            if current_policy == QFormLayout.WrapAllRows:
+                current_policy = getattr(
+                    self,
+                    "_wide_row_wrap_policy",
+                    QFormLayout.DontWrapRows,
+                )
+            else:
+                self._wide_row_wrap_policy = current_policy
+            self.form_layout.setRowWrapPolicy(current_policy)
+        for row in range(self.form_layout.rowCount()):
+            label_item = self.form_layout.itemAt(
+                row,
+                QFormLayout.ItemRole.LabelRole,
+            )
+            if label_item is None:
+                continue
+            label = label_item.widget()
+            if not isinstance(label, QLabel):
+                continue
+            label.setMinimumWidth(0)
+            label.setWordWrap(compact)
+            label.setSizePolicy(
+                QSizePolicy.Preferred,
+                QSizePolicy.Preferred,
+            )
+        self.form_layout.invalidate()
+        self.updateGeometry()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if not self._applying_theme_style and event.type() in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+        ):
+            self._apply_theme_style()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if (
+            watched is self.resolution_panel
+            and not self._applying_theme_style
+            and event.type()
+            in (QEvent.PaletteChange, QEvent.StyleChange, QEvent.ParentChange)
+        ):
+            self._apply_theme_style()
+        return super().eventFilter(watched, event)
+
+    def _apply_theme_style(self) -> None:
+        if self._applying_theme_style:
+            return
+        self._applying_theme_style = True
+        try:
+            parent = self.parentWidget()
+            palette = (
+                QWidget.palette(parent)
+                if parent is not None
+                else QWidget.palette(self)
+            )
+            colors = theme_colors(palette)
+            resolution_parent = self.resolution_panel.parentWidget()
+            resolution_palette = (
+                QWidget.palette(resolution_parent)
+                if resolution_parent is not None
+                else QWidget.palette(self.resolution_panel)
+            )
+            resolution_colors = theme_colors(resolution_palette)
+            self.source_summary.setStyleSheet(
+                f"color: {colors.muted_text.name()};"
+            )
+            self.pyramid_levels_label.setStyleSheet(
+                f"color: {resolution_colors.muted_text.name()};"
+            )
+            warning = colors.warning
+            self.memory_repair_panel.setStyleSheet(
+                "QWidget {"
+                f" background: {warning.surface.name()};"
+                f" border: 1px solid {warning.border.name()};"
+                " border-radius: 4px;"
+                " }"
+                "QLabel {"
+                " border: none; background: transparent;"
+                f" color: {warning.foreground.name()};"
+                " }"
+            )
+            self.axis_control._apply_theme_style()
+        finally:
+            self._applying_theme_style = False
 
     def value(self) -> dict[str, object]:
         return {
@@ -1054,6 +1245,64 @@ class ImageSourceControl(QWidget):
             "binding_mode": self.binding_combo.currentText(),
             "axis_declaration": self.axis_control.text(),
         }
+
+    @property
+    def source_representation_host(self) -> QWidget | None:
+        """Return the external host currently displaying the resolution panel."""
+
+        return self._source_representation_host
+
+    def set_source_representation_host(self, host: QWidget | None) -> None:
+        """Move the existing source-representation panel into *host*.
+
+        The host must already own a layout; this control intentionally does not
+        impose layout policy on an inspector section.  Passing ``None`` restores
+        the panel to its original spanning form row.  Call
+        :meth:`restore_source_representation_panel` before this control is
+        removed or deleted so ownership returns to the control.
+        """
+
+        if host is None:
+            self.restore_source_representation_panel()
+            return
+        if not isinstance(host, QWidget):
+            raise TypeError("source representation host must be a QWidget")
+        if host.layout() is None:
+            raise ValueError(
+                "source representation host must already have a layout"
+            )
+        ancestor: QWidget | None = host
+        while ancestor is not None:
+            if ancestor is self.resolution_panel:
+                raise ValueError(
+                    "source representation host cannot be inside the panel"
+                )
+            ancestor = ancestor.parentWidget()
+        if host is self._source_representation_host:
+            self._sync_rows()
+            return
+
+        current_parent = self.resolution_panel.parentWidget()
+        if current_parent is not None and current_parent.layout() is not None:
+            current_parent.layout().removeWidget(self.resolution_panel)
+        self._source_representation_host = host
+        host.layout().addWidget(self.resolution_panel)
+        self._sync_rows()
+        self._apply_theme_style()
+
+    def restore_source_representation_panel(self) -> None:
+        """Return an externally hosted panel to this control, if necessary."""
+
+        if self._source_representation_host is None:
+            self._sync_rows()
+            return
+        current_parent = self.resolution_panel.parentWidget()
+        if current_parent is not None and current_parent.layout() is not None:
+            current_parent.layout().removeWidget(self.resolution_panel)
+        self._source_representation_host = None
+        self._source_representation_home.layout().addWidget(self.resolution_panel)
+        self._sync_rows()
+        self._apply_theme_style()
 
     def set_options(
         self,
@@ -1152,6 +1401,7 @@ class ImageSourceControl(QWidget):
                 path,
             )
             self.path_edit.setText(path)
+            self._commit_path()
 
     def _browse_zarr_path(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -1168,6 +1418,20 @@ class ImageSourceControl(QWidget):
                 path,
             )
             self.path_edit.setText(path)
+            self._commit_path()
+
+    def _commit_path(self) -> None:
+        """Publish one completed path edit instead of every typed character."""
+
+        self._sync_rows()
+        self.pathCommitted.emit(self.value())
+
+    def set_path_text(self, path: str) -> None:
+        """Replace the visible path without publishing a second source edit."""
+
+        with QSignalBlocker(self.path_edit):
+            self.path_edit.setText(str(path))
+        self.path_edit.setCursorPosition(0)
 
     def _on_changed(self, *_args) -> None:
         self._sync_rows()
@@ -1251,9 +1515,7 @@ class ImageSourceControl(QWidget):
         shape = _shape_text(presentation.analysis_shape)
         axes = str(presentation.analysis_axes).strip()
         axis_prefix = f"{axes} " if axes else ""
-        analysis_text = (
-            f"Level 0 · {axis_prefix}{shape} · fixed scientific analysis"
-        )
+        analysis_text = f"Level 0 · {axis_prefix}{shape} · fixed processing data"
         if presentation.analysis_window_bounds:
             axis_names = (
                 tuple(axes)
@@ -1283,7 +1545,7 @@ class ImageSourceControl(QWidget):
                 f"{_shape_text(presentation.analysis_window_shape)}. Full level 0 "
                 "was not materialized."
             )
-        self.analysis_resolution_label.setText(f"Analysis · {analysis_text}")
+        self.analysis_resolution_label.setText(f"Source · {analysis_text}")
         self.pyramid_levels_label.setText(
             "Pyramid · "
             + "; ".join(
@@ -1327,7 +1589,7 @@ class ImageSourceControl(QWidget):
                 "Loaded Crop Stack window — L0 · "
                 f"{_shape_text(presentation.analysis_window_shape)}"
                 if presentation.analysis_window_bounds
-                else "Analysis output — L0 · "
+                else "Full-resolution source — L0 · "
                 f"{_shape_text(presentation.analysis_shape)}"
             )
             self.viewer_display_combo.addItem(analysis_choice, "analysis")
@@ -1371,9 +1633,11 @@ class ImageSourceControl(QWidget):
             self.source_summary,
             file_mode and bool(self.source_summary.text()),
         )
+        resolution_visible = file_mode and self._resolution_presentation.visible
+        self.resolution_panel.setVisible(resolution_visible)
         self._set_form_row_visible(
-            self.resolution_panel,
-            file_mode and self._resolution_presentation.visible
+            self._source_representation_home,
+            resolution_visible and self._source_representation_host is None,
         )
         self._set_form_row_visible(
             self.source_load_status,

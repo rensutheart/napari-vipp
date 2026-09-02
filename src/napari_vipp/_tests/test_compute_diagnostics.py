@@ -361,6 +361,8 @@ def test_live_catalog_reports_standard_libraries_and_every_public_region():
         "cupyx-fill-holes-all-v1",
         "cupy-measure-objects-basic-v1",
         "cupy-measure-objects-intensity-basic-v1",
+        "cupy-measure-3d-mesh-morphology-hybrid-v1",
+        "cupyx-analyze-skeleton-v1",
     }
     assert standard.cuda_ready
     assert {probe.library_id for probe in standard.library_probes} == {

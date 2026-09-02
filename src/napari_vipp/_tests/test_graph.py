@@ -2,21 +2,28 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from qtpy.QtCore import QPoint, QPointF, QRectF, Qt
-from qtpy.QtGui import QColor, QImage, QPainter, QPainterPath
+from qtpy.QtCore import QMimeData, QPoint, QPointF, QRectF, Qt
+from qtpy.QtGui import QColor, QImage, QPainter, QPainterPath, QPalette
+from qtpy.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from napari_vipp._graph import (
     BYPASSED_NODE_OPACITY,
     BYPASSED_NODE_OUTLINE,
     BYPASSED_NODE_PASS_THROUGH,
+    ISOLATED_TUNING_ACCENT,
+    OPERATION_MIME,
     STALE_EXECUTION_ACCENT,
     ComputeBadgeKind,
     PipelineGraphView,
     PortLabelMode,
     _wire_path,
 )
-from napari_vipp._theme import category_color, category_tint
-from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
+from napari_vipp._theme import category_color, category_tint, graph_theme
+from napari_vipp.core.pipeline import (
+    EXECUTION_BLOCKED,
+    NODE_LIBRARY_BY_ID,
+    PrototypePipeline,
+)
 
 
 def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
@@ -25,6 +32,186 @@ def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
     view.resize(980, 520)
     view.build_graph(pipeline.nodes.values(), pipeline.connections)
     return view, pipeline
+
+
+def _graph_palette(*, dark: bool) -> QPalette:
+    palette = QPalette()
+    surface = "#20242b" if dark else "#ffffff"
+    window = "#151922" if dark else "#f5f7fb"
+    text = "#f3f4f6" if dark else "#172033"
+    palette.setColor(QPalette.Base, QColor(surface))
+    palette.setColor(QPalette.Window, QColor(window))
+    palette.setColor(QPalette.Text, QColor(text))
+    palette.setColor(QPalette.Button, QColor(surface))
+    palette.setColor(QPalette.ButtonText, QColor(text))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#64748b"))
+    return palette
+
+
+def _dominant_widget_color(widget) -> str:
+    image = widget.grab().toImage().convertToFormat(QImage.Format_RGBA8888)
+    counts: dict[str, int] = {}
+    for y in range(3, max(image.height() - 3, 3)):
+        for x in range(3, max(image.width() - 3, 3)):
+            name = image.pixelColor(x, y).name()
+            counts[name] = counts.get(name, 0) + 1
+    assert counts
+    return max(counts, key=counts.get)
+
+
+def test_graph_canvas_and_items_follow_runtime_palette_changes(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+
+    view.setPalette(_graph_palette(dark=False))
+    view._apply_palette_theme()
+
+    card = view._cards["gaussian"]
+    connection = view._connections[0]
+    port = view._proxies["gaussian"].input_ports[0]
+    assert view.backgroundBrush().color().name() == "#f2f5f9"
+    assert "background: #ffffff" in card.styleSheet()
+    assert "color: #172033" in card.styleSheet()
+    assert "background: #e8edf4" in card.preview.styleSheet()
+    assert connection.pen().color().name() == "#64748b"
+    assert port.pen().color().name() == "#ffffff"
+
+    view.setPalette(_graph_palette(dark=True))
+    view._apply_palette_theme()
+
+    assert view.backgroundBrush().color().name() == "#151922"
+    assert "background: #20242b" in card.styleSheet()
+    assert "color: #f3f4f6" in card.styleSheet()
+    assert "background: #111827" in card.preview.styleSheet()
+    assert "background-color: #334155" in card.calculate_button.styleSheet()
+    assert "color: #f8fafc" in card.calculate_button.styleSheet()
+    assert connection.pen().color().name() == "#8aa0c8"
+    assert port.pen().color().name() == "#111827"
+
+
+def test_card_added_after_dark_graph_theme_ignores_light_application_palette(qtbot):
+    application = QApplication.instance()
+    assert application is not None
+    original_palette = QPalette(application.palette())
+
+    try:
+        application.setPalette(_graph_palette(dark=False))
+        view, pipeline = _build_view()
+        qtbot.addWidget(view)
+        view.setPalette(_graph_palette(dark=True))
+        view._apply_palette_theme()
+
+        node = pipeline.add_node("binary_threshold")
+        view.add_node(node, QPointF(990, 20))
+
+        card = view._cards[node.id]
+        assert card.palette().color(QPalette.Base).name() == "#20242b"
+        assert "background: #20242b" in card.styleSheet()
+        assert "color: #f3f4f6" in card.styleSheet()
+        assert "background: #111827" in card.preview.styleSheet()
+        assert "background-color: #334155" in card.calculate_button.styleSheet()
+        assert "color: #f8fafc" in card.calculate_button.styleSheet()
+        assert card._bypass_overlay._graph_theme.is_dark
+        assert card.processing_badge._graph_theme.is_dark
+    finally:
+        application.setPalette(original_palette)
+        QApplication.processEvents()
+
+
+def test_card_added_after_light_graph_theme_ignores_dark_application_palette(qtbot):
+    application = QApplication.instance()
+    assert application is not None
+    original_palette = QPalette(application.palette())
+
+    try:
+        application.setPalette(_graph_palette(dark=True))
+        view, pipeline = _build_view()
+        qtbot.addWidget(view)
+        view.setPalette(_graph_palette(dark=False))
+        view._apply_palette_theme()
+
+        node = pipeline.add_node("binary_threshold")
+        view.add_node(node, QPointF(990, 20))
+
+        card = view._cards[node.id]
+        assert card.palette().color(QPalette.Base).name() == "#ffffff"
+        assert "background: #ffffff" in card.styleSheet()
+        assert "color: #172033" in card.styleSheet()
+        assert "background: #e8edf4" in card.preview.styleSheet()
+        assert "background-color: #e2e8f0" in card.calculate_button.styleSheet()
+        assert "color: #172033" in card.calculate_button.styleSheet()
+        assert not card._bypass_overlay._graph_theme.is_dark
+        assert not card.processing_badge._graph_theme.is_dark
+    finally:
+        application.setPalette(original_palette)
+        QApplication.processEvents()
+
+
+def test_manual_card_button_follows_real_napari_qss_theme(qtbot):
+    from napari._qt.qt_resources import get_stylesheet
+
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    view, _pipeline = _build_view()
+    layout.addWidget(view)
+    qtbot.addWidget(host)
+    host.show()
+
+    host.setStyleSheet(
+        get_stylesheet("light", extra_variables={"font_size": "9pt"})
+    )
+    qtbot.waitUntil(
+        lambda: view.palette().color(QPalette.Base).lightnessF() > 0.5
+    )
+    view._apply_palette_theme()
+    card = view._cards["gaussian"]
+    card.set_execution_state("not_calculated", manual=True)
+    QApplication.processEvents()
+    button = card.calculate_button
+    assert button.palette().color(QPalette.Button).lightnessF() > 0.5
+    assert button.palette().color(QPalette.ButtonText).lightnessF() < 0.5
+    assert _dominant_widget_color(button) == "#e2e8f0"
+
+    card.set_execution_state(EXECUTION_BLOCKED, manual=True)
+    QApplication.processEvents()
+    assert _dominant_widget_color(button) == "#e5e7eb"
+
+    host.setStyleSheet(
+        get_stylesheet("dark", extra_variables={"font_size": "9pt"})
+    )
+    qtbot.waitUntil(
+        lambda: view.palette().color(QPalette.Base).lightnessF() < 0.5
+    )
+    view._apply_palette_theme()
+    assert button.palette().color(QPalette.Button).lightnessF() < 0.5
+    assert button.palette().color(QPalette.ButtonText).lightnessF() > 0.5
+    card.set_execution_state("not_calculated", manual=True)
+    QApplication.processEvents()
+    assert _dominant_widget_color(button) == "#334155"
+
+    card.set_execution_state(EXECUTION_BLOCKED, manual=True)
+    QApplication.processEvents()
+    assert _dominant_widget_color(button) == "#2b3038"
+
+
+class _OperationDropEvent:
+    """Small binding-neutral operation drag/drop event used by view tests."""
+
+    def __init__(self, operation_id: str, position: QPoint):
+        self._mime = QMimeData()
+        self._mime.setData(OPERATION_MIME, operation_id.encode())
+        self._position = QPointF(position)
+        self.accepted = False
+
+    def mimeData(self):  # noqa: N802
+        return self._mime
+
+    def position(self):
+        return QPointF(self._position)
+
+    def acceptProposedAction(self):  # noqa: N802
+        self.accepted = True
 
 
 def test_node_subtitle_is_elided_but_keeps_complete_binding_tooltip(qtbot):
@@ -53,6 +240,8 @@ def test_node_card_shows_and_updates_authored_bypass_badge(qtbot):
     view = PipelineGraphView()
     view.build_graph(pipeline.nodes.values(), pipeline.connections)
     qtbot.addWidget(view)
+    view.setPalette(_graph_palette(dark=True))
+    view._apply_palette_theme()
 
     card = view._cards[crop.id]
     assert card._bypassed
@@ -122,6 +311,8 @@ def test_bypass_fade_preserves_selected_pinned_and_error_cues(qtbot):
     view = PipelineGraphView()
     view.build_graph(pipeline.nodes.values(), pipeline.connections)
     qtbot.addWidget(view)
+    view.setPalette(_graph_palette(dark=True))
+    view._apply_palette_theme()
     card = view._cards[crop.id]
     proxy = view._proxies[crop.id]
 
@@ -525,6 +716,85 @@ def test_clicking_node_selects_it_without_inspect_button(qtbot):
     assert not hasattr(card, "inspect_button")
 
 
+def test_pressing_selected_node_exposes_press_boundary_to_receivers(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    selected = []
+    press_boundaries = []
+    selection_changes = []
+    view.node_selected.connect(
+        lambda node_id: (
+            selected.append(node_id),
+            press_boundaries.append(view.node_press_dispatch_active()),
+        )
+    )
+    view.node_selection_changed.connect(
+        lambda node_ids, primary: selection_changes.append(
+            (tuple(node_ids), primary)
+        )
+    )
+
+    view.select_node("gaussian")
+    selected.clear()
+    press_boundaries.clear()
+    selection_changes.clear()
+
+    view._handle_node_press("gaussian", Qt.NoModifier)
+
+    assert selected == ["gaussian"]
+    assert press_boundaries == [True]
+    assert selection_changes == [(('gaussian',), "gaussian")]
+
+    # Programmatic same-node selection remains distinguishable as an explicit
+    # refresh boundary rather than a pointer press.
+    view.select_node("gaussian")
+    assert selected == ["gaussian", "gaussian"]
+    assert press_boundaries == [True, False]
+    assert selection_changes == [
+        (('gaussian',), "gaussian"),
+        (('gaussian',), "gaussian"),
+    ]
+
+
+def test_connected_node_drag_defers_obstacle_routing_until_release(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    view.select_node("gaussian")
+    proxy = view._proxies["gaussian"]
+    connection = next(
+        item for item in view._connections if item.target_id == "gaussian"
+    )
+    start = view.mapFromScene(proxy.sceneBoundingRect().center())
+    end = start + QPoint(70, -45)
+    obstacle_calls = []
+    original_obstacles = view.connection_obstacle_rects
+
+    def tracked_obstacles(*args, **kwargs):
+        obstacle_calls.append(True)
+        return original_obstacles(*args, **kwargs)
+
+    view.connection_obstacle_rects = tracked_obstacles
+    old_target = QPointF(connection.path().pointAtPercent(1.0))
+
+    qtbot.mousePress(view.viewport(), Qt.LeftButton, pos=start)
+    obstacle_calls.clear()
+    qtbot.mouseMove(view.viewport(), pos=end)
+
+    assert view.node_drag_in_progress()
+    assert obstacle_calls == []
+    assert connection.path().pointAtPercent(1.0) != old_target
+
+    qtbot.mouseRelease(view.viewport(), Qt.LeftButton, pos=end)
+
+    assert not view.node_drag_in_progress()
+    assert obstacle_calls
+    assert connection.path().pointAtPercent(1.0) == proxy.port_scene_pos("input")
+
+
 def test_pin_button_is_not_shown_on_node_cards(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
@@ -587,6 +857,7 @@ def test_compute_badge_renders_supported_cpu_and_gpu_identities(qtbot):
         (ComputeBadgeKind.CPU, "CPU"),
         (ComputeBadgeKind.CUPY, "GPU · CuPy"),
         (ComputeBadgeKind.CUCIM, "GPU · cuCIM"),
+        (ComputeBadgeKind.HYBRID, "GPU + CPU"),
         (ComputeBadgeKind.CPU_FALLBACK, "CPU fallback"),
     )
 
@@ -712,6 +983,8 @@ def test_unchanged_compute_badge_skips_card_geometry_refresh(qtbot, monkeypatch)
 def test_gpu_optimization_hint_is_subtle_explanatory_and_independent(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
+    view.setPalette(_graph_palette(dark=True))
+    view._apply_palette_theme()
     card = view._cards["gaussian"]
 
     assert card.optimization_badge.isHidden()
@@ -876,6 +1149,52 @@ def test_automatic_stale_node_is_visibly_amber(qtbot):
     assert "paused" in card.toolTip().lower()
 
 
+@pytest.mark.parametrize("dark", [False, True])
+def test_isolated_tuning_has_distinct_active_mode_treatment(qtbot, dark):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.setPalette(_graph_palette(dark=dark))
+    view._apply_palette_theme()
+    card = view._cards["gaussian"]
+
+    view.set_node_execution_state(
+        "gaussian",
+        "stale",
+        manual=False,
+        message="Parameters changed while downstream is paused.",
+    )
+    view.set_isolated_tuning_node("gaussian")
+
+    assert ISOLATED_TUNING_ACCENT in card.styleSheet()
+    assert STALE_EXECUTION_ACCENT not in card.styleSheet()
+    assert graph_theme(card.palette()).tuning_surface in card.styleSheet()
+    assert card.execution_label.text() == "Tuning in isolation"
+    assert (
+        "#c4b5fd" if dark else "#6d28d9"
+    ) in card.execution_label.styleSheet()
+    stale_category_colors = (
+        ("#78350f", "#fde68a")
+        if dark
+        else ("#fef3c7", "#92400e")
+    )
+    assert all(
+        color not in card.category_label.styleSheet()
+        for color in stale_category_colors
+    )
+
+    card.set_processing(True, queued=True)
+
+    assert ISOLATED_TUNING_ACCENT in card.styleSheet()
+    assert STALE_EXECUTION_ACCENT not in card.styleSheet()
+    assert graph_theme(card.palette()).tuning_surface in card.styleSheet()
+
+    card.set_processing(False)
+    view.set_isolated_tuning_node(None)
+
+    assert ISOLATED_TUNING_ACCENT not in card.styleSheet()
+    assert STALE_EXECUTION_ACCENT in card.styleSheet()
+
+
 def test_node_context_menu_emits_requested_action(qtbot, monkeypatch):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
@@ -944,6 +1263,42 @@ def test_node_context_menu_toggles_isolated_tuning(qtbot, monkeypatch):
     assert view._cards["gaussian"]._isolated_tuning
 
 
+def test_node_context_menu_uses_isolation_state_resolver(qtbot, monkeypatch):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    resolved: list[str] = []
+    menus: list[dict[str, tuple[bool, str]]] = []
+
+    def resolve(node_id: str) -> tuple[bool, bool, str]:
+        resolved.append(node_id)
+        if node_id == "threshold":
+            return False, False, ""
+        return True, False, "Calculate the graph before isolated tuning."
+
+    def inspect_exec(menu, _pos):
+        menus.append(
+            {
+                action.text(): (action.isEnabled(), action.toolTip())
+                for action in menu.actions()
+                if not action.isSeparator()
+            }
+        )
+        return None
+
+    view.set_node_isolation_state_resolver(resolve)
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", inspect_exec)
+
+    view._show_node_context_menu("gaussian", QPoint(0, 0))
+    view._show_node_context_menu("threshold", QPoint(0, 0))
+
+    assert resolved == ["gaussian", "threshold"]
+    assert menus[0]["Tune node in isolation"] == (
+        False,
+        "Calculate the graph before isolated tuning.",
+    )
+    assert "Tune node in isolation" not in menus[1]
+
+
 def test_node_context_menu_can_request_attached_note(qtbot, monkeypatch):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
@@ -983,6 +1338,8 @@ def test_selecting_graph_note_clears_node_selection(qtbot):
 def test_node_context_menu_uses_unpin_label_for_pinned_nodes(qtbot, monkeypatch):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
+    view.setPalette(_graph_palette(dark=True))
+    view._apply_palette_theme()
     view.set_pinned_node("threshold")
 
     def fake_exec(menu, _pos):
@@ -1033,6 +1390,186 @@ def test_connection_context_menu_can_request_insert(qtbot, monkeypatch):
 
     assert labels == ["Info", "Insert node here...", "Delete"]
     assert requests == [(("input", "gaussian", 0, 0), QPointF(123, 45))]
+
+
+def test_palette_drop_on_terminal_node_appends_from_its_only_output(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    source_proxy = view._proxies["threshold"]
+    source_port = source_proxy.output_ports[0]
+    position = view.mapFromScene(source_proxy.sceneBoundingRect().center())
+    event = _OperationDropEvent("median_filter", position)
+    validation_calls = []
+    append_requests = []
+    free_create_requests = []
+    view.set_node_append_validator(
+        lambda operation_id, node_id, port_index: (
+            validation_calls.append((operation_id, node_id, port_index))
+            or ("compatible", "Drop to append.")
+        )
+    )
+    view.node_append_requested.connect(
+        lambda operation_id, node_id, port_index, scene_pos: append_requests.append(
+            (operation_id, node_id, port_index, QPointF(scene_pos))
+        )
+    )
+    view.node_create_requested.connect(
+        lambda operation_id, scene_pos: free_create_requests.append(
+            (operation_id, QPointF(scene_pos))
+        )
+    )
+
+    view.dragMoveEvent(event)
+
+    assert validation_calls == [("median_filter", "threshold", 0)]
+    assert view._highlighted_append_port is source_port
+    assert source_port._drop_state == "compatible"
+    assert view._cards["threshold"]._append_drop_state == "compatible"
+
+    view.dropEvent(event)
+
+    assert event.accepted
+    assert len(append_requests) == 1
+    assert append_requests[0][:3] == ("median_filter", "threshold", 0)
+    assert free_create_requests == []
+    assert view._highlighted_append_port is None
+    assert source_port._drop_state is None
+    assert view._cards["threshold"]._append_drop_state is None
+
+
+def test_palette_drop_on_occupied_output_is_incompatible_and_not_free_created(
+    qtbot,
+):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    source_proxy = view._proxies["gaussian"]
+    source_port = source_proxy.output_ports[0]
+    position = view.mapFromScene(source_proxy.sceneBoundingRect().center())
+    event = _OperationDropEvent("median_filter", position)
+    append_requests = []
+    free_create_requests = []
+    status_messages = []
+
+    def unexpected_validator(*_args):
+        raise AssertionError("occupied outputs must be rejected before validation")
+
+    view.set_node_append_validator(unexpected_validator)
+    view.node_append_requested.connect(lambda *args: append_requests.append(args))
+    view.node_create_requested.connect(lambda *args: free_create_requests.append(args))
+    view.status_message.connect(status_messages.append)
+
+    view.dragMoveEvent(event)
+
+    assert view._highlighted_append_port is source_port
+    assert source_port._drop_state == "incompatible"
+    assert view._cards["gaussian"]._append_drop_state == "incompatible"
+    assert "already feeds" in status_messages[-1]
+
+    view.dropEvent(event)
+
+    assert event.accepted
+    assert append_requests == []
+    assert free_create_requests == []
+    assert view._highlighted_append_port is None
+    assert source_port._drop_state is None
+    assert view._cards["gaussian"]._append_drop_state is None
+
+
+def test_multi_output_node_requires_an_exact_port_for_palette_append(qtbot):
+    view, pipeline = _build_view()
+    node = pipeline.add_node("skeleton_graph_tables")
+    view.add_node(node, QPointF(360, 320))
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    proxy = view._proxies[node.id]
+    assert len(proxy.output_ports) == 2
+    view.set_node_append_validator(
+        lambda _operation_id, _node_id, _port_index: (
+            "compatible",
+            "Drop to append.",
+        )
+    )
+    append_requests = []
+    view.node_append_requested.connect(
+        lambda operation_id, node_id, port_index, scene_pos: append_requests.append(
+            (operation_id, node_id, port_index, QPointF(scene_pos))
+        )
+    )
+
+    card_event = _OperationDropEvent(
+        "merge_tables",
+        view.mapFromScene(proxy.sceneBoundingRect().center()),
+    )
+    view.dragMoveEvent(card_event)
+
+    assert view._highlighted_append_port is None
+
+    second_output = proxy.output_ports[1]
+    port_event = _OperationDropEvent(
+        "merge_tables",
+        view.mapFromScene(second_output.mapToScene(QPointF(0, 0))),
+    )
+    view.dragMoveEvent(port_event)
+
+    assert view._highlighted_append_port is second_output
+    assert second_output._drop_state == "compatible"
+
+    view.dropEvent(port_event)
+
+    assert len(append_requests) == 1
+    assert append_requests[0][:3] == ("merge_tables", node.id, 1)
+    assert view._highlighted_append_port is None
+    assert second_output._drop_state is None
+
+
+def test_wire_insert_preview_takes_over_and_clears_terminal_append_feedback(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    terminal_proxy = view._proxies["threshold"]
+    terminal_port = terminal_proxy.output_ports[0]
+    view.set_node_append_validator(
+        lambda _operation_id, _node_id, _port_index: (
+            "compatible",
+            "Drop to append.",
+        )
+    )
+    view.set_connection_insert_validator(
+        lambda _operation_id, _connection_key: (
+            "full",
+            "Drop to splice.",
+        )
+    )
+    terminal_event = _OperationDropEvent(
+        "median_filter",
+        view.mapFromScene(terminal_proxy.sceneBoundingRect().center()),
+    )
+    view.dragMoveEvent(terminal_event)
+    assert view._highlighted_append_port is terminal_port
+
+    connection = view._connections[0]
+    wire_event = _OperationDropEvent(
+        "median_filter",
+        view.mapFromScene(connection.path().pointAtPercent(0.5)),
+    )
+    view.dragMoveEvent(wire_event)
+
+    assert view._highlighted_append_port is None
+    assert terminal_port._drop_state is None
+    assert view._cards["threshold"]._append_drop_state is None
+    assert view._highlighted_connection is connection
+    assert connection._insert_preview_state == "full"
+
+    view.dropEvent(wire_event)
+
+    assert view._highlighted_connection is None
+    assert connection._insert_preview_state is None
 
 
 def test_releasing_loose_node_on_connection_requests_splice(qtbot):

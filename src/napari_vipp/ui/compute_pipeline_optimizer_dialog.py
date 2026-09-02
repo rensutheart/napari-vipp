@@ -8,8 +8,8 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from qtpy.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
-from qtpy.QtGui import QBrush, QColor, QKeySequence
+from qtpy.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, Signal
+from qtpy.QtGui import QBrush, QColor, QKeySequence, QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -36,6 +36,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationSelectionBasis,
     PipelineOptimizationTimeoutReport,
 )
+from napari_vipp.ui.palette_roles import theme_colors
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +286,9 @@ class PipelineOptimizerDialog(QDialog):
         self._outcome: PipelineOptimizerWorkerOutcome | None = None
         self._running = False
         self._shutdown = False
+        self._result_tone: str | None = None
+        self._result_bold = False
+        self._applying_result_style = False
         self._node_titles = {
             str(node_id): str(title).strip() or str(node_id)
             for node_id, title in dict(node_titles or {}).items()
@@ -501,6 +505,7 @@ class PipelineOptimizerDialog(QDialog):
         self.result_table.setVisible(False)
         self.result_label.setText("")
         self.result_label.setToolTip("")
+        self._set_result_tone(None)
         self.overall_progress_bar.setRange(0, 0)
         self.overall_progress_label.setText(
             "Overall pipeline: capturing exact evidence. You can cancel at any time."
@@ -595,6 +600,34 @@ class PipelineOptimizerDialog(QDialog):
             event.ignore()
             return
         super().closeEvent(event)
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        """Refresh semantic result text after a live host-theme change."""
+
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+            self._apply_result_style()
+
+    def _set_result_tone(self, tone: str | None, *, bold: bool = False) -> None:
+        self._result_tone = tone
+        self._result_bold = bool(bold)
+        self._apply_result_style()
+
+    def _apply_result_style(self) -> None:
+        if getattr(self, "_applying_result_style", False) or not hasattr(
+            self, "result_label"
+        ):
+            return
+        self._applying_result_style = True
+        try:
+            style = "font-weight: 650;" if self._result_bold else ""
+            if self._result_tone is not None:
+                colors = theme_colors(_effective_palette(self))
+                foreground = getattr(colors, self._result_tone).foreground.name()
+                style = f"color: {foreground};" + style
+            self.result_label.setStyleSheet(style)
+        finally:
+            self._applying_result_style = False
 
     def _request_analysis(self) -> None:
         if self._running or self._shutdown:
@@ -700,7 +733,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
                 self.overall_progress_bar.setFormat("Cancelled at %p%")
                 self.operation_progress_bar.setFormat("Cancelled at %p%")
-                self.result_label.setStyleSheet("")
+                self._set_result_tone(None)
                 self.result_label.setTextFormat(Qt.PlainText)
                 self.result_label.setText(outcome.error)
             elif outcome.reason_code == "deadline_exceeded":
@@ -710,7 +743,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
                 self.overall_progress_bar.setFormat("Stopped at %p%")
                 self.operation_progress_bar.setFormat("Stopped at %p%")
-                self.result_label.setStyleSheet("color: #fcd34d;")
+                self._set_result_tone("warning")
                 self.result_label.setTextFormat(Qt.RichText)
                 self.result_label.setText(
                     _timeout_result_html(
@@ -726,14 +759,14 @@ class PipelineOptimizerDialog(QDialog):
                 self.overall_progress_label.setText(
                     "Overall pipeline: no safe pipeline-wide change is recommended."
                 )
-                self.result_label.setStyleSheet("color: #fcd34d;")
+                self._set_result_tone("warning")
                 self.result_label.setTextFormat(Qt.PlainText)
                 self.result_label.setText(outcome.error)
             else:
                 self.overall_progress_label.setText(
                     "Overall pipeline: analysis failed."
                 )
-                self.result_label.setStyleSheet("color: #fca5a5;")
+                self._set_result_tone("error")
                 self.result_label.setTextFormat(Qt.PlainText)
                 self.result_label.setText(outcome.error)
             self.details_button.setVisible(False)
@@ -870,7 +903,7 @@ class PipelineOptimizerDialog(QDialog):
             rounds = proposal.validation_measurement_rounds
             rounds_text = f"{rounds} paired round{'s' if rounds != 1 else ''}"
             if winner == "inconclusive":
-                self.result_label.setStyleSheet("font-weight: 650;")
+                self._set_result_tone(None, bold=True)
                 self.result_label.setText(
                     "No clear winner—current settings kept. Whole-pipeline "
                     f"totals: current {_format_seconds(current)}; tested "
@@ -885,7 +918,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
             elif winner == "current":
                 self.result_label.setToolTip("")
-                self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+                self._set_result_tone("success", bold=True)
                 self.result_label.setText(
                     "Current settings were faster in final validation: "
                     f"{_format_seconds(current)} versus "
@@ -895,7 +928,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
             else:
                 self.result_label.setToolTip("")
-                self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+                self._set_result_tone("success", bold=True)
                 self.result_label.setText(
                     "Faster pipeline validated: "
                     f"{_format_seconds(current)} current → "
@@ -905,7 +938,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
         else:
             self.result_label.setToolTip("")
-            self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+            self._set_result_tone("success", bold=True)
             basis_type = PipelineOptimizationSelectionBasis
             conservative_basis = basis_type.CONSERVATIVE_BOUND_RETAINED_CURRENT
             if proposal.selection_basis is conservative_basis:
@@ -934,7 +967,7 @@ class PipelineOptimizerDialog(QDialog):
                 "The measured difference is within VIPP's review limit, but "
                 "only you can decide whether it is acceptable for this analysis."
             )
-            self.result_label.setStyleSheet("color: #fcd34d; font-weight: 650;")
+            self._set_result_tone("warning", bold=True)
             self.result_label.setText(
                 f"{review_text}\n\n{optimization_summary}"
                 if optimization_summary
@@ -949,7 +982,7 @@ class PipelineOptimizerDialog(QDialog):
                 candidate_refusals,
                 self._node_titles,
             )
-            self.result_label.setStyleSheet("color: #fcd34d; font-weight: 650;")
+            self._set_result_tone("warning", bold=True)
             self.result_label.setText(
                 f"{existing_summary}\n\n{refusal_text}"
                 if existing_summary
@@ -979,6 +1012,11 @@ def _format_seconds(value: float) -> str:
     if value < 1.0:
         return f"{value * 1_000:.1f} ms"
     return f"{value:.3f} s"
+
+
+def _effective_palette(widget: QWidget) -> QPalette:
+    parent = widget.parentWidget()
+    return QWidget.palette(parent) if parent is not None else QWidget.palette(widget)
 
 
 def _format_duration(value: float) -> str:

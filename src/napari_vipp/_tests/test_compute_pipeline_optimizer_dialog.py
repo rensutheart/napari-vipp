@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import QAbstractItemView, QApplication
 
 from napari_vipp.core.compute import (
@@ -31,6 +32,16 @@ from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     _scientific_check,
     _subtle_group_brush,
 )
+from napari_vipp.ui.palette_roles import theme_colors
+
+
+def _theme_palette(*, base: str, text: str) -> QPalette:
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.Window, QColor(base))
+    palette.setColor(QPalette.Text, QColor(text))
+    palette.setColor(QPalette.WindowText, QColor(text))
+    return palette
 
 
 def _reviewable_result():
@@ -210,7 +221,10 @@ def test_reviewable_difference_requires_explicit_acceptance_before_apply(qtbot):
     assert "normalized maximum error 0.08%" in rendered
     assert "review limit 0.1%" in rendered
     assert "Nothing changes until" in rendered
-    assert "#fcd34d" in dialog.result_label.styleSheet()
+    assert (
+        theme_colors(dialog.palette()).warning.foreground.name()
+        in dialog.result_label.styleSheet()
+    )
     assert not dialog.apply_button.isEnabled()
 
     dialog._apply_result()
@@ -959,3 +973,27 @@ def test_shutdown_terminates_queued_worker_and_ignores_late_finish(qtbot):
 
     assert dialog.outcome is None
     assert not dialog.apply_button.isEnabled()
+
+
+def test_optimizer_error_restyles_live_with_the_dialog_palette(qtbot):
+    dialog = PipelineOptimizerDialog()
+    qtbot.addWidget(dialog)
+    dark = _theme_palette(base="#111827", text="#f8fafc")
+    dialog.setPalette(dark)
+    dialog._on_finished(
+        PipelineOptimizerWorkerOutcome(
+            error="benchmark failed",
+            reason_code="optimizer_failed",
+        )
+    )
+    dark_style = dialog.result_label.styleSheet()
+
+    assert theme_colors(dark).error.foreground.name() in dark_style
+
+    light = _theme_palette(base="#ffffff", text="#111827")
+    dialog.setPalette(light)
+    qtbot.waitUntil(lambda: dialog.result_label.styleSheet() != dark_style)
+
+    assert (
+        theme_colors(light).error.foreground.name() in dialog.result_label.styleSheet()
+    )

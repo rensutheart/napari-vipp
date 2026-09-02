@@ -70,13 +70,60 @@ def test_checked_in_manifest_maps_every_public_declaration_and_facet(harness):
     )
     owners = harness._facet_owner_map(manifest.runners)
 
-    assert len(declarations) == 19
+    assert len(declarations) == 21
     assert {item.key for item in manifest.implementations} == {
         item.key for item in declarations
     }
     for declaration in declarations:
         assert set(owners[declaration.key]) == set(harness.REQUIRED_FACETS)
         assert all(owners[declaration.key].values())
+
+
+def test_hybrid_measurements_have_scientific_and_rejection_owners_without_fake_evidence(
+    harness,
+):
+    manifest = harness.load_suite_manifest(
+        MANIFEST_PATH,
+        declarations=harness.public_accelerator_declarations(),
+        project_root=PROJECT_ROOT,
+    )
+    implementations = {
+        "measure_3d_mesh_morphology::cupy-measure-3d-mesh-morphology-hybrid-v1",
+        "analyze_skeleton::cupyx-analyze-skeleton-v1",
+    }
+    runners = {
+        runner.runner_id: runner
+        for runner in manifest.runners
+        if implementations <= set(runner.implementations)
+    }
+
+    assert {
+        "hybrid-measurement-scientific-contracts",
+        "hybrid-measurement-admission-rejection-contracts",
+    } <= set(runners)
+    scientific = runners["hybrid-measurement-scientific-contracts"]
+    policy = runners["hybrid-measurement-admission-rejection-contracts"]
+    assert set(scientific.facets) == {
+        "cpu_oracle_parity",
+        "adversarial_workloads",
+        "metadata",
+        "input_integrity",
+        "cancellation",
+        "cleanup",
+    }
+    assert set(policy.facets) == {
+        "memory",
+        "fallback",
+        "provenance",
+        "transfer_inclusive_timing",
+    }
+    assert scientific.kind == policy.kind == "pytest"
+    assert scientific.artifact is policy.artifact is None
+    assert not any(
+        runner.kind == "evidence"
+        and implementations.intersection(runner.implementations)
+        for runner in manifest.runners
+    )
 
 
 def test_custom_public_bridge_regions_are_evidence_mapped_in_both_profiles(harness):

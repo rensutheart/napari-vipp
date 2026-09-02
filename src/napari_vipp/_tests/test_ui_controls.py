@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 from qtpy.QtCore import QPoint, Qt
-from qtpy.QtWidgets import QLabel, QSizePolicy
+from qtpy.QtGui import QColor, QPalette
+from qtpy.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from napari_vipp.core.pipeline import ParameterSpec
 from napari_vipp.ui import recent_paths
@@ -17,6 +18,7 @@ from napari_vipp.ui.controls import (
     ImageSourceMemoryRepairPresentation,
     ImageSourceResolutionPresentation,
 )
+from napari_vipp.ui.palette_roles import theme_colors
 
 
 def _image_source_control():
@@ -156,6 +158,22 @@ def test_image_source_choosers_share_recent_input_directory(
     )
 
 
+def test_image_source_path_is_published_only_after_editing_finishes(qtbot):
+    control = _image_source_control()
+    qtbot.addWidget(control)
+    changes = []
+    control.pathCommitted.connect(changes.append)
+
+    control.path_edit.setText("C:/images/example.ome.tif")
+
+    assert changes == []
+
+    control.path_edit.editingFinished.emit()
+
+    assert len(changes) == 1
+    assert changes[0]["file_path"] == "C:/images/example.ome.tif"
+
+
 def test_image_source_resolution_panel_is_read_only_and_actionable(qtbot):
     control = ImageSourceControl(
         {
@@ -189,7 +207,8 @@ def test_image_source_resolution_panel_is_read_only_and_actionable(qtbot):
     assert control.resolution_panel.isVisibleTo(control)
     assert "Level 0" in control.analysis_resolution_label.text()
     assert "ZYX 12 × 128 × 160" in control.analysis_resolution_label.text()
-    assert "fixed scientific analysis" in control.analysis_resolution_label.text()
+    assert "Source · Level 0" in control.analysis_resolution_label.text()
+    assert "fixed processing data" in control.analysis_resolution_label.text()
     assert "L2 3 × 32 × 40" in control.pyramid_levels_label.text()
     assert "Level 2" in control.preview_resolution_label.text()
     assert "presentation only" in control.preview_resolution_label.text()
@@ -197,6 +216,9 @@ def test_image_source_resolution_panel_is_read_only_and_actionable(qtbot):
         control.viewer_display_combo.itemData(index)
         for index in range(control.viewer_display_combo.count())
     ] == ["analysis", "preview:auto", "preview:1", "preview:2"]
+    assert control.viewer_display_combo.itemText(0).startswith(
+        "Full-resolution source"
+    )
     assert control.viewer_display_combo.currentData() == "preview:auto"
     assert "L1" in control.viewer_display_combo.itemText(2)
     assert "6 × 64 × 80" in control.viewer_display_combo.itemText(2)
@@ -334,6 +356,118 @@ def test_image_source_resolution_panel_wraps_inside_narrow_inspector(qtbot):
     assert control.viewer_display_combo.width() <= control.resolution_panel.width()
 
 
+def test_image_source_resolution_panel_can_be_hosted_and_restored(qtbot):
+    container = QWidget()
+    qtbot.addWidget(container)
+    container_layout = QVBoxLayout(container)
+    control = ImageSourceControl(
+        {
+            "source_mode": "file path",
+            "file_path": "sample.ome.zarr",
+        },
+        layer_names=[],
+        sample_names=[],
+    )
+    host = QWidget()
+    host_layout = QVBoxLayout(host)
+    container_layout.addWidget(control)
+    container_layout.addWidget(host)
+    control.set_resolution_presentation(
+        ImageSourceResolutionPresentation(
+            analysis_axes="ZYX",
+            analysis_shape=(12, 128, 160),
+            level_shapes=((12, 128, 160), (6, 64, 80)),
+            preview_state="ready",
+            preview_level=1,
+            preview_shape=(6, 64, 80),
+            can_select_preview=True,
+        )
+    )
+    container.show()
+    qtbot.waitExposed(container)
+
+    control.set_source_representation_host(host)
+
+    assert control.source_representation_host is host
+    assert control.resolution_panel.parentWidget() is host
+    assert host_layout.indexOf(control.resolution_panel) >= 0
+    assert control._source_representation_home.isHidden()
+    assert control.resolution_panel.isVisibleTo(host)
+
+    control.mode_combo.setCurrentText("sample")
+    assert control.resolution_panel.isHidden()
+    control.mode_combo.setCurrentText("file path")
+    assert control.resolution_panel.isVisibleTo(host)
+
+    control.set_resolution_presentation(ImageSourceResolutionPresentation())
+    assert control.resolution_panel.isHidden()
+    control.set_resolution_presentation(
+        ImageSourceResolutionPresentation(
+            analysis_shape=(12, 128, 160),
+            level_shapes=((12, 128, 160), (6, 64, 80)),
+        )
+    )
+    assert control.resolution_panel.isVisibleTo(host)
+
+    control.restore_source_representation_panel()
+    control.restore_source_representation_panel()
+
+    assert control.source_representation_host is None
+    assert (
+        control.resolution_panel.parentWidget()
+        is control._source_representation_home
+    )
+    assert host_layout.indexOf(control.resolution_panel) == -1
+    assert control._source_representation_home.isVisibleTo(control)
+    assert control.resolution_panel.isVisibleTo(control)
+
+
+def test_image_source_resolution_host_requires_an_existing_layout(qtbot):
+    control = _image_source_control()
+    host = QWidget()
+    qtbot.addWidget(control)
+    qtbot.addWidget(host)
+
+    with pytest.raises(ValueError, match="must already have a layout"):
+        control.set_source_representation_host(host)
+
+    assert control.source_representation_host is None
+    assert (
+        control.resolution_panel.parentWidget()
+        is control._source_representation_home
+    )
+
+
+def test_hosted_image_source_resolution_panel_follows_host_palette(qtbot):
+    control = ImageSourceControl(
+        {"source_mode": "file path", "file_path": "sample.ome.zarr"},
+        layer_names=[],
+        sample_names=[],
+    )
+    host = QWidget()
+    QVBoxLayout(host)
+    qtbot.addWidget(control)
+    qtbot.addWidget(host)
+    control.set_source_representation_host(host)
+
+    palette = QPalette(host.palette())
+    surface = QColor("#f8fafc")
+    foreground = QColor("#172033")
+    palette.setColor(QPalette.Base, surface)
+    palette.setColor(QPalette.Window, surface)
+    palette.setColor(QPalette.AlternateBase, QColor("#eef2f7"))
+    palette.setColor(QPalette.Text, foreground)
+    palette.setColor(QPalette.WindowText, foreground)
+    host.setPalette(palette)
+
+    expected = theme_colors(palette).muted_text.name()
+    qtbot.waitUntil(
+        lambda: expected in control.pyramid_levels_label.styleSheet()
+    )
+
+    control.restore_source_representation_panel()
+
+
 def test_image_source_memory_repair_is_explicit_transient_and_read_only(qtbot):
     control = ImageSourceControl(
         {"source_mode": "file path", "file_path": "large.ome.zarr"},
@@ -389,6 +523,39 @@ def test_image_source_mode_hides_dynamic_fields_and_their_labels(qtbot):
     assert row_hidden(control.layer_row)
     assert row_hidden(control.file_row)
     assert row_hidden(control.binding_combo)
+
+
+def test_image_source_compact_form_keeps_visible_labels_readable(qtbot):
+    control = ImageSourceControl(
+        {"source_mode": "sample", "sample_name": "VIPP synthetic volume"},
+        layer_names=[],
+        sample_names=["VIPP synthetic volume"],
+    )
+    qtbot.addWidget(control)
+    control.resize(280, 360)
+    control.set_compact_form_mode(True)
+    control.show()
+
+    labels = [
+        control.form_layout.labelForField(field)
+        for field in (
+            control.mode_combo,
+            control.axis_control,
+            control.sample_row,
+        )
+    ]
+    qtbot.waitUntil(lambda: all(label.width() > 0 for label in labels))
+
+    assert all(not label.isHidden() for label in labels)
+    assert [label.text() for label in labels] == [
+        "Source",
+        "Image stack",
+        "Sample",
+    ]
+    assert all(
+        label.sizePolicy().horizontalPolicy() == QSizePolicy.Preferred
+        for label in labels
+    )
 
 
 def test_parameter_spec_accepts_narrower_declarative_slider_window():

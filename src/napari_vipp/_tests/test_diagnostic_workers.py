@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,6 +12,8 @@ from napari_vipp.ui.diagnostic_workers import (
     GeneratedLayerContrastWorker,
     InputHistogramRequest,
     InputHistogramWorker,
+    LabelVolumeRequest,
+    LabelVolumeWorker,
     ThumbnailContrastLimitRequest,
     ThumbnailContrastLimitWorker,
 )
@@ -328,6 +331,179 @@ def test_histogram_worker_depends_on_narrow_injected_ports():
     assert result.finite_values == data.size
     assert result.markers[0][:2] == ("threshold", 2.0)
     assert result.distribution is not None
+
+
+def test_label_volume_worker_returns_exact_injected_result_without_copying_input():
+    data = np.arange(12, dtype=np.int32).reshape(3, 4)
+    expected = np.array([3, 7], dtype=np.int64)
+    calls: list[tuple[object, int]] = []
+
+    def calculate(values, spatial_ndim):
+        calls.append((values, spatial_ndim))
+        return expected
+
+    worker = LabelVolumeWorker(
+        LabelVolumeRequest(12, ("volumes",), "labels", data, 2),
+        label_volumes=calculate,
+    )
+
+    result = _finished_results(worker)[0]
+
+    assert calls == [(data, 2)]
+    assert result.run_id == 12
+    assert result.key == ("volumes",)
+    assert result.node_id == "labels"
+    assert result.volumes is expected
+    assert result.error == ""
+    assert not result.cancelled
+
+
+def test_label_volume_worker_threads_connectivity_to_component_diagnostic():
+    data = np.eye(3, dtype=bool)
+    calls = []
+
+    def calculate(values, spatial_ndim, *, connectivity):
+        calls.append((values, spatial_ndim, connectivity))
+        return np.array([3], dtype=np.int64)
+
+    worker = LabelVolumeWorker(
+        LabelVolumeRequest(
+            18,
+            ("components", "full"),
+            "remove-small",
+            data,
+            2,
+            connectivity="Full connectivity",
+        ),
+        label_volumes=calculate,
+    )
+
+    result = _finished_results(worker)[0]
+
+    assert calls == [(data, 2, "Full connectivity")]
+    np.testing.assert_array_equal(result.volumes, [3])
+    assert not result.cancelled
+
+
+def test_label_volume_worker_honors_cancellation_before_calculation():
+    cancel_event = threading.Event()
+    cancel_event.set()
+    calls: list[object] = []
+    worker = LabelVolumeWorker(
+        LabelVolumeRequest(
+            13,
+            ("cancel-before",),
+            "labels",
+            np.ones((2, 2), dtype=np.int32),
+            2,
+            cancel_event,
+        ),
+        label_volumes=lambda data, _spatial_ndim: calls.append(data),
+    )
+
+    result = _finished_results(worker)[0]
+
+    assert calls == []
+    assert result.cancelled
+    assert result.volumes is None
+    assert result.error == ""
+
+
+def test_label_volume_worker_discards_result_if_cancelled_during_calculation():
+    cancel_event = threading.Event()
+
+    def calculate(_data, _spatial_ndim):
+        cancel_event.set()
+        return np.array([4], dtype=np.int64)
+
+    worker = LabelVolumeWorker(
+        LabelVolumeRequest(
+            14,
+            ("cancel-after",),
+            "labels",
+            np.ones((2, 2), dtype=np.int32),
+            2,
+            cancel_event,
+        ),
+        label_volumes=calculate,
+    )
+
+    result = _finished_results(worker)[0]
+
+    assert result.cancelled
+    assert result.volumes is None
+    assert result.error == ""
+
+
+def test_label_volume_worker_passes_progress_only_when_callable_supports_it():
+    cancel_event = threading.Event()
+    progress_values: list[object] = []
+    plain_kwargs: list[tuple[object, int]] = []
+
+    def progress_aware(data, spatial_ndim, *, progress):
+        progress_values.append(progress)
+        progress.check_cancelled()
+        return np.array([np.asarray(data).size + spatial_ndim], dtype=np.int64)
+
+    aware = LabelVolumeWorker(
+        LabelVolumeRequest(
+            15,
+            ("aware",),
+            "labels",
+            np.ones((2, 3), dtype=np.int32),
+            2,
+            cancel_event,
+        ),
+        label_volumes=progress_aware,
+    )
+    plain = LabelVolumeWorker(
+        LabelVolumeRequest(
+            16,
+            ("plain",),
+            "labels",
+            np.ones((2, 3), dtype=np.int32),
+            2,
+            cancel_event,
+        ),
+        label_volumes=lambda data, spatial_ndim: plain_kwargs.append(
+            (data, spatial_ndim)
+        )
+        or np.array([1], dtype=np.int64),
+    )
+
+    aware_result = _finished_results(aware)[0]
+    plain_result = _finished_results(plain)[0]
+
+    assert len(progress_values) == 1
+    assert plain_kwargs and plain_kwargs[0][1] == 2
+    np.testing.assert_array_equal(aware_result.volumes, np.array([8]))
+    np.testing.assert_array_equal(plain_result.volumes, np.array([1]))
+
+
+def test_label_volume_worker_reports_error_and_tolerates_destroyed_signals():
+    def fail(_data, _spatial_ndim):
+        raise ValueError("invalid labels")
+
+    worker = LabelVolumeWorker(
+        LabelVolumeRequest(17, ("error",), "labels", np.ones((2, 2)), 2),
+        label_volumes=fail,
+    )
+
+    result = _finished_results(worker)[0]
+
+    assert result.error == "invalid labels"
+    assert result.volumes is None
+    assert not result.cancelled
+
+    class DeletedSignal:
+        def emit(self, _payload):
+            raise RuntimeError("wrapped C/C++ object has been deleted")
+
+    class DeletedSignals:
+        finished = DeletedSignal()
+
+    worker.signals = DeletedSignals()
+    worker.run()
 
 
 def test_auto_and_generated_contrast_workers_report_typed_results():

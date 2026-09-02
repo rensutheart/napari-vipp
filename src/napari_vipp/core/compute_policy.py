@@ -53,6 +53,9 @@ REMOVE_SMALL_OBJECTS_WORKSPACE_BYTES_PER_SPATIAL_ELEMENT = 32
 REMOVE_BINARY_OUTLIERS_MAXIMUM_PUBLIC_RADIUS = 25.0
 REMOVE_BINARY_OUTLIERS_MAXIMUM_DIRECT_RADIUS = 100.0
 MEASUREMENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
+MESH_MORPHOLOGY_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
+MESH_MORPHOLOGY_HOST_FINALIZATION_BYTES_PER_INPUT_ELEMENT = 1024
+SKELETON_ANALYSIS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
 SIGMA_FILTER_FLOAT32_SQUARE_LIMIT = float(
     np.float32(math.sqrt(float(np.finfo(np.float32).max)))
 )
@@ -384,6 +387,8 @@ _PHASE1_CPU_SCIENTIFIC_STACK = {
     "scipy": "1.18.0",
     "scikit-image": "0.26.0",
 }
+
+
 def evaluate_candidate_environment_support(
     spec: OperationComputeSpec,
     environment: ComputeEnvironment,
@@ -889,6 +894,35 @@ def estimate_candidate_memory(
             * measurement_layout.packed_width
             * np.dtype(np.float64).itemsize
         )
+    elif spec.memory_model_id == "cupy-mesh-morphology-packed-memory-v1":
+        from napari_vipp.core.mesh_measurements import (
+            MESH_PAYLOAD_HEADER_BYTES,
+        )
+
+        mesh_layout = _mesh_morphology_layout_for_workload(workload)
+        # There can be at most one positive object record per input voxel.
+        # The hybrid payload stores no more than one uint32 local index per
+        # positive voxel when a bbox bit mask would be larger.  This remains a
+        # strict linear bound for arbitrary sparse int32 label IDs.
+        directory_bytes = primary_elements * mesh_layout.record_words * 8
+        encoded_data_bytes = primary_elements * np.dtype(np.uint32).itemsize
+        output_bytes = MESH_PAYLOAD_HEADER_BYTES + directory_bytes + encoded_data_bytes
+    elif spec.memory_model_id == "cupy-analyze-skeleton-packed-memory-v1":
+        from napari_vipp.core.skeleton_measurements import (
+            SKELETON_PAYLOAD_HEADER_BYTES,
+        )
+
+        skeleton_layout = _skeleton_analysis_layout_for_workload(workload)
+        # Distinct full-connectivity components must be Chebyshev-separated by
+        # at least two voxels. The maximum independent-set count of a spatial
+        # king grid is therefore product(ceil(axis_size / 2)) per leading
+        # block. This is a strict linear payload bound and materially tighter
+        # than reserving one record per foreground voxel.
+        maximum_rows = _skeleton_analysis_maximum_rows(skeleton_layout)
+        output_bytes = (
+            SKELETON_PAYLOAD_HEADER_BYTES
+            + maximum_rows * skeleton_layout.record_words * np.dtype(np.uint64).itemsize
+        )
     if spec.memory_model_id == "cupy-allocation-sharing-view-v1":
         if len(workload.input_shapes) != 1 or len(workload.input_dtypes) != 1:
             raise ValueError("Extract Channel memory requires exactly one input.")
@@ -1232,6 +1266,45 @@ def estimate_candidate_memory(
         # deliberately conservative multiple rather than claiming byte-exact
         # host accounting.
         host_workspace = output_bytes * 4
+        uncertainty_floor = 64 * 1024**2
+    elif spec.memory_model_id == "cupy-mesh-morphology-packed-memory-v1":
+        layout = _mesh_morphology_layout_for_workload(workload)
+        block_elements = math.prod(layout.spatial_shape)
+        # Axis reordering may materialize one complete contiguous input. Label
+        # compaction, morphology bounds, hybrid encoding, and scan/sort scratch
+        # are bounded conservatively for the largest sequential spatial block.
+        # The provider then retains per-block payload parts, concatenates them,
+        # and authors the final single-byte payload; at assembly peak three
+        # complete bounded payload representations can coexist.
+        workspace = input_bytes + block_elements * 128 + 2 * output_bytes
+        # D2H retains the packed payload counted by ``output_bytes`` below.
+        # Exact CPU finalization additionally retains versioned record objects,
+        # public Python row/scalar containers across all leading blocks, and one
+        # active marching-cubes/Qhull geometry.  Triangle indexing alone can
+        # transiently exceed 480 bytes per active spatial voxel, while a
+        # many-object table can approach a kilobyte of Python-owned storage per
+        # positive voxel.  Reserve a full KiB per authored element in addition
+        # to the payload so neither high-surface meshes nor pathological row
+        # counts are represented by the old 128-byte underbound.
+        host_workspace = (
+            primary_elements * MESH_MORPHOLOGY_HOST_FINALIZATION_BYTES_PER_INPUT_ELEMENT
+        )
+        uncertainty_floor = 64 * 1024**2
+    elif spec.memory_model_id == "cupy-analyze-skeleton-packed-memory-v1":
+        layout = _skeleton_analysis_layout_for_workload(workload)
+        block_elements = math.prod(layout.spatial_shape)
+        # Axis reordering may materialize one complete boolean input. Per
+        # active block, CuPyX labeling plus graph degree/category reductions
+        # allocate only element-wise masks, int32 labels, and bounded integer
+        # or float64 component reductions. The deliberately conservative
+        # coefficient is independent of component count and spatial extent.
+        # Retained block directories, their concatenation, and final payload
+        # can coexist at assembly, hence two additional output bounds here.
+        workspace = input_bytes + block_elements * 512 + 2 * output_bytes
+        # D2H retains the payload while the finalizer validates every record
+        # and constructs mixed Python scalar rows. Bound that host work by a
+        # fixed multiple of the versioned fixed-width payload.
+        host_workspace = output_bytes * 6
         uncertainty_floor = 64 * 1024**2
     else:
         raise ValueError(
@@ -2158,6 +2231,153 @@ def _basic_measurements_region_policy(
     return None
 
 
+def _mesh_morphology_region_policy(
+    workload: WorkloadDescriptor,
+    array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    if len(workload.input_shapes) != 1:
+        return _workload_rejection(
+            "3D mesh morphology requires exactly one label input.",
+            fallback_allowed=False,
+        )
+    try:
+        labels_dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "3D mesh morphology requires a valid non-boolean integer label dtype.",
+            fallback_allowed=False,
+        )
+    if labels_dtype == np.dtype(bool) or not np.issubdtype(
+        labels_dtype,
+        np.integer,
+    ):
+        return _workload_rejection(
+            "3D mesh morphology requires a non-boolean integer label image; "
+            f"{labels_dtype} is invalid for both CPU and GPU execution.",
+            fallback_allowed=False,
+        )
+    if labels_dtype != np.dtype(np.int32) or not labels_dtype.isnative:
+        return _workload_rejection(
+            "The hybrid 3D mesh GPU region requires native int32 labels. Other "
+            "non-negative integer label dtypes remain on CPU."
+        )
+    if workload.resolved_spatial_ndim != 3:
+        return _workload_rejection(
+            "GPU 3D mesh morphology requires a resolved true-3D spatial rank.",
+            fallback_allowed=False,
+        )
+
+    parameters = dict(workload.parameters)
+    try:
+        int(parameters.get("minimum_voxel_count", 16))
+    except (TypeError, ValueError, OverflowError):
+        return _workload_rejection(
+            "Minimum voxel count must be convertible to an integer.",
+            fallback_allowed=False,
+        )
+    try:
+        layout = _mesh_morphology_layout_for_workload(workload)
+    except (TypeError, ValueError) as exc:
+        return _workload_rejection(
+            f"The authored 3D mesh axis layout is invalid: {exc}",
+            fallback_allowed=False,
+        )
+    spatial_elements = math.prod(layout.spatial_shape)
+    if spatial_elements >= MESH_MORPHOLOGY_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:
+        return _workload_rejection(
+            "Each GPU 3D mesh spatial block must contain fewer than "
+            f"{MESH_MORPHOLOGY_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:,} elements so "
+            "private compact labels and sparse local indexes remain exact."
+        )
+    if any(size > np.iinfo(np.uint32).max for size in layout.spatial_shape):
+        return _workload_rejection(
+            "GPU 3D mesh spatial dimensions must fit native uint32 indexes."
+        )
+
+    if not array_facts:
+        return _complete_facts_rejection(
+            "GPU 3D mesh morphology requires complete label facts proving that "
+            "all native int32 labels are non-negative."
+        )
+    label_facts = array_facts[0]
+    if label_facts.completeness is not FactCompleteness.COMPLETE:
+        return _complete_facts_rejection(
+            "GPU 3D mesh morphology requires complete non-negative label facts."
+        )
+    if "nonnegative" not in label_facts.guarantees:
+        if label_facts.minimum is not None and label_facts.minimum < 0:
+            return _workload_rejection(
+                "3D mesh labels must contain only non-negative integers.",
+                fallback_allowed=False,
+            )
+        return _complete_facts_rejection(
+            "Complete label facts did not prove the non-negative mesh-label region."
+        )
+    return None
+
+
+def _analyze_skeleton_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    if len(workload.input_shapes) != 1 or len(workload.input_dtypes) != 1:
+        return _workload_rejection(
+            "Analyze Skeleton requires exactly one mask input.",
+            fallback_allowed=False,
+        )
+    try:
+        input_dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "Analyze Skeleton requires a concrete NumPy-compatible input dtype.",
+            fallback_allowed=False,
+        )
+    if input_dtype != np.dtype(bool) or not input_dtype.isnative:
+        return _workload_rejection(
+            "The promoted Analyze Skeleton GPU region requires a boolean mask. "
+            "Authoritative numeric nonzero coercion remains on CPU."
+        )
+
+    spatial_ndim = workload.resolved_spatial_ndim
+    if spatial_ndim not in {2, 3}:
+        return _workload_rejection(
+            "GPU Analyze Skeleton requires a resolved 2D or 3D spatial rank.",
+            fallback_allowed=False,
+        )
+
+    parameters = dict(workload.parameters)
+    input_mode = (
+        str(parameters.get("input_mode", "Already skeletonized")).strip().casefold()
+    )
+    if input_mode == "skeletonize first":
+        return _workload_rejection(
+            "GPU Analyze Skeleton accepts only an already-skeletonized mask; "
+            "the authored skeletonization step remains authoritative on CPU."
+        )
+    if input_mode != "already skeletonized":
+        return _workload_rejection(
+            "Analyze Skeleton input mode must be 'Already skeletonized' or "
+            "'Skeletonize first'.",
+            fallback_allowed=False,
+        )
+
+    try:
+        layout = _skeleton_analysis_layout_for_workload(workload)
+    except (TypeError, ValueError) as exc:
+        return _workload_rejection(
+            f"The authored skeleton-analysis axis layout is invalid: {exc}",
+            fallback_allowed=False,
+        )
+    spatial_elements = math.prod(layout.spatial_shape)
+    if spatial_elements >= SKELETON_ANALYSIS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:
+        return _workload_rejection(
+            "Each GPU skeleton-analysis spatial block must contain fewer than "
+            f"{SKELETON_ANALYSIS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:,} elements so "
+            "CuPyX component IDs remain exact."
+        )
+    return None
+
+
 _OPERATION_REGION_EVALUATORS: Mapping[
     str,
     Callable[
@@ -2185,6 +2405,10 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "remove-binary-outliers-parameters-v1": (_remove_binary_outliers_region_policy),
         "connected-components-parameters-v1": (_connected_components_region_policy),
         "basic-measurements-parameters-v1": _basic_measurements_region_policy,
+        "mesh-morphology-parameters-v1": _mesh_morphology_region_policy,
+        "analyze-skeleton-already-skeletonized-parameters-v1": (
+            _analyze_skeleton_region_policy
+        ),
     }
 )
 
@@ -2646,6 +2870,55 @@ def _basic_measurement_layout_for_workload(workload: WorkloadDescriptor):
     )
 
 
+def _mesh_morphology_layout_for_workload(workload: WorkloadDescriptor):
+    if workload.operation_id != "measure_3d_mesh_morphology":
+        raise ValueError("workload is not a 3D mesh morphology operation.")
+    if len(workload.input_shapes) != 1:
+        raise ValueError("3D mesh morphology requires one input shape.")
+    from napari_vipp.core.mesh_measurements import mesh_morphology_layout
+
+    parameters = dict(workload.parameters)
+    return mesh_morphology_layout(
+        workload.input_shapes[0],
+        spatial_mode=str(parameters.get("spatial_mode", "Auto from axes")),
+        resolved_spatial_ndim=workload.resolved_spatial_ndim,
+        axis_names=parameters.get("axis_names"),
+        axis_types=parameters.get("axis_types"),
+        axis_scales=parameters.get("axis_scales"),
+        axis_units=parameters.get("axis_units"),
+        include_convex_hull_metrics=parameters.get(
+            "include_convex_hull_metrics",
+            True,
+        ),
+    )
+
+
+def _skeleton_analysis_layout_for_workload(workload: WorkloadDescriptor):
+    if workload.operation_id != "analyze_skeleton":
+        raise ValueError("workload is not an Analyze Skeleton operation.")
+    if len(workload.input_shapes) != 1:
+        raise ValueError("Analyze Skeleton requires one input shape.")
+    from napari_vipp.core.skeleton_measurements import skeleton_analysis_layout
+
+    parameters = dict(workload.parameters)
+    return skeleton_analysis_layout(
+        workload.input_shapes[0],
+        spatial_mode=str(parameters.get("spatial_mode", "Auto from axes")),
+        resolved_spatial_ndim=workload.resolved_spatial_ndim,
+        axis_names=parameters.get("axis_names"),
+        axis_types=parameters.get("axis_types"),
+        axis_scales=parameters.get("axis_scales"),
+        axis_units=parameters.get("axis_units"),
+    )
+
+
+def _skeleton_analysis_maximum_rows(layout) -> int:
+    maximum_components_per_block = math.prod(
+        (int(size) + 1) // 2 for size in layout.spatial_shape
+    )
+    return int(layout.block_count) * maximum_components_per_block
+
+
 def _output_port_itemsize(policy_id: str, primary_itemsize: int) -> int:
     """Resolve static output storage without importing an implementation.
 
@@ -2825,6 +3098,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "remove-small-objects-bool-parameters-v1",
             "connected-components-parameters-v1",
             "basic-measurements-parameters-v1",
+            "mesh-morphology-parameters-v1",
+            "analyze-skeleton-already-skeletonized-parameters-v1",
         },
         PolicyKind.WORKLOAD: {
             "cpu-reference-v1",
@@ -2845,6 +3120,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "connected-components-bool-2d-3d-v1",
             "measurements-int32-basic-2d-3d-v1",
             "measurements-int32-bool-u8-u16-finite-f32-basic-2d-3d-v1",
+            "mesh-morphology-int32-true-3d-v1",
+            "analyze-skeleton-bool-2d-3d-v1",
         },
         PolicyKind.PARITY: {
             "authoritative-cpu-v1",
@@ -2857,6 +3134,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "mask-bitwise-v1",
             "labels-bitwise-int32-v1",
             "basic-measurement-table-v1",
+            "mesh-morphology-table-exact-v1",
+            "skeleton-measurement-table-v1",
         },
         PolicyKind.MEMORY: {
             "host-reference-v1",
@@ -2878,6 +3157,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-remove-small-objects-memory-v1",
             "cupyx-connected-components-memory-v1",
             "cupy-basic-measurements-memory-v1",
+            "cupy-mesh-morphology-packed-memory-v1",
+            "cupy-analyze-skeleton-packed-memory-v1",
         },
         PolicyKind.SHAPE: {
             "cpu-reference-v1",
@@ -2889,6 +3170,10 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "scalar-plane-luma-mask-v1",
             "measurement-input-shape-v1",
             "measurement-packed-rows-v1",
+            "mesh-morphology-input-shape-v1",
+            "mesh-morphology-packed-bytes-v1",
+            "skeleton-analysis-input-shape-v1",
+            "skeleton-analysis-packed-bytes-v1",
         },
         PolicyKind.OUTPUT_DTYPE: {
             "dtype-same-v1",
@@ -2896,6 +3181,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "fixed:bool",
             "fixed:int32",
             "fixed:float64",
+            "fixed:uint8",
             "cpu-dynamic-output-v1",
         },
         PolicyKind.CONVERSION: {
@@ -2914,6 +3200,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "measurement-native-labels-v1",
             "measurement-intensity-float64-reductions-v1",
             "packed-float64-to-typed-table-v1",
+            "packed-mesh-payload-to-typed-table-v1",
+            "packed-skeleton-payload-to-typed-table-v1",
         },
         PolicyKind.NONFINITE: {
             "cpu-reference-v1",
@@ -2942,6 +3230,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "labels-bitwise-int32-v1",
             "measurement-two-pass-reductions-v1",
             "measurement-typed-fields-v1",
+            "mesh-payload-bitwise-v1",
+            "skeleton-payload-bitwise-v1",
         },
         PolicyKind.OVERFLOW: {
             "cpu-reference-v1",
@@ -2957,6 +3247,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "measurements-int32-label-compact-v1",
             "measurement-float64-reductions-v1",
             "measurement-exact-integer-fields-v1",
+            "mesh-payload-size-checked-v1",
+            "skeleton-payload-size-checked-v1",
         },
         PolicyKind.BOUNDARY: {
             "cpu-reference-v1",
@@ -2974,6 +3266,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "scipy-binary-fill-holes-connectivity-v1",
             "scipy-connected-component-size-filter-v1",
             "measurement-leading-spatial-blocks-v1",
+            "mesh-morphology-leading-3d-blocks-v1",
+            "skeleton-leading-spatial-blocks-v1",
         },
         PolicyKind.PRECISION: {
             "scientific-default-v1",
@@ -2990,6 +3284,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "otsu-exact-mask-v1",
             "connected-components-exact-label-order-v1",
             "basic-measurement-table-v1",
+            "mesh-morphology-table-exact-v1",
+            "skeleton-measurement-table-v1",
         },
         PolicyKind.PROGRESS: {
             "cpu-reference-v1",
@@ -3003,6 +3299,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "histogram-scope-sync-progress-v1",
             "spatial-block-sync-progress-v1",
             "measurement-block-stage-progress-v1",
+            "mesh-morphology-block-stage-progress-v1",
+            "skeleton-analysis-block-stage-progress-v1",
         },
         PolicyKind.CANCELLATION: {
             "cpu-reference-v1",
@@ -3015,6 +3313,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "scalar-plane-boundary-cancel-v1",
             "spatial-block-boundary-cancel-v1",
             "measurement-block-stage-cancel-v1",
+            "mesh-morphology-block-stage-cancel-v1",
+            "skeleton-analysis-block-stage-cancel-v1",
         },
         PolicyKind.SIDE_EFFECT: {
             "pure-or-source-v1",
@@ -3085,6 +3385,8 @@ __all__ = [
     "PerformanceDecision",
     "PerformanceEvidence",
     "MASK_CLEANUP_MAXIMUM_SPATIAL_BLOCK_ELEMENTS",
+    "MESH_MORPHOLOGY_HOST_FINALIZATION_BYTES_PER_INPUT_ELEMENT",
+    "MESH_MORPHOLOGY_MAXIMUM_SPATIAL_BLOCK_ELEMENTS",
     "PolicyCatalog",
     "PolicyKind",
     "RICHARDSON_LUCY_MAXIMUM_ITERATIONS",
@@ -3098,6 +3400,7 @@ __all__ = [
     "RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS",
     "RICHARDSON_LUCY_TV_REGULARIZATION",
     "REMOVE_SMALL_OBJECTS_WORKSPACE_BYTES_PER_SPATIAL_ELEMENT",
+    "SKELETON_ANALYSIS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS",
     "SIGMA_FILTER_FLOAT32_SQUARE_LIMIT",
     "SupportDecision",
     "ValueDescriptor",

@@ -1039,6 +1039,177 @@ def _measurements_spec(*, include_intensity: bool) -> OperationComputeSpec:
     )
 
 
+def _mesh_morphology_spec() -> OperationComputeSpec:
+    """Declare exact GPU label packing with an authoritative CPU finalizer."""
+
+    boundary_policy_id = "mesh-morphology-leading-3d-blocks-v1"
+    precision_policy_id = "mesh-morphology-table-exact-v1"
+    input_port = ComputePortContract(
+        0,
+        ValueKind.LABELS,
+        port_name="labels",
+        public_dtypes=("int32",),
+        internal_dtypes=("int32",),
+        accumulation_dtype="int32",
+        value_domain="nonnegative-labels-v1",
+        shape_policy_id="mesh-morphology-input-shape-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="measurement-native-labels-v1",
+        nonfinite_policy_id="integer-nonnegative-v1",
+        rounding_policy_id="labels-bitwise-int32-v1",
+        overflow_policy_id="measurements-int32-label-compact-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        schema_id="labels-array-v1",
+    )
+    output_port = ComputePortContract(
+        0,
+        ValueKind.TABLE,
+        port_name="measurements",
+        public_dtypes=("table",),
+        internal_dtypes=("uint8",),
+        accumulation_dtype="uint8",
+        value_domain="packed-mesh-morphology-payload-v1",
+        shape_policy_id="mesh-morphology-packed-bytes-v1",
+        output_dtype_policy_id="fixed:uint8",
+        conversion_policy_id="packed-mesh-payload-to-typed-table-v1",
+        nonfinite_policy_id="integer-nonnegative-v1",
+        rounding_policy_id="mesh-payload-bitwise-v1",
+        overflow_policy_id="mesh-payload-size-checked-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        schema_id="mesh-morphology-table-v1",
+    )
+    return OperationComputeSpec(
+        operation_id="measure_3d_mesh_morphology",
+        implementation_id="cupy-measure-3d-mesh-morphology-hybrid-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupy",
+        callable_ref=(
+            "napari_vipp.core.gpu.cupy_mesh_morphology:measure_3d_mesh_morphology"
+        ),
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id="mesh-morphology-parameters-v1",
+        workload_policy_id="mesh-morphology-int32-true-3d-v1",
+        parity_policy_id="mesh-morphology-table-exact-v1",
+        memory_model_id="cupy-mesh-morphology-packed-memory-v1",
+        shape_policy_id="mesh-morphology-packed-bytes-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        progress_policy_id="mesh-morphology-block-stage-progress-v1",
+        cancellation_policy_id="mesh-morphology-block-stage-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        dynamic_output_policy_id="typed-host-table-finalizer-v1",
+        supported_spatial_ndims=(3,),
+        supports_device_residency=True,
+        limitations=(
+            "native-int32-nonnegative-labels-v1",
+            "arbitrary-sparse-positive-labels-v1",
+            "labels-requires-complete-nonnegative-facts-v1",
+            "hybrid-mask-sparse-payload-v1",
+            "marching-cubes-convex-hull-authoritative-cpu-v1",
+            "native-endian-only-v1",
+            "typed-host-table-boundary-v1",
+        ),
+        host_finalizer_ref=(
+            "napari_vipp.core.mesh_measurements:finalize_mesh_morphology_outputs"
+        ),
+    )
+
+
+def _analyze_skeleton_spec() -> OperationComputeSpec:
+    """Declare exact GPU graph measurement for authored boolean skeletons."""
+
+    boundary_policy_id = "skeleton-leading-spatial-blocks-v1"
+    precision_policy_id = "skeleton-measurement-table-v1"
+    input_port = ComputePortContract(
+        0,
+        ValueKind.MASK,
+        port_name="skeleton",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        accumulation_dtype="bool",
+        value_domain="binary-skeleton-mask-v1",
+        shape_policy_id="skeleton-analysis-input-shape-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="finite-only-v1",
+        rounding_policy_id="mask-bitwise-v1",
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        schema_id="skeleton-mask-array-v1",
+    )
+    output_port = ComputePortContract(
+        0,
+        ValueKind.TABLE,
+        port_name="measurements",
+        public_dtypes=("table",),
+        internal_dtypes=("uint8",),
+        accumulation_dtype="uint8",
+        value_domain="packed-skeleton-measurement-payload-v1",
+        shape_policy_id="skeleton-analysis-packed-bytes-v1",
+        output_dtype_policy_id="fixed:uint8",
+        conversion_policy_id="packed-skeleton-payload-to-typed-table-v1",
+        nonfinite_policy_id="integer-nonnegative-v1",
+        rounding_policy_id="skeleton-payload-bitwise-v1",
+        overflow_policy_id="skeleton-payload-size-checked-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        schema_id="skeleton-network-table-v1",
+    )
+    return OperationComputeSpec(
+        operation_id="analyze_skeleton",
+        implementation_id="cupyx-analyze-skeleton-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref=(
+            "napari_vipp.core.gpu.cupy_skeleton_measurements:analyze_skeleton"
+        ),
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id="analyze-skeleton-already-skeletonized-parameters-v1",
+        workload_policy_id="analyze-skeleton-bool-2d-3d-v1",
+        parity_policy_id="skeleton-measurement-table-v1",
+        memory_model_id="cupy-analyze-skeleton-packed-memory-v1",
+        shape_policy_id="skeleton-analysis-packed-bytes-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        progress_policy_id="skeleton-analysis-block-stage-progress-v1",
+        cancellation_policy_id="skeleton-analysis-block-stage-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        dynamic_output_policy_id="typed-host-table-finalizer-v1",
+        supported_spatial_ndims=(2, 3),
+        supports_device_residency=True,
+        limitations=(
+            "bool-already-skeletonized-input-v1",
+            "skeletonize-first-authoritative-cpu-v1",
+            "full-connectivity-valid-skeleton-edge-exact-v1",
+            "int32-spatial-block-under-2pow31-minus-2-v1",
+            "independent-leading-spatial-blocks-v1",
+            "typed-host-table-boundary-v1",
+        ),
+        host_finalizer_ref=(
+            "napari_vipp.core.skeleton_measurements:finalize_analyze_skeleton_outputs"
+        ),
+    )
+
+
 _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _background_spec("rolling_ball_background"),
     _background_spec("subtract_background"),
@@ -1058,6 +1229,8 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _connected_components_spec(),
     _measurements_spec(include_intensity=False),
     _measurements_spec(include_intensity=True),
+    _mesh_morphology_spec(),
+    _analyze_skeleton_spec(),
 )
 
 

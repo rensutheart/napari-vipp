@@ -50,7 +50,12 @@ from napari_vipp.core.host_finalization import apply_host_finalizer
 from napari_vipp.core.measurements import (
     MEASUREMENT_TABLE_PARITY_OPERATION_IDS,
     MEASUREMENT_TABLE_PARITY_POLICY_ID,
+    MESH_MORPHOLOGY_TABLE_PARITY_OPERATION_IDS,
+    MESH_MORPHOLOGY_TABLE_PARITY_POLICY_ID,
+    SKELETON_MEASUREMENT_TABLE_PARITY_OPERATION_IDS,
+    SKELETON_MEASUREMENT_TABLE_PARITY_POLICY_ID,
     measurement_table_parity,
+    skeleton_measurement_table_parity,
 )
 from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.progress import ProgressContext, ProgressUpdate
@@ -480,6 +485,14 @@ def operation_parity(
             candidate,
             intensity_dtype=intensity_dtype,
         )
+    if operation in MESH_MORPHOLOGY_TABLE_PARITY_OPERATION_IDS:
+        return measurement_table_parity(
+            reference,
+            candidate,
+            exact_float_columns=True,
+        )
+    if operation in SKELETON_MEASUREMENT_TABLE_PARITY_OPERATION_IDS:
+        return skeleton_measurement_table_parity(reference, candidate)
     raise ValueError(f"No production benchmark parity policy for {operation!r}.")
 
 
@@ -677,6 +690,10 @@ def _validate_admitted_spec(
         expected_parity = "sigma-dtype-parity-v1"
     elif call.operation_id in MEASUREMENT_TABLE_PARITY_OPERATION_IDS:
         expected_parity = MEASUREMENT_TABLE_PARITY_POLICY_ID
+    elif call.operation_id in MESH_MORPHOLOGY_TABLE_PARITY_OPERATION_IDS:
+        expected_parity = MESH_MORPHOLOGY_TABLE_PARITY_POLICY_ID
+    elif call.operation_id in SKELETON_MEASUREMENT_TABLE_PARITY_OPERATION_IDS:
+        expected_parity = SKELETON_MEASUREMENT_TABLE_PARITY_POLICY_ID
     if expected_parity is None or spec.parity_policy_id != expected_parity:
         raise ValueError(
             f"Implementation {spec.implementation_id!r} has unsupported parity "

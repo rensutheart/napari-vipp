@@ -3762,19 +3762,19 @@
   "source_provenance": [
     {
       "path": "src/napari_vipp/core/measurements.py",
-      "sha256": "1045f57a35cb1ebb7c4038738ab890becabfc8f028284723973e4e122ca9258c"
+      "sha256": "41e35c7205b348044f47594bf78c37dfd0e1d64343d1b11a6238803091c3f433"
     },
     {
       "path": "src/napari_vipp/core/operations.py",
-      "sha256": "0fae11885627c3f998a9f5fe7c51d302195f391a7c6bef24613d8e132d78c45c"
+      "sha256": "80c3b759d9e14d803ae6e504cfe8ca4bbf8023dd209bde6da096ee8f24653602"
     },
     {
       "path": "src/napari_vipp/core/compute_policy.py",
-      "sha256": "5636a255be8453427fe4f5e70b91ffdc96578ae6065e85727b3306b2b1448bb6"
+      "sha256": "ece68fa487866d5ded7ce679fae49f734819271d87c5af5f20f6501085c0820d"
     },
     {
       "path": "src/napari_vipp/core/compute_specs.py",
-      "sha256": "f114c4e9564f491d495999888dd0e3a94a89862eef54cb31ba346608960c7000"
+      "sha256": "e6b9500f753145c54ea8f76c274dd78c15b96b79ef27ba9951ccd6fffa0b7a9a"
     },
     {
       "path": "src/napari_vipp/core/gpu/cupy_measurements.py",

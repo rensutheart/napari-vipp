@@ -46,6 +46,27 @@ def test_vipp_starts_and_closes_with_real_napari_viewer_model(qtbot) -> None:
     assert not widget.isVisible()
 
 
+def test_node_library_icons_and_compact_controls_are_binding_neutral(qtbot) -> None:
+    """Keep the responsive node library on the PyQt/PySide runtime matrix."""
+
+    widget = VippWidget(ViewerModel(), defer_initial_run=True)
+    qtbot.addWidget(widget)
+
+    first_category = widget.palette.topLevelItem(0)
+    assert first_category.text(0) == "Image Data"
+    assert not first_category.icon(0).isNull()
+    widget.palette_panel.set_compact(True)
+    category_buttons = tuple(widget.palette_panel.compact_rail.category_buttons)
+
+    assert widget.palette_panel.is_compact
+    assert category_buttons
+    assert all(button.accessibleName() for button in category_buttons)
+    assert all(not button.icon().isNull() for button in category_buttons)
+
+    widget.close()
+    QApplication.processEvents()
+
+
 def test_vipp_generated_image_and_labels_use_real_napari_layers(qtbot) -> None:
     """Cover the generated-layer API shared by Inspect and pinned outputs."""
 

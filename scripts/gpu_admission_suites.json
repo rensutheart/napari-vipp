@@ -146,6 +146,20 @@
       "implementation_version": "1",
       "runtime_id": "cuda-cupy",
       "library_id": "cupy"
+    },
+    {
+      "operation_id": "measure_3d_mesh_morphology",
+      "implementation_id": "cupy-measure-3d-mesh-morphology-hybrid-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupy"
+    },
+    {
+      "operation_id": "analyze_skeleton",
+      "implementation_id": "cupyx-analyze-skeleton-v1",
+      "implementation_version": "1",
+      "runtime_id": "cuda-cupy",
+      "library_id": "cupyx"
     }
   ],
   "runners": [
@@ -593,6 +607,51 @@
       "profile_commands": {
         "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_measurements_provider.py"],
         "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_measurements_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "hybrid-measurement-scientific-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "measure_3d_mesh_morphology::cupy-measure-3d-mesh-morphology-hybrid-v1",
+        "analyze_skeleton::cupyx-analyze-skeleton-v1"
+      ],
+      "facets": [
+        "cpu_oracle_parity", "adversarial_workloads", "metadata",
+        "input_integrity", "cancellation", "cleanup"
+      ],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_gpu_mesh_morphology_provider.py",
+        "src/napari_vipp/_tests/test_gpu_analyze_skeleton_provider.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_mesh_morphology_provider.py", "src/napari_vipp/_tests/test_gpu_analyze_skeleton_provider.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_mesh_morphology_provider.py", "src/napari_vipp/_tests/test_gpu_analyze_skeleton_provider.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "hybrid-measurement-admission-rejection-contracts",
+      "kind": "pytest",
+      "implementations": [
+        "measure_3d_mesh_morphology::cupy-measure-3d-mesh-morphology-hybrid-v1",
+        "analyze_skeleton::cupyx-analyze-skeleton-v1"
+      ],
+      "facets": [
+        "memory", "fallback", "provenance", "transfer_inclusive_timing"
+      ],
+      "owner_paths": [
+        "src/napari_vipp/_tests/test_compute_policy_mesh_morphology_gpu.py",
+        "src/napari_vipp/_tests/test_compute_policy_skeleton_gpu.py"
+      ],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_compute_policy_mesh_morphology_gpu.py", "src/napari_vipp/_tests/test_compute_policy_skeleton_gpu.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_compute_policy_mesh_morphology_gpu.py", "src/napari_vipp/_tests/test_compute_policy_skeleton_gpu.py"]
       },
       "artifact": null,
       "artifact_schema": null,

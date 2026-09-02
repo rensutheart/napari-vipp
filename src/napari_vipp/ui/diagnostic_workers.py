@@ -12,6 +12,7 @@ import threading
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from inspect import Parameter, signature
 
 import numpy as np
 from qtpy.QtCore import QObject, QRunnable, Signal
@@ -128,6 +129,31 @@ class InputHistogramResult:
     display_bins: int = 0
     distribution_key: tuple = ()
     distribution: InputHistogramDistribution | None = None
+
+
+@dataclass(frozen=True)
+class LabelVolumeRequest:
+    """Exact label/component-size calculation requested by the inspector."""
+
+    run_id: int
+    key: tuple
+    node_id: str
+    data: object
+    spatial_ndim: int
+    cancel_event: threading.Event | None = None
+    connectivity: str = "Face connected"
+
+
+@dataclass(frozen=True)
+class LabelVolumeResult:
+    """Terminal result from one exact label-volume calculation."""
+
+    run_id: int
+    key: tuple
+    node_id: str
+    volumes: object = None
+    error: str = ""
+    cancelled: bool = False
 
 
 @dataclass(frozen=True)
@@ -707,6 +733,112 @@ class InputHistogramWorker(QRunnable):
         )
 
 
+class _LabelVolumeSignals(QObject):
+    finished = Signal(object)
+
+
+class LabelVolumeWorker(QRunnable):
+    """Calculate exact per-object label/component sizes off the GUI thread.
+
+    The injected calculation owns the scientific definition.  Current
+    :func:`napari_vipp.core.diagnostics.label_volumes` calls are cancellable
+    at the worker boundary; a future or test implementation that accepts a
+    ``progress`` keyword also receives a :class:`ProgressContext` so it can
+    stop during its inner calculation.
+    """
+
+    def __init__(
+        self,
+        request: LabelVolumeRequest,
+        *,
+        label_volumes: Callable[..., object],
+    ):
+        super().__init__()
+        self.request = request
+        self._label_volumes = label_volumes
+        self._accepts_progress = _callable_accepts_keyword(
+            label_volumes,
+            "progress",
+        )
+        self._accepts_connectivity = _callable_accepts_keyword(
+            label_volumes,
+            "connectivity",
+        )
+        self.signals = _LabelVolumeSignals()
+
+    def run(self) -> None:
+        request = self.request
+        cancel_event = request.cancel_event
+        if cancel_event is not None and cancel_event.is_set():
+            self._emit_result(cancelled=True)
+            return
+
+        progress = (
+            ProgressContext(cancelled=cancel_event.is_set)
+            if cancel_event is not None
+            else None
+        )
+        try:
+            if progress is not None:
+                progress.check_cancelled()
+            kwargs = (
+                {"progress": progress}
+                if progress is not None and self._accepts_progress
+                else {}
+            )
+            if self._accepts_connectivity:
+                kwargs["connectivity"] = request.connectivity
+            volumes = self._label_volumes(
+                request.data,
+                int(request.spatial_ndim),
+                **kwargs,
+            )
+            if progress is not None:
+                progress.check_cancelled()
+        except OperationCancelled:
+            self._emit_result(cancelled=True)
+            return
+        except Exception as exc:
+            self._emit_result(error=str(exc))
+            return
+        self._emit_result(volumes=volumes)
+
+    def _emit_result(
+        self,
+        *,
+        volumes: object = None,
+        error: str = "",
+        cancelled: bool = False,
+    ) -> None:
+        request = self.request
+        _emit_if_alive(
+            self.signals,
+            "finished",
+            LabelVolumeResult(
+                request.run_id,
+                request.key,
+                request.node_id,
+                volumes=volumes,
+                error=error,
+                cancelled=cancelled,
+            ),
+        )
+
+
+def _callable_accepts_keyword(function: Callable[..., object], name: str) -> bool:
+    """Return whether ``function`` explicitly or generically accepts a keyword."""
+    try:
+        parameters = signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    parameter = parameters.get(name)
+    if parameter is not None and parameter.kind is not Parameter.POSITIONAL_ONLY:
+        return True
+    return any(
+        item.kind is Parameter.VAR_KEYWORD for item in parameters.values()
+    )
+
+
 class _ColocalizationScatterSignals(QObject):
     finished = Signal(object)
 
@@ -966,6 +1098,9 @@ __all__ = [
     "InputHistogramRequest",
     "InputHistogramResult",
     "InputHistogramWorker",
+    "LabelVolumeRequest",
+    "LabelVolumeResult",
+    "LabelVolumeWorker",
     "ThumbnailContrastLimitRequest",
     "ThumbnailContrastLimitResult",
     "ThumbnailContrastLimitWorker",

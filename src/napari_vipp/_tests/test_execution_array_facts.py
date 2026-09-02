@@ -864,6 +864,54 @@ def test_background_to_gaussian_scans_source_once_and_propagates(monkeypatch):
     assert propagated.scan_seconds == source_facts.scan_seconds
 
 
+def test_label_filter_to_measurement_uses_output_theorems_without_source_scan(
+    monkeypatch,
+):
+    calls = _scan_spy(monkeypatch)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("otsu_threshold")
+    components = pipeline.add_node("label_connected_components")
+    label_filter = pipeline.add_node("filter_labels_by_volume")
+    measurement = pipeline.add_node("measure_objects")
+    assert pipeline.connect("input", threshold.id).success
+    assert pipeline.connect(threshold.id, components.id).success
+    assert pipeline.connect(components.id, label_filter.id).success
+    assert pipeline.connect(label_filter.id, measurement.id).success
+    pipeline.set_param(label_filter.id, "spatial_mode", "2D YX")
+    pipeline.set_param(measurement.id, "spatial_mode", "2D YX")
+    for name in (
+        "include_shape_descriptors",
+        "include_axis_descriptors",
+        "include_2d_boundary_descriptors",
+        "include_derived_shape_ratios",
+        "include_2d_shape_moments",
+    ):
+        pipeline.set_param(measurement.id, name, False)
+    data = np.array(
+        [[0, 80, 80, 0], [0, 80, 80, 160], [0, 0, 160, 160]],
+        dtype=np.uint16,
+    )
+    planner = _CapturingPlanner()
+
+    result = _execute_accelerated(
+        replace(
+            _accelerated_request(pipeline, data),
+            manual_node_ids=frozenset({measurement.id}),
+        ),
+        planner,
+    )
+
+    assert result.error == ""
+    assert calls == []
+    propagated = planner.array_facts[measurement.id][0]
+    assert propagated.all_finite is True
+    assert {"integer-labels", "nonnegative", "no-negative-zero"} <= set(
+        propagated.guarantees
+    )
+    assert ">filter_labels_by_volume:" in propagated.revision_fingerprint
+
+
 def test_accelerated_workload_preparation_forwards_costes_cancellation(
     monkeypatch,
 ):
@@ -1698,6 +1746,56 @@ def test_segmentation_projects_exact_boolean_facts(operation_id):
     assert {"nonnegative", "no-negative-zero"} <= set(propagated.guarantees)
 
 
+@pytest.mark.parametrize(
+    "operation_id",
+    ("expand_labels", "filter_labels_by_volume", "relabel_sequential"),
+)
+def test_validated_label_operations_project_exact_label_facts(operation_id):
+    source = execution_module._complete_array_facts(
+        np.array([[0, 1], [2, 2]], dtype=np.int32),
+        revision_fingerprint="validated-label-source",
+    )
+
+    propagated = execution_module._propagate_shape_preserving_facts(
+        operation_id,
+        source,
+        {},
+        output_port=OutputPortKey("labels", 0),
+        output_dtype="int32",
+    )
+
+    assert propagated is not None
+    assert propagated.all_finite is True
+    assert propagated.completeness.value == "complete"
+    assert {"integer-labels", "nonnegative", "no-negative-zero"} <= set(
+        propagated.guarantees
+    )
+
+
+@pytest.mark.parametrize(
+    ("dtype", "is_label_image"),
+    (("bool", False), ("int32", True)),
+)
+def test_clear_border_projects_mask_or_label_facts(dtype, is_label_image):
+    source = execution_module._complete_array_facts(
+        np.array([[0, 1], [1, 0]], dtype=dtype),
+        revision_fingerprint="clear-border-source",
+    )
+
+    propagated = execution_module._propagate_shape_preserving_facts(
+        "clear_border_objects",
+        source,
+        {},
+        output_port=OutputPortKey("cleared", 0),
+        output_dtype=dtype,
+    )
+
+    assert propagated is not None
+    assert propagated.all_finite is True
+    assert {"nonnegative", "no-negative-zero"} <= set(propagated.guarantees)
+    assert ("integer-labels" in propagated.guarantees) is is_label_image
+
+
 def test_extract_channel_projects_only_proven_subset_facts_without_extrema():
     finite_source = execution_module._complete_array_facts(
         np.arange(2 * 3 * 5, dtype=np.float32).reshape(2, 3, 5),
@@ -2376,6 +2474,105 @@ def test_set_pixel_size_planning_metadata_matches_authoritative_finalization():
     assert projected_state.axes == actual_state.axes
     assert projected_state.history == actual_state.history
     assert tuple(axis.scale for axis in projected_state.axes) == (2.0, 0.75, 0.5)
+
+
+def test_label_filter_keeps_downstream_measurement_gpu_eligible():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("otsu_threshold")
+    components = pipeline.add_node("label_connected_components")
+    label_filter = pipeline.add_node("filter_labels_by_volume")
+    measurement = pipeline.add_node("measure_objects")
+    assert pipeline.connect("input", threshold.id).success
+    assert pipeline.connect(threshold.id, components.id).success
+    assert pipeline.connect(components.id, label_filter.id).success
+    assert pipeline.connect(label_filter.id, measurement.id).success
+    pipeline.set_param(label_filter.id, "spatial_mode", "2D YX")
+    for name in (
+        "include_shape_descriptors",
+        "include_axis_descriptors",
+        "include_2d_boundary_descriptors",
+        "include_derived_shape_ratios",
+        "include_2d_shape_moments",
+    ):
+        pipeline.set_param(measurement.id, name, False)
+    pipeline.set_param(measurement.id, "spatial_mode", "2D YX")
+
+    data = np.array(
+        [
+            [0, 100, 100, 0, 200, 200],
+            [0, 100, 100, 0, 200, 200],
+            [0, 0, 0, 0, 0, 0],
+        ],
+        dtype=np.uint16,
+    )
+    state = image_state_from_array(
+        data,
+        axes=(AxisMetadata("y", "space"), AxisMetadata("x", "space")),
+    )
+    assert state is not None
+    source_port = OutputPortKey("input", 0)
+    source_facts = execution_module._complete_array_facts(
+        data,
+        revision_fingerprint="filtered-label-measurement-source",
+    )
+    request = ComputeRequest(mode=ComputeMode.PREFER_GPU)
+    validated_host = ComputeEnvironment(
+        os_name="Windows",
+        os_release="test",
+        execution_mode="native",
+        python_implementation="CPython",
+        python_version="3.12",
+        python_abi="cpython-312",
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
+    )
+
+    with (
+        _ProbeRegistry() as registry,
+        patch(
+            "napari_vipp.core.compute_planning.ComputeEnvironment",
+            return_value=validated_host,
+        ),
+    ):
+        workloads, facts_by_node, _lineage = execution_module._assemble_workloads(
+            pipeline,
+            frozenset(pipeline.nodes),
+            {source_port: data},
+            {source_port: state},
+            registry,
+            False,
+            seed_facts_by_port={source_port: source_facts},
+        )
+        measurement_specs = registry.implementations_for_operation(
+            measurement.operation_id,
+            allow_experimental=False,
+        )
+        environment, _warnings = probe_compute_environment(
+            registry,
+            request,
+            measurement_specs,
+        )
+        planning = plan_compute_decisions(
+            request,
+            workloads,
+            registry=registry,
+            environment=environment,
+            array_facts=facts_by_node,
+        )
+
+    measurement_facts = facts_by_node[measurement.id][0]
+    assert measurement_facts.all_finite is True
+    assert {"integer-labels", "nonnegative", "no-negative-zero"} <= set(
+        measurement_facts.guarantees
+    )
+    decision = planning.decisions_by_node[measurement.id]
+    assert decision.runtime_id == "cuda-cupy"
+    assert decision.implementation_id == "cupy-measure-objects-basic-v1"
+    assert decision.fallback_used is False
 
 
 def test_rescale_axes_keeps_downstream_prefer_gpu_workload_resolved():

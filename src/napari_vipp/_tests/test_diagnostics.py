@@ -18,6 +18,7 @@ from napari_vipp.core.diagnostics import (
     label_volumes,
     largest_label_volume,
     largest_object_size,
+    object_sizes,
     provisional_generated_layer_contrast_limits,
     psf_preflight,
     widefield_nyquist_sampling,
@@ -260,6 +261,36 @@ def test_largest_boolean_object_respects_connectivity_and_spatial_blocks():
     assert largest_object_size(diagonal, 2, "Fully connected") == 2
     assert largest_object_size(z_connected, 3, "Face connected") == 2
     assert largest_object_size(z_connected, 2, "Face connected") == 1
+
+
+def test_object_sizes_use_label_ids_or_boolean_components_per_spatial_block():
+    labels = np.array(
+        [
+            [[1, 1], [0, 2]],
+            [[1, 0], [1, 1]],
+        ],
+        dtype=np.uint16,
+    )
+    mask = np.array(
+        [
+            [[True, False], [False, True]],
+            [[True, True], [False, False]],
+        ],
+        dtype=bool,
+    )
+
+    np.testing.assert_array_equal(
+        object_sizes(labels, 2, "Face connected"),
+        [2, 1, 3],
+    )
+    np.testing.assert_array_equal(
+        object_sizes(mask, 2, "Face connected"),
+        [1, 1, 2],
+    )
+    np.testing.assert_array_equal(
+        object_sizes(mask, 2, "Full connectivity"),
+        [2, 2],
+    )
 
 
 def test_largest_object_size_preserves_existing_label_ids():

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -55,6 +56,30 @@ from napari_vipp.ui.batch_overrides import (
     BatchOverrideSourceItem,
     BatchParameterOverrideEditor,
 )
+from napari_vipp.ui.palette_roles import (
+    blend_colors,
+    custom_paint_colors,
+    palette_is_dark,
+)
+
+
+def _batch_state_text_color(palette, state: str) -> str:
+    normalized = str(state).strip().lower()
+    if palette_is_dark(palette):
+        return {
+            "working": "#bfdbfe",
+            "ready": "#86efac",
+            "success": "#86efac",
+            "warning": "#fbbf24",
+            "error": "#fca5a5",
+        }.get(normalized, custom_paint_colors(palette).muted_text.name())
+    return {
+        "working": "#1d4ed8",
+        "ready": "#166534",
+        "success": "#166534",
+        "warning": "#92400e",
+        "error": "#b91c1c",
+    }.get(normalized, custom_paint_colors(palette).muted_text.name())
 
 
 @dataclass(frozen=True)
@@ -161,6 +186,8 @@ class CollectionBatchDialog(QDialog):
         self._activity_run_completed = 0
         self._output_path_is_suggested = True
         self._setting_suggested_output = False
+        self._batch_activity_state = "info"
+        self._applying_palette_styles = False
         self._run_control_restore_timer = QTimer(self)
         self._run_control_restore_timer.setSingleShot(True)
         self._run_control_restore_timer.setInterval(50)
@@ -224,7 +251,6 @@ class CollectionBatchDialog(QDialog):
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
         )
-        self.preview_status.setStyleSheet("color: #94a3b8;")
 
         # Keep one concise Batch-only status surface in the fixed toolbar.  The
         # main VIPP progress indicator remains the source of truth for live graph
@@ -316,7 +342,6 @@ class CollectionBatchDialog(QDialog):
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
         )
-        self.graph_preview_status.setStyleSheet("color: #94a3b8;")
 
         self.source_group = QGroupBox("Batch sources")
         self.source_layout = QVBoxLayout(self.source_group)
@@ -407,14 +432,13 @@ class CollectionBatchDialog(QDialog):
         config_layout.addWidget(self.demo_config_button)
         config_layout.addWidget(self.batch_activity_strip, 1)
 
-        help_label = QLabel(
+        self.help_label = QLabel(
             "Choose the source and output folders. Preview checks a sample "
             "before anything is saved."
         )
-        help_label.setWordWrap(True)
-        help_label.setMinimumWidth(0)
-        help_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        help_label.setStyleSheet("color: #94a3b8;")
+        self.help_label.setWordWrap(True)
+        self.help_label.setMinimumWidth(0)
+        self.help_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
         self.demo_guide_label = QLabel("")
         self.demo_guide_label.setWordWrap(True)
@@ -424,10 +448,6 @@ class CollectionBatchDialog(QDialog):
             QSizePolicy.Preferred,
         )
         self.demo_guide_label.setTextFormat(Qt.RichText)
-        self.demo_guide_label.setStyleSheet(
-            "color: #dbeafe; padding: 9px; background: #172554; "
-            "border: 1px solid #3b82f6; border-radius: 4px;"
-        )
         self.demo_guide_label.hide()
         self.demo_path_edit = QLineEdit()
         self.demo_path_edit.setReadOnly(True)
@@ -486,7 +506,6 @@ class CollectionBatchDialog(QDialog):
             QSizePolicy.Preferred,
         )
         self.run_result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.run_result_label.setStyleSheet("color: #cbd5e1;")
         self.run_group = QGroupBox("Batch run")
         run_layout = QVBoxLayout(self.run_group)
         run_layout.addWidget(self.run_progress_label)
@@ -527,7 +546,7 @@ class CollectionBatchDialog(QDialog):
         content_layout.addWidget(self.node_execution_group)
         content_layout.addWidget(self.parameter_override_group)
         content_layout.addLayout(form)
-        content_layout.addWidget(help_label)
+        content_layout.addWidget(self.help_label)
         content_layout.addWidget(preview_row)
         content_layout.addWidget(self.preview_table)
         content_layout.addWidget(graph_preview_row)
@@ -565,6 +584,7 @@ class CollectionBatchDialog(QDialog):
             "Not checked · Preview or run to inspect batch items.",
             state="info",
         )
+        self._apply_palette_styles()
 
         screen = self.screen()
         if screen is not None:
@@ -587,6 +607,64 @@ class CollectionBatchDialog(QDialog):
             if event.type() == QEvent.MouseButtonPress or deliberate_focus:
                 self._acknowledge_output_path()
         return super().eventFilter(watched, event)
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+            self._apply_palette_styles()
+
+    def _apply_palette_styles(self) -> None:
+        if getattr(self, "_applying_palette_styles", False) or not hasattr(
+            self, "preview_status"
+        ):
+            return
+        self._applying_palette_styles = True
+        colors = custom_paint_colors(self.palette())
+        try:
+            muted_style = f"color: {colors.muted_text.name()};"
+            for label in (
+                self.preview_status,
+                self.graph_preview_status,
+                self.help_label,
+                self.run_result_label,
+            ):
+                label.setStyleSheet(muted_style)
+            accent = QColor("#3b82f6")
+            dark = palette_is_dark(self.palette())
+            demo_background = (
+                QColor("#172554")
+                if dark
+                else blend_colors(colors.surface, accent, 0.14)
+            )
+            demo_text = "#dbeafe" if dark else "#1e3a8a"
+            self.demo_guide_label.setStyleSheet(
+                f"color: {demo_text}; padding: 9px; "
+                f"background: {demo_background.name()}; "
+                "border: 1px solid #3b82f6; border-radius: 4px;"
+            )
+            row_style = self._source_row_style()
+            for row in self._source_rows:
+                row["widget"].setStyleSheet(row_style)
+            self._refresh_output_path_style()
+            self._apply_activity_status_style()
+        finally:
+            self._applying_palette_styles = False
+
+    def _source_row_style(self) -> str:
+        colors = custom_paint_colors(self.palette())
+        dark = palette_is_dark(self.palette())
+        border = "#334155" if dark else colors.border.name()
+        field_border = "#475569" if dark else colors.axis.name()
+        return (
+            f"QFrame {{ border: 1px solid {border}; "
+            "border-radius: 4px; }"
+            "QLabel { border: none; }"
+            f"QLineEdit {{ border: 1px solid {field_border}; }}"
+        )
+
+    def _apply_activity_status_style(self) -> None:
+        color = _batch_state_text_color(self.palette(), self._batch_activity_state)
+        self.batch_activity_status.setStyleSheet(f"color: {color};")
 
     def set_demo_context(self, demo: SyntheticBatchDemo) -> None:
         """Present a generated bundle as a ready-to-run example workspace."""
@@ -725,11 +803,7 @@ class CollectionBatchDialog(QDialog):
 
         row = QFrame()
         row.setFrameShape(QFrame.StyledPanel)
-        row.setStyleSheet(
-            "QFrame { border: 1px solid #334155; border-radius: 4px; }"
-            "QLabel { border: none; }"
-            "QLineEdit { border: 1px solid #475569; }"
-        )
+        row.setStyleSheet(self._source_row_style())
         row_layout = QVBoxLayout(row)
         row_layout.setContentsMargins(8, 6, 8, 6)
         row_layout.addWidget(title_label)
@@ -811,8 +885,9 @@ class CollectionBatchDialog(QDialog):
         )
         self.output_edit.setProperty("suggestedDefault", is_visible_suggestion)
         if is_visible_suggestion:
+            warning = "#f59e0b" if palette_is_dark(self.palette()) else "#b45309"
             self.output_edit.setStyleSheet(
-                "QLineEdit { color: #f59e0b; border: 1px solid #f59e0b; }"
+                f"QLineEdit {{ color: {warning}; border: 1px solid {warning}; }}"
             )
             description = (
                 "Suggested from the first bound batch source. Review this folder; "
@@ -1358,16 +1433,9 @@ class CollectionBatchDialog(QDialog):
         """
 
         normalized_state = str(state).strip().lower()
-        color = {
-            "working": "#bfdbfe",
-            "ready": "#86efac",
-            "success": "#86efac",
-            "warning": "#fbbf24",
-            "error": "#fca5a5",
-            "info": "#cbd5e1",
-        }.get(normalized_state, "#cbd5e1")
+        self._batch_activity_state = normalized_state
         self.batch_activity_status.setText(str(message).strip() or "Not checked")
-        self.batch_activity_status.setStyleSheet(f"color: {color};")
+        self._apply_activity_status_style()
         activity_tooltip = str(tooltip).strip() or self._batch_activity_tooltip
         self.batch_activity_status.setToolTip(activity_tooltip)
         self.source_detection_progress.setToolTip(activity_tooltip)

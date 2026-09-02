@@ -201,7 +201,12 @@ def inspect_microscope(path: Path) -> SourceInspection:
     raise ValueError(f"Unsupported microscope source: {path}")
 
 
-def read_microscope(path: Path, series_index: int = 0) -> ImageDataset:
+def read_microscope(
+    path: Path,
+    series_index: int = 0,
+    *,
+    item_key: str | None = None,
+) -> ImageDataset:
     """Read one selected microscope acquisition image."""
     suffix = path.suffix.lower()
     if suffix == ".lsm":
@@ -213,7 +218,7 @@ def read_microscope(path: Path, series_index: int = 0) -> ImageDataset:
             return _read_bioio(path, series_index, microscope_format_for_path(path))
     if suffix == ".czi":
         try:
-            return _read_czi(path, series_index)
+            return _read_czi(path, series_index, item_key=item_key)
         except OptionalMicroscopeReaderError:
             return _read_bioio(path, series_index, microscope_format_for_path(path))
     if suffix in {".lif", ".lof", ".xlif"}:
@@ -369,32 +374,33 @@ def _read_nd2(path: Path, series_index: int = 0) -> ImageDataset:
 def _inspect_czi(path: Path) -> SourceInspection:
     czifile = _optional_import("czifile", path.suffix)
     with czifile.CziFile(str(path)) as czi:
-        original = _safe_call(czi, "metadata")
-        series = tuple(
-            _series_with_reader_metadata(
-                selected,
-                image=scene,
-                path=path,
-                format_name="zeiss-czi",
-                original_metadata=original,
-                metadata_source="Zeiss CZI metadata",
-                reader_key="czifile",
-                reader_version=_reader_version(czifile),
-                capabilities=_EAGER_READER_CAPABILITIES,
-            )
-            for selected, scene in _czi_series_and_scenes(czi, path)
-        )
-    return SourceInspection(str(path), "zeiss-czi", series, original)
+        return _inspect_open_czi(czi, path, czifile)
 
 
-def _read_czi(path: Path, series_index: int = 0) -> ImageDataset:
-    inspection = _inspect_czi(path)
-    selected = _selected_series(inspection, series_index)
+def _read_czi(
+    path: Path,
+    series_index: int = 0,
+    *,
+    item_key: str | None = None,
+) -> ImageDataset:
+    """Read CZI metadata and pixels through one container lifetime.
+
+    The returned :class:`ImageDataset` is the authoritative paired result for
+    both header metadata and pixels.  Source-level before/after integrity
+    verification remains the responsibility of the frozen-source loader.
+    """
+
     czifile = _optional_import("czifile", path.suffix)
     with czifile.CziFile(str(path)) as czi:
+        inspection = _inspect_open_czi(czi, path, czifile)
+        selected = _selected_series(
+            inspection,
+            series_index,
+            item_key=item_key,
+        )
         scene = _czi_scene(czi, selected)
         data, axes, channels, attrs = _scene_payload(scene)
-        original = _safe_call(czi, "metadata")
+        original = inspection.original_metadata
     return _microscope_dataset(
         data,
         path,
@@ -406,6 +412,27 @@ def _read_czi(path: Path, series_index: int = 0) -> ImageDataset:
         metadata_source="Zeiss CZI metadata",
         reader="czifile",
     )
+
+
+def _inspect_open_czi(czi, path: Path, czifile) -> SourceInspection:
+    """Build a complete CZI inspection from an already-open container."""
+
+    original = _safe_call(czi, "metadata")
+    series = tuple(
+        _series_with_reader_metadata(
+            selected,
+            image=scene,
+            path=path,
+            format_name="zeiss-czi",
+            original_metadata=original,
+            metadata_source="Zeiss CZI metadata",
+            reader_key="czifile",
+            reader_version=_reader_version(czifile),
+            capabilities=_EAGER_READER_CAPABILITIES,
+        )
+        for selected, scene in _czi_series_and_scenes(czi, path)
+    )
+    return SourceInspection(str(path), "zeiss-czi", series, original)
 
 
 def _inspect_lif(path: Path) -> SourceInspection:
@@ -861,9 +888,23 @@ def _is_java_or_bioformats_readiness_error(error: Exception) -> bool:
 def _selected_series(
     inspection: SourceInspection,
     series_index: int,
+    *,
+    item_key: str | None = None,
 ) -> ImageSeriesInfo:
     if not inspection.series:
         raise ValueError(f"No image series found in {inspection.uri}")
+    requested_key = str(item_key or "").strip()
+    if requested_key:
+        selected = next(
+            (item for item in inspection.series if item.key == requested_key),
+            None,
+        )
+        if selected is None:
+            raise ValueError(
+                f"Source item {requested_key!r} is no longer available; "
+                "VIPP will not substitute another item by position."
+            )
+        return selected
     index = int(series_index)
     if index < 0 or index >= len(inspection.series):
         raise IndexError(

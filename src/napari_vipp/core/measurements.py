@@ -14,7 +14,7 @@ until a provider validates every advertised column.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -41,6 +41,10 @@ MEASUREMENT_TABLE_PARITY_POLICY_ID = "basic-measurement-table-v1"
 MEASUREMENT_TABLE_PARITY_OPERATION_IDS = frozenset(
     {"measure_objects", "measure_objects_intensity"}
 )
+MESH_MORPHOLOGY_TABLE_PARITY_POLICY_ID = "mesh-morphology-table-exact-v1"
+MESH_MORPHOLOGY_TABLE_PARITY_OPERATION_IDS = frozenset({"measure_3d_mesh_morphology"})
+SKELETON_MEASUREMENT_TABLE_PARITY_POLICY_ID = "skeleton-measurement-table-v1"
+SKELETON_MEASUREMENT_TABLE_PARITY_OPERATION_IDS = frozenset({"analyze_skeleton"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,6 +402,9 @@ def measurement_table_parity(
     candidate: object,
     *,
     intensity_dtype: str | np.dtype | None = None,
+    exact_float_columns: bool = False,
+    default_float_tolerance: tuple[float, float] | None = None,
+    float_tolerance_overrides: Mapping[str, tuple[float, float]] | None = None,
 ):
     """Compare complete public measurement tables under the v1 contract.
 
@@ -409,7 +416,10 @@ def measurement_table_parity(
 
     ``intensity_dtype`` lets callers select the tighter integer-reduction
     profile.  When it is unavailable, the admitted finite-float32 profile is
-    used conservatively for intensity reductions.
+    used conservatively for intensity reductions. ``exact_float_columns`` is
+    reserved for hybrid providers whose public floats are authored by the same
+    authoritative CPU algorithms after an exact accelerator preprocessing
+    boundary.
     """
 
     # Keep this scientific module importable while compute policy is being
@@ -441,6 +451,17 @@ def measurement_table_parity(
         )
 
     normalized_intensity_dtype = _parity_intensity_dtype(intensity_dtype)
+    normalized_default_tolerance = _normalized_parity_tolerance(
+        default_float_tolerance,
+        name="default_float_tolerance",
+    )
+    normalized_overrides = {
+        str(column_name): _normalized_parity_tolerance(
+            tolerance,
+            name=f"float_tolerance_overrides[{column_name!r}]",
+        )
+        for column_name, tolerance in dict(float_tolerance_overrides or {}).items()
+    }
     maximum_absolute_error = 0.0
     maximum_relative_error = 0.0
     for row_index, (expected_row, actual_row) in enumerate(
@@ -482,10 +503,17 @@ def measurement_table_parity(
                 )
             if not np.isfinite(expected):
                 continue
-            rtol, atol = _measurement_column_tolerance(
-                column_name,
-                normalized_intensity_dtype,
-            )
+            if exact_float_columns:
+                rtol, atol = (0.0, 0.0)
+            elif column_name in normalized_overrides:
+                rtol, atol = normalized_overrides[column_name]
+            elif normalized_default_tolerance is not None:
+                rtol, atol = normalized_default_tolerance
+            else:
+                rtol, atol = _measurement_column_tolerance(
+                    column_name,
+                    normalized_intensity_dtype,
+                )
             absolute_error = abs(actual - expected)
             denominator = max(abs(expected), atol)
             relative_error = (
@@ -508,6 +536,71 @@ def measurement_table_parity(
         "exact table schema/order/units/scalar types and exact integer/text "
         f"columns; max_float_abs={maximum_absolute_error:.9g}; "
         f"max_float_rel={maximum_relative_error:.9g}",
+    )
+
+
+def skeleton_measurement_table_parity(reference: object, candidate: object):
+    """Compare Analyze Skeleton tables with an edge-count error bound.
+
+    Every schema, metadata, scalar type, integer, text, and non-length float is
+    exact. Pixel and calibrated physical lengths allow only the forward-error
+    bound implied by summing the same positive float64 edge lengths in a
+    different order on CPU and GPU. The bound scales with the largest authored
+    component edge count instead of granting a broad fixed table tolerance.
+    """
+
+    from napari_vipp.core.compute_benchmark import ParityResult
+
+    if not isinstance(reference, TableData) or not isinstance(candidate, TableData):
+        return measurement_table_parity(reference, candidate)
+    edge_column = "voxel_graph_edge_count"
+    if edge_column not in reference.columns:
+        return ParityResult(
+            False,
+            "Analyze Skeleton parity requires voxel_graph_edge_count.",
+        )
+    edge_index = reference.columns.index(edge_column)
+    maximum_edges = 0
+    for row_index, row in enumerate(reference.rows):
+        if len(row) != len(reference.columns):
+            return ParityResult(False, f"row {row_index} violates the table schema")
+        value = row[edge_index]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return ParityResult(
+                False,
+                "Analyze Skeleton voxel_graph_edge_count must be a "
+                "non-negative Python int.",
+            )
+        maximum_edges = max(maximum_edges, value)
+
+    epsilon = float(np.finfo(np.float64).eps)
+    guarded_additions = maximum_edges + 64
+    denominator = 1.0 - guarded_additions * epsilon
+    if denominator <= 0.0:
+        return ParityResult(
+            False,
+            "Analyze Skeleton edge count exceeds the declared float64 "
+            "summation parity domain.",
+        )
+    relative_bound = 2.0 * guarded_additions * epsilon / denominator
+    absolute_bound = 16.0 * epsilon
+    length_columns = {
+        name
+        for name in reference.columns
+        if name
+        in {
+            "skeleton_length_pixels",
+            "skeleton_length_voxels",
+            "skeleton_length_physical",
+        }
+    }
+    return measurement_table_parity(
+        reference,
+        candidate,
+        default_float_tolerance=(0.0, 0.0),
+        float_tolerance_overrides={
+            name: (relative_bound, absolute_bound) for name in length_columns
+        },
     )
 
 
@@ -880,6 +973,23 @@ def _measurement_column_tolerance(
     return FLOAT32_INTENSITY_REDUCTION_RTOL, FLOAT32_INTENSITY_REDUCTION_ATOL
 
 
+def _normalized_parity_tolerance(
+    value: tuple[float, float] | None,
+    *,
+    name: str,
+) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    try:
+        rtol, atol = tuple(value)
+        normalized = (float(rtol), float(atol))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain finite non-negative rtol/atol.") from exc
+    if any(not np.isfinite(item) or item < 0.0 for item in normalized):
+        raise ValueError(f"{name} must contain finite non-negative rtol/atol.")
+    return normalized
+
+
 def _float_masks_match(expected: float, actual: float) -> tuple[bool, str]:
     if bool(np.isfinite(expected)) != bool(np.isfinite(actual)):
         return False, "finite/non-finite masks differ"
@@ -902,6 +1012,10 @@ __all__ = [
     "INTENSITY_COLUMNS",
     "MEASUREMENT_TABLE_PARITY_OPERATION_IDS",
     "MEASUREMENT_TABLE_PARITY_POLICY_ID",
+    "MESH_MORPHOLOGY_TABLE_PARITY_OPERATION_IDS",
+    "MESH_MORPHOLOGY_TABLE_PARITY_POLICY_ID",
+    "SKELETON_MEASUREMENT_TABLE_PARITY_OPERATION_IDS",
+    "SKELETON_MEASUREMENT_TABLE_PARITY_POLICY_ID",
     "BasicMeasurementLayout",
     "MeasurementUnits",
     "basic_measurement_layout",
@@ -909,5 +1023,6 @@ __all__ = [
     "finalize_basic_measurement_outputs",
     "measurement_units",
     "measurement_table_parity",
+    "skeleton_measurement_table_parity",
     "validate_basic_measurement_options",
 ]

@@ -8,7 +8,12 @@ from enum import StrEnum
 from pathlib import Path
 
 from napari_vipp.core.file_sources import VerifiedSourceInspection
-from napari_vipp.core.io import inspect_image_source, inspect_image_state
+from napari_vipp.core.io import (
+    inspect_image_source,
+    inspect_image_state,
+    normalize_local_image_source_path,
+    validate_local_image_source_path,
+)
 from napari_vipp.core.io.errors import annotate_image_source_exception
 from napari_vipp.core.io.model import ImageSeriesInfo, SourceInspection
 from napari_vipp.core.metadata import (
@@ -142,7 +147,7 @@ def inspect_local_source_item(
     after each reader boundary.
     """
 
-    source = Path(path).expanduser().resolve(strict=False)
+    source = normalize_local_image_source_path(path)
     index_hint = int(series_index)
     if isinstance(series_index, bool) or index_hint < 0:
         raise ValueError("Source inspection series index must be non-negative.")
@@ -158,6 +163,7 @@ def inspect_local_source_item(
     _check_cancelled(cancel_callback, "before source identity capture")
 
     try:
+        source = validate_local_image_source_path(source)
         bundle = capture_local_source_bundle(
             source,
             cancel_callback=cancel_callback,

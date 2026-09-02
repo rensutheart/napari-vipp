@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor, QPalette
 
 from napari_vipp.core.compute import (
     BenchmarkCandidateResult,
@@ -25,6 +26,16 @@ from napari_vipp.ui.compute_benchmark_dialog import (
     NodeBenchmarkWorker,
     NodeBenchmarkWorkerOutcome,
 )
+from napari_vipp.ui.palette_roles import theme_colors
+
+
+def _theme_palette(*, base: str, text: str) -> QPalette:
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.Window, QColor(base))
+    palette.setColor(QPalette.Text, QColor(text))
+    palette.setColor(QPalette.WindowText, QColor(text))
+    return palette
 
 
 class _ClosingRegistry:
@@ -569,3 +580,34 @@ def test_unsuccessful_outcomes_never_offer_or_emit_apply(qtbot, outcome):
         assert dialog.result_label.text() == ""
     else:
         assert dialog.result_label.text() == outcome.error
+
+
+def test_benchmark_result_restyles_live_and_cancel_clears_old_tone(qtbot):
+    dialog = NodeBenchmarkDialog("Gaussian blur")
+    qtbot.addWidget(dialog)
+    dark = _theme_palette(base="#111827", text="#f8fafc")
+    dialog.setPalette(dark)
+    dialog._on_finished(
+        NodeBenchmarkWorkerOutcome("gaussian-1", result=_renderable_result())
+    )
+    dark_style = dialog.result_label.styleSheet()
+
+    assert theme_colors(dark).success.foreground.name() in dark_style
+
+    light = _theme_palette(base="#ffffff", text="#111827")
+    dialog.setPalette(light)
+    qtbot.waitUntil(lambda: dialog.result_label.styleSheet() != dark_style)
+    assert (
+        theme_colors(light).success.foreground.name()
+        in dialog.result_label.styleSheet()
+    )
+
+    dialog._on_finished(
+        NodeBenchmarkWorkerOutcome(
+            "gaussian-1",
+            error="stopped by user",
+            reason_code="cancelled",
+            cancelled=True,
+        )
+    )
+    assert dialog.result_label.styleSheet() == ""

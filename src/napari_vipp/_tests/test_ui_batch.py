@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import (
     QApplication,
     QDialog,
@@ -36,6 +37,15 @@ from napari_vipp.ui.batch import (
     CollectionBatchActions,
     CollectionBatchDialog,
 )
+from napari_vipp.ui.palette_roles import custom_paint_colors, palette_is_dark
+
+
+def _theme_palette(*, base: str, alternate: str, text: str) -> QPalette:
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.AlternateBase, QColor(alternate))
+    palette.setColor(QPalette.Text, QColor(text))
+    return palette
 
 
 def _preview_result(tmp_path, *, count: int = 3) -> BatchPreviewResult:
@@ -322,7 +332,8 @@ def test_batch_output_defaults_to_primary_source_output_and_tracks_it(
 
     assert dialog.output_edit.text() == str(primary / "output")
     assert dialog.output_edit.property("suggestedDefault") is True
-    assert "#f59e0b" in dialog.output_edit.styleSheet()
+    warning = "#f59e0b" if palette_is_dark(dialog.palette()) else "#b45309"
+    assert warning in dialog.output_edit.styleSheet()
     assert "Suggested from the first bound batch source" in dialog.output_edit.toolTip()
 
     dialog._source_rows[1]["folder"].setText(str(tmp_path / "new-reference"))
@@ -331,6 +342,34 @@ def test_batch_output_defaults_to_primary_source_output_and_tracks_it(
     updated_primary = tmp_path / "updated-primary"
     dialog._source_rows[0]["folder"].setText(str(updated_primary))
     assert dialog.output_edit.text() == str(updated_primary / "output")
+
+
+def test_batch_workspace_surfaces_follow_runtime_palette_changes(qtbot):
+    dialog = CollectionBatchDialog()
+    qtbot.addWidget(dialog)
+    light = _theme_palette(
+        base="#ffffff", alternate="#f2f4f7", text="#111827"
+    )
+    dialog.setPalette(light)
+    dialog.show_workspace_activity("Review settings", state="warning")
+    light_muted = custom_paint_colors(light).muted_text.name()
+
+    assert light_muted in dialog.preview_status.styleSheet()
+    assert light_muted in dialog.help_label.styleSheet()
+    assert "#1e3a8a" in dialog.demo_guide_label.styleSheet()
+    assert "#172554" not in dialog.demo_guide_label.styleSheet()
+    assert "#334155" not in dialog._source_rows[0]["widget"].styleSheet()
+    assert "#92400e" in dialog.batch_activity_status.styleSheet()
+
+    dark = _theme_palette(
+        base="#111827", alternate="#1f2937", text="#f8fafc"
+    )
+    dialog.setPalette(dark)
+
+    assert "#dbeafe" in dialog.demo_guide_label.styleSheet()
+    assert "#172554" in dialog.demo_guide_label.styleSheet()
+    assert "#334155" in dialog._source_rows[0]["widget"].styleSheet()
+    assert "#fbbf24" in dialog.batch_activity_status.styleSheet()
 
 
 def test_batch_output_path_expands_with_dialog(qtbot, tmp_path):

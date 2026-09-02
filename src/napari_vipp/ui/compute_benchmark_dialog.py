@@ -9,7 +9,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from qtpy.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from qtpy.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, Signal
+from qtpy.QtGui import QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -38,6 +39,7 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     NodeBenchmarkUnavailable,
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
+from napari_vipp.ui.palette_roles import theme_colors
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +331,9 @@ class NodeBenchmarkDialog(QDialog):
         self._outcome: NodeBenchmarkWorkerOutcome | None = None
         self._running = False
         self._shutdown = False
+        self._result_tone: str | None = None
+        self._result_bold = False
+        self._applying_result_style = False
 
         self.summary_label = QLabel(
             "VIPP will compare the current node input and parameters on CPU and "
@@ -389,6 +394,7 @@ class NodeBenchmarkDialog(QDialog):
             raise RuntimeError("This benchmark dialog has already been started.")
         self._worker = worker
         self._running = True
+        self._set_result_tone(None)
         self.progress_label.setText(
             "Preparing exact current inputs. You can cancel at any time."
         )
@@ -457,6 +463,13 @@ class NodeBenchmarkDialog(QDialog):
             return
         super().closeEvent(event)
 
+    def changeEvent(self, event) -> None:  # noqa: N802
+        """Refresh semantic result text after a live host-theme change."""
+
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+            self._apply_result_style()
+
     def _on_progress(self, progress: NodeBenchmarkProgress) -> None:
         if self._shutdown:
             return
@@ -478,10 +491,11 @@ class NodeBenchmarkDialog(QDialog):
         elif outcome.cancelled:
             self.progress_label.setText("Benchmark cancelled. No preference changed.")
             self.result_label.setText("")
+            self._set_result_tone(None)
         else:
             self.progress_label.setText("Benchmark could not be completed.")
             self.result_label.setText(outcome.error)
-            self.result_label.setStyleSheet("color: #fca5a5;")
+            self._set_result_tone("error")
         self.benchmark_finished.emit(outcome)
 
     def _render_result(self, result: ApplicationNodeBenchmarkResult) -> None:
@@ -533,11 +547,32 @@ class NodeBenchmarkDialog(QDialog):
         preference_text = preference.kind.value
         if preference.value:
             preference_text += f":{preference.value}"
-        self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+        self._set_result_tone("success", bold=True)
         self.result_label.setText(
             f"Fastest qualified implementation: {winner}. Applying this result "
             f"will set the portable preference {preference_text}."
         )
+
+    def _set_result_tone(self, tone: str | None, *, bold: bool = False) -> None:
+        self._result_tone = tone
+        self._result_bold = bool(bold)
+        self._apply_result_style()
+
+    def _apply_result_style(self) -> None:
+        if getattr(self, "_applying_result_style", False) or not hasattr(
+            self, "result_label"
+        ):
+            return
+        self._applying_result_style = True
+        try:
+            style = "font-weight: 650;" if self._result_bold else ""
+            if self._result_tone is not None:
+                colors = theme_colors(_effective_palette(self))
+                foreground = getattr(colors, self._result_tone).foreground.name()
+                style = f"color: {foreground};" + style
+            self.result_label.setStyleSheet(style)
+        finally:
+            self._applying_result_style = False
 
     def _apply_result(self) -> None:
         if (
@@ -557,6 +592,11 @@ def _format_seconds(value: float | None) -> str:
     if value < 1.0:
         return f"{value * 1_000:.1f} ms"
     return f"{value:.3f} s"
+
+
+def _effective_palette(widget: QWidget) -> QPalette:
+    parent = widget.parentWidget()
+    return QWidget.palette(parent) if parent is not None else QWidget.palette(widget)
 
 
 def _format_bytes(value: int) -> str:

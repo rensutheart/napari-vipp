@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor, QPalette
 
 from napari_vipp.ui.batch_navigator import BatchNavigator
+from napari_vipp.ui.palette_roles import custom_paint_colors
+
+
+def _theme_palette(*, base: str, alternate: str, text: str) -> QPalette:
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.AlternateBase, QColor(alternate))
+    palette.setColor(QPalette.Text, QColor(text))
+    return palette
 
 
 def test_batch_navigator_starts_hidden_and_presents_a_session(qtbot):
@@ -90,6 +100,29 @@ def test_batch_navigator_can_show_committed_effective_overrides(qtbot):
     # visible while the replacement representative is still loading.
     qtbot.mouseClick(navigator.previous_button, Qt.LeftButton)
     assert navigator.effective_overrides_label.isHidden()
+
+
+def test_batch_navigator_follows_runtime_palette_changes(qtbot):
+    navigator = BatchNavigator()
+    qtbot.addWidget(navigator)
+
+    light = _theme_palette(
+        base="#ffffff", alternate="#f2f4f7", text="#111827"
+    )
+    navigator.setPalette(light)
+    light_muted = custom_paint_colors(light).muted_text.name()
+
+    assert "#1d4ed8" in navigator.effective_overrides_label.styleSheet()
+    assert light_muted in navigator.representative_label.styleSheet()
+
+    dark = _theme_palette(
+        base="#111827", alternate="#1f2937", text="#f8fafc"
+    )
+    navigator.setPalette(dark)
+    dark_muted = custom_paint_colors(dark).muted_text.name()
+
+    assert "#bfdbfe" in navigator.effective_overrides_label.styleSheet()
+    assert dark_muted in navigator.representative_label.styleSheet()
 
     navigator.set_session(2, 0, "0001_dim", ["01_dim.ome.zarr"])
     assert navigator.effective_overrides_label.isHidden()

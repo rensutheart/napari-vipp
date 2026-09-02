@@ -3,12 +3,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import tifffile
-from qtpy.QtGui import QColor, QImage
+from qtpy.QtCore import QPoint, Qt
+from qtpy.QtGui import QColor, QImage, QPalette
+from qtpy.QtWidgets import QWidget
 
 from napari_vipp.ui.colocalization_scatter_dialog import (
     ColocalizationScatterDialog,
     qimage_rgb_array,
+    render_widget_image,
 )
+from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.plots import COLOCALIZATION_SCATTER_COLORMAPS
 
 
@@ -103,6 +107,81 @@ def test_scatter_dialog_updates_estimate_immediately_then_exact_count(qtbot):
 
     assert dialog.summary_label.text() == "Exact: 1,536/4,096 (37.5%)"
     assert dialog.plot._summary == "Exact: 1,536/4,096 (37.5%)"
+
+
+def test_scatter_dialog_threshold_hover_uses_directional_cursors(qtbot):
+    dialog = ColocalizationScatterDialog()
+    qtbot.addWidget(dialog)
+    _populate_dialog(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    plot = dialog.plot
+    rect = plot._plot_rect()
+    vertical = QPoint(
+        plot._x_from_value(plot._threshold_1, rect),
+        rect.top() + 20,
+    )
+    horizontal = QPoint(
+        rect.right() - 20,
+        plot._y_from_value(plot._threshold_2, rect),
+    )
+
+    qtbot.mouseMove(plot, pos=vertical)
+    assert plot.cursor().shape() == Qt.SizeHorCursor
+    qtbot.mouseMove(plot, pos=horizontal)
+    assert plot.cursor().shape() == Qt.SizeVerCursor
+
+
+def test_scatter_dialog_threshold_scrub_keeps_plot_allocation_stable(qtbot):
+    dialog = ColocalizationScatterDialog()
+    qtbot.addWidget(dialog)
+    _populate_dialog(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    plot = dialog.plot
+    original_constraints = {
+        id(widget): (widget.minimumHeight(), widget.maximumHeight())
+        for widget in (plot, dialog.summary_label)
+    }
+    original_geometry = (plot.geometry(), dialog.summary_label.geometry())
+    rect = plot._plot_rect()
+    vertical = QPoint(
+        plot._x_from_value(plot._threshold_1, rect),
+        rect.center().y(),
+    )
+
+    qtbot.mousePress(plot, Qt.LeftButton, pos=vertical)
+    qtbot.mouseMove(plot, pos=QPoint(vertical.x() + 40, vertical.y()))
+    qtbot.wait(10)
+
+    assert dialog._threshold_layout_lock
+    assert not dialog.layout().isEnabled()
+    assert "Visible-density estimate" in dialog.summary_label.text()
+    assert (plot.geometry(), dialog.summary_label.geometry()) == original_geometry
+
+    dialog.set_exact_counts(
+        threshold_1=plot._threshold_1,
+        threshold_2=plot._threshold_2,
+        roi_voxels=4_096,
+        colocalized_voxels=1_536,
+    )
+    qtbot.wait(10)
+
+    assert (plot.geometry(), dialog.summary_label.geometry()) == original_geometry
+
+    qtbot.mouseRelease(
+        plot,
+        Qt.LeftButton,
+        pos=QPoint(vertical.x() + 40, vertical.y()),
+    )
+
+    assert dialog._threshold_layout_lock == ()
+    assert dialog.layout().isEnabled()
+    for widget in (plot, dialog.summary_label):
+        assert (
+            widget.minimumHeight(),
+            widget.maximumHeight(),
+        ) == original_constraints[id(widget)]
 
 
 def test_scatter_dialog_estimate_uses_independent_axis_ranges(qtbot):
@@ -219,3 +298,31 @@ def test_qimage_rgb_array_preserves_channel_values():
 
     assert array.shape == (2, 3, 3)
     assert np.all(array == np.asarray([18, 52, 86], dtype=np.uint8))
+
+
+@pytest.mark.parametrize(
+    ("base", "text"),
+    [("#111827", "#f8fafc"), ("#ffffff", "#111827")],
+)
+def test_widget_export_background_uses_the_active_palette(qtbot, base, text):
+    widget = QWidget()
+    qtbot.addWidget(widget)
+    widget.resize(12, 10)
+    widget.setAttribute(Qt.WA_TranslucentBackground, True)
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.Window, QColor(base))
+    palette.setColor(QPalette.Text, QColor(text))
+    palette.setColor(QPalette.WindowText, QColor(text))
+    widget.setPalette(palette)
+
+    pixels = qimage_rgb_array(render_widget_image(widget))
+    expected = theme_colors(palette).surface
+
+    assert np.all(
+        pixels[0, 0]
+        == np.asarray(
+            [expected.red(), expected.green(), expected.blue()],
+            dtype=np.uint8,
+        )
+    )

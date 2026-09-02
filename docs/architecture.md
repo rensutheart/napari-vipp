@@ -601,11 +601,11 @@ the [canonical Sigma Filter evidence](benchmarks/sigma-filter-cupy-windows-rtx50
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
   Filter Labels By Property, Clear Border Objects, Relabel Sequential, Label
   Skeleton Components, Label Skeleton Branches
-- `Measurements`: Measure Objects, Measure Objects + Intensity, Measure 3D
-  Mesh Morphology, Analyze Skeleton, Measure Skeleton Branches, Summarize
-  Skeleton Branches, Skeleton Graph Tables, Measure Overall Skeleton Network,
-  Merge Tables, Select Table Columns, Add Metadata Columns, Summarize
-  Measurements
+- `Measurements`: Intensity Histogram, Measure Objects, Measure Objects +
+  Intensity, Measure 3D Mesh Morphology, Analyze Skeleton, Measure Skeleton
+  Branches, Summarize Skeleton Branches, Skeleton Graph Tables, Measure Overall
+  Skeleton Network, Merge Tables, Select Table Columns, Add Metadata Columns,
+  Summarize Measurements
 
 `labels` is a first-class graph type for non-negative integer object IDs with
 zero as background. It is distinct from a boolean `mask` and an integer
@@ -1289,8 +1289,11 @@ per-object volume population is cached independently of the live minimum and
 maximum guides, avoiding another full label-image scan while either guide is
 dragged.
 
-When a table node is selected, the general histogram is hidden and the inspector
-shows a `Table Preview` group with the first rows and unit-annotated headers.
+When an ordinary table node is selected, the general image histogram is hidden
+and the inspector shows a `Results` group with the first rows and unit-annotated
+headers. `Intensity Histogram` is the deliberate exception: its bin table is the
+authoritative plot data, so an edge-aware Histogram section appears before
+Results and drives a resizable detailed pop-out without rereading the source.
 Table nodes do not create napari image/labels layers when inspected or pinned.
 
 ## Graph UI

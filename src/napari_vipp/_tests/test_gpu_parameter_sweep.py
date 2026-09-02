@@ -44,22 +44,23 @@ def test_catalog_accounts_for_every_release_admission_identity(sweep_module):
         for declaration in declarations
     }
     assert actual == expected
-    assert len(actual) == 19
+    assert len(actual) == 21
     assert {case.operation_id for case in cases} == {
         declaration.operation_id for declaration in declarations
     }
 
 
-def test_catalog_has_bounded_explicit_treatment_for_all_19(sweep_module):
+def test_catalog_has_bounded_explicit_treatment_for_all_21(sweep_module):
     cases = sweep_module.sweep_catalog()
     declarations = sweep_module.load_admission_manifest(MANIFEST_PATH)
 
     coverage = sweep_module.describe_coverage(cases, declarations)
 
-    assert coverage["admitted_implementation_count"] == 19
+    assert coverage["admitted_implementation_count"] == 21
     assert coverage["executed_sweep_count"] == 15
     assert coverage["fixed_contract_count"] == 2
     assert coverage["delegated_psf_sweep_count"] == 2
+    assert coverage["delegated_scientific_contract_count"] == 2
     rows = {row["operation_id"]: row for row in coverage["rows"]}
     assert rows["richardson_lucy_deconvolution"]["coverage_mode"] == (
         "delegated-psf-sweep"
@@ -76,6 +77,12 @@ def test_catalog_has_bounded_explicit_treatment_for_all_19(sweep_module):
             "include_2d_shape_moments": False,
         }
         assert "CPU" in row["classification"]
+    for operation_id in ("measure_3d_mesh_morphology", "analyze_skeleton"):
+        row = rows[operation_id]
+        assert row["coverage_mode"] == "delegated-scientific-contracts"
+        assert row["delegated_to"]
+        assert "does not" in row["classification"]
+        assert "performance evidence" in row["classification"]
 
 
 def test_catalog_exercises_expected_numeric_and_branch_controls(sweep_module):
@@ -438,7 +445,7 @@ def test_provider_free_orchestrator_emits_json_safe_complete_evidence(sweep_modu
         "executed_step_count": 135,
         "complete_coverage": True,
     }
-    assert len(document["cases"]) == 19
+    assert len(document["cases"]) == 21
     by_operation = {case["operation_id"]: case for case in document["cases"]}
     assert by_operation["fill_holes"]["production_scaffold"] == {
         "operation_id": "binary_threshold",

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 from qtpy.QtCore import QPoint, Qt
-from qtpy.QtGui import QColor
+from qtpy.QtGui import QColor, QPalette
+from qtpy.QtWidgets import QApplication
 
 from napari_vipp import _widget
 from napari_vipp.ui import plots
@@ -20,6 +21,7 @@ def _configured_histogram_plot(qtbot):
         draggable_markers={"threshold"},
     )
     plot.show()
+    qtbot.waitExposed(plot)
     return plot
 
 
@@ -134,6 +136,140 @@ def test_scatter_colormap_recolors_retained_density_without_state_change(qtbot):
     assert plot._colormap == "Gray"
 
 
+def _configured_scatter_plot(qtbot):
+    plot = plots.ColocalizationScatterPlot()
+    qtbot.addWidget(plot)
+    plot.resize(360, 340)
+    plot.set_density(
+        np.ones((16, 16), dtype=np.float64),
+        threshold_1=25.0,
+        threshold_2=70.0,
+        intensity_min=0.0,
+        intensity_max=100.0,
+    )
+    plot.show()
+    return plot
+
+
+def _scatter_threshold_points(plot):
+    rect = plot._plot_rect()
+    vertical = QPoint(
+        plot._x_from_value(plot._threshold_1, rect),
+        rect.bottom() - 20,
+    )
+    horizontal = QPoint(
+        rect.right() - 20,
+        plot._y_from_value(plot._threshold_2, rect),
+    )
+    return vertical, horizontal, rect.center()
+
+
+def test_scatter_threshold_hover_uses_directional_resize_cursors(qtbot):
+    plot = _configured_scatter_plot(qtbot)
+    vertical, horizontal, away = _scatter_threshold_points(plot)
+
+    qtbot.mouseMove(plot, pos=vertical)
+    assert plot.cursor().shape() == Qt.SizeHorCursor
+
+    qtbot.mouseMove(plot, pos=horizontal)
+    assert plot.cursor().shape() == Qt.SizeVerCursor
+
+    qtbot.mouseMove(plot, pos=away)
+    assert plot.cursor().shape() == Qt.ArrowCursor
+
+
+def test_scatter_threshold_cursor_and_axis_stay_locked_during_drag(qtbot):
+    plot = _configured_scatter_plot(qtbot)
+    vertical, horizontal, _away = _scatter_threshold_points(plot)
+    emitted = []
+    plot.thresholdChanged.connect(lambda axis, value: emitted.append((axis, value)))
+
+    qtbot.mousePress(plot, Qt.LeftButton, pos=vertical)
+    qtbot.mouseMove(plot, pos=horizontal)
+
+    assert plot.cursor().shape() == Qt.SizeHorCursor
+    assert emitted and {axis for axis, _value in emitted} == {1}
+
+    qtbot.mouseRelease(plot, Qt.LeftButton, pos=horizontal)
+    rect = plot._plot_rect()
+    horizontal_only = QPoint(
+        rect.left() + 20,
+        plot._y_from_value(plot._threshold_2, rect),
+    )
+    qtbot.mouseMove(plot, pos=horizontal_only)
+
+    assert plot.cursor().shape() == Qt.SizeVerCursor
+
+
+def test_scatter_drag_requires_left_button_near_a_guide_and_clear_resets_cursor(
+    qtbot,
+):
+    plot = _configured_scatter_plot(qtbot)
+    vertical, _horizontal, away = _scatter_threshold_points(plot)
+    gestures = []
+    plot.gestureStarted.connect(lambda: gestures.append("started"))
+
+    try:
+        qtbot.mousePress(plot, Qt.RightButton, pos=vertical)
+        qtbot.mousePress(plot, Qt.LeftButton, pos=away)
+
+        assert gestures == []
+        assert plot._drag_axis is None
+
+        qtbot.mouseMove(plot, pos=vertical)
+        assert plot.cursor().shape() == Qt.SizeHorCursor
+        plot.clear()
+        assert plot.cursor().shape() == Qt.ArrowCursor
+    finally:
+        qtbot.mouseRelease(plot, Qt.LeftButton, pos=away)
+        qtbot.mouseRelease(plot, Qt.RightButton, pos=vertical)
+
+    assert QApplication.mouseButtons() == Qt.NoButton
+
+
+def test_scatter_threshold_hit_area_remains_usable_at_plot_boundaries(qtbot):
+    plot = _configured_scatter_plot(qtbot)
+    plot.set_density(
+        np.ones((16, 16), dtype=np.float64),
+        threshold_1=0.0,
+        threshold_2=100.0,
+        intensity_min=0.0,
+        intensity_max=100.0,
+    )
+    rect = plot._plot_rect()
+
+    qtbot.mouseMove(plot, pos=QPoint(rect.left() - 4, rect.center().y()))
+    assert plot.cursor().shape() == Qt.SizeHorCursor
+
+    qtbot.mouseMove(plot, pos=QPoint(rect.center().x(), rect.top() - 4))
+    assert plot.cursor().shape() == Qt.SizeVerCursor
+
+
+def test_scatter_density_reset_cancels_an_active_threshold_gesture(qtbot):
+    plot = _configured_scatter_plot(qtbot)
+    vertical, _horizontal, _away = _scatter_threshold_points(plot)
+    events = []
+    plot.gestureStarted.connect(lambda: events.append("started"))
+    plot.gestureFinished.connect(lambda: events.append("finished"))
+
+    try:
+        qtbot.mousePress(plot, Qt.LeftButton, pos=vertical)
+        assert plot.cursor().shape() == Qt.SizeHorCursor
+        plot.set_pending_thresholds(
+            threshold_1=25.0,
+            threshold_2=70.0,
+            preserve_density=False,
+        )
+
+        assert events == ["started", "finished"]
+        assert plot._drag_axis is None
+        assert plot.cursor().shape() == Qt.ArrowCursor
+    finally:
+        qtbot.mouseRelease(plot, Qt.LeftButton, pos=vertical)
+
+    assert QApplication.mouseButtons() == Qt.NoButton
+
+
 def test_histogram_marker_drag_emits_one_gesture_pair(qtbot):
     plot = _configured_histogram_plot(qtbot)
     events = []
@@ -155,6 +291,95 @@ def test_histogram_marker_drag_emits_one_gesture_pair(qtbot):
     assert events == ["started", "finished"]
 
 
+def test_histogram_plot_labels_use_compact_in_frame_geometry(qtbot):
+    plot = _configured_histogram_plot(qtbot)
+    unlabelled_rect = plot._plot_rect()
+
+    plot.set_plot_labels(
+        title=" Input ",
+        x_axis_label=" Intensity (a.u.) ",
+        y_axis_label=" Voxels ",
+    )
+    labelled_rect = plot._plot_rect()
+
+    assert plot._title == "Input"
+    assert plot._x_axis_label == "Intensity (a.u.)"
+    assert plot._y_axis_label == "Voxels"
+    assert labelled_rect.left() > unlabelled_rect.left()
+    assert labelled_rect.top() >= (
+        unlabelled_rect.top() + plot.fontMetrics().height() + 8
+    )
+    # Range ticks and the axis label intentionally share one bottom band.
+    assert labelled_rect.bottom() == unlabelled_rect.bottom()
+    assert labelled_rect.width() > 100
+    assert labelled_rect.height() >= 60
+    assert not plot.grab().isNull()
+
+
+def test_histogram_plot_labels_preserve_marker_value_mapping(qtbot):
+    plot = _configured_histogram_plot(qtbot)
+    plot.set_plot_labels(
+        title="Input",
+        x_axis_label="Intensity (a.u.)",
+        y_axis_label="Voxels",
+    )
+    emitted = []
+    plot.markerChanged.connect(
+        lambda label, value: emitted.append((label, value))
+    )
+
+    start = _histogram_point(plot, 0.5)
+    end = _histogram_point(plot, 0.75)
+    qtbot.mousePress(plot, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(plot, pos=end)
+    qtbot.mouseRelease(plot, Qt.LeftButton, pos=end)
+
+    assert emitted
+    assert emitted[-1][0] == "threshold"
+    assert np.isclose(emitted[-1][1], 75.0, atol=0.5)
+    assert np.isclose(plot.marker_values()["threshold"], 75.0, atol=0.5)
+
+
+def test_binary_histogram_draws_inset_visible_bars(qtbot):
+    plot = plots.HistogramPlot()
+    qtbot.addWidget(plot)
+    plot.resize(240, 160)
+    plot.set_plot_labels(
+        title="Output",
+        x_axis_label="Mask value",
+        y_axis_label="Voxels",
+    )
+    plot.set_histogram(
+        np.asarray([30, 70], dtype=np.float32),
+        log_scale=False,
+        x_range=(0.0, 1.0),
+    )
+    plot.show()
+    qtbot.wait(10)
+
+    plot_rect = plot._plot_rect()
+    image = plot.grab().toImage()
+    device_ratio = image.devicePixelRatio()
+    slot_width = plot_rect.width() / 2.0
+    sample_y = plot_rect.bottom() - 3
+    bar_samples = [
+        image.pixelColor(
+            int(
+                (plot_rect.left() + int((index + 0.5) * slot_width))
+                * device_ratio
+            ),
+            int(sample_y * device_ratio),
+        )
+        for index in range(2)
+    ]
+    background = image.pixelColor(
+        int(plot_rect.center().x() * device_ratio),
+        int((plot_rect.top() + 3) * device_ratio),
+    )
+
+    assert all(sample != background for sample in bar_samples)
+
+
 def test_scatter_drag_hidden_mid_gesture_finishes_once(qtbot):
     plot = plots.ColocalizationScatterPlot()
     qtbot.addWidget(plot)
@@ -174,12 +399,68 @@ def test_scatter_drag_hidden_mid_gesture_finishes_once(qtbot):
     rect = plot._plot_rect()
     start = QPoint(plot._x_from_value(25.0, rect), rect.center().y())
     moved = QPoint(start.x() + 20, start.y())
-    qtbot.mousePress(plot, Qt.LeftButton, pos=start)
-    qtbot.mouseMove(plot, pos=moved)
+    pressed = False
+    try:
+        qtbot.mousePress(plot, Qt.LeftButton, pos=start)
+        pressed = True
+        qtbot.mouseMove(plot, pos=moved)
 
-    assert events == ["started"]
+        assert events == ["started"]
 
-    plot.hide()
-    plot.hide()
+        plot.hide()
+        plot.hide()
 
-    assert events == ["started", "finished"]
+        assert events == ["started", "finished"]
+    finally:
+        # Hiding must finish the plot's semantic gesture, but QtTest still
+        # requires the physical release paired with mousePress.  Without it,
+        # QApplication retains LeftButton globally and unrelated later slider
+        # tests can mis-detect or hang in an active drag.
+        if pressed:
+            qtbot.mouseRelease(plot, Qt.LeftButton, pos=moved)
+
+    assert QApplication.mouseButtons() == Qt.NoButton
+
+
+def _plot_palette(*, base: str, text: str) -> QPalette:
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.Text, QColor(text))
+    palette.setColor(QPalette.AlternateBase, QColor(base))
+    return palette
+
+
+def _rendered_plot_surface(plot) -> QColor:
+    image = plot.grab().toImage()
+    # Stay clear of the antialiased one-pixel frame at any device-pixel ratio.
+    return image.pixelColor(30, 30)
+
+
+def test_histogram_surface_follows_runtime_palette_changes(qtbot):
+    plot = plots.HistogramPlot()
+    qtbot.addWidget(plot)
+    plot.resize(240, 160)
+    plot.show()
+
+    plot.setPalette(_plot_palette(base="#ffffff", text="#111827"))
+    qtbot.wait(10)
+    assert _rendered_plot_surface(plot).name() == "#ffffff"
+
+    plot.setPalette(_plot_palette(base="#111827", text="#f8fafc"))
+    qtbot.wait(10)
+    assert _rendered_plot_surface(plot).name() == "#111827"
+
+
+def test_scatter_surface_follows_runtime_palette_changes(qtbot):
+    plot = plots.ColocalizationScatterPlot()
+    qtbot.addWidget(plot)
+    plot.resize(360, 340)
+    plot.show()
+
+    plot.setPalette(_plot_palette(base="#ffffff", text="#111827"))
+    qtbot.wait(10)
+    assert _rendered_plot_surface(plot).name() == "#ffffff"
+
+    plot.setPalette(_plot_palette(base="#111827", text="#f8fafc"))
+    qtbot.wait(10)
+    assert _rendered_plot_surface(plot).name() == "#111827"

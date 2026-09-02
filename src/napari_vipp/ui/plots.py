@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from numbers import Rational
 
 import numpy as np
-from qtpy.QtCore import QEvent, QPointF, QRect, Qt, Signal
-from qtpy.QtGui import QColor, QImage, QPainter, QPen
-from qtpy.QtWidgets import QWidget
+from qtpy.QtCore import QEvent, QPointF, QRect, QRectF, Qt, Signal
+from qtpy.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
+from qtpy.QtWidgets import QToolTip, QWidget
 
 from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_HEX,
@@ -16,6 +17,7 @@ from napari_vipp.core.channel_colors import (
 )
 from napari_vipp.core.operations import colocalization_populated_ranges
 from napari_vipp.core.preview import _apply_monochrome_colormap
+from napari_vipp.ui.palette_roles import custom_paint_colors
 
 COLOCALIZATION_SCATTER_BINS = 255
 COLOCALIZATION_SCATTER_COLORMAPS = (
@@ -32,6 +34,10 @@ COLOCALIZATION_SCATTER_CACHE_BUDGET_BYTES = 192 * 1024 * 1024
 # Plot conversion happens on Qt's GUI thread. Keep its largest float working
 # arrays near 8 MiB while the graph operation/export remains available at 4096.
 COLOCALIZATION_SCATTER_INSPECTOR_MAX_BINS = 1_024
+COLOCALIZATION_SCATTER_THRESHOLD_HIT_TOLERANCE = 8
+DETAILED_HISTOGRAM_DEFAULT_GRID_DIVISIONS = 4
+DETAILED_HISTOGRAM_MIN_GRID_DIVISIONS = 2
+DETAILED_HISTOGRAM_MAX_GRID_DIVISIONS = 12
 
 
 def colocalization_scatter_density_bytes(bins: int) -> int:
@@ -96,6 +102,9 @@ class HistogramPlot(QWidget):
         self._series_counts = np.empty((0, 0), dtype=np.float32)
         self._series_colors: list[QColor] = []
         self._log_scale = False
+        self._title = ""
+        self._x_axis_label = ""
+        self._y_axis_label = ""
         self._x_min_label = ""
         self._x_max_label = ""
         self._x_range: tuple[float, float] | None = None
@@ -108,6 +117,25 @@ class HistogramPlot(QWidget):
         self._gesture_active = False
         self.setMinimumHeight(120)
         self.setMouseTracking(True)
+
+    def set_plot_labels(
+        self,
+        *,
+        title: str = "",
+        x_axis_label: str = "",
+        y_axis_label: str = "",
+    ) -> None:
+        """Set compact, in-frame scientific labels for this histogram.
+
+        Labels are presentation-only and do not affect histogram values or
+        marker coordinates.  Keeping them on the plot makes paired input and
+        output distributions unambiguous without spending inspector height on
+        separate headings.
+        """
+        self._title = str(title).strip()
+        self._x_axis_label = str(x_axis_label).strip()
+        self._y_axis_label = str(y_axis_label).strip()
+        self.update()
 
     def set_histogram(
         self,
@@ -157,18 +185,18 @@ class HistogramPlot(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
 
         rect = self.rect().adjusted(8, 8, -8, -8)
-        painter.fillRect(rect, QColor("#111827"))
-        painter.setPen(QPen(QColor("#374151"), 1))
+        colors = custom_paint_colors(self.palette())
+        painter.fillRect(rect, colors.surface)
+        painter.setPen(QPen(colors.border, 1))
         painter.drawRect(rect)
 
-        label_height = painter.fontMetrics().height() + 5
-        plot_frame = rect.adjusted(0, 0, 0, -label_height)
-        plot_rect = plot_frame.adjusted(10, 8, -8, -10)
+        plot_rect = self._plot_rect()
+        self._draw_plot_text(painter, rect, plot_rect)
         self._draw_axes(painter, plot_rect)
 
         if self._series_counts.size == 0:
-            painter.setPen(QColor("#9ca3af"))
-            painter.drawText(plot_frame, Qt.AlignCenter, "No data")
+            painter.setPen(colors.muted_text)
+            painter.drawText(plot_rect, Qt.AlignCenter, "No data")
             painter.end()
             return
 
@@ -182,17 +210,6 @@ class HistogramPlot(QWidget):
 
         self._draw_histogram_series(painter, plot_rect, values, maximum)
         self._draw_markers(painter, plot_rect)
-        if self._x_min_label or self._x_max_label:
-            painter.setPen(QColor("#9ca3af"))
-            metrics = painter.fontMetrics()
-            baseline = min(rect.bottom() - 2, plot_rect.bottom() + metrics.ascent() + 3)
-            painter.drawText(plot_rect.left(), baseline, self._x_min_label)
-            right_width = metrics.horizontalAdvance(self._x_max_label)
-            painter.drawText(
-                plot_rect.right() - right_width,
-                baseline,
-                self._x_max_label,
-            )
         painter.end()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -260,7 +277,7 @@ class HistogramPlot(QWidget):
         return {str(label): value for label, value, _color in self._markers}
 
     def _draw_axes(self, painter: QPainter, plot_rect: QRect) -> None:
-        painter.setPen(QPen(QColor("#64748b"), 1.2))
+        painter.setPen(QPen(custom_paint_colors(self.palette()).axis, 1.2))
         painter.drawLine(
             plot_rect.left(),
             plot_rect.bottom(),
@@ -273,6 +290,85 @@ class HistogramPlot(QWidget):
             plot_rect.left(),
             plot_rect.bottom(),
         )
+
+    def _draw_plot_text(
+        self,
+        painter: QPainter,
+        rect: QRect,
+        plot_rect: QRect,
+    ) -> None:
+        colors = custom_paint_colors(self.palette())
+        base_font = painter.font()
+        metrics = painter.fontMetrics()
+
+        if self._title:
+            title_font = painter.font()
+            title_font.setBold(True)
+            painter.setFont(title_font)
+            title_metrics = painter.fontMetrics()
+            title_rect = QRect(
+                plot_rect.left(),
+                rect.top() + 3,
+                max(plot_rect.right() - plot_rect.left(), 1),
+                title_metrics.height() + 2,
+            )
+            title = title_metrics.elidedText(
+                self._title,
+                Qt.ElideRight,
+                title_rect.width(),
+            )
+            painter.setPen(colors.text)
+            painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, title)
+            painter.setFont(base_font)
+            metrics = painter.fontMetrics()
+
+        painter.setPen(colors.muted_text)
+        # Range ticks and the scientific x-axis label share one compact band.
+        # This keeps the data region useful in a 120 px-high docked inspector.
+        if self._x_min_label or self._x_max_label:
+            baseline = plot_rect.bottom() + metrics.ascent() + 3
+            painter.drawText(plot_rect.left(), baseline, self._x_min_label)
+            right_width = metrics.horizontalAdvance(self._x_max_label)
+            painter.drawText(
+                plot_rect.right() - right_width,
+                baseline,
+                self._x_max_label,
+            )
+
+        if self._x_axis_label:
+            left_tick_width = metrics.horizontalAdvance(self._x_min_label)
+            right_tick_width = metrics.horizontalAdvance(self._x_max_label)
+            label_width = max(
+                plot_rect.width() - left_tick_width - right_tick_width - 12,
+                1,
+            )
+            label = metrics.elidedText(
+                self._x_axis_label,
+                Qt.ElideRight,
+                label_width,
+            )
+            label_y = plot_rect.bottom() + metrics.ascent() + 3
+            painter.drawText(
+                plot_rect.center().x() - metrics.horizontalAdvance(label) // 2,
+                label_y,
+                label,
+            )
+
+        if self._y_axis_label:
+            label = metrics.elidedText(
+                self._y_axis_label,
+                Qt.ElideRight,
+                max(plot_rect.height() - 4, 1),
+            )
+            painter.save()
+            painter.translate(
+                rect.left() + metrics.ascent() + 2,
+                plot_rect.center().y() + metrics.horizontalAdvance(label) // 2,
+            )
+            painter.rotate(-90)
+            painter.setPen(colors.muted_text)
+            painter.drawText(0, 0, label)
+            painter.restore()
 
     def _draw_histogram_series(
         self,
@@ -298,6 +394,24 @@ class HistogramPlot(QWidget):
             if values.shape[0] > 1:
                 color = QColor(color)
                 color.setAlpha(175)
+            if reduced.size <= 8:
+                # Discrete distributions (especially boolean masks) need
+                # visible inset bars.  One-pixel strokes at x=0 and x=1 sit
+                # directly on the axes and otherwise look like an empty plot.
+                slot_width = width / max(int(reduced.size), 1)
+                bar_width = max(min(int(slot_width * 0.55), int(slot_width) - 2), 2)
+                painter.setPen(QPen(color, 1.0))
+                fill = QColor(color)
+                fill.setAlpha(max(fill.alpha(), 150))
+                painter.setBrush(fill)
+                for index, value in enumerate(reduced):
+                    center_x = plot_rect.left() + int((index + 0.5) * slot_width)
+                    x = center_x - bar_width // 2
+                    y = plot_rect.bottom() - int((float(value) / maximum) * height)
+                    bar_height = max(plot_rect.bottom() - y, 1)
+                    painter.drawRect(QRect(x, y, bar_width, bar_height))
+                painter.setBrush(Qt.NoBrush)
+                continue
             painter.setPen(QPen(color, 1.2))
             for index, value in enumerate(reduced):
                 x = plot_rect.left() + int(index * width / max(reduced.size - 1, 1))
@@ -354,9 +468,23 @@ class HistogramPlot(QWidget):
 
     def _plot_rect(self) -> QRect:
         rect = self.rect().adjusted(8, 8, -8, -8)
-        label_height = self.fontMetrics().height() + 5
-        plot_frame = rect.adjusted(0, 0, 0, -label_height)
-        return plot_frame.adjusted(10, 8, -8, -10)
+        metrics = self.fontMetrics()
+        # Reserve a small deliberate gap below the title so the first bars do
+        # not visually collide with its glyphs.  The plot remains compact at
+        # the inspector's 120 px minimum height.
+        title_height = metrics.height() + 8 if self._title else 0
+        bottom_band_height = (
+            metrics.height() + 3
+            if self._x_min_label or self._x_max_label or self._x_axis_label
+            else 0
+        )
+        y_axis_width = metrics.height() + 5 if self._y_axis_label else 0
+        return rect.adjusted(
+            10 + y_axis_width,
+            title_height,
+            -8,
+            -bottom_band_height,
+        )
 
     def _marker_at_point(self, point) -> str | None:
         if not self._draggable_markers or self._x_range is None:
@@ -408,6 +536,894 @@ class HistogramPlot(QWidget):
             shifted = np.expm1(fraction * np.log1p(max(shifted_maximum, 1.0)))
             return float(np.clip(minimum + shifted, minimum, maximum))
         return float(minimum + fraction * (maximum - minimum))
+
+
+class DetailedHistogramPlot(QWidget):
+    """Edge-aware, palette-native histogram for detailed inspection.
+
+    ``HistogramPlot`` above intentionally remains a small diagnostic that can
+    reduce hundreds of display bins into a narrow inspector.  This widget is
+    the exact presentation counterpart: it retains explicit bin edges, maps
+    every bar through the selected axis transforms, and exposes the original
+    bin values on hover.  Logarithmic axes are genuine base-10 coordinate
+    transforms; no ``log1p`` or shifted pseudo-logarithmic presentation is
+    used.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._bin_edges = np.array([], dtype=np.float64)
+        self._series_values = np.empty((0, 0), dtype=np.float64)
+        self._series_labels: tuple[str, ...] = ()
+        self._series_colors: list[QColor] = []
+        self._hover_details: dict[str, np.ndarray] = {}
+        self._x_scale = "linear"
+        self._y_scale = "linear"
+        self._x_grid_divisions = DETAILED_HISTOGRAM_DEFAULT_GRID_DIVISIONS
+        self._y_grid_divisions = DETAILED_HISTOGRAM_DEFAULT_GRID_DIVISIONS
+        self._title = "Histogram"
+        self._x_axis_label = "Value"
+        self._y_axis_label = "Count"
+        self._hovered_bin: int | None = None
+        self.setMinimumHeight(220)
+        self.setMouseTracking(True)
+        self.setAccessibleName("Detailed histogram")
+
+    @property
+    def supports_log_x(self) -> bool:
+        """Whether every retained edge is valid on a logarithmic x axis."""
+
+        return bool(self._bin_edges.size and np.all(self._bin_edges > 0.0))
+
+    @property
+    def bin_edges(self) -> np.ndarray:
+        """Return a read-only view of the retained exact bin edges."""
+
+        view = self._bin_edges.view()
+        view.flags.writeable = False
+        return view
+
+    @property
+    def values(self) -> np.ndarray:
+        """Return a read-only view of the currently displayed y values."""
+
+        view = self._series_values.view()
+        view.flags.writeable = False
+        return view
+
+    @property
+    def y_values(self) -> np.ndarray:
+        """Alias for :attr:`values` with an explicit axis-oriented name."""
+
+        return self.values
+
+    @property
+    def x_logarithmic(self) -> bool:
+        return self._x_scale == "log10"
+
+    @property
+    def y_logarithmic(self) -> bool:
+        return self._y_scale == "log10"
+
+    @property
+    def x_grid_divisions(self) -> int:
+        """Number of equal intervals between major x-axis grid lines."""
+
+        return self._x_grid_divisions
+
+    @property
+    def y_grid_divisions(self) -> int:
+        """Number of equal intervals between major y-axis grid lines."""
+
+        return self._y_grid_divisions
+
+    def clear(self, message: str = "No histogram data") -> None:
+        """Clear retained histogram data and expose an accessible reason."""
+
+        self._bin_edges = np.array([], dtype=np.float64)
+        self._series_values = np.empty((0, 0), dtype=np.float64)
+        self._series_labels = ()
+        self._series_colors = []
+        self._hover_details = {}
+        self._hovered_bin = None
+        self.setToolTip("")
+        self.setAccessibleDescription(str(message))
+        self.update()
+
+    def set_histogram(
+        self,
+        bin_edges,
+        y_values,
+        *,
+        title: str = "Histogram",
+        x_axis_label: str = "Value",
+        y_axis_label: str = "Count",
+        x_scale: str = "linear",
+        y_scale: str = "linear",
+        series_labels: Sequence[str] | None = None,
+        colors: Sequence[QColor | str] | None = None,
+        hover_details: Mapping[str, object] | None = None,
+    ) -> None:
+        """Replace the exact bin geometry and values displayed by the plot.
+
+        Parameters
+        ----------
+        bin_edges:
+            One finite, strictly increasing edge vector of length ``N + 1``.
+        y_values:
+            Either an ``N`` vector or a ``series x N`` matrix of finite,
+            non-negative values.
+        x_scale, y_scale:
+            ``"linear"`` or ``"log10"``.  Logarithmic x presentation requires
+            every edge to be strictly positive.  Zero-valued bars are omitted
+            on a logarithmic y axis because zero has no logarithm.
+        hover_details:
+            Optional named vectors/matrices with the same bin geometry.  Their
+            exact values are included in each bin's hover tooltip even when a
+            different y representation is displayed.
+        """
+
+        edges = np.asarray(bin_edges, dtype=np.float64)
+        if edges.ndim != 1 or edges.size < 2:
+            raise ValueError("Histogram bin edges must be a one-dimensional vector.")
+        if not np.all(np.isfinite(edges)):
+            raise ValueError("Histogram bin edges must all be finite.")
+        if not np.all(np.diff(edges) > 0.0):
+            raise ValueError("Histogram bin edges must be strictly increasing.")
+
+        values = np.asarray(y_values)
+        if values.ndim == 1:
+            values = values.reshape(1, -1)
+        if values.ndim != 2 or values.shape[0] < 1:
+            raise ValueError(
+                "Histogram values must contain one value per interval between edges."
+            )
+        if values.shape[1] != edges.size - 1:
+            raise ValueError(
+                "Histogram values must contain one value per interval between edges."
+            )
+        if not np.issubdtype(values.dtype, np.number):
+            raise TypeError("Histogram values must be numeric.")
+        values = np.asarray(values, dtype=np.float64)
+        if not np.all(np.isfinite(values)) or np.any(values < 0.0):
+            raise ValueError("Histogram values must be finite and non-negative.")
+
+        resolved_x_scale = _detailed_histogram_scale(x_scale, axis="x")
+        resolved_y_scale = _detailed_histogram_scale(y_scale, axis="y")
+        if resolved_x_scale == "log10" and np.any(edges <= 0.0):
+            raise ValueError("Logarithmic x axes require strictly positive bin edges.")
+
+        series_count = int(values.shape[0])
+        if series_labels is None:
+            labels = tuple(
+                "Histogram" if series_count == 1 else f"Series {index + 1}"
+                for index in range(series_count)
+            )
+        else:
+            labels = tuple(str(label).strip() for label in series_labels)
+            if len(labels) != series_count:
+                raise ValueError("Provide exactly one label for each histogram series.")
+            labels = tuple(
+                label or f"Series {index + 1}" for index, label in enumerate(labels)
+            )
+
+        if colors is None:
+            series_colors = _histogram_series_colors(series_count)
+        else:
+            if len(colors) != series_count:
+                raise ValueError("Provide exactly one color for each histogram series.")
+            series_colors = [
+                QColor(color) if not isinstance(color, QColor) else QColor(color)
+                for color in colors
+            ]
+            if not all(color.isValid() for color in series_colors):
+                raise ValueError("Every histogram series color must be valid.")
+
+        details: dict[str, np.ndarray] = {}
+        for label, detail_values in (hover_details or {}).items():
+            detail = np.asarray(detail_values)
+            if detail.ndim == 1:
+                detail = detail.reshape(1, -1)
+            if detail.ndim != 2 or detail.shape[1] != values.shape[1]:
+                raise ValueError(
+                    f"Hover detail {label!r} must contain one value per histogram bin."
+                )
+            if detail.shape[0] not in {1, series_count}:
+                raise ValueError(
+                    f"Hover detail {label!r} must have one row or one row per series."
+                )
+            if not np.issubdtype(detail.dtype, np.number):
+                raise TypeError(f"Hover detail {label!r} must be numeric.")
+            detail = np.asarray(detail, dtype=np.float64)
+            if not np.all(np.isfinite(detail)):
+                raise ValueError(f"Hover detail {label!r} must be finite.")
+            details[str(label)] = detail.copy()
+
+        self._bin_edges = edges.copy()
+        self._series_values = values.copy()
+        self._series_labels = labels
+        self._series_colors = series_colors
+        self._hover_details = details
+        self._x_scale = resolved_x_scale
+        self._y_scale = resolved_y_scale
+        self._title = str(title).strip()
+        self._x_axis_label = str(x_axis_label).strip()
+        self._y_axis_label = str(y_axis_label).strip()
+        self._hovered_bin = None
+        self.setToolTip("")
+        self.setAccessibleName(self._title or "Detailed histogram")
+        self.setAccessibleDescription(
+            f"{values.shape[1]:,} bins; {series_count:,} "
+            "series; "
+            f"{self._x_scale} x axis; {self._y_scale} y axis."
+        )
+        self.update()
+
+    def set_scales(
+        self,
+        *,
+        x_scale: str | None = None,
+        y_scale: str | None = None,
+    ) -> None:
+        """Change axis presentation without replacing retained histogram data."""
+
+        resolved_x = (
+            self._x_scale
+            if x_scale is None
+            else _detailed_histogram_scale(x_scale, axis="x")
+        )
+        resolved_y = (
+            self._y_scale
+            if y_scale is None
+            else _detailed_histogram_scale(y_scale, axis="y")
+        )
+        if resolved_x == "log10" and not self.supports_log_x:
+            raise ValueError("Logarithmic x axes require strictly positive bin edges.")
+        self._x_scale = resolved_x
+        self._y_scale = resolved_y
+        self._hovered_bin = None
+        self.setToolTip("")
+        self.update()
+
+    def set_grid_divisions(
+        self,
+        *,
+        x: int | None = None,
+        y: int | None = None,
+    ) -> None:
+        """Set major-grid intervals without changing retained histogram data.
+
+        Endpoints are included as ticks, so four divisions produce five major
+        grid lines. Logarithmic axes divide their transformed base-10 range.
+        """
+
+        if x is not None:
+            self._x_grid_divisions = _detailed_histogram_grid_divisions(x, axis="x")
+        if y is not None:
+            self._y_grid_divisions = _detailed_histogram_grid_divisions(y, axis="y")
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        colors = custom_paint_colors(self.palette())
+        outer = self.rect().adjusted(8, 8, -8, -8)
+        painter.fillRect(outer, colors.surface)
+        painter.setPen(QPen(colors.border, 1.0))
+        painter.drawRect(outer)
+
+        plot_rect = self._plot_rect()
+        self._draw_title_and_labels(painter, outer, plot_rect)
+        if self._series_values.size == 0:
+            painter.setPen(colors.muted_text)
+            painter.drawText(plot_rect, Qt.AlignCenter, "No histogram data")
+            painter.end()
+            return
+
+        x_ticks = self._x_ticks()
+        y_ticks = self._y_ticks()
+        self._draw_grid_and_ticks(painter, plot_rect, x_ticks, y_ticks)
+        self._draw_bars(painter, plot_rect)
+        self._draw_axes(painter, plot_rect)
+        self._draw_legend(painter, outer, plot_rect)
+        painter.end()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        point = _event_position(event)
+        bin_index = self._bin_at_point(point)
+        if bin_index == self._hovered_bin:
+            event.accept()
+            return
+        self._hovered_bin = bin_index
+        if bin_index is None:
+            self.setToolTip("")
+            QToolTip.hideText()
+        else:
+            detail = self._bin_tooltip(bin_index)
+            self.setToolTip(detail)
+            QToolTip.showText(self.mapToGlobal(point), detail, self)
+        self.update()
+        event.accept()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered_bin = None
+        self.setToolTip("")
+        QToolTip.hideText()
+        self.update()
+        super().leaveEvent(event)
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.Hide:
+            self._hovered_bin = None
+            self.setToolTip("")
+            QToolTip.hideText()
+        return super().event(event)
+
+    def _plot_rect(self) -> QRect:
+        outer = self.rect().adjusted(8, 8, -8, -8)
+        tick_metrics = QFontMetrics(self._tick_label_font())
+        axis_metrics = QFontMetrics(self._axis_label_font())
+        title_height = tick_metrics.height() + 11 if self._title else 6
+        legend_height = (
+            tick_metrics.height() + 3 if len(self._series_labels) > 1 else 0
+        )
+        y_tick_width = max(
+            (
+                tick_metrics.horizontalAdvance(
+                    _format_detailed_histogram_tick(float(value))
+                )
+                for value in self._y_ticks()
+            ),
+            default=0,
+        )
+        y_title_band = axis_metrics.height() + 8 if self._y_axis_label else 0
+        left = max(24, y_title_band + y_tick_width + 14)
+        x_tick_band = tick_metrics.height() + 7
+        x_title_band = axis_metrics.height() + 8 if self._x_axis_label else 0
+        bottom = x_tick_band + x_title_band + 6
+        return outer.adjusted(left, title_height + legend_height, -15, -bottom)
+
+    def _tick_label_font(self) -> QFont:
+        return QFont(self.font())
+
+    def _axis_label_font(self) -> QFont:
+        font = QFont(self.font())
+        point_size = font.pointSizeF()
+        if point_size > 0:
+            font.setPointSizeF(point_size + 1.0)
+        else:
+            font.setPixelSize(max(font.pixelSize() + 1, 1))
+        font.setWeight(QFont.DemiBold)
+        return font
+
+    def _draw_title_and_labels(
+        self,
+        painter: QPainter,
+        outer: QRect,
+        plot_rect: QRect,
+    ) -> None:
+        colors = custom_paint_colors(self.palette())
+        base_font = painter.font()
+        painter.setFont(self._tick_label_font())
+        if self._title:
+            title_font = painter.font()
+            title_font.setBold(True)
+            painter.setFont(title_font)
+            title_metrics = painter.fontMetrics()
+            title = title_metrics.elidedText(
+                self._title,
+                Qt.ElideRight,
+                max(plot_rect.width(), 1),
+            )
+            painter.setPen(colors.text)
+            painter.drawText(
+                plot_rect.left(),
+                outer.top() + title_metrics.ascent() + 4,
+                title,
+            )
+            painter.setFont(base_font)
+
+        axis_font = self._axis_label_font()
+        painter.setFont(axis_font)
+        axis_metrics = painter.fontMetrics()
+        painter.setPen(colors.text)
+        if self._x_axis_label:
+            label = axis_metrics.elidedText(
+                self._x_axis_label,
+                Qt.ElideRight,
+                max(plot_rect.width(), 1),
+            )
+            painter.drawText(
+                plot_rect.center().x() - axis_metrics.horizontalAdvance(label) // 2,
+                outer.bottom() - 4,
+                label,
+            )
+        if self._y_axis_label:
+            label = axis_metrics.elidedText(
+                self._y_axis_label,
+                Qt.ElideRight,
+                max(plot_rect.height(), 1),
+            )
+            painter.save()
+            painter.translate(
+                outer.left() + axis_metrics.ascent() + 2,
+                plot_rect.center().y()
+                + axis_metrics.horizontalAdvance(label) // 2,
+            )
+            painter.rotate(-90)
+            painter.drawText(0, 0, label)
+            painter.restore()
+        painter.setFont(base_font)
+
+    def _draw_grid_and_ticks(
+        self,
+        painter: QPainter,
+        plot_rect: QRect,
+        x_ticks: Sequence[float],
+        y_ticks: Sequence[float],
+    ) -> None:
+        colors = custom_paint_colors(self.palette())
+        grid = QColor(colors.border)
+        grid.setAlpha(120)
+        painter.setFont(self._tick_label_font())
+        metrics = painter.fontMetrics()
+        painter.setPen(QPen(grid, 1.0, Qt.DotLine))
+        for value in x_ticks:
+            x = self._x_pixel(float(value), plot_rect)
+            painter.drawLine(x, plot_rect.top(), x, plot_rect.bottom())
+        for value in y_ticks:
+            y = self._y_pixel(float(value), plot_rect)
+            if y is not None:
+                painter.drawLine(plot_rect.left(), y, plot_rect.right(), y)
+
+        painter.setPen(colors.muted_text)
+        x_label_y = plot_rect.bottom() + metrics.ascent() + 5
+        x_labels: list[tuple[str, int, tuple[int, int]]] = []
+        for value in x_ticks:
+            label = _format_detailed_histogram_tick(float(value))
+            x = self._x_pixel(float(value), plot_rect)
+            label_width = metrics.horizontalAdvance(label)
+            text_x = int(
+                np.clip(
+                    x - label_width // 2,
+                    plot_rect.left(),
+                    max(
+                        plot_rect.left(),
+                        plot_rect.right() - label_width,
+                    ),
+                )
+            )
+            x_labels.append(
+                (
+                    label,
+                    text_x,
+                    (text_x, text_x + label_width),
+                )
+            )
+        visible_x_labels = _non_overlapping_tick_label_indices(
+            [bounds for _label, _text_x, bounds in x_labels],
+            gap=6,
+        )
+        for index, (label, text_x, _bounds) in enumerate(x_labels):
+            if index not in visible_x_labels:
+                continue
+            painter.drawText(text_x, x_label_y, label)
+
+        y_labels: list[tuple[str, int, int, tuple[int, int]]] = []
+        for value in y_ticks:
+            y = self._y_pixel(float(value), plot_rect)
+            if y is None:
+                continue
+            label = _format_detailed_histogram_tick(float(value))
+            baseline = int(
+                np.clip(
+                    y + metrics.ascent() // 2,
+                    plot_rect.top() + metrics.ascent(),
+                    plot_rect.bottom() - metrics.descent(),
+                )
+            )
+            y_labels.append(
+                (
+                    label,
+                    plot_rect.left() - metrics.horizontalAdvance(label) - 6,
+                    baseline,
+                    (baseline - metrics.ascent(), baseline + metrics.descent()),
+                )
+            )
+        ordered_y_labels = sorted(
+            enumerate(y_labels),
+            key=lambda item: item[1][3][0],
+        )
+        visible_ordered_y_labels = _non_overlapping_tick_label_indices(
+            [entry[3] for _index, entry in ordered_y_labels],
+            gap=3,
+        )
+        visible_y_labels = {
+            ordered_y_labels[index][0] for index in visible_ordered_y_labels
+        }
+        for index, (label, text_x, baseline, _bounds) in enumerate(y_labels):
+            if index not in visible_y_labels:
+                continue
+            painter.drawText(
+                text_x,
+                baseline,
+                label,
+            )
+
+    def _draw_axes(self, painter: QPainter, plot_rect: QRect) -> None:
+        colors = custom_paint_colors(self.palette())
+        painter.setPen(QPen(colors.axis, 1.2))
+        painter.drawLine(
+            plot_rect.left(),
+            plot_rect.bottom(),
+            plot_rect.right(),
+            plot_rect.bottom(),
+        )
+        painter.drawLine(
+            plot_rect.left(),
+            plot_rect.top(),
+            plot_rect.left(),
+            plot_rect.bottom(),
+        )
+
+    def _draw_bars(self, painter: QPainter, plot_rect: QRect) -> None:
+        if self._series_values.size == 0:
+            return
+        series_count = int(self._series_values.shape[0])
+        bin_count = int(self._series_values.shape[1])
+        aggregate_for_pixels = bin_count > max(int(plot_rect.width()) * 2, 512)
+        for series_index, values in enumerate(self._series_values):
+            color = QColor(self._series_colors[series_index])
+            fill = QColor(color)
+            fill.setAlpha(185 if series_count == 1 else 105)
+            painter.setPen(QPen(color, 1.0))
+            painter.setBrush(fill)
+            if aggregate_for_pixels:
+                self._draw_pixel_aggregated_bars(
+                    painter,
+                    plot_rect,
+                    values,
+                )
+            else:
+                left_pixels = self._x_pixels(self._bin_edges[:-1], plot_rect)
+                right_pixels = self._x_pixels(self._bin_edges[1:], plot_rect)
+                y_pixels = self._y_pixels(values, plot_rect)
+                for left, right, y in zip(
+                    left_pixels,
+                    right_pixels,
+                    y_pixels,
+                    strict=True,
+                ):
+                    if y < 0:
+                        continue
+                    if right <= left:
+                        right = left + 1
+                    top = min(int(y), plot_rect.bottom() - 1)
+                    rect = QRectF(
+                        float(left) + 0.5,
+                        float(top),
+                        max(float(right - left) - 1.0, 1.0),
+                        max(float(plot_rect.bottom() - top), 1.0),
+                    )
+                    painter.drawRect(rect)
+            painter.setBrush(Qt.NoBrush)
+
+        if self._hovered_bin is None:
+            return
+        index = int(self._hovered_bin)
+        left = self._x_pixel(float(self._bin_edges[index]), plot_rect)
+        right = self._x_pixel(float(self._bin_edges[index + 1]), plot_rect)
+        highlight = QColor(custom_paint_colors(self.palette()).text)
+        highlight.setAlpha(48)
+        painter.fillRect(
+            QRectF(
+                float(left),
+                float(plot_rect.top()),
+                max(float(right - left), 1.0),
+                float(plot_rect.height()),
+            ),
+            highlight,
+        )
+
+    def _draw_pixel_aggregated_bars(
+        self,
+        painter: QPainter,
+        plot_rect: QRect,
+        values: np.ndarray,
+    ) -> None:
+        """Draw at most one peak-preserving bar per horizontal plot pixel."""
+
+        width = max(int(plot_rect.width()), 1)
+        left_pixels = self._x_pixels(self._bin_edges[:-1], plot_rect)
+        right_pixels = self._x_pixels(self._bin_edges[1:], plot_rect)
+        center_pixels = (left_pixels + right_pixels) // 2 - plot_rect.left()
+        center_pixels = np.clip(center_pixels, 0, width - 1)
+        reduced = np.zeros(width, dtype=np.float64)
+        occupied = np.zeros(width, dtype=bool)
+        np.maximum.at(reduced, center_pixels, values)
+        occupied[center_pixels] = True
+        y_pixels = self._y_pixels(reduced, plot_rect)
+        for offset in np.flatnonzero(occupied & (y_pixels >= 0)):
+            top = min(int(y_pixels[offset]), plot_rect.bottom() - 1)
+            painter.drawRect(
+                QRectF(
+                    float(plot_rect.left() + int(offset)),
+                    float(top),
+                    1.0,
+                    max(float(plot_rect.bottom() - top), 1.0),
+                )
+            )
+
+    def _draw_legend(
+        self,
+        painter: QPainter,
+        outer: QRect,
+        plot_rect: QRect,
+    ) -> None:
+        if len(self._series_labels) <= 1:
+            return
+        colors = custom_paint_colors(self.palette())
+        metrics = painter.fontMetrics()
+        x = plot_rect.left()
+        y = outer.top() + metrics.height() + 8
+        available_right = plot_rect.right()
+        for label, series_color in zip(
+            self._series_labels,
+            self._series_colors,
+            strict=True,
+        ):
+            label_width = metrics.horizontalAdvance(label)
+            required = 12 + 4 + label_width + 12
+            if x + required > available_right:
+                break
+            painter.fillRect(QRect(x, y - 9, 10, 8), series_color)
+            painter.setPen(colors.text)
+            painter.drawText(x + 14, y, label)
+            x += required
+
+    def _x_ticks(self) -> tuple[float, ...]:
+        if self._bin_edges.size == 0:
+            return ()
+        minimum = float(self._bin_edges[0])
+        maximum = float(self._bin_edges[-1])
+        tick_count = self._x_grid_divisions + 1
+        if self._x_scale == "log10":
+            transformed = np.linspace(
+                np.log10(minimum),
+                np.log10(maximum),
+                tick_count,
+            )
+            return tuple(float(value) for value in np.power(10.0, transformed))
+        return tuple(
+            float(value) for value in np.linspace(minimum, maximum, tick_count)
+        )
+
+    def _y_ticks(self) -> tuple[float, ...]:
+        positive = self._series_values[self._series_values > 0.0]
+        if self._series_values.size == 0:
+            return ()
+        maximum = float(np.max(self._series_values))
+        tick_count = self._y_grid_divisions + 1
+        if self._y_scale == "linear":
+            if maximum <= 0.0:
+                return (0.0,)
+            return tuple(
+                float(value) for value in np.linspace(0.0, maximum, tick_count)
+            )
+        if positive.size == 0:
+            return ()
+        lower_exponent, upper_exponent = self._log_y_exponent_range()
+        exponents = np.linspace(lower_exponent, upper_exponent, tick_count)
+        return tuple(float(value) for value in np.power(10.0, exponents))
+
+    def _log_y_exponent_range(self) -> tuple[float, float]:
+        positive = self._series_values[self._series_values > 0.0]
+        if positive.size == 0:
+            return (0.0, 1.0)
+        lower = float(np.floor(np.log10(float(np.min(positive)))))
+        upper = float(np.ceil(np.log10(float(np.max(positive)))))
+        if upper <= lower:
+            lower -= 1.0
+        return lower, upper
+
+    def _x_pixel(self, value: float, plot_rect: QRect) -> int:
+        return int(self._x_pixels(np.asarray([value]), plot_rect)[0])
+
+    def _x_pixels(self, values, plot_rect: QRect) -> np.ndarray:
+        coordinates = np.asarray(values, dtype=np.float64)
+        minimum = float(self._bin_edges[0])
+        maximum = float(self._bin_edges[-1])
+        if self._x_scale == "log10":
+            minimum = float(np.log10(minimum))
+            maximum = float(np.log10(maximum))
+            coordinates = np.log10(coordinates)
+        fractions = (coordinates - minimum) / max(
+            maximum - minimum,
+            np.finfo(float).eps,
+        )
+        horizontal_span = max(int(plot_rect.width()) - 1, 1)
+        return plot_rect.left() + np.rint(
+            np.clip(fractions, 0.0, 1.0) * horizontal_span
+        ).astype(np.int32)
+
+    def _y_pixel(self, value: float, plot_rect: QRect) -> int | None:
+        pixel = int(self._y_pixels(np.asarray([value]), plot_rect)[0])
+        return None if pixel < 0 else pixel
+
+    def _y_pixels(self, values, plot_rect: QRect) -> np.ndarray:
+        coordinates = np.asarray(values, dtype=np.float64)
+        invalid = np.zeros(coordinates.shape, dtype=bool)
+        if self._y_scale == "log10":
+            invalid = coordinates <= 0.0
+            lower, upper = self._log_y_exponent_range()
+            with np.errstate(divide="ignore", invalid="ignore"):
+                fractions = (np.log10(coordinates) - lower) / max(
+                    upper - lower,
+                    np.finfo(float).eps,
+                )
+        else:
+            maximum = float(np.max(self._series_values))
+            if maximum <= 0.0:
+                fractions = np.zeros(coordinates.shape, dtype=np.float64)
+            else:
+                fractions = coordinates / maximum
+        vertical_span = max(int(plot_rect.height()) - 1, 1)
+        pixels = plot_rect.bottom() - np.rint(
+            np.clip(fractions, 0.0, 1.0) * vertical_span
+        ).astype(np.int32)
+        pixels[invalid] = -1
+        return pixels
+
+    def _bin_at_point(self, point) -> int | None:
+        if self._bin_edges.size < 2:
+            return None
+        plot_rect = self._plot_rect()
+        if not plot_rect.contains(point):
+            return None
+        fraction = float(
+            np.clip(
+                (float(point.x()) - plot_rect.left()) / max(plot_rect.width(), 1),
+                0.0,
+                1.0,
+            )
+        )
+        minimum = float(self._bin_edges[0])
+        maximum = float(self._bin_edges[-1])
+        if self._x_scale == "log10":
+            transformed = np.log10(minimum) + fraction * (
+                np.log10(maximum) - np.log10(minimum)
+            )
+            value = float(np.power(10.0, transformed))
+        else:
+            value = minimum + fraction * (maximum - minimum)
+        index = int(np.searchsorted(self._bin_edges, value, side="right") - 1)
+        return int(np.clip(index, 0, self._bin_edges.size - 2))
+
+    def _bin_tooltip(self, bin_index: int) -> str:
+        left = float(self._bin_edges[bin_index])
+        right = float(self._bin_edges[bin_index + 1])
+        interval_close = "]" if bin_index == self._bin_edges.size - 2 else ")"
+        lines = [
+            f"Bin {bin_index + 1:,}",
+            "Range: "
+            f"[{_format_detailed_histogram_value(left)}, "
+            f"{_format_detailed_histogram_value(right)}{interval_close}",
+        ]
+        for series_index, label in enumerate(self._series_labels):
+            value = float(self._series_values[series_index, bin_index])
+            prefix = f"{label}: " if len(self._series_labels) > 1 else ""
+            lines.append(
+                f"{prefix}{self._y_axis_label}: "
+                f"{_format_detailed_histogram_value(value)}"
+            )
+        for label, detail in self._hover_details.items():
+            if detail.shape[0] == 1:
+                lines.append(
+                    f"{label}: {_format_detailed_histogram_value(detail[0, bin_index])}"
+                )
+                continue
+            values = ", ".join(
+                f"{series_label} "
+                f"{_format_detailed_histogram_value(detail[index, bin_index])}"
+                for index, series_label in enumerate(self._series_labels)
+            )
+            lines.append(f"{label}: {values}")
+        return "\n".join(lines)
+
+
+def _detailed_histogram_scale(value: object, *, axis: str) -> str:
+    normalized = str(value or "linear").strip().casefold()
+    aliases = {
+        "linear": "linear",
+        "log": "log10",
+        "log10": "log10",
+        "logarithmic": "log10",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        raise ValueError(
+            f"Histogram {axis} scale must be 'linear' or 'log10'."
+        ) from exc
+
+
+def _detailed_histogram_grid_divisions(value: object, *, axis: str) -> int:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Histogram {axis} grid divisions must be an integer between "
+            f"{DETAILED_HISTOGRAM_MIN_GRID_DIVISIONS} and "
+            f"{DETAILED_HISTOGRAM_MAX_GRID_DIVISIONS}."
+        ) from exc
+    if isinstance(value, (bool, np.bool_)) or not numeric.is_integer():
+        raise ValueError(
+            f"Histogram {axis} grid divisions must be an integer between "
+            f"{DETAILED_HISTOGRAM_MIN_GRID_DIVISIONS} and "
+            f"{DETAILED_HISTOGRAM_MAX_GRID_DIVISIONS}."
+        )
+    divisions = int(numeric)
+    if not (
+        DETAILED_HISTOGRAM_MIN_GRID_DIVISIONS
+        <= divisions
+        <= DETAILED_HISTOGRAM_MAX_GRID_DIVISIONS
+    ):
+        raise ValueError(
+            f"Histogram {axis} grid divisions must be between "
+            f"{DETAILED_HISTOGRAM_MIN_GRID_DIVISIONS} and "
+            f"{DETAILED_HISTOGRAM_MAX_GRID_DIVISIONS}."
+        )
+    return divisions
+
+
+def _non_overlapping_tick_label_indices(
+    bounds: Sequence[tuple[int, int]],
+    *,
+    gap: int,
+) -> set[int]:
+    """Keep readable tick labels while leaving every requested grid line visible."""
+
+    if not bounds:
+        return set()
+    if len(bounds) == 1:
+        return {0}
+    selected = [0]
+    final_index = len(bounds) - 1
+    final_start = int(bounds[final_index][0])
+    for index in range(1, final_index):
+        start, end = (int(value) for value in bounds[index])
+        prior_end = int(bounds[selected[-1]][1])
+        if start >= prior_end + gap and end + gap <= final_start:
+            selected.append(index)
+    prior_end = int(bounds[selected[-1]][1])
+    if final_start >= prior_end + gap:
+        selected.append(final_index)
+    return set(selected)
+
+
+def _format_detailed_histogram_tick(value: float) -> str:
+    if not np.isfinite(value):
+        return ""
+    absolute = abs(float(value))
+    if absolute == 0.0:
+        return "0"
+    if absolute >= 1_000_000.0 or absolute < 0.001:
+        return f"{value:.2e}"
+    if absolute >= 1_000.0:
+        return f"{value:,.0f}"
+    return f"{value:.4g}"
+
+
+def _format_detailed_histogram_value(value: float) -> str:
+    if not np.isfinite(value):
+        return ""
+    absolute = abs(float(value))
+    if absolute != 0.0 and (absolute >= 1_000_000.0 or absolute < 0.0001):
+        return f"{value:.6e}"
+    if abs(value - round(value)) < 1e-12:
+        return f"{int(round(value)):,}"
+    return f"{value:.8g}"
 
 
 def _prepare_colocalization_scatter_density(
@@ -637,6 +1653,8 @@ class ColocalizationScatterPlot(QWidget):
         self.update()
 
     def clear(self, message: str = "Connect two channel inputs.") -> None:
+        self._cancel_threshold_drag()
+        self.unsetCursor()
         self._image = None
         self._density_counts = None
         self._summary = message
@@ -656,6 +1674,8 @@ class ColocalizationScatterPlot(QWidget):
         self._threshold_2 = float(threshold_2)
         self._summary = str(summary)
         if not preserve_density:
+            self._cancel_threshold_drag()
+            self.unsetCursor()
             self._intensity_min = 0.0
             self._intensity_max = max(float(intensity_max), 1.0)
             self._channel_1_min = self._intensity_min
@@ -672,53 +1692,101 @@ class ColocalizationScatterPlot(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
 
         rect = self.rect().adjusted(8, 8, -8, -8)
-        painter.fillRect(rect, QColor("#111827"))
-        painter.setPen(QPen(QColor("#374151"), 1))
+        colors = custom_paint_colors(self.palette())
+        painter.fillRect(rect, colors.surface)
+        painter.setPen(QPen(colors.border, 1))
         painter.drawRect(rect)
 
         plot_rect = self._plot_rect()
         if self._image is None:
-            painter.setPen(QColor("#9ca3af"))
+            painter.setPen(colors.muted_text)
             painter.drawText(rect, Qt.AlignCenter, self._summary or "No data")
             painter.end()
             return
 
         painter.drawImage(plot_rect, self._image)
-        painter.setPen(QPen(QColor("#64748b"), 1.2))
+        painter.setPen(QPen(colors.axis, 1.2))
         painter.drawRect(plot_rect)
         self._draw_thresholds(painter, plot_rect)
         self._draw_labels(painter, rect, plot_rect)
         painter.end()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        plot_rect = self._plot_rect()
-        point = _event_position(event)
-        if not plot_rect.contains(point):
+        if event.button() != Qt.LeftButton:
+            super().mousePressEvent(event)
             return
-        vertical_x = self._x_from_value(self._threshold_1, plot_rect)
-        horizontal_y = self._y_from_value(self._threshold_2, plot_rect)
-        dx = abs(point.x() - vertical_x)
-        dy = abs(point.y() - horizontal_y)
-        self._drag_axis = 1 if dx <= dy else 2
+        point = _event_position(event)
+        drag_axis = self._threshold_axis_at_point(point)
+        if drag_axis is None:
+            super().mousePressEvent(event)
+            return
+        self._drag_axis = drag_axis
+        self._set_threshold_cursor(drag_axis)
         self._begin_gesture()
-        self._emit_threshold_from_point(point, plot_rect)
+        self._emit_threshold_from_point(point, self._plot_rect())
+        event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._drag_axis is None:
+        point = _event_position(event)
+        if self._drag_axis is not None:
+            self._set_threshold_cursor(self._drag_axis)
+            self._emit_threshold_from_point(point, self._plot_rect())
+            event.accept()
+            return
+        self._set_threshold_cursor(self._threshold_axis_at_point(point))
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._drag_axis is None or event.button() != Qt.LeftButton:
+            super().mouseReleaseEvent(event)
             return
         point = _event_position(event)
         self._emit_threshold_from_point(point, self._plot_rect())
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if self._drag_axis is not None:
-            point = _event_position(event)
-            self._emit_threshold_from_point(point, self._plot_rect())
         self._cancel_threshold_drag()
+        self._set_threshold_cursor(self._threshold_axis_at_point(point))
+        event.accept()
 
     def event(self, event) -> bool:
         if event.type() in {QEvent.Hide, QEvent.UngrabMouse}:
             self._cancel_threshold_drag()
+            self.unsetCursor()
+        elif event.type() == QEvent.Leave and self._drag_axis is None:
+            self.unsetCursor()
         return super().event(event)
+
+    def _threshold_axis_at_point(self, point) -> int | None:
+        """Return the draggable guide under ``point``, if any."""
+
+        if self._image is None:
+            return None
+        plot_rect = self._plot_rect()
+        tolerance = COLOCALIZATION_SCATTER_THRESHOLD_HIT_TOLERANCE
+        if not plot_rect.adjusted(
+            -tolerance,
+            -tolerance,
+            tolerance,
+            tolerance,
+        ).contains(point):
+            return None
+        vertical_x = self._x_from_value(self._threshold_1, plot_rect)
+        horizontal_y = self._y_from_value(self._threshold_2, plot_rect)
+        candidates = []
+        dx = abs(point.x() - vertical_x)
+        dy = abs(point.y() - horizontal_y)
+        if dx <= tolerance:
+            candidates.append((dx, 1))
+        if dy <= tolerance:
+            candidates.append((dy, 2))
+        if not candidates:
+            return None
+        return min(candidates)[1]
+
+    def _set_threshold_cursor(self, axis: int | None) -> None:
+        if axis == 1:
+            self.setCursor(Qt.SizeHorCursor)
+        elif axis == 2:
+            self.setCursor(Qt.SizeVerCursor)
+        else:
+            self.unsetCursor()
 
     def _begin_gesture(self) -> None:
         if self._gesture_active:
@@ -789,7 +1857,7 @@ class ColocalizationScatterPlot(QWidget):
 
     def _draw_labels(self, painter: QPainter, rect: QRect, plot_rect: QRect) -> None:
         metrics = painter.fontMetrics()
-        axis_color = QColor("#9ca3af")
+        axis_color = custom_paint_colors(self.palette()).muted_text
         x_min_label = _format_histogram_label(self._channel_1_min)
         x_max_label = _format_histogram_label(self._channel_1_max)
         y_min_label = _format_histogram_label(self._channel_2_min)
@@ -942,16 +2010,39 @@ def _qcolor_from_channel_color(value, *, fallback: str) -> QColor:
 def _histogram_series_colors(
     count: int,
     channel_axis_name: str = "",
+    channel_colors: Sequence[object] | str | None = None,
 ) -> list[QColor]:
     if count <= 0:
         return []
-    if channel_axis_name == "rgb":
+    normalized_axis_name = str(channel_axis_name).strip().casefold()
+    if normalized_axis_name == "rgb":
         base = [QColor("#ef4444"), QColor("#22c55e"), QColor("#60a5fa")]
+    elif normalized_axis_name == "rgba":
+        base = [
+            QColor("#ef4444"),
+            QColor("#22c55e"),
+            QColor("#60a5fa"),
+            QColor("#d1d5db"),
+        ]
     elif count > 1:
         base = [_qcolor_from_unit_rgb(color) for color in FLUORESCENCE_COLORS]
     else:
         base = [QColor("#60a5fa")]
-    return [QColor(base[index % len(base)]) for index in range(count)]
+    colors = [QColor(base[index % len(base)]) for index in range(count)]
+    if isinstance(channel_colors, str):
+        authored_colors: Sequence[object] = tuple(
+            part.strip() for part in channel_colors.split(",") if part.strip()
+        )
+    else:
+        authored_colors = () if channel_colors is None else channel_colors
+    for index, value in enumerate(authored_colors):
+        if index >= count:
+            break
+        colors[index] = _qcolor_from_channel_color(
+            value,
+            fallback=colors[index].name(),
+        )
+    return colors
 
 
 def _qcolor_from_unit_rgb(color: np.ndarray) -> QColor:

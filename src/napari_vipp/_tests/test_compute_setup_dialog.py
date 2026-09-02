@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import QApplication, QFormLayout
 
 from napari_vipp.core.compute import (
@@ -28,8 +29,18 @@ from napari_vipp.ui.compute_setup_dialog import (
     ComputeSetupCheckResult,
     ComputeSetupDialog,
 )
+from napari_vipp.ui.palette_roles import theme_colors
 
 GIB = 1024**3
+
+
+def _theme_palette(*, base: str, text: str) -> QPalette:
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.Window, QColor(base))
+    palette.setColor(QPalette.Text, QColor(text))
+    palette.setColor(QPalette.WindowText, QColor(text))
+    return palette
 
 
 class _CapturingThreadPool:
@@ -473,3 +484,18 @@ def test_worker_failure_becomes_a_terminal_retryable_result(qtbot):
     assert dialog.verify_button.isEnabled()
     assert dialog._last_report is not None
     assert dialog._last_report.reason_code == "diagnostic_worker_failed"
+
+
+def test_setup_semantic_text_restyles_live_with_the_dialog_palette(qtbot):
+    dialog, _pool = _dialog(qtbot, doctor=lambda **_kwargs: _report())
+    dark = _theme_palette(base="#111827", text="#f8fafc")
+    dialog.setPalette(dark)
+    dark_style = dialog.summary_label.styleSheet()
+
+    assert theme_colors(dark).muted_text.name() in dark_style
+
+    light = _theme_palette(base="#ffffff", text="#111827")
+    dialog.setPalette(light)
+    qtbot.waitUntil(lambda: dialog.summary_label.styleSheet() != dark_style)
+
+    assert theme_colors(light).muted_text.name() in dialog.summary_label.styleSheet()

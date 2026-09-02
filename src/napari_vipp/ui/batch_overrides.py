@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from numbers import Integral
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QEvent, Qt, Signal
 from qtpy.QtGui import QDoubleValidator, QIntValidator
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -29,6 +29,7 @@ from napari_vipp.core.batch_parameters import (
 )
 from napari_vipp.core.pipeline import ParameterSpec, validate_parameter_value
 from napari_vipp.core.source_items import SourceItem
+from napari_vipp.ui.palette_roles import custom_paint_colors, palette_is_dark
 
 
 class BatchOverrideEditorError(ValueError):
@@ -131,6 +132,7 @@ class BatchParameterOverrideEditor(QWidget):
         self._contract_error = ""
         self._configured = False
         self._updating = False
+        self._status_tone = "neutral"
 
         self.help_label = QLabel(
             "Enter only values that differ for a sample. Each blank cell shows "
@@ -140,7 +142,6 @@ class BatchParameterOverrideEditor(QWidget):
         self.help_label.setWordWrap(True)
         self.help_label.setMinimumWidth(0)
         self.help_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.help_label.setStyleSheet("color: #94a3b8;")
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
@@ -159,6 +160,23 @@ class BatchParameterOverrideEditor(QWidget):
         layout.addWidget(self.help_label)
         layout.addWidget(self.status_label)
         layout.addWidget(self.table)
+        self._apply_palette_styles()
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+            self._apply_palette_styles()
+
+    def _apply_palette_styles(self) -> None:
+        if not hasattr(self, "help_label"):
+            return
+        colors = custom_paint_colors(self.palette())
+        self.help_label.setStyleSheet(f"color: {colors.muted_text.name()};")
+        if self._status_tone == "error":
+            color = "#fca5a5" if palette_is_dark(self.palette()) else "#b91c1c"
+        else:
+            color = colors.muted_text.name()
+        self.status_label.setStyleSheet(f"color: {color};")
 
     @property
     def configured(self) -> bool:
@@ -217,6 +235,8 @@ class BatchParameterOverrideEditor(QWidget):
         self._contract_error = ""
         self._configured = False
         self.status_label.clear()
+        self._status_tone = "neutral"
+        self._apply_palette_styles()
         self.validityChanged.emit(True)
 
     def mark_saved_overrides_verifying(self, count: int) -> None:
@@ -236,7 +256,8 @@ class BatchParameterOverrideEditor(QWidget):
             f"Checking {int(count)} saved source override {entries} against "
             "the current collection..."
         )
-        self.status_label.setStyleSheet("color: #94a3b8;")
+        self._status_tone = "working"
+        self._apply_palette_styles()
         self.validityChanged.emit(False)
 
     def mark_saved_overrides_pending_review(
@@ -465,7 +486,8 @@ class BatchParameterOverrideEditor(QWidget):
                 "Ready. Blank cells use the shown workflow values; entered "
                 "exceptions are saved by exact primary SourceItem."
             )
-            self.status_label.setStyleSheet("color: #94a3b8;")
+            self._status_tone = "neutral"
+            self._apply_palette_styles()
             valid = True
         self.validityChanged.emit(valid)
 
@@ -562,7 +584,8 @@ class BatchParameterOverrideEditor(QWidget):
 
     def _show_error(self, message: str) -> None:
         self.status_label.setText(f"Needs attention: {message}")
-        self.status_label.setStyleSheet("color: #fca5a5;")
+        self._status_tone = "error"
+        self._apply_palette_styles()
 
 
 __all__ = [

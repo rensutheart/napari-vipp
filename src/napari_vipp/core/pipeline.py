@@ -85,6 +85,7 @@ from napari_vipp.core.operations import (
     h_maxima_markers,
     hysteresis_threshold,
     imagej_auto_threshold,
+    intensity_histogram,
     invert,
     isodata_threshold,
     label_connected_components,
@@ -738,6 +739,24 @@ _RESOLVED_SPATIAL_NDIM_PARAMETER = ParameterSpec(
     1,
 )
 
+# Manual measurement nodes persist this private execution preference alongside
+# their authored parameters.  Keeping a real ParameterSpec for it makes saved
+# workflows reject malformed values instead of treating strings such as
+# ``"false"`` as truthy at runtime.
+MANUAL_AUTO_RECALCULATE_PARAM = "_vipp_auto_recalculate"
+_MANUAL_AUTO_RECALCULATE_PARAMETER = ParameterSpec(
+    MANUAL_AUTO_RECALCULATE_PARAM,
+    "Auto recalculate",
+    "bool",
+    False,
+    0,
+    1,
+    1,
+)
+_MANUAL_AUTO_RECALCULATE_DEFAULT_OPERATION_IDS = frozenset(
+    {"intensity_histogram"}
+)
+
 CROP_ROI_LINE_WIDTH_SCALE_PARAMETER = ParameterSpec(
     "_vipp_crop_roi_line_width_scale",
     "Line thickness",
@@ -843,6 +862,7 @@ _OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
 # derived or legacy UI state and must not be initialized generically.
 _NEW_NODE_OPTIONAL_DEFAULTS: dict[str, dict[str, Any]] = {
     "input": {"axis_declaration": ""},
+    "intensity_histogram": {MANUAL_AUTO_RECALCULATE_PARAM: True},
     "composite_to_rgb": {
         "channel_axis_mode": COMPOSITE_RGB_AUTO,
         "mapping_mode": COMPOSITE_RGB_AUTO,
@@ -857,6 +877,12 @@ def optional_persisted_parameter_spec(
     """Return an explicitly supported, non-required serialized parameter."""
     if not isinstance(name, str):
         return None
+    if name == MANUAL_AUTO_RECALCULATE_PARAM:
+        return (
+            _MANUAL_AUTO_RECALCULATE_PARAMETER
+            if operation_spec.execution_policy == "manual"
+            else None
+        )
     if name == "resolved_spatial_ndim":
         if operation_spec.id in _RESOLVED_SPATIAL_PARAMETER_OPERATION_IDS:
             return _RESOLVED_SPATIAL_NDIM_PARAMETER
@@ -932,7 +958,7 @@ def validate_parameter_value(
     if spec.kind == "int":
         if isinstance(value, bool) or not isinstance(value, Integral):
             raise ValueError(f"{label} must be an integer.")
-        if spec.name in {"histogram_bins", "max_iterations"} and not (
+        if spec.name in {"bin_count", "histogram_bins", "max_iterations"} and not (
             spec.minimum <= value <= spec.maximum
         ):
             raise ValueError(
@@ -1061,6 +1087,19 @@ class OperationSpec:
         return (OutputSpec("out", self.output_type),)
 
     @property
+    def materializes_table_from_non_table(self) -> bool:
+        """Whether running this operation crosses into the table domain."""
+
+        ports = self.input_ports
+        return bool(
+            self.output_factory is None
+            and len(self.output_ports) == 1
+            and self.output_ports[0].output_type == "table"
+            and ports
+            and ports[0].input_type != "table"
+        )
+
+    @property
     def bypass_primary_input(self) -> InputSpec | None:
         """Return the schema-defined pass-through input, when one exists.
 
@@ -1068,8 +1107,10 @@ class OperationSpec:
         implementation.  Any ordinary operation with a static single output
         can therefore be a candidate; the live graph performs the stricter
         source/consumer type check before Bypass can be authored.  Sources,
-        writers, and dynamically/multiply-output operations are boundaries
-        and deliberately never expose the contract.
+        writers, dynamically/multiply-output operations, and operations that
+        materialize a table from a non-table input are boundaries and
+        deliberately never expose the contract.  Table-to-table transforms
+        remain valid pass-through candidates.
         """
 
         if (
@@ -1081,7 +1122,12 @@ class OperationSpec:
         ):
             return None
         ports = self.input_ports
-        return ports[0] if ports else None
+        if not ports:
+            return None
+        primary = ports[0]
+        if self.materializes_table_from_non_table:
+            return None
+        return primary
 
     @property
     def supports_bypass(self) -> bool:
@@ -1207,9 +1253,6 @@ NODE_EXECUTION_BYPASS = "bypass"
 NODE_EXECUTION_MODES = frozenset({NODE_EXECUTION_RUN, NODE_EXECUTION_BYPASS})
 MANUAL_RUN_CALCULATE = "calculate"
 MANUAL_RUN_SKIP = "skip"
-MANUAL_AUTO_RECALCULATE_PARAM = "_vipp_auto_recalculate"
-
-
 IMAGE_DATA_CATEGORY = "Image Data"
 INTENSITY_CONTRAST_CATEGORY = "Intensity & Contrast"
 SOURCE_OUTPUT_GROUP = "Source & Output"
@@ -1230,10 +1273,33 @@ RESTORATION_PSF_GROUP = "Restoration & PSF"
 GLOBAL_THRESHOLDS_GROUP = "Global Thresholds"
 LOCAL_THRESHOLDS_GROUP = "Local Thresholds"
 OBJECT_SEPARATION_GROUP = "Object Separation"
+MEASUREMENT_SHAPE_DESCRIPTORS_TOOLTIP = (
+    "Add bounding-box and filled area or volume columns. For 2D objects this "
+    "also adds convex area, solidity, and maximum Feret diameter. Calibrated "
+    "physical-value columns are included when spatial calibration is available."
+)
+MEASUREMENT_AXIS_DESCRIPTORS_TOOLTIP = (
+    "Add major- and minor-axis lengths plus inertia-tensor eigenvalues. For 2D "
+    "objects this also adds eccentricity and orientation. Calibrated "
+    "physical-value columns are included when spatial calibration is available."
+)
+MEASUREMENT_2D_BOUNDARY_DESCRIPTORS_TOOLTIP = (
+    "For 2D objects, add perimeter and Crofton-perimeter columns. Physical "
+    "perimeters are included when suitable isotropic calibration is available."
+)
+MEASUREMENT_DERIVED_SHAPE_RATIOS_TOOLTIP = (
+    "Add major/minor-axis ratio, bounding-box side lengths and axis ratios, "
+    "bounding-box fill fraction, and inertia-eigenvalue ratios."
+)
+MEASUREMENT_2D_SHAPE_MOMENTS_TOOLTIP = (
+    "For 2D objects, add circularity, perimeter-to-area ratio, and all seven Hu "
+    "moments."
+)
 SLICE_WISE_STACK_NOTICE = (
-    "Stack notice: this node processes each YX slice independently and does not "
-    "use 3D neighborhoods. If another plane should be processed, use Reorder "
-    "Axes first so the intended plane is YX."
+    "2D processing — each YX slice is handled independently."
+)
+DEFAULT_SLICE_WISE_STACK_NOTICE = (
+    "Default: 2D processing — each YX slice is handled independently."
 )
 GLOBAL_THRESHOLD_OPERATIONS = {
     "otsu_threshold",
@@ -1339,11 +1405,26 @@ SPATIAL_MODE_PARAMETER = ParameterSpec(
     ),
 )
 
+FILL_HOLES_SPATIAL_MODE_PARAMETER = replace(
+    SPATIAL_MODE_PARAMETER,
+    tooltip=(
+        "Auto uses 3D ZYX when explicit Z, Y, and X axes are present; otherwise "
+        "it uses 2D YX. In 3D, a cavity must be enclosed throughout the complete "
+        "volume. In 2D, each YX slice is filled independently."
+    ),
+)
+
 # A 3D-only measurement must continue to explain its dimensional requirement;
 # hiding its only mode on 2D input would conceal a validation error.
 VOLUMETRIC_SPATIAL_MODE_PARAMETER = replace(
     SPATIAL_MODE_PARAMETER,
     visibility=PARAMETER_VISIBILITY_ALWAYS,
+    tooltip=(
+        "This node is 3D-only. Auto follows resolved spatial-axis metadata; "
+        "choose 3D ZYX only when the spatial axes are known to be Z, Y, and X. "
+        "Physical lengths, areas, and volumes use the per-axis voxel spacing, "
+        "including anisotropic spacing; unspecified spacing defaults to 1."
+    ),
 )
 
 BACKGROUND_SPATIAL_MODE_PARAMETER = ParameterSpec(
@@ -2443,10 +2524,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         sigma_filter,
         subcategory=SMOOTHING_DENOISING_GROUP,
-        stack_processing_note=(
-            "Edge-preserving Lee sigma filter compatible with the documented "
-            "behavior of Fiji Sigma Filter Plus. " + SLICE_WISE_STACK_NOTICE
-        ),
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "bilateral_filter",
@@ -2530,10 +2608,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         rolling_ball_background,
         subcategory=BACKGROUND_CORRECTION_GROUP,
-        stack_processing_note=(
-            "Stack notice: the default processes each YX slice independently. "
-            "3D rolling-ball background estimation can be slow for large radii."
-        ),
+        stack_processing_note=DEFAULT_SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "subtract_background",
@@ -2575,10 +2650,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         subtract_background,
         subcategory=BACKGROUND_CORRECTION_GROUP,
-        stack_processing_note=(
-            "Stack notice: the default processes each YX slice independently. "
-            "3D rolling-ball background subtraction can be slow for large radii."
-        ),
+        stack_processing_note=DEFAULT_SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "difference_of_gaussians",
@@ -2772,6 +2844,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         select_axis_slice,
         subcategory=AXES_REGIONS_GROUP,
+        preserves_input_type=True,
     ),
     OperationSpec(
         "split_axis",
@@ -3083,6 +3156,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         imagej_auto_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "li_threshold",
@@ -3582,8 +3656,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1_000_000_000,
                 1,
+                tooltip=(
+                    "0 fills every enclosed hole. A positive value fills only "
+                    "holes at or below that area in pixels (2D) or volume in "
+                    "voxels (3D)."
+                ),
             ),
-            SPATIAL_MODE_PARAMETER,
+            FILL_HOLES_SPATIAL_MODE_PARAMETER,
             ParameterSpec(
                 "connectivity",
                 "Hole connectivity",
@@ -3593,6 +3672,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 choices=("Face connected", "Full connectivity"),
+                tooltip=(
+                    "Controls which background neighbours form a path to the "
+                    "image boundary. Face connected uses only side-sharing "
+                    "neighbours (4 in 2D; 6 in 3D). Full connectivity also "
+                    "includes diagonal edge/corner neighbours (8 in 2D; 26 in "
+                    "3D), so a diagonal opening can keep a cavity unfilled."
+                ),
             ),
         ),
         fill_holes,
@@ -3818,6 +3904,94 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         relabel_sequential,
     ),
     OperationSpec(
+        "intensity_histogram",
+        "Intensity Histogram",
+        MEASUREMENTS_CATEGORY,
+        "array",
+        "table",
+        (
+            ParameterSpec(
+                "bin_count",
+                "Number of bins",
+                "int",
+                256,
+                2,
+                65_536,
+                1,
+                slider_minimum=2,
+                slider_maximum=4_096,
+                tooltip=(
+                    "Number of intervals spanning the effective intensity range. "
+                    "Every eligible value from the complete input is counted; "
+                    "the calculation is not sampled from the current viewer slice."
+                ),
+            ),
+            ParameterSpec(
+                "range_mode",
+                "Histogram range",
+                "choice",
+                "Data range",
+                0,
+                0,
+                1,
+                choices=("Data range", "Custom range"),
+                tooltip=(
+                    "Data range uses the minimum and maximum eligible input "
+                    "values. Custom range counts values below and above its "
+                    "bounds as underflow and overflow."
+                ),
+            ),
+            ParameterSpec(
+                "custom_min",
+                "Custom minimum",
+                "float",
+                0.0,
+                -1.0e300,
+                1.0e300,
+                1.0,
+                6,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="range_mode",
+                visibility_values=("Custom range",),
+                tooltip=(
+                    "Inclusive lower edge of a custom histogram range. It must "
+                    "be greater than zero for logarithmic bins."
+                ),
+            ),
+            ParameterSpec(
+                "custom_max",
+                "Custom maximum",
+                "float",
+                1.0,
+                -1.0e300,
+                1.0e300,
+                1.0,
+                6,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="range_mode",
+                visibility_values=("Custom range",),
+                tooltip="Inclusive upper edge of a custom histogram range.",
+            ),
+            ParameterSpec(
+                "bin_spacing",
+                "Bin spacing",
+                "choice",
+                "Linear",
+                0,
+                0,
+                1,
+                choices=("Linear", "Logarithmic"),
+                tooltip=(
+                    "Linear uses equal intensity widths. Logarithmic uses equal "
+                    "intervals in log intensity and excludes finite values less "
+                    "than or equal to zero while reporting their exact count."
+                ),
+            ),
+        ),
+        intensity_histogram,
+        execution_policy="manual",
+    ),
+    OperationSpec(
         "measure_objects",
         "Measure Objects",
         MEASUREMENTS_CATEGORY,
@@ -3833,6 +4007,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_SHAPE_DESCRIPTORS_TOOLTIP,
             ),
             ParameterSpec(
                 "include_axis_descriptors",
@@ -3842,6 +4017,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_AXIS_DESCRIPTORS_TOOLTIP,
                 visibility=PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
             ),
             ParameterSpec(
@@ -3852,6 +4028,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_2D_BOUNDARY_DESCRIPTORS_TOOLTIP,
                 visibility=PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
             ),
             ParameterSpec(
@@ -3862,6 +4039,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_DERIVED_SHAPE_RATIOS_TOOLTIP,
                 visibility=PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
             ),
             ParameterSpec(
@@ -3872,6 +4050,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_2D_SHAPE_MOMENTS_TOOLTIP,
                 visibility=PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
             ),
         ),
@@ -3894,6 +4073,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_SHAPE_DESCRIPTORS_TOOLTIP,
             ),
             ParameterSpec(
                 "include_axis_descriptors",
@@ -3903,6 +4083,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_AXIS_DESCRIPTORS_TOOLTIP,
                 visibility=PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
             ),
             ParameterSpec(
@@ -3913,6 +4094,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_2D_BOUNDARY_DESCRIPTORS_TOOLTIP,
                 visibility=PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
             ),
             ParameterSpec(
@@ -3923,6 +4105,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_DERIVED_SHAPE_RATIOS_TOOLTIP,
                 visibility=PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
             ),
             ParameterSpec(
@@ -3933,6 +4116,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=MEASUREMENT_2D_SHAPE_MOMENTS_TOOLTIP,
                 visibility=PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
             ),
         ),
@@ -3962,6 +4146,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 slider_minimum=1,
                 slider_maximum=1_000,
+                tooltip=(
+                    "Objects with fewer labeled voxels than this are not "
+                    "meshed. They remain in the results table; mesh-derived "
+                    "fields are NaN, and mesh_status identifies them as "
+                    "skipped_too_few_voxels. This setting does not remove or "
+                    "relabel objects."
+                ),
             ),
             ParameterSpec(
                 "include_convex_hull_metrics",
@@ -3971,6 +4162,16 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=(
+                    "Builds the smallest convex 3D polyhedron enclosing each "
+                    "object's surface mesh. Adds convex-hull volume and surface "
+                    "area, 3D solidity (mesh volume divided by hull volume), and "
+                    "a mesh-to-hull surface-area ratio. Values near 1 indicate "
+                    "a convex, smooth object; lower solidity or a larger area "
+                    "ratio indicates concavity or surface roughness. If a hull "
+                    "cannot be formed, its hull fields are NaN while the base "
+                    "mesh metrics remain available."
+                ),
             ),
         ),
         measure_3d_mesh_morphology,
@@ -5533,6 +5734,12 @@ def validate_node_execution_mode(
             f"{context} execution_mode must be one of: {choices}."
         )
     if mode == NODE_EXECUTION_BYPASS and not operation.supports_bypass:
+        if operation.materializes_table_from_non_table:
+            primary = operation.input_ports[0]
+            raise ValueError(
+                f"{context} operation {operation.id!r} materializes a table "
+                f"from {primary.input_type} data and cannot be bypassed."
+            )
         raise ValueError(
             f"{context} operation {operation.id!r} is a source, writer, or "
             "multi-output boundary and cannot be bypassed."
@@ -6579,7 +6786,13 @@ class PrototypePipeline:
         node = self.nodes.get(node_id)
         if node is None or not self.is_manual_node(node_id):
             return False
-        return bool(node.params.get(MANUAL_AUTO_RECALCULATE_PARAM, False))
+        return bool(
+            node.params.get(
+                MANUAL_AUTO_RECALCULATE_PARAM,
+                node.operation_id
+                in _MANUAL_AUTO_RECALCULATE_DEFAULT_OPERATION_IDS,
+            )
+        )
 
     def set_node_auto_recalculate(self, node_id: str, enabled: bool) -> None:
         if node_id not in self.nodes or not self.is_manual_node(node_id):
@@ -7225,6 +7438,12 @@ class PrototypePipeline:
         operation = self.operation_spec(node.operation_id)
         primary_spec = operation.bypass_primary_input
         if primary_spec is None:
+            if operation.materializes_table_from_non_table:
+                primary = operation.input_ports[0]
+                return (
+                    f"{node.title} materializes a table from "
+                    f"{primary.input_type} data and cannot be bypassed."
+                )
             return (
                 f"{node.title} is a source, writer, or multi-output boundary "
                 "and cannot be bypassed."
@@ -9791,6 +10010,24 @@ class PrototypePipeline:
         input_states: list[ImageState | TableState | None],
         kwargs: dict[str, Any],
     ) -> None:
+        if (
+            node.operation_id == "intensity_histogram"
+            and input_states
+            and isinstance(input_states[0], ImageState)
+        ):
+            input_state = input_states[0]
+            kwargs["source_name"] = input_state.source_name
+            channel_axis = _explicit_image_state_channel_axis(input_state)
+            if channel_axis is not None:
+                kwargs["channel_axis"] = channel_axis
+                kwargs["channel_axis_name"] = input_state.axes[channel_axis].name
+                kwargs["channel_names"] = tuple(
+                    channel.name for channel in input_state.channels
+                )
+                kwargs["channel_colors"] = tuple(
+                    channel.color if channel.color is not None else ""
+                    for channel in input_state.channels
+                )
         if node.operation_id == "combine_channels":
             derived_axis = _default_combined_channel_axis(input_states[0])
             kwargs["channel_axis"] = derived_axis
@@ -9851,6 +10088,22 @@ class PrototypePipeline:
             kwargs["axis_scales"] = tuple(axis.scale for axis in input_state.axes)
             kwargs["axis_units"] = tuple(axis.unit for axis in input_state.axes)
             kwargs["source_name"] = input_state.source_name
+        if node.operation_id == "intensity_histogram" and isinstance(
+            input_state,
+            ImageState,
+        ):
+            kwargs["source_name"] = input_state.source_name
+            channel_axis = _explicit_image_state_channel_axis(input_state)
+            if channel_axis is not None:
+                kwargs["channel_axis"] = channel_axis
+                kwargs["channel_axis_name"] = input_state.axes[channel_axis].name
+                kwargs["channel_names"] = tuple(
+                    channel.name for channel in input_state.channels
+                )
+                kwargs["channel_colors"] = tuple(
+                    channel.color if channel.color is not None else ""
+                    for channel in input_state.channels
+                )
         if node.operation_id == "prune_skeleton_branches" and isinstance(
             input_state,
             ImageState,
@@ -10501,7 +10754,10 @@ def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]
     prior = _combined_history(states)
     row_count = getattr(table, "row_count", 0)
     table_kind = str(getattr(table, "table_kind", "")).lower()
-    if "graph node" in table_kind:
+    if "histogram" in table_kind:
+        noun = "bin" if row_count == 1 else "bins"
+        action = "binned"
+    elif "graph node" in table_kind:
         noun = "node" if row_count == 1 else "nodes"
         action = "exported"
     elif "graph edge" in table_kind:
@@ -11485,6 +11741,15 @@ def _split_axis_label(
 
 def _image_state_channel_axis(input_state: ImageState) -> int | None:
     axes = _image_state_channel_axes(input_state)
+    return axes[0] if len(axes) == 1 else None
+
+
+def _explicit_image_state_channel_axis(input_state: ImageState) -> int | None:
+    axes = tuple(
+        index
+        for index in _image_state_channel_axes(input_state)
+        if input_state.axes[index].is_explicit
+    )
     return axes[0] if len(axes) == 1 else None
 
 

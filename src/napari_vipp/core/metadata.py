@@ -14,8 +14,11 @@ from napari_vipp.core.channel_colors import (
     channel_color_names,
 )
 from napari_vipp.core.tables import (
+    TableData,
+    TableQuality,
     TableState,
     is_table_data,
+    table_quality_from_data,
     table_state_from_data,
 )
 
@@ -73,6 +76,7 @@ KIND_PRESERVING_OPERATIONS = {
     "rescale_axes",
     "clear_border_objects",
     "remove_small_objects",
+    "select_axis_slice",
     "set_microscope_metadata",
     "set_pixel_size",
 }
@@ -780,9 +784,9 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
         rows = [
             MetadataRow("Kind", table_state.kind),
             MetadataRow("Rows", str(table_state.row_count)),
-            MetadataRow("Columns", str(table_state.column_count)),
+            MetadataRow("Fields", str(table_state.column_count)),
             MetadataRow("Measurement set", table_state.table_kind),
-            MetadataRow("Column names", ", ".join(table_state.columns) or "none"),
+            MetadataRow("Field names", ", ".join(table_state.columns) or "none"),
             MetadataRow("Metadata source", table_state.metadata_source),
         ]
         if table_state.column_units:
@@ -792,6 +796,61 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
             rows.append(MetadataRow("Units", units))
         if table_state.source_name:
             rows.append(MetadataRow("Source", table_state.source_name))
+        histogram = table_state.histogram_metadata
+        if histogram is not None:
+            ignored_nonfinite = (
+                int(histogram.nan_value_count)
+                + int(histogram.positive_infinite_value_count)
+                + int(histogram.negative_infinite_value_count)
+            )
+            rows.extend(
+                [
+                    MetadataRow(
+                        "Histogram range",
+                        (
+                            f"{_format_number(histogram.effective_minimum)} to "
+                            f"{_format_number(histogram.effective_maximum)}"
+                            if histogram.effective_minimum is not None
+                            and histogram.effective_maximum is not None
+                            else "No finite range"
+                        ),
+                    ),
+                    MetadataRow("Bin spacing", histogram.bin_spacing),
+                    MetadataRow("Input values", f"{histogram.input_value_count:,}"),
+                    MetadataRow("Binned values", f"{histogram.binned_value_count:,}"),
+                    MetadataRow("Ignored NaN/Inf", f"{ignored_nonfinite:,}"),
+                    MetadataRow("NaN input values", f"{histogram.nan_value_count:,}"),
+                    MetadataRow(
+                        "+Inf input values",
+                        f"{histogram.positive_infinite_value_count:,}",
+                    ),
+                    MetadataRow(
+                        "-Inf input values",
+                        f"{histogram.negative_infinite_value_count:,}",
+                    ),
+                    MetadataRow("Below range", f"{histogram.underflow_count:,}"),
+                    MetadataRow("Above range", f"{histogram.overflow_count:,}"),
+                    MetadataRow(
+                        "Non-positive excluded",
+                        f"{histogram.nonpositive_excluded_count:,}",
+                    ),
+                ]
+            )
+        if table_state.numeric_value_count is not None:
+            rows.extend(
+                _table_quality_rows(
+                    TableQuality(
+                        numeric_values=table_state.numeric_value_count,
+                        nan_values=int(table_state.nan_value_count or 0),
+                        infinite_values=int(
+                            table_state.infinite_value_count or 0
+                        ),
+                        missing_values=int(table_state.missing_value_count or 0),
+                        nonfinite_rows=int(table_state.nonfinite_row_count or 0),
+                        nonfinite_columns=table_state.nonfinite_columns,
+                    )
+                )
+            )
         return rows
 
     state = _coerce_state(state_or_data)
@@ -880,6 +939,44 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
     if state.source.series_name:
         rows.append(MetadataRow("Source series", state.source.series_name))
     return rows
+
+
+def table_data_quality_rows(table: TableData) -> list[MetadataRow]:
+    """Return exact data-quality facts for a resident table output.
+
+    Table metadata deliberately keeps its structural state lightweight.  These
+    diagnostics inspect the resident values only when the inspector has the
+    actual :class:`TableData`, so an evicted or not-yet-calculated result is
+    never presented as if its quality had been measured.
+    """
+
+    if not isinstance(table, TableData):
+        return []
+
+    return _table_quality_rows(table_quality_from_data(table))
+
+
+def _table_quality_rows(quality: TableQuality) -> list[MetadataRow]:
+    """Format exact table diagnostics without rescanning resident values."""
+
+    affected_names = quality.nonfinite_columns
+    if affected_names:
+        visible_names = affected_names[:8]
+        field_detail = ", ".join(visible_names)
+        if len(affected_names) > len(visible_names):
+            field_detail += f", +{len(affected_names) - len(visible_names)} more"
+        affected_field_value = f"{len(affected_names)} ({field_detail})"
+    else:
+        affected_field_value = "0"
+
+    return [
+        MetadataRow("Numeric values", str(quality.numeric_values)),
+        MetadataRow("NaN values", str(quality.nan_values)),
+        MetadataRow("Infinite values", str(quality.infinite_values)),
+        MetadataRow("Missing values", str(quality.missing_values)),
+        MetadataRow("Rows with NaN/Inf", str(quality.nonfinite_rows)),
+        MetadataRow("Fields with NaN/Inf", affected_field_value),
+    ]
 
 
 def metadata_history_items(state_or_data) -> list[str]:

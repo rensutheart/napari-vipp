@@ -809,6 +809,32 @@ def test_measure_3d_mesh_morphology_reports_surface_and_failure_status():
     assert np.isnan(records[1]["mesh_volume_physical"])
 
 
+def test_mesh_morphology_uses_tight_regions_for_sparse_label_ids(monkeypatch):
+    labels = np.zeros((18, 30, 42), dtype=np.int32)
+    labels[2:6, 3:8, 4:10] = 7
+    labels[12:15, 22:28, 35:40] = 2_000_000_000
+    measured_shapes: list[tuple[int, ...]] = []
+    original = operations._mesh_metrics_for_label_mask
+
+    def tracked_metrics(mask, spatial_axis_names, units):
+        measured_shapes.append(tuple(int(size) for size in mask.shape))
+        return original(mask, spatial_axis_names, units)
+
+    monkeypatch.setattr(operations, "_mesh_metrics_for_label_mask", tracked_metrics)
+
+    table = measure_3d_mesh_morphology(
+        labels,
+        resolved_spatial_ndim=3,
+        minimum_voxel_count=1,
+        include_convex_hull_metrics=False,
+    )
+
+    assert [record["label_id"] for record in table.records()] == [7, 2_000_000_000]
+    assert [record["voxel_count"] for record in table.records()] == [120, 90]
+    assert measured_shapes == [(4, 5, 6), (3, 6, 5)]
+    assert sum(int(np.prod(shape)) for shape in measured_shapes) == 210
+
+
 def test_measure_objects_with_intensity_reports_per_label_values():
     labels = np.zeros((5, 6), dtype=np.int32)
     labels[1:3, 1:4] = 1
@@ -1489,6 +1515,248 @@ def test_object_colocalization_and_association_tables():
     assert localization_records[2]["in_region"] is False
 
 
+def test_association_tables_preserve_sparse_ids_pair_order_and_event_ties():
+    maximum_int32 = np.iinfo(np.int32).max
+    reference = np.asarray(
+        [
+            [maximum_int32, maximum_int32, 0, 2, 2],
+            [maximum_int32, 0, 0, 2, 2],
+        ],
+        dtype=np.int32,
+    )
+    target = np.asarray(
+        [
+            [7, 3, 0, 9, 9],
+            [3, 0, 0, 5, 5],
+        ],
+        dtype=np.int32,
+    )
+
+    overlaps = label_overlap_association(
+        [reference, target],
+        spatial_mode="2D YX",
+    ).records()
+
+    assert [(record["label_id"], record["target_label_id"]) for record in overlaps] == [
+        (2, 5),
+        (2, 9),
+        (maximum_int32, 3),
+        (maximum_int32, 7),
+    ]
+    assert [record["overlap_voxels"] for record in overlaps] == [2, 2, 2, 1]
+    assert overlaps[2]["reference_overlap_fraction"] == 2 / 3
+
+    events = np.asarray(
+        [
+            [maximum_int32, maximum_int32, 0, 2, 0],
+            [maximum_int32, maximum_int32, 0, 2, 0],
+            [0, 0, 0, 2, 0],
+        ],
+        dtype=np.int32,
+    )
+    regions = np.asarray(
+        [
+            [9, 9, 0, 7, 0],
+            [3, 3, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+        ],
+        dtype=np.int32,
+    )
+
+    localized = event_localization(
+        [events, regions],
+        spatial_mode="2D YX",
+    ).records()
+
+    assert [record["event_id"] for record in localized] == [2, maximum_int32]
+    assert localized[0]["region_label_id"] == 7
+    assert localized[0]["overlap_voxels"] == 1
+    assert localized[0]["event_overlap_fraction"] == 1 / 3
+    # Equal overlap with regions 3 and 9 retains the historical smaller-ID tie.
+    assert localized[1]["region_label_id"] == 3
+    assert localized[1]["overlap_voxels"] == 2
+
+
+@pytest.mark.parametrize(
+    ("dtype", "first_id", "second_id"),
+    (
+        (np.int64, 2**40, 2**48),
+        (np.uint64, 2**40 + 17, 2**52 + 17),
+    ),
+)
+def test_association_pair_histogram_preserves_wider_than_uint32_ids(
+    dtype,
+    first_id,
+    second_id,
+):
+    reference = np.asarray(
+        [[first_id, first_id, second_id, 0]],
+        dtype=dtype,
+    )
+    first_target = first_id + 101
+    second_target = second_id + 103
+    target = np.asarray(
+        [[first_target, first_target, second_target, 0]],
+        dtype=dtype,
+    )
+
+    records = label_overlap_association(
+        [reference, target],
+        spatial_mode="2D YX",
+    ).records()
+
+    assert [
+        (record["label_id"], record["target_label_id"], record["overlap_voxels"])
+        for record in records
+    ] == [
+        (first_id, first_target, 2),
+        (second_id, second_target, 1),
+    ]
+
+
+def test_pair_histogram_keeps_uint64_ids_beyond_signed_int64_exact():
+    first_id = 2**63 + 17
+    second_id = np.iinfo(np.uint64).max
+    first = np.asarray([[first_id, first_id, second_id]], dtype=np.uint64)
+    second = np.asarray([[second_id, second_id, first_id]], dtype=np.uint64)
+
+    assert operations._positive_pair_counts(first, second) == {
+        (first_id, second_id): 2,
+        (second_id, first_id): 1,
+    }
+
+
+def test_nearest_object_distance_preserves_smallest_label_ties_and_sparse_ids():
+    maximum_int32 = np.iinfo(np.int32).max
+    reference = np.zeros((5, 5), dtype=np.int32)
+    reference[0, 4] = 2
+    reference[2, 2] = maximum_int32
+    target = np.zeros_like(reference)
+    target[1, 2] = 5
+    target[3, 2] = 5
+    target[2, 1] = maximum_int32
+    target[2, 3] = maximum_int32
+
+    records = nearest_object_distance(
+        [reference, target],
+        spatial_mode="2D YX",
+    ).records()
+
+    assert [record["label_id"] for record in records] == [2, maximum_int32]
+    assert [record["nearest_label_id"] for record in records] == [5, 5]
+    assert np.isclose(records[0]["centroid_distance_pixels"], np.sqrt(8.0))
+    assert records[1]["centroid_distance_pixels"] == 0.0
+
+
+def test_nearest_centroid_tree_matches_ordered_brute_force_for_equal_distances():
+    reference_points = np.asarray(
+        [
+            [0.0, 0.0],
+            [3.0, 4.0],
+            [10.0, 10.0],
+        ]
+    )
+    # Rows represent ascending target IDs. Several points are exactly tied,
+    # including two labels with the same centroid.
+    target_points = np.asarray(
+        [
+            [-1.0, 0.0],
+            [1.0, 0.0],
+            [3.0, 4.0],
+            [3.0, 4.0],
+            [9.0, 10.0],
+            [11.0, 10.0],
+        ]
+    )
+    brute_distances = np.linalg.norm(
+        target_points[np.newaxis, :, :] - reference_points[:, np.newaxis, :],
+        axis=2,
+    )
+    expected_indices = np.argmin(brute_distances, axis=1)
+
+    indices, distances = operations._nearest_centroid_indices(
+        reference_points,
+        target_points,
+    )
+
+    np.testing.assert_array_equal(indices, expected_indices)
+    np.testing.assert_array_equal(
+        distances,
+        brute_distances[np.arange(len(reference_points)), expected_indices],
+    )
+
+
+def test_spatial_association_tables_keep_nontrailing_axes_in_separate_blocks():
+    reference = np.zeros((5, 2, 6), dtype=np.int32)
+    target = np.zeros_like(reference)
+    regions = np.zeros_like(reference)
+    reference[1, 0, 1] = 10
+    reference[3, 1, 4] = 11
+    target[1, 0, 2] = 20
+    target[3, 1, 2] = 21
+    regions[1, 0, 1] = 30
+    regions[3, 1, 4] = 31
+    axis_kwargs = {
+        "spatial_mode": "2D YX",
+        "axis_names": ("y", "t", "x"),
+        "axis_types": ("space", "time", "space"),
+    }
+
+    distance_records = nearest_object_distance(
+        [reference, target],
+        **axis_kwargs,
+    ).records()
+    overlap_records = label_overlap_association(
+        [reference, regions],
+        **axis_kwargs,
+    ).records()
+    localization_records = event_localization(
+        [reference, regions],
+        **axis_kwargs,
+    ).records()
+
+    assert [record["t_index"] for record in distance_records] == [0, 1]
+    assert [record["nearest_label_id"] for record in distance_records] == [20, 21]
+    assert [record["centroid_distance_pixels"] for record in distance_records] == [
+        1.0,
+        2.0,
+    ]
+    assert [record["t_index"] for record in overlap_records] == [0, 1]
+    assert [record["target_label_id"] for record in overlap_records] == [30, 31]
+    assert [record["t_index"] for record in localization_records] == [0, 1]
+    assert [record["region_label_id"] for record in localization_records] == [30, 31]
+
+
+def test_spatial_association_tables_preserve_empty_input_semantics():
+    reference = np.zeros((3, 4), dtype=np.int32)
+    reference[1, 1] = 17
+    empty = np.zeros_like(reference)
+
+    assert (
+        label_overlap_association(
+            [reference, empty],
+            spatial_mode="2D YX",
+        ).records()
+        == []
+    )
+    assert (
+        event_localization(
+            [empty, reference],
+            spatial_mode="2D YX",
+        ).records()
+        == []
+    )
+
+    distance_records = nearest_object_distance(
+        [reference, empty],
+        spatial_mode="2D YX",
+    ).records()
+    assert len(distance_records) == 1
+    assert distance_records[0]["label_id"] == 17
+    assert distance_records[0]["nearest_label_id"] == 0
+    assert np.isnan(distance_records[0]["centroid_distance_pixels"])
+
+
 def test_summarize_measurements_groups_by_metadata_and_units():
     table = table_from_columns(
         {
@@ -1636,6 +1904,12 @@ def test_pipeline_measure_objects_creates_table_state():
     assert state.kind == "measurement table"
     assert state.row_count == 2
     assert "volume_voxels" in state.columns
+    assert state.numeric_value_count == state.row_count * state.column_count
+    assert state.nan_value_count == 0
+    assert state.infinite_value_count == 0
+    assert state.missing_value_count == 0
+    assert state.nonfinite_row_count == 0
+    assert state.nonfinite_columns == ()
     assert state.history[-1] == "Measure Objects: measured 2 objects"
 
 
@@ -2673,6 +2947,77 @@ def test_skeleton_graph_tables_export_nodes_and_edges():
     assert all(record["end_node_id"] > 0 for record in edge_records)
     assert all(record["branch_length_pixels"] == 2.0 for record in edge_records)
     assert {"y_coord", "x_coord"} <= set(node_table.columns)
+
+
+def test_disconnected_skeleton_measurements_keep_global_coordinates_after_cropping():
+    skeleton = np.zeros((18, 30), dtype=bool)
+    skeleton[2, 3:8] = True
+    skeleton[10:15, 25] = True
+
+    branch_table = measure_skeleton_branches(skeleton, resolved_spatial_ndim=2)
+    node_table, edge_table = skeleton_graph_tables(
+        skeleton,
+        resolved_spatial_ndim=2,
+    )
+
+    expected_branches = {
+        ((2, 3), (2, 7)),
+        ((10, 25), (14, 25)),
+    }
+    actual_branches = {
+        (
+            (record["start_y"], record["start_x"]),
+            (record["end_y"], record["end_x"]),
+        )
+        for record in branch_table.records()
+    }
+    actual_edges = {
+        (
+            (record["start_y"], record["start_x"]),
+            (record["end_y"], record["end_x"]),
+        )
+        for record in edge_table.records()
+    }
+    actual_nodes = {
+        (record["y_coord"], record["x_coord"]) for record in node_table.records()
+    }
+
+    assert actual_branches == expected_branches
+    assert actual_edges == expected_branches
+    assert actual_nodes == {(2, 3), (2, 7), (10, 25), (14, 25)}
+    assert [record["component_id"] for record in branch_table.records()] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        analyze_skeleton,
+        measure_skeleton_branches,
+        skeleton_graph_tables,
+        measure_overall_skeleton_network,
+    ),
+)
+def test_image_backed_skeleton_measurements_build_one_cropped_graph_per_component(
+    monkeypatch,
+    operation,
+):
+    skeleton = np.zeros((18, 30), dtype=bool)
+    skeleton[2, 3:8] = True
+    skeleton[10:15, 25] = True
+    measured_shapes: list[tuple[int, ...]] = []
+    original = operations._skeleton_adjacency
+
+    def tracked_adjacency(component, scales=()):
+        measured_shapes.append(tuple(int(size) for size in component.shape))
+        return original(component, scales)
+
+    monkeypatch.setattr(operations, "_skeleton_adjacency", tracked_adjacency)
+
+    operation(skeleton, resolved_spatial_ndim=2)
+
+    assert measured_shapes == [(1, 5), (5, 1)]
+    assert sum(int(np.prod(shape)) for shape in measured_shapes) == 10
+    assert sum(int(np.prod(shape)) for shape in measured_shapes) < skeleton.size
 
 
 def test_measure_overall_skeleton_network_reports_block_metrics():

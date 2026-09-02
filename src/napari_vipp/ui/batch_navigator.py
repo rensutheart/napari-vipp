@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
+from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -17,6 +17,8 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from napari_vipp.ui.palette_roles import custom_paint_colors, palette_is_dark
 
 
 class _WrappingLabel(QLabel):
@@ -99,7 +101,6 @@ class BatchNavigator(QFrame):
         self.effective_overrides_label.setTextInteractionFlags(
             Qt.TextSelectableByMouse
         )
-        self.effective_overrides_label.setStyleSheet("color: #bfdbfe;")
         self.effective_overrides_label.setToolTip(
             "These values are applied only to this representative preview. "
             "They do not change the authored workflow values."
@@ -121,7 +122,6 @@ class BatchNavigator(QFrame):
             "graph using inherited workflow values plus any per-sample "
             "overrides. Nothing is saved until Run batch."
         )
-        self.representative_label.setStyleSheet("color: #94a3b8;")
 
         self.progress_frame = QFrame()
         self._progress_layout = QGridLayout(self.progress_frame)
@@ -164,8 +164,25 @@ class BatchNavigator(QFrame):
         # Begin in the narrow form so a platform-specific wide size hint cannot
         # prevent the first resize event that would otherwise make it compact.
         self._apply_responsive_layout(compact=True)
+        self._apply_palette_styles()
         self._sync_navigation_controls()
         self.hide()
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+            self._apply_palette_styles()
+
+    def _apply_palette_styles(self) -> None:
+        if not hasattr(self, "representative_label"):
+            return
+        colors = custom_paint_colors(self.palette())
+        info = "#bfdbfe" if palette_is_dark(self.palette()) else "#1d4ed8"
+        self.title_label.setStyleSheet("font-weight: 650;")
+        self.effective_overrides_label.setStyleSheet(f"color: {info};")
+        self.representative_label.setStyleSheet(
+            f"color: {colors.muted_text.name()};"
+        )
 
     @property
     def item_count(self) -> int:

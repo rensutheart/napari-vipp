@@ -19,11 +19,13 @@ from napari_vipp.core.metadata import (
     image_state_from_array,
     infer_axis_metadata_from_shape,
     metadata_table_rows,
+    table_data_quality_rows,
     transform_image_state,
     transform_multi_input_image_state,
     transform_split_output_state,
     with_channel_colors,
 )
+from napari_vipp.core.tables import TableData, table_state_from_data
 
 
 def test_metadata_table_exposes_text_acquisition_fields() -> None:
@@ -45,6 +47,35 @@ def test_metadata_table_exposes_text_acquisition_fields() -> None:
     assert rows["Objective"] == "Plan Apo 60x"
     assert rows["Instrument"] == "Example scope"
     assert rows["Detector"] == "Example camera"
+
+
+def test_table_metadata_uses_field_language_and_exact_quality_counts() -> None:
+    table = TableData(
+        ("label_id", "mean", "ratio", "note"),
+        (
+            (1, 2.5, float("nan"), "ok"),
+            (2, float("inf"), 0.5, None),
+            (3, float("-inf"), 1.5, "review"),
+        ),
+        table_kind="object measurements",
+    )
+    state = table_state_from_data(table, history=("Measured 3 objects",))
+
+    structural = {row.label: row.value for row in metadata_table_rows(state)}
+    quality = {row.label: row.value for row in table_data_quality_rows(table)}
+
+    assert structural["Rows"] == "3"
+    assert structural["Fields"] == "4"
+    assert structural["Field names"] == "label_id, mean, ratio, note"
+    assert "Columns" not in structural
+    assert quality == {
+        "Numeric values": "9",
+        "NaN values": "1",
+        "Infinite values": "2",
+        "Missing values": "1",
+        "Rows with NaN/Inf": "3",
+        "Fields with NaN/Inf": "2 (mean, ratio)",
+    }
 
 
 def test_shape_only_channel_guess_is_marked_inferred_not_explicit():

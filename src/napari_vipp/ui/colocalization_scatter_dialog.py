@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 from qtpy.QtCore import QPoint, QSignalBlocker, Qt, Signal
-from qtpy.QtGui import QColor, QImage, QPainter
+from qtpy.QtGui import QImage, QPainter
 from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
@@ -17,8 +17,10 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
+from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.plots import (
     COLOCALIZATION_SCATTER_COLORMAPS,
     ColocalizationScatterPlot,
@@ -90,8 +92,14 @@ class ColocalizationScatterDialog(QDialog):
         self._colocalized_voxels = 0
         self._range_percentile = 100.0
         self._display_note = ""
+        self._threshold_layout_lock: tuple[
+            tuple[QWidget, int, int], ...
+        ] = ()
+        self._threshold_layout_was_enabled: bool | None = None
 
         self.plot.thresholdChanged.connect(self._on_threshold_changed)
+        self.plot.gestureStarted.connect(self._begin_threshold_gesture)
+        self.plot.gestureFinished.connect(self._end_threshold_gesture)
         self.colormap_combo.currentTextChanged.connect(
             self.colormapChanged.emit
         )
@@ -284,6 +292,37 @@ class ColocalizationScatterDialog(QDialog):
         )
         self.thresholdChanged.emit(int(axis), float(value))
 
+    def _begin_threshold_gesture(self) -> None:
+        """Hold the active decision surface still while its summary changes."""
+
+        if self._threshold_layout_lock:
+            return
+        widgets = (self.plot, self.summary_label)
+        self._threshold_layout_lock = tuple(
+            (widget, widget.minimumHeight(), widget.maximumHeight())
+            for widget in widgets
+        )
+        layout = self.layout()
+        self._threshold_layout_was_enabled = layout.isEnabled()
+        layout.setEnabled(False)
+        for widget, _minimum, _maximum in self._threshold_layout_lock:
+            widget.setFixedHeight(widget.height())
+
+    def _end_threshold_gesture(self) -> None:
+        snapshots = self._threshold_layout_lock
+        if not snapshots:
+            return
+        self._threshold_layout_lock = ()
+        for widget, minimum, maximum in reversed(snapshots):
+            widget.setMaximumHeight(maximum)
+            widget.setMinimumHeight(minimum)
+            widget.updateGeometry()
+        layout = self.layout()
+        layout_was_enabled = self._threshold_layout_was_enabled
+        self._threshold_layout_was_enabled = None
+        if layout_was_enabled is not None:
+            layout.setEnabled(layout_was_enabled)
+
     def _histogram_estimate_summary(self) -> str:
         if self._density_counts is None:
             return "Count pending"
@@ -357,7 +396,7 @@ def render_widget_image(widget) -> QImage:
     width = max(int(widget.width()), 1)
     height = max(int(widget.height()), 1)
     image = QImage(width, height, QImage.Format_RGB888)
-    image.fill(QColor("#111827"))
+    image.fill(theme_colors(QWidget.palette(widget)).surface)
     painter = QPainter(image)
     # PySide6 does not expose the one-argument QPainter overload that PyQt6
     # accepts.  Supplying the default target offset selects the shared Qt API.

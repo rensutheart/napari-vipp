@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from qtpy.QtCore import QEvent
 from qtpy.QtWidgets import QLabel, QSizePolicy, QWidget
+
+from napari_vipp.ui.palette_roles import SemanticToneColors, theme_colors
 
 
 class MessageSeverity(StrEnum):
@@ -15,51 +18,6 @@ class MessageSeverity(StrEnum):
     SUCCESS = "success"
     WARNING = "warning"
     ERROR = "error"
-
-
-_ACCENT_STYLES = {
-    MessageSeverity.NEUTRAL: (
-        "color: #cbd5e1; background: transparent; border: none; padding: 3px 7px;"
-    ),
-    MessageSeverity.INFO: (
-        "color: #bfdbfe;"
-        " background: transparent;"
-        " border: none;"
-        " border-left: 3px solid #3b82f6;"
-        " padding: 3px 7px;"
-    ),
-    MessageSeverity.SUCCESS: (
-        "color: #bbf7d0;"
-        " background: transparent;"
-        " border: none;"
-        " border-left: 3px solid #22c55e;"
-        " padding: 3px 7px;"
-    ),
-    MessageSeverity.WARNING: (
-        "color: #fde68a;"
-        " background: transparent;"
-        " border: none;"
-        " border-left: 3px solid #f59e0b;"
-        " padding: 3px 7px;"
-    ),
-    MessageSeverity.ERROR: (
-        "color: #fca5a5;"
-        " background: transparent;"
-        " border: none;"
-        " border-left: 3px solid #ef4444;"
-        " padding: 3px 7px;"
-    ),
-}
-
-_ACTIONABLE_ERROR_STYLE = (
-    "color: #fecaca;"
-    " background-color: #450a0a;"
-    " border: 1px solid #ef4444;"
-    " border-left: 4px solid #ef4444;"
-    " border-radius: 4px;"
-    " padding: 6px 8px;"
-    " font-weight: 600;"
-)
 
 
 class StatusMessageStrip(QLabel):
@@ -82,6 +40,7 @@ class StatusMessageStrip(QLabel):
         super().__init__("", parent)
         self._severity = MessageSeverity.NEUTRAL
         self._actionable = False
+        self._applying_theme_style = False
         self.setObjectName("VippStatusMessageStrip")
         self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -129,12 +88,73 @@ class StatusMessageStrip(QLabel):
             f"{resolved_severity.value} status"
             + (" requiring action" if resolved_actionable else "")
         )
-        self.setStyleSheet(
-            _ACTIONABLE_ERROR_STYLE
-            if full_width_alert
-            else _ACCENT_STYLES[resolved_severity]
-        )
+        self._apply_theme_style()
         super().setText(str(text))
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        """Refresh palette-derived colors after a live host-theme change."""
+
+        super().changeEvent(event)
+        if not self._applying_theme_style and event.type() in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+        ):
+            self._apply_theme_style()
+
+    def refresh_theme(self) -> None:
+        """Re-resolve colors after the host applies a new theme stylesheet."""
+
+        self._apply_theme_style()
+
+    def _apply_theme_style(self) -> None:
+        if self._applying_theme_style:
+            return
+        self._applying_theme_style = True
+        try:
+            parent = self.parentWidget()
+            palette = (
+                QWidget.palette(parent) if parent is not None else QWidget.palette(self)
+            )
+            colors = theme_colors(palette)
+            full_width_alert = (
+                self._severity is MessageSeverity.ERROR and self._actionable
+            )
+            if full_width_alert:
+                tone = colors.error
+                style = (
+                    f"color: {tone.foreground.name()};"
+                    f" background-color: {tone.surface.name()};"
+                    f" border: 1px solid {tone.border.name()};"
+                    f" border-left: 4px solid {tone.accent.name()};"
+                    " border-radius: 4px;"
+                    " padding: 6px 8px;"
+                    " font-weight: 600;"
+                )
+            elif self._severity is MessageSeverity.NEUTRAL:
+                style = (
+                    f"color: {colors.muted_text.name()};"
+                    " background: transparent; border: none; padding: 3px 7px;"
+                )
+            else:
+                tone = self._semantic_tone(colors)
+                style = (
+                    f"color: {tone.foreground.name()};"
+                    " background: transparent;"
+                    " border: none;"
+                    f" border-left: 3px solid {tone.accent.name()};"
+                    " padding: 3px 7px;"
+                )
+            self.setStyleSheet(style)
+        finally:
+            self._applying_theme_style = False
+
+    def _semantic_tone(self, colors) -> SemanticToneColors:
+        return {
+            MessageSeverity.INFO: colors.info,
+            MessageSeverity.SUCCESS: colors.success,
+            MessageSeverity.WARNING: colors.warning,
+            MessageSeverity.ERROR: colors.error,
+        }[self._severity]
 
 
 __all__ = ["MessageSeverity", "StatusMessageStrip"]
