@@ -783,11 +783,25 @@ def _inspect_display_profiles_to_list(
             "display_rgb_as_channels",
             context,
         )
-        channel_index = None
+        display_channel_axis_as_layers = False
+        if "display_channel_axis_as_layers" in raw:
+            display_channel_axis_as_layers = _required_profile_bool(
+                raw,
+                "display_channel_axis_as_layers",
+                context,
+            )
+        rgb_channel_index = None
         if "display_rgb_channel_index" in raw:
-            channel_index = _required_non_negative_int(
+            rgb_channel_index = _required_non_negative_int(
                 raw,
                 "display_rgb_channel_index",
+                context,
+            )
+        channel_index = None
+        if "display_channel_index" in raw:
+            channel_index = _required_non_negative_int(
+                raw,
+                "display_channel_index",
                 context,
             )
         if display_rgb_as_channels and not display_rgb:
@@ -795,24 +809,40 @@ def _inspect_display_profiles_to_list(
                 f"{context.capitalize()} RGB channel surfaces require "
                 "display_rgb to be true."
             )
-        if display_rgb_as_channels != (channel_index is not None):
+        if display_rgb_as_channels != (rgb_channel_index is not None):
             raise ValueError(
                 f"{context.capitalize()} display_rgb_channel_index is required "
                 "exactly for RGB channel surfaces."
             )
-        if channel_index is not None and channel_index not in {0, 1, 2}:
+        if rgb_channel_index is not None and rgb_channel_index not in {0, 1, 2}:
             raise ValueError(
                 f"{context.capitalize()} display_rgb_channel_index must be 0, "
                 "1, or 2."
             )
+        if display_channel_axis_as_layers and display_rgb:
+            raise ValueError(
+                f"{context.capitalize()} channel-axis surfaces require "
+                "display_rgb to be false."
+            )
+        if display_channel_axis_as_layers != (channel_index is not None):
+            raise ValueError(
+                f"{context.capitalize()} display_channel_index is required "
+                "exactly for channel-axis surfaces."
+            )
+        display_as_channels = (
+            display_rgb_as_channels or display_channel_axis_as_layers
+        )
+        surface_channel_index = (
+            rgb_channel_index if display_rgb_as_channels else channel_index
+        )
         key = (
             node_id,
             output_port,
             data_kind,
             display_kind,
             display_rgb,
-            display_rgb_as_channels,
-            channel_index,
+            display_as_channels,
+            surface_channel_index,
             display_ndim,
         )
         if key in seen:
@@ -830,8 +860,11 @@ def _inspect_display_profiles_to_list(
             "display_rgb_as_channels": display_rgb_as_channels,
             "display_ndim": display_ndim,
         }
-        if channel_index is not None:
-            profile["display_rgb_channel_index"] = channel_index
+        if rgb_channel_index is not None:
+            profile["display_rgb_channel_index"] = rgb_channel_index
+        if display_channel_axis_as_layers:
+            profile["display_channel_axis_as_layers"] = True
+            profile["display_channel_index"] = channel_index
         profile["settings"] = _inspect_general_display_settings_to_dict(
             raw.get("settings", {}),
             context,

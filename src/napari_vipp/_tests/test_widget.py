@@ -136,6 +136,7 @@ from napari_vipp.core.batch_demo import (
     SyntheticBatchDemo,
     validate_synthetic_batch_demo,
 )
+from napari_vipp.core.channel_colors import channel_color_int
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
@@ -20330,6 +20331,300 @@ def test_composite_edit_preserves_upstream_manual_deconvolution_cache(qtbot):
     assert widget.pipeline.node_outputs[deconvolution.id][0] is manual_output
     assert widget.pipeline.node_execution_states[deconvolution.id] == EXECUTION_READY
     assert widget.pipeline.outputs[composite.id] is not None
+
+
+def test_combine_channel_colour_edit_updates_cached_state_without_restacking(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
+    qtbot.addWidget(widget)
+
+    first = widget.add_node_from_palette("gamma_correction")
+    second = widget.add_node_from_palette("gamma_correction")
+    combined = widget.add_node_from_palette("combine_channels")
+    composite = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", first.id)
+    widget._connect_nodes("input", second.id)
+    widget._connect_nodes(first.id, combined.id, target_port=0)
+    widget._connect_nodes(second.id, combined.id, target_port=1)
+    widget._connect_nodes(combined.id, composite.id)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+
+    upstream_ids = {"input", first.id, second.id}
+    upstream_outputs = {
+        node_id: widget.pipeline.outputs[node_id] for node_id in upstream_ids
+    }
+    combined_output = widget.pipeline.outputs[combined.id]
+    assert upstream_ids <= widget.pipeline.completed_node_ids
+
+    executed: list[str] = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        executed.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+    refreshed_thumbnails: list[str] = []
+    original_update_thumbnail = widget._update_node_thumbnail
+
+    def counted_update_thumbnail(node_id, *args, **kwargs):
+        refreshed_thumbnails.append(node_id)
+        return original_update_thumbnail(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget, "_update_node_thumbnail", counted_update_thumbnail)
+    inspect_refreshes = []
+    pinned_refreshes = []
+    monkeypatch.setattr(
+        widget,
+        "_refresh_inspection_layer_if_active",
+        lambda: inspect_refreshes.append(True),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_refresh_pinned_layer_if_active",
+        lambda: pinned_refreshes.append(True),
+    )
+    widget._selected_node_id = combined.id
+    widget._on_channel_color_changed(1, "Blue")
+    widget._debounce_timer.stop()
+
+    assert widget._pending_dirty_node_ids == {composite.id}
+    assert refreshed_thumbnails == [combined.id]
+    assert inspect_refreshes == []
+    assert pinned_refreshes == []
+    assert widget.pipeline.outputs[combined.id] is combined_output
+    assert combined.id in widget.pipeline.completed_node_ids
+    assert widget.pipeline.node_execution_states[combined.id] == EXECUTION_READY
+    assert (
+        widget.pipeline.output_states[combined.id].channels[1].color
+        == channel_color_int("Blue")
+    )
+    assert upstream_ids <= widget.pipeline.completed_node_ids
+    assert all(
+        widget.pipeline.outputs[node_id] is output
+        for node_id, output in upstream_outputs.items()
+    )
+
+    widget.run_pipeline(force_sync=True)
+
+    assert executed == [composite.id]
+    assert upstream_ids <= widget.pipeline.completed_node_ids
+    assert all(
+        widget.pipeline.outputs[node_id] is output
+        for node_id, output in upstream_outputs.items()
+    )
+
+
+def test_combine_channel_colour_edit_reuses_cache_with_pruned_ancestors(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
+    authored = PrototypePipeline()
+    authored.reset_empty_graph()
+    first = authored.add_node("gamma_correction")
+    second = authored.add_node("gamma_correction")
+    combined = authored.add_node("combine_channels")
+    composite = authored.add_node("composite_to_rgb")
+    assert authored.connect("input", first.id).success
+    assert authored.connect("input", second.id).success
+    assert authored.connect(first.id, combined.id, target_port=0).success
+    assert authored.connect(second.id, combined.id, target_port=1).success
+    assert authored.connect(combined.id, composite.id).success
+    retained = frozenset({combined.id, composite.id})
+    compute_request = ComputeRequest(mode=ComputeMode.CPU)
+
+    initial = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=147,
+            workflow=serialize_workflow(authored),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="Test image",
+            source_payloads={},
+            compute_request=compute_request,
+            retain_node_ids=retained,
+            prune_unretained=True,
+        )
+    )
+    assert initial.error == ""
+    assert initial.pipeline is not None
+    assert initial.pipeline.outputs[first.id] is None
+    assert initial.pipeline.outputs[second.id] is None
+    assert {"input", first.id, second.id} <= set(
+        initial.pipeline.node_cache_lineage
+    )
+
+    widget = VippWidget(
+        _Viewer(data, metadata={"axes": "YX"}),
+        defer_initial_run=True,
+    )
+    qtbot.addWidget(widget)
+    widget.pipeline = initial.pipeline
+    widget._pending_dirty_node_ids.clear()
+    widget._build_graph_from_pipeline()
+    widget._selected_node_id = combined.id
+    monkeypatch.setattr(
+        widget,
+        "_refresh_channel_color_presentations",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_sync_current_workflow_tab_state",
+        lambda: None,
+    )
+
+    widget._on_channel_color_changed(1, "Blue")
+    widget._debounce_timer.stop()
+
+    assert widget._pending_dirty_node_ids == {composite.id}
+    assert combined.id in widget.pipeline.completed_node_ids
+    fast_state = widget.pipeline.output_states[combined.id]
+    assert fast_state.channels[1].color == channel_color_int("Blue")
+
+    cached_request = PipelineRunRequest(
+        run_id=148,
+        workflow=serialize_workflow(widget.pipeline),
+        input_data=data,
+        input_metadata={"axes": "YX"},
+        input_name="Test image",
+        source_payloads={},
+        compute_request=compute_request,
+        dirty_node_ids=frozenset(widget._pending_dirty_node_ids),
+        cached_outputs=dict(widget.pipeline.outputs),
+        cached_output_states=dict(widget.pipeline.output_states),
+        cached_node_outputs={
+            node_id: list(outputs)
+            for node_id, outputs in widget.pipeline.node_outputs.items()
+        },
+        cached_node_output_states={
+            node_id: list(states)
+            for node_id, states in widget.pipeline.node_output_states.items()
+        },
+        cached_execution_states=dict(widget.pipeline.node_execution_states),
+        cached_execution_messages=dict(widget.pipeline.node_execution_messages),
+        cached_compute_provenance={
+            **widget.pipeline.node_cache_lineage,
+            **widget.pipeline.node_compute_provenance,
+        },
+        completed_node_ids=frozenset(widget.pipeline.completed_node_ids),
+        retain_node_ids=retained,
+        prune_unretained=True,
+    )
+    started: list[str] = []
+    updated = execute_pipeline_request(
+        cached_request,
+        node_started_callback=started.append,
+    )
+
+    assert updated.error == ""
+    assert updated.pipeline is not None
+    assert started == [composite.id]
+    assert updated.pipeline.outputs[first.id] is None
+    assert updated.pipeline.outputs[second.id] is None
+
+    recomputed = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=149,
+            workflow=serialize_workflow(widget.pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="Test image",
+            source_payloads={},
+            compute_request=compute_request,
+        )
+    )
+    assert recomputed.error == ""
+    assert recomputed.pipeline is not None
+    assert recomputed.pipeline.output_states[combined.id] == fast_state
+
+
+def test_combine_channel_colour_edit_does_not_rebase_an_already_dirty_cache(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
+    qtbot.addWidget(widget)
+
+    first = widget.add_node_from_palette("gamma_correction")
+    second = widget.add_node_from_palette("gamma_correction")
+    third = widget.add_node_from_palette("gamma_correction")
+    combined = widget.add_node_from_palette("combine_channels")
+    widget.pipeline.set_param(combined.id, "input_count", 3)
+    widget._connect_nodes("input", first.id)
+    widget._connect_nodes("input", second.id)
+    widget._connect_nodes("input", third.id)
+    widget._connect_nodes(first.id, combined.id, target_port=0)
+    widget._connect_nodes(second.id, combined.id, target_port=1)
+    widget._connect_nodes(third.id, combined.id, target_port=2)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    cached_state = widget.pipeline.output_states[combined.id]
+
+    widget._selected_node_id = combined.id
+    widget._on_combine_channels_input_count_changed(2)
+    widget._debounce_timer.stop()
+    monkeypatch.setattr(
+        widget,
+        "_refresh_channel_color_presentations",
+        lambda *_args, **_kwargs: None,
+    )
+    widget._on_channel_color_changed(0, "Blue")
+    widget._debounce_timer.stop()
+
+    assert widget._pending_dirty_node_ids == {combined.id}
+    assert widget.pipeline.output_states[combined.id] is cached_state
+
+
+def test_combine_channel_colour_edit_stays_inside_isolated_tuning(qtbot):
+    data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
+    qtbot.addWidget(widget)
+
+    first = widget.add_node_from_palette("gamma_correction")
+    second = widget.add_node_from_palette("gamma_correction")
+    combined = widget.add_node_from_palette("combine_channels")
+    composite = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", first.id)
+    widget._connect_nodes("input", second.id)
+    widget._connect_nodes(first.id, combined.id, target_port=0)
+    widget._connect_nodes(second.id, combined.id, target_port=1)
+    widget._connect_nodes(combined.id, composite.id)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    combined_output = widget.pipeline.outputs[combined.id]
+
+    widget._select_node(combined.id)
+    assert widget._start_isolated_tuning(combined.id) is True
+    widget._on_channel_color_changed(1, "Blue")
+    widget._debounce_timer.stop()
+
+    assert widget._isolated_tuning_node_id == combined.id
+    assert widget._isolated_tuning_has_changes is True
+    assert widget._pending_dirty_node_ids == set()
+    assert widget.pipeline.outputs[combined.id] is combined_output
+    assert widget.pipeline.node_execution_states[combined.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[composite.id] == EXECUTION_BLOCKED
+    assert (
+        widget.pipeline.output_states[combined.id].channels[1].color
+        == channel_color_int("Blue")
+    )
+
+    assert widget._apply_isolated_tuning(run=False) is True
+    assert widget._isolated_tuning_node_id is None
+    assert widget._pending_dirty_node_ids == {composite.id}
 
 
 def test_keep_cached_node_survives_low_memory_pruning(qtbot):

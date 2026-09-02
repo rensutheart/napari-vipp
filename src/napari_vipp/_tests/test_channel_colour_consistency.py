@@ -12,6 +12,7 @@ from napari_vipp.core.metadata import (
     ChannelMetadata,
     image_state_from_array,
 )
+from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 from napari_vipp.ui.plots import _histogram_series_colors
 
 
@@ -300,3 +301,15 @@ def test_combine_channels_colour_edit_repaints_cached_presentations(
         assert len(layers) == 2
         assert {str(layer.colormap) for layer in layers} == {"red", "cyan"}
         assert all(layer.blending == "additive" for layer in layers)
+
+    metadata = widget._workflow_metadata()
+    document = serialize_workflow(widget.pipeline, metadata=metadata)
+    restored = deserialize_workflow(document)
+    profiles = restored["metadata"]["vipp"]["inspector"]["display_profiles"]
+    combine_profiles = [
+        profile for profile in profiles if profile["node_id"] == combined.id
+    ]
+    assert {profile["display_channel_index"] for profile in combine_profiles} == {
+        0,
+        1,
+    }

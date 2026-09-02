@@ -1180,6 +1180,44 @@ def test_workflow_preserves_vipp_metadata(tmp_path):
     assert workflow["metadata"] == metadata
 
 
+def test_workflow_preserves_distinct_channel_axis_inspect_profiles():
+    pipeline = _build_pipeline()
+    profiles = [
+        {
+            "node_id": "gaussian",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": False,
+            "display_rgb_as_channels": False,
+            "display_ndim": 3,
+            "settings": {"opacity": 0.9},
+        },
+        *[
+            {
+                "node_id": "gaussian",
+                "output_port": 0,
+                "data_kind": "image",
+                "display_kind": "image",
+                "display_rgb": False,
+                "display_rgb_as_channels": False,
+                "display_channel_axis_as_layers": True,
+                "display_channel_index": channel_index,
+                "display_ndim": 3,
+                "settings": {"opacity": opacity},
+            }
+            for channel_index, opacity in enumerate((0.4, 0.7))
+        ],
+    ]
+    metadata = {"vipp": {"inspector": {"display_profiles": profiles}}}
+
+    document = serialize_workflow(pipeline, metadata=metadata)
+    restored = deserialize_workflow(document)
+
+    assert document["metadata"] == metadata
+    assert restored["metadata"] == metadata
+
+
 def test_workflow_preserves_attached_batch_config_document(tmp_path):
     document = serialize_workflow(_build_pipeline())
     batch_config = {
@@ -1376,6 +1414,47 @@ def test_workflow_rejects_impossible_inspect_rgb_profile(identity):
     }
 
     with pytest.raises(ValueError, match="RGB|channel_index"):
+        deserialize_workflow(document)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {
+            "display_rgb": True,
+            "display_rgb_as_channels": False,
+            "display_channel_axis_as_layers": True,
+            "display_channel_index": 0,
+        },
+        {
+            "display_rgb": False,
+            "display_rgb_as_channels": False,
+            "display_channel_axis_as_layers": True,
+        },
+        {
+            "display_rgb": False,
+            "display_rgb_as_channels": False,
+            "display_channel_axis_as_layers": False,
+            "display_channel_index": 0,
+        },
+    ],
+)
+def test_workflow_rejects_impossible_inspect_channel_axis_profile(identity):
+    document = serialize_workflow(_build_pipeline())
+    profile = {
+        "node_id": "gaussian",
+        "output_port": 0,
+        "data_kind": "image",
+        "display_kind": "image",
+        "display_ndim": 3,
+        "settings": {},
+        **identity,
+    }
+    document["metadata"] = {
+        "vipp": {"inspector": {"display_profiles": [profile]}}
+    }
+
+    with pytest.raises(ValueError, match="channel-axis|display_channel_index"):
         deserialize_workflow(document)
 
 

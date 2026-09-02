@@ -209,6 +209,7 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.execution import (
     ResidentThumbnailStatisticsRequest as ResidentThumbnailStatisticsRequest,
 )
+from napari_vipp.core.execution import _processing_scientific_context_fingerprint
 from napari_vipp.core.execution_telemetry import DeviceExecutionTelemetryConfig
 from napari_vipp.core.export import (
     export_batch_runner_to_python,
@@ -27556,10 +27557,154 @@ class VippWidget(QWidget):
         colors[slot] = str(value)
         node.params["channel_colors"] = ",".join(colors)
         self._sync_combine_channels_graph_ports(node_id)
-        self._mark_pipeline_dirty(node_id)
+        if self._update_cached_combine_channel_colors(node_id, colors):
+            if node_id == self._isolated_tuning_node_id:
+                self._mark_cached_isolated_tuning_update(node_id)
+            else:
+                downstream = self._scientific_successor_node_ids(node_id)
+                if downstream:
+                    self._mark_pipeline_branches_dirty(downstream)
+                else:
+                    self._clear_exact_workload_qualifications()
+                    self._mark_collection_batch_workflow_stale_if_needed()
+        else:
+            self._mark_pipeline_dirty(node_id)
         self._refresh_channel_color_presentations(node_id)
-        self._debounce_timer.start()
+        if self._pending_dirty_node_ids & set(self.pipeline.nodes):
+            self._debounce_timer.start()
         self._sync_current_workflow_tab_state()
+
+    def _update_cached_combine_channel_colors(
+        self,
+        node_id: str,
+        colors: list[str],
+    ) -> bool:
+        """Apply a metadata-only palette edit without rebuilding the channel stack."""
+
+        if (
+            self._active_pipeline_run_id is not None
+            or self._pipeline_run_pending
+            or self._active_source_load_id is not None
+            or self._source_load_pending
+        ):
+            return False
+        node = self.pipeline.nodes.get(node_id)
+        states = self.pipeline.node_output_states.get(node_id)
+        primary_state = self.pipeline.output_states.get(node_id)
+        if (
+            node is None
+            or node.operation_id != "combine_channels"
+            or self.pipeline.node_execution_states.get(node_id) != EXECUTION_READY
+            or node_id not in self.pipeline.completed_node_ids
+            or self.pipeline.outputs.get(node_id) is None
+            or not states
+            or not isinstance(primary_state, ImageState)
+            or not all(isinstance(state, ImageState) for state in states)
+            or primary_state != states[0]
+            or self._pending_dirty_node_ids
+            & self.pipeline.ancestors_inclusive({node_id})
+        ):
+            return False
+
+        lineage = self.pipeline.node_cache_lineage.get(node_id)
+        compute_provenance = self.pipeline.node_compute_provenance.get(node_id)
+        provenance_records = tuple(
+            record
+            for record in (lineage, compute_provenance)
+            if record is not None
+        )
+        if (
+            lineage is not None
+            and compute_provenance is not None
+            and lineage != compute_provenance
+        ):
+            return False
+        if any(record.produced_by_fallback for record in provenance_records):
+            return False
+        if not provenance_records and (
+            self.pipeline.node_cache_lineage or self.pipeline.node_compute_provenance
+        ):
+            # A detached run cannot reuse a cache hole. Let the ordinary dirty
+            # path rebuild the node from its authenticated inputs instead.
+            return False
+
+        rebased_context = ""
+        if provenance_records:
+            provenance_by_node = {
+                **self.pipeline.node_cache_lineage,
+                **self.pipeline.node_compute_provenance,
+            }
+            try:
+                rebased_context = _processing_scientific_context_fingerprint(
+                    self.pipeline,
+                    node_id,
+                    provenance_by_node,
+                )
+            except (KeyError, TypeError, ValueError):
+                return False
+
+        try:
+            updated_states = [with_channel_colors(state, colors) for state in states]
+        except ValueError:
+            return False
+        if any(state is None for state in updated_states):
+            return False
+
+        self.pipeline.output_states[node_id] = updated_states[0]
+        self.pipeline.node_output_states[node_id] = updated_states
+        if lineage is not None:
+            self.pipeline.node_cache_lineage[node_id] = replace(
+                lineage,
+                scientific_context_fingerprint=rebased_context,
+            )
+        if compute_provenance is not None:
+            self.pipeline.node_compute_provenance[node_id] = replace(
+                compute_provenance,
+                scientific_context_fingerprint=rebased_context,
+            )
+        self.pipeline.node_execution_states[node_id] = EXECUTION_READY
+        self.pipeline.node_execution_messages[node_id] = ""
+        return True
+
+    def _mark_cached_isolated_tuning_update(self, node_id: str) -> None:
+        """Keep a metadata-only result ready while isolation blocks descendants."""
+
+        self._supersede_interaction_for_untraced_edit(
+            node_id,
+            "scientific_or_topology_change",
+        )
+        self._preempt_thumbnail_statistics_for_scientific_edit()
+        self._clear_colocalization_scatter_cache()
+        descendants = self.pipeline.descendants_inclusive({node_id}) - {node_id}
+        self._mark_compute_badges_stale(descendants)
+        cleared_overrides = self._discard_background_node_result_overrides(
+            descendants
+        )
+        self.pipeline.mark_nodes_blocked(
+            descendants,
+            message=(
+                "Downstream result is stale because propagation is paused while "
+                f"'{self._node_title(node_id)}' is tuned."
+            ),
+        )
+        self._isolated_tuning_has_changes = True
+        self._sync_execution_ui()
+        self._refresh_node_presentation_surfaces(cleared_overrides)
+        self._refresh_histogram_dialog_from_owner(descendants)
+        self._mark_collection_batch_workflow_stale_if_needed()
+
+    def _scientific_successor_node_ids(self, node_id: str) -> set[str]:
+        """Return direct consumers whose scientific input depends on ``node_id``."""
+
+        return {
+            connection.target_id
+            for connection in self.pipeline.connections
+            if connection.source_id == node_id
+            and not (
+                self.pipeline.node_is_bypassed(connection.target_id)
+                and connection.target_port != 0
+            )
+        }
 
     def _sync_combine_channels_graph_ports(self, node_id: str) -> None:
         node = self.pipeline.nodes.get(node_id)
@@ -27762,11 +27907,32 @@ class VippWidget(QWidget):
     def _refresh_channel_color_presentations(self, node_id: str) -> None:
         """Repaint every visible colour surface without recomputing image data."""
 
-        self._update_thumbnails()
+        data, state, output_port = self._node_thumbnail_display_payload(node_id)
+        self._update_node_thumbnail(
+            node_id,
+            data,
+            state,
+            output_port,
+            queue_stack_contrast=False,
+        )
+        can_pin = self._node_can_pin(node_id)
+        self.graph_view.set_node_can_pin(node_id, can_pin)
+        if self._active_pinned_node_id == node_id and not can_pin:
+            self._clear_active_pin(status=False)
+        else:
+            self._sync_pin_ui()
         if self._selected_node_id == node_id:
             self._refresh_selected_histogram_channel_colors(node_id)
-        self._refresh_inspection_layer_if_active()
-        self._refresh_pinned_layer_if_active()
+        inspection_layers = self._generated_layers_for_name(self._inspect_layer_name)
+        inspected_node_id = (
+            getattr(inspection_layers[0], "metadata", {}).get("node_id")
+            if inspection_layers
+            else None
+        )
+        if inspected_node_id == node_id:
+            self._refresh_inspection_layer_if_active()
+        if self._active_pinned_node_id == node_id:
+            self._refresh_pinned_layer_if_active()
 
     def _refresh_selected_histogram_channel_colors(self, node_id: str) -> None:
         counts = np.asarray(self.histogram_plot._series_counts)
