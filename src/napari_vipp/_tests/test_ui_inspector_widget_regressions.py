@@ -244,6 +244,79 @@ def test_new_node_drag_defers_secondary_inspector_work_until_release(
     assert completed == [(node.id, True)]
 
 
+def test_composite_press_hold_defers_cached_inspector_until_drag_release(
+    qtbot,
+    monkeypatch,
+):
+    widget = _widget(
+        qtbot,
+        data=np.zeros((3, 4, 32, 32), dtype=np.uint16),
+        axes="CZYX",
+    )
+    widget._permit_incomplete_startup_discard()
+    composite = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", composite.id)
+    _publish_array_output(
+        widget,
+        composite.id,
+        np.zeros((4, 32, 32, 3), dtype=np.uint16),
+        axes="ZYXC",
+    )
+    widget.resize(1_300, 640)
+    widget.show()
+    qtbot.waitExposed(widget)
+    widget.graph_view.select_node("gaussian")
+    qtbot.wait(40)
+
+    scheduled = []
+    monkeypatch.setattr(
+        "napari_vipp._widget.QTimer.singleShot",
+        lambda delay, callback: scheduled.append((int(delay), callback)),
+    )
+    completed = []
+    monkeypatch.setattr(
+        widget,
+        "_refresh_selected_inspector_after_selection",
+        lambda node_id, *, select_layer: completed.append(
+            (node_id, bool(select_layer))
+        ),
+    )
+
+    proxy = widget.graph_view._proxies[composite.id]
+    position_before = proxy.pos()
+    start = widget.graph_view.mapFromScene(proxy.sceneBoundingRect().center())
+    end = start + QPoint(55, -35)
+    qtbot.mousePress(widget.graph_view.viewport(), Qt.LeftButton, pos=start)
+
+    generation = widget._selected_inspector_refresh_generation
+    assert widget.graph_view.node_pointer_gesture_active()
+    assert not widget.graph_view.node_drag_in_progress()
+    assert scheduled
+    widget._finish_selected_inspector_refresh(
+        generation,
+        composite.id,
+        select_layer=True,
+    )
+    assert completed == []
+
+    qtbot.mouseMove(widget.graph_view.viewport(), pos=end)
+
+    assert proxy.pos() != position_before
+    assert widget.graph_view.node_drag_in_progress()
+    assert completed == []
+
+    qtbot.mouseRelease(widget.graph_view.viewport(), Qt.LeftButton, pos=end)
+
+    assert not widget.graph_view.node_pointer_gesture_active()
+    assert not widget.graph_view.node_drag_in_progress()
+    widget._finish_selected_inspector_refresh(
+        generation,
+        composite.id,
+        select_layer=True,
+    )
+    assert completed == [(composite.id, True)]
+
+
 def test_rapid_embedded_card_switch_publishes_only_latest_inspector(qtbot, monkeypatch):
     widget = _widget(qtbot)
     label_filter = widget.add_node_from_palette("filter_labels_by_volume")

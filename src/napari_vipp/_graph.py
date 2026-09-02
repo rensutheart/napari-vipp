@@ -2156,11 +2156,16 @@ class NodeProxy(QGraphicsProxyWidget):
             card = self._card()
             view = _view_for_scene(self.scene())
             if view is not None:
-                self._press_preserved_group = view._handle_node_press(
-                    self.node_id,
-                    event.modifiers(),
-                    preserve_group_for_drag=True,
-                )
+                view._begin_node_pointer_gesture(self.node_id)
+                try:
+                    self._press_preserved_group = view._handle_node_press(
+                        self.node_id,
+                        event.modifiers(),
+                        preserve_group_for_drag=True,
+                    )
+                except Exception:
+                    view._finish_node_pointer_gesture(self.node_id)
+                    raise
                 self._drag_group_start_positions = view._selected_node_start_positions(
                     self.node_id
                 )
@@ -2204,6 +2209,9 @@ class NodeProxy(QGraphicsProxyWidget):
 
     def mouseReleaseEvent(self, event):  # noqa: N802
         if self._drag_start_scene is not None and event.button() == Qt.LeftButton:
+            view = _view_for_scene(self.scene())
+            if view is not None:
+                view._finish_node_pointer_gesture(self.node_id)
             start_pos = self._drag_start_pos
             end_pos = QPointF(self.pos())
             group_start_positions = {
@@ -2227,7 +2235,6 @@ class NodeProxy(QGraphicsProxyWidget):
             self._dragging = False
             self._press_was_preview = False
             if moved:
-                view = _view_for_scene(self.scene())
                 if view is not None:
                     if len(group_start_positions) > 1:
                         view._finish_selected_node_drag(group_start_positions)
@@ -2265,7 +2272,6 @@ class NodeProxy(QGraphicsProxyWidget):
                             )
                         view.node_moved.emit(self.node_id, start_pos, end_pos)
             else:
-                view = _view_for_scene(self.scene())
                 if view is not None:
                     view._finish_selected_node_drag(group_start_positions)
                     if self._press_preserved_group:
@@ -2647,6 +2653,7 @@ class PipelineGraphView(QGraphicsView):
         self._cards: dict[str, NodeCard] = {}
         self._primary_node_id: str | None = None
         self._node_press_dispatch_depth = 0
+        self._node_pointer_gesture_node_id: str | None = None
         self._clipboard_can_paste = False
         self._clipboard_single_operation_id = ""
         self._clipboard_single_title = ""
@@ -4612,6 +4619,22 @@ class PipelineGraphView(QGraphicsView):
         """Return whether node-selection signals are inside a mouse press."""
 
         return self._node_press_dispatch_depth > 0
+
+    def _begin_node_pointer_gesture(self, node_id: str) -> None:
+        """Reserve the UI thread for one potential click-or-drag gesture."""
+
+        self._node_pointer_gesture_node_id = str(node_id)
+
+    def _finish_node_pointer_gesture(self, node_id: str) -> None:
+        """Release a matching node gesture after its mouse button is released."""
+
+        if self._node_pointer_gesture_node_id == str(node_id):
+            self._node_pointer_gesture_node_id = None
+
+    def node_pointer_gesture_active(self) -> bool:
+        """Return whether a node press may still become or remain a drag."""
+
+        return self._node_pointer_gesture_node_id in self._proxies
 
     def node_drag_in_progress(self) -> bool:
         """Return whether nodes are following an active pointer drag."""

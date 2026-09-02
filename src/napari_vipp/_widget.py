@@ -19630,11 +19630,14 @@ class VippWidget(QWidget):
             or node_id != self._selected_node_id
         ):
             return
-        if self.graph_view.node_drag_in_progress():
+        if (
+            self.graph_view.node_pointer_gesture_active()
+            or self.graph_view.node_drag_in_progress()
+        ):
             # The title and parameters are already current. Keep metadata,
             # viewer publication, connected summaries, and diagnostics out of
-            # the pointer-critical path; the same generation resumes after the
-            # drag releases without rebuilding the form.
+            # the pointer-critical path from the initial press onward; the same
+            # generation resumes after release without rebuilding the form.
             QTimer.singleShot(
                 SELECTION_INSPECTOR_REFRESH_DELAY_MS,
                 lambda: self._finish_selected_inspector_refresh(
@@ -19693,6 +19696,19 @@ class VippWidget(QWidget):
             or generation != self._selected_viewer_refresh_generation
             or node_id != self._selected_node_id
         ):
+            return
+        if (
+            self.graph_view.node_pointer_gesture_active()
+            or self.graph_view.node_drag_in_progress()
+        ):
+            QTimer.singleShot(
+                SELECTION_INSPECTOR_REFRESH_DELAY_MS,
+                lambda: self._finish_selected_viewer_refresh(
+                    generation,
+                    node_id,
+                    select_layer=select_layer,
+                ),
+            )
             return
         dims_changed = self._refresh_selected_viewer_now(
             node_id,
