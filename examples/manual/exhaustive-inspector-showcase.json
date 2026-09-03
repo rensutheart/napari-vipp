@@ -709,7 +709,7 @@
       "params": {
         "threshold_scope": "Stack histogram",
         "histogram_bins": 256,
-        "max_iterations": 969,
+        "max_iterations": 5,
         "channel_axis": -1
       }
     },
@@ -970,7 +970,8 @@
         "include_axis_descriptors": true,
         "include_2d_boundary_descriptors": false,
         "include_derived_shape_ratios": true,
-        "include_2d_shape_moments": false
+        "include_2d_shape_moments": false,
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -982,7 +983,8 @@
         "max_value": 0.0,
         "keep_mode": "Keep inside range",
         "unmatched_labels": "Remove unmatched labels",
-        "spatial_mode": "Auto from axes"
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -994,7 +996,8 @@
         "include_axis_descriptors": false,
         "include_2d_boundary_descriptors": false,
         "include_derived_shape_ratios": false,
-        "include_2d_shape_moments": false
+        "include_2d_shape_moments": false,
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -1003,7 +1006,8 @@
       "params": {
         "spatial_mode": "Auto from axes",
         "minimum_voxel_count": 16,
-        "include_convex_hull_metrics": true
+        "include_convex_hull_metrics": true,
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -1064,34 +1068,8 @@
       "operation_id": "masked_colocalization_metrics",
       "params": {
         "threshold_mode": "Manual",
-        "channel_1_threshold": 12000.0,
-        "channel_2_threshold": 12000.0
-      }
-    },
-    {
-      "id": "colocalization_scatter_plot_1",
-      "operation_id": "colocalization_scatter_plot",
-      "params": {
-        "threshold_mode": "Manual",
-        "channel_1_threshold": 12000.0,
-        "channel_2_threshold": 12000.0,
-        "bins": 96,
-        "output_size": 512,
-        "range_percentile": 99.5,
-        "log_counts": true
-      }
-    },
-    {
-      "id": "masked_colocalization_scatter_plot_1",
-      "operation_id": "masked_colocalization_scatter_plot",
-      "params": {
-        "threshold_mode": "Manual",
-        "channel_1_threshold": 12000.0,
-        "channel_2_threshold": 12000.0,
-        "bins": 96,
-        "output_size": 512,
-        "range_percentile": 99.5,
-        "log_counts": true
+        "channel_1_threshold": 43101.47,
+        "channel_2_threshold": 46944.25
       }
     },
     {
@@ -1149,28 +1127,32 @@
         "spatial_mode": "Auto from axes",
         "threshold_mode": "Manual",
         "channel_1_threshold": 12000.0,
-        "channel_2_threshold": 12000.0
+        "channel_2_threshold": 12000.0,
+        "resolved_spatial_ndim": 3
       }
     },
     {
       "id": "label_overlap_association_1",
       "operation_id": "label_overlap_association",
       "params": {
-        "spatial_mode": "Auto from axes"
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
       }
     },
     {
       "id": "nearest_object_distance_1",
       "operation_id": "nearest_object_distance",
       "params": {
-        "spatial_mode": "Auto from axes"
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
       }
     },
     {
       "id": "event_localization_1",
       "operation_id": "event_localization",
       "params": {
-        "spatial_mode": "Auto from axes"
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -1210,7 +1192,8 @@
       "operation_id": "analyze_skeleton",
       "params": {
         "spatial_mode": "Auto from axes",
-        "input_mode": "Already skeletonized"
+        "input_mode": "Already skeletonized",
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -1218,7 +1201,8 @@
       "operation_id": "measure_skeleton_branches",
       "params": {
         "spatial_mode": "Auto from axes",
-        "input_mode": "Already skeletonized"
+        "input_mode": "Already skeletonized",
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -1234,7 +1218,8 @@
       "operation_id": "skeleton_graph_tables",
       "params": {
         "spatial_mode": "Auto from axes",
-        "input_mode": "Already skeletonized"
+        "input_mode": "Already skeletonized",
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -1242,7 +1227,8 @@
       "operation_id": "measure_overall_skeleton_network",
       "params": {
         "spatial_mode": "Auto from axes",
-        "input_mode": "Already skeletonized"
+        "input_mode": "Already skeletonized",
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -1341,7 +1327,8 @@
         "clip_negative_input": true,
         "clip_output_negative": true,
         "preserve_input_scale": true,
-        "filter_epsilon": 1e-12
+        "filter_epsilon": 1e-12,
+        "resolved_spatial_ndim": 3
       }
     },
     {
@@ -1357,7 +1344,8 @@
         "clip_output_negative": true,
         "preserve_input_scale": true,
         "filter_epsilon": 1e-12,
-        "denominator_floor": 0.05
+        "denominator_floor": 0.05,
+        "resolved_spatial_ndim": 3
       }
     }
   ],
@@ -2014,20 +2002,6 @@
     },
     {
       "source": "split_channels_1",
-      "target": "colocalization_scatter_plot_1",
-      "target_port": 0,
-      "source_port": 0,
-      "tunnel": "Red channel"
-    },
-    {
-      "source": "split_channels_1",
-      "target": "colocalization_scatter_plot_1",
-      "target_port": 1,
-      "source_port": 1,
-      "tunnel": "Green channel"
-    },
-    {
-      "source": "split_channels_1",
       "target": "colocalized_voxels_1",
       "target_port": 0,
       "source_port": 0,
@@ -2071,27 +2045,6 @@
     {
       "source": "binary_threshold_1",
       "target": "masked_colocalization_metrics_1",
-      "target_port": 2,
-      "source_port": 0,
-      "tunnel": "ROI mask"
-    },
-    {
-      "source": "split_channels_1",
-      "target": "masked_colocalization_scatter_plot_1",
-      "target_port": 0,
-      "source_port": 0,
-      "tunnel": "Red channel"
-    },
-    {
-      "source": "split_channels_1",
-      "target": "masked_colocalization_scatter_plot_1",
-      "target_port": 1,
-      "source_port": 1,
-      "tunnel": "Green channel"
-    },
-    {
-      "source": "binary_threshold_1",
-      "target": "masked_colocalization_scatter_plot_1",
       "target_port": 2,
       "source_port": 0,
       "tunnel": "ROI mask"
@@ -2363,12 +2316,12 @@
       20.0
     ],
     "crop_stack_1": [
-      342.5,
+      343.0,
       20.0
     ],
     "select_axis_slice_1": [
       685.0,
-      17.5
+      18.0
     ],
     "split_axis_1": [
       1020.0,
@@ -2387,8 +2340,8 @@
       330.0
     ],
     "rescale_axes_1": [
-      1722.5,
-      407.5
+      1723.0,
+      408.0
     ],
     "born_wolf_psf_1": [
       2040.0,
@@ -2403,7 +2356,7 @@
       -310.0
     ],
     "orthogonal_projection_1": [
-      1997.5,
+      1998.0,
       10.0
     ],
     "input_2": [
@@ -2663,8 +2616,8 @@
       5110.0
     ],
     "expand_labels_1": [
-      2720.0,
-      5110.0
+      2807.0,
+      5104.0
     ],
     "auto_watershed_from_mask_1": [
       2380.0,
@@ -2691,28 +2644,28 @@
       5750.0
     ],
     "filter_labels_by_property_1": [
-      3400.0,
-      5750.0
+      3290.0,
+      6010.0
     ],
     "measure_objects_intensity_1": [
-      3740.0,
-      5750.0
+      3671.0,
+      5783.0
     ],
     "measure_3d_mesh_morphology_1": [
-      3740.0,
-      6070.0
+      3812.0,
+      6043.0
     ],
     "merge_tables_1": [
-      4080.0,
-      5750.0
+      4147.0,
+      5751.0
     ],
     "add_metadata_columns_1": [
-      4420.0,
+      4533.0,
       5750.0
     ],
     "select_table_columns_1": [
-      4760.0,
-      5750.0
+      4813.0,
+      5753.0
     ],
     "summarize_measurements_1": [
       5100.0,
@@ -2723,52 +2676,44 @@
       5750.0
     ],
     "colocalization_metrics_1": [
-      680.0,
-      6590.0
+      205.0,
+      6770.0
     ],
     "masked_colocalization_metrics_1": [
-      1020.0,
-      6590.0
-    ],
-    "colocalization_scatter_plot_1": [
-      1360.0,
-      6590.0
-    ],
-    "masked_colocalization_scatter_plot_1": [
-      1700.0,
-      6590.0
+      231.0,
+      6520.0
     ],
     "colocalized_voxels_1": [
-      2040.0,
-      6590.0
+      831.3958511406257,
+      6766.63509378125
     ],
     "masked_colocalized_voxels_1": [
-      2380.0,
-      6590.0
+      844.0827903750007,
+      6477.8963090937505
     ],
     "racc_index_1": [
-      2720.0,
-      6590.0
+      1435.0,
+      6775.0
     ],
     "masked_racc_index_1": [
-      3060.0,
-      6590.0
+      1446.0,
+      6456.0
     ],
     "object_colocalization_metrics_1": [
-      3400.0,
-      6590.0
+      2011.0,
+      6505.0
     ],
     "label_overlap_association_1": [
-      3740.0,
-      6590.0
+      2035.0,
+      6849.0
     ],
     "nearest_object_distance_1": [
-      4080.0,
-      6590.0
+      2582.0,
+      6837.0
     ],
     "event_localization_1": [
-      4420.0,
-      6590.0
+      2595.0,
+      6495.0
     ],
     "input_5": [
       0.0,
@@ -2799,8 +2744,8 @@
       7470.0
     ],
     "measure_overall_skeleton_network_1": [
-      2380.0,
-      7470.0
+      2495.0,
+      7460.0
     ],
     "skeleton_keypoints_1": [
       1020.0,
@@ -2835,12 +2780,12 @@
       9010.0
     ],
     "richardson_lucy_deconvolution_1": [
-      680.0,
-      8690.0
+      695.0,
+      9010.0
     ],
     "richardson_lucy_tv_deconvolution_1": [
-      1020.0,
-      8690.0
+      764.9999999999999,
+      8655.0
     ]
   },
   "notes": [
@@ -2920,7 +2865,6 @@
   "metadata": {
     "vipp": {
       "inspector": {
-        "selected_node_id": "mip_1",
         "right_panel_visible": true,
         "display_profiles": [
           {
@@ -2934,6 +2878,84 @@
             "settings": {
               "colormap": "blue",
               "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "colocalized_voxels_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": true,
+            "display_rgb_as_channels": true,
+            "display_ndim": 3,
+            "display_rgb_channel_index": 0,
+            "settings": {
+              "colormap": "red",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "colocalized_voxels_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": true,
+            "display_rgb_as_channels": true,
+            "display_ndim": 3,
+            "display_rgb_channel_index": 1,
+            "settings": {
+              "colormap": "green",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "colocalized_voxels_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": true,
+            "display_rgb_as_channels": true,
+            "display_ndim": 3,
+            "display_rgb_channel_index": 2,
+            "settings": {
+              "colormap": "blue",
+              "blending": "additive",
               "interpolation2d": "nearest",
               "interpolation3d": "linear",
               "projection_mode": "mean",
@@ -3030,6 +3052,26 @@
             }
           },
           {
+            "node_id": "expand_labels_1",
+            "output_port": 0,
+            "data_kind": "labels",
+            "display_kind": "labels",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "none",
+              "rendering": "iso_categorical",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 0.7
+            },
+            "intensity_settings": {
+              "int32": {}
+            }
+          },
+          {
             "node_id": "input",
             "output_port": 0,
             "data_kind": "image",
@@ -3111,6 +3153,134 @@
             }
           },
           {
+            "node_id": "masked_colocalized_voxels_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": true,
+            "display_rgb_as_channels": true,
+            "display_ndim": 3,
+            "display_rgb_channel_index": 0,
+            "settings": {
+              "colormap": "red",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "masked_colocalized_voxels_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": true,
+            "display_rgb_as_channels": true,
+            "display_ndim": 3,
+            "display_rgb_channel_index": 1,
+            "settings": {
+              "colormap": "green",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "masked_colocalized_voxels_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": true,
+            "display_rgb_as_channels": true,
+            "display_ndim": 3,
+            "display_rgb_channel_index": 2,
+            "settings": {
+              "colormap": "blue",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "masked_racc_index_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "red",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "minimum_threshold_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
             "node_id": "mip_1",
             "output_port": 0,
             "data_kind": "image",
@@ -3170,6 +3340,31 @@
             "display_ndim": 2,
             "settings": {
               "colormap": "blue",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "racc_index_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "red",
               "blending": "translucent",
               "interpolation2d": "nearest",
               "interpolation3d": "linear",

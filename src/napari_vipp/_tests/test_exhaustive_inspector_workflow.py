@@ -5,7 +5,10 @@ import math
 from collections import Counter
 from pathlib import Path
 
-from napari_vipp.core.pipeline import PALETTE_NODE_LIBRARY
+from napari_vipp.core.pipeline import (
+    PALETTE_HIDDEN_OPERATION_IDS,
+    PALETTE_NODE_LIBRARY,
+)
 from napari_vipp.core.workflow import (
     WORKFLOW_TYPE,
     WORKFLOW_VERSION,
@@ -41,7 +44,8 @@ def test_exhaustive_inspector_showcase_covers_every_palette_operation_once():
     operation_counts = Counter(node.operation_id for node in snapshot.graph.nodes)
     palette_ids = {operation.id for operation in PALETTE_NODE_LIBRARY}
 
-    assert set(operation_counts) == palette_ids
+    assert palette_ids <= set(operation_counts)
+    assert set(operation_counts) - palette_ids == PALETTE_HIDDEN_OPERATION_IDS
     assert operation_counts["input"] >= 1
     assert {
         operation_id: count

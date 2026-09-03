@@ -5908,7 +5908,18 @@ _RESOLVED_SPATIAL_PARAMETER_OPERATION_IDS = frozenset(
     if spec.function is not None
     and "resolved_spatial_ndim" in inspect.signature(spec.function).parameters
 )
-PALETTE_NODE_LIBRARY = NODE_LIBRARY
+PALETTE_HIDDEN_OPERATION_IDS = frozenset(
+    {
+        # Interactive scatter review and export now live on the corresponding
+        # metric nodes.  Keep these raster-producing operations registered so
+        # existing workflows and headless callers remain reproducible.
+        "colocalization_scatter_plot",
+        "masked_colocalization_scatter_plot",
+    }
+)
+PALETTE_NODE_LIBRARY = tuple(
+    spec for spec in NODE_LIBRARY if spec.id not in PALETTE_HIDDEN_OPERATION_IDS
+)
 
 
 def validate_node_execution_mode(

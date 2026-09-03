@@ -18,6 +18,12 @@ import numpy as np
 from qtpy.QtCore import QObject, QRunnable, Signal
 
 from napari_vipp.core.compute import ComputeMode
+from napari_vipp.core.host_memory import (
+    DEFAULT_HOST_MEMORY_SAFETY_RESERVE_BYTES,
+    HostMemoryPreflightReason,
+    capture_host_memory,
+    preflight_host_allocation,
+)
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.thumbnail_statistics import (
     ThumbnailStatisticsCleanupError,
@@ -25,6 +31,9 @@ from napari_vipp.core.thumbnail_statistics import (
 )
 from napari_vipp.ui.plots import (
     COLOCALIZATION_SCATTER_BINS,
+    COLOCALIZATION_SCATTER_DISPLAY_MAX_BINS,
+    cap_colocalization_scatter_density_for_display,
+    colocalization_scatter_peak_bytes,
 )
 
 
@@ -167,11 +176,26 @@ class ColocalizationScatterDensity:
     channel_2_min: float
     channel_2_max: float
     range_percentile: float = 100.0
+    full_channel_1_min: float | None = None
+    full_channel_1_max: float | None = None
+    full_channel_2_min: float | None = None
+    full_channel_2_max: float | None = None
+    presentation_density_counts: object = None
 
     @property
     def nbytes(self) -> int:
         """Return the retained ndarray footprint used by the cache budget."""
-        return int(np.asarray(self.density_counts).nbytes)
+        arrays = [np.asarray(self.density_counts)]
+        if self.presentation_density_counts is not None:
+            arrays.append(np.asarray(self.presentation_density_counts))
+        unique_arrays: list[np.ndarray] = []
+        retained_bytes = 0
+        for array in arrays:
+            if any(np.shares_memory(array, existing) for existing in unique_arrays):
+                continue
+            unique_arrays.append(array)
+            retained_bytes += int(array.nbytes)
+        return retained_bytes
 
 
 @dataclass(frozen=True)
@@ -214,6 +238,11 @@ class ColocalizationScatterResult:
     channel_2_max: float | None = None
     range_percentile: float = 100.0
     density_reused: bool = False
+    full_channel_1_min: float | None = None
+    full_channel_1_max: float | None = None
+    full_channel_2_min: float | None = None
+    full_channel_2_max: float | None = None
+    presentation_density_counts: object = None
 
 
 @dataclass(frozen=True)
@@ -834,13 +863,80 @@ def _callable_accepts_keyword(function: Callable[..., object], name: str) -> boo
     parameter = parameters.get(name)
     if parameter is not None and parameter.kind is not Parameter.POSITIONAL_ONLY:
         return True
-    return any(
-        item.kind is Parameter.VAR_KEYWORD for item in parameters.values()
-    )
+    return any(item.kind is Parameter.VAR_KEYWORD for item in parameters.values())
 
 
 class _ColocalizationScatterSignals(QObject):
     finished = Signal(object)
+
+
+_UNAVAILABLE_HOST_MEMORY_REASONS = frozenset(
+    {
+        HostMemoryPreflightReason.SNAPSHOT_UNAVAILABLE,
+        HostMemoryPreflightReason.COMMIT_HEADROOM_UNAVAILABLE,
+    }
+)
+
+
+def _preflight_colocalization_scatter_density(
+    bins: int,
+    *,
+    host_memory_provider: Callable[[], object],
+) -> None:
+    """Reject a measured unsafe high-resolution scatter allocation."""
+    bins = int(bins)
+    if bins <= COLOCALIZATION_SCATTER_DISPLAY_MAX_BINS:
+        return
+    try:
+        snapshot = host_memory_provider()
+    except Exception:
+        # A diagnostic probe must never make the scientific operation unusable.
+        return
+    if snapshot is None:
+        return
+    required_bytes = colocalization_scatter_peak_bytes(bins)
+    decision = preflight_host_allocation(
+        snapshot,
+        required_bytes=required_bytes,
+        purpose=f"{bins:,}-bin colocalization scatter density",
+    )
+    if decision.allowed:
+        return
+    if decision.reason_code in _UNAVAILABLE_HOST_MEMORY_REASONS:
+        observations = (
+            (
+                "physical-memory",
+                snapshot.physical_available_bytes,
+                decision.physical_reserve_bytes,
+            ),
+            (
+                "commit",
+                snapshot.commit_available_bytes,
+                decision.commit_reserve_bytes,
+            ),
+        )
+        for resource, available_bytes, reserve_bytes in observations:
+            if available_bytes is None:
+                continue
+            reserve = (
+                DEFAULT_HOST_MEMORY_SAFETY_RESERVE_BYTES
+                if reserve_bytes is None
+                else reserve_bytes
+            )
+            if available_bytes >= required_bytes + reserve:
+                continue
+            raise MemoryError(
+                "Colocalization scatter memory preflight rejected the requested "
+                f"{bins:,} × {bins:,} density: measured {resource} headroom "
+                f"({available_bytes:,} bytes) cannot cover the estimated peak "
+                f"({required_bytes:,} bytes) plus the safety reserve "
+                f"({reserve:,} bytes)."
+            )
+        return
+    raise MemoryError(
+        "Colocalization scatter memory preflight rejected the requested "
+        f"{bins:,} × {bins:,} density. {decision.reason}"
+    )
 
 
 class ColocalizationScatterWorker(QRunnable):
@@ -854,6 +950,7 @@ class ColocalizationScatterWorker(QRunnable):
         threshold_values: Callable[..., object],
         scatter_density: Callable[..., object],
         scatter_counts: Callable[..., object],
+        host_memory_provider: Callable[[], object] = capture_host_memory,
     ):
         super().__init__()
         self.request = request
@@ -861,6 +958,7 @@ class ColocalizationScatterWorker(QRunnable):
         self._threshold_values = threshold_values
         self._scatter_density = scatter_density
         self._scatter_counts = scatter_counts
+        self._host_memory_provider = host_memory_provider
         self.signals = _ColocalizationScatterSignals()
 
     def run(self) -> None:
@@ -881,6 +979,11 @@ class ColocalizationScatterWorker(QRunnable):
         try:
             if progress is not None:
                 progress.check_cancelled()
+            if request.reusable_density is None:
+                _preflight_colocalization_scatter_density(
+                    request.bins,
+                    host_memory_provider=self._host_memory_provider,
+                )
             if (
                 str(request.threshold_mode).lower().startswith("costes")
                 and not request.thresholds_resolved
@@ -927,10 +1030,35 @@ class ColocalizationScatterWorker(QRunnable):
                     progress=progress,
                 )
                 density_counts = reusable.density_counts
+                presentation_density_counts = reusable.presentation_density_counts
+                if presentation_density_counts is None:
+                    presentation_density_counts = (
+                        cap_colocalization_scatter_density_for_display(density)
+                    )
                 channel_1_min = float(reusable.channel_1_min)
                 channel_1_max = float(reusable.channel_1_max)
                 channel_2_min = float(reusable.channel_2_min)
                 channel_2_max = float(reusable.channel_2_max)
+                full_channel_1_min = float(
+                    reusable.channel_1_min
+                    if reusable.full_channel_1_min is None
+                    else reusable.full_channel_1_min
+                )
+                full_channel_1_max = float(
+                    reusable.channel_1_max
+                    if reusable.full_channel_1_max is None
+                    else reusable.full_channel_1_max
+                )
+                full_channel_2_min = float(
+                    reusable.channel_2_min
+                    if reusable.full_channel_2_min is None
+                    else reusable.full_channel_2_min
+                )
+                full_channel_2_max = float(
+                    reusable.channel_2_max
+                    if reusable.full_channel_2_max is None
+                    else reusable.full_channel_2_max
+                )
             else:
                 (
                     density_counts,
@@ -940,6 +1068,10 @@ class ColocalizationScatterWorker(QRunnable):
                     channel_1_max,
                     channel_2_min,
                     channel_2_max,
+                    full_channel_1_min,
+                    full_channel_1_max,
+                    full_channel_2_min,
+                    full_channel_2_max,
                 ) = self._scatter_density(
                     ch1,
                     ch2,
@@ -950,6 +1082,12 @@ class ColocalizationScatterWorker(QRunnable):
                     bins=request.bins,
                     range_percentile=request.range_percentile,
                     progress=progress,
+                    include_full_ranges=True,
+                )
+                presentation_density_counts = (
+                    cap_colocalization_scatter_density_for_display(
+                        np.asarray(density_counts)
+                    )
                 )
             display_min = min(channel_1_min, channel_2_min)
             display_max = max(channel_1_max, channel_2_max)
@@ -989,6 +1127,11 @@ class ColocalizationScatterWorker(QRunnable):
                 channel_2_max=channel_2_max,
                 range_percentile=request.range_percentile,
                 density_reused=density_reused,
+                full_channel_1_min=full_channel_1_min,
+                full_channel_1_max=full_channel_1_max,
+                full_channel_2_min=full_channel_2_min,
+                full_channel_2_max=full_channel_2_max,
+                presentation_density_counts=presentation_density_counts,
             )
         )
 

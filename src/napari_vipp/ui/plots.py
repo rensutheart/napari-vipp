@@ -31,9 +31,11 @@ COLOCALIZATION_SCATTER_COLORMAPS = (
 SCATTER_DENSITY_CHUNK_ELEMENTS = 1_048_576
 SCATTER_DENSITY_BACKGROUND_COST_BYTES = 16 * 1024 * 1024
 COLOCALIZATION_SCATTER_CACHE_BUDGET_BYTES = 192 * 1024 * 1024
-# Plot conversion happens on Qt's GUI thread. Keep its largest float working
-# arrays near 8 MiB while the graph operation/export remains available at 4096.
-COLOCALIZATION_SCATTER_INSPECTOR_MAX_BINS = 1_024
+# Interactive density calculation supports the same upper resolution as the
+# legacy graph operation. Compact inspector plots retain a bounded derivative;
+# the detached plot opts into the complete texture explicitly.
+COLOCALIZATION_SCATTER_INSPECTOR_MAX_BINS = 4_096
+COLOCALIZATION_SCATTER_DISPLAY_MAX_BINS = 1_024
 COLOCALIZATION_SCATTER_THRESHOLD_HIT_TOLERANCE = 8
 DETAILED_HISTOGRAM_DEFAULT_GRID_DIVISIONS = 4
 DETAILED_HISTOGRAM_MIN_GRID_DIVISIONS = 2
@@ -51,9 +53,10 @@ def colocalization_scatter_density_bytes(bins: int) -> int:
 
 def colocalization_scatter_peak_bytes(bins: int) -> int:
     """Estimate peak density accumulation memory, excluding source arrays."""
-    # The retained accumulator and np.histogram2d's temporary chunk histogram
-    # coexist during accumulation.
-    return 2 * colocalization_scatter_density_bytes(bins)
+    # The retained accumulator coexists with np.histogram2d's flattened count,
+    # float conversion, and indexing scratch. Four grids are a conservative
+    # upper bound for the bin-dependent part of that worker allocation.
+    return 4 * colocalization_scatter_density_bytes(bins)
 
 
 def colocalization_scatter_requires_background(bins: int) -> bool:
@@ -76,12 +79,21 @@ def colocalization_scatter_inspector_bins(bins: int) -> int:
 
 def cap_colocalization_scatter_density_for_display(
     density_counts: np.ndarray,
+    *,
+    max_bins: int | None = None,
 ) -> np.ndarray:
     """Sum adjacent cells so GUI rendering never exceeds its bin limit."""
     density = np.asarray(density_counts)
     if density.ndim != 2:
         return density
-    max_bins = COLOCALIZATION_SCATTER_INSPECTOR_MAX_BINS
+    max_bins = max(
+        int(
+            COLOCALIZATION_SCATTER_DISPLAY_MAX_BINS
+            if max_bins is None
+            else max_bins
+        ),
+        1,
+    )
     if density.shape[0] <= max_bins and density.shape[1] <= max_bins:
         return density
     row_step = max(int(np.ceil(density.shape[0] / max_bins)), 1)
@@ -1492,7 +1504,8 @@ def _prepare_colocalization_scatter_density(
     range_percentile: float = 100.0,
     progress=None,
     chunk_elements: int = SCATTER_DENSITY_CHUNK_ELEMENTS,
-) -> tuple[np.ndarray, int, int, float, float, float, float]:
+    include_full_ranges: bool = False,
+) -> tuple:
     """Return exact density/counts and independent populated axis ranges."""
     ch1 = np.asarray(channel_1)
     ch2 = np.asarray(channel_2)
@@ -1517,6 +1530,15 @@ def _prepare_colocalization_scatter_density(
         roi_mask=roi_mask,
         percentile=range_percentile,
     )
+    if include_full_ranges and float(range_percentile) < 100.0:
+        full_range_1, full_range_2 = colocalization_populated_ranges(
+            ch1,
+            ch2,
+            roi_mask=roi_mask,
+            percentile=100.0,
+        )
+    else:
+        full_range_1, full_range_2 = range_1, range_2
     del intensity_max
     edges_1 = np.linspace(range_1[0], range_1[1], bins + 1)
     edges_2 = np.linspace(range_2[0], range_2[1], bins + 1)
@@ -1553,7 +1575,7 @@ def _prepare_colocalization_scatter_density(
             density_counts += chunk_density
             del chunk_density
 
-    return (
+    result = (
         density_counts,
         roi_voxels,
         colocalized_voxels,
@@ -1561,6 +1583,14 @@ def _prepare_colocalization_scatter_density(
         range_1[1],
         range_2[0],
         range_2[1],
+    )
+    if not include_full_ranges:
+        return result
+    return result + (
+        full_range_1[0],
+        full_range_1[1],
+        full_range_2[0],
+        full_range_2[1],
     )
 
 
@@ -1617,12 +1647,25 @@ def _count_colocalization_thresholds(
 class ColocalizationScatterPlot(QWidget):
     """Interactive two-channel scatter-density plot with threshold guides."""
 
+    # ``thresholdChanged`` is a lightweight live-preview signal.  Consumers
+    # must not use it to invalidate or recalculate a workflow while the mouse
+    # is still moving.  ``thresholdCommitted`` is emitted once on release and
+    # is the authoring boundary for expensive work.
     thresholdChanged = Signal(int, float)
+    thresholdCommitted = Signal(int, float)
     gestureStarted = Signal()
     gestureFinished = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, max_density_bins: int | None = None):
         super().__init__(parent)
+        self._max_density_bins = max(
+            int(
+                COLOCALIZATION_SCATTER_DISPLAY_MAX_BINS
+                if max_density_bins is None
+                else max_density_bins
+            ),
+            1,
+        )
         self._image: QImage | None = None
         self._density_counts: np.ndarray | None = None
         self._log_counts = True
@@ -1634,6 +1677,10 @@ class ColocalizationScatterPlot(QWidget):
         self._channel_1_max = 255.0
         self._channel_2_min = 0.0
         self._channel_2_max = 255.0
+        self._full_channel_1_min = 0.0
+        self._full_channel_1_max = 255.0
+        self._full_channel_2_min = 0.0
+        self._full_channel_2_max = 255.0
         self._display_channel_1_min = 0.0
         self._display_channel_1_max = 255.0
         self._display_channel_2_min = 0.0
@@ -1659,6 +1706,8 @@ class ColocalizationScatterPlot(QWidget):
         intensity_max: float = 255.0,
         channel_1_range: tuple[float, float] | None = None,
         channel_2_range: tuple[float, float] | None = None,
+        full_channel_1_range: tuple[float, float] | None = None,
+        full_channel_2_range: tuple[float, float] | None = None,
         channel_1_color: object = "Red",
         channel_2_color: object = "Green",
         colormap: str = "Viridis",
@@ -1675,6 +1724,26 @@ class ColocalizationScatterPlot(QWidget):
         self._channel_2_min, self._channel_2_max = _valid_scatter_axis_range(
             channel_2_range or shared_range
         )
+        self._full_channel_1_min, self._full_channel_1_max = (
+            _valid_scatter_axis_range(
+                full_channel_1_range
+                or (self._channel_1_min, self._channel_1_max)
+            )
+        )
+        self._full_channel_2_min, self._full_channel_2_max = (
+            _valid_scatter_axis_range(
+                full_channel_2_range
+                or (self._channel_2_min, self._channel_2_max)
+            )
+        )
+        self._density_counts = (
+            None
+            if density_counts is None
+            else cap_colocalization_scatter_density_for_display(
+                np.asarray(density_counts),
+                max_bins=self._max_density_bins,
+            )
+        )
         # Backward-compatible union used by older callers/tests that inspect
         # these presentation fields directly.
         self._intensity_min = min(self._channel_1_min, self._channel_2_min)
@@ -1689,13 +1758,6 @@ class ColocalizationScatterPlot(QWidget):
             fallback="#22c55e",
         )
         self._colormap = str(colormap or "Viridis")
-        self._density_counts = (
-            None
-            if density_counts is None
-            else cap_colocalization_scatter_density_for_display(
-                np.asarray(density_counts)
-            )
-        )
         self._log_counts = bool(log_counts)
         self._summary = str(summary)
         self._image = self._density_image(
@@ -1707,6 +1769,28 @@ class ColocalizationScatterPlot(QWidget):
     def set_colormap(self, colormap: str) -> None:
         """Recolor the retained presentation density without recomputing it."""
         self._colormap = str(colormap or "Viridis")
+        if self._image is not None and (
+            self._image.format() == QImage.Format_Indexed8
+        ):
+            recolored = QImage(self._image)
+            recolored.setColorTable(
+                _colocalization_scatter_color_table(self._colormap)
+            )
+            self._image = recolored
+        else:
+            self._image = self._density_image(
+                self._density_counts,
+                log_counts=self._log_counts,
+            )
+        self.update()
+
+    def set_log_counts(self, enabled: bool) -> None:
+        """Switch density transfer functions without recomputing the histogram."""
+
+        enabled = bool(enabled)
+        if self._log_counts == enabled:
+            return
+        self._log_counts = enabled
         self._image = self._density_image(
             self._density_counts,
             log_counts=self._log_counts,
@@ -1724,7 +1808,7 @@ class ColocalizationScatterPlot(QWidget):
         self.update()
 
     def set_equal_axes(self, enabled: bool) -> None:
-        """Use one numeric range for both axes so slopes are not distorted."""
+        """Use equal numeric spans for both axes so slopes are not distorted."""
 
         enabled = bool(enabled)
         if self._equal_axes == enabled:
@@ -1757,15 +1841,19 @@ class ColocalizationScatterPlot(QWidget):
         if not preserve_density:
             self._cancel_threshold_drag()
             self.unsetCursor()
+            self._density_counts = None
             self._intensity_min = 0.0
             self._intensity_max = max(float(intensity_max), 1.0)
             self._channel_1_min = self._intensity_min
             self._channel_1_max = self._intensity_max
             self._channel_2_min = self._intensity_min
             self._channel_2_max = self._intensity_max
+            self._full_channel_1_min = self._intensity_min
+            self._full_channel_1_max = self._intensity_max
+            self._full_channel_2_min = self._intensity_min
+            self._full_channel_2_max = self._intensity_max
             self._update_display_ranges()
             self._image = None
-            self._density_counts = None
         self.update()
 
     def paintEvent(self, event):  # noqa: N802
@@ -1830,7 +1918,10 @@ class ColocalizationScatterPlot(QWidget):
             super().mouseReleaseEvent(event)
             return
         point = _event_position(event)
+        drag_axis = self._drag_axis
         self._emit_threshold_from_point(point, self._plot_rect())
+        value = self._threshold_1 if drag_axis == 1 else self._threshold_2
+        self.thresholdCommitted.emit(drag_axis, value)
         self._cancel_threshold_drag()
         self._set_threshold_cursor(self._threshold_axis_at_point(point))
         event.accept()
@@ -1913,27 +2004,50 @@ class ColocalizationScatterPlot(QWidget):
         hist = np.asarray(density_counts)
         if hist.ndim != 2 or hist.size == 0:
             return None
-        hist = cap_colocalization_scatter_density_for_display(hist)
-        values = hist.T
-        if bool(log_counts):
-            values = np.log1p(values)
-        maximum = float(np.max(values))
-        if maximum > 0:
-            values = values / maximum
-        values = np.flipud(values)
-        gray = np.clip(np.rint(np.sqrt(values) * 255.0), 0, 255).astype(np.uint8)
-        # The Gray mapping preserves the flipped source's non-contiguous
-        # strides. PyQt6 cannot construct QImage from that memoryview, so make
-        # every colormap cross the Qt boundary with the same packed RGB layout.
-        rgb = np.ascontiguousarray(_apply_monochrome_colormap(gray, self._colormap))
-        rgb[values <= 0] = (4, 7, 15)
-        return QImage(
-            rgb.data,
-            rgb.shape[1],
-            rgb.shape[0],
-            int(rgb.strides[0]),
-            QImage.Format_RGB888,
+        hist = cap_colocalization_scatter_density_for_display(
+            hist,
+            max_bins=self._max_density_bins,
+        )
+        # Convert in short float32 row bands into an indexed 8-bit texture.
+        # This keeps a genuine 4096-bin pop-out near a 16 MiB raster plus about
+        # 1 MiB scratch instead of allocating full float and RGB work planes.
+        height, width = int(hist.shape[1]), int(hist.shape[0])
+        bytes_per_line = (width + 3) & ~3
+        indices = np.zeros((height, bytes_per_line), dtype=np.uint8)
+        maximum = float(np.max(hist))
+        transformed_maximum = (
+            float(np.log1p(maximum)) if bool(log_counts) else maximum
+        )
+        source_rows = hist.T[::-1]
+        if transformed_maximum > 0.0:
+            for start in range(0, height, 64):
+                stop = min(start + 64, height)
+                values = np.array(
+                    source_rows[start:stop],
+                    dtype=np.float32,
+                    order="C",
+                    copy=True,
+                )
+                positive = values > 0.0
+                if bool(log_counts):
+                    np.log1p(values, out=values)
+                values /= transformed_maximum
+                np.sqrt(values, out=values)
+                values *= 254.0
+                np.rint(values, out=values)
+                np.clip(values, 0.0, 254.0, out=values)
+                target = indices[start:stop, :width]
+                target[:] = values.astype(np.uint8)
+                target[positive] += 1
+        image = QImage(
+            indices.data,
+            width,
+            height,
+            bytes_per_line,
+            QImage.Format_Indexed8,
         ).copy()
+        image.setColorTable(_colocalization_scatter_color_table(self._colormap))
+        return image
 
     def _draw_thresholds(self, painter: QPainter, plot_rect: QRect) -> None:
         x = self._x_from_value(self._threshold_1, plot_rect)
@@ -2117,20 +2231,44 @@ class ColocalizationScatterPlot(QWidget):
         data_1 = (self._channel_1_min, self._channel_1_max)
         data_2 = (self._channel_2_min, self._channel_2_max)
         if self._zoom_to_data:
-            display_1 = data_1
-            display_2 = data_2
+            # The histogram is binned over the explicitly selected populated
+            # percentile.  Those bounds, rather than its inevitably occupied
+            # edge bins, are the authoritative zoom target.
+            display_1, display_2 = data_1, data_2
         else:
-            display_1 = (min(0.0, data_1[0]), max(0.0, data_1[1]))
-            display_2 = (min(0.0, data_2[0]), max(0.0, data_2[1]))
+            full_1 = (self._full_channel_1_min, self._full_channel_1_max)
+            full_2 = (self._full_channel_2_min, self._full_channel_2_max)
+            display_1 = (min(0.0, full_1[0]), max(0.0, full_1[1]))
+            display_2 = (min(0.0, full_2[0]), max(0.0, full_2[1]))
         if self._equal_axes:
-            shared = _valid_scatter_axis_range(
-                (
-                    min(display_1[0], display_2[0]),
-                    max(display_1[1], display_2[1]),
+            if self._zoom_to_data:
+                shared_span = max(
+                    display_1[1] - display_1[0],
+                    display_2[1] - display_2[0],
                 )
-            )
-            display_1 = shared
-            display_2 = shared
+                available = (
+                    min(data_1[0], data_2[0]),
+                    max(data_1[1], data_2[1]),
+                )
+                display_1 = _expand_scatter_range(
+                    display_1,
+                    span=shared_span,
+                    available=available,
+                )
+                display_2 = _expand_scatter_range(
+                    display_2,
+                    span=shared_span,
+                    available=available,
+                )
+            else:
+                shared = _valid_scatter_axis_range(
+                    (
+                        min(display_1[0], display_2[0]),
+                        max(display_1[1], display_2[1]),
+                    )
+                )
+                display_1 = shared
+                display_2 = shared
         self._display_channel_1_min, self._display_channel_1_max = (
             _valid_scatter_axis_range(display_1)
         )
@@ -2158,6 +2296,23 @@ class ColocalizationScatterPlot(QWidget):
         return QRectF(left, top, max(right - left, 1.0), max(bottom - top, 1.0))
 
 
+def _colocalization_scatter_color_table(colormap: str) -> list[int]:
+    """Build the indexed density texture's compact 256-colour table."""
+
+    colors = np.asarray(
+        _apply_monochrome_colormap(
+            np.arange(256, dtype=np.uint8),
+            colormap,
+        ),
+        dtype=np.uint8,
+    ).reshape(256, 3)
+    colors[0] = (4, 7, 15)
+    return [
+        QColor(int(red), int(green), int(blue)).rgb()
+        for red, green, blue in colors
+    ]
+
+
 def _valid_scatter_axis_range(
     values: tuple[float, float],
 ) -> tuple[float, float]:
@@ -2167,6 +2322,32 @@ def _valid_scatter_axis_range(
     if maximum <= minimum:
         maximum = minimum + 1.0
     return minimum, maximum
+
+
+def _expand_scatter_range(
+    values: tuple[float, float],
+    *,
+    span: float,
+    available: tuple[float, float],
+) -> tuple[float, float]:
+    """Expand around a populated range while remaining in shared data bounds."""
+
+    minimum, maximum = _valid_scatter_axis_range(values)
+    available_min, available_max = _valid_scatter_axis_range(available)
+    target_span = min(
+        max(float(span), maximum - minimum),
+        available_max - available_min,
+    )
+    center = (minimum + maximum) / 2.0
+    expanded_min = center - target_span / 2.0
+    expanded_max = center + target_span / 2.0
+    if expanded_min < available_min:
+        expanded_max += available_min - expanded_min
+        expanded_min = available_min
+    if expanded_max > available_max:
+        expanded_min -= expanded_max - available_max
+        expanded_max = available_max
+    return _valid_scatter_axis_range((expanded_min, expanded_max))
 
 
 def _event_position(event):

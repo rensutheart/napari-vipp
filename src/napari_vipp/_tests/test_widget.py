@@ -244,6 +244,9 @@ from napari_vipp.core.workflow import (
 )
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.batch_workers import CollectionBatchOperationProgress
+from napari_vipp.ui.colocalization_scatter_dialog import (
+    ColocalizationScatterDialog,
+)
 from napari_vipp.ui.compute_benchmark_dialog import NodeBenchmarkWorkerOutcome
 from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     PipelineOptimizerApplyRequest,
@@ -11064,7 +11067,27 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
         widget.pipeline.nodes[coloc.id].params["channel_2_threshold"],
     )
 
-    widget._on_colocalization_scatter_threshold_changed(1, 12.5)
+    plot = widget.colocalization_scatter_plot
+    plot_rect = plot._plot_rect()
+    start = QPoint(
+        plot._x_from_value(plot._threshold_1, plot_rect),
+        plot_rect.bottom() - 20,
+    )
+    target = QPoint(
+        plot_rect.left() + plot_rect.width() // 3,
+        start.y(),
+    )
+    expected_threshold = float(
+        np.round(plot._value_from_x(target.x(), plot_rect), 2)
+    )
+
+    qtbot.mousePress(plot, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(plot, pos=target)
+
+    # Moving the guide is presentation-only: authoring and recalculation wait
+    # until the user finishes the gesture.
+    assert widget.pipeline.nodes[coloc.id].params["threshold_mode"] == "Costes auto"
+    qtbot.mouseRelease(plot, Qt.LeftButton, pos=target)
     widget._debounce_timer.stop()
 
     assert widget.pipeline.nodes[coloc.id].params["threshold_mode"] == "Manual"
@@ -11072,7 +11095,7 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     assert threshold_2_control.isEnabled()
     assert np.isclose(
         widget.pipeline.nodes[coloc.id].params["channel_1_threshold"],
-        12.5,
+        expected_threshold,
     )
     widget.colocalization_scatter_colormap_combo.setCurrentText("Magma")
 
@@ -11243,6 +11266,169 @@ def test_scatter_popout_colormap_is_linked_without_recomputing_density(
     assert not session.dirty
 
 
+def test_scatter_popout_density_settings_target_detached_owner_and_reject_stale(
+    qtbot,
+):
+    data = np.arange(64, dtype=np.float32).reshape(8, 8)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    owner = widget.add_node_from_palette("colocalized_voxels")
+    selected = widget.add_node_from_palette("gaussian_blur")
+    widget._connect_nodes("input", owner.id, target_port=0)
+    widget._connect_nodes("input", owner.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(owner.id)
+    qtbot.mouseClick(widget.colocalization_scatter_popout_button, Qt.LeftButton)
+
+    dialog = widget._colocalization_scatter_dialog
+    assert dialog is not None and dialog.isVisible()
+    widget.graph_view.select_node(selected.id)
+    assert widget._selected_node_id == selected.id
+    assert widget._colocalization_scatter_dialog_node_id == owner.id
+
+    owner_params = dict(owner.params)
+    selected_params = dict(selected.params)
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    widget.workflow_tab_bar.sync_from_model(widget._workflow_tabs)
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    original_density = dialog._density_counts
+
+    dialog.configure_visualization(
+        density_bins=64,
+        range_percentile=90.0,
+        log_counts=dialog.log_density,
+        export_size=dialog.export_size,
+    )
+    dialog.densitySettingsChanged.emit(64, 90.0)
+
+    assert len(pool.workers) == 1
+    first = pool.workers[0].request
+    assert first.node_id == owner.id
+    assert first.bins == 64
+    assert first.range_percentile == 90.0
+    assert owner.params == owner_params
+    assert selected.params == selected_params
+    assert not session.dirty
+
+    dialog.configure_visualization(
+        density_bins=96,
+        range_percentile=80.0,
+        log_counts=dialog.log_density,
+        export_size=dialog.export_size,
+    )
+    dialog.densitySettingsChanged.emit(96, 80.0)
+
+    assert len(pool.workers) == 2
+    second = pool.workers[1].request
+    assert first.cancel_event is not None and first.cancel_event.is_set()
+    assert second.node_id == owner.id
+    assert second.bins == 96
+    assert second.range_percentile == 80.0
+    assert widget._active_colocalization_scatter_dialog_run_id == second.run_id
+
+    def finished_result(request):
+        return ColocalizationScatterResult(
+            request.run_id,
+            request.key,
+            request.node_id,
+            request.threshold_mode,
+            request.threshold_1,
+            request.threshold_2,
+            intensity_min=10.0,
+            intensity_max=55.0,
+            density_counts=np.ones(
+                (request.bins, request.bins),
+                dtype=np.float64,
+            ),
+            roi_voxels=request.bins * request.bins,
+            colocalized_voxels=request.bins,
+            density_key=request.density_key,
+            channel_1_min=10.0,
+            channel_1_max=50.0,
+            channel_2_min=15.0,
+            channel_2_max=55.0,
+            range_percentile=request.range_percentile,
+            full_channel_1_min=0.0,
+            full_channel_1_max=63.0,
+            full_channel_2_min=0.0,
+            full_channel_2_max=63.0,
+        )
+
+    widget._on_colocalization_scatter_dialog_owner_finished(
+        finished_result(first)
+    )
+
+    assert widget._active_colocalization_scatter_dialog_run_id == second.run_id
+    assert dialog._density_counts is original_density
+    assert first.key not in widget._colocalization_scatter_cache
+
+    widget._on_colocalization_scatter_dialog_owner_finished(
+        finished_result(second)
+    )
+
+    assert widget._active_colocalization_scatter_dialog_run_id is None
+    assert dialog._density_counts is not original_density
+    assert dialog._density_counts.shape == (96, 96)
+    assert dialog.populated_range_percentile == 80.0
+    assert widget._selected_node_id == selected.id
+    assert owner.params == owner_params
+    assert selected.params == selected_params
+    assert not session.dirty
+
+
+def test_scatter_popout_log_density_is_local_when_owner_is_not_selected(qtbot):
+    data = np.arange(64, dtype=np.float32).reshape(8, 8)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    owner = widget.add_node_from_palette("colocalized_voxels")
+    selected = widget.add_node_from_palette("gaussian_blur")
+    widget._connect_nodes("input", owner.id, target_port=0)
+    widget._connect_nodes("input", owner.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(owner.id)
+    qtbot.mouseClick(widget.colocalization_scatter_popout_button, Qt.LeftButton)
+    dialog = widget._colocalization_scatter_dialog
+    assert dialog is not None and dialog.isVisible()
+    widget.graph_view.select_node(selected.id)
+
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    widget.workflow_tab_bar.sync_from_model(widget._workflow_tabs)
+    owner_params = dict(owner.params)
+    selected_params = dict(selected.params)
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    inspector_log_density = widget.colocalization_scatter_log_checkbox.isChecked()
+    previous_image = dialog.plot._image
+
+    dialog.log_density_checkbox.setChecked(not dialog.log_density)
+
+    assert dialog.plot._image is not previous_image
+    assert pool.workers == []
+    assert widget._selected_node_id == selected.id
+    assert widget.colocalization_scatter_log_checkbox.isChecked() == (
+        inspector_log_density
+    )
+    assert owner.params == owner_params
+    assert selected.params == selected_params
+    assert not session.dirty
+
+
 def test_colocalization_scatter_density_and_counts_are_exact_beyond_old_cap():
     size = 600_123
     indices = np.arange(size, dtype=np.uint32)
@@ -11343,6 +11529,41 @@ def test_colocalization_scatter_percentile_clips_density_not_exact_counts():
     assert roi_voxels == 5
     assert colocalized_voxels == 4
     assert int(density.sum()) < roi_voxels
+
+
+def test_colocalization_scatter_preserves_full_ranges_for_popout_zoom():
+    channel_1 = np.asarray([0.0, 1.0, 2.0, 3.0, 10_000.0])
+    channel_2 = np.asarray([-10_000.0, 100.0, 101.0, 102.0, 103.0])
+
+    result = _prepare_colocalization_scatter_density(
+        channel_1,
+        channel_2,
+        threshold_1=0.0,
+        threshold_2=0.0,
+        roi_mask=None,
+        intensity_max=255.0,
+        bins=32,
+        range_percentile=80.0,
+        include_full_ranges=True,
+    )
+    (
+        _density,
+        _roi_voxels,
+        _colocalized_voxels,
+        density_x_min,
+        density_x_max,
+        density_y_min,
+        density_y_max,
+        full_x_min,
+        full_x_max,
+        full_y_min,
+        full_y_max,
+    ) = result
+
+    assert (full_x_min, full_x_max) == (0.0, 10_000.0)
+    assert (full_y_min, full_y_max) == (-10_000.0, 103.0)
+    assert (density_x_min, density_x_max) != (full_x_min, full_x_max)
+    assert (density_y_min, density_y_max) != (full_y_min, full_y_max)
 
 
 def test_colocalization_scatter_density_is_cooperatively_cancellable(monkeypatch):
@@ -12105,7 +12326,7 @@ def test_pipeline_edit_invalidates_colocalization_scatter_cache(qtbot):
     assert widget._colocalization_scatter_serial == old_serial + 1
 
 
-def test_4096_bin_node_queues_capped_inspector_density_with_visible_notice(
+def test_4096_bin_node_queues_full_density_with_bounded_inspector_notice(
     qtbot,
     monkeypatch,
 ):
@@ -12138,12 +12359,15 @@ def test_4096_bin_node_queues_capped_inspector_density_with_visible_notice(
     widget._update_colocalization_scatter()
 
     assert len(queued) == 1
-    assert queued[0].bins == 1_024
+    assert queued[0].bins == 4_096
     assert scatter.params["bins"] == 4_096
-    assert "capped at 1,024 x 1,024 bins" in (
+    assert "Density was computed at 4,096 x 4,096 bins" in (
         widget.colocalization_scatter_summary.text()
     )
-    assert "graph operation keeps its requested 4,096-bin histogram" in (
+    assert "compact inspector and live drag estimate" in (
+        widget.colocalization_scatter_summary.toolTip()
+    )
+    assert "pop-out retains the full-resolution density" in (
         widget.colocalization_scatter_summary.toolTip()
     )
 
@@ -29055,6 +29279,76 @@ def test_scatter_threshold_drag_and_recalculation_pause_share_one_undo_point(
     widget.run_pipeline = lambda *_args, **_kwargs: None
     widget.undo()
     assert widget.pipeline.nodes[coloc.id].params == initial_params
+
+
+def test_scatter_popout_threshold_drag_targets_its_owner_after_selection_changes(
+    qtbot,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8)), metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+    owner = widget.add_node_from_palette("racc_index")
+    selected = widget.add_node_from_palette("racc_index")
+    widget._connect_nodes("input", owner.id, target_port=0)
+    widget._connect_nodes("input", owner.id, target_port=1)
+    widget._debounce_timer.stop()
+    owner_initial = dict(owner.params)
+    selected_initial = dict(selected.params)
+
+    dialog = ColocalizationScatterDialog(widget)
+    qtbot.addWidget(dialog)
+    dialog.set_density(
+        np.ones((16, 16), dtype=np.float64),
+        threshold_1=float(owner.params["channel_1_threshold"]),
+        threshold_2=float(owner.params["channel_2_threshold"]),
+        intensity_min=0.0,
+        intensity_max=100.0,
+        roi_voxels=256,
+        colocalized_voxels=64,
+    )
+    dialog.thresholdChanged.connect(
+        widget._on_colocalization_scatter_threshold_changed
+    )
+    dialog.plot.gestureStarted.connect(
+        lambda: widget._begin_colocalization_threshold_scrub(dialog.plot)
+    )
+    dialog.plot.gestureFinished.connect(
+        lambda: widget._end_colocalization_threshold_scrub(dialog.plot)
+    )
+    widget._colocalization_scatter_dialog = dialog
+    widget._colocalization_scatter_dialog_node_id = owner.id
+    dialog.show()
+
+    widget.graph_view.select_node(selected.id)
+    widget._update_colocalization_scatter()
+
+    assert dialog.isVisible()
+    plot_rect = dialog.plot._plot_rect()
+    start = QPoint(
+        dialog.plot._x_from_value(dialog.plot._threshold_1, plot_rect),
+        plot_rect.bottom() - 20,
+    )
+    target = QPoint(plot_rect.center().x(), start.y())
+    expected = float(
+        np.round(dialog.plot._value_from_x(target.x(), plot_rect), 2)
+    )
+
+    qtbot.mousePress(dialog.plot, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(dialog.plot, pos=target)
+
+    assert owner.params == owner_initial
+    assert selected.params == selected_initial
+
+    qtbot.mouseRelease(dialog.plot, Qt.LeftButton, pos=target)
+    widget._debounce_timer.stop()
+    qtbot.waitUntil(
+        lambda: widget._active_colocalization_scatter_dialog_run_id is None,
+        timeout=5_000,
+    )
+
+    assert owner.params["threshold_mode"] == "Manual"
+    assert owner.params["channel_1_threshold"] == expected
+    assert selected.params == selected_initial
+    assert dialog.summary_label.text().startswith("Exact:")
 
 
 def test_deferred_pipeline_refresh_remains_owned_by_origin_workflow_tab(

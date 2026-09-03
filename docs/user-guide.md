@@ -1969,34 +1969,43 @@ manual thresholds and updates the corresponding threshold value. Masked
 variants add a third `ROI mask` input.
 
 Legacy metric nodes use a 255 x 255 scatter-density grid. Scatter graph nodes
-use their configured populated range and up to 1024 bins per axis in the
-interactive inspector/popout; a visible notice appears when the graph's larger
-requested histogram is capped for GUI rendering. Large or high-bin densities
-are accumulated in bounded chunks on a background worker. VIPP does not
-substitute sampled source pixels. Threshold changes reuse a compatible density
-but rescan the complete ROI for exact ROI/colocalized counts. Cached densities
-are shared across threshold results, byte-budgeted, and discarded when their
-input context becomes stale.
+and the detached interactive view support their configured populated range and
+up to 4096 bins per axis. Large or high-bin densities are accumulated in bounded
+chunks on a background worker after a measured host-memory preflight. The small
+inspector and live threshold-drag estimate use a mass-preserving representation
+of at most 1024 bins per axis; the popout retains and renders the complete
+requested density. VIPP does not substitute sampled source pixels. Threshold
+changes reuse a compatible density but rescan the complete ROI for exact
+ROI/colocalized counts. Cached densities are shared across threshold results,
+byte-budgeted, and discarded when their input context becomes stale.
 
-Use `Colocalization Scatter Plot` (or its masked variant) for a durable graph
-output. `Histogram bins per axis` controls density detail independently of the
-square `Output size`; both can be raised as far as 4096 for a publication
-render. Each axis automatically uses its own populated native min/max. The
-`Populated range percentile` defaults to the exact 100% range and can be
-lowered to symmetrically clip sparse outliers that would otherwise compress the
-main distribution. Tail voxels outside that visible range are omitted only
-from the rendered density; exact threshold counts and metrics still use the
-complete ROI population.
-The 1024-bin interactive cap does not affect this durable graph output: its
-histogram and output raster settings still accept values through 4096.
+For new interactive work, use `Colocalization Metrics` or `Masked
+Colocalization Metrics`, then choose `Open in window` in the inspector's scatter
+panel. The larger resizable dialog uses the same interactive threshold guides,
+shows an immediate histogram estimate while the authoritative exact count is
+recalculated, and exports a square PNG or TIFF at the selected `Export size`.
+The pop-out also exposes density bins, populated-range percentile, and log
+density. These are visualization settings: re-binning runs independently in
+the background and never invalidates the scientific pipeline. Colormap and log
+density redraw directly from retained density data.
 
-The inspector's `Open in window` action uses the same interactive threshold
-guides in a larger resizable dialog. It shows an immediate histogram estimate
-while the authoritative exact count is recalculated, and exports the visible
-plot as PNG or TIFF at the window's current plot resolution. The inspector and
-pop-out expose the same `Colormap` selector: changing either one updates both
-plots immediately from the cached density and does not recalculate thresholds,
-counts, or colocalization metrics.
+Dragging a threshold guide previews its position and density-derived count
+without invalidating the workflow; the threshold is committed and exact-count
+work starts once the pointer is released. `Zoom to populated data` switches
+from the full native ROI extent to the central range selected by `Populated
+range percentile`; the range readout makes the exact X/Y view explicit. At
+100%, the populated and full extrema can coincide, so zoom may correctly leave
+the bounds unchanged. `Equal axis scales` keeps equal intensity units per pixel
+so the scatter is not stretched. With zoom disabled, both axes retain the
+conventional zero-to-full-native-maximum view. Percentile clipping affects only
+the density picture; exact counts and metrics always use the full ROI.
+
+The older `Colocalization Scatter Plot` and `Masked Colocalization Scatter
+Plot` graph operations are hidden from the node palette. Existing workflows
+remain loadable and executable, and headless callers may still use them when a
+durable RGB raster is specifically required. Their histogram and square output
+resolutions remain independently configurable through 4096; the populated
+range percentile clips only the rendered density, never the metric population.
 
 Reference workflows:
 

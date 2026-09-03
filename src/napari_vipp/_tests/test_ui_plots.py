@@ -231,15 +231,23 @@ def test_scatter_threshold_cursor_and_axis_stay_locked_during_drag(qtbot):
     plot = _configured_scatter_plot(qtbot)
     vertical, horizontal, _away = _scatter_threshold_points(plot)
     emitted = []
+    committed = []
     plot.thresholdChanged.connect(lambda axis, value: emitted.append((axis, value)))
+    plot.thresholdCommitted.connect(
+        lambda axis, value: committed.append((axis, value))
+    )
 
     qtbot.mousePress(plot, Qt.LeftButton, pos=vertical)
     qtbot.mouseMove(plot, pos=horizontal)
 
     assert plot.cursor().shape() == Qt.SizeHorCursor
     assert emitted and {axis for axis, _value in emitted} == {1}
+    assert committed == []
 
     qtbot.mouseRelease(plot, Qt.LeftButton, pos=horizontal)
+    assert len(committed) == 1
+    assert committed[0][0] == 1
+    assert committed[0][1] == plot._threshold_1
     rect = plot._plot_rect()
     horizontal_only = QPoint(
         rect.left() + 20,

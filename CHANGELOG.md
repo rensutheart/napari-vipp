@@ -72,6 +72,11 @@
 
 ### Bug Fixes
 
+- Scatter display spinners now center their values, and Enter commits an active
+  numeric edit without opening the export dialog. Detached scatter densities
+  now accept and render up to 4096 bins per axis; high-resolution calculation is
+  backgrounded and memory-gated, while the compact inspector and live drag
+  estimate reuse a bounded mass-preserving derivative.
 - Clarified Minimum Threshold throughout the palette and inspector: “Minimum”
   now explicitly means the valley between two histogram peaks, histogram
   smoothing is distinguished from image blurring, and its iteration setting is

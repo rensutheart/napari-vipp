@@ -1258,9 +1258,13 @@ Threshold-only requests reuse the compatible density and run a counts-only
 full-ROI scan; a 192 MiB byte budget bounds the density cache. READY Costes
 results supply their already-resolved thresholds, while inspector work never
 writes derived thresholds into the live workflow during an active pipeline run.
-Interactive preparation and the Qt render conversion are capped at 1024 bins per
-axis, while the graph operation retains its independent 4096-bin limit. There is
-no sampled source population. These exact computational helpers still reside in
+Interactive preparation and the detached Qt view support up to 4096 bins per
+axis, matching the graph operation's limit. High-resolution densities pass a
+host-memory preflight and are prepared away from the GUI thread. A shared,
+mass-preserving density of at most 1024 bins per axis feeds the compact inspector
+and constant-time live drag estimate; the pop-out retains and renders the full
+density using a bounded float32/LUT conversion. There is no sampled source
+population. These exact computational helpers still reside in
 `ui/plots.py`, rather than the Qt-free diagnostics module, and remain a known
 boundary seam.
 
@@ -1280,16 +1284,22 @@ parity is pending. Pixel and object tables use
 certification, and carry the evidence state separately as
 `coloc_validation_status=experimental_source_aligned_golden_parity_pending`.
 
-The separate `colocalization_scatter_plot` graph operation produces a durable
-RGB render. It derives independent native populated ranges for X and Y,
-supports symmetric percentile clipping, and separates histogram resolution
-from output raster resolution. Its output metadata uses fresh unit-scale
-Y/X pixel axes plus RGB; source micrometer calibration is not attached to plot
-pixels. `ui/colocalization_scatter_dialog.py` owns the
-resizable interactive presentation and PNG/TIFF export. It emits threshold
-changes back to the workflow host and does not own source arrays or scientific
-state, so the established stale-safe worker remains authoritative for exact
-counts.
+The legacy `colocalization_scatter_plot` graph operation is hidden from the
+palette but remains registered for existing workflows and headless callers that
+need a durable RGB render. It derives independent native populated ranges for X
+and Y, supports symmetric percentile clipping, and separates histogram
+resolution from output raster resolution. Its output metadata uses fresh
+unit-scale Y/X pixel axes plus RGB; source micrometer calibration is not attached
+to plot pixels. `ui/colocalization_scatter_dialog.py` owns the
+resizable interactive presentation and fixed-resolution PNG/TIFF export. It
+keeps visualization-only density bins, populated percentile, log transfer, and
+export size outside measurement-node schemas. Full native ROI extrema are
+retained separately from percentile-clipped density bounds so zoom can switch
+between the two without relabelling the density. It emits threshold previews
+locally and commits a threshold change to the workflow host only when the
+pointer is released. It does not own source arrays or scientific state, so the
+established stale-safe worker remains authoritative for exact counts and for
+background re-binning.
 
 When `Filter Labels By Volume` is selected, a second histogram above the
 general histogram shows the object-volume distribution from the unfiltered
