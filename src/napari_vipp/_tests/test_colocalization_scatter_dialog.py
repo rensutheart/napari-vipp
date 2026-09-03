@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import tifffile
 from qtpy.QtCore import QPoint, Qt
-from qtpy.QtGui import QColor, QImage, QPalette
+from qtpy.QtGui import QColor, QFont, QFontMetrics, QImage, QPalette
 from qtpy.QtWidgets import QWidget
 
 from napari_vipp.ui.colocalization_scatter_dialog import (
@@ -13,7 +13,50 @@ from napari_vipp.ui.colocalization_scatter_dialog import (
     render_widget_image,
 )
 from napari_vipp.ui.palette_roles import theme_colors
-from napari_vipp.ui.plots import COLOCALIZATION_SCATTER_COLORMAPS
+from napari_vipp.ui.plots import (
+    COLOCALIZATION_SCATTER_COLORMAPS,
+    DetailedHistogramPlot,
+)
+
+
+class _TextPaintRecorder:
+    """Minimal painter spy that retains the font used for each text call."""
+
+    def __init__(self, font: QFont):
+        self._font = QFont(font)
+        self._saved_fonts: list[QFont] = []
+        self.text_calls: list[tuple[str, QFont]] = []
+
+    def font(self) -> QFont:
+        return QFont(self._font)
+
+    def setFont(self, font: QFont) -> None:  # noqa: N802
+        self._font = QFont(font)
+
+    def fontMetrics(self) -> QFontMetrics:  # noqa: N802
+        return QFontMetrics(self._font)
+
+    def setPen(self, _pen) -> None:  # noqa: N802
+        return None
+
+    def drawText(self, *_args) -> None:  # noqa: N802
+        text = next(
+            (argument for argument in reversed(_args) if isinstance(argument, str)),
+            "",
+        )
+        self.text_calls.append((text, QFont(self._font)))
+
+    def save(self) -> None:
+        self._saved_fonts.append(QFont(self._font))
+
+    def restore(self) -> None:
+        self._font = self._saved_fonts.pop()
+
+    def translate(self, _x: int, _y: int) -> None:
+        return None
+
+    def rotate(self, _angle: int) -> None:
+        return None
 
 
 def _populate_dialog(dialog: ColocalizationScatterDialog) -> None:
@@ -29,6 +72,159 @@ def _populate_dialog(dialog: ColocalizationScatterDialog) -> None:
         channel_2_color="Green",
         colormap="Magma",
     )
+
+
+def _populate_asymmetric_dialog(dialog: ColocalizationScatterDialog) -> np.ndarray:
+    density = np.ones((32, 32), dtype=np.float64)
+    dialog.set_density(
+        density,
+        threshold_1=42.0,
+        threshold_2=105.0,
+        intensity_min=0.0,
+        intensity_max=160.0,
+        channel_1_range=(40.0, 60.0),
+        channel_2_range=(100.0, 160.0),
+        roi_voxels=int(density.sum()),
+        colocalized_voxels=128,
+        colormap="Gray",
+    )
+    return density
+
+
+def _display_ranges(dialog: ColocalizationScatterDialog):
+    plot = dialog.plot
+    return (
+        (plot._display_channel_1_min, plot._display_channel_1_max),
+        (plot._display_channel_2_min, plot._display_channel_2_max),
+    )
+
+
+def test_scatter_axis_titles_match_histogram_axis_emphasis(qtbot):
+    dialog = ColocalizationScatterDialog()
+    histogram = DetailedHistogramPlot()
+    qtbot.addWidget(dialog)
+    qtbot.addWidget(histogram)
+    _populate_dialog(dialog)
+    plot = dialog.plot
+    recorder = _TextPaintRecorder(plot.font())
+
+    plot._draw_labels(
+        recorder,
+        plot.rect().adjusted(8, 8, -8, -8),
+        plot._plot_rect(),
+    )
+
+    axis_fonts = {
+        text: font
+        for text, font in recorder.text_calls
+        if text in {"Ch 1 intensity", "Ch 2 intensity"}
+    }
+    histogram_axis_font = histogram._axis_label_font()
+    assert set(axis_fonts) == {"Ch 1 intensity", "Ch 2 intensity"}
+    assert {font.weight() for font in axis_fonts.values()} == {
+        histogram_axis_font.weight()
+    }
+    assert {font.pointSizeF() for font in axis_fonts.values()} == {
+        histogram_axis_font.pointSizeF()
+    }
+    assert histogram_axis_font.weight() == QFont.DemiBold
+
+    threshold_fonts = [
+        font for text, font in recorder.text_calls if text.startswith(("T1 ", "T2 "))
+    ]
+    assert threshold_fonts
+    assert {font.weight() for font in threshold_fonts} == {plot.font().weight()}
+
+
+def test_scatter_dialog_defaults_to_zero_based_equal_intensity_axes(qtbot):
+    dialog = ColocalizationScatterDialog()
+    qtbot.addWidget(dialog)
+    density = _populate_asymmetric_dialog(dialog)
+
+    assert not dialog.zoom_to_data_checkbox.isChecked()
+    assert dialog.equal_axes_checkbox.isChecked()
+    assert _display_ranges(dialog) == ((0.0, 160.0), (0.0, 160.0))
+    assert (
+        dialog.plot._channel_1_min,
+        dialog.plot._channel_1_max,
+        dialog.plot._channel_2_min,
+        dialog.plot._channel_2_max,
+    ) == (40.0, 60.0, 100.0, 160.0)
+    np.testing.assert_array_equal(dialog.plot._density_counts, density)
+
+    plot_rect = dialog.plot._plot_rect()
+    x_units_per_pixel = 160.0 / plot_rect.width()
+    y_units_per_pixel = 160.0 / plot_rect.height()
+    assert plot_rect.width() == plot_rect.height()
+    assert x_units_per_pixel == y_units_per_pixel
+
+
+def test_scatter_dialog_zoom_and_equal_axes_are_independent(qtbot):
+    dialog = ColocalizationScatterDialog()
+    qtbot.addWidget(dialog)
+    _populate_asymmetric_dialog(dialog)
+    retained_density = dialog.plot._density_counts
+
+    dialog.zoom_to_data_checkbox.setChecked(True)
+    assert _display_ranges(dialog) == ((40.0, 160.0), (40.0, 160.0))
+
+    dialog.equal_axes_checkbox.setChecked(False)
+    assert _display_ranges(dialog) == ((40.0, 60.0), (100.0, 160.0))
+    assert dialog.plot._density_counts is retained_density
+
+    _populate_asymmetric_dialog(dialog)
+    assert dialog.zoom_to_data_checkbox.isChecked()
+    assert not dialog.equal_axes_checkbox.isChecked()
+    assert _display_ranges(dialog) == ((40.0, 60.0), (100.0, 160.0))
+    retained_density = dialog.plot._density_counts
+
+    dialog.zoom_to_data_checkbox.setChecked(False)
+    assert _display_ranges(dialog) == ((0.0, 60.0), (0.0, 160.0))
+
+    dialog.equal_axes_checkbox.setChecked(True)
+    assert _display_ranges(dialog) == ((0.0, 160.0), (0.0, 160.0))
+    assert dialog.plot._density_counts is retained_density
+    assert (
+        dialog.plot._channel_1_min,
+        dialog.plot._channel_1_max,
+        dialog.plot._channel_2_min,
+        dialog.plot._channel_2_max,
+    ) == (40.0, 60.0, 100.0, 160.0)
+
+
+def test_zero_based_scatter_maps_density_into_its_true_source_bounds(qtbot):
+    dialog = ColocalizationScatterDialog()
+    qtbot.addWidget(dialog)
+    _populate_asymmetric_dialog(dialog)
+    plot = dialog.plot
+    plot.resize(520, 520)
+    palette = QPalette(plot.palette())
+    palette.setColor(QPalette.Base, QColor("#111827"))
+    palette.setColor(QPalette.Text, QColor("#f8fafc"))
+    plot.setPalette(palette)
+
+    # Rendering a child of the still-hidden dialog activates its parent layout
+    # and may resize the plot.  Settle that layout before deriving probe points.
+    render_widget_image(plot)
+    plot_rect = plot._plot_rect()
+    rendered = render_widget_image(plot)
+    populated = rendered.pixelColor(
+        plot._x_from_value(50.0, plot_rect),
+        plot._y_from_value(130.0, plot_rect),
+    )
+    empty = rendered.pixelColor(
+        plot._x_from_value(20.0, plot_rect),
+        plot._y_from_value(80.0, plot_rect),
+    )
+
+    assert populated != empty, (
+        populated.getRgb(),
+        empty.getRgb(),
+        plot_rect.getRect(),
+        plot._density_target_rect(plot_rect).getRect(),
+        (plot.width(), plot.height()),
+    )
+    assert populated.value() > empty.value()
 
 
 def test_scatter_dialog_colormap_control_is_shared_and_programmatic_sync_is_quiet(

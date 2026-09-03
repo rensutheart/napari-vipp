@@ -17,7 +17,7 @@ from napari_vipp._tests.test_ui_inspector_widget_integration import (
     _select,
     _widget,
 )
-from napari_vipp._tests.test_widget import _Viewer
+from napari_vipp._tests.test_widget import _palette_item, _Viewer
 from napari_vipp._widget import (
     INSPECTOR_COLOCALIZATION_DIAGNOSTICS_BREAKPOINT,
     INSPECTOR_DENSE_DIAGNOSTICS_BREAKPOINT,
@@ -28,12 +28,40 @@ from napari_vipp._widget import (
     _InspectorNoteLabel,
 )
 from napari_vipp.core.pipeline import NODE_EXECUTION_BYPASS
-from napari_vipp.ui.controls import BoolControl, ImageSourceControl
-from napari_vipp.ui.palette_roles import blend_colors, theme_colors
+from napari_vipp.ui.controls import (
+    BoolControl,
+    ImageSourceControl,
+    NumericEntryControl,
+)
+from napari_vipp.ui.palette_roles import theme_colors
 
 
 def _assert_histogram_range(plot, expected) -> None:
     assert plot._x_range == pytest.approx(tuple(float(value) for value in expected))
+
+
+def _parameter_spanning_texts(widget: VippWidget) -> tuple[str, ...]:
+    """Return plain text from notes spanning the inspector parameter form."""
+
+    texts = []
+    for row in range(widget.parameter_form.rowCount()):
+        item = widget.parameter_form.itemAt(row, QFormLayout.SpanningRole)
+        if item is not None and isinstance(item.widget(), QLabel):
+            texts.append(item.widget().text())
+    return tuple(texts)
+
+
+def _assert_no_hidden_settings_disclosure(widget: VippWidget) -> None:
+    """Assert ordinary mode switching does not announce dormant alternatives."""
+
+    disclosed_text = _parameter_spanning_texts(widget) + (
+        widget.parameter_group.summary_label.toolTip(),
+        widget.parameter_group.summary_label.accessibleDescription(),
+    )
+    assert not any(
+        "Hidden setting" in text or "Customized settings that do not apply" in text
+        for text in disclosed_text
+    )
 
 
 @pytest.mark.parametrize(
@@ -270,8 +298,7 @@ def test_connected_input_card_tracks_variadic_and_colored_channel_ports(qtbot):
     widget._on_channel_color_changed(0, "Yellow")
 
     assert (
-        widget.connected_inputs_panel.rows[0].role_label.text()
-        == "Channel 1: Yellow"
+        widget.connected_inputs_panel.rows[0].role_label.text() == "Channel 1: Yellow"
     )
 
 
@@ -334,8 +361,10 @@ def test_connected_input_card_clears_when_upstream_node_is_deleted(qtbot):
     widget._delete_node(blur.id)
 
     assert widget.connected_inputs_panel.rows[0].binding.source_title is None
-    assert widget.connected_inputs_panel.rows[0].source_label.text().startswith(
-        "Not connected"
+    assert (
+        widget.connected_inputs_panel.rows[0]
+        .source_label.text()
+        .startswith("Not connected")
     )
 
 
@@ -379,9 +408,7 @@ def test_narrow_measurement_booleans_keep_wrapped_labels_beside_checkboxes(
         "include_derived_shape_ratios",
         "include_2d_shape_moments",
     )
-    controls = {
-        name: widget._parameter_widgets[name] for name in boolean_names
-    }
+    controls = {name: widget._parameter_widgets[name] for name in boolean_names}
     assert all(isinstance(control, BoolControl) for control in controls.values())
     outer_labels = {
         name: widget.parameter_form.labelForField(control)
@@ -393,9 +420,10 @@ def test_narrow_measurement_booleans_keep_wrapped_labels_beside_checkboxes(
     changed.checkbox.setChecked(True)
     widget._debounce_timer.stop()
     assert changed.value() is True
-    assert widget.pipeline.nodes[measurements.id].params[
-        "include_axis_descriptors"
-    ] is True
+    assert (
+        widget.pipeline.nodes[measurements.id].params["include_axis_descriptors"]
+        is True
+    )
 
     narrow_width = INSPECTOR_STACKED_FORM_BREAKPOINT - 1
     widget.inspector_content.resize(narrow_width, 700)
@@ -437,9 +465,10 @@ def test_narrow_measurement_booleans_keep_wrapped_labels_beside_checkboxes(
         assert not outer_labels[name].isHidden()
         assert outer_labels[name].text() == control.spec.label
     assert changed.value() is True
-    assert widget.pipeline.nodes[measurements.id].params[
-        "include_axis_descriptors"
-    ] is True
+    assert (
+        widget.pipeline.nodes[measurements.id].params["include_axis_descriptors"]
+        is True
+    )
 
 
 def test_mesh_morphology_guidance_is_concise_and_parameter_specific(qtbot):
@@ -569,9 +598,7 @@ def test_narrow_crop_and_source_forms_drop_wide_minimums_but_keep_usable_control
     assert source_control.form_layout.rowWrapPolicy() == QFormLayout.WrapAllRows
     assert narrow_minimum < INSPECTOR_STACKED_FORM_BREAKPOINT
     assert all(
-        source_control.form_layout.labelForField(field)
-        .sizePolicy()
-        .horizontalPolicy()
+        source_control.form_layout.labelForField(field).sizePolicy().horizontalPolicy()
         == QSizePolicy.Preferred
         for field in (
             source_control.mode_combo,
@@ -590,14 +617,14 @@ def test_narrow_crop_and_source_forms_drop_wide_minimums_but_keep_usable_control
     assert source_control.minimumSizeHint().width() > narrow_minimum
 
 
-def test_contextual_notes_name_values_and_follow_napari_qss_theme(qtbot):
+def test_custom_contextual_setting_uses_header_tooltip_and_notes_follow_theme(
+    qtbot,
+):
     from napari._qt.qt_resources import get_stylesheet
 
     data = np.zeros((4, 8, 10), dtype=np.uint16)
     host = QMainWindow()
-    host.setStyleSheet(
-        get_stylesheet("dark", extra_variables={"font_size": "9pt"})
-    )
+    host.setStyleSheet(get_stylesheet("dark", extra_variables={"font_size": "9pt"}))
     widget = VippWidget(
         _Viewer(data, metadata={"axes": "ZYX"}),
         parent=host,
@@ -613,77 +640,51 @@ def test_contextual_notes_name_values_and_follow_napari_qss_theme(qtbot):
     widget._connect_nodes("input", threshold.id)
 
     _select(widget, threshold.id)
+    _assert_no_hidden_settings_disclosure(widget)
 
-    spanning_notes = []
-    for row in range(widget.parameter_form.rowCount()):
-        item = widget.parameter_form.itemAt(row, QFormLayout.SpanningRole)
-        if item is not None and isinstance(item.widget(), QLabel):
-            spanning_notes.append(item.widget())
-    visibility_note = next(
-        note for note in spanning_notes if "Hidden settings preserved:" in note.text()
+    # Once the user has deliberately authored a value that cannot affect the
+    # resolved input, retain a concise warning without dumping that value
+    # into the form. Detailed state remains discoverable in its tooltip.
+    widget.pipeline.set_param(threshold.id, "histogram_bins", 512)
+    widget._render_parameters(threshold.id)
+
+    assert not any(
+        "Hidden setting" in text for text in _parameter_spanning_texts(widget)
     )
-    assert visibility_note.text() == (
-        "Hidden settings preserved: Float histogram bins: 256; "
-        "RGB/RGBA channel axis (-1 = scalar): -1."
+    guidance = widget.parameter_group.summary_label.toolTip()
+    assert guidance.startswith(
+        "Customized settings that do not apply to the current input are preserved:"
     )
-    assert "do not affect the current input or selected mode" in (
-        visibility_note.toolTip()
-    )
-    assert "resolved input is not floating-point" in visibility_note.toolTip()
-    assert "resolved input has no encoded RGB/RGBA axis" in (
-        visibility_note.toolTip()
-    )
-    assert visibility_note.accessibleDescription() == visibility_note.toolTip()
+    assert "Float histogram bins: 512" in guidance
+    assert "resolved input is not floating-point" in guidance
+    assert widget.parameter_group.summary_label.accessibleDescription() == guidance
     widget._add_operation_note(
         "2D operation — each YX slice is processed independently."
     )
     operation_note = widget._parameter_widgets["operation_notice"]
 
-    def expected_note_colors() -> tuple[str, str]:
+    def expected_note_color() -> str:
         colors = theme_colors(widget.parameter_form_widget.palette())
-        return (
-            blend_colors(colors.surface, colors.text, 0.82).name(),
-            colors.warning.foreground.name(),
-        )
+        return colors.warning.foreground.name()
 
-    dark_secondary, dark_warning = expected_note_colors()
-    qtbot.waitUntil(
-        lambda: dark_secondary in visibility_note.styleSheet()
-        and dark_warning in operation_note.styleSheet()
-    )
-    dark_styles = (
-        visibility_note.styleSheet(),
-        operation_note.styleSheet(),
-    )
+    dark_warning = expected_note_color()
+    qtbot.waitUntil(lambda: dark_warning in operation_note.styleSheet())
+    dark_style = operation_note.styleSheet()
 
-    host.setStyleSheet(
-        get_stylesheet("light", extra_variables={"font_size": "9pt"})
-    )
+    host.setStyleSheet(get_stylesheet("light", extra_variables={"font_size": "9pt"}))
     qtbot.waitUntil(lambda: widget.property("vippColorScheme") == "light")
-    light_secondary, light_warning = expected_note_colors()
-    qtbot.waitUntil(
-        lambda: light_secondary in visibility_note.styleSheet()
-        and light_warning in operation_note.styleSheet()
-    )
-    assert visibility_note.styleSheet() != dark_styles[0]
-    assert operation_note.styleSheet() != dark_styles[1]
+    light_warning = expected_note_color()
+    qtbot.waitUntil(lambda: light_warning in operation_note.styleSheet())
+    assert operation_note.styleSheet() != dark_style
 
-    host.setStyleSheet(
-        get_stylesheet("dark", extra_variables={"font_size": "9pt"})
-    )
+    host.setStyleSheet(get_stylesheet("dark", extra_variables={"font_size": "9pt"}))
     qtbot.waitUntil(lambda: widget.property("vippColorScheme") == "dark")
-    restored_secondary, restored_warning = expected_note_colors()
-    qtbot.waitUntil(
-        lambda: restored_secondary in visibility_note.styleSheet()
-        and restored_warning in operation_note.styleSheet()
-    )
-    assert (restored_secondary, restored_warning) == (
-        dark_secondary,
-        dark_warning,
-    )
+    restored_warning = expected_note_color()
+    qtbot.waitUntil(lambda: restored_warning in operation_note.styleSheet())
+    assert restored_warning == dark_warning
 
 
-def test_sole_hidden_channel_axis_uses_parameters_summary_guidance(qtbot):
+def test_custom_channel_axis_remains_visible_instead_of_disclosed_as_hidden(qtbot):
     data = np.zeros((4, 8, 10), dtype=np.float32)
     widget = _widget(qtbot, data, axes="ZYX")
     unsharp = widget.add_node_from_palette("unsharp_mask")
@@ -691,23 +692,230 @@ def test_sole_hidden_channel_axis_uses_parameters_summary_guidance(qtbot):
 
     _select(widget, unsharp.id)
 
-    spanning_text = []
-    for row in range(widget.parameter_form.rowCount()):
-        item = widget.parameter_form.itemAt(row, QFormLayout.SpanningRole)
-        if item is not None and isinstance(item.widget(), QLabel):
-            spanning_text.append(item.widget().text())
-    assert not any("Hidden setting" in text for text in spanning_text)
+    _assert_no_hidden_settings_disclosure(widget)
 
-    guidance = widget.parameter_group.summary_label.toolTip()
-    assert (
-        "Hidden setting preserved: Channel axis (-1 = none): -1." in guidance
-    )
-    assert "do not affect the current input or selected mode" in guidance
-    assert "resolved input is explicitly scalar" in guidance
-    assert (
-        widget.parameter_group.summary_label.accessibleDescription()
-        == guidance
-    )
+    widget.pipeline.set_param(unsharp.id, "channel_axis", 0)
+    widget._render_parameters(unsharp.id)
+
+    assert "channel_axis" in widget._parameter_widgets
+    assert widget._parameter_widgets["channel_axis"].value() == 0
+    _assert_no_hidden_settings_disclosure(widget)
+
+
+def test_imagej_threshold_hides_fixed_method_and_explains_default_and_legacy(
+    qtbot,
+):
+    data = np.arange(100, dtype=np.uint8).reshape(10, 10)
+    widget = _widget(qtbot, data, axes="YX")
+    threshold = widget.add_node_from_palette("imagej_auto_threshold")
+    widget._connect_nodes("input", threshold.id)
+
+    _select(widget, threshold.id)
+
+    assert widget.selected_title.text() == "ImageJ Default Threshold (8-bit)"
+    assert "method" not in widget._parameter_widgets
+    default_help = widget.selected_title.toolTip()
+    assert "ImageJ Default (modified IsoData)" in default_help
+    assert "256-bin histogram" in default_help
+    assert "Triangle Threshold" in default_help
+    assert widget.selected_title.accessibleDescription() == default_help
+
+    # A legacy workflow retains the old ImageJ Triangle calculation, but its
+    # compatibility-only parameter must not reintroduce a public dropdown.
+    threshold.params["method"] = "Triangle"
+    threshold.title = "ImageJ Triangle Threshold (8-bit, legacy)"
+    _select(widget, threshold.id)
+
+    assert widget.selected_title.text() == "ImageJ Triangle Threshold (8-bit, legacy)"
+    assert "method" not in widget._parameter_widgets
+    legacy_help = widget.selected_title.toolTip()
+    assert "Compatibility-only ImageJ Triangle" in legacy_help
+    assert "older saved workflow" in legacy_help
+    assert "not interchangeable" in legacy_help
+    assert widget.selected_title.accessibleDescription() == legacy_help
+
+
+def test_minimum_threshold_palette_and_inspector_explain_histogram_method(qtbot):
+    data = np.zeros((3, 16, 18), dtype=np.float32)
+    widget = _widget(qtbot, data, axes="ZYX")
+
+    palette_help = _palette_item(widget, "minimum_threshold").toolTip(0).casefold()
+    assert "histogram" in palette_help
+    assert "two peaks" in palette_help or "bimodal" in palette_help
+    assert "valley" in palette_help
+
+    threshold = widget.add_node_from_palette("minimum_threshold")
+    widget._connect_nodes("input", threshold.id)
+    _select(widget, threshold.id)
+
+    assert widget.selected_title.text() == "Minimum Threshold"
+    title_help = widget.selected_title.toolTip()
+    title_help_lower = title_help.casefold()
+    assert "minimum" in title_help_lower
+    assert "pixel value" in title_help_lower
+    assert "not" in title_help_lower
+    assert "valley" in title_help_lower
+    assert "histogram" in title_help_lower
+    assert "two peaks" in title_help_lower
+    assert widget.selected_title.accessibleDescription() == title_help
+
+    notice = widget._parameter_widgets["operation_notice"]
+    notice_text = notice.text().casefold()
+    assert "minimum" in notice_text
+    assert "valley" in notice_text
+    assert "two peaks" in notice_text
+    assert "smooth" in notice_text
+    assert "histogram" in notice_text
+    assert "image pixel" in notice_text
+    assert "not the image" in notice_text or "never" in notice_text
+    assert "above" in notice_text
+    assert "foreground" in notice_text
+
+
+def test_minimum_threshold_names_histogram_controls_and_explains_limits(qtbot):
+    data = np.zeros((3, 16, 18), dtype=np.float32)
+    widget = _widget(qtbot, data, axes="ZYX")
+    threshold = widget.add_node_from_palette("minimum_threshold")
+    widget._connect_nodes("input", threshold.id)
+
+    # An authored Intensity Histogram labels this shared row "Y values". A
+    # subsequent ordinary image node must restore its inspection-only meaning.
+    widget.histogram_controls_label.setText("Y values")
+    _select(widget, threshold.id)
+
+    assert widget.histogram_controls_label.text() == "Displayed histogram"
+    display_help = widget.histogram_controls_label.toolTip().casefold()
+    assert "display-only" in display_help
+    assert "does not change" in display_help
+    assert "histogram scope" in display_help
+
+    scope = widget._parameter_widgets["threshold_scope"]
+    scope_label = widget.parameter_form.labelForField(scope)
+    assert scope_label.text() == "Histogram scope"
+    assert scope_label.toolTip() == scope.toolTip()
+    scope_help = scope.toolTip().casefold()
+    assert "stack histogram" in scope_help
+    assert "one threshold" in scope_help
+    assert "complete input" in scope_help or "whole stack" in scope_help
+    assert "slice histogram" in scope_help
+    assert "separate threshold" in scope_help
+    assert "yx plane" in scope_help
+
+    pass_limit = widget._parameter_widgets["max_iterations"]
+    assert isinstance(pass_limit, NumericEntryControl)
+    pass_limit_label = widget.parameter_form.labelForField(pass_limit)
+    assert pass_limit_label.text() == "Histogram smoothing pass limit"
+    assert pass_limit_label.toolTip() == pass_limit.toolTip()
+    limit_help = pass_limit.toolTip().casefold()
+    assert "safety limit" in limit_help
+    assert "3-bin" in limit_help
+    assert "histogram" in limit_help
+    assert "image" in limit_help
+    assert "two peaks" in limit_help
+    assert "stop" in limit_help
+    assert "error" in limit_help
+
+
+def test_normalize_dormant_method_parameters_do_not_create_hidden_setting_noise(
+    qtbot,
+):
+    data = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = _widget(qtbot, data, axes="YX")
+    normalize = widget.add_node_from_palette("normalize_image")
+    widget._connect_nodes("input", normalize.id)
+
+    expected_controls = {
+        "min-max": {"method"},
+        "z-score": {"method"},
+        "robust-z-score": {"method"},
+        "maximum-absolute": {"method"},
+        "percentile": {"method", "low_percentile", "high_percentile"},
+        "reference-z-score": {
+            "method",
+            "reference_mean",
+            "reference_standard_deviation",
+        },
+    }
+    _select(widget, normalize.id)
+
+    for method_name, expected in expected_controls.items():
+        method_control = widget._parameter_widgets["method"]
+        method_control.combo.setCurrentIndex(method_control.combo.findData(method_name))
+        widget._debounce_timer.stop()
+
+        scientific_controls = {
+            name
+            for name in widget._parameter_widgets
+            if name
+            in {
+                "method",
+                "low_percentile",
+                "high_percentile",
+                "reference_mean",
+                "reference_standard_deviation",
+            }
+        }
+        assert scientific_controls == expected
+        _assert_no_hidden_settings_disclosure(widget)
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "parameter_name", "parameter_value", "visible", "dormant"),
+    (
+        (
+            "rescale_intensity",
+            "cutoff_mode",
+            "Percentiles",
+            {"in_low_percentile", "in_high_percentile"},
+            {"in_low_value", "in_high_value"},
+        ),
+        (
+            "rescale_intensity",
+            "cutoff_mode",
+            "Values",
+            {"in_low_value", "in_high_value"},
+            {"in_low_percentile", "in_high_percentile"},
+        ),
+        (
+            "clip_intensity",
+            "cutoff_mode",
+            "Data range",
+            set(),
+            {"minimum", "maximum"},
+        ),
+        (
+            "intensity_histogram",
+            "range_mode",
+            "Data range",
+            set(),
+            {"custom_min", "custom_max"},
+        ),
+        (
+            "colocalized_voxels",
+            "display_mode",
+            "White on black",
+            set(),
+            {"channel_1_color", "channel_2_color"},
+        ),
+    ),
+)
+def test_ordinary_mode_specific_controls_hide_without_preservation_notice(
+    qtbot,
+    operation_id,
+    parameter_name,
+    parameter_value,
+    visible,
+    dormant,
+):
+    widget = _widget(qtbot, np.arange(100, dtype=np.float32).reshape(10, 10), axes="YX")
+    node = widget.add_node_from_palette(operation_id)
+    widget.pipeline.set_param(node.id, parameter_name, parameter_value)
+
+    _select(widget, node.id)
+
+    assert visible <= widget._parameter_widgets.keys()
+    assert dormant.isdisjoint(widget._parameter_widgets)
+    _assert_no_hidden_settings_disclosure(widget)
 
 
 def test_remove_small_label_objects_uses_input_size_distribution_and_marker(qtbot):
@@ -913,10 +1121,7 @@ def test_inspector_header_stacks_actions_only_when_the_visible_buttons_do_not_fi
     )
     _select(widget, labels.id)
 
-    assert (
-        widget.inspector_panel.horizontalScrollBarPolicy()
-        == Qt.ScrollBarAlwaysOff
-    )
+    assert widget.inspector_panel.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
 
     action_buttons = tuple(
         button
@@ -928,10 +1133,13 @@ def test_inspector_header_stacks_actions_only_when_the_visible_buttons_do_not_fi
         if not button.isHidden()
     )
     assert len(action_buttons) == 2
-    required_width = sum(
-        max(button.sizeHint().width(), button.minimumSizeHint().width())
-        for button in action_buttons
-    ) + widget.inspector_action_layout.spacing()
+    required_width = (
+        sum(
+            max(button.sizeHint().width(), button.minimumSizeHint().width())
+            for button in action_buttons
+        )
+        + widget.inspector_action_layout.spacing()
+    )
 
     narrow_width = required_width + INSPECTOR_HEADER_ACTION_HORIZONTAL_PADDING - 1
     widget.inspector_content.resize(narrow_width, 800)

@@ -342,8 +342,8 @@
       "id": "linear_scale_offset_1",
       "operation_id": "linear_scale_offset",
       "params": {
-        "alpha": 1.15,
-        "beta": 4.0
+        "alpha": 1.2439024390243902,
+        "beta": -1.2439024390243902
       }
     },
     {
@@ -370,7 +370,11 @@
       "id": "normalize_image_1",
       "operation_id": "normalize_image",
       "params": {
-        "method": "z-score"
+        "method": "z-score",
+        "low_percentile": 1.0,
+        "high_percentile": 99.0,
+        "reference_mean": 0.0,
+        "reference_standard_deviation": 1.0
       }
     },
     {
@@ -378,7 +382,7 @@
       "operation_id": "clip_intensity",
       "params": {
         "cutoff_mode": "Values",
-        "minimum": -2.0,
+        "minimum": 0.0,
         "maximum": 2.0
       }
     },
@@ -511,9 +515,9 @@
       "id": "canny_edges_1",
       "operation_id": "canny_edges",
       "params": {
-        "sigma": 1.0,
-        "low_quantile": 0.1,
-        "high_quantile": 0.25,
+        "sigma": 3.0,
+        "low_quantile": 0.5,
+        "high_quantile": 0.8,
         "channel_axis": -1
       }
     },
@@ -550,7 +554,7 @@
       "id": "assign_channel_colors_1",
       "operation_id": "assign_channel_colors",
       "params": {
-        "channel_colors": "Red,Green"
+        "channel_colors": "Magenta,Cyan"
       }
     },
     {
@@ -570,7 +574,7 @@
       "id": "intensity_histogram_1",
       "operation_id": "intensity_histogram",
       "params": {
-        "bin_count": 128,
+        "bin_count": 100,
         "range_mode": "Data range",
         "custom_min": 0.0,
         "custom_max": 1.0,
@@ -705,7 +709,7 @@
       "params": {
         "threshold_scope": "Stack histogram",
         "histogram_bins": 256,
-        "max_iterations": 10000,
+        "max_iterations": 969,
         "channel_axis": -1
       }
     },
@@ -724,8 +728,8 @@
       "id": "adaptive_mean_threshold_1",
       "operation_id": "adaptive_mean_threshold",
       "params": {
-        "block_size": 15,
-        "c": 2.0,
+        "block_size": 30,
+        "c": -15.0,
         "channel_axis": -1
       }
     },
@@ -733,8 +737,8 @@
       "id": "adaptive_gaussian_threshold_1",
       "operation_id": "adaptive_gaussian_threshold",
       "params": {
-        "block_size": 15,
-        "c": 2.0,
+        "block_size": 30,
+        "c": -15.0,
         "channel_axis": -1
       }
     },
@@ -752,7 +756,7 @@
       "id": "niblack_threshold_1",
       "operation_id": "niblack_threshold",
       "params": {
-        "window_size": 15,
+        "window_size": 30,
         "k": 0.2,
         "channel_axis": -1
       }
@@ -825,21 +829,21 @@
       "id": "top_hat_1",
       "operation_id": "top_hat",
       "params": {
-        "size": 2
+        "size": 10
       }
     },
     {
       "id": "black_hat_1",
       "operation_id": "black_hat",
       "params": {
-        "size": 2
+        "size": 10
       }
     },
     {
       "id": "morphological_gradient_1",
       "operation_id": "morphological_gradient",
       "params": {
-        "size": 2
+        "size": 5
       }
     },
     {
@@ -864,7 +868,7 @@
       "id": "remove_small_objects_1",
       "operation_id": "remove_small_objects",
       "params": {
-        "min_size": 24,
+        "min_size": 128,
         "spatial_mode": "Auto from axes",
         "connectivity": "Face connected",
         "resolved_spatial_ndim": 3
@@ -903,7 +907,7 @@
       "id": "expand_labels_1",
       "operation_id": "expand_labels",
       "params": {
-        "distance": 2.0,
+        "distance": 3.0,
         "spatial_mode": "Auto from axes",
         "resolved_spatial_ndim": 3
       }
@@ -1606,79 +1610,92 @@
       "source": "split_channels_1",
       "target": "calculate_weighted_image_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "calculate_weighted_image_1",
       "target_port": 1,
-      "source_port": 1
+      "source_port": 1,
+      "tunnel": "Green channel"
     },
     {
       "source": "split_channels_1",
       "target": "add_images_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "add_images_1",
       "target_port": 1,
-      "source_port": 1
+      "source_port": 1,
+      "tunnel": "Green channel"
     },
     {
       "source": "split_channels_1",
       "target": "subtract_images_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "subtract_images_1",
       "target_port": 1,
-      "source_port": 1
+      "source_port": 1,
+      "tunnel": "Green channel"
     },
     {
       "source": "split_channels_1",
       "target": "ratio_image_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "ratio_image_1",
       "target_port": 1,
-      "source_port": 1
+      "source_port": 1,
+      "tunnel": "Green channel"
     },
     {
       "source": "split_channels_1",
       "target": "binary_threshold_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "threshold",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "triangle_threshold_1",
       "target_port": 0,
-      "source_port": 1
+      "source_port": 1,
+      "tunnel": "Green channel"
     },
     {
       "source": "split_channels_1",
       "target": "li_threshold_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "isodata_threshold_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "input_4",
@@ -1690,31 +1707,36 @@
       "source": "split_channels_1",
       "target": "hysteresis_threshold_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "adaptive_mean_threshold_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "adaptive_gaussian_threshold_1",
       "target_port": 0,
-      "source_port": 1
+      "source_port": 1,
+      "tunnel": "Green channel"
     },
     {
       "source": "split_channels_1",
       "target": "sauvola_threshold_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "niblack_threshold_1",
       "target_port": 0,
-      "source_port": 1
+      "source_port": 1,
+      "tunnel": "Green channel"
     },
     {
       "source": "calculate_weighted_image_1",

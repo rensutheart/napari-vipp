@@ -128,6 +128,22 @@ def test_channel_rules_use_explicit_semantics(shape, axes, ordinary, encoded):
     )
 
 
+@pytest.mark.parametrize(
+    "parameter",
+    (SCALAR_CHANNEL_AXIS_PARAMETER, SCALAR_LUMA_CHANNEL_AXIS_PARAMETER),
+)
+def test_saved_manual_channel_axis_override_remains_visible(parameter):
+    context = _context(
+        _state((8, 9), axes="YX"),
+        params={"channel_axis": 0},
+    )
+
+    result = resolve_parameter_visibility(parameter, context=context)
+
+    assert result.visible
+    assert "manual channel-axis override remains active" in result.reason
+
+
 @pytest.mark.parametrize("last_size", (3, 4))
 def test_shape_only_color_like_arrays_remain_unresolved(last_size):
     context = _context(_state((8, 9, last_size)))

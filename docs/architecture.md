@@ -426,13 +426,13 @@ The current high-level groups are:
     axes, including automatic Z projection, explicit axis choices, and an
     all-non-YX-spatial option for stack-style reductions.
 - `Segmentation`
-  - `Global Thresholds`: Otsu, Triangle, Li, Yen, Isodata, Minimum, ImageJ Auto
-    Threshold (8-bit), Binary, Hysteresis thresholding
+  - `Global Thresholds`: Otsu, Triangle, Li, Yen, Isodata, Minimum, ImageJ
+    Default Threshold (8-bit), Binary, Hysteresis thresholding
   - `Local Thresholds`: Adaptive Mean, Adaptive Gaussian, Sauvola, Niblack
     thresholding
 
 Automatic global threshold nodes default to
-`Threshold uses = Stack histogram`, meaning one cutoff is computed from the
+`Histogram scope = Stack histogram`, meaning one cutoff is computed from the
 whole grayscale input and applied to the full image. On stack inputs the
 inspector exposes `Slice histogram` for per-plane cutoff calculation; that still
 produces a full-stack mask, it only changes which histogram is used to compute
@@ -441,16 +441,21 @@ not meaningful. Fixed `Binary Threshold` and local threshold nodes do not expose
 this control. Global automatic threshold nodes also show the selected input
 histogram with a marker at the computed cutoff.
 
-ImageJ Auto Threshold (8-bit) is an explicit exception to the generic histogram
-contract below. It is an experimental source-aligned ImageJ 1.54p target for
-scalar uint8, uint16, and float32 inputs, fixed to per-YX-plane 8-bit conversion
-and a source-derived `Default` or `Triangle` AutoThresholder. Independent
-ImageJ-generated golden parity validation is pending. Bool handling, other
-floating dtypes, and RGB/RGBA luma reduction are VIPP extensions and are not
-ImageJ-exact. Its generic raw-stack histogram inspector is hidden because it
-would not represent the plane-local converted histogram or cutoff actually
-used. Infinite float inputs are rejected as a deliberate safety divergence
-instead of preserving ImageJ's collapsed plane.
+ImageJ Default Threshold (8-bit) is an explicit exception to the generic
+histogram contract below. It is an experimental source-aligned ImageJ 1.54p
+target for scalar uint8, uint16, and float32 inputs, fixed to independent
+per-YX-plane 8-bit conversion followed by ImageJ's modified IsoData (`Default`)
+AutoThresholder. The public node exposes no method control. Persisted nodes
+from the former ImageJ Auto Threshold dropdown that selected `Triangle` retain
+the source-derived ImageJ Triangle algorithm as fixed legacy compatibility; it
+must not be migrated to VIPP's generic Triangle operation because their
+conversion and histogram contracts differ. Independent ImageJ-generated golden
+parity validation is pending. Bool handling, other floating dtypes, and
+RGB/RGBA luma reduction are VIPP extensions and are not ImageJ-exact. Its
+generic raw-stack histogram inspector is hidden because it would not represent
+the plane-local converted histogram or cutoff actually used. Infinite float
+inputs are rejected as a deliberate safety divergence instead of preserving
+ImageJ's collapsed plane.
 
 Otsu, Triangle, Yen, Isodata, and Minimum count every finite input value, with
 no data-size-dependent sampling or silent rebinning. Their bin contract is
@@ -477,9 +482,12 @@ fabricated zero threshold. Local thresholds operate plane-wise and may
 inherently allocate a local-threshold plane; large runs still use the automatic
 background policy.
 
-Minimum exposes a saved `max_iterations` limit (1..10,000, default 10,000) for
-histogram smoothing. It reports an explicit failure when the method cannot
-resolve two maxima; no mean or alternate-threshold fallback is applied.
+Minimum exposes a saved `max_iterations` convergence safety limit (1..10,000,
+default 10,000) for repeated three-bin smoothing of the histogram, not the
+image. Smoothing stops when fewer than three maxima remain; calculation succeeds
+only when exactly two remain, selects the lowest valley between them, and
+reports an explicit failure otherwise. No mean or alternate-threshold fallback
+is applied.
 
 `Hysteresis Threshold` uses raw low/high intensity thresholds and displays those
 markers on its input histogram. Its spatial processing mode controls whether

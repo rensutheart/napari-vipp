@@ -38,6 +38,9 @@ COLOCALIZATION_SCATTER_THRESHOLD_HIT_TOLERANCE = 8
 DETAILED_HISTOGRAM_DEFAULT_GRID_DIVISIONS = 4
 DETAILED_HISTOGRAM_MIN_GRID_DIVISIONS = 2
 DETAILED_HISTOGRAM_MAX_GRID_DIVISIONS = 12
+HISTOGRAM_SINGLE_SERIES_FILL_ALPHA = 185
+HISTOGRAM_MULTI_SERIES_FILL_ALPHA = 72
+HISTOGRAM_MULTI_SERIES_STROKE_ALPHA = 128
 
 
 def colocalization_scatter_density_bytes(bins: int) -> int:
@@ -380,6 +383,7 @@ class HistogramPlot(QWidget):
         width = max(plot_rect.width(), 1)
         height = max(plot_rect.height(), 1)
         step = max(int(np.ceil(values.shape[1] / width)), 1)
+        multiple_series = values.shape[0] > 1
         for series_index, series_values in enumerate(values):
             reduced = np.array(
                 [
@@ -390,10 +394,14 @@ class HistogramPlot(QWidget):
             )
             if reduced.size == 0:
                 continue
-            color = self._series_colors[series_index % len(self._series_colors)]
-            if values.shape[0] > 1:
-                color = QColor(color)
-                color.setAlpha(175)
+            source_color = self._series_colors[
+                series_index % len(self._series_colors)
+            ]
+            color = QColor(source_color)
+            if multiple_series:
+                color.setAlpha(
+                    min(color.alpha(), HISTOGRAM_MULTI_SERIES_STROKE_ALPHA)
+                )
             if reduced.size <= 8:
                 # Discrete distributions (especially boolean masks) need
                 # visible inset bars.  One-pixel strokes at x=0 and x=1 sit
@@ -401,8 +409,12 @@ class HistogramPlot(QWidget):
                 slot_width = width / max(int(reduced.size), 1)
                 bar_width = max(min(int(slot_width * 0.55), int(slot_width) - 2), 2)
                 painter.setPen(QPen(color, 1.0))
-                fill = QColor(color)
-                fill.setAlpha(max(fill.alpha(), 150))
+                fill = QColor(source_color)
+                fill.setAlpha(
+                    min(fill.alpha(), HISTOGRAM_MULTI_SERIES_FILL_ALPHA)
+                    if multiple_series
+                    else max(fill.alpha(), 150)
+                )
                 painter.setBrush(fill)
                 for index, value in enumerate(reduced):
                     center_x = plot_rect.left() + int((index + 0.5) * slot_width)
@@ -865,9 +877,6 @@ class DetailedHistogramPlot(QWidget):
         tick_metrics = QFontMetrics(self._tick_label_font())
         axis_metrics = QFontMetrics(self._axis_label_font())
         title_height = tick_metrics.height() + 11 if self._title else 6
-        legend_height = (
-            tick_metrics.height() + 3 if len(self._series_labels) > 1 else 0
-        )
         y_tick_width = max(
             (
                 tick_metrics.horizontalAdvance(
@@ -879,6 +888,13 @@ class DetailedHistogramPlot(QWidget):
         )
         y_title_band = axis_metrics.height() + 8 if self._y_axis_label else 0
         left = max(24, y_title_band + y_tick_width + 14)
+        legend_width = max(outer.width() - left - 15, 1)
+        legend_rows = self._legend_row_count(tick_metrics, legend_width)
+        legend_height = (
+            legend_rows * (tick_metrics.height() + 4) + 4
+            if legend_rows
+            else 0
+        )
         x_tick_band = tick_metrics.height() + 7
         x_title_band = axis_metrics.height() + 8 if self._x_axis_label else 0
         bottom = x_tick_band + x_title_band + 6
@@ -936,7 +952,7 @@ class DetailedHistogramPlot(QWidget):
             )
             painter.drawText(
                 plot_rect.center().x() - axis_metrics.horizontalAdvance(label) // 2,
-                outer.bottom() - 4,
+                outer.bottom() - axis_metrics.descent() - 8,
                 label,
             )
         if self._y_axis_label:
@@ -1076,7 +1092,11 @@ class DetailedHistogramPlot(QWidget):
         for series_index, values in enumerate(self._series_values):
             color = QColor(self._series_colors[series_index])
             fill = QColor(color)
-            fill.setAlpha(185 if series_count == 1 else 105)
+            fill.setAlpha(
+                HISTOGRAM_SINGLE_SERIES_FILL_ALPHA
+                if series_count == 1
+                else HISTOGRAM_MULTI_SERIES_FILL_ALPHA
+            )
             painter.setPen(QPen(color, 1.0))
             painter.setBrush(fill)
             if aggregate_for_pixels:
@@ -1164,10 +1184,22 @@ class DetailedHistogramPlot(QWidget):
         if len(self._series_labels) <= 1:
             return
         colors = custom_paint_colors(self.palette())
+        base_font = painter.font()
+        painter.setFont(self._tick_label_font())
         metrics = painter.fontMetrics()
         x = plot_rect.left()
-        y = outer.top() + metrics.height() + 8
-        available_right = plot_rect.right()
+        row_count = self._legend_row_count(metrics, max(plot_rect.width(), 1))
+        row_height = metrics.height() + 4
+        # `_plot_rect()` reserves a dedicated legend band below the title.
+        # Anchor the legend to the bottom of that band so neither compact nor
+        # expanded plots can let it drift back over the title glyphs.
+        y = (
+            plot_rect.top()
+            - metrics.descent()
+            - 4
+            - max(row_count - 1, 0) * row_height
+        )
+        available_right = plot_rect.right() + 1
         for label, series_color in zip(
             self._series_labels,
             self._series_colors,
@@ -1175,12 +1207,34 @@ class DetailedHistogramPlot(QWidget):
         ):
             label_width = metrics.horizontalAdvance(label)
             required = 12 + 4 + label_width + 12
-            if x + required > available_right:
-                break
+            if x > plot_rect.left() and x + required > available_right:
+                x = plot_rect.left()
+                y += row_height
             painter.fillRect(QRect(x, y - 9, 10, 8), series_color)
             painter.setPen(colors.text)
-            painter.drawText(x + 14, y, label)
-            x += required
+            available_label_width = max(available_right - x - 14, 1)
+            visible_label = metrics.elidedText(
+                label,
+                Qt.ElideRight,
+                available_label_width,
+            )
+            painter.drawText(x + 14, y, visible_label)
+            x += 12 + 4 + metrics.horizontalAdvance(visible_label) + 12
+        painter.setFont(base_font)
+
+    def _legend_row_count(self, metrics: QFontMetrics, width: int) -> int:
+        if len(self._series_labels) <= 1:
+            return 0
+        available_width = max(int(width), 1)
+        rows = 1
+        used = 0
+        for label in self._series_labels:
+            required = 12 + 4 + metrics.horizontalAdvance(label) + 12
+            if used and used + required > available_width:
+                rows += 1
+                used = 0
+            used += min(required, available_width)
+        return rows
 
     def _x_ticks(self) -> tuple[float, ...]:
         if self._bin_edges.size == 0:
@@ -1580,6 +1634,12 @@ class ColocalizationScatterPlot(QWidget):
         self._channel_1_max = 255.0
         self._channel_2_min = 0.0
         self._channel_2_max = 255.0
+        self._display_channel_1_min = 0.0
+        self._display_channel_1_max = 255.0
+        self._display_channel_2_min = 0.0
+        self._display_channel_2_max = 255.0
+        self._zoom_to_data = False
+        self._equal_axes = True
         self._channel_1_color = QColor("#ef4444")
         self._channel_2_color = QColor("#22c55e")
         self._colormap = "Viridis"
@@ -1619,6 +1679,7 @@ class ColocalizationScatterPlot(QWidget):
         # these presentation fields directly.
         self._intensity_min = min(self._channel_1_min, self._channel_2_min)
         self._intensity_max = max(self._channel_1_max, self._channel_2_max)
+        self._update_display_ranges()
         self._channel_1_color = _qcolor_from_channel_color(
             channel_1_color,
             fallback="#ef4444",
@@ -1652,6 +1713,26 @@ class ColocalizationScatterPlot(QWidget):
         )
         self.update()
 
+    def set_zoom_to_data(self, enabled: bool) -> None:
+        """Crop the presentation axes to populated data without changing bins."""
+
+        enabled = bool(enabled)
+        if self._zoom_to_data == enabled:
+            return
+        self._zoom_to_data = enabled
+        self._update_display_ranges()
+        self.update()
+
+    def set_equal_axes(self, enabled: bool) -> None:
+        """Use one numeric range for both axes so slopes are not distorted."""
+
+        enabled = bool(enabled)
+        if self._equal_axes == enabled:
+            return
+        self._equal_axes = enabled
+        self._update_display_ranges()
+        self.update()
+
     def clear(self, message: str = "Connect two channel inputs.") -> None:
         self._cancel_threshold_drag()
         self.unsetCursor()
@@ -1682,6 +1763,7 @@ class ColocalizationScatterPlot(QWidget):
             self._channel_1_max = self._intensity_max
             self._channel_2_min = self._intensity_min
             self._channel_2_max = self._intensity_max
+            self._update_display_ranges()
             self._image = None
             self._density_counts = None
         self.update()
@@ -1704,7 +1786,15 @@ class ColocalizationScatterPlot(QWidget):
             painter.end()
             return
 
-        painter.drawImage(plot_rect, self._image)
+        # The retained density is binned over the populated source ranges.  The
+        # presentation can include zero or share one range across both axes,
+        # so draw that density only into the corresponding data rectangle
+        # instead of relabelling/stretching it across the wider view.
+        painter.fillRect(plot_rect, QColor(4, 7, 15))
+        painter.save()
+        painter.setClipRect(plot_rect)
+        painter.drawImage(self._density_target_rect(plot_rect), self._image)
+        painter.restore()
         painter.setPen(QPen(colors.axis, 1.2))
         painter.drawRect(plot_rect)
         self._draw_thresholds(painter, plot_rect)
@@ -1856,14 +1946,18 @@ class ColocalizationScatterPlot(QWidget):
         painter.drawEllipse(QPointF(float(x), float(y)), 3.5, 3.5)
 
     def _draw_labels(self, painter: QPainter, rect: QRect, plot_rect: QRect) -> None:
+        base_font = painter.font()
+        painter.setFont(self._tick_label_font())
         metrics = painter.fontMetrics()
-        axis_color = custom_paint_colors(self.palette()).muted_text
-        x_min_label = _format_histogram_label(self._channel_1_min)
-        x_max_label = _format_histogram_label(self._channel_1_max)
-        y_min_label = _format_histogram_label(self._channel_2_min)
-        y_max_label = _format_histogram_label(self._channel_2_max)
+        colors = custom_paint_colors(self.palette())
+        axis_value_color = colors.muted_text
+        axis_title_color = colors.text
+        x_min_label = _format_histogram_label(self._display_channel_1_min)
+        x_max_label = _format_histogram_label(self._display_channel_1_max)
+        y_min_label = _format_histogram_label(self._display_channel_2_min)
+        y_max_label = _format_histogram_label(self._display_channel_2_max)
 
-        painter.setPen(axis_color)
+        painter.setPen(axis_value_color)
         axis_value_y = plot_rect.bottom() + metrics.ascent() + 6
         painter.drawText(plot_rect.left(), axis_value_y, x_min_label)
         painter.drawText(
@@ -1873,12 +1967,19 @@ class ColocalizationScatterPlot(QWidget):
         )
 
         x_label = "Ch 1 intensity"
+        axis_font = self._axis_label_font()
+        painter.setFont(axis_font)
+        painter.setPen(axis_title_color)
+        axis_metrics = painter.fontMetrics()
         painter.drawText(
-            plot_rect.center().x() - metrics.horizontalAdvance(x_label) // 2,
-            axis_value_y + metrics.height(),
+            plot_rect.center().x() - axis_metrics.horizontalAdvance(x_label) // 2,
+            axis_value_y + axis_metrics.height(),
             x_label,
         )
 
+        painter.setFont(self._tick_label_font())
+        painter.setPen(axis_value_color)
+        metrics = painter.fontMetrics()
         y_value_x = plot_rect.left() - metrics.horizontalAdvance(y_max_label) - 8
         painter.drawText(y_value_x, plot_rect.top() + metrics.ascent(), y_max_label)
         painter.drawText(
@@ -1888,16 +1989,26 @@ class ColocalizationScatterPlot(QWidget):
         )
 
         y_label = "Ch 2 intensity"
+        painter.setFont(axis_font)
+        axis_metrics = painter.fontMetrics()
         painter.save()
         painter.translate(
-            plot_rect.left() - 42,
-            plot_rect.center().y() + metrics.horizontalAdvance(y_label) // 2,
+            plot_rect.left()
+            - max(
+                metrics.horizontalAdvance(y_min_label),
+                metrics.horizontalAdvance(y_max_label),
+            )
+            - axis_metrics.ascent()
+            - 12,
+            plot_rect.center().y() + axis_metrics.horizontalAdvance(y_label) // 2,
         )
         painter.rotate(-90)
-        painter.setPen(axis_color)
+        painter.setPen(axis_title_color)
         painter.drawText(0, 0, y_label)
         painter.restore()
 
+        painter.setFont(self._tick_label_font())
+        metrics = painter.fontMetrics()
         t1_text = f"T1 {_format_histogram_label(self._threshold_1)}"
         t1_width = metrics.horizontalAdvance(t1_text)
         t1_x = int(
@@ -1927,29 +2038,31 @@ class ColocalizationScatterPlot(QWidget):
 
         if self._summary:
             summary_width = metrics.horizontalAdvance(self._summary)
-            painter.setPen(axis_color)
+            painter.setPen(axis_value_color)
             painter.drawText(
                 max(plot_rect.left(), plot_rect.right() - summary_width),
                 plot_rect.top() + metrics.ascent() + 2,
                 self._summary,
             )
+        painter.setFont(base_font)
 
     def _plot_rect(self) -> QRect:
         rect = self.rect().adjusted(8, 8, -8, -8)
-        metrics = self.fontMetrics()
+        tick_metrics = QFontMetrics(self._tick_label_font())
+        axis_metrics = QFontMetrics(self._axis_label_font())
         range_labels = (
-            _format_histogram_label(self._channel_1_min),
-            _format_histogram_label(self._channel_1_max),
-            _format_histogram_label(self._channel_2_min),
-            _format_histogram_label(self._channel_2_max),
+            _format_histogram_label(self._display_channel_1_min),
+            _format_histogram_label(self._display_channel_1_max),
+            _format_histogram_label(self._display_channel_2_min),
+            _format_histogram_label(self._display_channel_2_max),
         )
         value_width = max(
-            *(metrics.horizontalAdvance(label) for label in range_labels),
+            *(tick_metrics.horizontalAdvance(label) for label in range_labels),
         )
-        left_margin = max(56, value_width + 22)
+        left_margin = max(56, value_width + axis_metrics.height() + 22)
         right_margin = 10
         top_margin = 8
-        bottom_margin = metrics.height() * 2 + 12
+        bottom_margin = tick_metrics.height() + axis_metrics.height() + 14
         available_width = max(1, rect.width() - left_margin - right_margin)
         available_height = max(1, rect.height() - top_margin - bottom_margin)
         side = max(1, min(available_width, available_height))
@@ -1958,24 +2071,91 @@ class ColocalizationScatterPlot(QWidget):
         return QRect(x, y, side, side)
 
     def _x_from_value(self, value: float, plot_rect: QRect) -> int:
-        span = self._channel_1_max - self._channel_1_min
-        fraction = float(np.clip((value - self._channel_1_min) / span, 0.0, 1.0))
-        return plot_rect.left() + int(round(fraction * max(plot_rect.width(), 1)))
+        span = self._display_channel_1_max - self._display_channel_1_min
+        fraction = float(
+            np.clip((value - self._display_channel_1_min) / span, 0.0, 1.0)
+        )
+        drawable_width = max(plot_rect.width() - 1, 0)
+        return plot_rect.left() + int(round(fraction * drawable_width))
 
     def _y_from_value(self, value: float, plot_rect: QRect) -> int:
-        span = self._channel_2_max - self._channel_2_min
-        fraction = float(np.clip((value - self._channel_2_min) / span, 0.0, 1.0))
-        return plot_rect.bottom() - int(round(fraction * max(plot_rect.height(), 1)))
+        span = self._display_channel_2_max - self._display_channel_2_min
+        fraction = float(
+            np.clip((value - self._display_channel_2_min) / span, 0.0, 1.0)
+        )
+        drawable_height = max(plot_rect.height() - 1, 0)
+        return plot_rect.bottom() - int(round(fraction * drawable_height))
 
     def _value_from_x(self, x: int, plot_rect: QRect) -> float:
-        fraction = (float(x) - plot_rect.left()) / max(plot_rect.width(), 1)
-        span = self._channel_1_max - self._channel_1_min
-        return float(self._channel_1_min + np.clip(fraction, 0.0, 1.0) * span)
+        fraction = (float(x) - plot_rect.left()) / max(plot_rect.width() - 1, 1)
+        span = self._display_channel_1_max - self._display_channel_1_min
+        return float(
+            self._display_channel_1_min + np.clip(fraction, 0.0, 1.0) * span
+        )
 
     def _value_from_y(self, y: int, plot_rect: QRect) -> float:
-        fraction = (plot_rect.bottom() - float(y)) / max(plot_rect.height(), 1)
-        span = self._channel_2_max - self._channel_2_min
-        return float(self._channel_2_min + np.clip(fraction, 0.0, 1.0) * span)
+        fraction = (plot_rect.bottom() - float(y)) / max(plot_rect.height() - 1, 1)
+        span = self._display_channel_2_max - self._display_channel_2_min
+        return float(
+            self._display_channel_2_min + np.clip(fraction, 0.0, 1.0) * span
+        )
+
+    def _tick_label_font(self) -> QFont:
+        return QFont(self.font())
+
+    def _axis_label_font(self) -> QFont:
+        font = QFont(self.font())
+        point_size = font.pointSizeF()
+        if point_size > 0:
+            font.setPointSizeF(point_size + 1.0)
+        else:
+            font.setPixelSize(max(font.pixelSize() + 1, 1))
+        font.setWeight(QFont.DemiBold)
+        return font
+
+    def _update_display_ranges(self) -> None:
+        data_1 = (self._channel_1_min, self._channel_1_max)
+        data_2 = (self._channel_2_min, self._channel_2_max)
+        if self._zoom_to_data:
+            display_1 = data_1
+            display_2 = data_2
+        else:
+            display_1 = (min(0.0, data_1[0]), max(0.0, data_1[1]))
+            display_2 = (min(0.0, data_2[0]), max(0.0, data_2[1]))
+        if self._equal_axes:
+            shared = _valid_scatter_axis_range(
+                (
+                    min(display_1[0], display_2[0]),
+                    max(display_1[1], display_2[1]),
+                )
+            )
+            display_1 = shared
+            display_2 = shared
+        self._display_channel_1_min, self._display_channel_1_max = (
+            _valid_scatter_axis_range(display_1)
+        )
+        self._display_channel_2_min, self._display_channel_2_max = (
+            _valid_scatter_axis_range(display_2)
+        )
+
+    def _density_target_rect(self, plot_rect: QRect) -> QRectF:
+        x_span = self._display_channel_1_max - self._display_channel_1_min
+        y_span = self._display_channel_2_max - self._display_channel_2_min
+        plot_left = float(plot_rect.left())
+        plot_bottom = float(plot_rect.bottom() + 1)
+        left = plot_left + (
+            (self._channel_1_min - self._display_channel_1_min) / x_span
+        ) * plot_rect.width()
+        right = plot_left + (
+            (self._channel_1_max - self._display_channel_1_min) / x_span
+        ) * plot_rect.width()
+        top = plot_bottom - (
+            (self._channel_2_max - self._display_channel_2_min) / y_span
+        ) * plot_rect.height()
+        bottom = plot_bottom - (
+            (self._channel_2_min - self._display_channel_2_min) / y_span
+        ) * plot_rect.height()
+        return QRectF(left, top, max(right - left, 1.0), max(bottom - top, 1.0))
 
 
 def _valid_scatter_axis_range(

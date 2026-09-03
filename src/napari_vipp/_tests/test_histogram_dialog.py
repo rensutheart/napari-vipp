@@ -97,6 +97,51 @@ def _dark_palette() -> QPalette:
     return palette
 
 
+class _RecordingPainter:
+    """Minimal painter spy for verifying text-band geometry."""
+
+    def __init__(self, font: QFont):
+        self._font = QFont(font)
+        self.text_calls: list[tuple[int, int, str, QFont]] = []
+        self.fill_rects = []
+
+    def font(self) -> QFont:
+        return QFont(self._font)
+
+    def setFont(self, font: QFont) -> None:  # noqa: N802
+        self._font = QFont(font)
+
+    def fontMetrics(self) -> QFontMetrics:  # noqa: N802
+        return QFontMetrics(self._font)
+
+    def setPen(self, _pen) -> None:  # noqa: N802
+        return None
+
+    def drawText(self, x: int, y: int, text: str) -> None:  # noqa: N802
+        self.text_calls.append((int(x), int(y), str(text), QFont(self._font)))
+
+    def fillRect(self, rect, _color) -> None:  # noqa: N802
+        self.fill_rects.append(rect)
+
+    def save(self) -> None:
+        return None
+
+    def restore(self) -> None:
+        return None
+
+    def translate(self, _x: int, _y: int) -> None:
+        return None
+
+    def rotate(self, _angle: int) -> None:
+        return None
+
+
+def _text_vertical_bounds(call: tuple[int, int, str, QFont]) -> tuple[int, int]:
+    _x, baseline, _text, font = call
+    metrics = QFontMetrics(font)
+    return baseline - metrics.ascent(), baseline + metrics.descent()
+
+
 def test_detailed_histogram_plot_preserves_raw_values_and_true_axis_modes(qtbot):
     plot = DetailedHistogramPlot()
     qtbot.addWidget(plot)
@@ -190,12 +235,105 @@ def test_detailed_histogram_layout_separates_axis_titles_and_large_ticks(
         + 5
         + tick_metrics.descent()
     )
-    x_title_top = outer.bottom() - 4 - axis_metrics.ascent()
+    x_title_top = (
+        outer.bottom()
+        - axis_metrics.descent()
+        - 8
+        - axis_metrics.ascent()
+    )
 
     assert leftmost_tick >= y_title_right + 6
     assert x_tick_bottom + 4 <= x_title_top
     assert axis_font.pointSizeF() > tick_font.pointSizeF()
     assert axis_font.weight() == QFont.DemiBold
+
+
+@pytest.mark.parametrize(
+    "size",
+    [(320, 165), (1100, 520)],
+    ids=("inspector", "popout"),
+)
+def test_multiseries_histogram_reserves_nonoverlapping_title_and_legend_bands(
+    qtbot,
+    size,
+):
+    plot = DetailedHistogramPlot()
+    qtbot.addWidget(plot)
+    plot.resize(*size)
+    plot.set_histogram(
+        np.asarray([0.0, 1.0, 2.0, 3.0]),
+        np.asarray(
+            [
+                [8.0, 5.0, 2.0],
+                [7.0, 4.0, 1.0],
+            ]
+        ),
+        title="Intensity histogram",
+        x_axis_label="Input value (a.u.)",
+        y_axis_label="Count",
+        series_labels=("Channel 1", "Channel 2"),
+        colors=("#14b8a6", "#d946ef"),
+    )
+
+    outer = plot.rect().adjusted(8, 8, -8, -8)
+    plot_rect = plot._plot_rect()
+    painter = _RecordingPainter(plot.font())
+    plot._draw_title_and_labels(painter, outer, plot_rect)
+    plot._draw_legend(painter, outer, plot_rect)
+
+    title_call = next(
+        call for call in painter.text_calls if call[2] == "Intensity histogram"
+    )
+    legend_calls = [
+        call
+        for call in painter.text_calls
+        if call[2] in {"Channel 1", "Channel 2"}
+    ]
+    assert len(legend_calls) == 2
+    assert len(painter.fill_rects) == 2
+
+    _title_top, title_bottom = _text_vertical_bounds(title_call)
+    legend_text_bounds = [_text_vertical_bounds(call) for call in legend_calls]
+    legend_top = min(
+        *(top for top, _bottom in legend_text_bounds),
+        *(rect.top() for rect in painter.fill_rects),
+    )
+    legend_bottom = max(
+        *(bottom for _top, bottom in legend_text_bounds),
+        *(rect.bottom() for rect in painter.fill_rects),
+    )
+
+    assert title_bottom + 4 <= legend_top
+    assert legend_bottom + 4 <= plot_rect.top()
+
+
+@pytest.mark.parametrize(
+    "size",
+    [(320, 165), (1100, 520)],
+    ids=("inspector", "popout"),
+)
+def test_histogram_x_axis_title_keeps_bottom_frame_padding(qtbot, size):
+    plot = DetailedHistogramPlot()
+    qtbot.addWidget(plot)
+    plot.resize(*size)
+    plot.set_histogram(
+        np.asarray([0.0, 1.0, 2.0, 3.0]),
+        np.asarray([8.0, 5.0, 2.0]),
+        title="Intensity histogram",
+        x_axis_label="Input value (a.u.)",
+        y_axis_label="Count",
+    )
+
+    outer = plot.rect().adjusted(8, 8, -8, -8)
+    plot_rect = plot._plot_rect()
+    painter = _RecordingPainter(plot.font())
+    plot._draw_title_and_labels(painter, outer, plot_rect)
+    x_axis_call = next(
+        call for call in painter.text_calls if call[2] == "Input value (a.u.)"
+    )
+    _label_top, label_bottom = _text_vertical_bounds(x_axis_call)
+
+    assert label_bottom + 6 <= outer.bottom()
 
 
 @pytest.mark.parametrize(

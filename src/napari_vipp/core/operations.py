@@ -1210,17 +1210,19 @@ def imagej_auto_threshold(
     channel_axis: int | None = None,
     progress=None,
 ) -> np.ndarray:
-    """Apply source-aligned ImageJ 1.x-style 8-bit thresholding per YX plane.
+    """Apply ImageJ Default 8-bit thresholding independently per YX plane.
 
     Scalar uint8, uint16, and float32 inputs target ImageJ 1.54p's
     ``run("8-bit")`` behavior after ``resetMinAndMax`` with ScaleConversions
     enabled. The resulting 256-bin histogram is passed to a source-derived
-    Default or Triangle implementation, and foreground is strictly greater than
-    the returned threshold. Independent ImageJ golden parity is pending.
+    Default (modified IsoData) implementation, and foreground is strictly
+    greater than the returned threshold. ``method="Triangle"`` remains accepted
+    only to preserve the scientific result of workflows authored before the
+    public node became Default-only. Independent ImageJ golden parity is pending.
 
     Bool handling and RGB/RGBA luma reduction are VIPP extensions and are not
-    claimed as ImageJ-exact. This operation is intentionally separate from
-    VIPP's generic scikit-image Triangle and Isodata operations.
+    claimed as ImageJ-exact. The legacy ImageJ Triangle route is intentionally
+    distinct from VIPP's native-intensity Triangle operation.
     """
     arr = _to_explicit_grayscale(
         np.asarray(data),
@@ -1258,7 +1260,7 @@ def minimum_threshold(
     progress=None,
     channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a minimum mask, optionally reducing declared RGB/RGBA to luma."""
+    """Threshold a bimodal histogram at the valley between its two peaks."""
     arr = _to_explicit_grayscale(
         np.asarray(data),
         channel_axis=channel_axis,
@@ -6181,25 +6183,151 @@ def _cast_rescaled_intensity(values: np.ndarray, dtype: np.dtype) -> np.ndarray:
 def normalize_image(
     data,
     method: str = "min-max",
+    low_percentile: float = 1.0,
+    high_percentile: float = 99.0,
+    reference_mean: float = 0.0,
+    reference_standard_deviation: float = 1.0,
 ) -> np.ndarray:
-    """Normalize an image to min-max or z-score float output."""
+    """Normalize an image to a declared floating-point numeric domain.
+
+    Fitted statistics exclude non-finite values. Signed affine modes preserve
+    non-finite input values through their arithmetic, while percentile
+    normalization clips infinite tails to its 0..1 output interval. A wholly
+    non-finite input retains the established Normalize contract of returning
+    zeros.
+    """
     arr = np.asarray(data)
+    normalized_method = str(method).strip().casefold()
+    supported_methods = {
+        "min-max",
+        "z-score",
+        "robust-z-score",
+        "maximum-absolute",
+        "reference-z-score",
+        "percentile",
+    }
+    if normalized_method not in supported_methods:
+        choices = ", ".join(sorted(supported_methods))
+        raise ValueError(f"Normalize method must be one of: {choices}.")
+
+    if normalized_method == "percentile":
+        low = _required_finite_float(low_percentile, "Low percentile")
+        high = _required_finite_float(high_percentile, "High percentile")
+        if not 0.0 <= low <= 100.0 or not 0.0 <= high <= 100.0:
+            raise ValueError("Normalize percentiles must be between 0 and 100.")
+        if low >= high:
+            raise ValueError(
+                "Normalize low percentile must be less than the high percentile."
+            )
+    else:
+        low = high = 0.0
+
+    if normalized_method == "reference-z-score":
+        center = _required_finite_float(reference_mean, "Reference mean")
+        try:
+            scale = float(reference_standard_deviation)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "Reference standard deviation must be a positive finite number."
+            ) from exc
+        if not np.isfinite(scale) or scale <= 0.0:
+            raise ValueError(
+                "Reference standard deviation must be a positive finite number."
+            )
+    else:
+        center = scale = 0.0
+
     output_dtype = arr.dtype if np.issubdtype(arr.dtype, np.floating) else np.float32
     if arr.dtype == bool:
         return arr.astype(output_dtype)
-    values = arr[np.isfinite(arr)].astype(output_dtype, copy=False)
-    if values.size == 0:
-        return np.zeros_like(arr, dtype=output_dtype)
-    if str(method).lower() == "z-score":
-        mean = float(values.mean())
-        std = float(values.std())
-        if std == 0:
+    if not (
+        np.issubdtype(arr.dtype, np.integer)
+        or np.issubdtype(arr.dtype, np.floating)
+    ):
+        raise ValueError("Normalize requires real-valued numeric image data.")
+
+    if normalized_method == "min-max":
+        return _rescale_values(
+            arr.astype(output_dtype, copy=False),
+            0.0,
+            1.0,
+        ).astype(output_dtype, copy=False)
+
+    if normalized_method in {"percentile", "reference-z-score"}:
+        # These modes do not otherwise need a flattened copy of every finite
+        # value. Scan in bounded chunks so selecting either mode does not add a
+        # second full-image allocation merely to preserve the established
+        # all-non-finite-input behavior.
+        finite_count = (
+            int(arr.size)
+            if np.issubdtype(arr.dtype, np.integer)
+            else _finite_array_stats(arr).count
+        )
+        if finite_count == 0:
             return np.zeros_like(arr, dtype=output_dtype)
-        return ((arr.astype(output_dtype, copy=False) - mean) / std).astype(
+
+    if normalized_method == "percentile":
+        if np.issubdtype(arr.dtype, np.integer):
+            cutoff_low, cutoff_high = exact_integer_percentiles(arr, (low, high))
+        else:
+            cutoff_low, cutoff_high = _exact_float_percentile_cutoffs(arr, low, high)
+        cutoff_low = float(cutoff_low)
+        cutoff_high = float(cutoff_high)
+        if cutoff_high == cutoff_low:
+            raise ValueError(
+                "Normalize percentile cutoffs resolve to the same value; choose "
+                "wider percentiles or use Min-max normalization."
+            )
+        scaled = (
+            arr.astype(np.float64, copy=False) - cutoff_low
+        ) / (cutoff_high - cutoff_low)
+        np.clip(scaled, 0.0, 1.0, out=scaled)
+        return scaled.astype(output_dtype, copy=False)
+
+    if normalized_method == "reference-z-score":
+        return ((arr.astype(output_dtype, copy=False) - center) / scale).astype(
             output_dtype,
             copy=False,
         )
-    return _rescale_values(arr.astype(output_dtype, copy=False), 0.0, 1.0).astype(
+
+    if normalized_method == "z-score":
+        # Preserve the established z-score arithmetic exactly: integer inputs
+        # are promoted to float32 and floating inputs keep their dtype for both
+        # fitted statistics and output calculation.
+        values = arr[np.isfinite(arr)].astype(output_dtype, copy=False)
+        if values.size == 0:
+            return np.zeros_like(arr, dtype=output_dtype)
+        center = float(values.mean())
+        scale = float(values.std())
+    else:
+        values = arr[np.isfinite(arr)].astype(np.float64, copy=False)
+        if values.size == 0:
+            return np.zeros_like(arr, dtype=output_dtype)
+
+    if normalized_method == "robust-z-score":
+        center = float(np.median(values))
+        median_absolute_deviation = float(np.median(np.abs(values - center)))
+        scale = 1.482602218505602 * median_absolute_deviation
+    elif normalized_method == "maximum-absolute":
+        scale = float(np.max(np.abs(values)))
+        if scale == 0.0:
+            return np.zeros_like(arr, dtype=output_dtype)
+        return (arr.astype(output_dtype, copy=False) / scale).astype(
+            output_dtype,
+            copy=False,
+        )
+
+    if scale == 0.0:
+        if normalized_method == "robust-z-score" and float(values.min()) != float(
+            values.max()
+        ):
+            raise ValueError(
+                "Robust z-score median absolute deviation is zero despite "
+                "variation in the finite input; use Z-score or another "
+                "normalization method."
+            )
+        return np.zeros_like(arr, dtype=output_dtype)
+    return ((arr.astype(output_dtype, copy=False) - center) / scale).astype(
         output_dtype,
         copy=False,
     )
@@ -7682,9 +7810,17 @@ def _minimum_value(
             )
 
     if len(maxima) != 2:
-        raise RuntimeError("Unable to find two maxima in histogram")
+        raise RuntimeError(
+            "Unable to find two maxima in histogram. Minimum Threshold needs "
+            "a two-peak distribution; choose another threshold method if the "
+            "data are not bimodal."
+        )
     if iteration == iteration_limit - 1:
-        raise RuntimeError("Maximum iteration reached for histogram smoothing")
+        raise RuntimeError(
+            "Maximum iteration reached for histogram smoothing. Increase the "
+            "histogram smoothing pass limit, or choose another threshold "
+            "method if the data are not bimodal."
+        )
     if progress is not None:
         progress.report(iteration + 1, iteration_limit, "Threshold histogram ready")
     valley_offset = int(np.argmin(smooth_histogram[maxima[0] : maxima[1] + 1]))

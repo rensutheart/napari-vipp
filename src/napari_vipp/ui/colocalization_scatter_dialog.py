@@ -9,6 +9,7 @@ import tifffile
 from qtpy.QtCore import QPoint, QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QImage, QPainter
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -53,9 +54,24 @@ class ColocalizationScatterDialog(QDialog):
         self.colormap_combo = QComboBox(self)
         self.colormap_combo.setAccessibleName("Scatter colormap")
         self.colormap_combo.addItems(COLOCALIZATION_SCATTER_COLORMAPS)
+        self.zoom_to_data_checkbox = QCheckBox("Zoom to populated data", self)
+        self.zoom_to_data_checkbox.setChecked(False)
+        self.zoom_to_data_checkbox.setToolTip(
+            "Crop away empty intensity ranges for a closer view. With equal axis "
+            "scales enabled, both channels still share one populated range."
+        )
+        self.equal_axes_checkbox = QCheckBox("Equal axis scales", self)
+        self.equal_axes_checkbox.setChecked(True)
+        self.equal_axes_checkbox.setToolTip(
+            "Use the same numeric range on both square axes so equal intensity "
+            "differences have the same visual length and slopes are not distorted."
+        )
         colormap_row = QHBoxLayout()
         colormap_row.addWidget(QLabel("Colormap", self))
         colormap_row.addWidget(self.colormap_combo)
+        colormap_row.addSpacing(10)
+        colormap_row.addWidget(self.zoom_to_data_checkbox)
+        colormap_row.addWidget(self.equal_axes_checkbox)
         colormap_row.addStretch(1)
         self.summary_label = QLabel("No scatter density is available.", self)
         self.summary_label.setWordWrap(True)
@@ -103,6 +119,8 @@ class ColocalizationScatterDialog(QDialog):
         self.colormap_combo.currentTextChanged.connect(
             self.colormapChanged.emit
         )
+        self.zoom_to_data_checkbox.toggled.connect(self.plot.set_zoom_to_data)
+        self.equal_axes_checkbox.toggled.connect(self.plot.set_equal_axes)
         self.export_button.clicked.connect(self.request_export)
         self.close_button.clicked.connect(self.close)
 

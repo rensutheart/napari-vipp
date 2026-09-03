@@ -5627,6 +5627,280 @@ def test_intensity_rescale_normalize_and_clip():
     np.testing.assert_array_equal(clipped, np.array([[2, 2, 2], [3, 4, 4]]))
 
 
+def test_normalize_legacy_min_max_and_z_score_results_are_unchanged():
+    data = np.array([0, 1, 2, 3, 4], dtype=np.uint16)
+
+    np.testing.assert_allclose(
+        normalize_image(data, method="min-max"),
+        np.linspace(0.0, 1.0, 5, dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        normalize_image(data, method="z-score"),
+        (data.astype(np.float32) - 2.0) / np.std(data.astype(np.float32)),
+    )
+
+
+def test_normalize_robust_z_score_uses_scaled_median_absolute_deviation():
+    data = np.array([0.0, 1.0, 2.0, 3.0, 100.0], dtype=np.float64)
+    scaled_mad = 1.482602218505602
+
+    result = normalize_image(data, method="robust-z-score")
+
+    np.testing.assert_allclose(result, (data - 2.0) / scaled_mad)
+    assert result.dtype == np.float64
+
+
+@pytest.mark.parametrize("method", ["z-score", "robust-z-score"])
+def test_signed_normalize_degenerate_scale_returns_zeros(method):
+    result = normalize_image(np.full((2, 3), 7, dtype=np.uint16), method=method)
+
+    np.testing.assert_array_equal(result, np.zeros((2, 3), dtype=np.float32))
+
+
+def test_robust_z_score_rejects_zero_mad_when_finite_values_vary():
+    data = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="deviation is zero despite variation"):
+        normalize_image(data, method="robust-z-score")
+
+
+def test_normalize_maximum_absolute_preserves_zero_and_signed_ratios():
+    data = np.array([-4, -2, 0, 1, 2], dtype=np.int16)
+
+    result = normalize_image(data, method="maximum-absolute")
+
+    np.testing.assert_array_equal(
+        result,
+        np.array([-1.0, -0.5, 0.0, 0.25, 0.5], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        normalize_image(np.zeros((2, 2), dtype=np.float32), method="maximum-absolute"),
+        np.zeros((2, 2), dtype=np.float32),
+    )
+
+
+def test_normalize_reference_z_score_uses_supplied_saved_statistics():
+    data = np.array([8, 10, 12], dtype=np.uint16)
+
+    result = normalize_image(
+        data,
+        method="reference-z-score",
+        reference_mean=10,
+        reference_standard_deviation=2,
+    )
+
+    np.testing.assert_array_equal(result, np.array([-1.0, 0.0, 1.0], np.float32))
+
+
+@pytest.mark.parametrize("mean", [np.nan, np.inf, -np.inf])
+def test_normalize_reference_z_score_requires_finite_mean(mean):
+    with pytest.raises(ValueError, match="Reference mean must be a finite number"):
+        normalize_image(
+            np.arange(3),
+            method="reference-z-score",
+            reference_mean=mean,
+            reference_standard_deviation=1,
+        )
+
+
+@pytest.mark.parametrize("standard_deviation", [0, -1, np.nan, np.inf, -np.inf])
+def test_normalize_reference_z_score_requires_positive_finite_sd(
+    standard_deviation,
+):
+    with pytest.raises(
+        ValueError,
+        match="Reference standard deviation must be a positive finite number",
+    ):
+        normalize_image(
+            np.arange(3),
+            method="reference-z-score",
+            reference_mean=0,
+            reference_standard_deviation=standard_deviation,
+        )
+
+
+def test_normalize_percentile_maps_selected_finite_range_and_clips_tails():
+    data = np.array([-100.0, 0.0, 10.0, 20.0, 100.0], dtype=np.float64)
+    low, high = np.percentile(data, [20.0, 80.0])
+
+    result = normalize_image(
+        data,
+        method="percentile",
+        low_percentile=20,
+        high_percentile=80,
+    )
+
+    expected = np.clip((data - low) / (high - low), 0.0, 1.0)
+    np.testing.assert_allclose(result, expected)
+    assert result[0] == 0.0
+    assert result[-1] == 1.0
+
+
+def test_normalize_percentile_rejects_equal_resolved_values():
+    with pytest.raises(ValueError, match="cutoffs resolve to the same value"):
+        normalize_image(
+            np.full((2, 3), 7.0, dtype=np.float32),
+            method="percentile",
+            low_percentile=1,
+            high_percentile=99,
+        )
+
+
+@pytest.mark.parametrize(
+    ("low", "high", "message"),
+    [
+        (-1, 99, "between 0 and 100"),
+        (1, 101, "between 0 and 100"),
+        (80, 20, "must be less than"),
+        (20, 20, "must be less than"),
+        (np.nan, 99, "finite"),
+        (1, np.inf, "finite"),
+    ],
+)
+def test_normalize_percentile_rejects_invalid_cutoffs(low, high, message):
+    with pytest.raises(ValueError, match=message):
+        normalize_image(
+            np.arange(5),
+            method="percentile",
+            low_percentile=low,
+            high_percentile=high,
+        )
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "min-max",
+        "z-score",
+        "robust-z-score",
+        "maximum-absolute",
+        "reference-z-score",
+        "percentile",
+    ],
+)
+@pytest.mark.parametrize(
+    ("input_dtype", "output_dtype"),
+    [
+        (np.uint16, np.float32),
+        (np.float32, np.float32),
+        (np.float64, np.float64),
+    ],
+)
+def test_normalize_methods_follow_float_output_dtype_contract(
+    method,
+    input_dtype,
+    output_dtype,
+):
+    result = normalize_image(
+        np.arange(5, dtype=input_dtype),
+        method=method,
+        reference_mean=2,
+        reference_standard_deviation=1,
+    )
+
+    assert result.dtype == output_dtype
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "min-max",
+        "z-score",
+        "robust-z-score",
+        "maximum-absolute",
+        "reference-z-score",
+    ],
+)
+def test_normalize_signed_and_legacy_modes_use_finite_statistics_but_preserve_nonfinite(
+    method,
+):
+    data = np.array([-np.inf, np.nan, 0.0, 2.0, np.inf], dtype=np.float32)
+
+    result = normalize_image(
+        data,
+        method=method,
+        reference_mean=1,
+        reference_standard_deviation=1,
+    )
+
+    assert np.isneginf(result[0])
+    assert np.isnan(result[1])
+    assert np.isfinite(result[2:4]).all()
+    assert np.isposinf(result[4])
+
+
+def test_normalize_percentile_clips_infinite_tails_and_preserves_nan():
+    data = np.array([-np.inf, np.nan, 0.0, 2.0, np.inf], dtype=np.float32)
+
+    result = normalize_image(
+        data,
+        method="percentile",
+        low_percentile=0,
+        high_percentile=100,
+    )
+
+    assert result[0] == 0.0
+    assert np.isnan(result[1])
+    np.testing.assert_array_equal(result[2:4], np.array([0.0, 1.0], np.float32))
+    assert result[4] == 1.0
+
+
+@pytest.mark.parametrize("method", ["min-max", "percentile"])
+def test_normalize_multichannel_shaped_array_uses_one_global_distribution(method):
+    data = np.array([[0.0, 2.0], [100.0, 102.0]], dtype=np.float32)
+
+    result = normalize_image(
+        data,
+        method=method,
+        low_percentile=0,
+        high_percentile=100,
+    )
+
+    np.testing.assert_allclose(result, data / 102.0)
+    assert 0.0 < result[0, 1] < 1.0
+    assert 0.0 < result[1, 0] < 1.0
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "min-max",
+        "z-score",
+        "robust-z-score",
+        "maximum-absolute",
+        "reference-z-score",
+        "percentile",
+    ],
+)
+def test_normalize_all_nonfinite_input_returns_zeros(method):
+    data = np.array([np.nan, np.inf, -np.inf], dtype=np.float32)
+
+    result = normalize_image(data, method=method)
+
+    np.testing.assert_array_equal(result, np.zeros(3, dtype=np.float32))
+
+
+def test_normalize_boolean_input_remains_binary_float_for_every_method():
+    data = np.array([[False, True], [True, False]])
+
+    for method in (
+        "min-max",
+        "z-score",
+        "robust-z-score",
+        "maximum-absolute",
+        "reference-z-score",
+        "percentile",
+    ):
+        result = normalize_image(data, method=method)
+        np.testing.assert_array_equal(result, data.astype(np.float32))
+        assert result.dtype == np.float32
+
+
+def test_normalize_rejects_unknown_method_in_direct_calls():
+    with pytest.raises(ValueError, match="Normalize method must be one of"):
+        normalize_image(np.arange(3), method="mystery")
+
+
 def test_float_rescale_extrema_fast_path_reports_progress(monkeypatch):
     data = np.linspace(-3.0, 9.0, 257, dtype=np.float32).reshape(1, -1)
     updates = []

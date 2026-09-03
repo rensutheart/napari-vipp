@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from qtpy.QtCore import QPoint, Qt
+from qtpy.QtCore import QPoint, QRect, Qt
 from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import QApplication
 
@@ -31,6 +31,55 @@ def _histogram_point(plot, fraction: float) -> QPoint:
         rect.left() + int(round(fraction * rect.width())),
         rect.center().y(),
     )
+
+
+class _BarPaintRecorder:
+    """Record the colors supplied to the histogram drawing primitives."""
+
+    def __init__(self):
+        self.pen_colors: list[QColor] = []
+        self.brush_colors: list[QColor] = []
+
+    def setPen(self, pen) -> None:  # noqa: N802
+        self.pen_colors.append(QColor(pen.color()))
+
+    def setBrush(self, brush) -> None:  # noqa: N802
+        if isinstance(brush, QColor):
+            self.brush_colors.append(QColor(brush))
+
+    def drawLine(self, *_args) -> None:  # noqa: N802
+        return None
+
+    def drawRect(self, *_args) -> None:  # noqa: N802
+        return None
+
+
+def _record_compact_histogram_paint(qtbot, *, series_count: int, bin_count: int):
+    plot = plots.HistogramPlot()
+    qtbot.addWidget(plot)
+    values = np.ones((series_count, bin_count), dtype=np.float32)
+    plot.set_histogram(
+        values,
+        log_scale=False,
+        colors=[QColor("#d946ef"), QColor("#06b6d4")][:series_count],
+    )
+    recorder = _BarPaintRecorder()
+    plot._draw_histogram_series(recorder, QRect(10, 10, 180, 90), values, 1.0)
+    return recorder
+
+
+def _record_detailed_histogram_paint(qtbot, *, series_count: int):
+    plot = plots.DetailedHistogramPlot()
+    qtbot.addWidget(plot)
+    values = np.ones((series_count, 3), dtype=np.float64)
+    plot.set_histogram(
+        np.asarray([0.0, 1.0, 2.0, 3.0]),
+        values,
+        colors=[QColor("#d946ef"), QColor("#06b6d4")][:series_count],
+    )
+    recorder = _BarPaintRecorder()
+    plot._draw_bars(recorder, QRect(10, 10, 180, 90))
+    return recorder
 
 
 def test_widget_module_reexports_extracted_plot_symbols():
@@ -378,6 +427,54 @@ def test_binary_histogram_draws_inset_visible_bars(qtbot):
     )
 
     assert all(sample != background for sample in bar_samples)
+
+
+def test_compact_histogram_only_reduces_multiseries_stroke_opacity(qtbot):
+    single = _record_compact_histogram_paint(qtbot, series_count=1, bin_count=16)
+    multiseries = _record_compact_histogram_paint(
+        qtbot,
+        series_count=2,
+        bin_count=16,
+    )
+
+    assert [color.alpha() for color in single.pen_colors] == [255]
+    assert len(multiseries.pen_colors) == 2
+    assert all(color.alpha() <= 128 for color in multiseries.pen_colors)
+    assert all(
+        color.alpha() < single.pen_colors[0].alpha() for color in multiseries.pen_colors
+    )
+
+
+def test_compact_discrete_histogram_only_reduces_multiseries_fill_opacity(qtbot):
+    single = _record_compact_histogram_paint(qtbot, series_count=1, bin_count=3)
+    multiseries = _record_compact_histogram_paint(
+        qtbot,
+        series_count=2,
+        bin_count=3,
+    )
+
+    assert [color.alpha() for color in single.brush_colors] == [255]
+    assert len(multiseries.brush_colors) == 2
+    assert all(color.alpha() <= 80 for color in multiseries.brush_colors)
+    assert all(
+        color.alpha() < single.brush_colors[0].alpha()
+        for color in multiseries.brush_colors
+    )
+
+
+def test_detailed_histogram_only_reduces_multiseries_fill_opacity(qtbot):
+    single = _record_detailed_histogram_paint(qtbot, series_count=1)
+    multiseries = _record_detailed_histogram_paint(qtbot, series_count=2)
+
+    assert [color.alpha() for color in single.brush_colors] == [185]
+    assert len(multiseries.brush_colors) == 2
+    assert all(color.alpha() <= 80 for color in multiseries.brush_colors)
+    assert all(
+        color.alpha() < single.brush_colors[0].alpha()
+        for color in multiseries.brush_colors
+    )
+    assert [color.alpha() for color in single.pen_colors] == [255]
+    assert [color.alpha() for color in multiseries.pen_colors] == [255, 255]
 
 
 def test_scatter_drag_hidden_mid_gesture_finishes_once(qtbot):

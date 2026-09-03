@@ -398,6 +398,17 @@ def resolve_parameter_visibility(
         )
 
     if visibility == PARAMETER_VISIBILITY_RGB_OR_RGBA_INPUT:
+        stored_axis = context.parameter_values.get(spec.name, spec.default)
+        if (
+            spec.name == "channel_axis"
+            and isinstance(stored_axis, Integral)
+            and not isinstance(stored_axis, (bool, np.bool_))
+            and int(stored_axis) >= 0
+        ):
+            return ParameterVisibility(
+                True,
+                "A saved manual channel-axis override remains active.",
+            )
         state = context.primary_input_state
         if not _visibility_axes_resolved(state):
             return ParameterVisibility(
@@ -413,6 +424,17 @@ def resolve_parameter_visibility(
         )
 
     if visibility == PARAMETER_VISIBILITY_MULTICHANNEL_INPUT:
+        stored_axis = context.parameter_values.get(spec.name, spec.default)
+        if (
+            spec.name == "channel_axis"
+            and isinstance(stored_axis, Integral)
+            and not isinstance(stored_axis, (bool, np.bool_))
+            and int(stored_axis) >= 0
+        ):
+            return ParameterVisibility(
+                True,
+                "A saved manual channel-axis override remains active.",
+            )
         state = context.primary_input_state
         if not _visibility_axes_resolved(state):
             return ParameterVisibility(
@@ -788,6 +810,22 @@ _OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
         ),
     ),
     "crop_stack": (CROP_ROI_LINE_WIDTH_SCALE_PARAMETER,),
+    # ``method`` used to be an authored dropdown on ImageJ Auto Threshold.
+    # Keep both saved values executable for scientific compatibility, but do
+    # not expose either as a current control: newly authored nodes are always
+    # ImageJ Default and legacy Triangle nodes remain fixed to Triangle.
+    "imagej_auto_threshold": (
+        ParameterSpec(
+            "method",
+            "ImageJ method",
+            "choice",
+            "Default",
+            0,
+            0,
+            1,
+            choices=("Default", "Triangle"),
+        ),
+    ),
     "select_axis_slice": (
         ParameterSpec("axes", "Selected axes", "text", "", 0, 0, 1),
         ParameterSpec("indices", "Selected indices", "text", "", 0, 0, 1),
@@ -862,6 +900,7 @@ _OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
 # derived or legacy UI state and must not be initialized generically.
 _NEW_NODE_OPTIONAL_DEFAULTS: dict[str, dict[str, Any]] = {
     "input": {"axis_declaration": ""},
+    "imagej_auto_threshold": {"method": "Default"},
     "select_axis_slice": {
         "axes": "",
         "indices": "",
@@ -1281,6 +1320,10 @@ RESTORATION_PSF_GROUP = "Restoration & PSF"
 GLOBAL_THRESHOLDS_GROUP = "Global Thresholds"
 LOCAL_THRESHOLDS_GROUP = "Local Thresholds"
 OBJECT_SEPARATION_GROUP = "Object Separation"
+IMAGEJ_DEFAULT_THRESHOLD_TITLE = "ImageJ Default Threshold (8-bit)"
+IMAGEJ_LEGACY_TRIANGLE_THRESHOLD_TITLE = (
+    "ImageJ Triangle Threshold (8-bit, legacy)"
+)
 MEASUREMENT_SHAPE_DESCRIPTORS_TOOLTIP = (
     "Add bounding-box and filled area or volume columns. For 2D objects this "
     "also adds convex area, solidity, and maximum Feret diameter. Calibrated "
@@ -1456,7 +1499,7 @@ BACKGROUND_SPATIAL_MODE_PARAMETER = ParameterSpec(
 
 THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
     "threshold_scope",
-    "Threshold uses",
+    "Histogram scope",
     "choice",
     "Stack histogram",
     0,
@@ -1465,8 +1508,10 @@ THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
     choices=("Stack histogram", "Slice histogram"),
     visibility=PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT,
     tooltip=(
-        "Shown when a resolved or still-unresolved stack axis can make stack "
-        "and slice histograms differ."
+        "Stack histogram calculates one threshold from the complete input and "
+        "applies it everywhere. Slice histogram calculates a separate "
+        "threshold for each trailing YX plane. This changes threshold "
+        "estimation only; it does not smooth image pixels."
     ),
 )
 HISTOGRAM_BINS_PARAMETER = ParameterSpec(
@@ -1896,7 +1941,17 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
-            ParameterSpec("alpha", "Scale", "float", 3.0, 0.0, 1000.0, 0.0001, 4),
+            ParameterSpec(
+                "alpha",
+                "Scale",
+                "float",
+                3.0,
+                0.0,
+                1000.0,
+                0.0001,
+                4,
+                tooltip="Multiplier in Output = Input x Scale + Offset.",
+            ),
             ParameterSpec(
                 "beta",
                 "Offset",
@@ -1906,6 +1961,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100000.0,
                 1.0,
                 2,
+                tooltip=(
+                    "Value added after scaling in Output = Input x Scale + Offset. "
+                    "Integer results are rounded and limited to the input data "
+                    "type's range."
+                ),
             ),
         ),
         linear_scale_offset,
@@ -3139,29 +3199,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     ),
     OperationSpec(
         "imagej_auto_threshold",
-        "ImageJ Auto Threshold (8-bit)",
+        IMAGEJ_DEFAULT_THRESHOLD_TITLE,
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (
-            ParameterSpec(
-                "method",
-                "ImageJ method",
-                "choice",
-                "Default",
-                0,
-                0,
-                1,
-                choices=("Default", "Triangle"),
-                tooltip=(
-                    "Experimental source-aligned ImageJ 1.54p target for "
-                    "scalar uint8, uint16, and float32 YX planes. Independent "
-                    "golden parity is pending; bool handling and RGB/RGBA "
-                    "luma reduction are VIPP extensions, not ImageJ-exact."
-                ),
-            ),
-            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
-        ),
+        (SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,),
         imagej_auto_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
         stack_processing_note=SLICE_WISE_STACK_NOTICE,
@@ -3215,12 +3257,22 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             HISTOGRAM_BINS_PARAMETER,
             ParameterSpec(
                 "max_iterations",
-                "Maximum smoothing iterations",
+                "Histogram smoothing pass limit",
                 "int",
                 10_000,
                 1,
                 10_000,
                 25,
+                tooltip=(
+                    "Safety limit, not a fixed amount of smoothing. Each pass "
+                    "applies a 3-bin moving average to the intensity histogram, "
+                    "never to the image. Smoothing stops when fewer than three "
+                    "peaks remain; calculation succeeds only if exactly two "
+                    "peaks remain, then uses the lowest valley between them as the "
+                    "threshold. If no two-peak solution is found "
+                    "before this limit, calculation reports an error instead "
+                    "of switching methods."
+                ),
             ),
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
@@ -5166,8 +5218,33 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
-            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
-            ParameterSpec("weights", "Weights", "text", "1,1", 0, 0, 1),
+            ParameterSpec(
+                "input_count",
+                "Inputs",
+                "int",
+                2,
+                2,
+                12,
+                1,
+                tooltip=(
+                    "Number of active image inputs. The weight list must contain "
+                    "exactly one coefficient for every active input."
+                ),
+            ),
+            ParameterSpec(
+                "weights",
+                "Weights",
+                "text",
+                "1,1",
+                0,
+                0,
+                1,
+                tooltip=(
+                    "Comma-separated coefficients in numbered input order. "
+                    "Coefficients are not normalized; the Calculation preview "
+                    "shows the exact weighted sum."
+                ),
+            ),
             ParameterSpec(
                 "offset",
                 "Offset",
@@ -5179,6 +5256,10 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 3,
                 slider_minimum=-1_000.0,
                 slider_maximum=1_000.0,
+                tooltip=(
+                    "Constant added to every output pixel after the weighted "
+                    "inputs have been summed."
+                ),
             ),
         ),
         calculate_weighted_image,
@@ -5499,7 +5580,98 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 0,
                 1,
-                choices=("min-max", "z-score"),
+                choices=(
+                    "min-max",
+                    "z-score",
+                    "robust-z-score",
+                    "maximum-absolute",
+                    "reference-z-score",
+                    "percentile",
+                ),
+                choice_labels=(
+                    "Min–max (0–1)",
+                    "Z-score (mean/SD; signed)",
+                    "Robust z-score (median/MAD; signed)",
+                    "Maximum absolute value",
+                    "Reference mean/SD (signed)",
+                    "Percentile (0–1)",
+                ),
+                tooltip=(
+                    "Choose the output numeric domain. Signed methods can produce "
+                    "negative values; non-negative Min–max and Percentile modes "
+                    "produce values from 0 to 1. Robust z-score cannot normalize "
+                    "varied data when its median absolute deviation is zero. "
+                    "Input-fitted statistics use the complete input array; split "
+                    "channels first when each channel needs independent normalization."
+                ),
+            ),
+            ParameterSpec(
+                "low_percentile",
+                "Low percentile",
+                "float",
+                1.0,
+                0.0,
+                100.0,
+                0.1,
+                2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="method",
+                visibility_values=("percentile",),
+                tooltip=(
+                    "Exact finite-value percentile mapped to 0. Values below it "
+                    "are clipped to 0."
+                ),
+            ),
+            ParameterSpec(
+                "high_percentile",
+                "High percentile",
+                "float",
+                99.0,
+                0.0,
+                100.0,
+                0.1,
+                2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="method",
+                visibility_values=("percentile",),
+                tooltip=(
+                    "Exact finite-value percentile mapped to 1. Values above it "
+                    "are clipped to 1."
+                ),
+            ),
+            ParameterSpec(
+                "reference_mean",
+                "Reference mean",
+                "float",
+                0.0,
+                -1_000_000_000_000.0,
+                1_000_000_000_000.0,
+                0.01,
+                6,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="method",
+                visibility_values=("reference-z-score",),
+                tooltip=(
+                    "Saved mean applied unchanged across inputs or samples. Values "
+                    "below this reference become negative."
+                ),
+            ),
+            ParameterSpec(
+                "reference_standard_deviation",
+                "Reference SD",
+                "float",
+                1.0,
+                0.000000000001,
+                1_000_000_000_000.0,
+                0.01,
+                12,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="method",
+                visibility_values=("reference-z-score",),
+                tooltip=(
+                    "Saved positive standard deviation applied unchanged across "
+                    "inputs or samples. It must be greater than zero."
+                ),
             ),
         ),
         normalize_image,
@@ -5790,6 +5962,13 @@ def graph_node_from_persisted_params(
         raise ValueError(f"{context} requires non-empty 'id'.")
     if not isinstance(saved_params, dict):
         raise ValueError(f"Parameters for node {node_id!r} must be an object.")
+    # The former public dropdown offered ImageJ Triangle. Keep that exact
+    # serialized calculation loadable and visibly label it as legacy, while
+    # preventing new nodes from authoring it through the Default-only spec.
+    legacy_imagej_triangle = bool(
+        operation_id == "imagej_auto_threshold"
+        and saved_params.get("method") == "Triangle"
+    )
     normalized_execution_mode = validate_node_execution_mode(
         spec,
         execution_mode,
@@ -5810,6 +5989,14 @@ def graph_node_from_persisted_params(
     elif operation_id == "select_axis_slice" and "range_mode" not in saved_params:
         saved_params = dict(saved_params)
         saved_params["range_mode"] = False
+    # Normalize originally persisted only its method. Preserve those workflows
+    # while making the newly mode-specific controls ordinary saved parameters.
+    elif operation_id == "normalize_image":
+        saved_params = dict(saved_params)
+        saved_params.setdefault("low_percentile", 1.0)
+        saved_params.setdefault("high_percentile", 99.0)
+        saved_params.setdefault("reference_mean", 0.0)
+        saved_params.setdefault("reference_standard_deviation", 1.0)
 
     required_params = {parameter.name for parameter in spec.parameters}
     missing_params = required_params - saved_params.keys()
@@ -5853,7 +6040,11 @@ def graph_node_from_persisted_params(
     return GraphNode(
         node_id,
         spec.id,
-        spec.title,
+        (
+            IMAGEJ_LEGACY_TRIANGLE_THRESHOLD_TITLE
+            if legacy_imagej_triangle
+            else spec.title
+        ),
         spec.category,
         spec.input_type,
         spec.output_type,
@@ -6777,6 +6968,15 @@ class PrototypePipeline:
 
     def set_param(self, node_id: str, name: str, value: Any) -> None:
         node = self.nodes[node_id]
+        if (
+            node.operation_id == "imagej_auto_threshold"
+            and name == "method"
+            and value != node.params.get("method", "Default")
+        ):
+            raise ValueError(
+                "ImageJ threshold method is fixed by the node: new nodes use "
+                "Default and restored legacy Triangle nodes remain Triangle."
+            )
         spec = next(
             (
                 parameter

@@ -479,6 +479,15 @@ def prepare_paste_values(
         )
     }
     merged.update(source_values)
+    # The hidden ImageJ method is an immutable node variant, not an authored
+    # value. Paste Values may transfer ordinary settings between exact
+    # operations, but must never turn a visibly Default node into a legacy
+    # Triangle calculation (or vice versa).
+    if operation.id == "imagej_auto_threshold":
+        if "method" in normalized_target:
+            merged["method"] = normalized_target["method"]
+        else:
+            merged.pop("method", None)
     if target_has_auto_recalculate:
         merged[MANUAL_AUTO_RECALCULATE_PARAM] = target_auto_recalculate
     elif operation.execution_policy == "manual":

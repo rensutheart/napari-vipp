@@ -347,22 +347,31 @@ integer Li inputs, VIPP preserves exact native offsets but rejects a relative
 intensity span wider than 2^53, which cannot be represented faithfully by Li's
 float64 iteration; convert or rescale deliberately in that exceptional case.
 
-`Minimum Threshold` exposes `Maximum smoothing iterations`. It repeatedly
-smooths the exact histogram until two peaks remain, following the
-scikit-image method. If two peaks cannot be found within the declared limit,
-the node reports the failure; it does not silently substitute another
-threshold.
+`Minimum Threshold` is intended for roughly bimodal data, such as a background
+peak and a foreground peak. “Minimum” means the lowest valley between those two
+histogram peaks, not the minimum image intensity. The node repeatedly applies a
+three-bin moving average to the exact histogram—never to the image pixels—and
+marks values strictly above the valley as foreground. The
+`Histogram smoothing pass limit` is only a convergence safety limit. Smoothing
+stops once fewer than three peaks remain, and calculation succeeds only when
+exactly two remain. Raising an already sufficient limit therefore does not
+change the result. If two peaks cannot be found within the declared limit, the
+node reports the failure; it does not silently substitute another threshold.
 
-`ImageJ Auto Threshold (8-bit)` is a separate, experimental source-aligned node
-targeting ImageJ 1.54p for scalar uint8, uint16, and float32 inputs. It processes
-each trailing YX plane independently, applies source-derived 8-bit
-ScaleConversions behavior, and then runs a source-derived `Default` or
-`Triangle` AutoThresholder. Independent ImageJ-generated golden parity is
-pending. Bool handling, other floating dtypes, and RGB/RGBA luma reduction are
-VIPP extensions and are not claimed as ImageJ-exact. NaNs become zero during
-plane conversion; infinite float values are rejected explicitly instead of
-preserving ImageJ's collapsed all-zero plane. The node does not change the
-scientific contract of VIPP's generic Triangle or Isodata nodes.
+`ImageJ Default Threshold (8-bit)` is a separate, experimental source-aligned
+node targeting ImageJ 1.54p for scalar uint8, uint16, and float32 inputs. It
+converts each trailing YX plane independently with source-derived 8-bit
+ScaleConversions behavior, then applies ImageJ's modified IsoData (`Default`)
+AutoThresholder. The method is fixed, so newly authored nodes do not show a
+method dropdown. Existing workflows saved with the former ImageJ `Triangle`
+choice retain that source-derived calculation as fixed legacy compatibility;
+it is not interchangeable with VIPP's generic `Triangle Threshold`, whose
+conversion and histogram contract differs. Independent ImageJ-generated golden
+parity is pending. Bool handling, other floating dtypes, and RGB/RGBA luma
+reduction are VIPP extensions and are not claimed as ImageJ-exact. NaNs become
+zero during plane conversion; infinite float values are rejected explicitly
+instead of preserving ImageJ's collapsed all-zero plane. The node does not
+change the scientific contract of VIPP's generic Triangle or Isodata nodes.
 
 For the generic global threshold nodes, NaN, positive infinity, and negative
 infinity are excluded from cutoff fitting and become background in the

@@ -63,9 +63,31 @@
   operation arranged into seven meaningful synthetic-data lanes, plus a
   deterministic bimodal threshold phantom, restrained long-route tunnels, and
   coverage/graph-safety checks.
+- Replaced the public `ImageJ Auto Threshold (8-bit)` method dropdown with a
+  fixed `ImageJ Default Threshold (8-bit)` node. It independently converts each
+  YX plane to 8-bit before applying ImageJ's modified IsoData (`Default`)
+  threshold. Existing workflows saved with the former ImageJ `Triangle` choice
+  retain that distinct calculation as fixed legacy compatibility rather than
+  silently changing scientific results.
 
 ### Bug Fixes
 
+- Clarified Minimum Threshold throughout the palette and inspector: “Minimum”
+  now explicitly means the valley between two histogram peaks, histogram
+  smoothing is distinguished from image blurring, and its iteration setting is
+  presented as an early-stopping safety limit with failure behavior explained.
+  The convergence limit now uses a compact numeric field instead of a
+  misleading strength-like slider, and calculation scope is distinguished from
+  the inspector's display-only histogram scope.
+- Made colocalization scatter plots start from a zero-inclusive, shared axis
+  range by default so equal intensity differences have equal visual lengths.
+  The pop-out now offers explicit populated-data zoom and equal-axis controls,
+  maps the retained density into its true coordinates without recomputation,
+  and uses larger semibold axis titles consistent with histogram plots.
+- Made overlapping multi-channel histogram bars substantially more transparent
+  in both the inspector and detached histogram window, while retaining crisp
+  channel-coloured outlines, saturated legend keys, and the existing
+  single-channel appearance.
 - Retired transient Crop Source/ROI layers after leaving Crop Stack so their
   hidden higher-rank shapes no longer leave inert, negatively labelled napari
   sliders beside a genuinely 2D selected result. The crop presentation is

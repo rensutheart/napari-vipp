@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
+from numbers import Integral
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -284,6 +285,7 @@ from napari_vipp.core.operations import (
     BORN_WOLF_PSF_MANUAL_DEFAULTS,
     IDENTITY_JOIN_COLUMNS,
     PROPERTY_FILTER_COLUMN_PRIORITY,
+    _parse_finite_weight_list,
     automatic_threshold_value,
     colocalization_normalized_inputs,
     colocalization_threshold_values,
@@ -307,6 +309,8 @@ from napari_vipp.core.pipeline import (
     MANUAL_RUN_SKIP,
     NODE_EXECUTION_BYPASS,
     NODE_EXECUTION_RUN,
+    PARAMETER_VISIBILITY_PARAMETER_IN,
+    PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
     SLICE_WISE_STACK_NOTICE,
     GraphConnection,
     GraphNode,
@@ -944,6 +948,17 @@ CLAMP_INTENSITY_DESCRIPTION_TOOLTIP = (
 INSPECTOR_TITLE_TOOLTIPS = {
     "sigma_filter": SIGMA_FILTER_DESCRIPTION_TOOLTIP,
     "clip_intensity": CLAMP_INTENSITY_DESCRIPTION_TOOLTIP,
+    "imagej_auto_threshold": (
+        "Converts each YX plane independently to 8-bit, then applies ImageJ "
+        "Default (modified IsoData) to its 256-bin histogram. This differs "
+        "from VIPP's Triangle Threshold, which works in the native intensity "
+        "domain and can use a shared stack histogram."
+    ),
+    "minimum_threshold": (
+        "Minimum refers to the lowest valley between two peaks in the "
+        "intensity histogram, not the minimum pixel value. Values above that "
+        "valley become foreground."
+    ),
 }
 SLICE_WISE_PROCESSING_TOOLTIP = (
     "This is not 3D processing: each YX plane is handled separately without "
@@ -952,14 +967,6 @@ SLICE_WISE_PROCESSING_TOOLTIP = (
 DEFAULT_SLICE_WISE_PROCESSING_TOOLTIP = (
     "Choose 3D ZYX to process the complete volume instead. 3D rolling-ball "
     "processing can be slow at large radii."
-)
-HIDDEN_SETTINGS_TOOLTIP = (
-    "These settings do not affect the current input or selected mode. Their "
-    "stored values remain available if they become relevant."
-)
-UNRESOLVED_SETTINGS_TOOLTIP = (
-    "Axis metadata or connected-input details are incomplete, so VIPP cannot "
-    "yet determine whether these settings apply."
 )
 ISOLATED_TUNING_STATUS_MESSAGES = (
     "Change a parameter to begin local recalculation.",
@@ -1329,6 +1336,8 @@ def _format_inspector_parameter_value(value) -> str:
         return str(int(value))
     if isinstance(value, (float, np.floating)):
         number = float(value)
+        if number == 0.0:
+            number = 0.0
         return f"{number:.6g}" if math.isfinite(number) else str(number)
     if value is None:
         return "not set"
@@ -1336,18 +1345,40 @@ def _format_inspector_parameter_value(value) -> str:
     return text if len(text) <= 64 else f"{text[:61]}…"
 
 
-def _hidden_settings_summary(
-    settings: Iterable[tuple[str, object]],
-) -> str:
-    """Return one shared, value-specific summary for hidden parameters."""
+def _image_calculator_input_symbol(index: int) -> str:
+    """Return a compact, readable symbol for one numbered calculator input."""
 
-    entries = tuple(settings)
-    noun = "setting" if len(entries) == 1 else "settings"
-    values = "; ".join(
-        f"{label}: {_format_inspector_parameter_value(value)}"
-        for label, value in entries
-    )
-    return f"Hidden {noun} preserved: {values}."
+    subscript_digits = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+    return f"I{str(int(index) + 1).translate(subscript_digits)}"
+
+
+def _format_image_calculator_number(value: float) -> str:
+    """Format a validated number with a round-trippable displayed value."""
+
+    number = float(value)
+    if number == 0.0:
+        return "0"
+    if number.is_integer() and abs(number) < 1e15:
+        return str(int(number))
+    return repr(number)
+
+
+def _image_calculator_equation(weights: list[float], offset: float) -> str:
+    """Render the exact signed weighted-sum expression used by the operation."""
+
+    terms: list[str] = []
+    for index, weight in enumerate(weights):
+        value = float(weight)
+        magnitude = _format_image_calculator_number(abs(value))
+        term = f"{magnitude} × {_image_calculator_input_symbol(index)}"
+        if index == 0:
+            terms.append(f"−{term}" if value < 0.0 else term)
+        else:
+            terms.append(f"{'−' if value < 0.0 else '+'} {term}")
+    resolved_offset = float(offset)
+    offset_sign = "−" if resolved_offset < 0.0 else "+"
+    offset_text = _format_image_calculator_number(abs(resolved_offset))
+    return f"Output = {' '.join(terms)} {offset_sign} {offset_text}"
 
 
 def _toolbar_separator(width: int = 12) -> QFrame:
@@ -1505,13 +1536,19 @@ class _InspectorParameterFormLayout(QFormLayout):
 
 AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
     "saturation_percent",
-    "Saturation (%)",
+    "Tail exclusion (%)",
     "float",
     0.35,
     0.0,
     20.0,
     0.05,
     2,
+    tooltip=(
+        "Total percentage excluded when choosing the fitted input range, divided "
+        "equally between the low and high tails. For 0.35%, VIPP uses the "
+        "0.175th and 99.825th percentiles. This setting is used only when "
+        "Calculate and apply is clicked."
+    ),
 )
 
 
@@ -2127,6 +2164,7 @@ class VippWidget(QWidget):
         self._active_auto_contrast_run_id: int | None = None
         self._active_auto_contrast_key: tuple | None = None
         self._auto_contrast_busy_visible = False
+        self._auto_contrast_feedback_key: tuple | None = None
         self._generated_layer_contrast_generation = 0
         self._generated_layer_contrast_cache: dict[
             tuple,
@@ -2797,7 +2835,14 @@ class VippWidget(QWidget):
             "Image-like outputs use OME-TIFF and tables use CSV."
         )
         self._inspector_output_port_by_node: dict[str, int] = {}
-        self.auto_contrast_group = QGroupBox("Auto Contrast")
+        self.auto_contrast_group = QGroupBox("Set scale + offset from input")
+        self.auto_contrast_group.setFlat(True)
+        self.auto_contrast_help_label = QLabel(
+            "One-time helper: calculates Scale and Offset from the connected "
+            "input and writes the saved values above."
+        )
+        self.auto_contrast_help_label.setWordWrap(True)
+        _set_palette_text_tone(self.auto_contrast_help_label, "secondary")
         self.auto_saturation_control = ParameterControl(
             AUTO_CONTRAST_SATURATION_SPEC,
             AUTO_CONTRAST_SATURATION_SPEC.default,
@@ -2808,13 +2853,23 @@ class VippWidget(QWidget):
                 AUTO_CONTRAST_SATURATION_SPEC.decimals,
             ),
         )
-        self.auto_contrast_button = QPushButton("Auto")
+        saturation_tooltip = f"<qt>{AUTO_CONTRAST_SATURATION_SPEC.tooltip}</qt>"
+        self.auto_saturation_control.setToolTip(saturation_tooltip)
+        for child in self.auto_saturation_control.findChildren(QWidget):
+            child.setToolTip(saturation_tooltip)
+        self.auto_contrast_button = QPushButton("Calculate and apply")
         self.auto_contrast_button.setToolTip(
-            "Set scale and offset from exact full-input finite percentiles. "
-            "Explicit RGB and RGBA inputs use weighted RGB luminance; alpha is "
-            "ignored. Unlabelled arrays are treated as scalar data. "
-            "Large inputs are calculated in the background."
+            "Inspect every finite input value and set Scale and Offset so the "
+            "selected lower and upper percentiles map to 0 and 255. The calculated "
+            "values are shown above and saved with the workflow. Explicit RGB and "
+            "RGBA inputs use weighted RGB luminance; alpha is ignored. Large inputs "
+            "are calculated in the background."
         )
+        self.auto_contrast_result_label = QLabel(
+            "Scale and Offset above are the values this node will use."
+        )
+        self.auto_contrast_result_label.setWordWrap(True)
+        _set_palette_text_tone(self.auto_contrast_result_label, "text")
         self.metadata_group = InspectorSection("Output metadata", expanded=False)
         self.history_group = InspectorSection("History", expanded=False)
         self.table_group = InspectorSection(
@@ -5308,13 +5363,24 @@ class VippWidget(QWidget):
         batch_effective_layout.setContentsMargins(8, 8, 8, 8)
         batch_effective_layout.addWidget(self.batch_effective_parameter_label)
         auto_layout = QVBoxLayout(self.auto_contrast_group)
+        auto_layout.setContentsMargins(8, 8, 8, 8)
+        auto_layout.setSpacing(5)
+        auto_layout.addWidget(self.auto_contrast_help_label)
         self.auto_contrast_form = QFormLayout()
         self.auto_contrast_form.addRow(
             AUTO_CONTRAST_SATURATION_SPEC.label,
             self.auto_saturation_control,
         )
+        auto_saturation_label = self.auto_contrast_form.labelForField(
+            self.auto_saturation_control
+        )
+        if isinstance(auto_saturation_label, QWidget):
+            auto_saturation_label.setToolTip(
+                f"<qt>{AUTO_CONTRAST_SATURATION_SPEC.tooltip}</qt>"
+            )
         auto_layout.addLayout(self.auto_contrast_form)
         auto_layout.addWidget(self.auto_contrast_button)
+        auto_layout.addWidget(self.auto_contrast_result_label)
 
         parameters_layout = QVBoxLayout(self.parameter_group.content_widget)
         parameters_layout.setContentsMargins(7, 5, 7, 7)
@@ -5459,7 +5525,7 @@ class VippWidget(QWidget):
         )
         self.histogram_controls_layout.setContentsMargins(0, 0, 0, 0)
         self.histogram_controls_layout.setSpacing(8)
-        self.histogram_controls_label = QLabel("Histogram uses")
+        self.histogram_controls_label = QLabel("Displayed histogram")
         self.histogram_controls_layout.addWidget(self.histogram_controls_label)
         self.histogram_controls_layout.addWidget(self.histogram_scope_combo, 1)
         self.histogram_controls_layout.addWidget(self.histogram_value_combo, 1)
@@ -5758,6 +5824,9 @@ class VippWidget(QWidget):
         self.table_popout_button.clicked.connect(self._open_result_table_dialog)
         self.table_calculate_button.clicked.connect(self._calculate_selected_node)
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
+        self.auto_saturation_control.valueChanged.connect(
+            lambda _value: self._sync_auto_contrast_ui()
+        )
         self.save_button.clicked.connect(self._save_selected_output_dialog)
         self.left_panel_toggle.clicked.connect(self._toggle_left_panel)
         self.right_panel_toggle.clicked.connect(self._toggle_right_panel)
@@ -10262,6 +10331,75 @@ class VippWidget(QWidget):
                 self.run_pipeline()
         return True
 
+    @staticmethod
+    def _canvas_only_history_change(
+        current: WorkflowHistorySnapshot,
+        target: WorkflowHistorySnapshot,
+    ) -> bool:
+        """Return whether history differs only in graph canvas presentation.
+
+        Node positions and graph notes are persisted with a workflow, but they
+        do not participate in scientific execution.  Restoring either through
+        the full graph path would unnecessarily discard valid results and run
+        the pipeline again. Node selection and inspect display profiles are
+        transient presentation state: selecting a newly dragged node can finish
+        its deferred inspector refresh after the move snapshot was recorded.
+        Both are deliberately kept at their current live values.
+        """
+        current_workflow = current.workflow
+        target_workflow = target.workflow
+        if (
+            current_workflow.graph != target_workflow.graph
+            or current_workflow.metadata != target_workflow.metadata
+            or current_workflow.compute_request != target_workflow.compute_request
+        ):
+            return False
+        node_ids = {node.id for node in target_workflow.graph.nodes}
+        if (
+            set(current_workflow.positions_dict()) != node_ids
+            or set(target_workflow.positions_dict()) != node_ids
+        ):
+            return False
+        for attribute in (
+            "preview_disabled_node_ids",
+            "active_pinned_node_id",
+            "compute_mode",
+            "compute_fallback_policy",
+            "compute_node_preferences",
+            "compute_optimizer_locked_node_ids",
+        ):
+            if getattr(current, attribute) != getattr(target, attribute):
+                return False
+        return (
+            current_workflow.positions != target_workflow.positions
+            or current_workflow.notes != target_workflow.notes
+        )
+
+    def _restore_canvas_history_snapshot(
+        self,
+        current: WorkflowHistorySnapshot,
+        target: WorkflowHistorySnapshot,
+    ) -> bool:
+        """Restore positions and notes without touching scientific runtime state."""
+        if not self._canvas_only_history_change(current, target):
+            return False
+        workflow = target.workflow
+        with self._history.suspend_recording():
+            self.graph_view.apply_node_positions(workflow.positions_dict())
+            previous_note_ids = set(self._graph_notes)
+            self._restore_graph_notes(note.to_mapping() for note in workflow.notes)
+            for note_id in previous_note_ids - set(self._graph_notes):
+                self.graph_view.remove_note(note_id)
+            for note in self._graph_notes.values():
+                self.graph_view.add_note(
+                    note.id,
+                    note.text,
+                    QPointF(*note.position),
+                    width=note.width,
+                    attached_node=note.attached_node,
+                )
+        return True
+
     def _restore_history_snapshot(
         self,
         snapshot: WorkflowHistorySnapshot,
@@ -10273,6 +10411,11 @@ class VippWidget(QWidget):
             prefer_parameter_restore
             and current_snapshot is not None
             and self._restore_parameter_history_snapshot(current_snapshot, snapshot)
+        ):
+            return
+        if (
+            current_snapshot is not None
+            and self._restore_canvas_history_snapshot(current_snapshot, snapshot)
         ):
             return
         self._cancel_selected_inspector_refresh()
@@ -12199,6 +12342,7 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         clone = self.pipeline.add_node(original.operation_id)
         clone.params = deepcopy(original.params)
+        clone.title = original.title
         self.pipeline.restore_node_execution_mode(
             clone.id,
             original.execution_mode,
@@ -12484,6 +12628,10 @@ class VippWidget(QWidget):
                 if live_node.id != node_id:
                     raise RuntimeError("The workflow changed while nodes were pasted.")
                 live_node.params = deepcopy(staged_node.params)
+                # Some compatibility nodes derive their visible title from
+                # immutable persisted parameters. Keep that staged, validated
+                # identity instead of reverting to the new-node title.
+                live_node.title = staged_node.title
             for tunnel in new_tunnels:
                 self.pipeline.add_output_tunnel(
                     tunnel.name,
@@ -20381,6 +20529,15 @@ class VippWidget(QWidget):
             f"{spec.category}; {output_label} output; {execution} execution."
         )
         description = INSPECTOR_TITLE_TOOLTIPS.get(spec.id, "")
+        if spec.id == "imagej_auto_threshold":
+            node = self.pipeline.nodes.get(self._selected_node_id)
+            if node is not None and node.params.get("method") == "Triangle":
+                description = (
+                    "Compatibility-only ImageJ Triangle behavior retained for "
+                    "an older saved workflow. It converts each YX plane "
+                    "independently to 8-bit and is not interchangeable with "
+                    "VIPP's native-intensity Triangle Threshold node."
+                )
         self.selected_title.setToolTip(description)
         self.selected_title.setAccessibleDescription(description)
 
@@ -20442,6 +20599,7 @@ class VippWidget(QWidget):
                 )
             bindings.append(binding)
         self.connected_inputs_panel.set_bindings(bindings)
+        self._update_image_calculator_equation_preview(self._selected_node_id)
         if ports:
             self.parameter_group.show()
 
@@ -21699,6 +21857,9 @@ class VippWidget(QWidget):
             self._apply_parameter_tooltip(spec, widget)
             self._parameter_widgets[spec.name] = widget
             rendered = True
+        if node.operation_id == "calculate_weighted_image":
+            self._add_image_calculator_equation_preview(node_id)
+            rendered = True
         if self._add_parameter_visibility_note(
             node_id,
             specs,
@@ -21813,6 +21974,147 @@ class VippWidget(QWidget):
             rendered = True
         self.parameter_group.setHidden(not rendered)
 
+    def _add_image_calculator_equation_preview(self, node_id: str) -> None:
+        """Add a live, human-readable expansion of Image Calculator settings."""
+
+        preview = _InspectorNoteLabel(parent=self.parameter_form_widget)
+        preview.setObjectName("ImageCalculatorEquationPreview")
+        preview.setTextFormat(Qt.PlainText)
+        preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        preview.setToolTip(
+            "Each I subscript refers to the correspondingly numbered Connected "
+            "input. Coefficients are applied directly and are not normalized. "
+            "VIPP converts every same-shaped input to float32, multiplies it by "
+            "the shown coefficient, sums inputs in order, then adds the offset "
+            "to every output pixel."
+        )
+        _set_palette_text_tone(
+            preview,
+            "secondary",
+            extra_style="padding-top: 4px; padding-bottom: 2px;",
+        )
+        self.parameter_form.addRow(preview)
+        self._parameter_widgets["image_calculator_equation"] = preview
+        self._update_image_calculator_equation_preview(node_id)
+
+    def _update_image_calculator_equation_preview(
+        self,
+        node_id: str | None = None,
+    ) -> None:
+        """Refresh the calculator equation without rebuilding its inspector form."""
+
+        resolved_node_id = str(node_id or self._selected_node_id)
+        node = self.pipeline.nodes.get(resolved_node_id)
+        preview = self._parameter_widgets.get("image_calculator_equation")
+        if (
+            node is None
+            or node.id != self._selected_node_id
+            or node.operation_id != "calculate_weighted_image"
+            or not isinstance(preview, QLabel)
+        ):
+            return
+
+        maximum_inputs = max(int(node.max_inputs or 12), 1)
+        raw_input_count = node.params.get("input_count", 2)
+        input_count_error = ""
+        try:
+            if isinstance(raw_input_count, (bool, np.bool_)) or not isinstance(
+                raw_input_count,
+                Integral,
+            ):
+                raise ValueError
+            input_count = int(raw_input_count)
+        except (TypeError, ValueError, OverflowError):
+            input_count = 2
+            input_count_error = "input count must be an integer."
+        else:
+            if input_count < 1 or input_count > maximum_inputs:
+                input_count_error = (
+                    f"input count must be between 1 and {maximum_inputs}."
+                )
+        mapping_count = min(max(input_count, 1), maximum_inputs)
+
+        if self.pipeline.node_is_bypassed(node.id):
+            equation = "Bypassed — Output = I₁; stored calculation is inactive."
+            mapping_count = 1
+        elif input_count_error:
+            equation = f"Equation unavailable — {input_count_error}"
+        else:
+            try:
+                weights = _parse_finite_weight_list(
+                    node.params.get("weights", "1,1")
+                )
+            except ValueError as exc:
+                detail = str(exc).removeprefix("Image Calculator ")
+                equation = f"Equation unavailable — {detail}"
+            else:
+                if len(weights) != input_count:
+                    required_word = "weight" if input_count == 1 else "weights"
+                    provided_word = "was" if len(weights) == 1 else "were"
+                    equation = (
+                        "Equation unavailable — "
+                        f"{input_count} inputs require exactly {input_count} "
+                        f"{required_word}; {len(weights)} {provided_word} provided."
+                    )
+                else:
+                    try:
+                        offset = float(node.params.get("offset", 0.0))
+                    except (TypeError, ValueError, OverflowError):
+                        offset = math.nan
+                    if not math.isfinite(offset):
+                        equation = "Equation unavailable — offset must be finite."
+                    else:
+                        equation = _image_calculator_equation(weights, offset)
+
+        input_mappings = self._image_calculator_input_mappings(
+            resolved_node_id,
+            mapping_count,
+        )
+        plain_text = "\n".join(
+            (
+                "Calculation",
+                equation,
+                f"Inputs: {'; '.join(input_mappings)}",
+            )
+        )
+        if preview.text() != plain_text:
+            preview.setText(plain_text)
+        preview.setAccessibleName("Image calculation equation")
+        preview.setAccessibleDescription(plain_text)
+        if preview.isVisible() and self.parameter_form_widget.height() > 0:
+            self._sync_parameter_form_height()
+
+    def _image_calculator_input_mappings(
+        self,
+        node_id: str,
+        input_count: int,
+    ) -> list[str]:
+        """Map equation symbols to the graph sources bound to each input port."""
+
+        connections = {
+            connection.target_port: connection
+            for connection in self.pipeline._input_connections(node_id)
+        }
+        mappings: list[str] = []
+        for index in range(max(int(input_count), 0)):
+            symbol = _image_calculator_input_symbol(index)
+            connection = connections.get(index)
+            if connection is None:
+                mappings.append(f"{symbol} = not connected")
+                continue
+            source_node = self.pipeline.nodes.get(connection.source_id)
+            source_title = (
+                source_node.title if source_node is not None else connection.source_id
+            )
+            source_ports = self.pipeline.output_ports(connection.source_id)
+            source_port_label = (
+                source_ports[connection.source_port].label
+                if 0 <= connection.source_port < len(source_ports)
+                else f"Output {connection.source_port + 1}"
+            )
+            mappings.append(f"{symbol} = {source_title} · {source_port_label}")
+        return mappings
+
     def _apply_parameter_tooltip(self, spec, widget: QWidget) -> None:
         tooltip = str(getattr(spec, "tooltip", "")).strip()
         if not tooltip:
@@ -21832,7 +22134,16 @@ class VippWidget(QWidget):
         *,
         context: ParameterVisibilityContext | None = None,
     ) -> bool:
-        """Add at most one explanation for contextual inspector rows."""
+        """Keep contextual parameter persistence out of the visible form.
+
+        Mode- and input-specific controls retain their authored values while
+        hidden, just like controls on an ordinary tabbed form. Listing those
+        dormant implementation details beside the active controls is distracting
+        and can imply that they affect the current calculation. A customized
+        setting hidden only because of the current input remains discoverable in
+        the Parameters summary tooltip; ordinary defaults and mutually exclusive
+        mode fields stay silent.
+        """
         resolved_context = (
             self.pipeline.parameter_visibility_context(node_id)
             if context is None
@@ -21851,71 +22162,53 @@ class VippWidget(QWidget):
             and not self._is_colocalization_threshold_value_spec(node_id, spec)
         ]
         node = self.pipeline.nodes.get(node_id)
-        if node is not None and node.operation_id == "crop_stack":
-            evaluated = [
-                (spec, result)
+        customized_hidden = []
+        if node is not None:
+            customized_hidden = [
+                (
+                    spec,
+                    result,
+                    node.params.get(spec.name, spec.default),
+                )
                 for spec, result in evaluated
-                if not (spec.name == "channel_axis" and not result.visible)
+                if not result.visible
+                and spec.visibility
+                not in {
+                    PARAMETER_VISIBILITY_PARAMETER_IN,
+                    PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+                }
+                and node.params.get(spec.name, spec.default) != spec.default
             ]
-        results = [result for _spec, result in evaluated]
-        hidden = [
-            (spec, result)
-            for spec, result in evaluated
-            if not result.visible
-        ]
-        hidden_values = tuple(
-            (
-                spec.label,
-                node.params.get(spec.name, spec.default)
-                if node is not None
-                else spec.default,
-            )
-            for spec, _result in hidden
+        if not customized_hidden:
+            return False
+
+        values = "; ".join(
+            f"{spec.label}: {_format_inspector_parameter_value(value)}"
+            for spec, _result, value in customized_hidden
         )
-        hidden_reasons = " ".join(
+        reasons = " ".join(
             dict.fromkeys(
                 result.reason.strip()
-                for _spec, result in hidden
+                for _spec, result, _value in customized_hidden
                 if result.reason.strip()
             )
         )
-        hidden_tooltip = " ".join(
-            part for part in (HIDDEN_SETTINGS_TOOLTIP, hidden_reasons) if part
+        detail = " ".join(
+            part
+            for part in (
+                "Customized settings that do not apply to the current input are "
+                f"preserved: {values}.",
+                reasons,
+            )
+            if part
         )
-        if (
-            len(hidden) == 1
-            and hidden[0][0].name == "channel_axis"
-        ):
-            detail = " ".join(
-                (
-                    _hidden_settings_summary(hidden_values),
-                    hidden_tooltip,
-                )
-            )
-            self.parameter_group.summary_label.setProperty(
-                "vippParameterSummaryGuidance",
-                detail,
-            )
-            self.parameter_group.summary_label.setToolTip(detail)
-            self.parameter_group.summary_label.setAccessibleDescription(detail)
-            return False
-        if hidden:
-            text = _hidden_settings_summary(hidden_values)
-            tooltip = hidden_tooltip
-        elif any(
-            result.visible and "unresolved" in result.reason.casefold()
-            for result in results
-        ):
-            text = "Input details are unresolved; related settings remain available."
-            tooltip = UNRESOLVED_SETTINGS_TOOLTIP
-        else:
-            return False
-        note = _InspectorNoteLabel(text, self.parameter_form_widget)
-        note.setToolTip(tooltip)
-        note.setAccessibleDescription(tooltip)
-        _set_palette_text_tone(note, "secondary")
-        self.parameter_form.addRow(note)
-        return True
+        self.parameter_group.summary_label.setProperty(
+            "vippParameterSummaryGuidance",
+            detail,
+        )
+        self.parameter_group.summary_label.setToolTip(detail)
+        self.parameter_group.summary_label.setAccessibleDescription(detail)
+        return False
 
     def _render_rescale_axes_parameters(
         self,
@@ -22694,6 +22987,16 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return ""
+        if node.operation_id == "normalize_image":
+            return self._normalize_help_note(node_id)
+        if node.operation_id == "minimum_threshold":
+            return (
+                "Minimum means the lowest valley between two histogram peaks, "
+                "not the image's minimum pixel value. VIPP smooths the "
+                "histogram—not the image pixels—until fewer than three peaks "
+                "remain. It proceeds only if exactly two peaks remain; values above "
+                "the valley become foreground."
+            )
         if node.operation_id in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS:
             return self._deconvolution_help_note(node_id)
         if node.operation_id in {"h_maxima_markers", "auto_watershed_from_mask"}:
@@ -22718,7 +23021,22 @@ class VippWidget(QWidget):
 
     def _operation_help_note_tooltip(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "measure_3d_mesh_morphology":
+        if node is None:
+            return ""
+        if node.operation_id == "normalize_image":
+            return self._normalize_help_note_tooltip(node_id)
+        if node.operation_id == "minimum_threshold":
+            return (
+                "This method is intended for roughly bimodal intensity "
+                "distributions, such as a background peak and a foreground "
+                "peak. Each pass applies a three-bin moving average to the "
+                "histogram only. Smoothing stops when fewer than three local "
+                "peaks remain; calculation succeeds only if exactly two peaks remain "
+                "and then uses the lowest bin between them. If it cannot "
+                "resolve exactly two peaks before the safety limit, it reports "
+                "an error rather than silently using a different method."
+            )
+        if node.operation_id != "measure_3d_mesh_morphology":
             return ""
         return (
             "Each label is reconstructed as a surface mesh using its Z/Y/X "
@@ -22730,6 +23048,20 @@ class VippWidget(QWidget):
 
     def _operation_help_note_status(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "minimum_threshold":
+            return "Info"
+        if node is not None and node.operation_id == "normalize_image":
+            method = str(node.params.get("method", "min-max")).strip().casefold()
+            return (
+                ""
+                if method
+                in {
+                    "z-score",
+                    "robust-z-score",
+                    "reference-z-score",
+                }
+                else "Info"
+            )
         if (
             node is None
             or node.operation_id not in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS
@@ -22737,6 +23069,94 @@ class VippWidget(QWidget):
             return ""
         report = self._deconvolution_psf_preflight(node_id)
         return self._deconvolution_psf_display_status(node_id, report)
+
+    def _normalize_help_note(self, node_id: str) -> str:
+        """Return concise, method-specific Normalize guidance."""
+
+        method = str(
+            self.pipeline.nodes[node_id].params.get("method", "min-max")
+        ).strip().casefold()
+        signed_guidance = (
+            "Use Min–max (0–1) when non-negative output is required. "
+            "To intentionally discard negative values, add a visible Clamp "
+            "Intensity node downstream and set its minimum to 0."
+        )
+        if method == "z-score":
+            return f"Values below the mean become negative. {signed_guidance}"
+        if method == "robust-z-score":
+            return f"Values below the median become negative. {signed_guidance}"
+        if method == "reference-z-score":
+            return (
+                "Values below the reference mean become negative. This method "
+                "uses the saved reference mean and SD instead of recalculating "
+                f"statistics for each image. {signed_guidance}"
+            )
+        if method == "maximum-absolute":
+            return (
+                "Divides by the largest absolute value, preserves zero and sign, "
+                "and produces values between −1 and 1."
+            )
+        if method == "percentile":
+            return (
+                "Maps the selected low and high percentiles to 0 and 1 and clips "
+                "values outside that range."
+            )
+        return (
+            "Maps the input minimum and maximum to 0 and 1. The output is "
+            "non-negative."
+        )
+
+    def _normalize_help_note_tooltip(self, node_id: str) -> str:
+        """Return scientific detail for the selected Normalize method."""
+
+        method = str(
+            self.pipeline.nodes[node_id].params.get("method", "min-max")
+        ).strip().casefold()
+        clamp_detail = (
+            " To discard negative output intentionally, set a downstream Clamp "
+            "Intensity node's Input cutoffs to Explicit values and its Minimum to 0."
+        )
+        if method == "z-score":
+            return (
+                "Formula: (value − mean) / population SD. Mean and SD are "
+                "calculated from the finite values in each input. A zero SD "
+                f"produces zeros.{clamp_detail}"
+            )
+        if method == "robust-z-score":
+            return (
+                "Formula: (value − median) / (1.4826 × MAD). The scale factor "
+                "makes MAD comparable to SD for normally distributed data. "
+                "Median and MAD use finite input values, making the result less "
+                "sensitive to unusually bright values and hot pixels. A constant "
+                "input produces zeros; varied input with zero MAD cannot be "
+                "normalized and reports an error instead of discarding its signal."
+                f"{clamp_detail}"
+            )
+        if method == "maximum-absolute":
+            return (
+                "Formula: value / max(abs(value)), using finite input values to "
+                "find the divisor. A zero maximum produces zeros."
+            )
+        if method == "reference-z-score":
+            return (
+                "Formula: (value − saved reference mean) / saved reference SD. "
+                "The saved statistics remain fixed across inputs instead of being "
+                "recalculated for every image. Reference SD must be greater than "
+                f"zero.{clamp_detail}"
+            )
+        if method == "percentile":
+            return (
+                "Finite values determine both percentiles. Values at or below the "
+                "low cutoff become 0, values at or above the high cutoff become "
+                "1, and values between them are scaled linearly. Equal cutoffs "
+                "cannot be normalized."
+            )
+        return (
+            "Formula: (value − minimum) / (maximum − minimum), using finite "
+            "input values to determine the range. To preserve legacy workflows, "
+            "a constant positive input maps to 1 and other constant inputs map "
+            "to 0."
+        )
 
     def _deconvolution_help_note(self, node_id: str) -> str:
         node = self.pipeline.nodes[node_id]
@@ -25920,6 +26340,8 @@ class VippWidget(QWidget):
             self._update_deconvolution_help_note()
         if node.operation_id == "intensity_histogram":
             self._sync_histogram_dialog_calculation_parameters(node.id)
+        if node.operation_id == "calculate_weighted_image":
+            self._update_image_calculator_equation_preview(node.id)
         return changed
 
     def _parameter_numeric_control_kind_changed(self, node_id: str) -> bool:
@@ -26130,6 +26552,15 @@ class VippWidget(QWidget):
             or (
                 node.operation_id == "intensity_histogram"
                 and spec.name in {"custom_min", "custom_max"}
+            )
+            or (
+                node.operation_id == "normalize_image"
+                and spec.name
+                in {"reference_mean", "reference_standard_deviation"}
+            )
+            or (
+                node.operation_id == "minimum_threshold"
+                and spec.name == "max_iterations"
             )
             or (
                 node.operation_id == "set_microscope_metadata"
@@ -31352,7 +31783,17 @@ class VippWidget(QWidget):
                 detail=f"Parameter commit failed: {exc}",
             )
             raise
-        if self._parameter_visibility_controls_changed(self._selected_node_id):
+        if node.operation_id == "calculate_weighted_image" and name in {
+            "input_count",
+            "weights",
+            "offset",
+        }:
+            self._update_image_calculator_equation_preview(node.id)
+        if node.operation_id == "linear_scale_offset" and name in {"alpha", "beta"}:
+            self._sync_auto_contrast_ui()
+        if (
+            node.operation_id == "normalize_image" and name == "method"
+        ) or self._parameter_visibility_controls_changed(self._selected_node_id):
             self._render_parameters(self._selected_node_id)
         if (
             (node.operation_id == "clip_intensity" and name in CLIP_CUTOFF_PARAMETERS)
@@ -31637,7 +32078,7 @@ class VippWidget(QWidget):
 
         if self._active_auto_contrast_run_id is not None:
             self.status_label.setText(
-                "Exact auto-contrast calculation is already running."
+                "Scale and Offset calculation is already running."
             )
             return
 
@@ -31658,8 +32099,12 @@ class VippWidget(QWidget):
             self._active_auto_contrast_key = request.key
             self.auto_contrast_button.setEnabled(False)
             self._show_auto_contrast_busy(node_id)
+            self._set_auto_contrast_feedback(
+                node_id,
+                "Calculating from the full connected input…",
+            )
             self.status_label.setText(
-                "Calculating exact full-input auto-contrast percentiles..."
+                "Calculating Scale and Offset from exact full-input percentiles..."
             )
             worker = AutoContrastWorker(
                 request,
@@ -31699,6 +32144,23 @@ class VippWidget(QWidget):
             repr(node.params.get("beta")) if node is not None else "",
         )
 
+    def _current_auto_contrast_feedback_key(self, node_id: str) -> tuple:
+        return self._auto_contrast_request_key(
+            node_id,
+            self.pipeline.input_data_for_node(node_id),
+            self.pipeline.input_state_for_node(node_id),
+            float(self.auto_saturation_control.value()),
+        )
+
+    def _set_auto_contrast_feedback(self, node_id: str, text: str) -> None:
+        """Show helper feedback only while it still describes the visible state."""
+        if node_id != self._selected_node_id:
+            return
+        self._auto_contrast_feedback_key = (
+            self._current_auto_contrast_feedback_key(node_id)
+        )
+        self.auto_contrast_result_label.setText(text)
+
     def _show_auto_contrast_busy(self, node_id: str) -> None:
         if (
             self._active_pipeline_run_id is not None
@@ -31709,7 +32171,7 @@ class VippWidget(QWidget):
             return
         self._auto_contrast_busy_visible = True
         self._set_pipeline_busy(True, node_id, cancelable=False)
-        self.pipeline_busy_label.setText("Calculating exact auto contrast...")
+        self.pipeline_busy_label.setText("Calculating Scale and Offset...")
 
     def _clear_auto_contrast_busy(self) -> None:
         if not self._auto_contrast_busy_visible:
@@ -31732,8 +32194,12 @@ class VippWidget(QWidget):
         self._sync_auto_contrast_ui()
 
         if result.error:
+            self._set_auto_contrast_feedback(
+                result.node_id,
+                f"Could not calculate Scale and Offset: {result.error}",
+            )
             self._set_status(
-                f"Exact auto-contrast calculation failed: {result.error}",
+                f"Scale and Offset calculation failed: {result.error}",
                 severity=MessageSeverity.ERROR,
             )
             return
@@ -31752,8 +32218,12 @@ class VippWidget(QWidget):
             or result.node_id != self._selected_node_id
         ):
             if result.node_id == self._selected_node_id:
+                self._set_auto_contrast_feedback(
+                    result.node_id,
+                    "The input or helper setting changed; calculate again.",
+                )
                 self.status_label.setText(
-                    "Auto-contrast input or settings changed; the stale result "
+                    "Scale/Offset input or helper setting changed; the stale result "
                     "was ignored."
                 )
             return
@@ -31774,14 +32244,34 @@ class VippWidget(QWidget):
         if node is None or node.operation_id != "linear_scale_offset":
             return
         if result is None:
+            self._set_auto_contrast_feedback(
+                node_id,
+                "Connect an input containing at least two different finite "
+                "intensity values.",
+            )
             self.status_label.setText(
-                "Auto contrast needs connected input with intensity variation."
+                "Scale and Offset calculation needs connected input with "
+                "intensity variation."
             )
             return
 
         alpha, beta, lower, upper = result
+        detail = (
+            f"input range {_format_inspector_parameter_value(lower)}–"
+            f"{_format_inspector_parameter_value(upper)} maps to 0–255; "
+            f"Scale {_format_inspector_parameter_value(alpha)}, "
+            f"Offset {_format_inspector_parameter_value(beta)}"
+        )
         if node.params.get("alpha") == alpha and node.params.get("beta") == beta:
-            self.status_label.setText("Auto contrast is already up to date.")
+            # Refresh the controls even for a no-op so the visible values are
+            # unequivocally the values used by the node. A no-op must not add
+            # history or launch the pipeline again.
+            self._render_parameters(node_id)
+            self._set_auto_contrast_feedback(node_id, f"Already applied: {detail}.")
+            self.status_label.setText(
+                f"Scale and Offset for '{node.title}' are already up to date "
+                f"({detail})."
+            )
             return
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
@@ -31790,11 +32280,12 @@ class VippWidget(QWidget):
         self._mark_pipeline_dirty(node_id)
         self._debounce_timer.stop()
         self._render_parameters(node_id)
+        self._set_auto_contrast_feedback(node_id, f"Applied: {detail}.")
         self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(
-            f"Auto contrast set '{node.title}' to {saturation:.2f}% saturation "
-            f"({lower:.3g} to {upper:.3g})."
+            f"Calculated Scale and Offset for '{node.title}' using "
+            f"{saturation:.2f}% tail exclusion ({detail})."
         )
 
     def run_pipeline(
@@ -36467,6 +36958,12 @@ class VippWidget(QWidget):
             )
         )
         self.histogram_controls_row.show()
+        self.histogram_controls_label.setText("Displayed histogram")
+        self.histogram_controls_label.setToolTip(
+            "Choose the data shown in this inspector chart. This display-only "
+            "setting does not change the node's calculation; global threshold "
+            "nodes use Histogram scope in Parameters for that."
+        )
         self.histogram_controls_label.show()
         self.histogram_scope_combo.show()
         self.histogram_log_checkbox.show()
@@ -41968,10 +42465,19 @@ class VippWidget(QWidget):
 
     def _sync_auto_contrast_ui(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
-        self.auto_contrast_group.setVisible(
-            node is not None and node.operation_id == "linear_scale_offset"
-        )
+        visible = node is not None and node.operation_id == "linear_scale_offset"
+        self.auto_contrast_group.setVisible(visible)
         self.auto_contrast_button.setEnabled(self._active_auto_contrast_run_id is None)
+        if not visible:
+            self._auto_contrast_feedback_key = None
+            return
+
+        feedback_key = self._current_auto_contrast_feedback_key(node.id)
+        if feedback_key != self._auto_contrast_feedback_key:
+            self._auto_contrast_feedback_key = feedback_key
+            self.auto_contrast_result_label.setText(
+                "Scale and Offset above are the values this node will use."
+            )
 
     def _node_preview_enabled(self, node_id: str) -> bool:
         if self._node_output_type(node_id) == "table":

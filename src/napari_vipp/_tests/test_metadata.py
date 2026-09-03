@@ -1020,3 +1020,57 @@ def test_intensity_cutoff_history_records_only_active_mode(
     )
 
     assert output_state.history[-1] == expected
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "expected"),
+    [
+        (
+            "min-max",
+            {},
+            "Normalize: finite-value minimum/maximum; output 0..1",
+        ),
+        (
+            "z-score",
+            {},
+            "Normalize: finite-value mean/population SD; signed output",
+        ),
+        (
+            "robust-z-score",
+            {},
+            "Normalize: finite-value median/normal-consistent MAD; signed output",
+        ),
+        (
+            "maximum-absolute",
+            {},
+            "Normalize: finite-value maximum absolute magnitude; signed output",
+        ),
+        (
+            "reference-z-score",
+            {"reference_mean": 12.5, "reference_standard_deviation": 2.5},
+            "Normalize: saved reference mean 12.5, SD 2.5; signed output",
+        ),
+        (
+            "percentile",
+            {"low_percentile": 2.0, "high_percentile": 98.0},
+            "Normalize: exact finite-value percentiles 2..98; clipped output 0..1",
+        ),
+    ],
+)
+def test_normalize_history_records_the_active_numeric_contract(
+    method,
+    params,
+    expected,
+):
+    data = np.arange(6, dtype=np.float32).reshape(2, 3)
+    input_state = image_state_from_array(data, layer_metadata={"axes": "YX"})
+
+    output_state = transform_image_state(
+        data.copy(),
+        input_state,
+        operation_id="normalize_image",
+        operation_title="Normalize",
+        params={"method": method, **params},
+    )
+
+    assert output_state.history[-1] == expected

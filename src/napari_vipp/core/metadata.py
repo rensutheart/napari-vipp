@@ -2635,6 +2635,31 @@ def _operation_history(
             f"{_format_number(params.get('minimum', 0.0))}.."
             f"{_format_number(params.get('maximum', 255.0))}"
         )
+    if operation_id == "normalize_image":
+        method = str(params.get("method", "min-max")).strip().casefold()
+        if method == "z-score":
+            detail = "finite-value mean/population SD; signed output"
+        elif method == "robust-z-score":
+            detail = "finite-value median/normal-consistent MAD; signed output"
+        elif method == "maximum-absolute":
+            detail = "finite-value maximum absolute magnitude; signed output"
+        elif method == "reference-z-score":
+            detail = (
+                "saved reference mean "
+                f"{_format_number(params.get('reference_mean', 0.0))}, SD "
+                f"{_format_number(params.get('reference_standard_deviation', 1.0))}; "
+                "signed output"
+            )
+        elif method == "percentile":
+            detail = (
+                "exact finite-value percentiles "
+                f"{_format_number(params.get('low_percentile', 1.0))}.."
+                f"{_format_number(params.get('high_percentile', 99.0))}; "
+                "clipped output 0..1"
+            )
+        else:
+            detail = "finite-value minimum/maximum; output 0..1"
+        return f"{operation_title}: {detail}"
     if operation_id == "mip":
         axis = _axis_label(input_state.axes, params.get("axis", 0))
         return f"{operation_title}: projected {axis}"

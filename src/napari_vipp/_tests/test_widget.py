@@ -4181,6 +4181,26 @@ def test_duplicate_preserves_disconnected_bypass_and_can_clear_then_reconnect(
     )
 
 
+def test_duplicate_preserves_legacy_imagej_threshold_variant(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    legacy = widget._add_node_at(
+        "imagej_auto_threshold",
+        QPointF(700.0, 300.0),
+    )
+    legacy.params["method"] = "Triangle"
+    legacy.title = "ImageJ Triangle Threshold (8-bit, legacy)"
+    before_ids = set(widget.pipeline.nodes)
+
+    widget._duplicate_node(legacy.id)
+
+    clone_id = (set(widget.pipeline.nodes) - before_ids).pop()
+    clone = widget.pipeline.nodes[clone_id]
+    assert clone.params["method"] == "Triangle"
+    assert clone.title == "ImageJ Triangle Threshold (8-bit, legacy)"
+
+
 def test_graph_fragment_copy_paste_is_atomic_and_keeps_only_internal_edges(
     qtbot,
     monkeypatch,
@@ -4269,6 +4289,30 @@ def test_graph_fragment_copy_paste_preserves_validated_bypass_intent(
     assert widget.node_bypass_checkbox.isChecked()
     assert not widget.parameter_group.isEnabled()
     assert len(widget._undo_stack) == 1
+
+
+def test_graph_fragment_copy_paste_preserves_legacy_imagej_variant_title(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    QApplication.clipboard().clear()
+    legacy = widget._add_node_at(
+        "imagej_auto_threshold",
+        QPointF(700.0, 300.0),
+    )
+    legacy.params["method"] = "Triangle"
+    legacy.title = "ImageJ Triangle Threshold (8-bit, legacy)"
+
+    widget._copy_graph_nodes((legacy.id,))
+    pasted_ids = widget._paste_graph_fragment(QPointF(1000.0, 300.0))
+
+    assert len(pasted_ids) == 1
+    pasted = widget.pipeline.nodes[pasted_ids[0]]
+    assert pasted.params["method"] == "Triangle"
+    assert pasted.title == "ImageJ Triangle Threshold (8-bit, legacy)"
 
 
 def test_single_node_copy_paste_preserves_disconnected_bypass_and_reconnects(
@@ -4801,6 +4845,207 @@ def test_undo_restores_moved_node_position(qtbot):
 
     restored = widget.graph_view._proxies["gaussian"].pos()
     assert restored == old_pos
+
+
+def test_processing_node_move_undo_preserves_runtime_cache_and_inspector(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer(np.arange(4 * 16 * 18).reshape(4, 16, 18))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget._debounce_timer.stop()
+    widget.graph_view.select_node("gaussian")
+
+    widget.resize(1000, 500)
+    widget.inspector_panel.setFixedHeight(220)
+    widget.show()
+
+    # Reproduce the real graph timing: a press selects a different node and
+    # paints its parameter form immediately, while its inspector layer and
+    # display profile are deliberately deferred until after pointer release.
+    settled_refreshes = []
+
+    def track_settled_refresh(node_id, *, select_layer):
+        assert select_layer
+        source_profile = next(
+            deepcopy(profile)
+            for key, profile in widget._inspect_display_profiles.items()
+            if key[0] == "gaussian"
+        )
+        source_profile["node_id"] = node_id
+        key = widget._inspect_display_profile_key(source_profile)
+        assert key is not None
+        widget._inspect_display_profiles[key] = source_profile
+        settled_refreshes.append(node_id)
+
+    monkeypatch.setattr(
+        widget,
+        "_refresh_selected_inspector_after_selection",
+        track_settled_refresh,
+    )
+
+    graph_view = widget.graph_view
+    proxy = graph_view._proxies["threshold"]
+    old_position = QPointF(proxy.pos())
+    new_position = old_position + QPointF(120, 45)
+    start_positions = {"threshold": old_position}
+    history_size = len(widget._undo_stack)
+
+    graph_view._begin_node_pointer_gesture("threshold")
+    graph_view._handle_node_press(
+        "threshold",
+        Qt.NoModifier,
+        preserve_group_for_drag=True,
+    )
+    assert graph_view.node_pointer_gesture_active()
+    assert graph_view.node_press_dispatch_active() is False
+    assert widget._selected_node_id == "threshold"
+    assert not settled_refreshes
+
+    graph_view._move_selected_nodes_during_drag(
+        start_positions,
+        new_position - old_position,
+    )
+    graph_view._finish_node_pointer_gesture("threshold")
+    graph_view._finish_selected_node_drag(start_positions)
+    widget._on_node_moved("threshold", old_position, new_position)
+
+    assert proxy.pos() == new_position
+    assert len(widget._undo_stack) == history_size + 1
+    move_snapshot = widget._undo_stack[-1]
+
+    qtbot.waitUntil(lambda: settled_refreshes == ["threshold"], timeout=5_000)
+    settled_snapshot = widget._current_history_snapshot()
+
+    # Position is the intended history difference. The late display-profile
+    # addition is incidental UI state and must not turn the undo into a full
+    # scientific workflow restore.
+    assert move_snapshot.workflow.graph == settled_snapshot.workflow.graph
+    assert move_snapshot.workflow.metadata == settled_snapshot.workflow.metadata
+    assert (
+        move_snapshot.workflow.compute_request
+        == settled_snapshot.workflow.compute_request
+    )
+    assert move_snapshot.workflow.notes == settled_snapshot.workflow.notes
+    assert move_snapshot.workflow.positions != settled_snapshot.workflow.positions
+    assert move_snapshot.selected_node_id == settled_snapshot.selected_node_id
+    for attribute in (
+        "preview_disabled_node_ids",
+        "active_pinned_node_id",
+        "compute_mode",
+        "compute_fallback_policy",
+        "compute_node_preferences",
+        "compute_optimizer_locked_node_ids",
+    ):
+        assert getattr(move_snapshot, attribute) == getattr(
+            settled_snapshot,
+            attribute,
+        )
+    assert (
+        move_snapshot.inspect_display_profiles
+        != settled_snapshot.inspect_display_profiles
+    )
+
+    # Keep a meaningful nonzero inspector position so a full inspector rebuild
+    # cannot pass as an unchanged canvas-only undo.
+    qtbot.waitUntil(
+        lambda: widget.inspector_panel.verticalScrollBar().maximum() > 0,
+        timeout=5_000,
+    )
+    inspector_scroll = widget.inspector_panel.verticalScrollBar()
+    inspector_scroll.setValue(min(80, inspector_scroll.maximum()))
+    qtbot.waitUntil(lambda: inspector_scroll.value() > 0, timeout=5_000)
+
+    pipeline = widget.pipeline
+    outputs_container = pipeline.outputs
+    output_objects = dict(pipeline.outputs)
+    output_states_container = pipeline.output_states
+    output_state_objects = dict(pipeline.output_states)
+    node_outputs_container = pipeline.node_outputs
+    node_output_objects = {
+        node_id: tuple(values) for node_id, values in pipeline.node_outputs.items()
+    }
+    execution_states_container = pipeline.node_execution_states
+    execution_states = dict(pipeline.node_execution_states)
+    cache_lineage_container = pipeline.node_cache_lineage
+    cache_lineage = dict(pipeline.node_cache_lineage)
+    completed_node_ids = set(pipeline.completed_node_ids)
+    cache_bytes = _pipeline_cache_nbytes(pipeline)
+    selected_node_id = widget._selected_node_id
+    selected_graph_nodes = widget.graph_view.selected_node_ids()
+    primary_graph_node = widget.graph_view.primary_node_id()
+    scroll_value = inspector_scroll.value()
+
+    assert selected_node_id == "threshold"
+    assert selected_graph_nodes == ("threshold",)
+    assert primary_graph_node == "threshold"
+    assert completed_node_ids == set(pipeline.nodes)
+    assert cache_lineage
+    assert scroll_value > 0
+
+    pipeline_runs = []
+    invalidations = []
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *args, **kwargs: pipeline_runs.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_invalidate_pipeline_cache",
+        lambda: invalidations.append(None),
+    )
+
+    # This is the same QAction invoked by the Ctrl+Z shortcut.
+    widget.undo_action.trigger()
+
+    assert widget.graph_view.node_position("threshold") == old_position
+    assert pipeline.outputs is outputs_container
+    assert all(
+        pipeline.outputs[node_id] is output
+        for node_id, output in output_objects.items()
+    )
+    assert pipeline.output_states is output_states_container
+    assert all(
+        pipeline.output_states[node_id] is state
+        for node_id, state in output_state_objects.items()
+    )
+    assert pipeline.node_outputs is node_outputs_container
+    assert {
+        node_id: tuple(id(value) for value in values)
+        for node_id, values in pipeline.node_outputs.items()
+    } == {
+        node_id: tuple(id(value) for value in values)
+        for node_id, values in node_output_objects.items()
+    }
+    assert pipeline.node_execution_states is execution_states_container
+    assert pipeline.node_execution_states == execution_states
+    assert pipeline.node_cache_lineage is cache_lineage_container
+    assert pipeline.node_cache_lineage == cache_lineage
+    assert pipeline.completed_node_ids == completed_node_ids
+    assert _pipeline_cache_nbytes(pipeline) == cache_bytes
+    assert widget._selected_node_id == selected_node_id
+    assert widget.graph_view.selected_node_ids() == selected_graph_nodes
+    assert widget.graph_view.primary_node_id() == primary_graph_node
+    assert inspector_scroll.value() == scroll_value
+    assert (
+        widget._current_history_snapshot().inspect_display_profiles
+        == settled_snapshot.inspect_display_profiles
+    )
+    assert not pipeline_runs
+    assert not invalidations
+
+    # The simulated move is a real editor change, so it correctly leaves the
+    # workflow tab dirty.  Clear that test-only state before qtbot closes the
+    # visible widget; otherwise teardown opens the interactive save prompt.
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
 
 
 def test_widget_restores_hidden_source_layer_on_close(qtbot):
@@ -9793,7 +10038,7 @@ def test_global_threshold_scope_control_shows_for_stack_input(qtbot):
     assert not widget.parameter_group.isHidden()
     control = widget._parameter_widgets["threshold_scope"]
     label = widget.parameter_form.labelForField(control)
-    assert label.text() == "Threshold uses"
+    assert label.text() == "Histogram scope"
     assert control.combo.itemText(0) == "Stack histogram"
     assert control.combo.itemText(1) == "Slice histogram"
     assert widget.pipeline.nodes[node.id].params["threshold_scope"] == (
@@ -10834,7 +11079,7 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     assert widget.colocalization_scatter_plot._colormap == "Magma"
 
 
-def test_scatter_node_popout_uses_independent_native_ranges(qtbot):
+def test_scatter_node_popout_can_zoom_to_independent_native_ranges(qtbot):
     data = np.arange(16, dtype=np.float32).reshape(4, 4)
     widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
@@ -10856,6 +11101,12 @@ def test_scatter_node_popout_uses_independent_native_ranges(qtbot):
     plot = widget.colocalization_scatter_plot
     assert (plot._channel_1_min, plot._channel_1_max) == (0.0, 15.0)
     assert (plot._channel_2_min, plot._channel_2_max) == (500.0, 515.0)
+    assert (
+        plot._display_channel_1_min,
+        plot._display_channel_1_max,
+        plot._display_channel_2_min,
+        plot._display_channel_2_max,
+    ) == (0.0, 515.0, 0.0, 515.0)
     result = widget._colocalization_scatter_cache[
         widget._current_colocalization_scatter_key
     ]
@@ -10872,6 +11123,24 @@ def test_scatter_node_popout_uses_independent_native_ranges(qtbot):
         500.0,
         515.0,
     )
+    assert not dialog.zoom_to_data_checkbox.isChecked()
+    assert dialog.equal_axes_checkbox.isChecked()
+    assert (
+        dialog.plot._display_channel_1_min,
+        dialog.plot._display_channel_1_max,
+        dialog.plot._display_channel_2_min,
+        dialog.plot._display_channel_2_max,
+    ) == (0.0, 515.0, 0.0, 515.0)
+
+    dialog.zoom_to_data_checkbox.setChecked(True)
+    dialog.equal_axes_checkbox.setChecked(False)
+
+    assert (
+        dialog.plot._display_channel_1_min,
+        dialog.plot._display_channel_1_max,
+        dialog.plot._display_channel_2_min,
+        dialog.plot._display_channel_2_max,
+    ) == (0.0, 15.0, 500.0, 515.0)
     plot_rect = dialog.plot._plot_rect()
     assert abs(dialog.plot._x_from_value(7.5, plot_rect) - plot_rect.center().x()) <= 1
     assert (
@@ -13193,6 +13462,128 @@ def test_intensity_contrast_nodes_show_input_and_output_histograms(
 
     assert widget.rescale_input_histogram_plot._counts.sum() == 200.0
     assert widget.histogram_plot._counts.sum() == 200.0
+
+
+def test_normalize_inspector_names_methods_and_explains_signed_output(qtbot):
+    data = np.arange(16, dtype=np.uint8).reshape(4, 4)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("normalize_image")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    widget._debounce_timer.stop()
+
+    method = widget._parameter_widgets["method"]
+    assert [
+        method.combo.itemText(index) for index in range(method.combo.count())
+    ] == [
+        "Min–max (0–1)",
+        "Z-score (mean/SD; signed)",
+        "Robust z-score (median/MAD; signed)",
+        "Maximum absolute value",
+        "Reference mean/SD (signed)",
+        "Percentile (0–1)",
+    ]
+    assert [
+        method.combo.itemData(index) for index in range(method.combo.count())
+    ] == [
+        "min-max",
+        "z-score",
+        "robust-z-score",
+        "maximum-absolute",
+        "reference-z-score",
+        "percentile",
+    ]
+
+    method.combo.setCurrentIndex(method.combo.findData("z-score"))
+    widget._debounce_timer.stop()
+
+    guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "Values below the mean become negative." in guidance
+    assert "Min–max (0–1)" in guidance
+    assert "non-negative output" in guidance
+    assert "visible Clamp Intensity node downstream" in guidance
+    assert "minimum to 0" in guidance
+
+    method = widget._parameter_widgets["method"]
+    method.combo.setCurrentIndex(method.combo.findData("robust-z-score"))
+    widget._debounce_timer.stop()
+
+    robust_guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "median" in robust_guidance
+    assert "negative" in robust_guidance
+    assert "1.4826" in widget._parameter_widgets[
+        "operation_notice"
+    ].toolTip()
+
+    method = widget._parameter_widgets["method"]
+    method.combo.setCurrentIndex(method.combo.findData("maximum-absolute"))
+    widget._debounce_timer.stop()
+
+    maximum_guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "preserves zero" in maximum_guidance
+    assert "sign" in maximum_guidance
+    assert "−1" in maximum_guidance
+    assert "1" in maximum_guidance
+
+
+def test_normalize_inspector_shows_only_parameters_for_selected_method(qtbot):
+    data = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("normalize_image")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    widget._debounce_timer.stop()
+
+    method = widget._parameter_widgets["method"]
+    method.combo.setCurrentIndex(method.combo.findData("percentile"))
+    widget._debounce_timer.stop()
+
+    assert "low_percentile" in widget._parameter_widgets
+    assert "high_percentile" in widget._parameter_widgets
+    assert "reference_mean" not in widget._parameter_widgets
+    assert "reference_standard_deviation" not in widget._parameter_widgets
+    low_percentile = widget._parameter_widgets["low_percentile"]
+    high_percentile = widget._parameter_widgets["high_percentile"]
+    assert widget.parameter_form.labelForField(low_percentile).text() == (
+        "Low percentile"
+    )
+    assert widget.parameter_form.labelForField(high_percentile).text() == (
+        "High percentile"
+    )
+    assert low_percentile.value() == 1.0
+    assert high_percentile.value() == 99.0
+    percentile_guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "0" in percentile_guidance
+    assert "1" in percentile_guidance
+    assert "clip" in percentile_guidance.casefold()
+
+    method = widget._parameter_widgets["method"]
+    method.combo.setCurrentIndex(method.combo.findData("reference-z-score"))
+    widget._debounce_timer.stop()
+
+    assert "low_percentile" not in widget._parameter_widgets
+    assert "high_percentile" not in widget._parameter_widgets
+    assert "reference_mean" in widget._parameter_widgets
+    assert "reference_standard_deviation" in widget._parameter_widgets
+    reference_mean = widget._parameter_widgets["reference_mean"]
+    reference_sd = widget._parameter_widgets["reference_standard_deviation"]
+    assert widget.parameter_form.labelForField(reference_mean).text() == (
+        "Reference mean"
+    )
+    assert widget.parameter_form.labelForField(reference_sd).text() == (
+        "Reference SD"
+    )
+    assert reference_mean.value() == 0.0
+    assert reference_sd.value() == 1.0
+    assert "greater than zero" in reference_sd.toolTip()
+    reference_guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "saved reference mean and SD" in reference_guidance
+    assert "each image" in reference_guidance
+    assert "negative" in reference_guidance
 
 
 def test_intensity_contrast_histogram_membership_follows_palette_category():
@@ -21128,6 +21519,209 @@ def test_graph_notes_are_undoable_and_restored(qtbot):
     assert note_id in widget.graph_view._notes
 
 
+def test_immediate_graph_note_add_undo_redo_does_not_recalculate(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    widget._debounce_timer.stop()
+    pipeline_runs = []
+    invalidations = []
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *args, **kwargs: pipeline_runs.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_invalidate_pipeline_cache",
+        lambda: invalidations.append(None),
+    )
+    selected_before = widget._selected_node_id
+
+    note_id = widget._add_graph_note("Review threshold", QPointF(25, 35))
+
+    assert selected_before == "gaussian"
+    assert widget._selected_node_id != selected_before
+    assert note_id in widget._graph_notes
+    assert note_id in widget.graph_view._notes
+
+    widget.undo()
+
+    assert note_id not in widget._graph_notes
+    assert note_id not in widget.graph_view._notes
+
+    widget.redo()
+
+    assert note_id in widget._graph_notes
+    assert note_id in widget.graph_view._notes
+    assert not pipeline_runs
+    assert not invalidations
+
+
+def test_graph_note_move_undo_redo_preserves_scientific_runtime(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.arange(4 * 16 * 18).reshape(4, 16, 18)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget._debounce_timer.stop()
+    note_id = widget._add_graph_note(
+        "Review threshold",
+        QPointF(25, 35),
+        attached_node="gaussian",
+    )
+
+    pipeline = widget.pipeline
+    runtime_containers = {
+        name: getattr(pipeline, name)
+        for name in (
+            "nodes",
+            "outputs",
+            "output_states",
+            "node_outputs",
+            "node_output_states",
+            "completed_node_ids",
+            "node_compute_provenance",
+            "node_cache_lineage",
+            "node_execution_states",
+            "node_execution_messages",
+        )
+    }
+    node_refs = dict(pipeline.nodes)
+    output_refs = dict(pipeline.outputs)
+    output_state_refs = dict(pipeline.output_states)
+    node_output_refs = {
+        node_id: tuple(outputs) for node_id, outputs in pipeline.node_outputs.items()
+    }
+    node_output_state_refs = {
+        node_id: tuple(states)
+        for node_id, states in pipeline.node_output_states.items()
+    }
+    completed_node_ids = set(pipeline.completed_node_ids)
+    compute_provenance = dict(pipeline.node_compute_provenance)
+    cache_lineage = dict(pipeline.node_cache_lineage)
+    execution_states = dict(pipeline.node_execution_states)
+    execution_messages = dict(pipeline.node_execution_messages)
+    pending_dirty_node_ids = set(widget._pending_dirty_node_ids)
+    pending_manual_node_ids = set(widget._pending_manual_node_ids)
+    stale_compute_badges = set(widget._stale_compute_badge_node_ids)
+    source_signature = widget._last_pipeline_source_signature
+    card_refs = dict(widget.graph_view._cards)
+    pipeline_run_pending = widget._pipeline_run_pending
+    assert completed_node_ids == set(pipeline.nodes)
+    assert set(execution_states.values()) == {EXECUTION_READY}
+    assert not pending_dirty_node_ids
+    assert not stale_compute_badges
+    assert not pipeline_run_pending
+
+    pipeline_runs = []
+    invalidations = []
+    original_invalidate = widget._invalidate_pipeline_cache
+
+    def track_pipeline_run(*args, **kwargs):
+        pipeline_runs.append((args, kwargs))
+
+    def track_invalidation():
+        invalidations.append(None)
+        original_invalidate()
+
+    monkeypatch.setattr(widget, "run_pipeline", track_pipeline_run)
+    monkeypatch.setattr(widget, "_invalidate_pipeline_cache", track_invalidation)
+
+    def assert_scientific_runtime_unchanged():
+        for name, container in runtime_containers.items():
+            assert getattr(pipeline, name) is container
+        assert all(
+            pipeline.nodes[node_id] is node for node_id, node in node_refs.items()
+        )
+        assert all(
+            pipeline.outputs[node_id] is output
+            for node_id, output in output_refs.items()
+        )
+        assert all(
+            pipeline.output_states[node_id] is state
+            for node_id, state in output_state_refs.items()
+        )
+        assert {
+            node_id: tuple(id(output) for output in outputs)
+            for node_id, outputs in pipeline.node_outputs.items()
+        } == {
+            node_id: tuple(id(output) for output in outputs)
+            for node_id, outputs in node_output_refs.items()
+        }
+        assert {
+            node_id: tuple(id(state) for state in states)
+            for node_id, states in pipeline.node_output_states.items()
+        } == {
+            node_id: tuple(id(state) for state in states)
+            for node_id, states in node_output_state_refs.items()
+        }
+        assert pipeline.completed_node_ids == completed_node_ids
+        assert pipeline.node_compute_provenance == compute_provenance
+        assert pipeline.node_cache_lineage == cache_lineage
+        assert pipeline.node_execution_states == execution_states
+        assert pipeline.node_execution_messages == execution_messages
+        assert widget._pending_dirty_node_ids == pending_dirty_node_ids
+        assert widget._pending_manual_node_ids == pending_manual_node_ids
+        assert widget._stale_compute_badge_node_ids == stale_compute_badges
+        assert widget._last_pipeline_source_signature == source_signature
+        assert widget._pipeline_run_pending == pipeline_run_pending
+        assert widget._active_pipeline_run_id is None
+        assert not widget._debounce_timer.isActive()
+        assert all(
+            widget.graph_view._cards[node_id] is card
+            for node_id, card in card_refs.items()
+        )
+        assert not pipeline_runs
+        assert not invalidations
+
+    old_note_pos = QPointF(widget.graph_view._notes[note_id].pos())
+    moved_note_pos = QPointF(140, 155)
+    widget.graph_view._notes[note_id].setPos(moved_note_pos)
+    widget._on_graph_note_moved(note_id, old_note_pos, moved_note_pos)
+
+    assert widget._graph_notes[note_id].position == (140.0, 155.0)
+    assert_scientific_runtime_unchanged()
+
+    widget.undo()
+
+    assert widget._graph_notes[note_id].position == (25.0, 35.0)
+    assert widget.graph_view._notes[note_id].pos() == old_note_pos
+    assert widget.graph_view._notes[note_id].isSelected()
+    assert_scientific_runtime_unchanged()
+
+    widget.redo()
+
+    assert widget._graph_notes[note_id].position == (140.0, 155.0)
+    assert widget.graph_view._notes[note_id].pos() == moved_note_pos
+    assert_scientific_runtime_unchanged()
+
+    old_node_pos = QPointF(widget.graph_view.node_position("gaussian"))
+    old_attached_note_pos = QPointF(widget.graph_view._notes[note_id].pos())
+    moved_node_pos = old_node_pos + QPointF(80, 30)
+    widget.graph_view.apply_node_positions({"gaussian": moved_node_pos})
+    widget._on_node_moved("gaussian", old_node_pos, moved_node_pos)
+
+    assert widget.graph_view._notes[note_id].pos() == (
+        old_attached_note_pos + QPointF(80, 30)
+    )
+    widget.undo()
+    assert widget.graph_view.node_position("gaussian") == old_node_pos
+    assert widget.graph_view._notes[note_id].pos() == old_attached_note_pos
+    assert_scientific_runtime_unchanged()
+
+    widget.redo()
+    assert widget.graph_view.node_position("gaussian") == moved_node_pos
+    assert widget.graph_view._notes[note_id].pos() == (
+        old_attached_note_pos + QPointF(80, 30)
+    )
+    assert_scientific_runtime_unchanged()
+
+
 def test_graph_note_editor_wraps_text_to_dialog_width(qtbot, monkeypatch):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
@@ -22522,6 +23116,8 @@ def test_palette_registry_nodes_are_constructible():
         expected_params = {param.name: param.default for param in spec.parameters}
         if spec.id == "input":
             expected_params["axis_declaration"] = ""
+        if spec.id == "imagej_auto_threshold":
+            expected_params["method"] = "Default"
         if spec.id == "select_axis_slice":
             expected_params.update(
                 {
@@ -32963,6 +33559,101 @@ def test_auto_contrast_button_updates_scale_and_offset(qtbot):
     )
     assert output.min() == 0
     assert output.max() == 255
+
+
+def test_auto_contrast_helper_explains_its_one_shot_parameter_update(qtbot):
+    widget = VippWidget(_Viewer(np.arange(256, dtype=np.uint8).reshape(16, 16)))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+
+    assert widget.auto_contrast_group.title() == "Set scale + offset from input"
+    assert widget.auto_contrast_button.text() == "Calculate and apply"
+
+    saturation_label = widget.auto_contrast_form.labelForField(
+        widget.auto_saturation_control
+    )
+    assert saturation_label.text() == "Tail exclusion (%)"
+
+    saturation_tooltip = widget.auto_saturation_control.toolTip().casefold()
+    assert "total percentage" in saturation_tooltip
+    assert "equally" in saturation_tooltip
+    assert "low and high tails" in saturation_tooltip
+    assert "0.175" in saturation_tooltip
+    assert "only" in saturation_tooltip
+    assert saturation_label.toolTip() == widget.auto_saturation_control.toolTip()
+
+    action_tooltip = widget.auto_contrast_button.toolTip().casefold()
+    assert "every finite input value" in action_tooltip
+    assert "scale and offset" in action_tooltip
+    assert "0 and 255" in action_tooltip
+    assert "shown above" in action_tooltip
+    assert "saved with the workflow" in action_tooltip
+
+
+def test_auto_contrast_noop_shows_exact_applied_parameters_without_rerun(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+    widget._debounce_timer.stop()
+    widget.pipeline.set_param(node.id, "alpha", 1.0)
+    widget.pipeline.set_param(node.id, "beta", 0.0)
+    widget._render_parameters(node.id)
+    widget.auto_saturation_control.value_box.setValue(0.0)
+
+    runs = []
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *args, **kwargs: runs.append((args, kwargs)),
+    )
+    history_size = len(widget._undo_stack)
+
+    widget.auto_contrast_button.click()
+
+    params = widget.pipeline.nodes[node.id].params
+    assert params["alpha"] == 1.0
+    assert params["beta"] == 0.0
+    assert widget._parameter_widgets["alpha"].value() == 1.0
+    assert widget._parameter_widgets["beta"].value() == 0.0
+    assert len(widget._undo_stack) == history_size
+    assert not runs
+
+    result_text = widget.auto_contrast_result_label.text().casefold()
+    assert "already" in result_text
+    assert "input range" in result_text
+    assert "0" in result_text
+    assert "255" in result_text
+    assert "scale 1" in result_text
+    assert "offset 0" in result_text
+
+
+def test_manual_scale_edit_immediately_clears_auto_contrast_result(qtbot):
+    data = np.arange(100, dtype=np.uint8).reshape(10, 10)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+    widget.auto_saturation_control.value_box.setValue(0.0)
+    widget.auto_contrast_button.click()
+
+    assert widget.auto_contrast_result_label.text().startswith("Applied:")
+
+    widget._parameter_widgets["alpha"].value_box.setValue(4.0)
+    widget._debounce_timer.stop()
+
+    assert widget.pipeline.nodes[node.id].params["alpha"] == 4.0
+    assert widget.auto_contrast_result_label.text() == (
+        "Scale and Offset above are the values this node will use."
+    )
 
 
 def test_auto_contrast_button_uses_connected_explicit_rgb_semantics(qtbot):

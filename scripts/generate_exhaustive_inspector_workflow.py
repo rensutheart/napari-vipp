@@ -456,8 +456,20 @@ def build_workflow() -> tuple[
     subtracted = place("subtract_images", 1360, 3380, input_count=2)
     ratio = place("ratio_image", 1700, 3380, input_count=2, epsilon=1e-6)
     for math_node in (weighted, added, subtracted, ratio):
-        wire(split_channels, math_node, target_port=0, source_port=0)
-        wire(split_channels, math_node, target_port=1, source_port=1)
+        wire(
+            split_channels,
+            math_node,
+            target_port=0,
+            source_port=0,
+            tunnel_name=red_channel_tunnel,
+        )
+        wire(
+            split_channels,
+            math_node,
+            target_port=1,
+            source_port=1,
+            tunnel_name=green_channel_tunnel,
+        )
 
     threshold_source = source("VIPP synthetic threshold gallery", 340, 3700)
     binary = place("binary_threshold", 680, 3700, threshold=12000.0, channel_axis=-1)
@@ -502,11 +514,36 @@ def build_workflow() -> tuple[
         max_iterations=10000,
         channel_axis=-1,
     )
-    wire(split_channels, binary, source_port=0)
-    wire(split_channels, otsu, source_port=0)
-    wire(split_channels, triangle, source_port=1)
-    wire(split_channels, li, source_port=0)
-    wire(split_channels, isodata, source_port=0)
+    wire(
+        split_channels,
+        binary,
+        source_port=0,
+        tunnel_name=red_channel_tunnel,
+    )
+    wire(
+        split_channels,
+        otsu,
+        source_port=0,
+        tunnel_name=red_channel_tunnel,
+    )
+    wire(
+        split_channels,
+        triangle,
+        source_port=1,
+        tunnel_name=green_channel_tunnel,
+    )
+    wire(
+        split_channels,
+        li,
+        source_port=0,
+        tunnel_name=red_channel_tunnel,
+    )
+    wire(
+        split_channels,
+        isodata,
+        source_port=0,
+        tunnel_name=red_channel_tunnel,
+    )
     wire(threshold_source, minimum)
 
     hysteresis = place(
@@ -551,11 +588,36 @@ def build_workflow() -> tuple[
         k=0.2,
         channel_axis=-1,
     )
-    wire(split_channels, hysteresis, source_port=0)
-    wire(split_channels, adaptive_mean, source_port=0)
-    wire(split_channels, adaptive_gaussian, source_port=1)
-    wire(split_channels, sauvola, source_port=0)
-    wire(split_channels, niblack, source_port=1)
+    wire(
+        split_channels,
+        hysteresis,
+        source_port=0,
+        tunnel_name=red_channel_tunnel,
+    )
+    wire(
+        split_channels,
+        adaptive_mean,
+        source_port=0,
+        tunnel_name=red_channel_tunnel,
+    )
+    wire(
+        split_channels,
+        adaptive_gaussian,
+        source_port=1,
+        tunnel_name=green_channel_tunnel,
+    )
+    wire(
+        split_channels,
+        sauvola,
+        source_port=0,
+        tunnel_name=red_channel_tunnel,
+    )
+    wire(
+        split_channels,
+        niblack,
+        source_port=1,
+        tunnel_name=green_channel_tunnel,
+    )
 
     mask_image = place("mask_image", 2040, 3380, outside_value=0.0, invert_mask="no")
     inverted = place("invert", 2380, 3380)

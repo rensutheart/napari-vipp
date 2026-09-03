@@ -78,8 +78,8 @@ def test_sigma_filter_keeps_one_concise_inline_note_and_tooltips_hold_details(qt
     assert "3d" in guidance
     assert "reorder axes" in guidance
     summary_guidance = _guidance_text((widget.parameter_group.summary_label,))
-    assert "hidden setting preserved" in summary_guidance
-    assert "channel axis (-1 = scalar): -1" in summary_guidance
+    assert "hidden setting" not in summary_guidance
+    assert "channel axis" not in summary_guidance
 
 
 @pytest.mark.parametrize(
