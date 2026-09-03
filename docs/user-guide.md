@@ -372,7 +372,8 @@ which pixels contribute. An empty input or an input with no finite pixels
 reports an error instead of inventing a cutoff.
 
 For manual guides, dragging a Binary Threshold, either Hysteresis guide, either
-Rescale cutoff, or an explicit Clip cutoff reuses the already calculated input
+Rescale cutoff, or an explicit Clamp Intensity cutoff reuses the already
+calculated input
 distribution. Dragging a percentile-derived Rescale guide switches `Input
 cutoffs` to `Explicit values`, preserving the untouched guide and making the
 dragged intensity an exact saved cutoff. Only the guide moves immediately and
@@ -387,8 +388,9 @@ population has genuinely changed.
 All numeric nodes in **Intensity & Contrast** show both the connected input
 histogram and the selected output histogram. The input view has the same exact
 slice/stack and log-display controls for Linear Scale + Offset, Gamma
-Correction, Rescale Intensity, Normalize, and Clip. Rescale and Clip additionally
-show their cutoff guides; the other three input histograms are read-only
+Correction, Rescale Intensity, Normalize, and Clamp Intensity. Rescale Intensity
+and Clamp Intensity additionally show their cutoff guides; the other three
+input histograms are read-only
 context for judging the transformation.
 
 ### Rescale Intensity Cutoffs
@@ -410,19 +412,22 @@ workflow JSON. Dragging either histogram cutoff is a manual intensity edit, so
 a node in percentile mode changes to `Explicit values` before the dragged
 cutoff is saved.
 
-`Clip Intensity` uses the same explicit-mode principle. New nodes default to
+`Clamp Intensity` uses the same explicit-mode principle. New nodes default to
 `Data range`, which leaves the input range unchanged until explicit bounds are
-chosen; `Values` applies `Minimum` and `Maximum`.
+chosen; `Values` applies `Minimum` and `Maximum`. Values below or above those
+bounds are set to the nearest bound; values inside the interval are unchanged.
+Clamping does not set a positive lower tail to zero and is not background
+removal.
 
 Integer data retains native-level meaning in both nodes. Integer percentiles
 are calculated from exact order statistics, including the fractional
 interpolation between neighbouring ranked levels, and Rescale performs its
 arithmetic after subtracting a native integer origin. This preserves adjacent
-int64/uint64 values even near their dtype limits. Integer Clip uses whole-number
-bounds and clamps without a float conversion; use `Convert Dtype` first when a
-fractional clipping bound is scientifically intended.
+int64/uint64 values even near their dtype limits. Integer Clamp Intensity uses
+whole-number bounds and clamps without a float conversion; use `Convert Dtype`
+first when a fractional clipping bound is scientifically intended.
 
-When the connected image has a non-boolean integer dtype, the Clip
+When the connected image has a non-boolean integer dtype, the Clamp Intensity
 minimum/maximum, Rescale output minimum/maximum, and Mask Image outside-value
 controls switch to whole-number steps and integer entry. Floating-point and
 boolean inputs retain fractional entry because those operation contracts permit
@@ -443,7 +448,7 @@ the dtype. int64/uint64 Rescale outputs default safely to `0..1` instead of an
 imprecise float representation of the full dtype maximum.
 
 The input-histogram slice/stack selector changes the distribution drawn for
-inspection. A percentile-mode Rescale marker and a data-range Clip marker still
+inspection. A percentile-mode Rescale marker and a data-range Clamp marker still
 describe the complete connected input, because that is the data those node
 modes actually process.
 

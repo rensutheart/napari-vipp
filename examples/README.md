@@ -40,6 +40,10 @@ workflows as a grouped, searchable template list and opens them with their
 sample `Image Source` nodes already configured. Use `Load workflow...` for
 custom or external workflow JSON files.
 
+Large manual-QA fixtures are kept under [`manual/`](manual/README.md) rather
+than in the **Open example...** catalogue. The exhaustive inspector showcase in
+that folder uses every operation currently exposed in the palette.
+
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
 | `graph-authoring-acceptance.json` | `VIPP synthetic object morphology` | Numbered, on-canvas acceptance recipe for inserting a node before a shared tunnel, copying settings between matching nodes, copying and moving a connected node group, pasting at a chosen location, checking one-step undo/redo, and using **Add conversion** to make a `uint16` Gaussian input GPU eligible on a qualified GPU setup. It opens with Auto compute intent so that qualified systems can show the real tip; CPU-only systems continue normally without it. Open it as `graph-authoring`. |

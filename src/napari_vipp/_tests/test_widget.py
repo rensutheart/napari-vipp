@@ -5807,6 +5807,129 @@ def test_hidden_source_preview_cannot_replace_active_viewer_axis_labels(qtbot):
     assert tuple(viewer.dims.axis_labels) == ("T", "Y", "X")
 
 
+def _colored_tczyx_viewer():
+    data = np.zeros((5, 3, 4, 6, 8), dtype=np.uint16)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("t", "time"),
+            AxisMetadata("c", "channel"),
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+        channels=(
+            ChannelMetadata(name="blue", color=0x0000FF),
+            ChannelMetadata(name="green", color=0x00FF00),
+            ChannelMetadata(name="red", color=0xFF0000),
+        ),
+    )
+    viewer = ViewerModel()
+    viewer.add_image(
+        data,
+        name="TCZYX source",
+        metadata={"vipp_image_state": state.to_dict()},
+    )
+    return viewer
+
+
+def test_colored_tczyx_inspect_napari_time_axis_updates_vipp_time(qtbot):
+    viewer = _colored_tczyx_viewer()
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    assert widget.follow_dims_checkbox.isChecked()
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("input")
+
+    qtbot.waitUntil(
+        lambda: len(widget._colored_channel_axis_layers("VIPP Inspect")) == 3,
+        timeout=5_000,
+    )
+    assert all(
+        tuple(layer.axis_labels) == ("T", "Z", "Y", "X")
+        for layer in widget._colored_channel_axis_layers("VIPP Inspect")
+    )
+    labels = tuple(str(label) for label in viewer.dims.axis_labels)
+    assert labels[-4:] == ("T", "Z", "Y", "X")
+    time_axis = labels.index("T")
+    padding_axis = next(
+        index for index, label in enumerate(labels) if label.startswith("-")
+    )
+    before = {axis.label: axis.value for axis in widget._view_dim_axes()}
+    assert tuple(before) == ("T", "Z")
+
+    viewer.dims.set_current_step(time_axis, 4)
+    after = {axis.label: axis.value for axis in widget._view_dim_axes()}
+
+    assert after["T"] == 4
+    assert after["Z"] == before["Z"]
+
+    viewer.dims.set_current_step(padding_axis, 3)
+    after_padding_move = {axis.label: axis.value for axis in widget._view_dim_axes()}
+
+    assert after_padding_move == after
+
+
+def test_tczyx_crop_surface_ignores_hidden_lower_rank_inspect_mapping(qtbot):
+    viewer = _colored_tczyx_viewer()
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("input")
+    qtbot.waitUntil(
+        lambda: len(widget._colored_channel_axis_layers("VIPP Inspect")) == 3,
+        timeout=5_000,
+    )
+
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(crop.id)
+    qtbot.waitUntil(
+        lambda: bool(widget._owned_crop_presentation_layers("crop_source"))
+        and getattr(widget._active_viewer_layer(), "metadata", {}).get(
+            "napari_vipp_kind"
+        )
+        == "crop_source",
+        timeout=5_000,
+    )
+
+    crop_source = widget._owned_crop_presentation_layers("crop_source")[0]
+    assert tuple(crop_source.axis_labels) == ("T", "C", "Z", "Y", "X")
+    assert all(
+        not layer.visible
+        for layer in widget._colored_channel_axis_layers("VIPP Inspect")
+    )
+    labels = tuple(str(label) for label in viewer.dims.axis_labels)
+    assert labels == ("T", "C", "Z", "Y", "X")
+    before = {axis.label: axis.value for axis in widget._view_dim_axes()}
+    assert tuple(before) == ("T", "C", "Z")
+    assert widget._raw_axis_for_current_step_axis(0) == labels.index("T")
+    assert widget._raw_axis_for_current_step_axis(1) == labels.index("C")
+
+    viewer.dims.set_current_step(labels.index("T"), 4)
+    after_time = {axis.label: axis.value for axis in widget._view_dim_axes()}
+
+    assert after_time == {"T": 4, "C": before["C"], "Z": before["Z"]}
+
+    viewer.dims.set_current_step(labels.index("C"), 4)
+    after = {axis.label: axis.value for axis in widget._view_dim_axes()}
+
+    assert after == {"T": 4, "C": 2, "Z": before["Z"]}
+
+    widget.graph_view.select_node("input")
+    qtbot.waitUntil(
+        lambda: len(widget._colored_channel_axis_layers("VIPP Inspect")) == 3,
+        timeout=5_000,
+    )
+    assert all(
+        layer.visible
+        for layer in widget._colored_channel_axis_layers("VIPP Inspect")
+    )
+
+
 def test_unsupported_multilevel_source_cannot_enter_preview_mode(
     qtbot,
     tmp_path,
@@ -8717,12 +8840,32 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
     assert _palette_child_by_text(utilities, "Convert Dtype")
     assert _palette_child_by_text(intensity, "Rescale Intensity")
     assert _palette_child_by_text(intensity, "Normalize")
-    assert _palette_child_by_text(intensity, "Clip")
+    clamp = _palette_child_by_text(intensity, "Clamp Intensity")
+    assert "nearest bound without rescaling" in clamp.toolTip(0)
     assert _palette_child_by_text(intensity, "Linear Scale + Offset")
     assert _palette_child_by_text(intensity, "Gamma Correction")
     assert _palette_child_by_text(math_logic, "Calculate New Image")
     assert _palette_child_by_text(math_logic, "Add")
     assert _palette_child_by_text(math_logic, "Logical XOR")
+
+
+def test_clamp_intensity_inspector_explains_clamping_semantics(qtbot):
+    viewer = _Viewer(np.arange(16, dtype=np.uint16).reshape(4, 4))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("clip_intensity")
+    widget._connect_nodes("input", node.id)
+    widget._select_node(node.id)
+
+    assert widget.selected_title.text() == "Clamp Intensity"
+    assert "values below Minimum become Minimum" in widget.selected_title.toolTip()
+    cutoff = next(
+        parameter
+        for parameter in widget.pipeline.operation_spec("clip_intensity").parameters
+        if parameter.name == "cutoff_mode"
+    )
+    assert "does not remove background" in cutoff.tooltip
 
 
 def test_set_pixel_size_uses_numeric_entries_without_sliders(qtbot):
@@ -13260,7 +13403,7 @@ def test_rescale_cutoff_modes_keep_inactive_parameters_from_driving_output(qtbot
         (
             "clip_intensity",
             {"cutoff_mode": "Values", "minimum": 90.0, "maximum": 10.0},
-            "Clip minimum must not exceed",
+            "Clamp minimum must not exceed",
         ),
         (
             "hysteresis_threshold",
@@ -14632,6 +14775,45 @@ def test_select_axis_slice_updates_metadata_axes(qtbot):
     assert _metadata_value(widget, "Dimensions") == "t=2, c=1, z=4, y=5, x=6"
     assert _metadata_value(widget, "Channels") == "1"
     assert "1. Select Axis Slice: kept c axis (1)[2..2]" in widget.history_label.text()
+
+
+def test_select_axis_slice_render_keeps_legacy_removal_semantics(qtbot):
+    data = np.zeros((5, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("select_axis_slice")
+    widget._connect_nodes("input", node.id)
+    modern_params = dict(node.params)
+    node.params.clear()
+    node.params.update({"axis": 0, "index": 2})
+
+    widget._render_parameters(node.id)
+    control = widget._parameter_widgets["axis_slice"]
+
+    assert node.params == {"axis": 0, "index": 2}
+    assert control.value()["remove_axes"] == "0"
+    assert control.value()["remove_indices"] == "2"
+    # Restore current-schema state before the workflow-tab teardown snapshot.
+    node.params.clear()
+    node.params.update(modern_params)
+
+
+def test_reorder_axes_render_does_not_rewrite_authored_order(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("reorder_axes")
+    widget._connect_nodes("input", node.id)
+    widget.pipeline.set_param(node.id, "order", "YXZ")
+
+    widget._render_parameters(node.id)
+    widget._refresh_selected_parameter_controls()
+
+    assert widget.pipeline.nodes[node.id].params["order"] == "YXZ"
 
 
 def test_select_axis_slice_can_slice_multiple_metadata_axes(qtbot):
@@ -22340,6 +22522,17 @@ def test_palette_registry_nodes_are_constructible():
         expected_params = {param.name: param.default for param in spec.parameters}
         if spec.id == "input":
             expected_params["axis_declaration"] = ""
+        if spec.id == "select_axis_slice":
+            expected_params.update(
+                {
+                    "axes": "",
+                    "indices": "",
+                    "ranges": "",
+                    "range_mode": True,
+                    "remove_axes": "",
+                    "remove_indices": "",
+                }
+            )
         if spec.id == "intensity_histogram":
             expected_params["_vipp_auto_recalculate"] = True
         if spec.id == "composite_to_rgb":
@@ -30814,9 +31007,10 @@ def test_safe_bypass_inspector_is_shared_and_keeps_parameters_dormant(qtbot):
         "complete input"
         in widget._parameter_widgets["crop_roi_summary"].text().casefold()
     )
-    retained_roi_layers = widget._owned_crop_presentation_layers("crop_roi")
-    assert retained_roi_layers
-    assert all(not layer.visible for layer in retained_roi_layers)
+    qtbot.waitUntil(
+        lambda: not widget._owned_crop_presentation_layers(),
+        timeout=2_000,
+    )
     assert widget.graph_view._cards[crop.id]._bypassed
     assert (
         widget.graph_view._cards[crop.id]._compute_badge_kind
@@ -30835,6 +31029,25 @@ def test_safe_bypass_inspector_is_shared_and_keeps_parameters_dormant(qtbot):
     assert not ready
     assert "bypassed" in reason.casefold()
     assert not widget.node_benchmark_button.isEnabled()
+
+    widget.node_bypass_checkbox.setChecked(False)
+
+    assert widget.pipeline.nodes[crop.id].execution_mode == "run"
+    assert widget.pipeline.nodes[crop.id].params == stored
+    assert widget.parameter_group.isEnabled()
+    assert widget._parameter_widgets["top"].isEnabled()
+    expected = data[:, 2:, :]
+    qtbot.waitUntil(
+        lambda: tuple(widget.pipeline.outputs[crop.id].shape) == expected.shape,
+        timeout=2_000,
+    )
+    np.testing.assert_array_equal(widget.pipeline.outputs[crop.id], expected)
+    qtbot.waitUntil(
+        lambda: bool(widget._owned_crop_presentation_layers("crop_source"))
+        and bool(widget._owned_crop_presentation_layers("crop_roi")),
+        timeout=2_000,
+    )
+    assert all(layer.visible for layer in widget._owned_crop_presentation_layers())
 
 
 def test_safe_bypass_hides_sources_writers_and_multi_output_nodes(qtbot):

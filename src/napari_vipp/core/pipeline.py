@@ -862,6 +862,14 @@ _OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
 # derived or legacy UI state and must not be initialized generically.
 _NEW_NODE_OPTIONAL_DEFAULTS: dict[str, dict[str, Any]] = {
     "input": {"axis_declaration": ""},
+    "select_axis_slice": {
+        "axes": "",
+        "indices": "",
+        "ranges": "",
+        "range_mode": True,
+        "remove_axes": "",
+        "remove_indices": "",
+    },
     "intensity_histogram": {MANUAL_AUTO_RECALCULATE_PARAM: True},
     "composite_to_rgb": {
         "channel_axis_mode": COMPOSITE_RGB_AUTO,
@@ -5498,7 +5506,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     ),
     OperationSpec(
         "clip_intensity",
-        "Clip",
+        "Clamp Intensity",
         INTENSITY_CONTRAST_CATEGORY,
         "array",
         "image",
@@ -5513,6 +5521,12 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 choices=("Data range", "Values"),
                 choice_labels=("Full data range", "Explicit values"),
+                tooltip=(
+                    "Clamping preserves values inside the selected range. Values "
+                    "below Minimum become Minimum, and values above Maximum become "
+                    "Maximum; this does not remove background or rescale the "
+                    "remaining intensities."
+                ),
             ),
             ParameterSpec(
                 "minimum",
@@ -5526,6 +5540,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
                 visibility_parameter="cutoff_mode",
                 visibility_values=("Values",),
+                tooltip=(
+                    "Values below this bound are set to the bound itself, not to "
+                    "zero. Values at or above it remain unchanged unless they "
+                    "exceed Maximum."
+                ),
             ),
             ParameterSpec(
                 "maximum",
@@ -5539,6 +5558,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
                 visibility_parameter="cutoff_mode",
                 visibility_values=("Values",),
+                tooltip=(
+                    "Values above this bound are set to the bound itself. Values "
+                    "at or below it remain unchanged unless they fall below "
+                    "Minimum."
+                ),
             ),
         ),
         clip_intensity,
@@ -5779,6 +5803,13 @@ def graph_node_from_persisted_params(
         saved_params = dict(saved_params)
         saved_params.setdefault("z_start", 0)
         saved_params.setdefault("z_end", 0)
+    # Select Axis Slice originally persisted only ``axis``/``index`` (and,
+    # later, ``axes``/``indices``). The modern range/removal control explicitly
+    # saves ``range_mode=True``. Missing range_mode must therefore retain the
+    # legacy removal semantics instead of becoming the modern no-op default.
+    elif operation_id == "select_axis_slice" and "range_mode" not in saved_params:
+        saved_params = dict(saved_params)
+        saved_params["range_mode"] = False
 
     required_params = {parameter.name for parameter in spec.parameters}
     missing_params = required_params - saved_params.keys()

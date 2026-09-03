@@ -176,8 +176,8 @@ force a node to calculate if the node has no output yet.
 Exact interior percentiles require one native-dtype working buffer so that the
 requested order statistics can be selected without histogram approximation.
 The common integer `0..100` percentile pair uses exact extrema and avoids that
-buffer. Integer Rescale then maps in bounded chunks; integer Clip is a native
-pointwise clamp and does not allocate a whole-stack float copy.
+buffer. Integer Rescale then maps in bounded chunks; integer Clamp Intensity is
+a native pointwise clamp and does not allocate a whole-stack float copy.
 | Save Image and Batch Output nodes | Explicit terminal/output intent. | Batch execution retains these outputs only long enough to write them. |
 
 ## Large-Data Direction

@@ -131,9 +131,9 @@ explanation is a pass where the exact GPU region is unavailable.
 - [ ] Drop a disconnected compatible node onto a green-highlighted wire and
       confirm that it is inserted between the exact endpoints as one Undo action.
 - [ ] Inspect several **Intensity & Contrast** nodes and confirm that each shows
-      the exact input and output histograms. Integer Clip bounds must use
-      whole-number controls, while Sigma Filter keeps a practical slider and a
-      wider direct-entry range.
+      the exact input and output histograms. Integer Clamp Intensity bounds must
+      use whole-number controls, while Sigma Filter keeps a practical slider
+      and a wider direct-entry range.
 - [ ] Open **Portable GPU Segmentation Bridge**, calculate the graph, and
       confirm that the 19-voxel speck is removed, 31 enclosed cavity voxels are
       restored, and the final component volumes are 685, 599, 595, and 561.

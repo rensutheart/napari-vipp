@@ -330,7 +330,8 @@ Special execution cases:
   `slider_minimum`/`slider_maximum` inside its wider accepted entry range.
   Sigma Filter uses a practical `0..10` slider for Sigma width while its entry
   retains the full `0..1,000,000` contract.
-- Clip bounds, Rescale Intensity output bounds, and Mask Image's outside value
+- Clamp Intensity bounds, Rescale Intensity output bounds, and Mask Image's
+  outside value
   derive their editor kind from the connected array or authoritative input
   state. Non-boolean integer inputs use whole-number controls; floating-point
   and boolean inputs retain fractional entry. Persisted invalid values are shown
@@ -414,7 +415,7 @@ The current high-level groups are:
   - `Math & Logic`: Calculate New Image, Add, Subtract, Ratio, Mask Image,
     Logical AND, Logical OR, Logical XOR, Invert
 - `Intensity & Contrast`: Linear Scale + Offset, Gamma Correction, Rescale
-  Intensity, Normalize, Clip
+  Intensity, Normalize, Clamp Intensity
 - `Filtering`
   - `Smoothing & Denoising`: Average Blur, Gaussian Blur, Gaussian Blur 3D,
     Median Filter, Sigma Filter, Bilateral Filtering, Non-Local Means
@@ -1193,7 +1194,8 @@ Every numeric operation in the **Intensity & Contrast** palette category, plus
 the threshold/cutoff operations listed in `INPUT_HISTOGRAM_OPERATIONS`, shows an
 `Input Histogram` above the general output histogram. It has its own
 `Histogram uses` slice/stack selector, hidden when the connected input has no
-meaningful stack axis. Rescale, Clip, and threshold nodes add parameter-driven
+meaningful stack axis. Rescale, Clamp Intensity, and threshold nodes add
+parameter-driven
 guides; Linear Scale + Offset, Gamma Correction, and Normalize use the same
 exact distribution as read-only context.
 
@@ -1201,7 +1203,7 @@ Input histogram caching separates two dependency domains. The bounded display
 distribution is keyed only by array identity, shape/dtype, semantic axis
 signature, normalized slice/stack scope, and the effective slice position. A
 second key contains the operation plus only parameters that affect its guide
-markers. Manual Binary/Hysteresis and explicit Rescale/Clip markers are rebuilt
+markers. Manual Binary/Hysteresis and explicit Rescale/Clamp markers are rebuilt
 synchronously over cached counts; exact percentile and automatic-threshold
 markers can run independently in the background. Small and large inputs use
 the same cache contract. Pipeline completion invalidates the selected-output
@@ -1219,7 +1221,7 @@ a drag from either percentile marker atomically seeds the explicit-value pair
 from the displayed exact cutoffs and changes `cutoff_mode` to `Values`; later
 drag events reuse the cached distribution and update the active value parameter.
 
-`Clip Intensity` similarly stores `cutoff_mode = Data range | Values`. New nodes
+`Clamp Intensity` similarly stores `cutoff_mode = Data range | Values`. New nodes
 default to `Data range`. Its data-range markers likewise describe the complete
 input; the histogram scope affects only the inspector distribution.
 
@@ -1228,8 +1230,9 @@ statistics over a native-dtype working buffer. The cutoff is retained as an
 integer or rational value, then each bounded processing chunk is translated
 from the cutoff's integer origin before float64 ratio arithmetic. Exact native
 endpoint masks prevent distant saturated values from entering that conversion.
-Input and output intervals wider than 2^53 fail explicitly. Integer Clip takes
-the simpler fully native path: bounds must be integral, inactive out-of-dtype
+Input and output intervals wider than 2^53 fail explicitly. Integer Clamp
+Intensity takes the simpler fully native path: bounds must be integral,
+inactive out-of-dtype
 sides are clamped to the dtype limit, and `np.clip` never promotes the image to
 float. These rules prevent large int64/uint64 offsets from collapsing adjacent
 levels.

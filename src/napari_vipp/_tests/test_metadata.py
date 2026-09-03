@@ -990,15 +990,15 @@ def test_threshold_history_never_infers_rgb_conversion_from_x_size():
         ),
         (
             "clip_intensity",
-            "Clip",
+            "Clamp Intensity",
             {"cutoff_mode": "Data range", "minimum": 2.0, "maximum": 4.0},
-            "Clip: full data range preserved (no clipping)",
+            "Clamp Intensity: full data range preserved (no clipping)",
         ),
         (
             "clip_intensity",
-            "Clip",
+            "Clamp Intensity",
             {"cutoff_mode": "Values", "minimum": 2.0, "maximum": 4.0},
-            "Clip: explicit values 2..4",
+            "Clamp Intensity: explicit values 2..4",
         ),
     ],
 )

@@ -5814,7 +5814,7 @@ def test_integer_clip_rejects_fractional_or_rounded_wide_bounds():
         (
             clip_intensity,
             {"cutoff_mode": "Values", "minimum": 0.0, "maximum": np.inf},
-            "Clip maximum must be a finite number",
+            "Clamp maximum must be a finite number",
         ),
     ],
 )
@@ -5839,7 +5839,7 @@ def test_boolean_intensity_passthrough_still_validates_active_cutoffs():
             in_low_value=2,
             in_high_value=1,
         )
-    with pytest.raises(ValueError, match="Clip minimum must not exceed"):
+    with pytest.raises(ValueError, match="Clamp minimum must not exceed"):
         clip_intensity(
             mask,
             cutoff_mode="Values",

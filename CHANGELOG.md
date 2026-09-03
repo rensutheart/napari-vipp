@@ -59,9 +59,27 @@
   image file or copied pixels. Local paths retain their file-backed metadata;
   raw clipboard pixels become a normal RGB/RGBA napari layer without relying on
   a temporary file.
+- Added a manual exhaustive inspector showcase with every current palette
+  operation arranged into seven meaningful synthetic-data lanes, plus a
+  deterministic bimodal threshold phantom, restrained long-route tunnels, and
+  coverage/graph-safety checks.
 
 ### Bug Fixes
 
+- Retired transient Crop Source/ROI layers after leaving Crop Stack so their
+  hidden higher-rank shapes no longer leave inert, negatively labelled napari
+  sliders beside a genuinely 2D selected result. The crop presentation is
+  recreated from cached input when Crop Stack is selected again.
+- Aligned napari and VIPP dimension navigation for mixed-rank channel
+  presentations: split-channel displays no longer alias `T` to `C`, padding
+  axes are ignored, and Crop Stack temporarily retires hidden lower-rank
+  Inspect layers so its full `TCZYX` labels and slider ranges remain exact.
+- Preserved legacy Select Axis Slice removals when their modern inspector is
+  rendered, and stopped Select/Reorder axis control refreshes from silently
+  rewriting scientific parameters.
+- Renamed the intensity `Clip` node to `Clamp Intensity` and added tooltips
+  that state its exact bound behavior, including that values below a positive
+  minimum become that minimum rather than zero.
 - Preserved explicit RGB/RGBA semantics for pasted image pixels so Image Source
   thumbnails no longer reinterpret encoded colours as blue/green/red
   fluorescence channels.

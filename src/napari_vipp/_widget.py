@@ -936,6 +936,15 @@ SIGMA_FILTER_DESCRIPTION_TOOLTIP = (
     "Uses clamped edges and supports finite uint8, uint16, and float32 images. "
     "ROI/mask behavior is not supported."
 )
+CLAMP_INTENSITY_DESCRIPTION_TOOLTIP = (
+    "Clamps values without rescaling them: values below Minimum become Minimum, "
+    "values above Maximum become Maximum, and values inside the range remain "
+    "unchanged. This is not a background-removal threshold."
+)
+INSPECTOR_TITLE_TOOLTIPS = {
+    "sigma_filter": SIGMA_FILTER_DESCRIPTION_TOOLTIP,
+    "clip_intensity": CLAMP_INTENSITY_DESCRIPTION_TOOLTIP,
+}
 SLICE_WISE_PROCESSING_TOOLTIP = (
     "This is not 3D processing: each YX plane is handled separately without "
     "adjacent Z slices. Use Reorder Axes to process a different plane."
@@ -8938,6 +8947,7 @@ class VippWidget(QWidget):
 
     def _on_follow_dims_toggled(self, _checked: bool) -> None:
         self._capture_vipp_dims_from_viewer()
+        self._sync_view_dims_bar()
         self._update_thumbnails()
         self._update_metadata_panel()
         self._update_histogram()
@@ -20370,9 +20380,7 @@ class VippWidget(QWidget):
         self.selected_category_label.setToolTip(
             f"{spec.category}; {output_label} output; {execution} execution."
         )
-        description = (
-            SIGMA_FILTER_DESCRIPTION_TOOLTIP if spec.id == "sigma_filter" else ""
-        )
+        description = INSPECTOR_TITLE_TOOLTIPS.get(spec.id, "")
         self.selected_title.setToolTip(description)
         self.selected_title.setAccessibleDescription(description)
 
@@ -24579,7 +24587,15 @@ class VippWidget(QWidget):
             and not self.pipeline.node_is_bypassed(selected.id)
         )
         if not crop_active:
-            self._set_crop_presentation_layers_visible(False)
+            # napari derives its global dimensionality from every layer in the
+            # LayerList, including invisible ones.  Keeping a hidden TCZYX Crop
+            # Source/ROI after selecting a true YX result therefore leaves
+            # inert, negatively labelled dimension sliders above the canvas.
+            # This method runs from the deferred viewer-refresh boundary, after
+            # graph pointer handling has finished, so the transient crop layers
+            # can be retired safely and recreated from cached input next time
+            # Crop Stack is selected.
+            self._discard_crop_presentation_layers()
         crop_source = (
             self._ensure_crop_source_layer(selected.id)
             if crop_active and selected is not None
@@ -24608,6 +24624,16 @@ class VippWidget(QWidget):
                 self._move_layer_to_bottom(layer)
 
         inspect_layers = self._generated_layers_for_name(self._inspect_layer_name)
+        if crop_active and inspect_layers:
+            # Invisible layers still contribute to napari's global dims. A
+            # channel-colored TCZYX Inspect presentation is stored as TZYX
+            # layers, so retaining it beside the full-rank Crop Source aliases
+            # its T extent onto the Crop Source C slider. Inspect is not shown
+            # while cropping; remove it and recreate the selected presentation
+            # when the user leaves Crop Stack.
+            self._remember_current_inspect_display_profiles()
+            self._discard_inspect_layers()
+            inspect_layers = []
         for layer in inspect_layers:
             try:
                 metadata = layer.metadata
@@ -25608,7 +25634,6 @@ class VippWidget(QWidget):
             self._axis_slice_options_for(node_id),
             self._select_axis_slice_value(node),
         )
-        self._apply_select_axis_slice_params(node_id, control.value())
         control.valueChanged.connect(self._on_select_axis_slice_changed)
         control.gestureStarted.connect(
             lambda: self._begin_parameter_slider_scrub(
@@ -25633,7 +25658,6 @@ class VippWidget(QWidget):
             self._axis_slice_options_for(node_id),
             str(node.params.get("order", "")),
         )
-        self._apply_reorder_axes_params(node_id, control.value())
         control.valueChanged.connect(self._on_reorder_axes_changed)
         control.gestureStarted.connect(
             lambda: self._begin_parameter_slider_scrub(
@@ -25755,33 +25779,21 @@ class VippWidget(QWidget):
         if node.operation_id == "select_axis_slice":
             widget = self._parameter_widgets.get("axis_slice")
             if isinstance(widget, AxisSliceControl):
-                previous = dict(node.params)
                 widget.set_options(
                     self._axis_slice_options_for(self._selected_node_id),
                     self._select_axis_slice_value(node),
                     emit=False,
                 )
-                self._apply_select_axis_slice_params(
-                    self._selected_node_id,
-                    widget.value(),
-                )
-                changed = previous != node.params
-            return changed
+            return False
         if node.operation_id == "reorder_axes":
             widget = self._parameter_widgets.get("order")
             if isinstance(widget, ReorderAxesControl):
-                previous = dict(node.params)
                 widget.set_options(
                     self._axis_slice_options_for(self._selected_node_id),
                     str(node.params.get("order", "")),
                     emit=False,
                 )
-                self._apply_reorder_axes_params(
-                    self._selected_node_id,
-                    widget.value(),
-                )
-                changed = previous != node.params
-            return changed
+            return False
         if node.operation_id == "select_table_columns":
             widget = self._parameter_widgets.get("columns")
             if isinstance(widget, SelectTableColumnsControl):
@@ -27005,7 +27017,10 @@ class VippWidget(QWidget):
             "axes": params.get("axes", ""),
             "indices": params.get("indices", ""),
             "ranges": params.get("ranges", ""),
-            "range_mode": params.get("range_mode", True),
+            # New nodes store the modern True default explicitly. A missing
+            # value identifies a legacy axis/index selector, whose original
+            # behavior was to remove the selected axis.
+            "range_mode": params.get("range_mode", False),
             "remove_axes": params.get("remove_axes", ""),
             "remove_indices": params.get("remove_indices", ""),
         }
@@ -30336,8 +30351,12 @@ class VippWidget(QWidget):
         return layers
 
     def _discard_crop_presentation_layers(self) -> None:
-        for layer in self._owned_crop_presentation_layers():
-            self._remove_layer(layer)
+        # Treat the source image and ROI as one transient presentation.  Layer
+        # removal emits napari events synchronously; suppress VIPP's ordinary
+        # live-source reaction until the complete owned group has gone.
+        with self._suspend_viewer_layer_change_handling():
+            for layer in self._owned_crop_presentation_layers():
+                self._remove_layer(layer)
 
     def _set_crop_presentation_layers_visible(
         self,
@@ -34504,6 +34523,14 @@ class VippWidget(QWidget):
             step_axis = self._state_axis_to_step_axis(state, axis_index, current_step)
             if step_axis is None or step_axis < 0:
                 continue
+            if (
+                self._dims_linked()
+                and self._raw_axis_for_current_step_axis(step_axis) is None
+            ):
+                # Channel-split and RGB presentations deliberately remove the
+                # component axis from napari dims.  Do not offer it as a linked
+                # control: there is no matching napari slider to move.
+                continue
             step_size = (
                 int(current_nsteps[step_axis])
                 if current_nsteps is not None and step_axis < len(current_nsteps)
@@ -34638,6 +34665,8 @@ class VippWidget(QWidget):
 
     def _set_current_step_axis(self, step_axis: int, value: int) -> None:
         raw_axis = self._raw_axis_for_current_step_axis(step_axis)
+        if raw_axis is None:
+            return
         self._set_raw_current_step(raw_axis, int(value))
 
     def _set_vipp_current_step_axis(self, step_axis: int, value: int) -> None:
@@ -34657,26 +34686,47 @@ class VippWidget(QWidget):
             nsteps,
         )
 
-    def _raw_axis_for_current_step_axis(self, step_axis: int) -> int:
+    def _viewer_dims_mapping_context(self) -> tuple[ImageState, Mapping] | None:
+        """Return metadata for the VIPP layer currently driving napari dims."""
+
+        active = self._active_viewer_layer()
+        if active is not None and not self._layer_is_present(active):
+            active = None
+        inspect_layers = self._generated_layers_for_name(self._inspect_layer_name)
+        candidates = [active, *inspect_layers]
+        seen: set[int] = set()
+        for layer in candidates:
+            if layer is None or id(layer) in seen:
+                continue
+            seen.add(id(layer))
+            metadata = getattr(layer, "metadata", None)
+            if not isinstance(metadata, Mapping):
+                continue
+            carried = metadata.get("vipp_image_state")
+            state = (
+                ImageState.from_dict(carried) if isinstance(carried, dict) else None
+            )
+            if state is not None and state.axes:
+                return state, metadata
+            node_id = metadata.get("node_id")
+            output_port = int(metadata.get("output_port", 0) or 0)
+            state = self._node_output_state(node_id, output_port)
+            if state is not None and getattr(state, "axes", None):
+                return state, metadata
+        return None
+
+    def _raw_axis_for_current_step_axis(self, step_axis: int) -> int | None:
         raw_step = self._raw_current_step()
         if raw_step is None:
             return int(step_axis)
-        layers = self._generated_layers_for_name(self._inspect_layer_name)
-        layer = layers[0] if layers else None
-        metadata = getattr(layer, "metadata", {}) if layer is not None else {}
-        if not isinstance(metadata, dict):
+        context = self._viewer_dims_mapping_context()
+        if context is None:
             return int(step_axis)
-        node_id = metadata.get("node_id")
-        output_port = int(metadata.get("output_port", 0) or 0)
-        state = self._node_output_state(node_id, output_port)
+        state, metadata = context
         axes = tuple(getattr(state, "axes", ()))
         if not axes:
             return int(step_axis)
-        display_axis_indices = [
-            index
-            for index, axis in enumerate(axes)
-            if not _state_axis_hidden_from_napari_dims(axis, metadata)
-        ]
+        display_axis_indices = _state_axis_indices_for_napari_layer(state, metadata)
         if not display_axis_indices:
             return int(step_axis)
         offset = max(len(tuple(raw_step)) - len(display_axis_indices), 0)
@@ -34692,7 +34742,11 @@ class VippWidget(QWidget):
                 source_axis = state_axis_index
             if int(source_axis) == int(step_axis):
                 return int(raw_axis)
-        return int(step_axis)
+        # A presentation can deliberately remove a scientific axis.  For
+        # example, authored C channels are separate additive napari layers,
+        # so C has no corresponding viewer slider.  Falling back positionally
+        # here would move the following displayed axis instead (usually T).
+        return None
 
     def _on_dims_changed(self, _event=None) -> None:
         if self._closing:
@@ -42062,22 +42116,14 @@ class VippWidget(QWidget):
         *,
         fill_value: int,
     ) -> tuple:
-        layers = self._generated_layers_for_name(self._inspect_layer_name)
-        layer = layers[0] if layers else None
-        metadata = getattr(layer, "metadata", {}) if layer is not None else {}
-        if not isinstance(metadata, dict):
+        context = self._viewer_dims_mapping_context()
+        if context is None:
             return tuple(int(value) for value in values)
-        node_id = metadata.get("node_id")
-        output_port = int(metadata.get("output_port", 0) or 0)
-        state = self._node_output_state(node_id, output_port)
+        state, metadata = context
         axes = tuple(getattr(state, "axes", ()))
         if not axes:
             return tuple(int(value) for value in values)
-        display_axis_indices = [
-            index
-            for index, axis in enumerate(axes)
-            if not _state_axis_hidden_from_napari_dims(axis, metadata)
-        ]
+        display_axis_indices = _state_axis_indices_for_napari_layer(state, metadata)
         if not display_axis_indices:
             return tuple(int(value) for value in values)
         offset = max(len(values) - len(display_axis_indices), 0)
@@ -42649,15 +42695,19 @@ def _input_histogram_markers(
                 return []
             low, high = stats.minimum, stats.maximum
         elif mode == "values":
-            low = _finite_marker_value((params or {}).get("minimum"), "Clip minimum")
+            low = _finite_marker_value(
+                (params or {}).get("minimum"), "Clamp minimum"
+            )
             high = _finite_marker_value(
                 (params or {}).get("maximum"),
-                "Clip maximum",
+                "Clamp maximum",
             )
         else:
-            raise ValueError("Clip input cutoffs must be 'Data range' or 'Values'.")
+            raise ValueError(
+                "Clamp input cutoffs must be 'Data range' or 'Values'."
+            )
         if low > high:
-            raise ValueError("Clip minimum must not exceed the maximum.")
+            raise ValueError("Clamp minimum must not exceed the maximum.")
         markers = [("min", low, QColor("#f59e0b"))]
         if low != high:
             markers.append(("max", high, QColor("#38bdf8")))
@@ -43152,36 +43202,47 @@ def _state_axis_hidden_from_napari_dims(axis, metadata: dict) -> bool:
     return str(getattr(axis, "name", "")).lower() in {"rgb", "rgba"}
 
 
-def _state_axes_for_napari_layer(state: ImageState, metadata: dict) -> tuple:
-    """Align carried axes with napari's displayed layer dimensionality."""
+def _state_axis_indices_for_napari_layer(
+    state: ImageState,
+    metadata: Mapping,
+) -> tuple[int, ...]:
+    """Return state-axis indices in the exact order exposed to napari dims."""
 
     expected_ndim = _napari_layer_transform_ndim(metadata)
     axes = tuple(getattr(state, "axes", ()))
     if expected_ndim <= 0:
         return ()
+    indices = tuple(range(len(axes)))
     if (
         bool(metadata.get("display_channel_axis_as_layers"))
-        and len(axes) == expected_ndim + 1
+        and len(indices) == expected_ndim + 1
     ):
         try:
             channel_axis = int(metadata.get("display_channel_axis_index"))
         except (TypeError, ValueError):
             return ()
-        if not 0 <= channel_axis < len(axes):
+        if not 0 <= channel_axis < len(indices):
             return ()
-        axes = axes[:channel_axis] + axes[channel_axis + 1 :]
-    elif bool(metadata.get("display_rgb")) and len(axes) == expected_ndim + 1:
-        # VIPP only marks a layer RGB when its explicit component axis is
-        # trailing.  napari hides that component axis from viewer dimensions,
-        # including when its authored name is C rather than RGB/RGBA.
-        axes = axes[:-1]
+        indices = indices[:channel_axis] + indices[channel_axis + 1 :]
+    elif bool(metadata.get("display_rgb")) and len(indices) == expected_ndim + 1:
+        # VIPP marks a layer RGB only when its explicit component axis is
+        # trailing. napari hides that final data axis from viewer dimensions.
+        indices = indices[:-1]
     else:
-        axes = tuple(
-            axis
-            for axis in axes
+        indices = tuple(
+            index
+            for index, axis in enumerate(axes)
             if not _state_axis_hidden_from_napari_dims(axis, metadata)
         )
-    return axes if len(axes) == expected_ndim else ()
+    return indices if len(indices) == expected_ndim else ()
+
+
+def _state_axes_for_napari_layer(state: ImageState, metadata: dict) -> tuple:
+    """Align carried axes with napari's displayed layer dimensionality."""
+
+    axes = tuple(getattr(state, "axes", ()))
+    indices = _state_axis_indices_for_napari_layer(state, metadata)
+    return tuple(axes[index] for index in indices)
 
 
 def _default_napari_axis_labels(ndim: int) -> tuple[str, ...]:

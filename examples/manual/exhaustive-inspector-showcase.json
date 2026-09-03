@@ -1,0 +1,3628 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 6,
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic time-lapse multichannel",
+        "series_index": 0,
+        "channel_colors": "Blue,Green,Red",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "crop_stack_1",
+      "operation_id": "crop_stack",
+      "params": {
+        "z_start": 1,
+        "z_end": 0,
+        "top": 20,
+        "bottom": 25,
+        "left": 30,
+        "right": 50,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "select_axis_slice_1",
+      "operation_id": "select_axis_slice",
+      "params": {
+        "axis": 0,
+        "index": 1,
+        "axes": "0",
+        "indices": "1",
+        "ranges": "",
+        "range_mode": true,
+        "remove_axes": "0",
+        "remove_indices": "1"
+      }
+    },
+    {
+      "id": "split_axis_1",
+      "operation_id": "split_axis",
+      "params": {
+        "axis": "axis:0"
+      }
+    },
+    {
+      "id": "reorder_axes_1",
+      "operation_id": "reorder_axes",
+      "params": {
+        "order": "YXZ"
+      }
+    },
+    {
+      "id": "set_microscope_metadata_1",
+      "operation_id": "set_microscope_metadata",
+      "params": {
+        "channel_1_wavelength_nm": 405.0,
+        "channel_2_wavelength_nm": 488.0,
+        "channel_3_wavelength_nm": 561.0,
+        "numerical_aperture": 1.4,
+        "refractive_index": 1.518
+      }
+    },
+    {
+      "id": "set_pixel_size_1",
+      "operation_id": "set_pixel_size",
+      "params": {
+        "x_size": 0.12,
+        "y_size": 0.12,
+        "z_size": 0.35,
+        "unit": "micrometer"
+      }
+    },
+    {
+      "id": "rescale_axes_1",
+      "operation_id": "rescale_axes",
+      "params": {
+        "x_scale": 0.75,
+        "y_scale": 0.75,
+        "z_scale": 1.0,
+        "lock_xy": true,
+        "interpolation": "Auto",
+        "anti_aliasing": true,
+        "resize_mode": "Scale factor",
+        "z_size": 11,
+        "y_size": 38,
+        "x_size": 36
+      }
+    },
+    {
+      "id": "born_wolf_psf_1",
+      "operation_id": "born_wolf_psf",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "auto_parameters": true,
+        "wavelength_nm": 0.0,
+        "numerical_aperture": 0.0,
+        "refractive_index": 0.0,
+        "pixel_size_xy_um": 0.0,
+        "z_step_um": 0.0,
+        "xy_size": 17,
+        "z_size": 7,
+        "channel": -1,
+        "pupil_samples": 64,
+        "normalize": true,
+        "resolved_spatial_ndim": 3,
+        "_vipp_psf_resolution": {
+          "channel": {
+            "value": 0,
+            "source": "manual",
+            "message": "Manual channel index.",
+            "required": true
+          },
+          "wavelength_nm": {
+            "value": 405.0,
+            "source": "metadata",
+            "message": "Emission or excitation wavelength from channel metadata.",
+            "required": true
+          },
+          "numerical_aperture": {
+            "value": 1.4,
+            "source": "metadata",
+            "message": "Objective numerical aperture from metadata.",
+            "required": true
+          },
+          "refractive_index": {
+            "value": 1.518,
+            "source": "metadata",
+            "message": "Objective immersion refractive index from metadata.",
+            "required": true
+          },
+          "pixel_size_xy_um": {
+            "value": 0.12,
+            "source": "metadata",
+            "message": "Mean X/Y pixel size from axis metadata.",
+            "required": true
+          },
+          "z_step_um": {
+            "value": 0.35,
+            "source": "metadata",
+            "message": "Z step from axis metadata.",
+            "required": true
+          }
+        },
+        "_vipp_psf_channel_resolutions": [
+          {
+            "values": {
+              "channel": 0,
+              "wavelength_nm": 405.0,
+              "numerical_aperture": 1.4,
+              "refractive_index": 1.518,
+              "pixel_size_xy_um": 0.12,
+              "z_step_um": 0.35
+            },
+            "unresolved": [],
+            "parameters": {
+              "channel": {
+                "value": 0,
+                "source": "manual",
+                "message": "Manual channel index.",
+                "required": true
+              },
+              "wavelength_nm": {
+                "value": 405.0,
+                "source": "metadata",
+                "message": "Emission or excitation wavelength from channel metadata.",
+                "required": true
+              },
+              "numerical_aperture": {
+                "value": 1.4,
+                "source": "metadata",
+                "message": "Objective numerical aperture from metadata.",
+                "required": true
+              },
+              "refractive_index": {
+                "value": 1.518,
+                "source": "metadata",
+                "message": "Objective immersion refractive index from metadata.",
+                "required": true
+              },
+              "pixel_size_xy_um": {
+                "value": 0.12,
+                "source": "metadata",
+                "message": "Mean X/Y pixel size from axis metadata.",
+                "required": true
+              },
+              "z_step_um": {
+                "value": 0.35,
+                "source": "metadata",
+                "message": "Z step from axis metadata.",
+                "required": true
+              }
+            }
+          },
+          {
+            "values": {
+              "channel": 1,
+              "wavelength_nm": 488.0,
+              "numerical_aperture": 1.4,
+              "refractive_index": 1.518,
+              "pixel_size_xy_um": 0.12,
+              "z_step_um": 0.35
+            },
+            "unresolved": [],
+            "parameters": {
+              "channel": {
+                "value": 1,
+                "source": "manual",
+                "message": "Manual channel index.",
+                "required": true
+              },
+              "wavelength_nm": {
+                "value": 488.0,
+                "source": "metadata",
+                "message": "Emission or excitation wavelength from channel metadata.",
+                "required": true
+              },
+              "numerical_aperture": {
+                "value": 1.4,
+                "source": "metadata",
+                "message": "Objective numerical aperture from metadata.",
+                "required": true
+              },
+              "refractive_index": {
+                "value": 1.518,
+                "source": "metadata",
+                "message": "Objective immersion refractive index from metadata.",
+                "required": true
+              },
+              "pixel_size_xy_um": {
+                "value": 0.12,
+                "source": "metadata",
+                "message": "Mean X/Y pixel size from axis metadata.",
+                "required": true
+              },
+              "z_step_um": {
+                "value": 0.35,
+                "source": "metadata",
+                "message": "Z step from axis metadata.",
+                "required": true
+              }
+            }
+          },
+          {
+            "values": {
+              "channel": 2,
+              "wavelength_nm": 561.0,
+              "numerical_aperture": 1.4,
+              "refractive_index": 1.518,
+              "pixel_size_xy_um": 0.12,
+              "z_step_um": 0.35
+            },
+            "unresolved": [],
+            "parameters": {
+              "channel": {
+                "value": 2,
+                "source": "manual",
+                "message": "Manual channel index.",
+                "required": true
+              },
+              "wavelength_nm": {
+                "value": 561.0,
+                "source": "metadata",
+                "message": "Emission or excitation wavelength from channel metadata.",
+                "required": true
+              },
+              "numerical_aperture": {
+                "value": 1.4,
+                "source": "metadata",
+                "message": "Objective numerical aperture from metadata.",
+                "required": true
+              },
+              "refractive_index": {
+                "value": 1.518,
+                "source": "metadata",
+                "message": "Objective immersion refractive index from metadata.",
+                "required": true
+              },
+              "pixel_size_xy_um": {
+                "value": 0.12,
+                "source": "metadata",
+                "message": "Mean X/Y pixel size from axis metadata.",
+                "required": true
+              },
+              "z_step_um": {
+                "value": 0.35,
+                "source": "metadata",
+                "message": "Z step from axis metadata.",
+                "required": true
+              }
+            }
+          }
+        ],
+        "_vipp_psf_unresolved_parameters": []
+      }
+    },
+    {
+      "id": "mip_1",
+      "operation_id": "mip",
+      "params": {
+        "axis": 2
+      }
+    },
+    {
+      "id": "project_image_1",
+      "operation_id": "project_image",
+      "params": {
+        "axes": "auto",
+        "method": "Mean"
+      }
+    },
+    {
+      "id": "orthogonal_projection_1",
+      "operation_id": "orthogonal_projection",
+      "params": {
+        "method": "Maximum",
+        "use_physical_scale": true
+      }
+    },
+    {
+      "id": "input_2",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic volume",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "linear_scale_offset_1",
+      "operation_id": "linear_scale_offset",
+      "params": {
+        "alpha": 1.15,
+        "beta": 4.0
+      }
+    },
+    {
+      "id": "gamma_correction_1",
+      "operation_id": "gamma_correction",
+      "params": {
+        "gamma": 0.85
+      }
+    },
+    {
+      "id": "rescale_intensity_1",
+      "operation_id": "rescale_intensity",
+      "params": {
+        "cutoff_mode": "Percentiles",
+        "in_low_value": 0.0,
+        "in_high_value": 1.0,
+        "in_low_percentile": 1.0,
+        "in_high_percentile": 99.0,
+        "out_min": 0.0,
+        "out_max": 255.0
+      }
+    },
+    {
+      "id": "normalize_image_1",
+      "operation_id": "normalize_image",
+      "params": {
+        "method": "z-score"
+      }
+    },
+    {
+      "id": "clip_intensity_1",
+      "operation_id": "clip_intensity",
+      "params": {
+        "cutoff_mode": "Values",
+        "minimum": -2.0,
+        "maximum": 2.0
+      }
+    },
+    {
+      "id": "average_blur_1",
+      "operation_id": "average_blur",
+      "params": {
+        "size": 3,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "median_filter_1",
+      "operation_id": "median_filter",
+      "params": {
+        "size": 3,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "sigma_filter_1",
+      "operation_id": "sigma_filter",
+      "params": {
+        "radius": 1.5,
+        "sigma_width": 2.0,
+        "minimum_pixel_fraction": 0.2,
+        "outlier_aware": true,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "bilateral_filter_1",
+      "operation_id": "bilateral_filter",
+      "params": {
+        "diameter": 5,
+        "sigma_color": 12.0,
+        "sigma_space": 3.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "non_local_means_filter_1",
+      "operation_id": "non_local_means_filter",
+      "params": {
+        "patch_size": 3,
+        "patch_distance": 4,
+        "h": 0.08,
+        "fast_mode": true,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "gaussian",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 1.2,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "unsharp_mask_1",
+      "operation_id": "unsharp_mask",
+      "params": {
+        "radius": 1.0,
+        "amount": 1.25,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "sobel_filter_1",
+      "operation_id": "sobel_filter",
+      "params": {
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "laplace_filter_1",
+      "operation_id": "laplace_filter",
+      "params": {
+        "kernel_size": 3,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "gaussian_blur_3d_1",
+      "operation_id": "gaussian_blur_3d",
+      "params": {
+        "sigma_z": 0.8,
+        "sigma_y": 1.2,
+        "sigma_x": 1.2,
+        "lock_xy": true,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "rolling_ball_background_1",
+      "operation_id": "rolling_ball_background",
+      "params": {
+        "radius": 12.0,
+        "light_background": false,
+        "disable_smoothing": false,
+        "spatial_mode": "2D YX",
+        "channel_axis": -1,
+        "resolved_spatial_ndim": 2
+      }
+    },
+    {
+      "id": "subtract_background_1",
+      "operation_id": "subtract_background",
+      "params": {
+        "radius": 12.0,
+        "light_background": false,
+        "disable_smoothing": false,
+        "clip_negative": true,
+        "spatial_mode": "2D YX",
+        "channel_axis": -1,
+        "resolved_spatial_ndim": 2
+      }
+    },
+    {
+      "id": "difference_of_gaussians_1",
+      "operation_id": "difference_of_gaussians",
+      "params": {
+        "low_sigma": 1.0,
+        "high_sigma": 2.5,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "canny_edges_1",
+      "operation_id": "canny_edges",
+      "params": {
+        "sigma": 1.0,
+        "low_quantile": 0.1,
+        "high_quantile": 0.25,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "input_3",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic colocalization",
+        "series_index": 0,
+        "channel_colors": "Red,Green",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "split_channels_1",
+      "operation_id": "split_channels",
+      "params": {
+        "preview_channel": 0
+      }
+    },
+    {
+      "id": "combine_channels_1",
+      "operation_id": "combine_channels",
+      "params": {
+        "input_count": 2,
+        "channel_axis": 0
+      }
+    },
+    {
+      "id": "assign_channel_colors_1",
+      "operation_id": "assign_channel_colors",
+      "params": {
+        "channel_colors": "Red,Green"
+      }
+    },
+    {
+      "id": "composite_to_rgb_1",
+      "operation_id": "composite_to_rgb",
+      "params": {
+        "channel_axis": -1,
+        "red_channel": -1,
+        "green_channel": -1,
+        "blue_channel": -1,
+        "intensity_mapping": "Preserve numeric values",
+        "channel_axis_mode": "Auto",
+        "mapping_mode": "Auto"
+      }
+    },
+    {
+      "id": "intensity_histogram_1",
+      "operation_id": "intensity_histogram",
+      "params": {
+        "bin_count": 128,
+        "range_mode": "Data range",
+        "custom_min": 0.0,
+        "custom_max": 1.0,
+        "bin_spacing": "Linear",
+        "_vipp_auto_recalculate": true
+      }
+    },
+    {
+      "id": "save_output_1",
+      "operation_id": "save_output",
+      "params": {
+        "enabled": "off",
+        "path": "",
+        "format": "auto",
+        "overwrite": "no"
+      }
+    },
+    {
+      "id": "extract_channel_1",
+      "operation_id": "extract_channel",
+      "params": {
+        "channel": 0
+      }
+    },
+    {
+      "id": "convert_dtype_1",
+      "operation_id": "convert_dtype",
+      "params": {
+        "output_dtype": "uint8",
+        "scaling": "rescale"
+      }
+    },
+    {
+      "id": "imagej_auto_threshold_1",
+      "operation_id": "imagej_auto_threshold",
+      "params": {
+        "method": "Default",
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "calculate_weighted_image_1",
+      "operation_id": "calculate_weighted_image",
+      "params": {
+        "input_count": 2,
+        "weights": "0.65,0.35",
+        "offset": 0.0
+      }
+    },
+    {
+      "id": "add_images_1",
+      "operation_id": "add_images",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "subtract_images_1",
+      "operation_id": "subtract_images",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "ratio_image_1",
+      "operation_id": "ratio_image",
+      "params": {
+        "input_count": 2,
+        "epsilon": 1e-06
+      }
+    },
+    {
+      "id": "input_4",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic threshold gallery",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 12000.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "threshold",
+      "operation_id": "otsu_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "triangle_threshold_1",
+      "operation_id": "triangle_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "li_threshold_1",
+      "operation_id": "li_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "isodata_threshold_1",
+      "operation_id": "isodata_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "minimum_threshold_1",
+      "operation_id": "minimum_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256,
+        "max_iterations": 10000,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "hysteresis_threshold_1",
+      "operation_id": "hysteresis_threshold",
+      "params": {
+        "low_threshold": 8000.0,
+        "high_threshold": 22000.0,
+        "spatial_mode": "Auto from axes",
+        "channel_axis": -1,
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "adaptive_mean_threshold_1",
+      "operation_id": "adaptive_mean_threshold",
+      "params": {
+        "block_size": 15,
+        "c": 2.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "adaptive_gaussian_threshold_1",
+      "operation_id": "adaptive_gaussian_threshold",
+      "params": {
+        "block_size": 15,
+        "c": 2.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "sauvola_threshold_1",
+      "operation_id": "sauvola_threshold",
+      "params": {
+        "window_size": 15,
+        "k": 0.2,
+        "dynamic_range": 0.0,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "niblack_threshold_1",
+      "operation_id": "niblack_threshold",
+      "params": {
+        "window_size": 15,
+        "k": 0.2,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "mask_image_1",
+      "operation_id": "mask_image",
+      "params": {
+        "outside_value": 0.0,
+        "invert_mask": "no"
+      }
+    },
+    {
+      "id": "invert_1",
+      "operation_id": "invert",
+      "params": {}
+    },
+    {
+      "id": "logical_and_1",
+      "operation_id": "logical_and",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "logical_or_1",
+      "operation_id": "logical_or",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "logical_xor_1",
+      "operation_id": "logical_xor",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "dilate_1",
+      "operation_id": "dilate",
+      "params": {
+        "size": 3,
+        "iterations": 1
+      }
+    },
+    {
+      "id": "erode_1",
+      "operation_id": "erode",
+      "params": {
+        "size": 3,
+        "iterations": 1
+      }
+    },
+    {
+      "id": "opening_1",
+      "operation_id": "opening",
+      "params": {
+        "size": 2
+      }
+    },
+    {
+      "id": "closing_1",
+      "operation_id": "closing",
+      "params": {
+        "size": 2
+      }
+    },
+    {
+      "id": "top_hat_1",
+      "operation_id": "top_hat",
+      "params": {
+        "size": 2
+      }
+    },
+    {
+      "id": "black_hat_1",
+      "operation_id": "black_hat",
+      "params": {
+        "size": 2
+      }
+    },
+    {
+      "id": "morphological_gradient_1",
+      "operation_id": "morphological_gradient",
+      "params": {
+        "size": 2
+      }
+    },
+    {
+      "id": "remove_binary_outliers_1",
+      "operation_id": "remove_binary_outliers",
+      "params": {
+        "radius": 1.5,
+        "which_outliers": "Foreground (remove)"
+      }
+    },
+    {
+      "id": "fill_holes_1",
+      "operation_id": "fill_holes",
+      "params": {
+        "max_hole_size": 0,
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Face connected",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "remove_small_objects_1",
+      "operation_id": "remove_small_objects",
+      "params": {
+        "min_size": 24,
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Face connected",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "euclidean_distance_transform_1",
+      "operation_id": "euclidean_distance_transform",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "h_maxima_markers_1",
+      "operation_id": "h_maxima_markers",
+      "params": {
+        "h": 1.0,
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Full connectivity",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "marker_controlled_watershed_1",
+      "operation_id": "marker_controlled_watershed",
+      "params": {
+        "image_mode": "Distance map (invert)",
+        "compactness": 0.0,
+        "watershed_line": false,
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "expand_labels_1",
+      "operation_id": "expand_labels",
+      "params": {
+        "distance": 2.0,
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "auto_watershed_from_mask_1",
+      "operation_id": "auto_watershed_from_mask",
+      "params": {
+        "h": 1.0,
+        "connectivity": "Full connectivity",
+        "image_mode": "Distance map (invert)",
+        "compactness": 0.0,
+        "watershed_line": false,
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Full connectivity",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "clear_border_objects_1",
+      "operation_id": "clear_border_objects",
+      "params": {
+        "border_buffer": 0,
+        "boundary_mode": "All spatial borders",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "filter_labels_by_volume_1",
+      "operation_id": "filter_labels_by_volume",
+      "params": {
+        "min_volume": 24,
+        "max_volume": 0,
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "relabel_sequential_1",
+      "operation_id": "relabel_sequential",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "measure_objects_1",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "include_shape_descriptors": true,
+        "include_axis_descriptors": true,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": true,
+        "include_2d_shape_moments": false
+      }
+    },
+    {
+      "id": "filter_labels_by_property_1",
+      "operation_id": "filter_labels_by_property",
+      "params": {
+        "property_column": "volume_voxels",
+        "min_value": 24.0,
+        "max_value": 0.0,
+        "keep_mode": "Keep inside range",
+        "unmatched_labels": "Remove unmatched labels",
+        "spatial_mode": "Auto from axes"
+      }
+    },
+    {
+      "id": "measure_objects_intensity_1",
+      "operation_id": "measure_objects_intensity",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": false,
+        "include_2d_shape_moments": false
+      }
+    },
+    {
+      "id": "measure_3d_mesh_morphology_1",
+      "operation_id": "measure_3d_mesh_morphology",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "minimum_voxel_count": 16,
+        "include_convex_hull_metrics": true
+      }
+    },
+    {
+      "id": "merge_tables_1",
+      "operation_id": "merge_tables",
+      "params": {
+        "input_count": 2,
+        "join_mode": "Left join",
+        "join_keys": "auto"
+      }
+    },
+    {
+      "id": "add_metadata_columns_1",
+      "operation_id": "add_metadata_columns",
+      "params": {
+        "metadata_columns": "condition=inspector_demo,sample=synthetic_colocalization",
+        "overwrite": "no"
+      }
+    },
+    {
+      "id": "select_table_columns_1",
+      "operation_id": "select_table_columns",
+      "params": {
+        "columns": "auto"
+      }
+    },
+    {
+      "id": "summarize_measurements_1",
+      "operation_id": "summarize_measurements",
+      "params": {
+        "group_by": "auto",
+        "value_columns": "auto",
+        "statistics": "count,mean,median,std,min,max,q25,q75"
+      }
+    },
+    {
+      "id": "batch_output_1",
+      "operation_id": "batch_output",
+      "params": {
+        "tag": "inspector_demo_summary",
+        "format": "batch default",
+        "subfolder": "inspector-demo",
+        "filename_template": "{source_stem}__{tag}",
+        "overwrite": "batch default"
+      }
+    },
+    {
+      "id": "colocalization_metrics_1",
+      "operation_id": "colocalization_metrics",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 12000.0,
+        "channel_2_threshold": 12000.0
+      }
+    },
+    {
+      "id": "masked_colocalization_metrics_1",
+      "operation_id": "masked_colocalization_metrics",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 12000.0,
+        "channel_2_threshold": 12000.0
+      }
+    },
+    {
+      "id": "colocalization_scatter_plot_1",
+      "operation_id": "colocalization_scatter_plot",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 12000.0,
+        "channel_2_threshold": 12000.0,
+        "bins": 96,
+        "output_size": 512,
+        "range_percentile": 99.5,
+        "log_counts": true
+      }
+    },
+    {
+      "id": "masked_colocalization_scatter_plot_1",
+      "operation_id": "masked_colocalization_scatter_plot",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 12000.0,
+        "channel_2_threshold": 12000.0,
+        "bins": 96,
+        "output_size": 512,
+        "range_percentile": 99.5,
+        "log_counts": true
+      }
+    },
+    {
+      "id": "colocalized_voxels_1",
+      "operation_id": "colocalized_voxels",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 12000.0,
+        "channel_2_threshold": 12000.0,
+        "display_mode": "White overlay on channels",
+        "channel_1_color": "Red",
+        "channel_2_color": "Green"
+      }
+    },
+    {
+      "id": "masked_colocalized_voxels_1",
+      "operation_id": "masked_colocalized_voxels",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 12000.0,
+        "channel_2_threshold": 12000.0,
+        "display_mode": "White overlay on channels",
+        "channel_1_color": "Red",
+        "channel_2_color": "Green"
+      }
+    },
+    {
+      "id": "racc_index_1",
+      "operation_id": "racc_index",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 12000.0,
+        "channel_2_threshold": 12000.0,
+        "theta_degrees": 45.0,
+        "include_percentile": 99.0,
+        "output_dtype": "float32"
+      }
+    },
+    {
+      "id": "masked_racc_index_1",
+      "operation_id": "masked_racc_index",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 12000.0,
+        "channel_2_threshold": 12000.0,
+        "theta_degrees": 45.0,
+        "include_percentile": 99.0,
+        "output_dtype": "float32"
+      }
+    },
+    {
+      "id": "object_colocalization_metrics_1",
+      "operation_id": "object_colocalization_metrics",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 12000.0,
+        "channel_2_threshold": 12000.0
+      }
+    },
+    {
+      "id": "label_overlap_association_1",
+      "operation_id": "label_overlap_association",
+      "params": {
+        "spatial_mode": "Auto from axes"
+      }
+    },
+    {
+      "id": "nearest_object_distance_1",
+      "operation_id": "nearest_object_distance",
+      "params": {
+        "spatial_mode": "Auto from axes"
+      }
+    },
+    {
+      "id": "event_localization_1",
+      "operation_id": "event_localization",
+      "params": {
+        "spatial_mode": "Auto from axes"
+      }
+    },
+    {
+      "id": "input_5",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic skeleton network",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "yen_threshold_1",
+      "operation_id": "yen_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "skeletonize_1",
+      "operation_id": "skeletonize",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "method": "Auto",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "analyze_skeleton_1",
+      "operation_id": "analyze_skeleton",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "input_mode": "Already skeletonized"
+      }
+    },
+    {
+      "id": "measure_skeleton_branches_1",
+      "operation_id": "measure_skeleton_branches",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "input_mode": "Already skeletonized"
+      }
+    },
+    {
+      "id": "summarize_skeleton_branches_1",
+      "operation_id": "summarize_skeleton_branches",
+      "params": {
+        "group_by": "auto",
+        "statistics": "mean,median,std,min,max,q25,q75"
+      }
+    },
+    {
+      "id": "skeleton_graph_tables_1",
+      "operation_id": "skeleton_graph_tables",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "input_mode": "Already skeletonized"
+      }
+    },
+    {
+      "id": "measure_overall_skeleton_network_1",
+      "operation_id": "measure_overall_skeleton_network",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "input_mode": "Already skeletonized"
+      }
+    },
+    {
+      "id": "skeleton_keypoints_1",
+      "operation_id": "skeleton_keypoints",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "skeleton_graph_overlay_1",
+      "operation_id": "skeleton_graph_overlay",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "display_mode": "Colored edges + colored nodes",
+        "node_size": 2,
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "label_skeleton_components_1",
+      "operation_id": "label_skeleton_components",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "label_skeleton_branches_1",
+      "operation_id": "label_skeleton_branches",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "prune_skeleton_branches_1",
+      "operation_id": "prune_skeleton_branches",
+      "params": {
+        "min_branch_length": 3.0,
+        "length_units": "Pixels/voxels",
+        "iterations": 1,
+        "remove_isolated": true,
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "input_6",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 3D deconvolution volume",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "input_7",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 3D measured PSF",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "prepare_validate_psf_1",
+      "operation_id": "prepare_validate_psf",
+      "params": {
+        "center_mode": "Peak",
+        "clip_negatives": true,
+        "normalize_sum": true,
+        "minimum_valid_sum": 1e-12,
+        "force_odd_shape": true,
+        "crop_empty_border": false
+      }
+    },
+    {
+      "id": "richardson_lucy_deconvolution_1",
+      "operation_id": "richardson_lucy_deconvolution",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "iterations": 5,
+        "normalize_psf": true,
+        "clip_negative_input": true,
+        "clip_output_negative": true,
+        "preserve_input_scale": true,
+        "filter_epsilon": 1e-12
+      }
+    },
+    {
+      "id": "richardson_lucy_tv_deconvolution_1",
+      "operation_id": "richardson_lucy_tv_deconvolution",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "iterations": 5,
+        "tv_regularization": 0.002,
+        "tv_epsilon": 1e-06,
+        "normalize_psf": true,
+        "clip_negative_input": true,
+        "clip_output_negative": true,
+        "preserve_input_scale": true,
+        "filter_epsilon": 1e-12,
+        "denominator_floor": 0.05
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "crop_stack_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "crop_stack_1",
+      "target": "select_axis_slice_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "select_axis_slice_1",
+      "target": "split_axis_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_axis_1",
+      "target": "reorder_axes_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "select_axis_slice_1",
+      "target": "set_microscope_metadata_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "set_microscope_metadata_1",
+      "target": "set_pixel_size_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "set_pixel_size_1",
+      "target": "rescale_axes_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "set_pixel_size_1",
+      "target": "born_wolf_psf_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "reorder_axes_1",
+      "target": "mip_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "reorder_axes_1",
+      "target": "project_image_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "reorder_axes_1",
+      "target": "orthogonal_projection_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_2",
+      "target": "linear_scale_offset_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "linear_scale_offset_1",
+      "target": "gamma_correction_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gamma_correction_1",
+      "target": "rescale_intensity_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "rescale_intensity_1",
+      "target": "normalize_image_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "normalize_image_1",
+      "target": "clip_intensity_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_2",
+      "target": "average_blur_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "average_blur_1",
+      "target": "median_filter_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "median_filter_1",
+      "target": "sigma_filter_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "sigma_filter_1",
+      "target": "bilateral_filter_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "bilateral_filter_1",
+      "target": "non_local_means_filter_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_2",
+      "target": "gaussian",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gaussian",
+      "target": "unsharp_mask_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "unsharp_mask_1",
+      "target": "sobel_filter_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "sobel_filter_1",
+      "target": "laplace_filter_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_2",
+      "target": "gaussian_blur_3d_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_2",
+      "target": "rolling_ball_background_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Raw volume"
+    },
+    {
+      "source": "input_2",
+      "target": "subtract_background_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Raw volume"
+    },
+    {
+      "source": "input_2",
+      "target": "difference_of_gaussians_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Raw volume"
+    },
+    {
+      "source": "input_2",
+      "target": "canny_edges_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Raw volume"
+    },
+    {
+      "source": "input_3",
+      "target": "split_channels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "combine_channels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "combine_channels_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "combine_channels_1",
+      "target": "assign_channel_colors_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "assign_channel_colors_1",
+      "target": "composite_to_rgb_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "assign_channel_colors_1",
+      "target": "intensity_histogram_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "composite_to_rgb_1",
+      "target": "save_output_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "assign_channel_colors_1",
+      "target": "extract_channel_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_1",
+      "target": "convert_dtype_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "convert_dtype_1",
+      "target": "imagej_auto_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "calculate_weighted_image_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "calculate_weighted_image_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "split_channels_1",
+      "target": "add_images_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "add_images_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "split_channels_1",
+      "target": "subtract_images_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "subtract_images_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "split_channels_1",
+      "target": "ratio_image_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "ratio_image_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "split_channels_1",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "threshold",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "triangle_threshold_1",
+      "target_port": 0,
+      "source_port": 1
+    },
+    {
+      "source": "split_channels_1",
+      "target": "li_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "isodata_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_4",
+      "target": "minimum_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "hysteresis_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "adaptive_mean_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "adaptive_gaussian_threshold_1",
+      "target_port": 0,
+      "source_port": 1
+    },
+    {
+      "source": "split_channels_1",
+      "target": "sauvola_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "niblack_threshold_1",
+      "target_port": 0,
+      "source_port": 1
+    },
+    {
+      "source": "calculate_weighted_image_1",
+      "target": "mask_image_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "mask_image_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "mask_image_1",
+      "target": "invert_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "threshold",
+      "target": "logical_and_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "li_threshold_1",
+      "target": "logical_and_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "triangle_threshold_1",
+      "target": "logical_or_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "isodata_threshold_1",
+      "target": "logical_or_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "adaptive_mean_threshold_1",
+      "target": "logical_xor_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "adaptive_gaussian_threshold_1",
+      "target": "logical_xor_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "dilate_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "erode_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "opening_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "closing_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "top_hat_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "black_hat_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "morphological_gradient_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "remove_binary_outliers_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "remove_binary_outliers_1",
+      "target": "fill_holes_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "fill_holes_1",
+      "target": "remove_small_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "remove_small_objects_1",
+      "target": "euclidean_distance_transform_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "euclidean_distance_transform_1",
+      "target": "h_maxima_markers_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "euclidean_distance_transform_1",
+      "target": "marker_controlled_watershed_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "h_maxima_markers_1",
+      "target": "marker_controlled_watershed_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "remove_small_objects_1",
+      "target": "marker_controlled_watershed_1",
+      "target_port": 2,
+      "source_port": 0
+    },
+    {
+      "source": "marker_controlled_watershed_1",
+      "target": "expand_labels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "remove_small_objects_1",
+      "target": "auto_watershed_from_mask_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "remove_small_objects_1",
+      "target": "label_connected_components_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "clear_border_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "clear_border_objects_1",
+      "target": "filter_labels_by_volume_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "filter_labels_by_volume_1",
+      "target": "relabel_sequential_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "relabel_sequential_1",
+      "target": "measure_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "relabel_sequential_1",
+      "target": "filter_labels_by_property_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "measure_objects_1",
+      "target": "filter_labels_by_property_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "filter_labels_by_property_1",
+      "target": "measure_objects_intensity_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "measure_objects_intensity_1",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "filter_labels_by_property_1",
+      "target": "measure_3d_mesh_morphology_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "measure_objects_1",
+      "target": "merge_tables_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "measure_objects_intensity_1",
+      "target": "merge_tables_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "merge_tables_1",
+      "target": "add_metadata_columns_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "add_metadata_columns_1",
+      "target": "select_table_columns_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "select_table_columns_1",
+      "target": "summarize_measurements_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "summarize_measurements_1",
+      "target": "batch_output_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_metrics_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_metrics_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_scatter_plot_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_scatter_plot_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalized_voxels_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalized_voxels_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "racc_index_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "racc_index_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalization_metrics_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalization_metrics_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "masked_colocalization_metrics_1",
+      "target_port": 2,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalization_scatter_plot_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalization_scatter_plot_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "masked_colocalization_scatter_plot_1",
+      "target_port": 2,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalized_voxels_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalized_voxels_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "masked_colocalized_voxels_1",
+      "target_port": 2,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_racc_index_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_racc_index_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "masked_racc_index_1",
+      "target_port": 2,
+      "source_port": 0,
+      "tunnel": "ROI mask"
+    },
+    {
+      "source": "relabel_sequential_1",
+      "target": "object_colocalization_metrics_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Object labels"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "object_colocalization_metrics_1",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "object_colocalization_metrics_1",
+      "target_port": 2,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "relabel_sequential_1",
+      "target": "label_overlap_association_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Object labels"
+    },
+    {
+      "source": "auto_watershed_from_mask_1",
+      "target": "label_overlap_association_1",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Watershed labels"
+    },
+    {
+      "source": "relabel_sequential_1",
+      "target": "nearest_object_distance_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Object labels"
+    },
+    {
+      "source": "auto_watershed_from_mask_1",
+      "target": "nearest_object_distance_1",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Watershed labels"
+    },
+    {
+      "source": "expand_labels_1",
+      "target": "event_localization_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Expanded labels"
+    },
+    {
+      "source": "relabel_sequential_1",
+      "target": "event_localization_1",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Object labels"
+    },
+    {
+      "source": "input_5",
+      "target": "yen_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "yen_threshold_1",
+      "target": "skeletonize_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "skeletonize_1",
+      "target": "analyze_skeleton_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "skeletonize_1",
+      "target": "measure_skeleton_branches_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "skeletonize_1",
+      "target": "skeleton_graph_tables_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "skeletonize_1",
+      "target": "measure_overall_skeleton_network_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "measure_skeleton_branches_1",
+      "target": "summarize_skeleton_branches_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "skeletonize_1",
+      "target": "skeleton_keypoints_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Skeleton mask"
+    },
+    {
+      "source": "skeletonize_1",
+      "target": "skeleton_graph_overlay_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Skeleton mask"
+    },
+    {
+      "source": "skeletonize_1",
+      "target": "label_skeleton_components_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Skeleton mask"
+    },
+    {
+      "source": "skeletonize_1",
+      "target": "label_skeleton_branches_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Skeleton mask"
+    },
+    {
+      "source": "skeletonize_1",
+      "target": "prune_skeleton_branches_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Skeleton mask"
+    },
+    {
+      "source": "input_7",
+      "target": "prepare_validate_psf_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_6",
+      "target": "richardson_lucy_deconvolution_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "prepare_validate_psf_1",
+      "target": "richardson_lucy_deconvolution_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "input_6",
+      "target": "richardson_lucy_tv_deconvolution_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "born_wolf_psf_1",
+      "target": "richardson_lucy_tv_deconvolution_1",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Born-Wolf PSF"
+    }
+  ],
+  "tunnels": [
+    {
+      "name": "Born-Wolf PSF",
+      "source": "born_wolf_psf_1",
+      "source_port": 0
+    },
+    {
+      "name": "Expanded labels",
+      "source": "expand_labels_1",
+      "source_port": 0
+    },
+    {
+      "name": "Green channel",
+      "source": "split_channels_1",
+      "source_port": 1
+    },
+    {
+      "name": "Object labels",
+      "source": "relabel_sequential_1",
+      "source_port": 0
+    },
+    {
+      "name": "ROI mask",
+      "source": "binary_threshold_1",
+      "source_port": 0
+    },
+    {
+      "name": "Raw volume",
+      "source": "input_2",
+      "source_port": 0
+    },
+    {
+      "name": "Red channel",
+      "source": "split_channels_1",
+      "source_port": 0
+    },
+    {
+      "name": "Skeleton mask",
+      "source": "skeletonize_1",
+      "source_port": 0
+    },
+    {
+      "name": "Watershed labels",
+      "source": "auto_watershed_from_mask_1",
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [
+      0.0,
+      20.0
+    ],
+    "crop_stack_1": [
+      342.5,
+      20.0
+    ],
+    "select_axis_slice_1": [
+      685.0,
+      17.5
+    ],
+    "split_axis_1": [
+      1020.0,
+      0.0
+    ],
+    "reorder_axes_1": [
+      1360.0,
+      0.0
+    ],
+    "set_microscope_metadata_1": [
+      1020.0,
+      330.0
+    ],
+    "set_pixel_size_1": [
+      1360.0,
+      330.0
+    ],
+    "rescale_axes_1": [
+      1722.5,
+      407.5
+    ],
+    "born_wolf_psf_1": [
+      2040.0,
+      330.0
+    ],
+    "mip_1": [
+      1700.0,
+      -10.0
+    ],
+    "project_image_1": [
+      1715.0,
+      -310.0
+    ],
+    "orthogonal_projection_1": [
+      1997.5,
+      10.0
+    ],
+    "input_2": [
+      0.0,
+      1020.0
+    ],
+    "linear_scale_offset_1": [
+      340.0,
+      1020.0
+    ],
+    "gamma_correction_1": [
+      680.0,
+      1020.0
+    ],
+    "rescale_intensity_1": [
+      1020.0,
+      1020.0
+    ],
+    "normalize_image_1": [
+      1360.0,
+      1020.0
+    ],
+    "clip_intensity_1": [
+      1700.0,
+      1020.0
+    ],
+    "average_blur_1": [
+      340.0,
+      1320.0
+    ],
+    "median_filter_1": [
+      680.0,
+      1320.0
+    ],
+    "sigma_filter_1": [
+      1020.0,
+      1320.0
+    ],
+    "bilateral_filter_1": [
+      1360.0,
+      1320.0
+    ],
+    "non_local_means_filter_1": [
+      1700.0,
+      1320.0
+    ],
+    "gaussian": [
+      340.0,
+      1620.0
+    ],
+    "unsharp_mask_1": [
+      680.0,
+      1620.0
+    ],
+    "sobel_filter_1": [
+      1020.0,
+      1620.0
+    ],
+    "laplace_filter_1": [
+      1360.0,
+      1620.0
+    ],
+    "gaussian_blur_3d_1": [
+      340.0,
+      1920.0
+    ],
+    "rolling_ball_background_1": [
+      680.0,
+      1920.0
+    ],
+    "subtract_background_1": [
+      1020.0,
+      1920.0
+    ],
+    "difference_of_gaussians_1": [
+      1360.0,
+      1920.0
+    ],
+    "canny_edges_1": [
+      1700.0,
+      1920.0
+    ],
+    "input_3": [
+      0.0,
+      2760.0
+    ],
+    "split_channels_1": [
+      340.0,
+      2760.0
+    ],
+    "combine_channels_1": [
+      680.0,
+      2760.0
+    ],
+    "assign_channel_colors_1": [
+      1020.0,
+      2760.0
+    ],
+    "composite_to_rgb_1": [
+      1360.0,
+      2760.0
+    ],
+    "intensity_histogram_1": [
+      1700.0,
+      2760.0
+    ],
+    "save_output_1": [
+      1700.0,
+      3060.0
+    ],
+    "extract_channel_1": [
+      680.0,
+      3060.0
+    ],
+    "convert_dtype_1": [
+      1020.0,
+      3060.0
+    ],
+    "imagej_auto_threshold_1": [
+      1360.0,
+      3060.0
+    ],
+    "calculate_weighted_image_1": [
+      680.0,
+      3380.0
+    ],
+    "add_images_1": [
+      1020.0,
+      3380.0
+    ],
+    "subtract_images_1": [
+      1360.0,
+      3380.0
+    ],
+    "ratio_image_1": [
+      1700.0,
+      3380.0
+    ],
+    "input_4": [
+      340.0,
+      3700.0
+    ],
+    "binary_threshold_1": [
+      680.0,
+      3700.0
+    ],
+    "threshold": [
+      1020.0,
+      3700.0
+    ],
+    "triangle_threshold_1": [
+      1360.0,
+      3700.0
+    ],
+    "li_threshold_1": [
+      1700.0,
+      3700.0
+    ],
+    "isodata_threshold_1": [
+      2040.0,
+      3700.0
+    ],
+    "minimum_threshold_1": [
+      2380.0,
+      3700.0
+    ],
+    "hysteresis_threshold_1": [
+      680.0,
+      4010.0
+    ],
+    "adaptive_mean_threshold_1": [
+      1020.0,
+      4010.0
+    ],
+    "adaptive_gaussian_threshold_1": [
+      1360.0,
+      4010.0
+    ],
+    "sauvola_threshold_1": [
+      1700.0,
+      4010.0
+    ],
+    "niblack_threshold_1": [
+      2040.0,
+      4010.0
+    ],
+    "mask_image_1": [
+      2040.0,
+      3380.0
+    ],
+    "invert_1": [
+      2380.0,
+      3380.0
+    ],
+    "logical_and_1": [
+      2380.0,
+      4010.0
+    ],
+    "logical_or_1": [
+      2720.0,
+      4010.0
+    ],
+    "logical_xor_1": [
+      3060.0,
+      4010.0
+    ],
+    "dilate_1": [
+      680.0,
+      4790.0
+    ],
+    "erode_1": [
+      1020.0,
+      4790.0
+    ],
+    "opening_1": [
+      1360.0,
+      4790.0
+    ],
+    "closing_1": [
+      1700.0,
+      4790.0
+    ],
+    "top_hat_1": [
+      2040.0,
+      4790.0
+    ],
+    "black_hat_1": [
+      2380.0,
+      4790.0
+    ],
+    "morphological_gradient_1": [
+      2720.0,
+      4790.0
+    ],
+    "remove_binary_outliers_1": [
+      680.0,
+      5110.0
+    ],
+    "fill_holes_1": [
+      1020.0,
+      5110.0
+    ],
+    "remove_small_objects_1": [
+      1360.0,
+      5110.0
+    ],
+    "euclidean_distance_transform_1": [
+      1700.0,
+      5110.0
+    ],
+    "h_maxima_markers_1": [
+      2040.0,
+      5110.0
+    ],
+    "marker_controlled_watershed_1": [
+      2380.0,
+      5110.0
+    ],
+    "expand_labels_1": [
+      2720.0,
+      5110.0
+    ],
+    "auto_watershed_from_mask_1": [
+      2380.0,
+      5430.0
+    ],
+    "label_connected_components_1": [
+      1700.0,
+      5430.0
+    ],
+    "clear_border_objects_1": [
+      2040.0,
+      5750.0
+    ],
+    "filter_labels_by_volume_1": [
+      2380.0,
+      5750.0
+    ],
+    "relabel_sequential_1": [
+      2720.0,
+      5750.0
+    ],
+    "measure_objects_1": [
+      3060.0,
+      5750.0
+    ],
+    "filter_labels_by_property_1": [
+      3400.0,
+      5750.0
+    ],
+    "measure_objects_intensity_1": [
+      3740.0,
+      5750.0
+    ],
+    "measure_3d_mesh_morphology_1": [
+      3740.0,
+      6070.0
+    ],
+    "merge_tables_1": [
+      4080.0,
+      5750.0
+    ],
+    "add_metadata_columns_1": [
+      4420.0,
+      5750.0
+    ],
+    "select_table_columns_1": [
+      4760.0,
+      5750.0
+    ],
+    "summarize_measurements_1": [
+      5100.0,
+      5750.0
+    ],
+    "batch_output_1": [
+      5440.0,
+      5750.0
+    ],
+    "colocalization_metrics_1": [
+      680.0,
+      6590.0
+    ],
+    "masked_colocalization_metrics_1": [
+      1020.0,
+      6590.0
+    ],
+    "colocalization_scatter_plot_1": [
+      1360.0,
+      6590.0
+    ],
+    "masked_colocalization_scatter_plot_1": [
+      1700.0,
+      6590.0
+    ],
+    "colocalized_voxels_1": [
+      2040.0,
+      6590.0
+    ],
+    "masked_colocalized_voxels_1": [
+      2380.0,
+      6590.0
+    ],
+    "racc_index_1": [
+      2720.0,
+      6590.0
+    ],
+    "masked_racc_index_1": [
+      3060.0,
+      6590.0
+    ],
+    "object_colocalization_metrics_1": [
+      3400.0,
+      6590.0
+    ],
+    "label_overlap_association_1": [
+      3740.0,
+      6590.0
+    ],
+    "nearest_object_distance_1": [
+      4080.0,
+      6590.0
+    ],
+    "event_localization_1": [
+      4420.0,
+      6590.0
+    ],
+    "input_5": [
+      0.0,
+      7470.0
+    ],
+    "yen_threshold_1": [
+      340.0,
+      7470.0
+    ],
+    "skeletonize_1": [
+      680.0,
+      7470.0
+    ],
+    "analyze_skeleton_1": [
+      1020.0,
+      7470.0
+    ],
+    "measure_skeleton_branches_1": [
+      1360.0,
+      7470.0
+    ],
+    "summarize_skeleton_branches_1": [
+      1700.0,
+      7470.0
+    ],
+    "skeleton_graph_tables_1": [
+      2040.0,
+      7470.0
+    ],
+    "measure_overall_skeleton_network_1": [
+      2380.0,
+      7470.0
+    ],
+    "skeleton_keypoints_1": [
+      1020.0,
+      7790.0
+    ],
+    "skeleton_graph_overlay_1": [
+      1360.0,
+      7790.0
+    ],
+    "label_skeleton_components_1": [
+      1700.0,
+      7790.0
+    ],
+    "label_skeleton_branches_1": [
+      2040.0,
+      7790.0
+    ],
+    "prune_skeleton_branches_1": [
+      2380.0,
+      7790.0
+    ],
+    "input_6": [
+      0.0,
+      8690.0
+    ],
+    "input_7": [
+      0.0,
+      9010.0
+    ],
+    "prepare_validate_psf_1": [
+      340.0,
+      9010.0
+    ],
+    "richardson_lucy_deconvolution_1": [
+      680.0,
+      8690.0
+    ],
+    "richardson_lucy_tv_deconvolution_1": [
+      1020.0,
+      8690.0
+    ]
+  },
+  "notes": [
+    {
+      "id": "lane_axes",
+      "text": "1. AXES, REGIONS, METADATA, PROJECTIONS, AND GENERATED PSF\nA TCZYX sample is cropped, reduced to one time point, split by channel, and inspected through spatial metadata and projection operations.",
+      "position": [
+        -440.0,
+        -40.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_filtering",
+      "text": "2. INTENSITY AND FILTERING\nA small ZYX fluorescence volume drives an intensity-adjustment chain plus parallel smoothing, background, edge, and detail branches.",
+      "position": [
+        -440.0,
+        980.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_channels",
+      "text": "3. CHANNELS, RGB, THRESHOLDS, AND IMAGE MATH\nTwo registered fluorescence channels feed composites, arithmetic, logical masks, and a multichannel histogram; a compact bimodal phantom keeps the Minimum-threshold demonstration deterministic.",
+      "position": [
+        -440.0,
+        2720.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_objects",
+      "text": "4. MORPHOLOGY, OBJECT SEPARATION, LABELS, AND TABLES\nA thresholded 3D fluorescence channel is cleaned and separated, then measured through object, intensity, mesh, and table-summary paths.",
+      "position": [
+        -440.0,
+        4750.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_colocalization",
+      "text": "5. COLOCALIZATION AND SPATIAL ASSOCIATION\nThe same two channels and ROI mask are reused across unmasked, masked, voxel, object, overlap, nearest-distance, and event-localization views.",
+      "position": [
+        -440.0,
+        6550.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_skeleton",
+      "text": "6. SKELETON QC AND NETWORK MEASUREMENTS\nA sparse 3D network is thresholded and skeletonized before parallel topology, labeling, pruning, overlay, graph-table, and summary outputs.",
+      "position": [
+        -440.0,
+        7430.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_restoration",
+      "text": "7. PSF PREPARATION AND DECONVOLUTION\nA measured 3D PSF is prepared for Richardson-Lucy restoration, while the metadata-derived Born-Wolf PSF drives the TV-regularized variant.",
+      "position": [
+        -440.0,
+        8650.0
+      ],
+      "width": 360.0
+    }
+  ],
+  "execution": {
+    "compute": {
+      "mode": "cpu",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "mip_1",
+        "right_panel_visible": true,
+        "display_profiles": [
+          {
+            "node_id": "born_wolf_psf_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "blue",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "crop_stack_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 4,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 0,
+            "settings": {
+              "colormap": "blue",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "crop_stack_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 4,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 1,
+            "settings": {
+              "colormap": "green",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "crop_stack_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 4,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 2,
+            "settings": {
+              "colormap": "red",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "input",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 4,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 0,
+            "settings": {
+              "colormap": "blue",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "input",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 4,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 1,
+            "settings": {
+              "colormap": "green",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "input",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 4,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 2,
+            "settings": {
+              "colormap": "red",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "mip_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 2,
+            "settings": {
+              "colormap": "blue",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "orthogonal_projection_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 2,
+            "settings": {
+              "colormap": "blue",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "project_image_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 2,
+            "settings": {
+              "colormap": "blue",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "reorder_axes_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "blue",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "rescale_axes_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 0,
+            "settings": {
+              "colormap": "blue",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "rescale_axes_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 1,
+            "settings": {
+              "colormap": "green",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "rescale_axes_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 2,
+            "settings": {
+              "colormap": "red",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "select_axis_slice_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 0,
+            "settings": {
+              "colormap": "blue",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "select_axis_slice_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 4,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 0,
+            "settings": {
+              "colormap": "blue",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "select_axis_slice_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 1,
+            "settings": {
+              "colormap": "green",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "select_axis_slice_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 4,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 1,
+            "settings": {
+              "colormap": "green",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "select_axis_slice_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 2,
+            "settings": {
+              "colormap": "red",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "select_axis_slice_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 4,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 2,
+            "settings": {
+              "colormap": "red",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "set_microscope_metadata_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 0,
+            "settings": {
+              "colormap": "blue",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "set_microscope_metadata_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 1,
+            "settings": {
+              "colormap": "green",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "set_microscope_metadata_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 2,
+            "settings": {
+              "colormap": "red",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "set_pixel_size_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 0,
+            "settings": {
+              "colormap": "blue",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "set_pixel_size_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 1,
+            "settings": {
+              "colormap": "green",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "set_pixel_size_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "display_channel_axis_as_layers": true,
+            "display_channel_index": 2,
+            "settings": {
+              "colormap": "red",
+              "blending": "additive",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "split_axis_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "blue",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          }
+        ]
+      },
+      "compute_optimizer": {
+        "locked_node_ids": []
+      }
+    }
+  }
+}

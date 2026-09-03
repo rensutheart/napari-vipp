@@ -451,6 +451,7 @@ def test_clip_cutoff_mode_roundtrips():
     document = serialize_workflow(pipeline)
     explicit = deserialize_workflow(document)
     explicit_node = next(item for item in explicit["nodes"] if item.id == node.id)
+    assert explicit_node.title == "Clamp Intensity"
     assert explicit_node.params["cutoff_mode"] == "Data range"
 
 
@@ -562,6 +563,63 @@ def test_composite_auto_modes_are_valid_optional_values():
 
     assert restored_node.params["channel_axis_mode"] == COMPOSITE_RGB_AUTO
     assert restored_node.params["mapping_mode"] == COMPOSITE_RGB_AUTO
+
+
+def test_new_select_axis_slice_has_explicit_modern_noop_defaults():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    selector = pipeline.add_node("select_axis_slice")
+    assert pipeline.connect("input", selector.id).success
+
+    assert selector.params == {
+        "axis": 0,
+        "index": 0,
+        "axes": "",
+        "indices": "",
+        "ranges": "",
+        "range_mode": True,
+        "remove_axes": "",
+        "remove_indices": "",
+    }
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    assert (
+        pipeline.run(data, input_metadata={"axes": "TCZYX"})[selector.id].shape
+        == data.shape
+    )
+
+
+def test_legacy_select_axis_slice_restore_preserves_axis_removal():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    selector = pipeline.add_node("select_axis_slice")
+    assert pipeline.connect("input", selector.id).success
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == selector.id)
+    serialized["params"] = {"axis": 0, "index": 2}
+
+    restored = deserialize_workflow(document)
+    restored_selector = next(
+        item for item in restored["nodes"] if item.id == selector.id
+    )
+    assert restored_selector.params == {
+        "axis": 0,
+        "index": 2,
+        "range_mode": False,
+    }
+
+    restored_pipeline = PrototypePipeline()
+    restored_pipeline.restore_graph(
+        restored["nodes"],
+        restored["connections"],
+        restored["output_tunnels"],
+    )
+    data = np.zeros((5, 3, 4, 6, 7), dtype=np.uint16)
+    assert (
+        restored_pipeline.run(data, input_metadata={"axes": "TCZYX"})[
+            selector.id
+        ].shape
+        == (3, 4, 6, 7)
+    )
 
 
 def test_composite_workflow_requires_and_validates_intensity_mapping():

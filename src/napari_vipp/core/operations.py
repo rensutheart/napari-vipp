@@ -6212,34 +6212,34 @@ def clip_intensity(
     *,
     cutoff_mode: str = "Data range",
 ) -> np.ndarray:
-    """Clip intensities while preserving the incoming dtype where possible."""
+    """Clamp to the nearest bound without rescaling values inside the range."""
     arr = np.asarray(data)
     mode = str(cutoff_mode).strip().casefold()
     if mode not in {"data range", "values"}:
-        raise ValueError("Clip input cutoffs must be 'Data range' or 'Values'.")
+        raise ValueError("Clamp input cutoffs must be 'Data range' or 'Values'.")
     if mode == "data range":
         return arr.copy()
     integer_data = np.issubdtype(arr.dtype, np.integer)
     low = (
-        _required_finite_fraction(minimum, "Clip minimum")
+        _required_finite_fraction(minimum, "Clamp minimum")
         if integer_data
-        else _required_finite_float(minimum, "Clip minimum")
+        else _required_finite_float(minimum, "Clamp minimum")
     )
     high = (
-        _required_finite_fraction(maximum, "Clip maximum")
+        _required_finite_fraction(maximum, "Clamp maximum")
         if integer_data
-        else _required_finite_float(maximum, "Clip maximum")
+        else _required_finite_float(maximum, "Clamp maximum")
     )
     if low > high:
-        raise ValueError("Clip minimum must not exceed the maximum.")
+        raise ValueError("Clamp minimum must not exceed the maximum.")
     if arr.dtype == bool:
         return arr.copy()
     if integer_data:
-        _reject_rounded_wide_integer_control(arr, minimum, "Clip minimum")
-        _reject_rounded_wide_integer_control(arr, maximum, "Clip maximum")
+        _reject_rounded_wide_integer_control(arr, minimum, "Clamp minimum")
+        _reject_rounded_wide_integer_control(arr, maximum, "Clamp maximum")
         if low.denominator != 1 or high.denominator != 1:
             raise ValueError(
-                "Integer Clip bounds must be whole numbers; convert the image "
+                "Integer Clamp bounds must be whole numbers; convert the image "
                 "to floating point before using fractional bounds."
             )
         info = np.iinfo(arr.dtype)
@@ -6247,7 +6247,7 @@ def clip_intensity(
         high_value = int(high)
         if low_value > info.max or high_value < info.min:
             raise ValueError(
-                f"Clip bounds lie outside the representable {arr.dtype} range "
+                f"Clamp bounds lie outside the representable {arr.dtype} range "
                 f"{info.min}..{info.max}."
             )
         low_value = max(low_value, int(info.min))

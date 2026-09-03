@@ -40,6 +40,7 @@ def make_sample_data():
         _deconvolution_volume_sample(),
         _measured_psf_3d_sample(),
         _gpu_segmentation_cleanup_sample(),
+        _threshold_gallery_sample(),
     ]
 
 
@@ -118,6 +119,43 @@ def _gpu_segmentation_cleanup_sample():
             ),
             "channel_names": ["Empty control 1", "Empty control 2", "Cleanup mask"],
             **_ome_image_metadata("CZYX", data.shape),
+        },
+    }
+    return data, metadata, "image"
+
+
+def _threshold_gallery_sample():
+    """Return a compact, clearly bimodal 3D fluorescence phantom."""
+
+    z, y, x = np.indices((8, 64, 80), dtype=np.float32)
+    foreground = (
+        ((z - 3.5) / 2.8) ** 2
+        + ((y - 24) / 16.0) ** 2
+        + ((x - 26) / 18.0) ** 2
+        <= 1
+    ) | (
+        ((z - 4.5) / 2.2) ** 2
+        + ((y - 44) / 13.0) ** 2
+        + ((x - 58) / 14.0) ** 2
+        <= 1
+    )
+    rng = np.random.default_rng(20260903)
+    data = rng.normal(35.0, 6.0, foreground.shape)
+    data[foreground] = rng.normal(170.0, 9.0, int(foreground.sum()))
+    data = np.clip(data, 0, 255).astype(np.uint8)
+
+    metadata = {
+        "name": "VIPP synthetic threshold gallery",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Compact noisy ZYX phantom with separated background and "
+                "foreground intensity populations for comparing global and "
+                "local threshold inspectors, including Minimum threshold."
+            ),
+            **_ome_image_metadata("ZYX", data.shape),
         },
     }
     return data, metadata, "image"
