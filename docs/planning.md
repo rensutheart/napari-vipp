@@ -968,6 +968,21 @@ exact scientific region reads.
   object association, skeleton/network topology, real PSFs/deconvolution,
   microscope metadata, interrupted batch, and OME-Zarr round-tripping.
 
+## Pending Correctness Follow-Ups
+
+### Binary Threshold: Above / Below Selection
+
+- [ ] Add an explicit above/below foreground option to Binary Threshold.
+  Confirmed on 2026-09-05: both the CPU operation
+  (`core/operations.py::binary_threshold`) and CuPy provider
+  (`core/gpu/cupy_binary_threshold.py::binary_threshold`) use strict `>`;
+  the node declaration in `core/pipeline.py` exposes no direction parameter.
+  Preserve strictly-above behavior for existing workflows. Define and explain
+  equality handling, expose the choice clearly in the inspector, and carry it
+  through saved workflows, batch execution, and generated Python/export.
+  Verify CPU/GPU parity with below/equal/above-threshold and non-finite inputs.
+  This is a recorded follow-up, not an implemented fix or release commitment.
+
 ## Continuous Product And Release Gates
 
 These gates apply proportionately to every change:

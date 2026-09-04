@@ -515,7 +515,7 @@ def test_fresh_example_cpu_and_prefer_gpu_outputs_match(spec, sample_catalog):
 
 
 def test_compute_matrix_covers_every_bundled_example():
-    assert len(EXAMPLE_WORKFLOWS) == 18
+    assert len(EXAMPLE_WORKFLOWS) == 19
     ids = [spec.id for spec in EXAMPLE_WORKFLOWS]
     filenames = [spec.filename for spec in EXAMPLE_WORKFLOWS]
     assert len(ids) == len(set(ids))

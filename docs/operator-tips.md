@@ -1,33 +1,35 @@
 # VIPP Operator Tips and Performance
 
-Last reviewed: 2026-08-05
+Last reviewed: 2026-09-04
 
 This guide is for day-to-day operation of larger or more complex workflows.
 It focuses on responsiveness, stability, and practical tuning.
 
 ## Choosing Background Mode
 
-VIPP supports two background-processing behaviors in the toolbar:
+The right-side gear menu's `Run all in background` setting provides two
+background-processing behaviors:
 
-- `Run all in BG` off: automatic mode backgrounds known slower operations and
-  updates involving at least 32 MiB or four million image values. Smaller,
-  quick edits remain inline.
-- `Run all in BG` on: all recomputes use background mode.
+- `Run all in background` off: automatic mode backgrounds known slower
+  operations and updates involving at least 32 MiB or four million image
+  values. Smaller, quick edits remain inline.
+- `Run all in background` on: all recomputes use background mode.
 
-Use `Run all in BG` on when:
+Use `Run all in background` on when:
 
 - pipelines are long;
 - mid-sized operations still make interaction feel uneven;
 - users need visible progress feedback during recompute.
 
-Use `Run all in BG` off when:
+Use `Run all in background` off when:
 
 - edits are usually small and fast;
 - reducing per-run orchestration overhead is more important than progress UI.
 
-The toolbar `Cancel calculation` button appears while a background graph update
-is active. Compute mode and per-node backend controls are disabled for the
-entire run. Use this explicit button before changing CPU/GPU policy. It cancels
+The `Stop` button appears beside progress in the status footer while a
+background graph update is active. Compute mode and per-node backend controls
+are disabled for the entire run. Use this explicit button before changing
+CPU/GPU policy. It cancels
 queued reruns, marks the in-flight dirty nodes as pending again, and asks
 cooperative operations to stop. The button and compute controls remain in their
 stopping state until the worker has synchronized and released CPU/GPU resources;
@@ -51,30 +53,30 @@ optimizer, and new batch controls stay disabled until VIPP is restarted.
 
 ## Preview and Dims Strategy
 
-`Follow napari dims` controls whether previews and slice-based histograms track
-the current napari dim position.
+The gear menu's `Link napari/VIPP sliders` setting controls whether previews
+and slice-based histograms track the current napari dim position.
 
 - On: best for normal interactive exploration.
 - Off: best for fixed-reference comparison while scrubbing dims.
 
 For heavy scenes, these settings can help reduce UI churn:
 
-- set `Thumbnail detail` to `Low (90 × 55)` while authoring; use Standard
+- set `Preview > Detail` to `Low (90 × 55)` while authoring; use Standard
   (180 × 110), High (360 × 220), or Very High (720 × 440) when more backing
   detail is useful on a HiDPI display, during downsampling, or at maximum graph
   zoom. Very High uses four times the thumbnail pixels of High;
-- set `Contrast Range` to `Slice` when you do not need stable brightness across
+- set `Preview > Range` to `Slice` when you do not need stable brightness across
   the whole output;
-- set preview mode to `Off` when tuning non-visual parameters;
+- set `Preview > Mode` to `Off` when tuning non-visual parameters;
 - keep histogram scope to `Slice` while iterating.
 
 Thumbnail detail changes only the backing image for the fixed card viewport. It
 does not change the full output read by Stack contrast. Slice contrast instead
 normalizes the spatially sampled current view, so its display limits may shift
-slightly between Low, Standard, High, and Very High. `Settings > Thumbnail statistics`
-controls full-output Stack work. Auto uses eligible exact
-`uint8` Percentile histograms on CuPy from a conservative 384-MiB cold crossover
-and `uint16` histograms from 512 MiB; both use 32 MiB once warm. These measured
+slightly between Low, Standard, High, and Very High. The gear menu's
+`Thumbnail statistics` setting controls full-output Stack work. Auto uses
+eligible exact `uint8` Percentile histograms on CuPy from a conservative
+384-MiB cold crossover and `uint16` histograms from 512 MiB; both use 32 MiB once warm. These measured
 defaults are heuristics, not a guarantee for every distribution or computer.
 CPU avoids CUDA, and Prefer GPU is the explicit override with visible fallback.
 Min-max uses an exact native reduction on CPU instead of a histogram. Float and
@@ -87,8 +89,8 @@ inspector for presentation state: `Calculating…`, `CPU · NumPy`, `GPU · CuPy
 `CPU fallback`, or `Error`. The ordinary title-row compute badge still identifies
 what produced the scientific output. Hover the inspector row or thumbnail for
 details; keyboard What's This help and screen readers receive the same text.
-Stack statistics use the toolbar progress and Cancel surfaces and retain
-provisional thumbnails if cancelled. CPU integer work stops
+Stack statistics use the status footer's progress bar and `Stop` button and
+retain provisional thumbnails if cancelled. CPU integer work stops
 between bounded chunks. An active GPU kernel/synchronization or exact
 float/other-dtype NumPy percentile can have a non-interruptible inner pass; the
 progress message identifies the phase and cancellation takes effect after that
@@ -133,12 +135,12 @@ structures.
 
 If updates feel slow:
 
-1. Turn `Run all in BG` on if a mid-sized operation falls below the automatic
-   cutoff but still pauses interaction.
-2. Set thumbnail detail to `Low`.
-3. Use `Slice` contrast range to avoid full-output thumbnail statistics.
-4. Set preview mode to `Off` and retest.
-5. Switch preview mode from `MIP` to `Slice`.
+1. Turn `Run all in background` on if a mid-sized operation falls below the
+   automatic cutoff but still pauses interaction.
+2. Set `Preview > Detail` to `Low`.
+3. Set `Preview > Range` to `Slice` to avoid full-output thumbnail statistics.
+4. Set `Preview > Mode` to `Off` and retest.
+5. Switch `Preview > Mode` from `MIP` to `Slice`.
 6. Reduce graph fan-out while tuning upstream nodes.
 7. Re-enable features one by one to identify the dominant cost.
 

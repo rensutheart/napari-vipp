@@ -72,6 +72,26 @@ def test_show_message_accepts_a_string_severity(qtbot):
     assert "#22c55e" in strip.styleSheet()
 
 
+def test_status_detail_moves_long_context_to_tooltip_and_accessibility(qtbot):
+    strip = StatusMessageStrip()
+    qtbot.addWidget(strip)
+
+    strip.show_message(
+        "Workflow calculations complete.",
+        severity="success",
+        detail="Sources used:\nsource one, source two",
+    )
+
+    assert strip.text() == "Workflow calculations complete."
+    assert strip.toolTip() == "Sources used:\nsource one, source two"
+    assert "source one, source two" in strip.accessibleDescription()
+
+    strip.setText("Centered workflow graph.")
+
+    assert strip.toolTip() == ""
+    assert "Details:" not in strip.accessibleDescription()
+
+
 def test_legacy_set_text_clears_an_actionable_error(qtbot):
     strip = StatusMessageStrip()
     qtbot.addWidget(strip)

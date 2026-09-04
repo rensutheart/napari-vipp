@@ -13,12 +13,12 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from napari_vipp.ui.palette_roles import custom_paint_colors, palette_is_dark
+from napari_vipp.ui.sliders import VippSlider
 
 
 class _WrappingLabel(QLabel):
@@ -109,7 +109,7 @@ class BatchNavigator(QFrame):
 
         self.previous_button = QPushButton("Previous")
         self.next_button = QPushButton("Next")
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = VippSlider(Qt.Horizontal)
         self.slider.setTracking(False)
         self.slider.setRange(0, 0)
         self.slider.setToolTip(

@@ -18,7 +18,12 @@ from napari_vipp._graph import (
     PortLabelMode,
     _wire_path,
 )
-from napari_vipp._theme import category_color, category_tint, graph_theme
+from napari_vipp._theme import (
+    category_color,
+    category_foreground,
+    category_tint,
+    graph_theme,
+)
 from napari_vipp.core.pipeline import (
     EXECUTION_BLOCKED,
     NODE_LIBRARY_BY_ID,
@@ -1628,6 +1633,41 @@ def test_graph_cards_use_category_colors(qtbot):
 
     assert gaussian._category_color == category_color("Filtering")
     assert gaussian._category_tint == category_tint("Filtering")
+
+
+@pytest.mark.parametrize(
+    ("state", "state_accent", "surface_attribute"),
+    (
+        ("ready", "#22c55e", "ready_surface"),
+        ("not_calculated", STALE_EXECUTION_ACCENT, "stale_surface"),
+        ("error", "#ef4444", "error_surface"),
+    ),
+)
+def test_manual_colocalization_card_keeps_category_identity(
+    qtbot,
+    state,
+    state_accent,
+    surface_attribute,
+):
+    view, pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.setPalette(_graph_palette(dark=True))
+    view._apply_palette_theme()
+    node = pipeline.add_node("colocalization_metrics")
+    view.add_node(node, QPointF(990, 20))
+
+    view.set_node_execution_state(node.id, state, manual=True)
+
+    card = view._cards[node.id]
+    card_style = card.styleSheet()
+    category_style = card.category_label.styleSheet()
+    category = "Colocalization & Spatial Analysis"
+    theme = graph_theme(card.palette())
+    assert f"border: 2px solid {state_accent};" in card_style
+    assert f"background: {getattr(theme, surface_attribute)};" in card_style
+    assert f"background: {category_color(category)};" in card_style
+    assert f"background: {category_tint(category, card.palette())};" in category_style
+    assert f"color: {category_foreground(category, card.palette())};" in category_style
 
 
 def test_graph_zoom_can_be_set_and_reset(qtbot):

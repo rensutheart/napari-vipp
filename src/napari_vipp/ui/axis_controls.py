@@ -8,7 +8,7 @@ from html import escape
 
 import numpy as np
 from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
-from qtpy.QtGui import QBrush, QColor, QPainter, QPen
+from qtpy.QtGui import QBrush, QPainter, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -19,7 +19,6 @@ from qtpy.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -28,7 +27,8 @@ from qtpy.QtWidgets import (
 
 from napari_vipp.core.operations import NO_TABLE_COLUMNS_VALUE
 from napari_vipp.ui.controls import _configure_numeric_spin_box
-from napari_vipp.ui.palette_roles import custom_paint_colors, theme_colors
+from napari_vipp.ui.palette_roles import theme_colors
+from napari_vipp.ui.sliders import SliderColors, VippSlider, slider_colors
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,7 @@ class AxisIntervalSlider(QWidget):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
-        colors = custom_paint_colors(self.palette())
+        colors = self._paint_colors()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         left = 8
@@ -111,15 +111,18 @@ class AxisIntervalSlider(QWidget):
         start_x = self._x_for_value(self._start)
         end_x = self._x_for_value(self._end)
 
-        painter.setPen(QPen(colors.border, 4, Qt.SolidLine, Qt.RoundCap))
+        painter.setPen(QPen(colors.groove, 6, Qt.SolidLine, Qt.RoundCap))
         painter.drawLine(left, center_y, right, center_y)
-        painter.setPen(QPen(QColor("#60a5fa"), 4, Qt.SolidLine, Qt.RoundCap))
+        painter.setPen(QPen(colors.fill, 6, Qt.SolidLine, Qt.RoundCap))
         painter.drawLine(start_x, center_y, end_x, center_y)
 
-        painter.setPen(QPen(QColor("#93c5fd"), 1))
-        painter.setBrush(QBrush(QColor("#1d4ed8")))
+        painter.setPen(QPen(colors.handle_border, 1))
+        painter.setBrush(QBrush(colors.handle))
         painter.drawEllipse(start_x - 6, center_y - 6, 12, 12)
         painter.drawEllipse(end_x - 6, center_y - 6, 12, 12)
+
+    def _paint_colors(self) -> SliderColors:
+        return slider_colors(self.palette())
 
     def mousePressEvent(self, event) -> None:
         x = self._event_x(event)
@@ -237,7 +240,7 @@ class AxisSelectionRow(QWidget):
         self.range_slider = AxisIntervalSlider(0, maximum)
         self.start_box = QSpinBox()
         self.end_box = QSpinBox()
-        self.index_slider = QSlider(Qt.Horizontal)
+        self.index_slider = VippSlider(Qt.Horizontal)
         self.index_box = QSpinBox()
         for box in (self.start_box, self.end_box, self.index_box):
             _configure_numeric_spin_box(box)

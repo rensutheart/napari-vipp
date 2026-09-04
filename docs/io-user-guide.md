@@ -1,6 +1,6 @@
 # Image Import And Export
 
-Last reviewed: 2026-08-27
+Last reviewed: 2026-09-04
 
 VIPP uses one headless I/O layer for interactive sources, quick saves, Save
 Image nodes, and exported Python scripts. The explicit format choice matters:
@@ -96,7 +96,7 @@ large files use the background queue with decoded-memory preflight and truthful
 progress; a monolithic eager reader does not invent an internal percentage.
 
 `Binding: collection` marks an Image Source node as a per-item source for
-`Batch workspace...`. The graph still represents one scientific item at a
+`Batch workflow`. The graph still represents one scientific item at a
 time. After planning, VIPP swaps the complete set of paired collection paths
 into those Image Source nodes as a transient representative and runs the same
 graph once per batch item during full execution. The transient paths are not
@@ -120,9 +120,9 @@ TIFF, OME-TIFF, or Export OME Analysis Dataset for those labels.
 
 ## Collection Batch Runs
 
-`Batch workspace...` configures and executes the current graph over local image
-collections. The retained workspace shows one source row for each `Image
-Source` node in the workflow. Bind a
+The command bar's `Batch workflow` action configures and executes the current
+graph over local image collections. The retained workspace shows one source row for each
+`Image Source` node in the workflow. Bind a
 source row to a folder and one or more glob patterns, separated by semicolons,
 when that node should receive a different file for every batch item. The default
 `*` includes recognized image files and directory stores such as `.ome.zarr`;
@@ -131,10 +131,10 @@ the batch. A blank row is reproducible only when that `Image Source` already
 uses a fixed local file path; napari-layer and bundled-sample sources must be
 bound to a collection before saving or running a batch config.
 
-The main toolbar places `Batch workspace...` between workflow loading and the
-separate export actions. It is the single entry point for opening or returning
-to the retained workspace; the representative strip only navigates samples and
-reports batch progress.
+The command bar places `Batch workflow` after the grouped `New`/`Open`/`Save`
+commands and beside the `Preview` menu. It is the single entry point for
+opening or returning to the retained workspace; the representative strip only
+navigates samples and reports batch progress.
 
 After a fresh plan resolves stable SourceItems, `Per-sample parameters
 (optional)` shows eligible authored numeric scientific controls as columns and
@@ -150,10 +150,10 @@ are retained in config, checkpoint, manifest, and item provenance.
 When a workflow includes its Batch workspace, reopening it automatically detects
 the current samples in a background, metadata-only preflight and restores the
 table without requiring `Preview batch`. A compact status and activity indicator
-sit at the right of the fixed Batch toolbar, labelling that source-discovery work
-separately from the main VIPP graph-calculation bar; the two jobs may run
-concurrently. The status remains visible after fast operations as
-`Ready - N batch items`, the adjacent indicator becomes indeterminate for
+sit at the right of the fixed Batch toolbar, labelling that source-discovery
+work separately from graph-calculation progress in VIPP's status footer; the
+two jobs may run concurrently. The status remains visible after fast operations
+as `Ready - N batch items`, the adjacent indicator becomes indeterminate for
 discovery and preflight, and it mirrors overall item progress during a full run.
 The detailed per-item and per-operation bars remain in the Batch run section. No
 representative pixels are calculated until explicitly requested.
@@ -164,10 +164,10 @@ inherited row is not silently overlooked. A changed or missing source keeps the
 saved values quarantined, disables Run, and explains that no value was reassigned
 by filename or collection order.
 
-The easiest way to explore batching is `Open example...` -> `Deterministic
-Batch & Provenance` -> `Open batch demo...`. Choose where to save the demo's
-small working copy; VIPP then opens the batch workspace with its two-source
-workflow and config loaded. The graph automatically displays the first paired
+The easiest way to explore batching is to choose `Open example…` from the gear
+menu, then `Deterministic Batch & Provenance` and `Open batch demo...`. Choose
+where to save the demo's small working copy; VIPP then opens the batch workspace
+with its two-source workflow and config loaded. The graph automatically displays the first paired
 NumPy field through every connected node. Use `Previous`, `Next`, or the
 representative slider to move through all three pairs; both source paths change
 together. Selecting a table row and clicking `Preview selected in graph` (or
@@ -250,7 +250,7 @@ internal percentages. `Cancel run` sets the shared cooperative token and waits
 for synchronization and cleanup before finalizing the cancelled item and
 manifest. On smaller displays, the workspace body scrolls vertically while
 `Run batch`, `Cancel run`, and `Close` remain fixed at the bottom. Reopen the
-same workspace from the main toolbar's `Batch workspace...` button.
+same workspace with `Batch workflow` on the command bar.
 After a run, its preflight and row statuses remain visible as historical run
 evidence. Run preflights current paths again before replay; use Preview first
 only when you want to inspect them.
@@ -307,14 +307,14 @@ guarded Z-stack suggestion has been applied, saving records the concrete
 `Stack planes are depth slices (Z stack)`.
 
 In the GUI, the loaded config's compute request remains effective while the
-toolbar compute request is unchanged from load time. Changing any toolbar
-compute setting selects the complete current toolbar request for the next
+command-bar compute request is unchanged from load time. Changing any
+command-bar compute setting selects the complete current request for the next
 preview, save, or run. In headless replay, the config request is the default and
 an explicit function or CLI override applies only to that invocation. The
 manifest keeps both configured and effective requests plus separate saved and
 effective config hashes.
 
-When a Batch workspace is active, `Save workflow...` asks whether to include
+When a Batch workspace is active, command-bar `Save` asks whether to include
 that validated batch config inside the workflow JSON. `Yes` creates one file;
 loading it restores and opens the workspace, then starts background
 metadata-only source discovery. That refreshes the current sample plan without
@@ -393,8 +393,9 @@ It can additionally write:
   and `--progress` prints both item and current-operation streams. One `Ctrl+C`
   requests cooperative cancellation and returns exit code 130 after cleanup.
 
-This batch runner is intentionally different from `Export Python...`. The
-export embeds a validated immutable workflow and executes it through the same
+This batch runner is intentionally different from the gear menu's
+`Export Python…` action. The export embeds a validated immutable workflow and
+executes it through the same
 headless pipeline service as VIPP, while its command-line folder harness is a
 primary-source convenience rather than the complete multi-source collection
 configuration used by batch runs. The convenience loop hashes its local source
@@ -420,8 +421,8 @@ combinations. Plate/well/field discovery and HCS traversal are also deferred.
 
 ## Export OME Analysis Dataset
 
-`Export OME dataset...` writes one reference image plus every available graph
-label output into a single `.ome.zarr` store:
+The gear menu's `Export OME dataset…` action writes one reference image plus
+every available graph label output into a single `.ome.zarr` store:
 
 ```text
 /

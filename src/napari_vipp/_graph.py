@@ -1177,47 +1177,11 @@ class NodeCard(QFrame):
         accent_color = self._category_color
         category_background = category_tint(self.category, self.palette())
         category_text = category_foreground(self.category, self.palette())
-        if self._execution_state == EXECUTION_BLOCKED:
-            accent_color = BLOCKED_EXECUTION_ACCENT
-            category_background = "#431407" if theme.is_dark else "#ffedd5"
-            category_text = "#fdba74" if theme.is_dark else "#9a3412"
-        elif self._execution_state == "stale":
-            accent_color = STALE_EXECUTION_ACCENT
-            category_background = "#78350f" if theme.is_dark else "#fef3c7"
-            category_text = "#fde68a" if theme.is_dark else "#92400e"
-        elif self._manual_execution:
-            if self._execution_state == "ready":
-                accent_color = "#22c55e"
-                category_background = "#064e3b" if theme.is_dark else "#dcfce7"
-                category_text = "#bbf7d0" if theme.is_dark else "#166534"
-            elif self._execution_state == "not_calculated":
-                accent_color = STALE_EXECUTION_ACCENT
-                category_background = "#78350f" if theme.is_dark else "#fef3c7"
-                category_text = "#fde68a" if theme.is_dark else "#92400e"
-            elif self._execution_state == "error":
-                accent_color = "#ef4444"
-                category_background = "#7f1d1d" if theme.is_dark else "#fee2e2"
-                category_text = "#fecaca" if theme.is_dark else "#991b1b"
-        if isolated_tuning_active:
-            accent_color = ISOLATED_TUNING_ACCENT
-            category_background = category_tint(self.category, self.palette())
-            category_text = category_foreground(self.category, self.palette())
-        if self._processing and not isolated_tuning_active:
-            accent_color = "#94a3b8"
-            category_background = "#3a414c" if theme.is_dark else "#e2e8f0"
-            category_text = "#d1d5db" if theme.is_dark else "#475569"
-        if self._image_drop_target:
-            accent_color = "#34d399"
-            category_background = "#064e3b" if theme.is_dark else "#d1fae5"
-            category_text = "#d1fae5" if theme.is_dark else "#065f46"
-        if self._append_drop_state == "compatible":
-            accent_color = "#34d399"
-            category_background = "#064e3b" if theme.is_dark else "#d1fae5"
-            category_text = "#d1fae5" if theme.is_dark else "#065f46"
-        elif self._append_drop_state == "incompatible":
-            accent_color = "#fb7185"
-            category_background = "#4c0519" if theme.is_dark else "#ffe4e6"
-            category_text = "#fecdd3" if theme.is_dark else "#9f1239"
+        # Category identity and execution state are independent visual channels.
+        # The outer card border/surface above communicates ready, stale, error,
+        # processing, and drop states; keep the heading and top stripe tied to
+        # the operation category so a manual node does not look like a
+        # Measurements node merely because its cached result is ready.
         self.setStyleSheet(
             f"""
             QFrame#NodeCard {{

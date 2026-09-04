@@ -19,6 +19,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from numbers import Integral
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -81,6 +82,9 @@ from qtpy.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -691,6 +695,7 @@ from napari_vipp.ui.search import (
     _fuzzy_token_match as _fuzzy_token_match,
 )
 from napari_vipp.ui.search import _normalize_search_text
+from napari_vipp.ui.sliders import VippSlider
 from napari_vipp.ui.source_adapter import (
     LiveLayerSnapshot,
     LiveLayerSourceAdapter,
@@ -1251,7 +1256,7 @@ def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
         arrow.lineTo(15, 4)
         arrow.lineTo(15, 12)
         arrow.closeSubpath()
-    elif kind == "reset":
+    elif kind in {"reset", "refresh"}:
         path.moveTo(18.5, 8)
         path.cubicTo(15.8, 4.5, 9.8, 3.8, 6.5, 8)
         path.cubicTo(3.2, 12.2, 5.6, 19.5, 12.5, 19.5)
@@ -1260,7 +1265,7 @@ def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
         arrow.lineTo(15, 7.1)
         arrow.lineTo(18.4, 11.7)
         arrow.closeSubpath()
-    else:
+    elif kind == "undo":
         path.moveTo(8, 8)
         path.cubicTo(11, 5.5, 19, 6.5, 19, 13)
         path.cubicTo(19, 18, 14.5, 20, 8, 20)
@@ -1268,10 +1273,136 @@ def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
         arrow.lineTo(9, 4)
         arrow.lineTo(9, 12)
         arrow.closeSubpath()
-    painter.drawPath(path)
-    painter.setPen(Qt.NoPen)
-    painter.setBrush(QColor(foreground))
-    painter.drawPath(arrow)
+    elif kind == "new":
+        path.moveTo(6, 3)
+        path.lineTo(14, 3)
+        path.lineTo(19, 8)
+        path.lineTo(19, 21)
+        path.lineTo(6, 21)
+        path.closeSubpath()
+        path.moveTo(14, 3)
+        path.lineTo(14, 8)
+        path.lineTo(19, 8)
+        painter.drawPath(path)
+        painter.drawLine(9, 14, 16, 14)
+        painter.drawLine(13, 11, 13, 18)
+    elif kind == "open":
+        path.moveTo(3, 7)
+        path.lineTo(10, 7)
+        path.lineTo(12, 9)
+        path.lineTo(21, 9)
+        path.lineTo(18, 20)
+        path.lineTo(4, 20)
+        path.closeSubpath()
+        painter.drawPath(path)
+        painter.drawLine(4, 7, 4, 5)
+        painter.drawLine(4, 5, 11, 5)
+        painter.drawLine(11, 5, 13, 7)
+    elif kind == "save":
+        painter.drawRect(4, 3, 16, 18)
+        painter.drawRect(8, 4, 8, 6)
+        painter.drawRect(8, 14, 8, 7)
+    elif kind == "batch":
+        painter.drawRect(3, 4, 18, 16)
+        painter.drawLine(3, 10, 21, 10)
+        painter.drawLine(3, 15, 21, 15)
+        painter.drawLine(9, 4, 9, 20)
+        painter.drawLine(15, 4, 15, 20)
+    elif kind == "preview":
+        path.moveTo(2.5, 12)
+        path.cubicTo(6, 6.5, 9, 5, 12, 5)
+        path.cubicTo(15, 5, 18, 6.5, 21.5, 12)
+        path.cubicTo(18, 17.5, 15, 19, 12, 19)
+        path.cubicTo(9, 19, 6, 17.5, 2.5, 12)
+        path.closeSubpath()
+        painter.drawPath(path)
+        painter.drawEllipse(9, 9, 6, 6)
+    elif kind == "calculate":
+        arrow.moveTo(7, 4)
+        arrow.lineTo(20, 12)
+        arrow.lineTo(7, 20)
+        arrow.closeSubpath()
+    elif kind == "optimize":
+        # A compact speedometer remains recognizable when the responsive
+        # toolbar removes the Find-fastest label.
+        painter.drawArc(QRect(4, 4, 16, 16), 0, 180 * 16)
+        painter.drawLine(12, 13, 17, 9)
+        painter.drawEllipse(10, 11, 4, 4)
+    elif kind == "settings":
+        # Use one connected eight-tooth outline rather than radial spokes.  At
+        # toolbar size, detached spokes read as a star or brightness control.
+        gear = QPainterPath()
+        gear_points: list[QPointF] = []
+        tooth_step = math.tau / 8.0
+        for tooth in range(8):
+            center_angle = tooth * tooth_step - math.pi / 2.0
+            for offset, radius in (
+                (-0.50, 7.8),
+                (-0.34, 7.8),
+                (-0.27, 10.0),
+                (0.27, 10.0),
+                (0.34, 7.8),
+                (0.50, 7.8),
+            ):
+                angle = center_angle + offset * tooth_step
+                gear_points.append(
+                    QPointF(
+                        12.0 + math.cos(angle) * radius,
+                        12.0 + math.sin(angle) * radius,
+                    )
+                )
+        gear.moveTo(gear_points[0])
+        for point in gear_points[1:]:
+            gear.lineTo(point)
+        gear.closeSubpath()
+        painter.drawPath(gear)
+        painter.drawEllipse(QPointF(12.0, 12.0), 3.0, 3.0)
+    elif kind == "focus":
+        for points in (
+            ((4, 9), (4, 4), (9, 4)),
+            ((15, 4), (20, 4), (20, 9)),
+            ((20, 15), (20, 20), (15, 20)),
+            ((9, 20), (4, 20), (4, 15)),
+        ):
+            path.moveTo(*points[0])
+            path.lineTo(*points[1])
+            path.lineTo(*points[2])
+        painter.drawPath(path)
+        painter.drawEllipse(9, 9, 6, 6)
+    elif kind == "arrange":
+        painter.drawLine(7, 7, 17, 12)
+        painter.drawLine(7, 17, 17, 12)
+        painter.drawEllipse(3, 3, 7, 7)
+        painter.drawEllipse(3, 14, 7, 7)
+        painter.drawEllipse(14, 9, 7, 7)
+    elif kind == "tunnels":
+        painter.drawEllipse(3, 5, 6, 6)
+        painter.drawEllipse(15, 13, 6, 6)
+        painter.drawLine(9, 8, 14, 8)
+        painter.drawLine(14, 8, 14, 16)
+        painter.drawLine(14, 16, 15, 16)
+        painter.drawLine(10, 16, 14, 16)
+    elif kind == "activity":
+        path.moveTo(2, 13)
+        path.lineTo(7, 13)
+        path.lineTo(10, 5)
+        path.lineTo(14, 19)
+        path.lineTo(17, 10)
+        path.lineTo(22, 10)
+        painter.drawPath(path)
+    elif kind == "stop":
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(foreground))
+        painter.drawRect(6, 6, 12, 12)
+    else:
+        painter.drawEllipse(5, 5, 14, 14)
+
+    if not path.isEmpty() and kind in {"undo", "redo", "reset", "refresh"}:
+        painter.drawPath(path)
+    if not arrow.isEmpty():
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(foreground))
+        painter.drawPath(arrow)
     painter.end()
     return pixmap
 
@@ -1385,7 +1516,8 @@ def _image_calculator_equation(weights: list[float], offset: float) -> str:
 def _toolbar_separator(width: int = 12) -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.VLine)
-    line.setFrameShadow(QFrame.Sunken)
+    line.setFrameShadow(QFrame.Plain)
+    line.setLineWidth(1)
     line.setFixedWidth(int(width))
     return line
 
@@ -1421,6 +1553,150 @@ def _configure_toolbar_combo(combo: QComboBox) -> None:
     combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
     combo.setMinimumWidth(max(78, combo.minimumSizeHint().width()))
     combo.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
+
+class _ToolbarElidingLabel(QLabel):
+    """Single-line status text that retains its complete accessible value."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self._full_text = ""
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full_text = str(text)
+        self.setAccessibleName(self._full_text)
+        self._sync_elided_text()
+        self.updateGeometry()
+
+    def text(self) -> str:
+        return self._full_text
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        """Prefer the complete text while still allowing layout-time elision."""
+        hint = super().sizeHint()
+        full_width = self.fontMetrics().horizontalAdvance(self._full_text)
+        margins = self.contentsMargins()
+        hint.setWidth(
+            max(
+                hint.width(),
+                full_width + margins.left() + margins.right() + 8,
+            )
+        )
+        return hint
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_elided_text()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if hasattr(self, "_full_text") and event.type() in (
+            QEvent.FontChange,
+            QEvent.StyleChange,
+        ):
+            self._sync_elided_text()
+
+    def _sync_elided_text(self) -> None:
+        available = max(self.contentsRect().width() - 2, 1)
+        visible = self.fontMetrics().elidedText(
+            getattr(self, "_full_text", ""),
+            Qt.ElideRight,
+            available,
+        )
+        QLabel.setText(self, visible)
+
+
+class _ToolbarChevronIndicator(QWidget):
+    """Small two-stroke dropdown affordance for a toolbar menu button."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(12, 12)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        del event
+        group = QPalette.Active if self.isEnabled() else QPalette.Disabled
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(self.palette().color(group, QPalette.ButtonText), 1.8)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(2.5, 4.5), QPointF(6.0, 8.0))
+        painter.drawLine(QPointF(6.0, 8.0), QPointF(9.5, 4.5))
+        painter.end()
+
+
+class _ToolbarCommandButton(QPushButton):
+    """Toolbar push button with a little extra icon-to-label breathing room."""
+
+    _ICON_TEXT_SPACER = "\u2009"
+
+    def _toolbar_style_option(self) -> QStyleOptionButton:
+        """Return the native button option with VIPP's icon/text spacing."""
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        if option.text and not option.icon.isNull():
+            option.text = f"{self._ICON_TEXT_SPACER}{option.text}"
+        return option
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        del event
+        painter = QStylePainter(self)
+        painter.drawControl(QStyle.CE_PushButton, self._toolbar_style_option())
+
+
+class _ToolbarChevronButton(_ToolbarCommandButton):
+    """Push button with a padded, unfilled chevron instead of a triangle.
+
+    Using ``QPushButton`` deliberately gives menu triggers the same filled
+    command-button chrome as adjacent actions such as Batch workflow.  The
+    native menu triangle is hidden and replaced with the larger two-stroke
+    chevron used by the toolbar mockup.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self._chevron_indicator = _ToolbarChevronIndicator(self)
+        self.setProperty("chevronVisible", False)
+        self.setStyleSheet(
+            "QPushButton { padding: 2px 5px; }"
+            'QPushButton[chevronVisible="true"] { padding-right: 22px; }'
+            "QPushButton::menu-indicator { image: none; width: 0px; }"
+        )
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        super().setText(text)
+        if hasattr(self, "_chevron_indicator"):
+            visible = bool(str(text))
+            self._chevron_indicator.setVisible(visible)
+            if bool(self.property("chevronVisible")) != visible:
+                self.setProperty("chevronVisible", visible)
+                self.style().unpolish(self)
+                self.style().polish(self)
+                self.updateGeometry()
+
+    def _toolbar_style_option(self) -> QStyleOptionButton:
+        """Lay out icon/text like a normal button; VIPP paints the chevron."""
+        option = super()._toolbar_style_option()
+        option.features &= ~QStyleOptionButton.HasMenu
+        return option
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        indicator = self._chevron_indicator
+        indicator.move(
+            max(self.width() - indicator.width() - 6, 0),
+            max((self.height() - indicator.height()) // 2, 0),
+        )
+        indicator.raise_()
 
 
 class _InspectorNoteLabel(QLabel):
@@ -1797,11 +2073,8 @@ class VippWidget(QWidget):
     HISTORY_LIMIT = 80
     INSERT_GAP_PADDING_X = 70.0
     INSERT_GAP_PADDING_Y = 55.0
-    TOOLBAR_HIDE_CHECKBOXES_WIDTH = 1700
-    TOOLBAR_HIDE_DROPDOWNS_WIDTH = 1500
-    TOOLBAR_HIDE_ZOOM_WIDTH = 1100
-    TOOLBAR_HIDE_COMPUTE_WIDTH = 1350
-    TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH = 1500
+    TOOLBAR_WIDE_WIDTH = 1280
+    TOOLBAR_NARROW_WIDTH = 880
     NODE_LIBRARY_COMPACT_TRIGGER_WIDTH = 220
     NODE_LIBRARY_EXPAND_TRIGGER_WIDTH = 250
     NODE_LIBRARY_GRAPH_MINIMUM_WIDTH = 320
@@ -2084,11 +2357,21 @@ class VippWidget(QWidget):
         self._isolated_tuning_snapshot: _IsolatedTuningSnapshot | None = None
         self._isolated_tuning_has_changes = False
         self._last_pipeline_source_signature: tuple | None = None
-        self._toolbar_compact_stage: tuple[bool, bool, bool, bool, bool] | None = None
-        self._toolbar_checkbox_widgets: list[QWidget] = []
-        self._toolbar_dropdown_widgets: list[QWidget] = []
-        self._toolbar_zoom_widgets: list[QWidget] = []
-        self._toolbar_settings_widgets: list[QWidget] = []
+        self._toolbar_layout_mode: str | None = None
+        self._toolbar_responsive_signature: tuple | None = None
+        self._last_run_activity_text = "No calculations have run in this session."
+        self._run_activity_started_at: float | None = None
+        # Scientific pipeline timing is deliberately separate from the shared
+        # busy strip.  That strip also covers source I/O, thumbnail statistics,
+        # and result presentation, none of which should inflate the pipeline
+        # total shown in Run activity.
+        self._pipeline_processing_total_seconds = 0.0
+        self._pipeline_processing_active_started_at: dict[object, float] = {}
+        self._pipeline_processing_timer_serial = 0
+        self._run_activity_panel: QFrame | None = None
+        self._run_activity_action: QWidgetAction | None = None
+        self._run_activity_value_labels: dict[str, QLabel] = {}
+        self._run_activity_stop_button: QPushButton | None = None
         self._recent_cache_node_ids: list[str] = []
         self._thumbnail_contrast_limit_cache: dict[tuple, object] = {}
         self._thumbnail_contrast_statistics_cache: dict[tuple, object] = {}
@@ -2332,7 +2615,7 @@ class VippWidget(QWidget):
             "When disabled, napari scrubbing updates only the viewer; VIPP sliders "
             "control workflow thumbnails and inspector summaries."
         )
-        self.graph_zoom_slider = QSlider(Qt.Horizontal)
+        self.graph_zoom_slider = VippSlider(Qt.Horizontal)
         self.graph_zoom_slider.setRange(
             PipelineGraphView.SLIDER_MIN_ZOOM,
             PipelineGraphView.SLIDER_MAX_ZOOM,
@@ -2348,32 +2631,39 @@ class VippWidget(QWidget):
             "Ctrl/trackpad wheel zoom can go beyond this slider range."
         )
         self.graph_zoom_label = QLabel("100%")
-        self.graph_zoom_label.setMinimumWidth(44)
+        self.graph_zoom_label.setMinimumWidth(48)
         self.graph_zoom_reset_button = QToolButton()
         self.graph_zoom_reset_button.setIcon(_toolbar_icon("reset"))
         self.graph_zoom_reset_button.setIconSize(QSize(18, 18))
-        self.graph_zoom_reset_button.setFixedSize(24, 24)
+        self.graph_zoom_reset_button.setFixedSize(26, 26)
         self.graph_zoom_reset_button.setToolTip("Reset graph zoom to the default 100%.")
 
-        self.new_workflow_button = QPushButton("New workflow...")
-        self.tunnel_manager_button = QPushButton("Tunnels...")
+        self.new_workflow_button = _ToolbarCommandButton("New")
+        self.new_workflow_button.setIcon(_toolbar_icon("new"))
+        self.new_workflow_button.setToolTip("Create a new empty workflow.")
+        self.tunnel_manager_button = _ToolbarCommandButton("Tunnels...")
+        self.tunnel_manager_button.setIcon(_toolbar_icon("tunnels"))
         self.tunnel_manager_button.setToolTip(
             "Manage named graph tunnels and reveal their subscribers.",
         )
-        self.auto_structure_button = QPushButton("Auto structure graph")
+        self.auto_structure_button = _ToolbarCommandButton("Auto Arrange")
+        self.auto_structure_button.setIcon(_toolbar_icon("arrange"))
         self.auto_structure_button.setToolTip(
             "One-shot source-to-sink layout cleanup. Undo restores old positions."
         )
-        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button = _ToolbarCommandButton("Refresh")
+        self.refresh_button.setIcon(_toolbar_icon("refresh"))
         self.refresh_button.setToolTip(
             "Reload file-path sources and recalculate the graph. File data is "
             "held as a frozen scientific snapshot until Refresh is pressed."
         )
-        self.graph_focus_button = QPushButton("Focus")
+        self.graph_focus_button = _ToolbarCommandButton("Focus")
+        self.graph_focus_button.setIcon(_toolbar_icon("focus"))
         self.graph_focus_button.setToolTip(
             "Center the workflow graph in the canvas without changing zoom."
         )
-        self.calculate_all_button = QPushButton("Calculate all")
+        self.calculate_all_button = _ToolbarCommandButton("Calculate all")
+        self.calculate_all_button.setIcon(_toolbar_icon("calculate"))
         self.calculate_all_button.setToolTip(
             "Calculate every manual node that is not current."
         )
@@ -2405,60 +2695,93 @@ class VippWidget(QWidget):
         self.undo_button = QToolButton()
         self.undo_button.setDefaultAction(self.undo_action)
         self.undo_button.setIconSize(QSize(18, 18))
-        self.undo_button.setFixedSize(24, 24)
+        self.undo_button.setFixedSize(30, 30)
         self.redo_button = QToolButton()
         self.redo_button.setDefaultAction(self.redo_action)
         self.redo_button.setIconSize(QSize(18, 18))
-        self.redo_button.setFixedSize(24, 24)
+        self.redo_button.setFixedSize(30, 30)
         self.addAction(self.undo_action)
         self.addAction(self.redo_action)
         self.addAction(self.save_workflow_action)
         self.addAction(self.save_workflow_as_action)
-        self.save_workflow_button = QPushButton("Save workflow")
+        self.save_workflow_button = _ToolbarCommandButton("Save")
+        self.save_workflow_button.setIcon(_toolbar_icon("save"))
         self.save_workflow_button.setToolTip(
-            "Save the active workflow (Ctrl+S). Use Settings > Save workflow "
-            "as… to choose another file."
+            "Save the active workflow (Ctrl+S). Use Save workflow as… in the "
+            "gear menu to choose another file."
         )
         self.open_example_button = QPushButton("Open example...")
         self.open_example_button.setToolTip(
             "Open a bundled example workflow with its sample Image Source nodes."
         )
-        self.load_workflow_button = QPushButton("Load workflow...")
+        self.load_workflow_button = _ToolbarCommandButton("Open")
+        self.load_workflow_button.setIcon(_toolbar_icon("open"))
+        self.load_workflow_button.setToolTip("Open a saved VIPP workflow.")
         self.export_button = QPushButton("Export Python...")
-        self.batch_button = QPushButton("Batch workspace...")
+        self.batch_button = _ToolbarCommandButton("Batch workflow")
+        self.batch_button.setIcon(_toolbar_icon("batch"))
         self.batch_button.setToolTip(
             "Bind collections, preview paired representatives through the "
             "graph, run the full batch, and inspect progress."
         )
-        self.leave_batch_button = QPushButton("Leave batch mode")
+        self.leave_batch_button = _ToolbarCommandButton("Leave batch mode")
+        self.leave_batch_button.setIcon(_toolbar_icon("stop"))
         self.leave_batch_button.setToolTip(
             "Discard the active Batch workspace and its representative source "
             "overrides, then return the graph to ordinary single-image inputs."
         )
         self.leave_batch_button.hide()
         self.export_ome_button = QPushButton("Export OME dataset...")
+        self.preview_menu_button = _ToolbarChevronButton()
+        self.preview_menu_button.setText("Preview")
+        self.preview_menu_button.setIcon(_toolbar_icon("preview"))
+        self.preview_menu_button.setIconSize(QSize(18, 18))
+        self.preview_menu_button.setToolTip(
+            "Preview display settings. These controls change presentation only, "
+            "never analysis pixels."
+        )
+        self.preview_display_menu = QMenu(self.preview_menu_button)
+        self.preview_display_menu.setObjectName("VippPreviewDisplayMenu")
+        self.preview_display_menu.setAccessibleName("Preview display settings")
+        self._preview_menu_panel: QFrame | None = None
+        self._preview_menu_action: QWidgetAction | None = None
+        self._preview_menu_combos: dict[str, QComboBox] = {}
+        self.preview_display_menu.aboutToShow.connect(
+            self._populate_preview_display_menu
+        )
+        self.preview_menu_button.setMenu(self.preview_display_menu)
+
         self.settings_menu_button = QToolButton()
-        self.settings_menu_button.setText("Settings")
-        self.settings_menu_button.setMinimumWidth(96)
+        self.settings_menu_button.setIcon(_toolbar_icon("settings"))
+        self.settings_menu_button.setIconSize(QSize(18, 18))
+        self.settings_menu_button.setFixedSize(30, 30)
         self.settings_menu_button.setPopupMode(QToolButton.InstantPopup)
-        self.settings_menu_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.settings_menu_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.settings_menu_button.setStyleSheet(
-            "QToolButton { padding: 3px 18px 3px 8px; }"
-            "QToolButton::menu-indicator {"
-            " subcontrol-origin: padding;"
-            " subcontrol-position: right center;"
-            " right: 4px;"
-            " width: 10px;"
-            "}"
+            "QToolButton::menu-indicator { image: none; width: 0px; }"
         )
         self.settings_menu_button.setToolTip(
-            "Graph labels, cache behavior, and collapsed display controls."
+            "Settings and more workflow actions."
         )
+        self.settings_menu_button.setAccessibleName("Settings and more actions")
         self.settings_menu = QMenu(self.settings_menu_button)
         self._settings_menu_submenus: list[QMenu] = []
         self._settings_menu_submenu_actions: list[QAction] = []
         self.settings_menu.aboutToShow.connect(self._populate_settings_toolbar_menu)
         self.settings_menu_button.setMenu(self.settings_menu)
+        for button in (
+            self.new_workflow_button,
+            self.load_workflow_button,
+            self.save_workflow_button,
+            self.batch_button,
+            self.leave_batch_button,
+            self.calculate_all_button,
+            self.refresh_button,
+            self.graph_focus_button,
+            self.auto_structure_button,
+            self.tunnel_manager_button,
+        ):
+            button.setIconSize(QSize(18, 18))
         self.port_label_mode_combo = QComboBox()
         self.port_label_mode_combo.addItems(
             [
@@ -2494,7 +2817,10 @@ class VippWidget(QWidget):
         self.compute_status_label.setToolTip(
             "Actual CPU/GPU decisions appear here after an accepted run."
         )
-        self.optimize_pipeline_button = QPushButton("Find fastest pipeline…")
+        self.optimize_pipeline_button = _ToolbarCommandButton("Find fastest")
+        self.optimize_pipeline_button.setIcon(_toolbar_icon("optimize"))
+        self.optimize_pipeline_button.setIconSize(QSize(18, 18))
+        self.optimize_pipeline_button.setAccessibleName("Find fastest pipeline")
         self.optimize_pipeline_button.setToolTip(
             "Compare every scientifically eligible implementation for each "
             "unlocked node and review the fastest whole-pipeline assignment. "
@@ -2536,14 +2862,28 @@ class VippWidget(QWidget):
             "updates that process large images."
         )
         self.view_dims_bar = ViewDimsBar()
-        self.pipeline_busy_label = QLabel("Processing")
+        self.pipeline_busy_label = _ToolbarElidingLabel("Processing")
         self.pipeline_busy_label.setStyleSheet("font-weight: 650;")
+        self.pipeline_busy_label.setMinimumWidth(80)
+        self.pipeline_busy_label.setMaximumWidth(300)
+        self.pipeline_busy_label.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Fixed,
+        )
         self.pipeline_busy_bar = QProgressBar()
         self.pipeline_busy_bar.setRange(0, 0)
-        self.pipeline_busy_bar.setTextVisible(False)
-        self.pipeline_busy_bar.setFixedWidth(96)
-        self.pipeline_busy_bar.setFixedHeight(12)
-        self.pipeline_cancel_button = QPushButton("Cancel calculation")
+        self.pipeline_busy_bar.setTextVisible(True)
+        self.pipeline_busy_bar.setMinimumWidth(96)
+        self.pipeline_busy_bar.setMaximumWidth(180)
+        self.pipeline_busy_bar.setFixedHeight(14)
+        self.pipeline_cancel_button = _ToolbarCommandButton("Stop")
+        self.pipeline_cancel_button.setIcon(_toolbar_icon("stop"))
+        self.pipeline_cancel_button.setIconSize(QSize(18, 18))
+        self.pipeline_cancel_button.setMaximumWidth(90)
+        self.pipeline_cancel_button.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Fixed,
+        )
         self.pipeline_cancel_button.setToolTip(
             "Request cooperative cancellation and wait for the active worker to "
             "release its CPU/GPU resources before changing compute policy."
@@ -2551,7 +2891,13 @@ class VippWidget(QWidget):
         self.pipeline_cancel_button.setVisible(False)
         self.pipeline_busy_label.setVisible(False)
         self.pipeline_busy_bar.setVisible(False)
-        self.cache_status_label = QLabel("Cache: --")
+        self.cache_status_label = _ToolbarElidingLabel("Cache: --")
+        self.cache_status_label.setMinimumWidth(80)
+        self.cache_status_label.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Fixed,
+        )
+        self.cache_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.cache_status_label.setStyleSheet("font-size: 11px; padding: 2px 4px;")
         self.cache_status_label.setToolTip("Estimated VIPP cache and system memory.")
         self.version_label = QLabel(f"VIPP {VIPP_VERSION}")
@@ -2559,12 +2905,24 @@ class VippWidget(QWidget):
             "font-size: 11px; font-weight: 600; padding: 2px 8px;"
         )
         self.version_label.setToolTip(f"napari-vipp {VIPP_VERSION}")
+        self.run_activity_button = _ToolbarChevronButton()
+        self.run_activity_button.setText("Run activity")
+        self.run_activity_button.setIcon(_toolbar_icon("activity"))
+        self.run_activity_button.setIconSize(QSize(18, 18))
+        self.run_activity_button.setToolTip(
+            "Show current and recent activity, total pipeline time, and workers."
+        )
+        self.run_activity_menu = QMenu(self.run_activity_button)
+        self.run_activity_menu.setObjectName("VippRunActivityMenu")
+        self.run_activity_menu.setAccessibleName("Run activity")
+        self.run_activity_menu.aboutToShow.connect(self._populate_run_activity_menu)
+        self.run_activity_button.setMenu(self.run_activity_menu)
         self.status_label = StatusMessageStrip(
             "Select an Image Source node to choose data for the workflow."
         )
 
         self.graph_search_edit = QLineEdit()
-        self.graph_search_edit.setPlaceholderText("Search graph")
+        self.graph_search_edit.setPlaceholderText("Find in workflow")
         self.graph_search_edit.setClearButtonEnabled(True)
         self.graph_search_edit.setToolTip(
             "Search node titles, operation IDs, tunnel names, and output tags."
@@ -3758,6 +4116,61 @@ class VippWidget(QWidget):
                 " border-radius: 999px;"
                 f" background: {color(colors.alternate_surface)};"
             )
+            for separator in (
+                self._toolbar_document_separator,
+                self._toolbar_preview_separator,
+            ):
+                # Napari's toolbar stylesheet can suppress a native QFrame
+                # line. Paint the two approved group dividers explicitly while
+                # retaining generous transparent space on either side.
+                separator.setStyleSheet(
+                    "QFrame {"
+                    " border: none;"
+                    f" border-left: 1px solid {color(colors.border)};"
+                    " margin: 4px 5px;"
+                    "}"
+                )
+            self.context_toolbar_group.setStyleSheet(
+                "QWidget#GraphContextToolbar {"
+                f" background: {color(colors.alternate_surface)};"
+                f" border: 1px solid {color(colors.border)};"
+                " border-radius: 4px; padding: 2px;"
+                "}"
+            )
+            self.status_toolbar_widget.setStyleSheet(
+                "QWidget#VippStatusToolbar {"
+                f" border-top: 1px solid {color(colors.border)};"
+                " padding-top: 2px;"
+                "}"
+            )
+            self.pipeline_activity_group.setStyleSheet(
+                "QFrame#VippPipelineActivityGroup {"
+                f" background: {color(colors.alternate_surface)};"
+                f" border: 1px solid {color(colors.border)};"
+                " border-radius: 4px;"
+                "}"
+            )
+            for button, icon_name in (
+                (self.new_workflow_button, "new"),
+                (self.load_workflow_button, "open"),
+                (self.save_workflow_button, "save"),
+                (self.batch_button, "batch"),
+                (self.leave_batch_button, "stop"),
+                (self.calculate_all_button, "calculate"),
+                (self.optimize_pipeline_button, "optimize"),
+                (self.refresh_button, "refresh"),
+                (self.graph_focus_button, "focus"),
+                (self.auto_structure_button, "arrange"),
+                (self.tunnel_manager_button, "tunnels"),
+                (self.pipeline_cancel_button, "stop"),
+            ):
+                button.setIcon(_toolbar_icon(icon_name, palette))
+            self.preview_menu_button.setIcon(_toolbar_icon("preview", palette))
+            self.settings_menu_button.setIcon(_toolbar_icon("settings", palette))
+            self.run_activity_button.setIcon(_toolbar_icon("activity", palette))
+            self.undo_action.setIcon(_toolbar_icon("undo", palette))
+            self.redo_action.setIcon(_toolbar_icon("redo", palette))
+            self.graph_zoom_reset_button.setIcon(_toolbar_icon("reset", palette))
             self.thumbnail_contrast_status_panel.setStyleSheet(
                 "QFrame#ThumbnailContrastStatusPanel {"
                 f" background: {color(colors.alternate_surface)};"
@@ -3859,6 +4272,8 @@ class VippWidget(QWidget):
 
             self.graph_view._apply_palette_theme()
             self.view_dims_bar._apply_palette_styles()
+            for slider in self.findChildren(VippSlider):
+                slider.refresh_theme(palette)
 
             self.graph_zoom_reset_button.setIcon(_toolbar_icon("reset", palette))
             self.reset_inspect_display_button.setIcon(
@@ -3910,6 +4325,8 @@ class VippWidget(QWidget):
             self._sync_thumbnail_statistics_inspector()
             if hasattr(self, "isolated_tuning_status"):
                 self._reserve_isolated_tuning_panel_height()
+            if hasattr(self, "status_toolbar_widget"):
+                self._reserve_status_toolbar_height()
         finally:
             self._theme_refresh_in_progress = False
 
@@ -4696,71 +5113,165 @@ class VippWidget(QWidget):
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(4)
 
-        input_row = QHBoxLayout()
-        input_row.setContentsMargins(0, 0, 0, 0)
-        input_row.setSpacing(6)
+        self.command_toolbar_widget = QWidget(self)
+        self.command_toolbar_widget.setObjectName("VippCommandToolbar")
+        self.command_toolbar_widget.setStyleSheet(
+            "QWidget#VippCommandToolbar QPushButton {"
+            " padding: 2px 5px;"
+            "}"
+        )
+        command_row = QHBoxLayout(self.command_toolbar_widget)
+        command_row.setContentsMargins(0, 0, 0, 0)
+        command_row.setSpacing(4)
+        self.command_toolbar_layout = command_row
+        # Compatibility alias used by compute-summary refreshes.
+        self.main_toolbar_layout = command_row
 
-        self.thumbnail_toolbar_group = QWidget(self)
-        thumbnail_layout = QHBoxLayout(self.thumbnail_toolbar_group)
-        thumbnail_layout.setContentsMargins(0, 0, 0, 0)
-        thumbnail_layout.setSpacing(10)
-        (
-            self.preview_toolbar_field,
-            self.preview_toolbar_label,
-        ) = _toolbar_field_pair(
-            "Preview",
-            self.preview_mode_combo,
-            parent=self.thumbnail_toolbar_group,
-        )
-        (
-            self.contrast_toolbar_field,
-            self.contrast_toolbar_label,
-        ) = _toolbar_field_pair(
-            "Contrast",
-            self.thumbnail_contrast_combo,
-            parent=self.thumbnail_toolbar_group,
-        )
-        (
-            self.contrast_range_toolbar_field,
-            self.contrast_range_toolbar_label,
-        ) = _toolbar_field_pair(
-            "Contrast Range",
-            self.thumbnail_scope_combo,
-            parent=self.thumbnail_toolbar_group,
-        )
-        (
-            self.mono_toolbar_field,
-            self.mono_toolbar_label,
-        ) = _toolbar_field_pair(
-            "Mono",
-            self.thumbnail_colormap_combo,
-            parent=self.thumbnail_toolbar_group,
-        )
-        (
-            self.thumbnail_resolution_toolbar_field,
-            self.thumbnail_resolution_toolbar_label,
-        ) = _toolbar_field_pair(
-            "Detail",
-            self.thumbnail_resolution_combo,
-            parent=self.thumbnail_toolbar_group,
-        )
-        for field in (
-            self.preview_toolbar_field,
-            self.contrast_toolbar_field,
-            self.contrast_range_toolbar_field,
-            self.mono_toolbar_field,
-            self.thumbnail_resolution_toolbar_field,
+        self.document_toolbar_group = QWidget(self.command_toolbar_widget)
+        document_layout = QHBoxLayout(self.document_toolbar_group)
+        document_layout.setContentsMargins(0, 0, 0, 0)
+        document_layout.setSpacing(4)
+        for button in (
+            self.new_workflow_button,
+            self.load_workflow_button,
+            self.save_workflow_button,
         ):
-            thumbnail_layout.addWidget(field)
-        self.thumbnail_toolbar_group.setSizePolicy(
+            document_layout.addWidget(button)
+        self.document_toolbar_group.setSizePolicy(
             QSizePolicy.Maximum,
             QSizePolicy.Preferred,
         )
-        input_row.addWidget(self.thumbnail_toolbar_group)
+        command_row.addWidget(self.document_toolbar_group)
 
-        self._toolbar_zoom_separator = _toolbar_separator()
-        input_row.addWidget(self._toolbar_zoom_separator)
+        self._toolbar_document_separator = _toolbar_separator()
+        command_row.addWidget(self._toolbar_document_separator)
+
+        self.workflow_toolbar_group = QWidget(self.command_toolbar_widget)
+        workflow_tools_layout = QHBoxLayout(self.workflow_toolbar_group)
+        workflow_tools_layout.setContentsMargins(0, 0, 0, 0)
+        workflow_tools_layout.setSpacing(4)
+        workflow_tools_layout.addWidget(self.batch_button)
+        workflow_tools_layout.addWidget(self.leave_batch_button)
+        workflow_tools_layout.addWidget(self.preview_menu_button)
+        self.workflow_toolbar_group.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Preferred,
+        )
+        command_row.addWidget(self.workflow_toolbar_group)
+
+        self._toolbar_preview_separator = _toolbar_separator()
+        command_row.addWidget(self._toolbar_preview_separator)
+
+        self.execution_toolbar_group = QWidget(self.command_toolbar_widget)
+        execution_layout = QHBoxLayout(self.execution_toolbar_group)
+        execution_layout.setContentsMargins(0, 0, 0, 0)
+        execution_layout.setSpacing(5)
+        execution_layout.addWidget(self.calculate_all_button)
+
+        self.compute_toolbar_group = QWidget(self.execution_toolbar_group)
+        compute_toolbar_layout = QHBoxLayout(self.compute_toolbar_group)
+        compute_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        compute_toolbar_layout.setSpacing(5)
+        (
+            self.compute_toolbar_field,
+            self.compute_toolbar_label,
+        ) = _toolbar_field_pair(
+            "Compute",
+            self.compute_mode_combo,
+            parent=self.compute_toolbar_group,
+        )
+        compute_toolbar_layout.addWidget(self.compute_toolbar_field)
+        compute_toolbar_layout.addWidget(self.compute_status_label)
+        self.compute_toolbar_group.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Preferred,
+        )
+        execution_layout.addWidget(self.compute_toolbar_group)
+        # Keep the whole-pipeline optimizer directly reachable whenever Custom
+        # compute is selected. It sits outside the compute field so its compact
+        # icon remains available when that field moves into Settings at narrow
+        # widths.
+        execution_layout.addWidget(self.optimize_pipeline_button)
+        self.execution_toolbar_group.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Preferred,
+        )
+        command_row.addWidget(self.execution_toolbar_group)
+        command_row.addStretch(1)
+
+        self.utility_toolbar_group = QWidget(self.command_toolbar_widget)
+        utility_layout = QHBoxLayout(self.utility_toolbar_group)
+        utility_layout.setContentsMargins(0, 0, 0, 0)
+        utility_layout.setSpacing(4)
+        utility_layout.addWidget(self.version_label)
+        utility_layout.addWidget(self.undo_button)
+        utility_layout.addWidget(self.redo_button)
+        utility_layout.addWidget(self.settings_menu_button)
+        self.utility_toolbar_group.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Preferred,
+        )
+        command_row.addWidget(self.utility_toolbar_group)
+        root.addWidget(self.command_toolbar_widget)
+
+        for widget in (
+            self.background_all_checkbox,
+            self.follow_dims_checkbox,
+        ):
+            widget.setVisible(False)
+
+        # These controls remain the single source of truth for menu actions,
+        # but no longer need to exist as unowned top-level widgets after moving
+        # presentation and infrequent controls out of the command bar.
+        self.toolbar_state_controls = QWidget(self)
+        self.toolbar_state_controls.hide()
+        for widget in (
+            self.open_example_button,
+            self.export_button,
+            self.export_ome_button,
+            self.preview_mode_combo,
+            self.thumbnail_contrast_combo,
+            self.thumbnail_scope_combo,
+            self.thumbnail_colormap_combo,
+            self.thumbnail_resolution_combo,
+            self.port_label_mode_combo,
+            self.background_all_checkbox,
+            self.follow_dims_checkbox,
+        ):
+            widget.setParent(self.toolbar_state_controls)
+            widget.hide()
+
+        self.batch_navigator = BatchNavigator(self)
+        root.addWidget(self.batch_navigator)
+        root.addWidget(self.workflow_tab_bar)
+
+        self.context_toolbar_group = QWidget(self)
+        self.context_toolbar_group.setObjectName("GraphContextToolbar")
+        panel_controls = QHBoxLayout(self.context_toolbar_group)
+        panel_controls.setContentsMargins(0, 0, 0, 0)
+        panel_controls.setSpacing(4)
+        panel_controls.addWidget(self.left_panel_toggle)
+        panel_controls.addWidget(self.graph_search_edit)
+        panel_controls.addWidget(self.graph_search_focus_button)
+        panel_controls.addWidget(self.graph_search_status)
+        panel_controls.addStretch(1)
+
+        self.context_actions_group = QWidget(self.context_toolbar_group)
+        context_actions_layout = QHBoxLayout(self.context_actions_group)
+        context_actions_layout.setContentsMargins(0, 0, 0, 0)
+        context_actions_layout.setSpacing(4)
+        context_actions_layout.addWidget(self.refresh_button)
+        context_actions_layout.addWidget(self.graph_focus_button)
+        context_actions_layout.addWidget(self.auto_structure_button)
+        context_actions_layout.addWidget(self.tunnel_manager_button)
+        self.context_actions_group.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Preferred,
+        )
+        panel_controls.addWidget(self.context_actions_group)
+
         self.zoom_toolbar_controls = QWidget(self)
         zoom_controls_layout = QHBoxLayout(self.zoom_toolbar_controls)
         zoom_controls_layout.setContentsMargins(0, 0, 0, 0)
@@ -4776,105 +5287,9 @@ class VippWidget(QWidget):
             self.zoom_toolbar_controls,
             parent=self,
         )
-        input_row.addWidget(self.zoom_toolbar_field)
-
-        self._toolbar_action_separator = _toolbar_separator()
-        input_row.addWidget(self._toolbar_action_separator)
-        self.graph_actions_toolbar_group = QWidget(self)
-        graph_actions_layout = QHBoxLayout(self.graph_actions_toolbar_group)
-        graph_actions_layout.setContentsMargins(0, 0, 0, 0)
-        graph_actions_layout.setSpacing(4)
-        for button in (
-            self.refresh_button,
-            self.graph_focus_button,
-            self.calculate_all_button,
-            self.auto_structure_button,
-            self.tunnel_manager_button,
-            self.undo_button,
-            self.redo_button,
-        ):
-            graph_actions_layout.addWidget(button)
-        self.graph_actions_toolbar_group.setSizePolicy(
-            QSizePolicy.Maximum,
-            QSizePolicy.Preferred,
-        )
-        input_row.addWidget(self.graph_actions_toolbar_group)
-
-        self._toolbar_compute_separator = _toolbar_separator(6)
-        input_row.addWidget(self._toolbar_compute_separator)
-        self.compute_toolbar_group = QWidget(self)
-        compute_toolbar_layout = QHBoxLayout(self.compute_toolbar_group)
-        compute_toolbar_layout.setContentsMargins(0, 0, 0, 0)
-        compute_toolbar_layout.setSpacing(5)
-        (
-            self.compute_toolbar_field,
-            self.compute_toolbar_label,
-        ) = _toolbar_field_pair(
-            "Compute",
-            self.compute_mode_combo,
-            parent=self.compute_toolbar_group,
-        )
-        compute_toolbar_layout.addWidget(self.compute_toolbar_field)
-        compute_toolbar_layout.addWidget(self.optimize_pipeline_button)
-        compute_toolbar_layout.addWidget(self.compute_status_label)
-        self.compute_toolbar_group.setSizePolicy(
-            QSizePolicy.Maximum,
-            QSizePolicy.Preferred,
-        )
-        input_row.addWidget(self.compute_toolbar_group)
-
-        self._toolbar_settings_separator = _toolbar_separator(6)
-        input_row.addWidget(self._toolbar_settings_separator)
-        input_row.addWidget(self.settings_menu_button)
-        input_row.addStretch(1)
-        self.main_toolbar_layout = input_row
-        root.addLayout(input_row)
-        self._toolbar_checkbox_widgets = []
-        for widget in (
-            self.background_all_checkbox,
-            self.follow_dims_checkbox,
-        ):
-            widget.setVisible(False)
-        self._toolbar_dropdown_widgets = [
-            self.thumbnail_toolbar_group,
-        ]
-        self._toolbar_compute_widgets = [
-            self._toolbar_compute_separator,
-            self.compute_toolbar_group,
-        ]
-        self._toolbar_zoom_widgets = [self.zoom_toolbar_field]
-        self._toolbar_settings_widgets = [
-            self._toolbar_settings_separator,
-            self.settings_menu_button,
-        ]
-
-        workflow_row = QHBoxLayout()
-        workflow_row.setContentsMargins(0, 0, 0, 0)
-        workflow_row.setSpacing(4)
-        workflow_row.addWidget(self.new_workflow_button)
-        workflow_row.addWidget(self.open_example_button)
-        workflow_row.addWidget(self.load_workflow_button)
-        workflow_row.addWidget(self.save_workflow_button)
-        self._batch_toolbar_left_separator = _toolbar_separator()
-        workflow_row.addWidget(self._batch_toolbar_left_separator)
-        workflow_row.addWidget(self.batch_button)
-        workflow_row.addWidget(self.leave_batch_button)
-        self._batch_toolbar_right_separator = _toolbar_separator()
-        workflow_row.addWidget(self._batch_toolbar_right_separator)
-        workflow_row.addWidget(self.export_button)
-        workflow_row.addWidget(self.export_ome_button)
-        export_separator = _toolbar_separator()
-        workflow_row.addWidget(export_separator)
-        workflow_row.addStretch(1)
-        workflow_row.addWidget(self.pipeline_busy_label)
-        workflow_row.addWidget(self.pipeline_busy_bar)
-        workflow_row.addWidget(self.pipeline_cancel_button)
-        workflow_row.addWidget(self.cache_status_label)
-        workflow_row.addWidget(self.version_label)
-        self.workflow_toolbar_layout = workflow_row
-        root.addLayout(workflow_row)
-        self.batch_navigator = BatchNavigator(self)
-        root.addWidget(self.batch_navigator)
+        panel_controls.addWidget(self.zoom_toolbar_field)
+        panel_controls.addWidget(self.right_panel_toggle)
+        root.addWidget(self.context_toolbar_group)
         root.addWidget(self.view_dims_bar)
 
         self.splitter = QSplitter(Qt.Horizontal)
@@ -4889,161 +5304,746 @@ class VippWidget(QWidget):
         self.splitter.setMinimumHeight(0)
         self.splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         root.addWidget(self.splitter, 1)
-        root.addWidget(self.status_label)
+
+        self.status_toolbar_widget = QWidget(self)
+        self.status_toolbar_widget.setObjectName("VippStatusToolbar")
+        status_row = QHBoxLayout(self.status_toolbar_widget)
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(6)
+        status_row.addWidget(self.status_label, 1)
+
+        self.pipeline_activity_group = QFrame(self.status_toolbar_widget)
+        self.pipeline_activity_group.setObjectName("VippPipelineActivityGroup")
+        self.pipeline_activity_group.setAccessibleName("Current calculation")
+        self.pipeline_activity_group.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Fixed,
+        )
+        activity_row = QHBoxLayout(self.pipeline_activity_group)
+        activity_row.setContentsMargins(7, 2, 5, 2)
+        activity_row.setSpacing(5)
+        activity_row.addWidget(self.pipeline_busy_label)
+        activity_row.addWidget(self.pipeline_busy_bar)
+        activity_row.addWidget(self.pipeline_cancel_button)
+        self.pipeline_activity_layout = activity_row
+        self.pipeline_activity_group.setVisible(False)
+
+        status_row.addWidget(self.cache_status_label)
+        status_row.addWidget(
+            self.pipeline_activity_group,
+            0,
+            Qt.AlignRight | Qt.AlignVCenter,
+        )
+        status_row.addWidget(self.run_activity_button)
+        self.status_toolbar_layout = status_row
+        # Compatibility alias used when repainting tab-switch activity.
+        self.workflow_toolbar_layout = status_row
+        root.addWidget(self.status_toolbar_widget)
         self._sync_side_panel_toggles()
 
+    def _command_toolbar_minimum_width(self) -> int:
+        """Return a freshly propagated minimum width for the nested command row."""
+
+        for group in (
+            self.compute_toolbar_group,
+            self.document_toolbar_group,
+            self.workflow_toolbar_group,
+            self.execution_toolbar_group,
+            self.utility_toolbar_group,
+            self.command_toolbar_widget,
+        ):
+            layout = group.layout()
+            if layout is not None:
+                layout.invalidate()
+                layout.activate()
+            group.updateGeometry()
+        self.command_toolbar_layout.invalidate()
+        self.command_toolbar_layout.activate()
+        return int(self.command_toolbar_layout.minimumSize().width())
+
     def _sync_toolbar_responsive_mode(self) -> None:
-        width = int(self.width())
-        expanded_width = max(
-            self.TOOLBAR_HIDE_DROPDOWNS_WIDTH,
-            self._expanded_toolbar_required_width(),
+        width = max(int(self.width()), 1)
+        signature = (
+            width,
+            self.leave_batch_button.isHidden(),
+            self.compute_status_label.text(),
+            self._compute_mode.value,
+            self.font().toString(),
         )
-        hide_dropdowns = 0 < width < expanded_width
-        hide_compute = 0 < width < self.TOOLBAR_HIDE_COMPUTE_WIDTH
-        zoom_required_width = self._toolbar_stage_required_width(
-            hide_dropdowns=hide_dropdowns,
-            hide_zoom=False,
-            hide_compute=hide_compute,
-            include_compute_status=False,
+        if signature == self._toolbar_responsive_signature:
+            # Font/style polishing can increase native size hints after the
+            # first pre-show pass.  Re-enter compaction if the settled command
+            # row no longer fits instead of trusting a stale width signature.
+            available = max(width - 12, 1)
+            if self._command_toolbar_minimum_width() <= available:
+                return
+        self._toolbar_responsive_signature = signature
+        if width >= self.TOOLBAR_WIDE_WIDTH:
+            mode = "wide"
+        elif width >= self.TOOLBAR_NARROW_WIDTH:
+            mode = "medium"
+        else:
+            mode = "narrow"
+        self._toolbar_layout_mode = mode
+
+        compact_documents = mode == "narrow" or width < 1120
+        document_text = {
+            self.new_workflow_button: "New",
+            self.load_workflow_button: "Open",
+            self.save_workflow_button: "Save",
+        }
+        for button, text in document_text.items():
+            button.setText("" if compact_documents else text)
+            button.setAccessibleName(text)
+            button.setVisible(True)
+
+        if mode == "wide":
+            self.batch_button.setText("Batch workflow")
+            self.preview_menu_button.setText("Preview")
+            self.calculate_all_button.setText("Calculate all")
+            self.optimize_pipeline_button.setText("Find fastest")
+            self.auto_structure_button.setText("Auto Arrange")
+        elif mode == "medium":
+            self.batch_button.setText("Batch")
+            self.preview_menu_button.setText("Preview")
+            self.calculate_all_button.setText("Calculate")
+            self.optimize_pipeline_button.setText("Find fastest")
+            self.auto_structure_button.setText("Arrange")
+        else:
+            self.batch_button.setText("")
+            self.preview_menu_button.setText("")
+            self.calculate_all_button.setText("")
+            self.optimize_pipeline_button.setText("")
+            self.auto_structure_button.setText("")
+        self.leave_batch_button.setText(
+            "Leave batch mode"
+            if mode == "wide"
+            else ("Leave batch" if mode == "medium" else "")
         )
-        hide_zoom = 0 < width and (
-            width <= self.TOOLBAR_HIDE_ZOOM_WIDTH or width < zoom_required_width
-        )
-        status_required_width = self._toolbar_stage_required_width(
-            hide_dropdowns=hide_dropdowns,
-            hide_zoom=hide_zoom,
-            hide_compute=hide_compute,
-            include_compute_status=True,
-        )
-        long_compute_status = len(self.compute_status_label.text()) > 24
-        hide_compute_status = hide_compute or (
-            0 < width
-            and (
-                width < self.TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH
-                or width < status_required_width
-                or (long_compute_status and width < self.TOOLBAR_HIDE_CHECKBOXES_WIDTH)
+        self.leave_batch_button.setAccessibleName("Leave batch mode")
+        self.batch_button.setAccessibleName("Batch workflow")
+        self.preview_menu_button.setAccessibleName("Preview display settings")
+        self.calculate_all_button.setAccessibleName("Calculate all")
+        self.optimize_pipeline_button.setAccessibleName("Find fastest pipeline")
+        self.auto_structure_button.setAccessibleName("Auto Arrange graph")
+
+        hide_compute = mode == "narrow"
+        hide_compute_status = hide_compute or width < 1120
+        self.compute_toolbar_group.setVisible(not hide_compute)
+        self.compute_status_label.setVisible(not hide_compute_status)
+
+        show_context_secondary = mode != "narrow"
+        self.refresh_button.setVisible(True)
+        self.graph_focus_button.setVisible(True)
+        self.refresh_button.setText("Refresh" if show_context_secondary else "")
+        self.graph_focus_button.setText("Focus" if show_context_secondary else "")
+        self.refresh_button.setAccessibleName("Refresh file sources")
+        self.graph_focus_button.setAccessibleName("Focus workflow graph")
+        self.auto_structure_button.setVisible(show_context_secondary)
+        self.tunnel_manager_button.setVisible(show_context_secondary)
+        self.graph_search_status.setVisible(mode != "narrow")
+        # At smaller medium widths, retaining Zoom would squeeze the search
+        # field and clip the graph actions. Keep the match count and complete
+        # action cluster visible; Zoom returns as soon as the whole row fits.
+        self.zoom_toolbar_field.setVisible(mode == "wide" or width >= 1120)
+
+        for toggle, text in (
+            (self.left_panel_toggle, "Nodes"),
+            (self.right_panel_toggle, "Inspector"),
+        ):
+            # The directional glyph is clearer than a clipped label and keeps
+            # both edge controls reachable even when the graph search expands.
+            toggle.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            toggle.setText("")
+            toggle.setFixedSize(30, 28)
+            toggle.setAccessibleName(f"Toggle {text.lower()} sidebar")
+
+        self._toolbar_document_separator.setVisible(True)
+        self._toolbar_preview_separator.setVisible(True)
+        self.document_toolbar_group.setVisible(True)
+        self.workflow_toolbar_group.setVisible(True)
+        self.execution_toolbar_group.setVisible(True)
+        self.utility_toolbar_group.setVisible(True)
+        self.settings_menu_button.setVisible(True)
+
+        # Optional state can add a long Leave-batch action, and translated text
+        # or a larger UI font can outgrow fixed breakpoints. Compact only as far
+        # as the live command row requires, preserving text whenever it fits.
+        def command_row_fits() -> bool:
+            available = max(width - 12, 1)
+            return self._command_toolbar_minimum_width() <= available
+
+        if (
+            not command_row_fits()
+            and not self.leave_batch_button.isHidden()
+            and self.leave_batch_button.text()
+        ):
+            self.leave_batch_button.setText(
+                "Leave batch" if mode == "wide" else ""
             )
+        if not command_row_fits() and not self.compute_status_label.isHidden():
+            self.compute_status_label.hide()
+        if (
+            not command_row_fits()
+            and not self.optimize_pipeline_button.isHidden()
+            and self.optimize_pipeline_button.text()
+        ):
+            self.optimize_pipeline_button.setText("Fastest")
+        if (
+            not command_row_fits()
+            and not self.optimize_pipeline_button.isHidden()
+            and self.optimize_pipeline_button.text()
+        ):
+            self.optimize_pipeline_button.setText("")
+        if not command_row_fits() and mode == "wide":
+            for button in document_text:
+                button.setText("")
+            self.batch_button.setText("Batch")
+            self.calculate_all_button.setText("Calculate")
+        if not command_row_fits():
+            self.batch_button.setText("")
+            self.preview_menu_button.setText("")
+            self.calculate_all_button.setText("")
+            self.optimize_pipeline_button.setText("")
+        if not command_row_fits() and not self.compute_toolbar_group.isHidden():
+            self.compute_toolbar_group.hide()
+
+        self.cache_status_label.setVisible(mode != "narrow")
+        self.cache_status_label.setMinimumWidth(140 if mode == "wide" else 80)
+        self.run_activity_button.setText("" if mode == "narrow" else "Run activity")
+        self.run_activity_button.setAccessibleName("Run activity")
+        self._sync_run_activity_button()
+
+    def _populate_preview_display_menu(self) -> None:
+        """Build the form-style, presentation-only preview settings popover."""
+        menu = self.preview_display_menu
+        menu.clear()
+        self._preview_menu_panel = None
+        self._preview_menu_action = None
+        self._preview_menu_combos.clear()
+
+        colors = theme_colors(QWidget.palette(self))
+        neutral_surface = blend_colors(
+            colors.surface,
+            colors.text,
+            0.02 if palette_is_dark(QWidget.palette(self)) else 0.08,
         )
-        hide_checkboxes = True
-        stage = (
-            hide_checkboxes,
-            hide_dropdowns,
-            hide_zoom,
-            hide_compute_status,
-            hide_compute,
+        panel_background = blend_colors(
+            neutral_surface,
+            colors.info.accent,
+            0.04,
         )
-        self._toolbar_compact_stage = stage
-        for widget in self._toolbar_checkbox_widgets:
-            widget.setVisible(not hide_checkboxes)
-        for widget in self._toolbar_dropdown_widgets:
-            widget.setVisible(not hide_dropdowns)
-        for widget in self._toolbar_zoom_widgets:
-            widget.setVisible(not hide_zoom)
-        for widget in self._toolbar_compute_widgets:
-            widget.setVisible(not hide_compute)
-        self.compute_status_label.setVisible(
-            not hide_compute and not hide_compute_status
-        )
-        for widget in self._toolbar_settings_widgets:
-            widget.setVisible(True)
-        self._toolbar_zoom_separator.setVisible(not hide_dropdowns and not hide_zoom)
-        self._toolbar_action_separator.setVisible(not hide_dropdowns or not hide_zoom)
-        self.auto_structure_button.setText(
-            "Structure" if hide_dropdowns or hide_zoom else "Auto structure graph"
+        menu.setStyleSheet(
+            "QMenu#VippPreviewDisplayMenu {"
+            f" background: {panel_background.name()};"
+            f" border: 1px solid {colors.border.name()};"
+            " border-radius: 5px; padding: 0px;"
+            "}"
         )
 
-    def _expanded_toolbar_required_width(self) -> int:
-        """Return the width needed to show the complete first toolbar row."""
-        return self._toolbar_stage_required_width(
-            hide_dropdowns=False,
-            hide_zoom=False,
-            hide_compute=False,
-            include_compute_status=True,
+        panel = QFrame(menu)
+        panel.setObjectName("VippPreviewDisplayPanel")
+        panel.setAccessibleName("Preview display settings")
+        panel.setMinimumWidth(360)
+        panel.setStyleSheet(
+            "QFrame#VippPreviewDisplayPanel {"
+            f" background: {panel_background.name()};"
+            " border: none; border-radius: 5px;"
+            "}"
+            "QWidget#VippPreviewDisplayHeader {"
+            " background: transparent; border: none;"
+            "}"
+            "QLabel#VippPreviewDisplayHeading {"
+            f" color: {colors.text.name()}; font-weight: 600;"
+            "}"
+            "QLabel#VippPreviewDisplayNote {"
+            f" color: {colors.muted_text.name()}; font-size: 11px;"
+            "}"
         )
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(11, 10, 11, 10)
+        layout.setSpacing(8)
 
-    def _toolbar_stage_required_width(
-        self,
-        *,
-        hide_dropdowns: bool,
-        hide_zoom: bool,
-        hide_compute: bool,
-        include_compute_status: bool,
-    ) -> int:
-        """Return the width that keeps primary toolbar actions uncompressed."""
-        original_text = self.auto_structure_button.text()
-        self.auto_structure_button.setText(
-            "Structure" if hide_dropdowns or hide_zoom else "Auto structure graph"
+        header = QWidget(panel)
+        header.setObjectName("VippPreviewDisplayHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 1)
+        header_layout.setSpacing(7)
+        icon = QLabel(header)
+        icon.setPixmap(
+            _toolbar_icon("preview", QWidget.palette(self)).pixmap(18, 18)
         )
-        actions_layout = self.graph_actions_toolbar_group.layout()
-        if actions_layout is not None:
-            actions_layout.invalidate()
-        widths: list[int] = []
-        if not hide_dropdowns:
-            widths.append(self.thumbnail_toolbar_group.sizeHint().width())
-        if not hide_dropdowns and not hide_zoom:
-            widths.append(self._toolbar_zoom_separator.sizeHint().width())
-        if not hide_zoom:
-            widths.append(self.zoom_toolbar_field.sizeHint().width())
-        if not hide_dropdowns or not hide_zoom:
-            widths.append(self._toolbar_action_separator.sizeHint().width())
-        widths.append(self.graph_actions_toolbar_group.sizeHint().width())
-        if not hide_compute:
-            widths.append(self._toolbar_compute_separator.sizeHint().width())
-            widths.append(
-                self._compute_toolbar_required_width(
-                    include_status=include_compute_status
+        icon.setFixedSize(18, 18)
+        heading = QLabel("Preview display settings", header)
+        heading.setObjectName("VippPreviewDisplayHeading")
+        heading.setAccessibleName("Preview display settings")
+        header_layout.addWidget(icon)
+        header_layout.addWidget(heading)
+        header_layout.addStretch(1)
+        layout.addWidget(header)
+
+        form = QGridLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(7)
+        form.setColumnStretch(1, 1)
+        for label, combo in (
+            ("Mode", self.preview_mode_combo),
+            ("Contrast", self.thumbnail_contrast_combo),
+            ("Range", self.thumbnail_scope_combo),
+            ("Colormap", self.thumbnail_colormap_combo),
+            ("Detail", self.thumbnail_resolution_combo),
+            ("Port labels", self.port_label_mode_combo),
+        ):
+            row = form.rowCount()
+            row_label = QLabel(label, panel)
+            row_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            picker = QComboBox(panel)
+            picker.setAccessibleName(f"Preview {label.lower()}")
+            picker.setToolTip(combo.toolTip())
+            for index in range(combo.count()):
+                picker.addItem(
+                    combo.itemIcon(index),
+                    combo.itemText(index),
+                    combo.itemData(index),
                 )
+                picker.setItemData(
+                    index,
+                    combo.itemData(index, Qt.ToolTipRole),
+                    Qt.ToolTipRole,
+                )
+            picker.setCurrentIndex(combo.currentIndex())
+            picker.setEnabled(combo.isEnabled())
+            picker.setSizeAdjustPolicy(
+                QComboBox.AdjustToMinimumContentsLengthWithIcon
             )
-        widths.extend(
-            (
-                self._toolbar_settings_separator.sizeHint().width(),
-                self.settings_menu_button.sizeHint().width(),
+            picker.setMinimumContentsLength(18)
+            picker.setMinimumWidth(220)
+            picker.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            picker.currentIndexChanged.connect(
+                lambda index, source=combo: source.setCurrentIndex(int(index))
             )
-        )
-        required = sum(widths)
-        required += self.main_toolbar_layout.spacing() * max(len(widths) - 1, 0)
-        required += 12
-        self.auto_structure_button.setText(original_text)
-        if actions_layout is not None:
-            actions_layout.invalidate()
-        return required
+            row_label.setBuddy(picker)
+            form.addWidget(row_label, row, 0)
+            form.addWidget(picker, row, 1)
+            self._preview_menu_combos[label] = picker
+        layout.addLayout(form)
 
-    def _compute_toolbar_required_width(self, *, include_status: bool) -> int:
-        layout = self.compute_toolbar_group.layout()
-        margins = layout.contentsMargins()
-        required = (
-            self.compute_toolbar_field.sizeHint().width()
-            + margins.left()
-            + margins.right()
+        note = QLabel(
+            "Presentation only · analysis pixels are unchanged",
+            panel,
         )
-        if not self.optimize_pipeline_button.isHidden():
-            required += (
-                layout.spacing() + self.optimize_pipeline_button.sizeHint().width()
+        note.setObjectName("VippPreviewDisplayNote")
+        note.setAccessibleName(
+            "Presentation only; analysis pixels are unchanged"
+        )
+        layout.addWidget(note)
+
+        action = QWidgetAction(menu)
+        action.setText("Preview display settings")
+        action.setDefaultWidget(panel)
+        menu.addAction(action)
+        self._preview_menu_panel = panel
+        self._preview_menu_action = action
+
+    @staticmethod
+    def _format_activity_duration(seconds: float) -> str:
+        """Format an elapsed duration compactly without hiding short runs."""
+        seconds = max(float(seconds), 0.0)
+        if seconds < 10.0:
+            return f"{seconds:.1f} s"
+        if seconds < 60.0:
+            return f"{seconds:.0f} s"
+        total_seconds = int(round(seconds))
+        minutes, remainder = divmod(total_seconds, 60)
+        if minutes < 60:
+            return f"{minutes} min {remainder:02d} s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours} h {minutes:02d} min"
+
+    def _begin_pipeline_processing_timing(self, key: object) -> None:
+        """Start one scientific pipeline timer unless it is already active."""
+        self._pipeline_processing_active_started_at.setdefault(key, monotonic())
+
+    def _finish_pipeline_processing_timing(self, key: object) -> float | None:
+        """Commit one pipeline timer exactly once and return its duration."""
+        started_at = self._pipeline_processing_active_started_at.pop(key, None)
+        if started_at is None:
+            return None
+        elapsed = max(monotonic() - started_at, 0.0)
+        self._pipeline_processing_total_seconds += elapsed
+        return elapsed
+
+    @contextmanager
+    def _measure_synchronous_pipeline_processing(self):
+        """Measure one synchronous scientific ``pipeline.run`` invocation."""
+        self._pipeline_processing_timer_serial += 1
+        key = ("synchronous", self._pipeline_processing_timer_serial)
+        self._begin_pipeline_processing_timing(key)
+        try:
+            yield
+        finally:
+            self._finish_pipeline_processing_timing(key)
+
+    def _pipeline_processing_time_snapshot(self) -> tuple[float, float]:
+        """Return session total and currently running pipeline seconds."""
+        now = monotonic()
+        current = sum(
+            max(now - started_at, 0.0)
+            for started_at in self._pipeline_processing_active_started_at.values()
+        )
+        return self._pipeline_processing_total_seconds + current, current
+
+    def _populate_run_activity_menu(self) -> None:
+        """Expose current, recent, timing, and worker activity as a compact card."""
+        menu = self.run_activity_menu
+        menu.clear()
+        self._run_activity_panel = None
+        self._run_activity_action = None
+        self._run_activity_value_labels.clear()
+        self._run_activity_stop_button = None
+
+        palette = QWidget.palette(self)
+        colors = theme_colors(palette)
+        neutral_surface = blend_colors(
+            colors.surface,
+            colors.text,
+            0.02 if palette_is_dark(palette) else 0.08,
+        )
+        panel_background = blend_colors(
+            neutral_surface,
+            colors.info.accent,
+            0.04,
+        )
+        menu.setStyleSheet(
+            "QMenu#VippRunActivityMenu {"
+            f" background: {panel_background.name()};"
+            f" border: 1px solid {colors.border.name()};"
+            " border-radius: 5px; padding: 0px;"
+            "}"
+        )
+
+        panel = QFrame(menu)
+        panel.setObjectName("VippRunActivityPanel")
+        panel.setAccessibleName("Run activity details")
+        panel.setMinimumWidth(430)
+        panel.setMaximumWidth(560)
+        panel.setStyleSheet(
+            "QFrame#VippRunActivityPanel {"
+            f" background: {panel_background.name()};"
+            " border: none; border-radius: 5px;"
+            "}"
+            "QWidget#VippRunActivityHeader {"
+            " background: transparent; border: none;"
+            "}"
+            "QLabel#VippRunActivityHeading {"
+            f" color: {colors.text.name()}; font-weight: 600;"
+            "}"
+            "QLabel#VippRunActivityKey {"
+            f" color: {colors.muted_text.name()}; font-weight: 600;"
+            "}"
+            "QLabel#VippRunActivityValue {"
+            f" color: {colors.text.name()};"
+            "}"
+            "QLabel#VippRunActivityCurrent {"
+            f" color: {colors.info.foreground.name()}; font-weight: 600;"
+            "}"
+            "QLabel#VippRunActivityNote {"
+            f" color: {colors.muted_text.name()}; font-size: 11px;"
+            "}"
+            "QFrame#VippRunActivityDivider {"
+            f" background: {colors.border.name()}; border: none;"
+            "}"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(11, 10, 11, 10)
+        layout.setSpacing(8)
+
+        header = QWidget(panel)
+        header.setObjectName("VippRunActivityHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 1)
+        header_layout.setSpacing(7)
+        icon = QLabel(header)
+        icon.setPixmap(_toolbar_icon("activity", palette).pixmap(18, 18))
+        icon.setFixedSize(18, 18)
+        heading = QLabel("Run activity", header)
+        heading.setObjectName("VippRunActivityHeading")
+        header_layout.addWidget(icon)
+        header_layout.addWidget(heading)
+        header_layout.addStretch(1)
+        layout.addWidget(header)
+
+        divider = QFrame(panel)
+        divider.setObjectName("VippRunActivityDivider")
+        divider.setFixedHeight(1)
+        layout.addWidget(divider)
+
+        busy = not self.pipeline_busy_label.isHidden()
+        current_text = "No calculations running"
+        if busy:
+            current_text = self.pipeline_busy_label.text().strip() or "Processing"
+            if self.pipeline_busy_bar.maximum() > self.pipeline_busy_bar.minimum():
+                maximum = max(self.pipeline_busy_bar.maximum(), 1)
+                percent = int(round(100 * self.pipeline_busy_bar.value() / maximum))
+                current_text = f"{current_text} · {percent}%"
+
+        form = QGridLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(7)
+        form.setColumnMinimumWidth(0, 112)
+        form.setColumnStretch(1, 1)
+
+        def add_detail_row(
+            key: str,
+            label: str,
+            value: str,
+            *,
+            current: bool = False,
+            tooltip: str = "",
+        ) -> QLabel:
+            row = form.rowCount()
+            key_label = QLabel(label, panel)
+            key_label.setObjectName("VippRunActivityKey")
+            key_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            value_label = QLabel(value, panel)
+            value_label.setObjectName(
+                "VippRunActivityCurrent" if current else "VippRunActivityValue"
             )
-        if include_status:
-            required += layout.spacing() + self.compute_status_label.sizeHint().width()
-        return required
+            value_label.setWordWrap(True)
+            value_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            value_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            value_label.setAccessibleName(f"{label}: {value}")
+            if tooltip:
+                key_label.setToolTip(tooltip)
+                value_label.setToolTip(tooltip)
+            form.addWidget(key_label, row, 0)
+            form.addWidget(value_label, row, 1)
+            self._run_activity_value_labels[key] = value_label
+            return value_label
+
+        add_detail_row(
+            "current",
+            "Current activity",
+            current_text,
+            current=busy,
+        )
+        if busy and self._run_activity_started_at is not None:
+            elapsed = max(monotonic() - self._run_activity_started_at, 0.0)
+            add_detail_row(
+                "elapsed",
+                "Elapsed",
+                self._format_activity_duration(elapsed),
+            )
+        add_detail_row(
+            "recent",
+            "Recent activity",
+            self._last_run_activity_text,
+        )
+        pipeline_total, pipeline_current = self._pipeline_processing_time_snapshot()
+        pipeline_text = (
+            f"{self._format_activity_duration(pipeline_total)} total this session"
+        )
+        if self._pipeline_processing_active_started_at:
+            pipeline_text += (
+                f" · {self._format_activity_duration(pipeline_current)} current"
+            )
+        pipeline_tooltip = (
+            "Wall-clock time spent running scientific pipeline calculations in "
+            "this VIPP session. Result display, source loading, and thumbnail "
+            "statistics are excluded."
+        )
+        add_detail_row(
+            "pipeline_time",
+            "Pipeline time",
+            pipeline_text,
+            tooltip=pipeline_tooltip,
+        )
+        workers = add_detail_row(
+            "workers",
+            "Workers",
+            self.compute_status_label.text(),
+            tooltip=self.compute_status_label.toolTip(),
+        )
+        workers.setAccessibleDescription(self.compute_status_label.toolTip())
+        layout.addLayout(form)
+
+        note = QLabel(
+            "Pipeline time is cumulative for this VIPP session.",
+            panel,
+        )
+        note.setObjectName("VippRunActivityNote")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        if busy and not self.pipeline_cancel_button.isHidden():
+            action_row = QHBoxLayout()
+            action_row.setContentsMargins(0, 1, 0, 0)
+            action_row.addStretch(1)
+            stop_button = _ToolbarCommandButton("Stop", panel)
+            stop_button.setObjectName("VippRunActivityStop")
+            stop_button.setIcon(_toolbar_icon("stop", palette))
+            stop_button.setIconSize(QSize(18, 18))
+            stop_button.setAccessibleName("Stop current activity")
+            stop_button.setToolTip(self.pipeline_cancel_button.toolTip())
+
+            def stop_current_activity() -> None:
+                menu.close()
+                self.pipeline_cancel_button.click()
+
+            stop_button.clicked.connect(stop_current_activity)
+            action_row.addWidget(stop_button)
+            layout.addLayout(action_row)
+            self._run_activity_stop_button = stop_button
+
+        action = QWidgetAction(menu)
+        action.setText("Run activity details")
+        action.setDefaultWidget(panel)
+        menu.addAction(action)
+        self._run_activity_panel = panel
+        self._run_activity_action = action
+
+    def _sync_run_activity_button(self) -> None:
+        busy = not self.pipeline_busy_label.isHidden()
+        self.pipeline_activity_group.setVisible(busy)
+        base = "Run activity"
+        narrow = self._toolbar_layout_mode == "narrow"
+        if not narrow:
+            self.run_activity_button.setText(f"{base} · 1" if busy else base)
+        else:
+            self.run_activity_button.setText("")
+        # While work is active, the operation/progress strip is the primary
+        # status. Hiding the older message prevents duplicate status copy and
+        # leaves enough room for long node names at every dock width.
+        self.status_label.setVisible(not busy)
+        self.pipeline_busy_label.setMinimumWidth(0 if narrow else 80)
+        self.pipeline_busy_label.setMaximumWidth(160 if narrow else 300)
+        self.pipeline_busy_bar.setMinimumWidth(80 if narrow else 96)
+        self.pipeline_busy_bar.setMaximumWidth(120 if narrow else 180)
+        self.pipeline_cancel_button.setText("Stop")
+        self.pipeline_cancel_button.setAccessibleName("Stop current activity")
+        self.run_activity_button.setToolTip(
+            "One activity is running. Open for progress, timing, workers, and Stop."
+            if busy
+            else (
+                "Show current and recent activity, total pipeline time, and workers."
+            )
+        )
+        self._reserve_status_toolbar_height()
+
+    def _reserve_status_toolbar_height(self) -> None:
+        """Keep progress controls from changing the bottom toolbar's height."""
+        toolbar = getattr(self, "status_toolbar_widget", None)
+        activity_layout = getattr(self, "pipeline_activity_layout", None)
+        if toolbar is None or activity_layout is None:
+            return
+
+        activity_controls = (
+            self.pipeline_busy_label,
+            self.pipeline_busy_bar,
+            self.pipeline_cancel_button,
+        )
+        control_height = max(
+            max(control.sizeHint().height(), control.minimumSizeHint().height())
+            for control in activity_controls
+        )
+        activity_margins = activity_layout.contentsMargins()
+        activity_height = (
+            control_height
+            + activity_margins.top()
+            + activity_margins.bottom()
+            + 2  # the activity card's one-pixel border on each edge
+        )
+        adjacent_height = max(
+            self.cache_status_label.sizeHint().height(),
+            self.run_activity_button.sizeHint().height(),
+        )
+        status_height = 0
+        if toolbar.isVisible() and not self.status_label.isHidden():
+            status_width = max(self.status_label.width(), 1)
+            if self.status_label.hasHeightForWidth():
+                status_height = self.status_label.heightForWidth(status_width)
+            else:
+                status_height = self.status_label.sizeHint().height()
+        layout_margins = self.status_toolbar_layout.contentsMargins()
+        reserved_height = (
+            max(activity_height, adjacent_height, status_height)
+            + layout_margins.top()
+            + layout_margins.bottom()
+        )
+        if toolbar.minimumHeight() != reserved_height:
+            # Minimum-only is intentional: routine progress cannot resize the
+            # row, while a genuinely long warning or actionable error can still
+            # wrap without being clipped.
+            toolbar.setMinimumHeight(reserved_height)
+        # Hiding the status label and revealing the activity card changes this
+        # nested row's size hint.  Explicitly invalidate both layouts so the
+        # outer vertical layout does not reuse the idle hint for one frame (or,
+        # with some Qt styles, for the entire run).
+        self.status_toolbar_layout.invalidate()
+        self.status_toolbar_layout.activate()
+        toolbar.updateGeometry()
+        outer_layout = self.layout()
+        if outer_layout is not None:
+            outer_layout.invalidate()
+            outer_layout.activate()
 
     def _populate_settings_toolbar_menu(self) -> None:
         menu = self.settings_menu
         menu.clear()
         self._settings_menu_submenus.clear()
         self._settings_menu_submenu_actions.clear()
-        (
-            _hide_checkboxes,
-            hide_dropdowns,
-            hide_zoom,
-            _hide_compute_status,
-            _hide_compute,
-        ) = self._toolbar_compact_stage or (False, False, False, False, False)
-        added_section = False
-        self._add_combo_menu(menu, "Compute policy", self.compute_mode_combo)
+        hide_zoom = self.zoom_toolbar_field.isHidden()
+        hide_compute = self.compute_toolbar_group.isHidden()
+
+        self._add_menu_heading(menu, "Workflow actions")
+        open_example_action = menu.addAction("Open example…")
+        open_example_action.triggered.connect(
+            lambda _checked=False: self.open_example_button.click()
+        )
+        export_python_action = menu.addAction("Export Python…")
+        export_python_action.triggered.connect(
+            lambda _checked=False: self.export_button.click()
+        )
+        export_ome_action = menu.addAction("Export OME dataset…")
+        export_ome_action.triggered.connect(
+            lambda _checked=False: self.export_ome_button.click()
+        )
+        menu.addAction(self.save_workflow_as_action)
+        if not self.leave_batch_button.isHidden():
+            leave_batch_action = menu.addAction("Leave batch mode")
+            leave_batch_action.triggered.connect(
+                lambda _checked=False: self.leave_batch_button.click()
+            )
+        if self.auto_structure_button.isHidden():
+            arrange_action = menu.addAction("Auto Arrange graph")
+            arrange_action.triggered.connect(
+                lambda _checked=False: self.auto_structure_button.click()
+            )
+        if self.tunnel_manager_button.isHidden():
+            tunnels_action = menu.addAction("Tunnels…")
+            tunnels_action.triggered.connect(
+                lambda _checked=False: self.tunnel_manager_button.click()
+            )
+
+        menu.addSeparator()
+        self._add_menu_heading(menu, "Compute")
+        if hide_compute:
+            self._add_combo_menu(
+                menu,
+                "Compute preference",
+                self.compute_mode_combo,
+            )
         strict_compute_action = self._add_checkbox_menu_action(
             menu,
             "Fail if a selected GPU cannot run",
             self.strict_compute_checkbox,
         )
-        strict_compute_action.setEnabled(self._compute_mode is ComputeMode.CUSTOM)
+        strict_compute_action.setEnabled(
+            self._compute_mode is ComputeMode.CUSTOM
+            and self.strict_compute_checkbox.isEnabled()
+        )
         strict_compute_action.setToolTip(
             "Available only in Custom mode for explicitly required GPU choices."
         )
@@ -5058,14 +6058,14 @@ class VippWidget(QWidget):
             optimize_action.setEnabled(optimize_ready)
             optimize_action.setToolTip(optimize_reason)
             optimize_action.triggered.connect(self._show_pipeline_optimizer)
+
         menu.addSeparator()
+        self._add_menu_heading(menu, "Workflow settings")
         self._add_combo_menu(
             menu,
             "Workflow saving",
             self.workflow_save_policy_combo,
         )
-        menu.addAction(self.save_workflow_as_action)
-        menu.addSeparator()
         self._add_checkbox_menu_action(
             menu,
             "Save thumbnail visibility in workflows",
@@ -5087,8 +6087,6 @@ class VippWidget(QWidget):
             self.follow_dims_checkbox,
         )
         menu.addSeparator()
-        self._add_combo_menu(menu, "Port labels", self.port_label_mode_combo)
-        menu.addSeparator()
         self._add_combo_menu(menu, "Cache mode", self.cache_mode_combo)
         self._add_checkbox_menu_action(
             menu,
@@ -5100,36 +6098,32 @@ class VippWidget(QWidget):
             "Cache limit",
             self.memory_limit_spin,
         )
-        added_section = True
-        if hide_dropdowns:
-            if added_section:
-                menu.addSeparator()
-            self._add_combo_menu(menu, "Preview mode", self.preview_mode_combo)
-            self._add_combo_menu(
-                menu,
-                "Thumbnail contrast",
-                self.thumbnail_contrast_combo,
-            )
-            self._add_combo_menu(
-                menu,
-                "Contrast range",
-                self.thumbnail_scope_combo,
-            )
-            self._add_combo_menu(
-                menu,
-                "Monochrome colormap",
-                self.thumbnail_colormap_combo,
-            )
-            self._add_combo_menu(
-                menu,
-                "Thumbnail detail",
-                self.thumbnail_resolution_combo,
-            )
-            added_section = True
         if hide_zoom:
-            if added_section:
-                menu.addSeparator()
+            menu.addSeparator()
             self._add_zoom_menu_widget(menu)
+
+    def _add_menu_heading(self, menu: QMenu, label: str) -> QWidgetAction:
+        """Add a bold, normal-color non-command heading to a toolbar menu."""
+
+        heading = QLabel(label, menu)
+        heading.setObjectName("VippToolbarMenuHeading")
+        heading.setFont(menu.font())
+        font = heading.font()
+        font.setBold(True)
+        heading.setFont(font)
+        heading.setContentsMargins(24, 4, 12, 3)
+        heading.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        heading.setAccessibleName(label)
+
+        action = QWidgetAction(menu)
+        action.setText(label)
+        action.setDefaultWidget(heading)
+        menu.addAction(action)
+        # Keep the menu from selecting or dismissing on a heading click, while
+        # the embedded label remains enabled so it uses the normal text role.
+        action.setEnabled(False)
+        heading.setEnabled(True)
+        return action
 
     def _add_checkbox_menu_action(
         self,
@@ -5149,13 +6143,21 @@ class VippWidget(QWidget):
         menu: QMenu,
         label: str,
         combo: QComboBox,
+        *,
+        retained_menus: list[QMenu] | None = None,
+        retained_actions: list[QAction] | None = None,
     ) -> QMenu:
         submenu = menu.addMenu(label)
+        submenu.setEnabled(combo.isEnabled())
         # PySide6 6.9 does not reliably preserve the Python wrapper merely
         # because the native menu owns it; retain the menu and its action until
         # the settings menu is rebuilt.
-        self._settings_menu_submenus.append(submenu)
-        self._settings_menu_submenu_actions.append(submenu.menuAction())
+        if retained_menus is None:
+            retained_menus = self._settings_menu_submenus
+        if retained_actions is None:
+            retained_actions = self._settings_menu_submenu_actions
+        retained_menus.append(submenu)
+        retained_actions.append(submenu.menuAction())
         submenu.setEnabled(combo.isEnabled())
         submenu.setToolTip(combo.toolTip())
         current = combo.currentText()
@@ -5164,6 +6166,7 @@ class VippWidget(QWidget):
             action = submenu.addAction(value)
             action.setCheckable(True)
             action.setChecked(value == current)
+            action.setEnabled(combo.isEnabled())
             action.triggered.connect(
                 lambda _checked=False, selected=value: combo.setCurrentText(selected)
             )
@@ -5175,7 +6178,7 @@ class VippWidget(QWidget):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(6)
         layout.addWidget(QLabel("Zoom"))
-        slider = QSlider(Qt.Horizontal)
+        slider = VippSlider(Qt.Horizontal)
         slider.setRange(
             PipelineGraphView.SLIDER_MIN_ZOOM,
             PipelineGraphView.SLIDER_MAX_ZOOM,
@@ -5226,6 +6229,7 @@ class VippWidget(QWidget):
         clone.setSuffix(spinbox.suffix())
         clone.setValue(spinbox.value())
         clone.setToolTip(spinbox.toolTip())
+        clone.setEnabled(spinbox.isEnabled())
         clone.valueChanged.connect(spinbox.setValue)
         spinbox.valueChanged.connect(clone.setValue)
         layout.addWidget(clone)
@@ -5239,19 +6243,7 @@ class VippWidget(QWidget):
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        panel_controls = QHBoxLayout()
-        panel_controls.setContentsMargins(0, 0, 0, 0)
-        panel_controls.setSpacing(4)
-        panel_controls.addWidget(self.left_panel_toggle)
-        panel_controls.addWidget(self.graph_search_edit)
-        panel_controls.addWidget(self.graph_search_focus_button)
-        panel_controls.addWidget(self.graph_search_status)
-        panel_controls.addStretch(1)
-        panel_controls.addWidget(self.right_panel_toggle)
-        layout.addWidget(self.workflow_tab_bar)
-        layout.addLayout(panel_controls)
+        layout.setSpacing(0)
         layout.addWidget(self.graph_view, 1)
         return panel
 
@@ -5655,6 +6647,9 @@ class VippWidget(QWidget):
         return scroll
 
     def _connect_signals(self) -> None:
+        self.status_label.message_changed.connect(
+            self._reserve_status_toolbar_height
+        )
         self.metadata_group.toggle_button.toggled.connect(
             self._on_metadata_section_toggled
         )
@@ -5974,13 +6969,16 @@ class VippWidget(QWidget):
         *,
         severity: MessageSeverity | str = MessageSeverity.NEUTRAL,
         actionable: bool = False,
+        detail: str = "",
     ) -> None:
         """Show one app-level VIPP message with explicit visual priority."""
         self.status_label.show_message(
             text,
             severity=severity,
             actionable=actionable,
+            detail=detail,
         )
+        self._reserve_status_toolbar_height()
 
     def _show_compute_setup_dialog(self) -> None:
         """Show one reusable, nonblocking GPU setup and memory dialog."""
@@ -9378,6 +10376,7 @@ class VippWidget(QWidget):
             self.pipeline_busy_bar.setVisible(True)
             self.pipeline_cancel_button.setVisible(False)
             self.status_label.setText(f"Switching to workflow '{normalized_title}'…")
+            self._sync_run_activity_button()
             return
 
         # Tab activation does not launch scientific computation. Presentation
@@ -9403,6 +10402,7 @@ class VippWidget(QWidget):
         self.pipeline_busy_bar.setRange(0, 0)
         self.pipeline_busy_bar.setTextVisible(False)
         self.pipeline_busy_bar.setToolTip("")
+        self._sync_run_activity_button()
 
     def _repaint_workflow_tab_loading(self) -> None:
         """Paint tab-switch acknowledgement before the synchronous rebuild."""
@@ -14258,6 +15258,7 @@ class VippWidget(QWidget):
             return
         self._collection_batch_workspace_engaged = True
         self.leave_batch_button.show()
+        self._sync_toolbar_responsive_mode()
 
     def _collection_batch_dialog_rejected(
         self,
@@ -14270,6 +15271,7 @@ class VippWidget(QWidget):
             return
         self._active_collection_batch_dialog = None
         self.leave_batch_button.hide()
+        self._sync_toolbar_responsive_mode()
         dialog.deleteLater()
 
     def _leave_collection_batch_workspace(self) -> None:
@@ -14315,6 +15317,7 @@ class VippWidget(QWidget):
             self._active_collection_batch_dialog = None
             self._collection_batch_workspace_engaged = False
             self.leave_batch_button.hide()
+            self._sync_toolbar_responsive_mode()
         dialog.close()
         dialog.deleteLater()
         self._sync_current_workflow_tab_state()
@@ -14405,7 +15408,7 @@ class VippWidget(QWidget):
                 cancelable=True,
                 preserve_progress=True,
             )
-            self.pipeline_cancel_button.setText("Cancel queued batch")
+            self.pipeline_cancel_button.setText("Stop")
             self.pipeline_cancel_button.setToolTip(
                 "Cancel the full batch that is waiting for optional thumbnail "
                 "statistics to release CPU/GPU resources."
@@ -14415,7 +15418,7 @@ class VippWidget(QWidget):
             )
             self._set_status(
                 "Full batch queued while thumbnail CPU/GPU statistics release "
-                "their resources. Use Cancel queued batch to abandon it.",
+                "their resources. Use Stop to abandon it.",
                 severity=MessageSeverity.INFO,
             )
             dialog.show_workspace_activity(
@@ -16061,6 +17064,7 @@ class VippWidget(QWidget):
         elif close_workspace:
             self._collection_batch_workspace_engaged = False
             self.leave_batch_button.hide()
+            self._sync_toolbar_responsive_mode()
         self._sync_current_workflow_tab_state()
 
     def _load_collection_batch_demo_preview(
@@ -17458,7 +18462,7 @@ class VippWidget(QWidget):
             suffix = "pair overlaps" if len(overlaps) == 1 else "pairs overlap"
             self.status_label.setText(
                 f"Port labels set to {mode}; {len(overlaps)} node {suffix}. "
-                "Use Auto structure graph to create space."
+                "Use Auto Arrange to create space."
             )
             return
         self.status_label.setText(f"Port labels set to {mode}.")
@@ -21221,7 +22225,7 @@ class VippWidget(QWidget):
             f" background-color: {warning.surface.name()};"
             f" color: {warning.foreground.name()};"
             f" border: 2px solid {warning.border.name()};"
-            " border-radius: 3px; font-weight: 650;"
+            " border-radius: 3px; font-weight: 650; padding: 2px 5px;"
             "}"
             "QPushButton:hover {"
             f" background-color: {warning.surface.lighter(108).name()};"
@@ -29381,7 +30385,7 @@ class VippWidget(QWidget):
             return
         self._thumbnail_contrast_busy_visible = True
         self._set_pipeline_busy(True, None, cancelable=True)
-        self.pipeline_cancel_button.setText("Cancel thumbnails")
+        self.pipeline_cancel_button.setText("Stop")
         self.pipeline_cancel_button.setToolTip(
             "Cancel presentation-only thumbnail statistics. Previous complete "
             "thumbnails and scientific pipeline results will be retained."
@@ -32785,7 +33789,10 @@ class VippWidget(QWidget):
         synchronous_node_ids = set(execution_plan.runnable_node_ids)
         self._begin_pipeline_dispatch(dirty_node_ids)
         try:
-            with self._preserve_interactive_collection_workflow_params():
+            with (
+                self._measure_synchronous_pipeline_processing(),
+                self._preserve_interactive_collection_workflow_params(),
+            ):
                 self.pipeline.run(
                     input_data,
                     input_metadata=input_metadata,
@@ -32869,7 +33876,10 @@ class VippWidget(QWidget):
                     target_node_ids=target_node_ids,
                 )
                 synchronous_node_ids.update(rerun_plan.runnable_node_ids)
-                with self._preserve_interactive_collection_workflow_params():
+                with (
+                    self._measure_synchronous_pipeline_processing(),
+                    self._preserve_interactive_collection_workflow_params(),
+                ):
                     self.pipeline.run(
                         input_data,
                         input_metadata=input_metadata,
@@ -32900,6 +33910,33 @@ class VippWidget(QWidget):
         )
         self._finish_pipeline_update(primary_layer, source_label)
         self._finish_interaction_without_preview_if_needed()
+
+    def _show_workflow_ready_status(
+        self,
+        source_label: str,
+        *,
+        snapshots_pinned: bool,
+    ) -> None:
+        """Report successful calculation without turning it into an instruction."""
+        message = "Workflow calculations complete."
+        wrapped_sources = textwrap.fill(
+            source_label,
+            width=76,
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+        detail = f"Sources used:\n{wrapped_sources}"
+        if snapshots_pinned:
+            message += " Refresh only if source files changed."
+            detail += (
+                "\n\nFile source snapshots remain pinned. Use Refresh to read "
+                "changed files from disk."
+            )
+        self._set_status(
+            message,
+            severity=MessageSeverity.SUCCESS,
+            detail=detail,
+        )
 
     def _finish_pipeline_update(self, primary_layer, source_label: str) -> None:
         self._set_pipeline_busy(True, None, cancelable=False)
@@ -32952,10 +33989,9 @@ class VippWidget(QWidget):
                     "remain stale until Apply and continue."
                 )
             elif source_label:
-                self._set_status(
-                    f"Graph updated from '{source_label}'. "
-                    f"Connect ports to build alternate paths.{snapshot_note}",
-                    severity=MessageSeverity.SUCCESS,
+                self._show_workflow_ready_status(
+                    source_label,
+                    snapshots_pinned=bool(snapshot_note),
                 )
             else:
                 self.status_label.setText("No image source selected.")
@@ -33673,7 +34709,13 @@ class VippWidget(QWidget):
                 InteractionLatencyPhase.WORKER_QUEUED,
                 detail=f"pipeline run {run_id}",
             )
-        self._pipeline_thread_pool.start(worker)
+        timing_key = ("background", run_id)
+        self._begin_pipeline_processing_timing(timing_key)
+        try:
+            self._pipeline_thread_pool.start(worker)
+        except Exception:
+            self._finish_pipeline_processing_timing(timing_key)
+            raise
         if completion_loop is not None and not completion_observed:
             completion_loop.exec()
         if completion_graph_center is not None:
@@ -33985,6 +35027,10 @@ class VippWidget(QWidget):
         interaction_generation = self._interaction_pipeline_terminal(result)
         if result.run_id != self._active_pipeline_run_id:
             return
+        # Stop the scientific timer before result merging, display preparation,
+        # and thumbnail statistics.  The keyed pop makes duplicate terminal
+        # delivery harmless.
+        self._finish_pipeline_processing_timing(("background", result.run_id))
         shadow_node_ids = self._pipeline_run_shadow_node_ids.pop(
             result.run_id,
             frozenset(),
@@ -34973,6 +36019,10 @@ class VippWidget(QWidget):
     ) -> None:
         self._sync_pipeline_optimizer_action()
         self._sync_compute_policy_editability()
+        was_busy = not self.pipeline_busy_label.isHidden()
+        previous_activity_text = self.pipeline_busy_label.text().strip()
+        if busy and not was_busy:
+            self._run_activity_started_at = monotonic()
         keep_current_progress = bool(
             busy and preserve_progress and not self.pipeline_busy_bar.isHidden()
         )
@@ -34980,11 +36030,24 @@ class VippWidget(QWidget):
         self.pipeline_busy_bar.setVisible(busy)
         self.pipeline_cancel_button.setVisible(busy and cancelable)
         if not busy:
+            if was_busy and previous_activity_text not in {"", "Processing"}:
+                duration_text = ""
+                if self._run_activity_started_at is not None:
+                    elapsed = max(monotonic() - self._run_activity_started_at, 0.0)
+                    duration_text = (
+                        f" · {elapsed:.1f} s"
+                        if elapsed < 10.0
+                        else f" · {elapsed:.0f} s"
+                    )
+                self._last_run_activity_text = (
+                    f"{previous_activity_text}{duration_text}"
+                )
+            self._run_activity_started_at = None
             cleared_overrides = self._discard_background_node_result_overrides()
             self.pipeline_busy_label.setText("Processing")
             self.pipeline_busy_bar.setRange(0, 0)
             self.pipeline_busy_bar.setTextVisible(False)
-            self.pipeline_cancel_button.setText("Cancel calculation")
+            self.pipeline_cancel_button.setText("Stop")
             self.pipeline_cancel_button.setToolTip(
                 "Request cooperative cancellation and wait for the active worker "
                 "to release its CPU/GPU resources before changing compute policy."
@@ -35001,6 +36064,7 @@ class VippWidget(QWidget):
                 self._report_result_display_error(exc)
             self._sync_compute_toolbar_summary()
             self._sync_compute_policy_editability()
+            self._sync_run_activity_button()
             return
         if not keep_current_progress:
             self.pipeline_busy_bar.setRange(0, 0)
@@ -35023,6 +36087,7 @@ class VippWidget(QWidget):
             self._sync_execution_ui()
         else:
             self.pipeline_busy_label.setText("Processing graph")
+        self._sync_run_activity_button()
 
     def _report_result_display_error(self, error: Exception) -> None:
         self._set_status(

@@ -12,7 +12,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QMenu,
     QSizePolicy,
-    QSlider,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -22,6 +21,7 @@ from qtpy.QtWidgets import (
 
 from napari_vipp.ui.axis_controls import _control_signal_blockers
 from napari_vipp.ui.palette_roles import custom_paint_colors
+from napari_vipp.ui.sliders import VippSlider
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ class ViewDimAxisControl(QWidget):
 
         self.label = QLabel("")
         self.label.setMinimumWidth(18)
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = VippSlider(Qt.Horizontal)
         self.slider.setMinimumWidth(120)
         self.slider.setSingleStep(1)
         self.slider.setPageStep(1)
@@ -193,8 +193,47 @@ class ViewDimsBar(QWidget):
         if not self._axes:
             return
         width = max(int(self.width()), 1)
-        full_width = 190 + 220 * len(self._axes)
-        compact_width = 160 + 86 * len(self._axes)
+        parent = self.parentWidget()
+        if parent is not None:
+            width = min(width, max(int(parent.contentsRect().width()) - 12, 1))
+
+        def minimum_widget_width(widget: QWidget) -> int:
+            return max(
+                int(widget.minimumWidth()),
+                int(widget.minimumSizeHint().width()),
+                0,
+            )
+
+        def control_width(control: ViewDimAxisControl, *, full: bool) -> int:
+            widgets = [control.label, control.spin, control.range_label]
+            if full:
+                widgets.insert(1, control.slider)
+            return sum(minimum_widget_width(widget) for widget in widgets) + (
+                max(len(widgets) - 1, 0) * control.layout().spacing()
+            )
+
+        margins = self._layout.contentsMargins()
+        outer_padding = margins.left() + margins.right() + 12
+        active_controls = self._controls[: len(self._axes)]
+        full_widgets = 1 + len(active_controls)
+        full_width = (
+            outer_padding
+            + minimum_widget_width(self.title_label)
+            + sum(control_width(control, full=True) for control in active_controls)
+            + max(full_widgets - 1, 0) * self._layout.spacing()
+        )
+        compact_widgets = 2 + len(active_controls)
+        compact_width = (
+            outer_padding
+            + minimum_widget_width(self.title_label)
+            + minimum_widget_width(self.menu_button)
+            + sum(control_width(control, full=False) for control in active_controls)
+            + max(compact_widgets - 1, 0) * self._layout.spacing()
+        )
+        # Native style metrics can add padding after the child hints are queried.
+        # Keep a conservative per-axis floor so compact controls switch to their
+        # complete menu before labels or exact-value spin boxes overlap.
+        compact_width = max(compact_width, 190 + 130 * len(active_controls))
         if width >= full_width:
             mode = "full"
         elif width >= compact_width:
@@ -205,12 +244,11 @@ class ViewDimsBar(QWidget):
             return
         self._responsive_mode = mode
         self.title_label.setVisible(mode != "menu")
-        active_controls = self._controls[: len(self._axes)]
         for control in self._controls:
             control.set_display_mode("compact" if mode == "compact" else "full")
             control.setVisible(mode != "menu" and control in active_controls)
         self.menu_button.setVisible(mode != "full")
-        self.menu_button.setText("Sliders..." if mode == "compact" else "View dims...")
+        self.menu_button.setText("Dims…" if mode == "compact" else "View dims…")
 
     def _ensure_control_count(self, count: int) -> None:
         while len(self._controls) < count:

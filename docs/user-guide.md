@@ -1,6 +1,6 @@
 # VIPP User Guide
 
-Last reviewed: 2026-08-27
+Last reviewed: 2026-09-04
 
 This guide is written for people building visual image-processing workflows in
 VIPP. It focuses on how to use the graph, how to choose the right controls, and
@@ -29,12 +29,13 @@ Once VIPP is installed, start **VIPP Automatic** from its launcher or open
 The fastest way to understand VIPP is to open a bundled example. The examples
 use packaged synthetic data, so they do not require external files.
 
-1. Click `Open example...`.
+1. Open the right-side gear menu and choose `Open example…`.
 2. Pick a workflow from the grouped chooser.
 3. Review the graph from left to right.
 4. Select nodes to inspect parameters, output metadata, histograms, and manual
    calculation controls.
-5. Use `Save workflow` or press `Ctrl+S` once the graph is worth keeping.
+5. Use `Save` in the command bar or press `Ctrl+S` once the graph is worth
+   keeping.
 
 ![Grouped example workflow chooser](assets/user-guide/vipp-example-chooser.png)
 
@@ -57,7 +58,7 @@ The VIPP dock has four working areas:
 
 | Area | Purpose |
 | --- | --- |
-| Toolbar | Workflow loading, export, preview settings, dimension controls, background progress, and graph tools. |
+| Toolbar stack | Workflow commands, preview and compute controls, graph navigation, status, and activity. |
 | Palette | Searchable node library grouped by task. |
 | Graph canvas | Typed node graph where outputs connect to compatible inputs. |
 | Inspector | Parameters, execution controls, metadata, histograms, and table previews for the selected node. |
@@ -68,19 +69,21 @@ Graph direction is usually left to right: sources on the left, processing in
 the middle, analysis or saved outputs on the right. Node cards show a compact
 thumbnail, axis/dtype metadata, execution status, and typed input/output ports.
 
-The toolbar `Settings` menu controls persistent port names with three modes:
+The command bar's `Preview > Port labels` menu controls persistent port names
+with three modes:
 `Ambiguous only` labels every port on nodes with multiple inputs or outputs,
 `Show all` labels every existing port, and `Hide all` shows ports without names.
 `Ambiguous only` is the default. Visible labels widen the card to reserve clear
 left and right gutters; unusually long names are shortened visually and retain
 their complete name as a tooltip. Changing the mode preserves manual node
-positions. If wider cards overlap, VIPP reports it in the status line; use
-`Auto structure graph` to reflow the graph using the new card sizes.
+positions. If wider cards overlap, VIPP reports it in the status footer; use
+`Auto Arrange` in the graph context row to reflow the graph using the new card
+sizes.
 
 ### Compute Policy And Benchmarking
 
-The compute selector in the main toolbar has four policies. New sessions use
-`Auto` by default.
+The `Compute` selector in the main command bar has four policies. New sessions
+use `Auto` by default.
 
 | Policy | Behavior |
 | --- | --- |
@@ -159,9 +162,10 @@ the saved choices remains current.
 VIPP does not permit compute intent to change underneath active work. While a
 pipeline calculation, node benchmark, or `Find fastest` analysis is running,
 the compute-mode and applicable per-node controls are disabled. They unlock
-after normal completion. To select another policy sooner, use the explicit
-`Cancel calculation`, `Cancel benchmark`, or `Cancel analysis` action. The
-controls stay disabled while the worker reaches a cooperative checkpoint,
+after normal completion. To select another policy sooner, use `Stop` in the
+status footer for a background pipeline calculation, `Cancel benchmark` in the
+benchmark dialog, or `Cancel analysis` in the optimizer dialog. The controls
+stay disabled while the worker reaches a cooperative checkpoint,
 synchronizes, and releases CPU/GPU resources; only then can another mode or
 backend be selected. This prevents, for example, a GPU benchmark from
 continuing after the user has requested CPU-only execution.
@@ -243,9 +247,9 @@ device, and measurement identity. Incomplete timings for the interrupted node
 are discarded. Choose a longer time limit and retry when the unfinished
 comparison is worth waiting for.
 
-Use `Settings > Compute setup and memory…` to verify optional GPU packages and
-hardware without freezing the interface. VIPP shows separate system RAM and
-VRAM for discrete GPUs, and one shared CPU/GPU memory budget on unified-memory
+Use the gear menu's `Compute setup and memory…` action to verify optional GPU
+packages and hardware without freezing the interface. VIPP shows separate
+system RAM and VRAM for discrete GPUs, and one shared CPU/GPU memory budget on unified-memory
 systems. On Windows the cache status separately reports physical RAM and
 remaining commit headroom: a large allocation can fail when commit is exhausted
 even if some physical RAM appears available. If setup is unavailable or
@@ -497,9 +501,39 @@ catalog and rationale.
 
 ## Toolbar Controls
 
+### Toolbar Layout
+
+The header identifies the dock as `VIPP Workflow`; its badge at the upper right
+shows the installed VIPP version. The command bar below it is grouped from left
+to right:
+
+- document commands: `New`, `Open`, and `Save`;
+- workflow and display commands: `Batch workflow` and the `Preview` menu;
+- execution controls: `Calculate all` and the `Compute` selector/status;
+- utility controls at the right edge: `Undo`, `Redo`, and the gear menu for
+  settings and additional workflow actions.
+
+Below the workflow tabs, the graph context row keeps graph-local controls near
+the canvas. At wide and medium widths it includes the sidebar toggles,
+`Find in workflow`, `Refresh`, graph `Focus`, `Auto Arrange`, and `Tunnels...`;
+zoom remains in the row while space permits. Narrow layouts retain both sidebar
+toggles, search, `Refresh`, and graph `Focus` (the latter two as icons), and move
+`Auto Arrange`, `Tunnels...`, and zoom into the gear menu. The optional
+`View dims` row sits below it when the active image has non-XY axes.
+
+The footer shows the ordinary status message while idle. During active work,
+the operation and progress replace that message, with a cooperative `Stop`
+action when the current activity supports cancellation. `Run activity` opens
+the current/recent activity and worker summary. Cache status remains at the
+right except in the narrow layout. At narrower dock widths, some labels shorten
+or collapse to icons.
+The gear menu keeps `Compute`, `Auto Arrange`, `Tunnels...`, and zoom reachable
+when those controls are hidden.
+
 ### Preview
 
-`Preview` controls graph-card thumbnails:
+`Preview` is the command-bar menu for presentation-only graph-card settings.
+Its `Mode` submenu controls thumbnails:
 
 | Mode | Use |
 | --- | --- |
@@ -507,11 +541,13 @@ catalog and rationale.
 | `MIP` | Show a maximum projection. Useful for sparse 3D objects or PSFs. |
 | `Off` | Disable thumbnails. Useful for very large workflows or slow previews. |
 
-The preview mode affects graph thumbnails, not the napari layer view.
+The preview mode affects graph thumbnails, not the napari layer view. The same
+menu also contains `Contrast`, `Range`, `Colormap`, `Detail`, and graph-card
+`Port labels`; none of these settings changes analysis pixels.
 
 ### Thumbnail Detail And Statistics
 
-`Thumbnail detail` controls how many pixels VIPP renders for each node card:
+`Preview > Detail` controls how many pixels VIPP renders for each node card:
 
 | Detail | Render size | Use |
 | --- | --- | --- |
@@ -531,8 +567,8 @@ High uses four times the backing pixels of High and is best reserved for maximum
 graph zoom or displays where High still appears pixelated. Changing detail
 retains any exact Stack limits already cached.
 
-`Settings > Thumbnail statistics` controls where presentation-only Stack
-contrast work runs:
+The gear menu's `Thumbnail statistics` setting controls where
+presentation-only Stack contrast work runs:
 
 | Policy | Behavior |
 | --- | --- |
@@ -540,9 +576,9 @@ contrast work runs:
 | `CPU` | Use NumPy and do not initialize CUDA for thumbnail statistics. |
 | `Prefer GPU` | Use CuPy for every eligible result, with a visible CPU fallback if it cannot run. |
 
-The main compute policy remains authoritative. Main-toolbar `CPU` always forces
-thumbnail statistics to CPU. With thumbnail statistics on `Auto`, main-toolbar
-`Prefer GPU` biases eligible statistics to GPU; main-toolbar `Auto` and
+The main compute policy remains authoritative. Command-bar `CPU` always forces
+thumbnail statistics to CPU. With thumbnail statistics on `Auto`, command-bar
+`Prefer GPU` biases eligible statistics to GPU; command-bar `Auto` and
 `Custom` use the adaptive crossover. An explicit thumbnail-statistics `CPU` or
 `Prefer GPU` choice otherwise supplies the presentation preference. These
 local settings are remembered on this machine but do not enter workflow JSON
@@ -579,9 +615,9 @@ crossover, and any fallback or failure; keyboard What's This help and screen
 readers receive the same detail. Presentation statistics never change the node
 output or the implementation recorded for it.
 
-### Contrast And Contrast Range
+### Contrast And Range
 
-`Contrast` chooses the intensity mapping:
+`Preview > Contrast` chooses the intensity mapping:
 
 | Contrast | Meaning |
 | --- | --- |
@@ -589,7 +625,7 @@ output or the implementation recorded for it.
 | `Min-max` | Use observed minimum and maximum. Useful when outliers are meaningful. |
 | `Raw` | Use raw values relative to the selected range. Useful for normalized floats and PSFs. |
 
-`Contrast Range` chooses where that range is measured:
+`Preview > Range` chooses where that range is measured:
 
 | Range | Meaning |
 | --- | --- |
@@ -605,12 +641,12 @@ CPU histogram implementations produce the same limits. Min-max uses a faster
 exact native reduction and does not construct a histogram. Float and other
 dtypes use the exact NumPy-compatible CPU percentile path.
 
-The shared toolbar progress area identifies the node, backend, and active
+The status-footer progress area identifies the node, backend, and active
 statistics phase while Stack work runs. CPU integer histograms and min-max
 reductions advance and stop between bounded chunks. An active GPU
 kernel/synchronization or exact float/other-dtype NumPy percentile can contain a
 non-interruptible inner pass; VIPP shows that phase honestly and applies
-`Cancel` at the next cooperative boundary. The GPU histogram uploads the full
+`Stop` at the next cooperative boundary. The GPU histogram uploads the full
 eligible input once, while the NumPy fallback may allocate full-array conversion
 or finite-filter temporaries. Completed exact limits are cached. Cancellation
 retains scan-free provisional thumbnails; a failed Prefer-GPU attempt is shown
@@ -651,7 +687,7 @@ source dimensions.
 
 ### Link Napari/VIPP Sliders
 
-The Settings menu contains `Link napari/VIPP sliders`.
+The gear menu contains `Link napari/VIPP sliders`.
 
 | Setting | Behavior |
 | --- | --- |
@@ -663,19 +699,19 @@ make the whole graph refresh too often.
 
 ### Background Execution
 
-`Run all in BG` controls whether normal pipeline recomputes run in background
-mode.
+The gear menu's `Run all in background` setting controls whether normal
+pipeline recomputes run in background mode.
 
 | Setting | Behavior |
 | --- | --- |
 | Off | Automatic mode: known slower operations and image updates of at least 32 MiB or four million values run in the background; smaller edits remain inline. |
 | On | Every graph recompute runs in the background. |
 
-Background execution shows progress in the toolbar. If parameters change while
+Background execution shows progress in the status footer. If parameters change while
 a calculation is running, VIPP rejects its stale result and queues the latest
 request. Cancellation is cooperative: VIPP can stop between supported work
 units, but it cannot interrupt a NumPy, SciPy, or scikit-image call already in
-progress. CPU use may therefore continue briefly after `Cancel` is clicked.
+progress. CPU use may therefore continue briefly after `Stop` is clicked.
 
 The same responsiveness rule applies to inspector diagnostics. Large stack
 histograms and automatic-threshold markers are calculated away from the UI
@@ -708,13 +744,13 @@ isolation starts so this restoration point is coherent. Editing the saved
 workflow graph, layout, or notes commits the current tuning result before that
 edit, so Cancel can never restore state from a different graph revision.
 
-The toolbar `Calculate all` acts as `Apply and continue`: it disables isolated
+Command-bar `Calculate all` acts as `Apply and continue`: it disables isolated
 tuning first, then resumes ordinary automatic and manual-node execution. This
 also applies to pipelines with no manual nodes.
 
 ### Cache And Memory
 
-The Settings menu also exposes `Cache mode`, `Auto memory guard`, and
+The gear menu also exposes `Cache mode`, `Auto memory guard`, and
 `Cache limit`.
 
 | Mode | Use |
@@ -781,9 +817,10 @@ drops are left unchanged.
 
 ### Search And Focus
 
-Use `Search graph` above the canvas to find nodes, operation IDs, named
-tunnels, and `Batch Output` tags. Press Enter or click `Focus` to move through
-matches. Tunnel matches reveal the source and subscribers.
+Use `Find in workflow` in the graph context row to find nodes, operation IDs,
+named tunnels, and `Batch Output` tags. Press Enter or click the adjacent
+`Focus` to move through matches. Tunnel matches reveal the source and
+subscribers.
 
 ### Select, Copy, And Reuse Nodes
 
@@ -834,8 +871,8 @@ Use a tunnel:
 2. Choose `Use tunnel`.
 3. Select the named source.
 
-The `Tunnels...` toolbar button opens a manager where you can filter, focus,
-rename, or delete tunnels.
+The graph context row's `Tunnels...` button opens a manager where you can
+filter, focus, rename, or delete tunnels.
 
 To change a tunnel's source without editing JSON, drag the source badge on its
 current output port and release it over another compatible output. VIPP previews
@@ -876,7 +913,7 @@ workflow graph.
 Each tab owns a separate live workflow: its calculated results and caches,
 undo/redo history, inspector state, filename, and dirty baseline remain intact
 when another tab is selected. `New` opens a clean workflow in a new tab, and
-`Load workflow...` opens the chosen file in a new tab. Double-click a tab to
+`Open` opens the chosen file in a new tab. Double-click a tab to
 rename it, drag tabs to reorder them, and use the close button or middle-click
 to close one. A dirty tab asks for Save, Discard, or Cancel; closing the last tab
 immediately creates a valid blank replacement.
@@ -899,20 +936,20 @@ cancelled, skips later unstarted items, and finalizes the manifests.
 
 ### Save Workflow JSON
 
-`Save workflow` and `Ctrl+S` write the graph, parameters, connections,
+Command-bar `Save` and `Ctrl+S` write the graph, parameters, connections,
 positions, named tunnels, graph notes, selected inspector state, and portable
 compute intent. The first save asks for a name and location. A bundled example
 also starts as an unsaved template, so its first save asks for a destination
 instead of modifying the packaged example. If that chosen file already exists,
 VIPP asks before replacing it, with Cancel as the safe default.
 
-After the first save, the default behavior is the familiar one: `Save workflow`
-or `Ctrl+S` overwrites that workflow file without another dialog and reports
-`Saved workflow` in the status strip. Use `Ctrl+Shift+S` or `Save workflow as`
-in Settings to choose another name or location; replacing an existing file from
-Save As still requires confirmation.
+After the first save, the default behavior is the familiar one: `Save` or
+`Ctrl+S` overwrites that workflow file without another dialog and reports
+`Saved workflow` in the status footer. Use `Ctrl+Shift+S` or `Save workflow as…`
+in the gear menu to choose another name or location; replacing an existing file
+from Save As still requires confirmation.
 
-The Settings menu's `Workflow saving` preference persists locally and offers
+The gear menu's `Workflow saving` preference persists locally and offers
 three policies:
 
 | Policy | Behavior |
@@ -991,9 +1028,9 @@ workflow reopens, not how it calculates:
 
 ### Export Python
 
-`Export Python...` writes a headless script containing an immutable validated
-workflow document. Each call reconstructs a fresh pipeline and executes it
-through the same shared engine as the GUI. Use it when a workflow should be
+The gear menu's `Export Python…` action writes a headless script containing an
+immutable validated workflow document. Each call reconstructs a fresh pipeline
+and executes it through the same shared engine as the GUI. Use it when a workflow should be
 reviewed, versioned, or run outside napari without replacing scientific graph
 semantics with hand-written operation calls.
 
@@ -1049,8 +1086,9 @@ between the durable batch runner and the generated folder convenience.
 
 ### Batch Output Basics
 
-For a deterministic end-to-end check, select `Deterministic Batch & Provenance`
-under `Open example...` and click `Open batch demo...`. VIPP explains that the
+For a deterministic end-to-end check, choose `Open example…` from the gear
+menu, select `Deterministic Batch & Provenance`, and click `Open batch demo...`.
+VIPP explains that the
 demo needs a writable working copy, then asks where to save it; it creates a new
 uniquely named directory and never overwrites an earlier one. The batch
 workspace opens with the bundled two-source workflow and portable config
@@ -1063,7 +1101,7 @@ paths together but does not run or save the full batch. A highlighted guide
 summarizes the demonstrated features and the next step is explicit: click `Run
 demo batch` to write nine outputs and validate the scientific results and
 provenance. The workspace retains item progress, final statuses, validation,
-and the manifest path and can be reopened with `Batch workspace...`. The same
+and the manifest path and can be reopened with `Batch workflow`. The same
 example remains available there through `Demo...`.
 
 The graph commits a new representative label only after its matching source
@@ -1141,8 +1179,8 @@ a changed SourceItem inventory, invalid saved selector/metadata contract, or
 deterministic axis-contract failure blocks the run regardless of `Continue
 after item failures`.
 
-The single `Batch workspace...` action is visually separated between workflow
-loading and the export actions in the main toolbar. `Save...` writes a
+The command bar places the single `Batch workflow` action after the grouped
+`New`/`Open`/`Save` commands and beside the `Preview` menu. `Save...` writes a
 versioned `vipp_batch_config.json`. Current config version 5 retains version 4's
 canonical SourceItem inventories and typed per-sample parameter overrides, then
 adds the typed whole-batch node-behavior profile. Version 3 introduced the
@@ -1179,15 +1217,16 @@ but the effective bypass does not use it in the output's scientific node
 lineage. Source pruning or metadata-only loading for such inactive bindings is
 a separate optimization, not an implicit change to the saved batch definition.
 
-A loaded config's compute request remains selected while the toolbar compute
-request is unchanged from load time. Changing any toolbar compute setting makes
-the complete current toolbar request effective for the next preview, save, or
-run; VIPP does not merge half of a loaded request with half of the toolbar.
+A loaded config's compute request remains selected while the command-bar
+compute request is unchanged from load time. Changing any command-bar compute
+setting makes the complete current request effective for the next preview,
+save, or run; VIPP does not merge half of a loaded request with half of the
+command bar.
 Headless replay uses the saved config request unless an explicit run/CLI
 override is supplied. The manifest records both configured and effective
 requests and hashes the effective override separately.
 
-For interactive convenience, `Save workflow` can instead attach that
+For interactive convenience, command-bar `Save` can instead attach that
 versioned config to the workflow file after a Yes/No/Cancel prompt. A standalone
 config remains the appropriate choice for headless replay, explicit companion
 workflow files, and generated batch runner scripts.
@@ -1325,7 +1364,7 @@ flowchart LR
 
 Review sequence:
 
-1. Open `Open example... -> Restoration & PSF -> 3D Richardson-Lucy / TV
+1. From the gear menu, open `Open example… -> Restoration & PSF -> 3D Richardson-Lucy / TV
    Deconvolution`.
 2. Select the PSF source and inspect its axes. It should be `ZYX`.
 3. Select `Prepare / Validate PSF` and confirm the output is `float32`, odd
@@ -1669,7 +1708,8 @@ supported GPU execution therefore use the final visible margins. Workflows
 created before Z margins existed load with `Z start = 0` and `Z end = 0`, so
 their previous pixels and scientific hash remain unchanged.
 
-Open **Responsive Volumetric Crop Acceptance** from `Open example...` (launcher
+Open **Responsive Volumetric Crop Acceptance** from the gear menu's
+`Open example…` action (launcher
 ID `responsive-crop`) for numbered checks covering rapid drag, held-idle safety,
 undo/redo, physical origins, durable boundaries, QYX safety, and the explained
 CPU assignment under Prefer GPU.
@@ -2039,11 +2079,11 @@ examples/synthetic-advanced-skeleton-network.json
 
 For large z-stacks or long workflows:
 
-1. Set `Preview` to `Slice` or `Off`.
-2. Use `Contrast Range = Stack` once the range cache has been built.
+1. Set `Preview > Mode` to `Slice` or `Off`.
+2. Use `Preview > Range = Stack` once the range cache has been built.
 3. Turn `Link napari/VIPP sliders` off when napari scrubbing should not refresh
    all graph thumbnails.
-4. Use `Run all in BG` when many edits trigger slow recomputation.
+4. Use `Run all in background` when many edits trigger slow recomputation.
 5. Use `Smart interactive cache` or `Low-memory mode`.
 6. Mark expensive stable intermediates with `Keep output cached`.
 
@@ -2056,7 +2096,7 @@ unnecessary full-volume branches.
 
 | Symptom | Check |
 | --- | --- |
-| Thumbnail brightness changes while scrubbing Z | Set `Contrast Range` to `Stack`. |
+| Thumbnail brightness changes while scrubbing Z | Set `Preview > Range` to `Stack`. |
 | Napari Z scrubbing refreshes too much of the graph | Turn off `Link napari/VIPP sliders`. |
 | A manual node says `Not calculated` | Select it and click `Calculate`, or use `Calculate all`. |
 | A manual node is orange/stale | Upstream data or parameters changed. Click `Recalculate`. |

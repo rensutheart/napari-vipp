@@ -1,15 +1,16 @@
 # Manual workflow QA examples
 
-These workflows are deliberately broad inspector and interaction fixtures. They
-live outside the normal **Open example** catalogue because they are intended for
-manual QA, may be much larger than a teaching example, and should not be run as
-part of the ordinary example compute matrix.
+These workflows are deliberately broad inspector and interaction fixtures. The
+actively maintained exhaustive showcase lives here alongside its manual-QA
+notes and is mirrored into the normal **Open example...** catalogue for easy
+access in the app.
 
 ## Exhaustive inspector showcase
 
-Open `exhaustive-inspector-showcase.json` with **Load workflow...**. The graph
-contains every operation currently exposed in the node palette: 115 distinct
-operations across 121 nodes, with seven bundled sample sources. Every non-source
+Choose **Open example... → Exhaustive Inspector Showcase**, or open
+`exhaustive-inspector-showcase.json` here with **Load workflow...**. The graph
+contains every operation currently exposed in the node palette: 113 distinct
+operations across 119 nodes, with seven bundled sample sources. Every non-source
 operation appears exactly once.
 
 The graph is arranged as seven labelled horizontal lanes:
@@ -25,7 +26,7 @@ The graph is arranged as seven labelled horizontal lanes:
 The lanes are independent where combining them would be scientifically
 artificial. Fan-outs indicate alternative analyses of the same data rather than
 an intended sequence. Nine named tunnels carry the longest reused inputs across
-lanes; 100 nearby connections remain as ordinary wires so each lane's main path
+lanes; 82 nearby connections remain as ordinary wires so each lane's main path
 is still visible.
 
 The workflow is safe to inspect after loading. **Save Image** is disabled and

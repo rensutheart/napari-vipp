@@ -31,6 +31,7 @@ from qtpy.QtGui import (
 from qtpy.QtWidgets import (
     QApplication,
     QBoxLayout,
+    QComboBox,
     QDockWidget,
     QFileDialog,
     QFormLayout,
@@ -46,6 +47,7 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QStackedLayout,
     QStyle,
+    QStyleOptionButton,
     QStyleOptionSlider,
     QWidget,
 )
@@ -106,6 +108,8 @@ from napari_vipp._widget import (
     _prepare_colocalization_scatter_density,
     _rescale_dtype_output_range,
     _system_memory_bytes,
+    _ToolbarChevronButton,
+    _ToolbarCommandButton,
     _windows_memory_bytes,
 )
 from napari_vipp.core.batch import (
@@ -640,7 +644,9 @@ def test_live_theme_switch_restyles_widget_tables_status_and_icons(qtbot):
     dark_table_style = widget.metadata_table.styleSheet()
     dark_version_style = widget.version_label.styleSheet()
     dark_isolation_style = widget.isolated_tuning_panel.styleSheet()
+    dark_slider_style = widget.graph_zoom_slider.styleSheet()
     dark_undo_icon = widget.undo_action.icon().cacheKey()
+    assert "background: #4560c4" in dark_slider_style
     assert (
         theme_colors(QWidget.palette(widget)).active_mode.surface.name()
         in dark_isolation_style
@@ -655,6 +661,8 @@ def test_live_theme_switch_restyles_widget_tables_status_and_icons(qtbot):
     assert "#1f242c" not in widget.metadata_table.styleSheet()
     assert widget.version_label.styleSheet() != dark_version_style
     assert widget.isolated_tuning_panel.styleSheet() != dark_isolation_style
+    assert widget.graph_zoom_slider.styleSheet() != dark_slider_style
+    assert "background: #a0b8ff" in widget.graph_zoom_slider.styleSheet()
     assert (
         theme_colors(QWidget.palette(widget)).active_mode.surface.name()
         in widget.isolated_tuning_panel.styleSheet()
@@ -1090,6 +1098,31 @@ def test_widget_uses_one_severity_aware_message_strip(qtbot):
     assert widget.status_label.property("messageSeverity") == "neutral"
 
 
+def test_workflow_ready_status_is_concise_and_keeps_source_detail_on_hover(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    source_label = (
+        "VIPP synthetic time-lapse multichannel, VIPP synthetic volume, "
+        "VIPP synthetic colocalization"
+    )
+
+    widget._show_workflow_ready_status(source_label, snapshots_pinned=False)
+
+    assert widget.status_label.text() == "Workflow calculations complete."
+    assert source_label not in widget.status_label.text()
+    assert "Connect ports" not in widget.status_label.text()
+    assert source_label in widget.status_label.toolTip().replace("\n", " ")
+    assert widget.status_label.property("messageSeverity") == "success"
+    assert widget.status_label.property("messageActionable") is False
+
+    widget._show_workflow_ready_status(source_label, snapshots_pinned=True)
+
+    assert widget.status_label.text() == (
+        "Workflow calculations complete. Refresh only if source files changed."
+    )
+    assert "Use Refresh" in widget.status_label.toolTip()
+
+
 def test_diagnostic_failure_callbacks_classify_nonactionable_status(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -1313,6 +1346,16 @@ def test_pipeline_optimizer_action_is_custom_only(qtbot):
     widget._populate_settings_toolbar_menu()
 
     assert not widget.optimize_pipeline_button.isHidden()
+    assert (
+        widget.optimize_pipeline_button.parentWidget()
+        is widget.execution_toolbar_group
+    )
+    assert isinstance(widget.optimize_pipeline_button, _ToolbarCommandButton)
+    assert not widget.optimize_pipeline_button.icon().isNull()
+    assert (
+        widget.optimize_pipeline_button.accessibleName()
+        == "Find fastest pipeline"
+    )
     assert "Find fastest pipeline…" in {
         action.text() for action in widget.settings_menu.actions()
     }
@@ -2541,6 +2584,9 @@ def test_background_auto_run_is_detached_and_cancel_button_remains_usable(qtbot)
     assert len(pool.workers) == 1
     run_id = widget._active_pipeline_run_id
     assert run_id is not None
+    timing_key = ("background", run_id)
+    total_before_run = widget._pipeline_processing_total_seconds
+    assert timing_key in widget._pipeline_processing_active_started_at
     assert not widget.pipeline_cancel_button.isHidden()
     assert widget.pipeline_cancel_button.isEnabled()
     assert not widget.compute_mode_combo.isEnabled()
@@ -2552,6 +2598,8 @@ def test_background_auto_run_is_detached_and_cancel_button_remains_usable(qtbot)
     assert not widget.compute_mode_combo.isEnabled()
     pool.workers[0].run()
     qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None)
+    assert timing_key not in widget._pipeline_processing_active_started_at
+    assert widget._pipeline_processing_total_seconds >= total_before_run
     assert widget.compute_mode_combo.isEnabled()
 
 
@@ -7467,7 +7515,10 @@ def test_file_source_is_one_owned_read_only_snapshot_until_refresh(
     assert snapshot.payload.metadata["vipp_source_snapshot_policy"] == (
         "pinned until Refresh"
     )
-    assert "pinned until Refresh" in widget.status_label.text()
+    assert widget.status_label.text() == (
+        "Workflow calculations complete. Refresh only if source files changed."
+    )
+    assert "snapshots remain pinned" in widget.status_label.toolTip()
     with pytest.raises(ValueError, match="read-only"):
         frozen[0, 0] = 99
 
@@ -8213,17 +8264,22 @@ def test_view_dims_bar_responsive_modes(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
+    # The responsive bar uses the actual dock/widget width as its upper bound,
+    # so keep the host and the child in sync just as Qt's layout does in napari.
+    widget.resize(1012, widget.height())
     widget.view_dims_bar.resize(1000, 32)
     widget.view_dims_bar.sync_responsive_mode()
-    assert not widget.view_dims_bar.menu_button.isVisible()
+    assert widget.view_dims_bar.menu_button.isHidden()
     assert not _view_dim_control(widget, "Z").slider.isHidden()
 
-    widget.view_dims_bar.resize(450, 32)
+    widget.resize(612, widget.height())
+    widget.view_dims_bar.resize(600, 32)
     widget.view_dims_bar.sync_responsive_mode()
     assert not widget.view_dims_bar.menu_button.isHidden()
     assert _view_dim_control(widget, "Z").slider.isHidden()
     assert not _view_dim_control(widget, "Z").spin.isHidden()
 
+    widget.resize(272, widget.height())
     widget.view_dims_bar.resize(260, 32)
     widget.view_dims_bar.sync_responsive_mode()
     assert not widget.view_dims_bar.menu_button.isHidden()
@@ -18610,7 +18666,7 @@ def test_thumbnail_statistics_progress_and_cancel_use_shared_toolbar(qtbot):
     widget._show_thumbnail_contrast_busy(2, 100)
     widget.graph_view.select_node("input")
 
-    assert widget.pipeline_cancel_button.text() == "Cancel thumbnails"
+    assert widget.pipeline_cancel_button.text() == "Stop"
     assert widget.pipeline_cancel_button.isEnabled()
     widget._on_thumbnail_contrast_limit_progress(
         ThumbnailContrastProgress(
@@ -18782,7 +18838,7 @@ def test_full_batch_preempts_thumbnail_statistics_then_resumes_once(
     assert widget._pending_collection_batch_start == (dialog, values)
     assert cancel_event.is_set()
     assert run_id in widget._thumbnail_contrast_discarded_run_ids
-    assert widget.pipeline_cancel_button.text() == "Cancel queued batch"
+    assert widget.pipeline_cancel_button.text() == "Stop"
     assert widget.pipeline_cancel_button.isEnabled()
     assert "input" not in widget._thumbnail_statistics_presentations
     assert "releasing thumbnail resources" in (
@@ -22866,121 +22922,122 @@ def test_auto_structure_graph_is_undoable_position_only_edit(qtbot):
     assert widget.graph_view._notes[note_id].pos() == messy_note_pos
 
 
-def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
-    viewer = _Viewer()
-    widget = VippWidget(viewer)
-    qtbot.addWidget(widget)
-
-    expanded_width = widget._expanded_toolbar_required_width()
-    widget.resize(expanded_width + 100, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.settings_menu_button.isHidden() is False
-    assert widget.settings_menu_button.text() == "Settings"
-    assert widget.settings_menu_button.minimumWidth() >= 96
-    assert widget.background_all_checkbox.isHidden()
-    assert widget.follow_dims_checkbox.isHidden()
-    assert widget.thumbnail_toolbar_group.isHidden() is False
-    assert widget.preview_mode_combo.isHidden() is False
-    assert widget.thumbnail_contrast_combo.isHidden() is False
-    assert widget.thumbnail_scope_combo.isHidden() is False
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden() is False
-    assert widget.compute_status_label.isHidden() is False
-    assert widget.save_workflow_button.isHidden() is False
-    assert widget.export_button.isHidden() is False
-    assert widget.auto_structure_button.text() == "Auto structure graph"
-
-    widget.resize(1400, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.thumbnail_toolbar_group.isHidden()
-    assert widget.preview_mode_combo.isHidden() is False
-    assert widget.thumbnail_contrast_combo.isHidden() is False
-    assert widget.thumbnail_scope_combo.isHidden() is False
-    assert widget.thumbnail_colormap_combo.isHidden() is False
-    assert widget.zoom_toolbar_field.isHidden() is False
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden() is False
-    assert widget.compute_status_label.isHidden()
-
-    widget.resize(1200, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.graph_zoom_reset_button.isHidden() is False
-    assert widget.graph_zoom_label.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden()
-    assert widget.compute_status_label.isHidden()
-
-    widget.resize(1000, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.zoom_toolbar_field.isHidden()
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.graph_zoom_reset_button.isHidden() is False
-    assert widget.graph_zoom_label.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden()
-    assert widget.compute_status_label.isHidden()
-
-    widget.resize(expanded_width + 100, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.settings_menu_button.isHidden() is False
-    assert widget.background_all_checkbox.isHidden()
-    assert widget.follow_dims_checkbox.isHidden()
-    assert widget.thumbnail_toolbar_group.isHidden() is False
-    assert widget.preview_mode_combo.isHidden() is False
-    assert widget.thumbnail_contrast_combo.isHidden() is False
-    assert widget.thumbnail_scope_combo.isHidden() is False
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.save_workflow_button.isHidden() is False
-    assert widget.export_button.isHidden() is False
-    assert widget.compute_status_label.isHidden() is False
-    assert widget.auto_structure_button.text() == "Auto structure graph"
-
-
-@pytest.mark.parametrize(
-    ("width", "compute_visible", "zoom_visible"),
-    (
-        (1400, True, True),
-        (1200, False, True),
-        (1100, False, False),
-        (1051, False, False),
-        (1050, False, False),
-        (1000, False, False),
-    ),
-)
-def test_toolbar_compute_stages_preserve_primary_action_width(
-    qtbot,
-    width,
-    compute_visible,
-    zoom_visible,
-):
-    widget = VippWidget(_Viewer())
-    qtbot.addWidget(widget)
+def _show_toolbar_at_width(widget, qtbot, width: int) -> None:
     widget.setFixedWidth(width)
+    widget.resize(width, 600)
     widget.show()
     qtbot.waitExposed(widget)
     widget._sync_toolbar_responsive_mode()
     QApplication.processEvents()
 
-    assert widget.compute_toolbar_group.isHidden() is (not compute_visible)
-    assert widget.compute_status_label.isHidden()
-    assert widget.zoom_toolbar_field.isHidden() is (not zoom_visible)
-    assert (
-        widget.calculate_all_button.width()
-        >= widget.calculate_all_button.minimumSizeHint().width()
-    )
-    assert widget.settings_menu_button.geometry().right() < widget.width()
 
-
-def test_long_compute_summary_collapses_before_compressing_primary_action(qtbot):
+@pytest.mark.parametrize(
+    ("width", "expected_mode"),
+    ((1400, "wide"), (900, "medium"), (640, "narrow")),
+)
+def test_toolbar_file_actions_remain_visible_at_every_width(
+    qtbot,
+    width,
+    expected_mode,
+):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
-    widget.setFixedWidth(1600)
-    widget.show()
-    qtbot.waitExposed(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+    widget._populate_settings_toolbar_menu()
+
+    assert widget._toolbar_layout_mode == expected_mode
+    for button, tooltip_word in (
+        (widget.new_workflow_button, "New"),
+        (widget.load_workflow_button, "Open"),
+        (widget.save_workflow_button, "Save"),
+    ):
+        assert not button.isHidden()
+        assert not button.icon().isNull()
+        assert tooltip_word.lower() in button.toolTip().lower()
+
+    settings_labels = {
+        action.text()
+        for action in widget.settings_menu.actions()
+        if not action.isSeparator() and action.text()
+    }
+    assert not {"New workflow", "Open workflow", "Save workflow"} & settings_labels
+
+
+@pytest.mark.parametrize(
+    (
+        "width",
+        "mode",
+        "batch_text",
+        "preview_text",
+        "calculate_text",
+        "arrange_text",
+        "document_texts",
+    ),
+    (
+        (
+            1400,
+            "wide",
+            "Batch workflow",
+            "Preview",
+            "Calculate all",
+            "Auto Arrange",
+            ("New", "Open", "Save"),
+        ),
+        (1000, "medium", "Batch", "Preview", "Calculate", "Arrange", ("", "", "")),
+        (640, "narrow", "", "", "", "", ("", "", "")),
+    ),
+)
+def test_toolbar_labels_follow_responsive_mode(
+    qtbot,
+    width,
+    mode,
+    batch_text,
+    preview_text,
+    calculate_text,
+    arrange_text,
+    document_texts,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert widget._toolbar_layout_mode == mode
+    assert widget.batch_button.text() == batch_text
+    assert widget.preview_menu_button.text() == preview_text
+    assert widget.calculate_all_button.text() == calculate_text
+    assert (
+        tuple(
+            button.text()
+            for button in (
+                widget.new_workflow_button,
+                widget.load_workflow_button,
+                widget.save_workflow_button,
+            )
+        )
+        == document_texts
+    )
+    if mode == "narrow":
+        assert widget.auto_structure_button.isHidden()
+        for button in (
+            widget.new_workflow_button,
+            widget.load_workflow_button,
+            widget.save_workflow_button,
+            widget.batch_button,
+            widget.preview_menu_button,
+            widget.calculate_all_button,
+        ):
+            assert not button.icon().isNull()
+    else:
+        assert not widget.auto_structure_button.isHidden()
+        assert widget.auto_structure_button.text() == arrange_text
+
+
+def test_toolbar_compute_summary_stays_with_execution_controls_until_narrow(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1400)
 
     def decision(node_id, *, gpu=False, fallback=False):
         return NodeExecutionDecision(
@@ -23030,55 +23087,93 @@ def test_long_compute_summary_collapses_before_compressing_primary_action(qtbot)
 
     assert widget.compute_status_label.text() == ("Auto · 1 GPU / 4 CPU · 1 fallback")
     assert widget.compute_toolbar_group.isHidden() is False
-    assert widget.compute_status_label.isHidden()
+    assert widget.compute_status_label.isHidden() is False
     assert (
         widget.calculate_all_button.width()
         >= widget.calculate_all_button.minimumSizeHint().width()
     )
 
-    widget._accepted_compute_decisions = {"cpu-1": decisions["cpu-1"]}
-    widget._sync_compute_toolbar_summary()
-    QApplication.processEvents()
+    _show_toolbar_at_width(widget, qtbot, 640)
 
-    assert widget.compute_status_label.text() == "Auto · 1 CPU"
-    assert widget.compute_status_label.isHidden() is False
+    assert widget._toolbar_layout_mode == "narrow"
+    assert widget.compute_toolbar_group.isHidden()
+    assert widget.compute_status_label.isHidden()
 
 
-def test_load_precedes_save_and_batch_is_separated_from_exports(
-    qtbot,
-):
+def test_toolbar_has_separators_only_after_save_and_preview(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
-    layout = widget.workflow_toolbar_layout
+    layout = widget.command_toolbar_layout
 
-    load_index = layout.indexOf(widget.load_workflow_button)
-    save_index = layout.indexOf(widget.save_workflow_button)
-    left_separator_index = layout.indexOf(widget._batch_toolbar_left_separator)
-    batch_index = layout.indexOf(widget.batch_button)
-    leave_batch_index = layout.indexOf(widget.leave_batch_button)
-    right_separator_index = layout.indexOf(widget._batch_toolbar_right_separator)
-    export_index = layout.indexOf(widget.export_button)
-    export_ome_index = layout.indexOf(widget.export_ome_button)
+    direct_widgets = [
+        item.widget()
+        for index in range(layout.count())
+        if (item := layout.itemAt(index)).widget() is not None
+    ]
+    separators = [item for item in direct_widgets if isinstance(item, QFrame)]
 
+    assert widget.main_toolbar_layout is widget.command_toolbar_layout
+    assert separators == [
+        widget._toolbar_document_separator,
+        widget._toolbar_preview_separator,
+    ]
     assert (
-        load_index
-        < save_index
-        < left_separator_index
-        < batch_index
-        < leave_batch_index
-        < right_separator_index
-        < export_index
-        < export_ome_index
+        layout.indexOf(widget.document_toolbar_group)
+        < layout.indexOf(widget._toolbar_document_separator)
+        < layout.indexOf(widget.workflow_toolbar_group)
+        < layout.indexOf(widget._toolbar_preview_separator)
+        < layout.indexOf(widget.execution_toolbar_group)
+        < layout.indexOf(widget.utility_toolbar_group)
     )
-    assert isinstance(widget._batch_toolbar_left_separator, QFrame)
-    assert isinstance(widget._batch_toolbar_right_separator, QFrame)
+
+    document_layout = widget.document_toolbar_group.layout()
+    document_buttons = [
+        document_layout.itemAt(index).widget()
+        for index in range(document_layout.count())
+        if document_layout.itemAt(index).widget() is not None
+    ]
+    workflow_layout = widget.workflow_toolbar_group.layout()
+    workflow_buttons = [
+        workflow_layout.itemAt(index).widget()
+        for index in range(workflow_layout.count())
+        if workflow_layout.itemAt(index).widget() is not None
+    ]
+
+    assert document_buttons == [
+        widget.new_workflow_button,
+        widget.load_workflow_button,
+        widget.save_workflow_button,
+    ]
+    assert workflow_buttons[-1] is widget.preview_menu_button
+    assert workflow_buttons.index(widget.batch_button) < workflow_buttons.index(
+        widget.preview_menu_button
+    )
     assert widget.leave_batch_button.isHidden()
+    separator_color = theme_colors(QWidget.palette(widget)).border.name()
+    for separator in separators:
+        assert separator.frameShape() == QFrame.VLine
+        assert separator.frameShadow() == QFrame.Plain
+        assert separator.lineWidth() == 1
+        assert "border-left: 1px solid" in separator.styleSheet()
+        assert separator_color in separator.styleSheet()
+        assert "margin: 4px 5px" in separator.styleSheet()
+
+    for width in (1400, 900, 640):
+        _show_toolbar_at_width(widget, qtbot, width)
+        assert not widget._toolbar_document_separator.isHidden()
+        assert not widget._toolbar_preview_separator.isHidden()
+
+
+def test_batch_dialog_load_precedes_save_and_activity(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1400)
 
     widget.batch_navigator.set_session(2, 0, "0001_a", ["a.npy"])
     batch_buttons = [
         button
         for button in widget.findChildren(QPushButton)
-        if button.text() == "Batch workspace..."
+        if button.text() == "Batch workflow"
     ]
     assert batch_buttons == [widget.batch_button]
 
@@ -23093,140 +23188,726 @@ def test_load_precedes_save_and_batch_is_separated_from_exports(
     )
 
 
-def test_toolbar_field_pairs_stay_adjacent_and_responsive(qtbot):
+@pytest.mark.parametrize("width", (1400, 900, 640))
+def test_toolbar_utility_group_stays_right_aligned_and_consolidated(qtbot, width):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
-    widget.resize(widget._expanded_toolbar_required_width() + 100, 600)
-    widget.show()
-    qtbot.waitExposed(widget)
-    widget._sync_toolbar_responsive_mode()
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    utility_layout = widget.utility_toolbar_group.layout()
+    utility_buttons = [
+        utility_layout.itemAt(index).widget()
+        for index in range(utility_layout.count())
+        if utility_layout.itemAt(index).widget() is not None
+    ]
+    assert utility_buttons == [
+        widget.version_label,
+        widget.undo_button,
+        widget.redo_button,
+        widget.settings_menu_button,
+    ]
+    assert widget.version_label.parentWidget() is widget.utility_toolbar_group
+    assert not widget.version_label.isHidden()
+    assert not [
+        label
+        for label in widget.findChildren(QLabel)
+        if label.text() == "VIPP Workflow"
+    ]
+    assert widget.settings_menu_button.menu() is widget.settings_menu
+    assert not widget.settings_menu_button.icon().isNull()
+
+    toolbar = widget.command_toolbar_layout.parentWidget()
+    utility_right = widget.utility_toolbar_group.mapTo(
+        toolbar,
+        widget.utility_toolbar_group.rect().bottomRight(),
+    ).x()
+    assert toolbar.contentsRect().right() - utility_right <= 8
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+
+
+def test_toolbar_preview_menu_owns_presentation_controls(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    assert widget.preview_menu_button.menu() is widget.preview_display_menu
+    assert isinstance(widget.preview_menu_button, QPushButton)
+    widget._populate_preview_display_menu()
+    actions = widget.preview_display_menu.actions()
+
+    assert [action.text() for action in actions] == ["Preview display settings"]
+    assert widget._preview_menu_action is actions[0]
+    panel = actions[0].defaultWidget()
+    assert panel is widget._preview_menu_panel
+    assert panel.objectName() == "VippPreviewDisplayPanel"
+    assert panel.minimumWidth() >= 360
+    headings = panel.findChildren(QLabel, "VippPreviewDisplayHeading")
+    assert [heading.text() for heading in headings] == ["Preview display settings"]
+    assert headings[0].isEnabled()
+    notes = panel.findChildren(QLabel, "VippPreviewDisplayNote")
+    assert [note.text() for note in notes] == [
+        "Presentation only · analysis pixels are unchanged"
+    ]
+    colors = theme_colors(QWidget.palette(widget))
+    assert colors.text.name() in panel.styleSheet()
+    assert colors.muted_text.name() in panel.styleSheet()
+    assert colors.border.name() in widget.preview_display_menu.styleSheet()
+    assert set(widget._preview_menu_combos) == {
+        "Mode",
+        "Contrast",
+        "Range",
+        "Colormap",
+        "Detail",
+        "Port labels",
+    }
+    sources = {
+        "Mode": widget.preview_mode_combo,
+        "Contrast": widget.thumbnail_contrast_combo,
+        "Range": widget.thumbnail_scope_combo,
+        "Colormap": widget.thumbnail_colormap_combo,
+        "Detail": widget.thumbnail_resolution_combo,
+        "Port labels": widget.port_label_mode_combo,
+    }
+    for label, source in sources.items():
+        picker = widget._preview_menu_combos[label]
+        assert isinstance(picker, QComboBox)
+        assert picker.currentText() == source.currentText()
+        assert picker.count() == source.count()
+        assert picker.toolTip() == source.toolTip()
+
+
+@pytest.mark.parametrize(
+    ("width", "compute_hidden", "compute_in_settings"),
+    ((1400, False, False), (900, False, False), (640, True, True)),
+)
+def test_toolbar_compute_overflow_is_used_only_in_narrow_mode(
+    qtbot,
+    width,
+    compute_hidden,
+    compute_in_settings,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+    widget._populate_settings_toolbar_menu()
+    settings_labels = [
+        action.text()
+        for action in widget.settings_menu.actions()
+        if not action.isSeparator() and action.text()
+    ]
+    compute_entries = [
+        label for label in settings_labels if label.startswith("Compute preference")
+    ]
+
+    assert widget.compute_toolbar_group.isHidden() is compute_hidden
+    assert bool(compute_entries) is compute_in_settings
+
+
+def test_toolbar_compute_overflow_respects_active_run_lock(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 640)
+
+    widget._active_pipeline_run_id = "run-1"
+    widget._sync_compute_policy_editability()
+    widget._populate_settings_toolbar_menu()
+
+    compute_menu = next(
+        action.menu()
+        for action in widget.settings_menu.actions()
+        if action.text().startswith("Compute preference")
+    )
+    strict_action = next(
+        action
+        for action in widget.settings_menu.actions()
+        if action.text() == "Fail if a selected GPU cannot run"
+    )
+    assert compute_menu is not None
+    assert not compute_menu.isEnabled()
+    assert not strict_action.isEnabled()
+
+
+@pytest.mark.parametrize("width", (1400, 1280, 1120, 1000, 900))
+def test_toolbar_live_content_compacts_without_clipping(qtbot, width):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.leave_batch_button.show()
+    widget.compute_status_label.setText("Custom · 1 GPU / 4 CPU · 1 fallback")
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+    assert (
+        widget.optimize_pipeline_button.parentWidget()
+        is widget.execution_toolbar_group
+    )
+    if widget.compute_toolbar_group.isHidden():
+        widget._populate_settings_toolbar_menu()
+        assert any(
+            action.text().startswith("Compute preference")
+            for action in widget.settings_menu.actions()
+        )
+
+
+@pytest.mark.parametrize(
+    ("width", "expected_text", "compute_hidden"),
+    (
+        (1400, "Find fastest", False),
+        (900, "Find fastest", False),
+        (640, "", True),
+    ),
+)
+def test_toolbar_custom_keeps_find_fastest_directly_available_at_every_width(
+    qtbot,
+    width,
+    expected_text,
+    compute_hidden,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    with QSignalBlocker(widget.compute_mode_combo):
+        widget.compute_mode_combo.setCurrentIndex(
+            widget.compute_mode_combo.findData("custom")
+        )
+    widget._compute_mode = ComputeMode.CUSTOM
+    widget._sync_compute_toolbar_summary()
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert not widget.optimize_pipeline_button.isHidden()
+    assert widget.optimize_pipeline_button.isVisibleTo(widget)
+    assert widget.optimize_pipeline_button.text() == expected_text
+    assert not widget.optimize_pipeline_button.icon().isNull()
+    assert (
+        widget.optimize_pipeline_button.accessibleName()
+        == "Find fastest pipeline"
+    )
+    assert widget.compute_toolbar_group.isHidden() is compute_hidden
+    execution_layout = widget.execution_toolbar_group.layout()
+    execution_widgets = [
+        execution_layout.itemAt(index).widget()
+        for index in range(execution_layout.count())
+        if execution_layout.itemAt(index).widget() is not None
+    ]
+    assert execution_widgets == [
+        widget.calculate_all_button,
+        widget.compute_toolbar_group,
+        widget.optimize_pipeline_button,
+    ]
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+
+
+@pytest.mark.parametrize("width", (1400, 900, 640))
+def test_toolbar_hides_find_fastest_outside_custom(qtbot, width):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert widget._compute_mode is not ComputeMode.CUSTOM
+    assert widget.optimize_pipeline_button.isHidden()
+    assert not widget.optimize_pipeline_button.isVisibleTo(widget)
+
+
+def test_toolbar_narrow_context_keeps_refresh_and_graph_focus(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, 640)
+
+    assert not widget.refresh_button.isHidden()
+    assert not widget.graph_focus_button.isHidden()
+    assert widget.refresh_button.text() == ""
+    assert widget.graph_focus_button.text() == ""
+    assert not widget.refresh_button.icon().isNull()
+    assert not widget.graph_focus_button.icon().isNull()
+
+
+@pytest.mark.parametrize("width", (1120, 1000, 900))
+def test_toolbar_medium_context_keeps_match_count_and_right_aligned_actions(
+    qtbot,
+    width,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_search_edit.setText("otsu")
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert widget._toolbar_layout_mode == "medium"
+    assert widget.graph_search_status.text() == "1 match"
+    assert not widget.graph_search_status.isHidden()
+    action_layout = widget.context_actions_group.layout()
+    action_widgets = [
+        action_layout.itemAt(index).widget()
+        for index in range(action_layout.count())
+        if action_layout.itemAt(index).widget() is not None
+    ]
+    assert action_widgets == [
+        widget.refresh_button,
+        widget.graph_focus_button,
+        widget.auto_structure_button,
+        widget.tunnel_manager_button,
+    ]
+    assert all(not button.isHidden() for button in action_widgets)
+
+    context = widget.context_toolbar_group
+    assert context.minimumSizeHint().width() <= context.width()
+    for button in action_widgets:
+        assert button.width() >= button.minimumSizeHint().width()
+    status_right = widget.graph_search_status.mapTo(
+        context,
+        widget.graph_search_status.rect().bottomRight(),
+    ).x()
+    actions_left = widget.context_actions_group.mapTo(
+        context,
+        widget.context_actions_group.rect().topLeft(),
+    ).x()
+    assert actions_left > status_right
+    if not widget.zoom_toolbar_field.isHidden():
+        actions_right = widget.context_actions_group.mapTo(
+            context,
+            widget.context_actions_group.rect().bottomRight(),
+        ).x()
+        zoom_left = widget.zoom_toolbar_field.mapTo(
+            context,
+            widget.zoom_toolbar_field.rect().topLeft(),
+        ).x()
+        assert 0 <= zoom_left - actions_right <= (
+            context.layout().spacing() + 2
+        )
+
+
+@pytest.mark.parametrize(
+    ("width", "cache_visible"),
+    ((1400, True), (900, True), (640, False)),
+)
+def test_toolbar_busy_footer_elides_long_status_without_clipping(
+    qtbot,
+    width,
+    cache_visible,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    widget.cache_status_label.setText("Cache and memory " + "very long " * 24)
+    widget._set_pipeline_busy(True, "gaussian")
+    widget.pipeline_busy_label.setText("Processing " + "a long operation " * 20)
     QApplication.processEvents()
 
-    fields = (
-        (
-            widget.preview_toolbar_label,
-            widget.preview_mode_combo,
-        ),
-        (
-            widget.contrast_toolbar_label,
-            widget.thumbnail_contrast_combo,
-        ),
-        (
-            widget.contrast_range_toolbar_label,
-            widget.thumbnail_scope_combo,
-        ),
-        (
-            widget.mono_toolbar_label,
-            widget.thumbnail_colormap_combo,
-        ),
-        (
-            widget.zoom_toolbar_label,
-            widget.zoom_toolbar_controls,
-        ),
-        (
-            widget.compute_toolbar_label,
-            widget.compute_mode_combo,
-        ),
+    assert (
+        widget.status_toolbar_widget.minimumSizeHint().width()
+        <= widget.status_toolbar_widget.width()
     )
-    controls = [control for _label, control in fields]
-
-    def rect_in_toolbar(child):
-        return child.rect().translated(child.mapTo(widget, QPoint(0, 0)))
-
-    def horizontal_gap(first, second):
-        if first.right() < second.left():
-            return second.left() - first.right()
-        if second.right() < first.left():
-            return first.left() - second.right()
-        return 0
-
-    label_left_edges = []
-    for label, control in fields:
-        assert label.alignment() & Qt.AlignRight
-        label_rect = rect_in_toolbar(label)
-        control_rect = rect_in_toolbar(control)
-        label_left_edges.append(label_rect.left())
-        own_gap = horizontal_gap(label_rect, control_rect)
-        assert 0 < own_gap <= 6
-        other_gaps = [
-            horizontal_gap(label_rect, rect_in_toolbar(other))
-            for other in controls
-            if other is not control
-        ]
-        assert own_gap < min(other_gaps)
-
-    assert label_left_edges[0] == min(label_left_edges)
-
-    widget.hide()
-    widget.setFixedWidth(1400)
-    widget._sync_toolbar_responsive_mode()
-    assert widget.thumbnail_toolbar_group.isHidden()
-    assert widget.zoom_toolbar_field.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden() is False
-    assert widget.compute_status_label.isHidden()
-    assert widget._toolbar_zoom_separator.isHidden()
-    assert widget._toolbar_action_separator.isHidden() is False
-
-    widget.setFixedWidth(1000)
-    widget._sync_toolbar_responsive_mode()
-    assert widget.thumbnail_toolbar_group.isHidden()
-    assert widget.zoom_toolbar_field.isHidden()
-    assert widget.compute_toolbar_group.isHidden()
-    assert widget.compute_status_label.isHidden()
-    assert widget._toolbar_zoom_separator.isHidden()
-    assert widget._toolbar_action_separator.isHidden()
-
-    widget.setFixedWidth(700)
-    widget._sync_toolbar_responsive_mode()
-    assert widget.compute_toolbar_group.isHidden()
-    assert widget.compute_status_label.isHidden()
-    assert widget._toolbar_compute_separator.isHidden()
-    assert widget.settings_menu_button.isHidden() is False
+    assert widget.cache_status_label.isHidden() is (not cache_visible)
+    assert not widget.pipeline_activity_group.isHidden()
+    assert widget.pipeline_cancel_button.text() == "Stop"
+    widget._set_pipeline_busy(False)
 
 
-def test_toolbar_fields_do_not_clip_with_larger_font(qtbot):
+@pytest.mark.parametrize("width", (1400, 900, 640))
+def test_status_toolbar_height_is_stable_when_progress_appears(
+    qtbot,
+    width,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, width)
+    widget.resize(width, 700)
+    QApplication.processEvents()
+
+    idle_height = widget.status_toolbar_widget.height()
+    assert idle_height >= widget.status_toolbar_widget.minimumHeight()
+    assert widget.status_toolbar_widget.maximumHeight() > idle_height
+
+    widget._set_pipeline_busy(True, "gaussian")
+    widget.pipeline_busy_bar.setRange(0, 100)
+    widget.pipeline_busy_bar.setValue(48)
+    QApplication.processEvents()
+
+    assert widget.status_toolbar_widget.height() == idle_height
+
+    widget._set_pipeline_busy(False)
+    QApplication.processEvents()
+
+    assert widget.status_toolbar_widget.height() == idle_height
+
+
+def test_status_toolbar_baseline_does_not_clip_wrapped_actionable_error(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 640)
+    baseline_height = widget.status_toolbar_widget.height()
+    widget._set_status(
+        "The image source could not be read because its saved location is no "
+        "longer available. Choose the source again, then recalculate the "
+        "workflow to continue.",
+        severity="error",
+        actionable=True,
+    )
+    QApplication.processEvents()
+
+    required_height = widget.status_label.heightForWidth(
+        max(widget.status_label.width(), 1)
+    )
+    assert widget.status_label.height() >= required_height
+    assert widget.status_toolbar_widget.height() >= required_height
+    assert widget.status_toolbar_widget.height() > baseline_height
+
+    widget.status_label.setText("Workflow ready.")
+    QApplication.processEvents()
+
+    assert widget.status_toolbar_widget.height() == baseline_height
+
+
+def test_status_toolbar_progress_stop_and_run_activity_stay_synchronized(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1400)
+
+    status_widgets = [
+        widget.status_toolbar_layout.itemAt(index).widget()
+        for index in range(widget.status_toolbar_layout.count())
+        if widget.status_toolbar_layout.itemAt(index).widget() is not None
+    ]
+    assert widget.workflow_toolbar_layout is widget.status_toolbar_layout
+    assert status_widgets == [
+        widget.status_label,
+        widget.cache_status_label,
+        widget.pipeline_activity_group,
+        widget.run_activity_button,
+    ]
+    activity_widgets = [
+        widget.pipeline_activity_layout.itemAt(index).widget()
+        for index in range(widget.pipeline_activity_layout.count())
+        if widget.pipeline_activity_layout.itemAt(index).widget() is not None
+    ]
+    assert activity_widgets == [
+        widget.pipeline_busy_label,
+        widget.pipeline_busy_bar,
+        widget.pipeline_cancel_button,
+    ]
+    assert widget.run_activity_button.menu() is widget.run_activity_menu
+    assert isinstance(widget.run_activity_button, _ToolbarChevronButton)
+    assert widget.pipeline_activity_group.isHidden()
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+    assert widget.pipeline_cancel_button.isHidden()
+
+    widget._set_pipeline_busy(True, "gaussian")
+    widget.pipeline_busy_bar.setRange(0, 100)
+    widget.pipeline_busy_bar.setValue(63)
+    widget.pipeline_busy_bar.setTextVisible(True)
+    widget._sync_run_activity_button()
+
+    assert not widget.pipeline_busy_label.isHidden()
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert not widget.pipeline_cancel_button.isHidden()
+    assert not widget.pipeline_activity_group.isHidden()
+    assert widget.pipeline_cancel_button.text() == "Stop"
+    assert widget.run_activity_button.text() == "Run activity · 1"
+
+    activity_right = widget.pipeline_activity_group.mapTo(
+        widget.status_toolbar_widget,
+        widget.pipeline_activity_group.rect().bottomRight(),
+    ).x()
+    run_activity_left = widget.run_activity_button.mapTo(
+        widget.status_toolbar_widget,
+        widget.run_activity_button.rect().topLeft(),
+    ).x()
+    assert 0 <= run_activity_left - activity_right <= (
+        widget.status_toolbar_layout.spacing() + 2
+    )
+    assert (
+        widget.pipeline_activity_group.x()
+        > widget.status_toolbar_widget.contentsRect().center().x()
+    )
+    assert (
+        widget.pipeline_activity_group.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Maximum
+    )
+    activity_spacing = widget.pipeline_activity_layout.spacing()
+    label_to_bar = (
+        widget.pipeline_busy_bar.geometry().left()
+        - widget.pipeline_busy_label.geometry().right()
+    )
+    bar_to_stop = (
+        widget.pipeline_cancel_button.geometry().left()
+        - widget.pipeline_busy_bar.geometry().right()
+    )
+    assert 0 <= label_to_bar <= activity_spacing + 2
+    assert 0 <= bar_to_stop <= activity_spacing + 2
+
+    widget._populate_run_activity_menu()
+    assert [action.text() for action in widget.run_activity_menu.actions()] == [
+        "Run activity details"
+    ]
+    assert widget._run_activity_action.defaultWidget() is widget._run_activity_panel
+    assert widget._run_activity_panel.objectName() == "VippRunActivityPanel"
+    assert "Gaussian Blur" in widget._run_activity_value_labels["current"].text()
+    assert "63%" in widget._run_activity_value_labels["current"].text()
+    assert widget._run_activity_value_labels["current"].isEnabled()
+    assert widget._run_activity_value_labels["recent"].wordWrap()
+    assert "total this session" in widget._run_activity_value_labels[
+        "pipeline_time"
+    ].text()
+    assert widget._run_activity_stop_button is not None
+    stop_clicks = []
+    widget.pipeline_cancel_button.clicked.connect(lambda: stop_clicks.append(True))
+
+    widget._run_activity_stop_button.click()
+
+    assert stop_clicks == [True]
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_activity_group.isHidden()
+    widget._populate_run_activity_menu()
+    assert (
+        widget._run_activity_value_labels["current"].text()
+        == "No calculations running"
+    )
+    assert widget._run_activity_value_labels["recent"].text().startswith(
+        "Processing: Gaussian Blur"
+    )
+    assert widget._run_activity_stop_button is None
+
+
+@pytest.mark.parametrize(
+    ("base", "text"),
+    (("#111827", "#f8fafc"), ("#ffffff", "#111827")),
+)
+def test_run_activity_panel_uses_readable_palette_roles(qtbot, base, text):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    palette = _widget_test_palette(base=base, text=text)
+    widget.setPalette(palette)
+
+    widget._populate_run_activity_menu()
+
+    colors = theme_colors(palette)
+    panel = widget._run_activity_panel
+    assert panel is not None
+    assert colors.text.name() in panel.styleSheet()
+    assert colors.muted_text.name() in panel.styleSheet()
+    assert colors.info.foreground.name() in panel.styleSheet()
+    assert colors.border.name() in widget.run_activity_menu.styleSheet()
+    assert all(
+        label.isEnabled()
+        for label in widget._run_activity_value_labels.values()
+    )
+
+
+def test_pipeline_processing_time_is_separate_idempotent_and_live(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    clock = [100.0]
+    monkeypatch.setattr("napari_vipp._widget.monotonic", lambda: clock[0])
+    widget._pipeline_processing_total_seconds = 0.0
+    widget._pipeline_processing_active_started_at.clear()
+
+    background_key = ("background", 41)
+    widget._begin_pipeline_processing_timing(background_key)
+    clock[0] = 102.5
+    total, current = widget._pipeline_processing_time_snapshot()
+    assert total == pytest.approx(2.5)
+    assert current == pytest.approx(2.5)
+
+    widget._populate_run_activity_menu()
+    timing_text = widget._run_activity_value_labels["pipeline_time"].text()
+    assert "2.5 s total this session" in timing_text
+    assert "2.5 s current" in timing_text
+    assert widget._pipeline_processing_total_seconds == 0.0
+
+    clock[0] = 104.0
+    assert widget._finish_pipeline_processing_timing(
+        background_key
+    ) == pytest.approx(4.0)
+    assert widget._finish_pipeline_processing_timing(background_key) is None
+    assert widget._pipeline_processing_total_seconds == pytest.approx(4.0)
+
+    with widget._measure_synchronous_pipeline_processing():
+        clock[0] = 105.25
+    assert widget._pipeline_processing_total_seconds == pytest.approx(5.25)
+
+    widget._set_pipeline_busy(True, "gaussian")
+    clock[0] = 112.0
+    widget._set_pipeline_busy(False)
+    assert widget._pipeline_processing_total_seconds == pytest.approx(5.25)
+
+
+def test_status_toolbar_uses_available_width_for_full_memory_summary(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1800)
+
+    memory_summary = (
+        "Cache 25.3 MB (Keep all) | RAM free 13.6 GB / 31.9 GB | "
+        "Commit free 33.8 GB / 71.9 GB"
+    )
+    widget.cache_status_label.setText(memory_summary)
+    widget._set_pipeline_busy(True, "gaussian")
+    QApplication.processEvents()
+
+    assert widget.cache_status_label.maximumWidth() > 420
+    assert QLabel.text(widget.cache_status_label) == memory_summary
+    assert "Commit free 33.8 GB / 71.9 GB" in QLabel.text(
+        widget.cache_status_label
+    )
+    widget._set_pipeline_busy(False)
+
+
+def test_toolbar_text_buttons_do_not_clip_with_larger_font(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     font = widget.font()
     font.setPointSizeF(max(font.pointSizeF() * 1.5, 13.0))
     widget.setFont(font)
-    expanded_width = widget._expanded_toolbar_required_width()
-    widget.setFixedWidth(expanded_width + 100)
-    widget.resize(expanded_width + 100, 700)
-    widget.show()
-    qtbot.waitExposed(widget)
-    widget._sync_toolbar_responsive_mode()
-    QApplication.processEvents()
+    _show_toolbar_at_width(widget, qtbot, 2000)
 
-    labels = (
-        widget.preview_toolbar_label,
-        widget.contrast_toolbar_label,
-        widget.contrast_range_toolbar_label,
-        widget.mono_toolbar_label,
-        widget.zoom_toolbar_label,
-        widget.compute_toolbar_label,
+    assert widget._toolbar_layout_mode == "wide"
+    for button in (
+        widget.new_workflow_button,
+        widget.load_workflow_button,
+        widget.save_workflow_button,
+        widget.batch_button,
+        widget.preview_menu_button,
+        widget.calculate_all_button,
+        widget.auto_structure_button,
+    ):
+        assert button.width() >= button.minimumSizeHint().width()
+        assert button.height() >= button.minimumSizeHint().height()
+
+
+def test_toolbar_command_icons_have_breathing_room_and_preview_chevron(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1400)
+
+    assert "padding: 2px 5px" in widget.command_toolbar_widget.styleSheet()
+    for button in (
+        widget.new_workflow_button,
+        widget.load_workflow_button,
+        widget.save_workflow_button,
+        widget.batch_button,
+        widget.calculate_all_button,
+        widget.refresh_button,
+        widget.graph_focus_button,
+        widget.auto_structure_button,
+        widget.tunnel_manager_button,
+    ):
+        assert isinstance(button, _ToolbarCommandButton)
+        assert button.iconSize() == QSize(18, 18)
+        assert button.property("text") == button.text()
+
+    preview = widget.preview_menu_button
+    assert preview.text() == "Preview"
+    assert "menu-indicator { image: none" in preview.styleSheet()
+    assert "padding-right: 22px" in preview.styleSheet()
+    assert preview.property("chevronVisible") is True
+    assert not preview._chevron_indicator.isHidden()
+    assert preview.rect().contains(preview._chevron_indicator.geometry())
+    preview_option = preview._toolbar_style_option()
+    batch_option = widget.batch_button._toolbar_style_option()
+    assert not bool(preview_option.features & QStyleOptionButton.HasMenu)
+    preview_contents = preview.style().subElementRect(
+        QStyle.SE_PushButtonContents,
+        preview_option,
+        preview,
     )
-    combos = (
-        widget.preview_mode_combo,
-        widget.thumbnail_contrast_combo,
-        widget.thumbnail_scope_combo,
-        widget.thumbnail_colormap_combo,
+    batch_contents = widget.batch_button.style().subElementRect(
+        QStyle.SE_PushButtonContents,
+        batch_option,
+        widget.batch_button,
     )
-    for label in labels:
-        assert label.width() >= label.sizeHint().width()
-        assert label.height() >= label.sizeHint().height()
-    for combo in combos:
-        assert combo.width() >= combo.minimumSizeHint().width()
-        assert combo.height() >= combo.minimumSizeHint().height()
-    assert widget.settings_menu_button.geometry().right() < widget.width()
+    assert preview_contents.left() == batch_contents.left()
+    assert (
+        preview._chevron_indicator.geometry().left() - preview_contents.right()
+        >= 4
+    )
+
+    run_activity = widget.run_activity_button
+    assert isinstance(run_activity, _ToolbarChevronButton)
+    assert run_activity.text() == "Run activity"
+    assert "menu-indicator { image: none" in run_activity.styleSheet()
+    assert "padding-right: 22px" in run_activity.styleSheet()
+    assert run_activity.property("chevronVisible") is True
+    assert not run_activity._chevron_indicator.isHidden()
+    assert run_activity.rect().contains(run_activity._chevron_indicator.geometry())
+    assert not bool(
+        run_activity._toolbar_style_option().features
+        & QStyleOptionButton.HasMenu
+    )
+    run_activity_contents = run_activity.style().subElementRect(
+        QStyle.SE_PushButtonContents,
+        run_activity._toolbar_style_option(),
+        run_activity,
+    )
+    assert (
+        run_activity._chevron_indicator.geometry().left()
+        - run_activity_contents.right()
+        >= 4
+    )
+
+    _show_toolbar_at_width(widget, qtbot, 900)
+    assert preview.text() == "Preview"
+    assert preview.property("chevronVisible") is True
+    assert not preview._chevron_indicator.isHidden()
+    assert run_activity.text() == "Run activity"
+    assert run_activity.property("chevronVisible") is True
+    assert not run_activity._chevron_indicator.isHidden()
+
+    _show_toolbar_at_width(widget, qtbot, 640)
+    assert preview.text() == ""
+    assert preview.property("chevronVisible") is False
+    assert preview._chevron_indicator.isHidden()
+    assert run_activity.text() == ""
+    assert run_activity.property("chevronVisible") is False
+    assert run_activity._chevron_indicator.isHidden()
 
 
-def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
+def test_toolbar_compaction_remeasures_nested_groups_after_layout_changes(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, 1600)
+    for width in (900, 1400):
+        widget.setFixedWidth(width)
+        QApplication.processEvents()
+        widget._sync_toolbar_responsive_mode()
+        QApplication.processEvents()
+
+    assert widget.new_workflow_button.text() == "New"
+    assert widget.batch_button.text() == "Batch workflow"
+    assert widget.preview_menu_button.text() == "Preview"
+    assert widget.calculate_all_button.text() == "Calculate all"
+    assert not widget.compute_toolbar_group.isHidden()
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+
+
+def test_toolbar_settings_menu_consolidates_actions_not_preview_controls(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    widget.resize(widget._expanded_toolbar_required_width() + 100, 600)
+    widget.setFixedWidth(1400)
     widget._sync_toolbar_responsive_mode()
     widget._populate_settings_toolbar_menu()
 
@@ -23240,7 +23921,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert "Run all in background" in labels
     assert "Link napari/VIPP sliders" in labels
     assert "Compute setup and memory…" in labels
-    assert "Port labels" in labels
+    assert "Port labels" not in labels
     assert "Cache mode" in labels
     assert "Auto memory guard" in labels
     assert "Preview mode" not in labels
@@ -23274,7 +23955,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert cache_limit_widget.findChild(QLabel).font() == widget.settings_menu.font()
     assert cache_limit_widget.findChild(QSpinBox).font() == widget.settings_menu.font()
 
-    widget.resize(1200, 600)
+    widget.setFixedWidth(640)
     widget._sync_toolbar_responsive_mode()
     widget._populate_settings_toolbar_menu()
     labels = [
@@ -23282,10 +23963,11 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
         for action in widget.settings_menu.actions()
         if not action.isSeparator() and action.text()
     ]
-    assert "Preview mode" in labels
-    assert "Thumbnail contrast" in labels
-    assert "Contrast range" in labels
-    assert "Monochrome colormap" in labels
+    assert "Preview mode" not in labels
+    assert "Thumbnail contrast" not in labels
+    assert "Contrast range" not in labels
+    assert "Monochrome colormap" not in labels
+    assert any(label.startswith("Compute preference") for label in labels)
 
     save_thumbnail_action = next(
         action
@@ -23297,36 +23979,52 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert widget.save_thumbnail_visibility_checkbox.isChecked()
 
 
-def test_settings_menu_controls_port_label_mode(qtbot):
+def test_settings_menu_headings_are_bold_normal_color_labels(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._populate_settings_toolbar_menu()
+
+    headings = {
+        action.text(): action
+        for action in widget.settings_menu.actions()
+        if action.text() in {"Workflow actions", "Compute", "Workflow settings"}
+    }
+    assert set(headings) == {"Workflow actions", "Compute", "Workflow settings"}
+    menu_color = widget.settings_menu.palette().color(
+        QPalette.Active, QPalette.WindowText
+    )
+    for action in headings.values():
+        label = action.defaultWidget()
+        assert isinstance(label, QLabel)
+        assert not action.isEnabled()
+        assert label.isEnabled()
+        assert label.font().bold()
+        assert label.palette().color(QPalette.Active, QPalette.WindowText) == menu_color
+
+
+def test_preview_menu_controls_port_label_mode(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
     assert widget.port_label_mode_combo.currentText() == "Ambiguous only"
     assert widget.graph_view.port_label_mode == PortLabelMode.AMBIGUOUS_ONLY
-    widget._populate_settings_toolbar_menu()
-    submenu = next(
-        action.menu()
-        for action in widget.settings_menu.actions()
-        if action.text() == "Port labels"
-    )
-    actions = {action.text(): action for action in submenu.actions()}
-    assert list(actions) == ["Ambiguous only", "Show all", "Hide all"]
+    widget._populate_preview_display_menu()
+    picker = widget._preview_menu_combos["Port labels"]
+    assert [picker.itemText(index) for index in range(picker.count())] == [
+        "Ambiguous only",
+        "Show all",
+        "Hide all",
+    ]
 
-    actions["Show all"].trigger()
+    picker.setCurrentText("Show all")
 
     assert widget.port_label_mode_combo.currentText() == "Show all"
     assert widget.graph_view.port_label_mode == PortLabelMode.SHOW_ALL
     assert widget.status_label.text().startswith("Port labels set to Show all")
 
-    widget._populate_settings_toolbar_menu()
-    submenu = next(
-        action.menu()
-        for action in widget.settings_menu.actions()
-        if action.text() == "Port labels"
-    )
-    checked = [action.text() for action in submenu.actions() if action.isChecked()]
-    assert checked == ["Show all"]
+    widget._populate_preview_display_menu()
+    assert widget._preview_menu_combos["Port labels"].currentText() == "Show all"
 
 
 def test_palette_registry_nodes_are_constructible():

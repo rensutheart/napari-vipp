@@ -18,11 +18,18 @@ from napari_vipp.core.workflow import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-WORKFLOW_PATH = REPO_ROOT / "examples" / "manual" / "exhaustive-inspector-showcase.json"
+WORKFLOW_PATH = REPO_ROOT / "examples" / "exhaustive-inspector-showcase.json"
+MANUAL_WORKFLOW_PATH = (
+    REPO_ROOT / "examples" / "manual" / "exhaustive-inspector-showcase.json"
+)
 
 
 def _showcase_document() -> dict[str, object]:
     return json.loads(WORKFLOW_PATH.read_text(encoding="utf-8"))
+
+
+def test_bundled_exhaustive_inspector_showcase_matches_manual_qa_source():
+    assert WORKFLOW_PATH.read_bytes() == MANUAL_WORKFLOW_PATH.read_bytes()
 
 
 def test_exhaustive_inspector_showcase_is_current_and_canonical():
@@ -44,8 +51,8 @@ def test_exhaustive_inspector_showcase_covers_every_palette_operation_once():
     operation_counts = Counter(node.operation_id for node in snapshot.graph.nodes)
     palette_ids = {operation.id for operation in PALETTE_NODE_LIBRARY}
 
-    assert palette_ids <= set(operation_counts)
-    assert set(operation_counts) - palette_ids == PALETTE_HIDDEN_OPERATION_IDS
+    assert set(operation_counts) == palette_ids
+    assert not (set(operation_counts) & PALETTE_HIDDEN_OPERATION_IDS)
     assert operation_counts["input"] >= 1
     assert {
         operation_id: count
@@ -139,11 +146,11 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
     expected_tunnels = {
         "Born-Wolf PSF": ("born_wolf_psf_1", 0, 1),
         "Expanded labels": ("expand_labels_1", 0, 1),
-        "Green channel": ("split_channels_1", 1, 16),
+        "Green channel": ("split_channels_1", 1, 14),
         "Object labels": ("relabel_sequential_1", 0, 4),
-        "ROI mask": ("binary_threshold_1", 0, 11),
+        "ROI mask": ("binary_threshold_1", 0, 10),
         "Raw volume": ("input_2", 0, 4),
-        "Red channel": ("split_channels_1", 0, 21),
+        "Red channel": ("split_channels_1", 0, 19),
         "Skeleton mask": ("skeletonize_1", 0, 5),
         "Watershed labels": ("auto_watershed_from_mask_1", 0, 2),
     }
@@ -167,7 +174,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
             for name, (*_, subscriber_count) in expected_tunnels.items()
         }
     )
-    assert sum(tunnel_counts.values()) == 65
+    assert sum(tunnel_counts.values()) == 60
     assert sum(not connection.tunnel_name for connection in pipeline.connections) == 82
 
     for connection in pipeline.connections:

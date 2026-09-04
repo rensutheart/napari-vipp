@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from qtpy.QtGui import QColor, QPalette
+from qtpy.QtWidgets import QWidget
 
 from napari_vipp import _widget
 from napari_vipp.ui.view_dims import (
@@ -62,6 +63,31 @@ def test_view_dimensions_menu_builds_full_controls_and_forwards_values(qtbot):
     controls[0].spin.setValue(2)
 
     assert captured == [(0, 2)]
+
+
+def test_view_dimensions_use_menu_before_compact_controls_overlap(qtbot):
+    parent = QWidget()
+    parent.resize(652, 80)
+    bar = ViewDimsBar(parent)
+    qtbot.addWidget(bar)
+    bar.resize(640, 40)
+    bar.set_axes(
+        tuple(
+            ViewDimAxis(name, label, step_axis=index, size=size, value=0)
+            for index, (name, label, size) in enumerate(
+                (
+                    ("time", "T", 120),
+                    ("channel", "C", 81),
+                    ("depth", "Z", 12),
+                    ("position", "P", 5),
+                )
+            )
+        )
+    )
+
+    assert bar._responsive_mode == "menu"
+    assert not bar.menu_button.isHidden()
+    assert all(control.isHidden() for control in bar._controls)
 
 
 def _theme_palette(*, base: str, alternate: str, text: str) -> QPalette:

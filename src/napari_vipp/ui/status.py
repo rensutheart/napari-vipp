@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from qtpy.QtCore import QEvent
+from qtpy.QtCore import QEvent, Signal
 from qtpy.QtWidgets import QLabel, QSizePolicy, QWidget
 
 from napari_vipp.ui.palette_roles import SemanticToneColors, theme_colors
@@ -31,6 +31,8 @@ class StatusMessageStrip(QLabel):
     alert treatment.  All other messages remain lightweight text/accent status so
     routine progress and success feedback do not compete with failures.
     """
+
+    message_changed = Signal()
 
     def __init__(
         self,
@@ -69,11 +71,13 @@ class StatusMessageStrip(QLabel):
         *,
         severity: MessageSeverity | str = MessageSeverity.NEUTRAL,
         actionable: bool = False,
+        detail: str = "",
     ) -> None:
-        """Display ``text`` with semantic, severity-aware presentation."""
+        """Display concise ``text`` with optional hover/accessibility detail."""
 
         resolved_severity = MessageSeverity(severity)
         resolved_actionable = bool(actionable)
+        resolved_detail = str(detail).strip()
         full_width_alert = (
             resolved_severity is MessageSeverity.ERROR and resolved_actionable
         )
@@ -87,9 +91,12 @@ class StatusMessageStrip(QLabel):
         self.setAccessibleDescription(
             f"{resolved_severity.value} status"
             + (" requiring action" if resolved_actionable else "")
+            + (f". Details: {resolved_detail}" if resolved_detail else "")
         )
+        self.setToolTip(resolved_detail)
         self._apply_theme_style()
         super().setText(str(text))
+        self.message_changed.emit()
 
     def changeEvent(self, event) -> None:  # noqa: N802
         """Refresh palette-derived colors after a live host-theme change."""

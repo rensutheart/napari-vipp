@@ -21,7 +21,6 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -36,6 +35,7 @@ from napari_vipp.ui.file_sources import (
     SourceLoadProgressUnit,
 )
 from napari_vipp.ui.palette_roles import theme_colors
+from napari_vipp.ui.sliders import VippSlider
 
 
 @dataclass(frozen=True)
@@ -229,7 +229,7 @@ class ParameterControl(QWidget):
         self._entry_minimum = bounds.minimum
         self._entry_maximum = bounds.maximum
         self._scale = self._scale_for(bounds)
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = VippSlider(Qt.Horizontal)
         # The slider remains comfortably draggable at 80 px, while avoiding a
         # large hard minimum when an inspector form stacks labels above fields.
         self.slider.setMinimumWidth(80)

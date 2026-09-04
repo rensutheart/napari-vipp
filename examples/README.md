@@ -13,6 +13,7 @@ python scripts/launch_vipp_intensity_workflow.py <name>
 Current launcher IDs (run the launcher with `--list` for the authoritative
 registry):
 
+- `exhaustive-inspector`
 - `graph-authoring`
 - `responsive-crop`
 - `safe-node-bypass`
@@ -40,12 +41,13 @@ workflows as a grouped, searchable template list and opens them with their
 sample `Image Source` nodes already configured. Use `Load workflow...` for
 custom or external workflow JSON files.
 
-Large manual-QA fixtures are kept under [`manual/`](manual/README.md) rather
-than in the **Open example...** catalogue. The exhaustive inspector showcase in
-that folder uses every operation currently exposed in the palette.
+The exhaustive inspector showcase is available directly from **Open
+example...**. Its actively maintained source also remains under
+[`manual/`](manual/README.md) for focused manual-QA notes.
 
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
+| `exhaustive-inspector-showcase.json` | Seven bundled VIPP synthetic samples | Seven-lane comprehensive review graph containing every operation currently exposed in the node palette, representative connections and tunnels, canvas notes, and saved inspector display settings. **Save Image** is disabled, so opening or calculating the workflow cannot write an image unexpectedly. Open it as `exhaustive-inspector`. |
 | `graph-authoring-acceptance.json` | `VIPP synthetic object morphology` | Numbered, on-canvas acceptance recipe for inserting a node before a shared tunnel, copying settings between matching nodes, copying and moving a connected node group, pasting at a chosen location, checking one-step undo/redo, and using **Add conversion** to make a `uint16` Gaussian input GPU eligible on a qualified GPU setup. It opens with Auto compute intent so that qualified systems can show the real tip; CPU-only systems continue normally without it. Open it as `graph-authoring`. |
 | `responsive-volume-crop-acceptance.json` | `VIPP synthetic time-lapse multichannel` | Numbered acceptance path for the responsive TCZYX Crop Stack. It verifies explicit-Z controls, an immediate constant-size crop box and current-slice outline during rapid slider movement, one committed calculation and undo after release or idle, exact T/C preservation and physical-origin shifts, draft flushing before calculation/save/export/batch/tab/close boundaries, inferred-QYX rejection, and the explained CPU assignment under Prefer GPU. The authored margins crop `(5, 3, 12, 96, 128)` to `(5, 3, 9, 87, 115)`. Open it as `responsive-crop`. |
 | `safe-node-bypass-acceptance.json` | `VIPP synthetic volume` | Focused Crop Stack acceptance path for the exact scientific alias, would-run card thumbnail, bypass styling, undo/save/export, GPU-neutral status, and batch Run/Bypass profile. Open it as `safe-node-bypass`. |
