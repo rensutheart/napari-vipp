@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from qtpy.QtCore import QPointF, QRect, Qt
+from qtpy.QtCore import QPointF, QRect, QSize, Qt
 from qtpy.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from qtpy.QtWidgets import (
     QApplication,
@@ -353,13 +353,27 @@ class ToolbarCommandButton(QPushButton):
         painter.drawControl(QStyle.CE_PushButton, self._toolbar_style_option())
 
     def sizeHint(self):  # noqa: N802
-        """Reserve the extra text we paint, without changing the action label."""
-        hint = super().sizeHint()
-        if self.text() and not self.icon().isNull():
-            metrics = self._toolbar_style_option().fontMetrics
-            hint.setWidth(
-                hint.width()
-                + metrics.horizontalAdvance(self._ICON_TEXT_SPACER + self.text())
-                - metrics.horizontalAdvance(self.text())
+        """Measure the painted content using the current styled font and DPI."""
+        self.ensurePolished()
+        # QPushButton caches its hint, which can retain pre-reparenting/font
+        # metrics in a styled footer. Keep the option alive too: PySide's
+        # fontMetrics property borrows from its owning style option.
+        option = self._toolbar_style_option()
+        if not option.text and option.icon.isNull():
+            return super().sizeHint()
+        content = (
+            option.fontMetrics.size(Qt.TextShowMnemonic, option.text)
+            if option.text else QSize(0, 0)
+        )
+        if not option.icon.isNull():
+            content.setWidth(content.width() + option.iconSize.width() + 4)
+            content.setHeight(max(content.height(), option.iconSize.height()))
+        option.rect.setSize(content)
+        if self.menu() is not None:
+            content.setWidth(
+                content.width()
+                + self.style().pixelMetric(QStyle.PM_MenuButtonIndicator, option, self)
             )
-        return hint
+        return self.style().sizeFromContents(
+            QStyle.CT_PushButton, option, content, self
+        )

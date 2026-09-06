@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from html import escape
 
 import numpy as np
-from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
+from qtpy.QtCore import QEvent, QRect, QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtGui import QBrush, QPainter, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -962,6 +963,62 @@ class ReorderAxesControl(QWidget):
             self._applying_theme_style = False
 
 
+class _ColumnActionLayout(QLayout):
+    """Wrap column actions at their readable size, including in narrow docks."""
+
+    def __init__(self):
+        super().__init__()
+        self._items = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(6)
+
+    def addItem(self, item) -> None:  # noqa: N802
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index):  # noqa: N802
+        return self._items[index] if 0 <= index < self.count() else None
+
+    def takeAt(self, index):  # noqa: N802
+        return self._items.pop(index) if 0 <= index < self.count() else None
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._arrange(QRect(0, 0, width, 0), measure_only=True)
+
+    def minimumSize(self) -> QSize:  # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        return size
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.minimumSize()
+
+    def setGeometry(self, rect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._arrange(rect, measure_only=False)
+
+    def _arrange(self, rect, *, measure_only: bool) -> int:
+        x, y = rect.x(), rect.y()
+        line_height = 0
+        for item in self._items:
+            size = item.sizeHint().expandedTo(item.minimumSize())
+            if x > rect.x() and x + size.width() > rect.right() + 1:
+                x = rect.x()
+                y += line_height + self.spacing()
+                line_height = 0
+            if not measure_only:
+                item.setGeometry(QRect(x, y, size.width(), size.height()))
+            x += size.width() + self.spacing()
+            line_height = max(line_height, size.height())
+        return y - rect.y() + line_height
+
+
 class SelectTableColumnsControl(QWidget):
     """Checklist control for keeping and ordering table columns."""
 
@@ -1013,9 +1070,7 @@ class SelectTableColumnsControl(QWidget):
         self.list_widget.itemSelectionChanged.connect(self._sync_button_state)
         layout.addWidget(self.list_widget)
 
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(0, 0, 0, 0)
-        button_row.setSpacing(6)
+        button_row = _ColumnActionLayout()
         self.select_all_button = QPushButton("Select all")
         self.deselect_all_button = QPushButton("Deselect all")
         self.move_up_button = QPushButton("Move up")
@@ -1026,7 +1081,6 @@ class SelectTableColumnsControl(QWidget):
         button_row.addWidget(self.move_up_button)
         button_row.addWidget(self.move_down_button)
         button_row.addWidget(self.reset_button)
-        button_row.addStretch(1)
         layout.addLayout(button_row)
 
         self.summary_label = QLabel()
@@ -1196,6 +1250,21 @@ class SelectTableColumnsControl(QWidget):
             self.hint_label.setStyleSheet(f"color: {colors.muted_text.name()};")
             self.summary_label.setStyleSheet(
                 f"color: {colors.muted_text.name()};"
+            )
+            # Napari can style Base/Text without updating AlternateBase. Bind
+            # every list surface to the same normalized theme colors so dark
+            # themes never inherit white alternating rows from the OS palette.
+            self.list_widget.setStyleSheet(
+                "QListWidget {"
+                f" background-color: {colors.surface.name()};"
+                f" alternate-background-color: {colors.alternate_surface.name()};"
+                f" color: {colors.text.name()};"
+                f" border: 1px solid {colors.border.name()};"
+                "}"
+                "QListWidget::item:selected {"
+                f" background-color: {colors.info.surface.name()};"
+                f" color: {colors.info.foreground.name()};"
+                "}"
             )
         finally:
             self._applying_theme_style = False

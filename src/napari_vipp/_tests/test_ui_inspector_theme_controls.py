@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from qtpy.QtCore import QEvent
 from qtpy.QtGui import QColor, QPalette
-from qtpy.QtWidgets import QApplication
+from qtpy.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from napari_vipp.ui.axis_controls import (
     AxisSelectionRow,
@@ -119,3 +119,31 @@ def test_image_source_inspector_surfaces_follow_palette(qtbot):
         assert colors.warning.surface.name() in warning_style
         assert colors.warning.foreground.name() in warning_style
         assert colors.warning.border.name() in warning_style
+
+
+def test_column_list_replaces_incompatible_alternate_palette_in_both_themes(qtbot):
+    parent = QWidget()
+    layout = QVBoxLayout(parent)
+    columns = SelectTableColumnsControl(["label", "area", "mean"], parent=parent)
+    layout.addWidget(columns)
+    qtbot.addWidget(parent)
+    parent.resize(450, 420)
+    parent.show()
+
+    for base, text, stale_alternate in (
+        ("#111827", "#f8fafc", "#ffffff"),
+        ("#ffffff", "#111827", "#000000"),
+    ):
+        palette = _palette(base=base, text=text)
+        palette.setColor(QPalette.AlternateBase, QColor(stale_alternate))
+        parent.setPalette(palette)
+        _restyle(columns, palette)
+        QApplication.processEvents()
+        colors = theme_colors(palette)
+        style = columns.list_widget.styleSheet()
+        assert f"background-color: {colors.surface.name()}" in style
+        assert f"alternate-background-color: {colors.alternate_surface.name()}" in style
+        assert f"color: {colors.text.name()}" in style
+        assert colors.alternate_surface != QColor(stale_alternate)
+        assert colors.info.surface.name() in style
+        assert colors.info.foreground.name() in style

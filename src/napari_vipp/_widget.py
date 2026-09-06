@@ -1588,7 +1588,12 @@ class _InspectorParameterLabel(QLabel):
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         hint = super().minimumSizeHint()
-        return QSize(0, int(hint.height()))
+        # A side-by-side label needs its natural width. Returning zero lets Qt
+        # erase the entire label column when a large-font control needs room.
+        return QSize(
+            0 if self._stacked_width > 0 else int(hint.width()),
+            int(hint.height()),
+        )
 
 
 class _InspectorParameterFormLayout(QFormLayout):
@@ -4381,6 +4386,39 @@ class VippWidget(QWidget):
             "_vipp_wide_row_wrap_policy",
             QFormLayout.DontWrapRows,
         )
+        parent = form.parentWidget()
+        form_width = (
+            int(parent.contentsRect().width()) if parent is not None else 0
+        )
+        if form_width <= 100:
+            # Freshly rebuilt forms can still have Qt's provisional 100 px
+            # width. The inspector already knows the real responsive width.
+            form_width = max(int(available_width) - 14, form_width)
+        margins = form.contentsMargins()
+        usable_width = max(
+            form_width - int(margins.left() + margins.right()), 0
+        )
+        for row in range(form.rowCount()):
+            label_item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            field_item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            label = label_item.widget() if label_item is not None else None
+            if not isinstance(label, QLabel) or field_item is None:
+                continue
+            label_margins = label.contentsMargins()
+            label_width = (
+                label.fontMetrics().horizontalAdvance(label.text())
+                + label_margins.left()
+                + label_margins.right()
+                + 2 * label.margin()
+            )
+            required_width = (
+                label_width
+                + field_item.minimumSize().width()
+                + max(form.horizontalSpacing(), 0)
+            )
+            # Pixel breakpoints alone are not enough: long scientific labels
+            # and larger host fonts can need wrapping even in a wider dock.
+            wrap_long_rows |= required_width > usable_width
         if stacked:
             target_policy = QFormLayout.WrapAllRows
             responsive_active = True
@@ -4392,15 +4430,6 @@ class VippWidget(QWidget):
             responsive_active = False
         form.setRowWrapPolicy(target_policy)
         form._vipp_responsive_wrap_active = responsive_active
-        parent = form.parentWidget()
-        form_width = (
-            int(parent.contentsRect().width()) if parent is not None else 0
-        )
-        if form_width <= 100:
-            # Freshly rebuilt forms can still have Qt's provisional 100 px
-            # width. The inspector already knows the real responsive width.
-            form_width = max(int(available_width) - 14, form_width)
-        margins = form.contentsMargins()
         stacked_label_width = max(
             form_width - int(margins.left() + margins.right()),
             80,

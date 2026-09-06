@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from qtpy.QtWidgets import QApplication, QFormLayout, QLabel, QWidget
+from qtpy.QtWidgets import QApplication, QFormLayout, QLabel, QLineEdit, QWidget
 
 from napari_vipp._tests.test_ui_inspector_widget_integration import (
     _publish_array_output,
@@ -13,6 +13,8 @@ from napari_vipp._widget import (
     DEFAULT_SLICE_WISE_PROCESSING_TOOLTIP,
     INSPECTOR_STACKED_FORM_BREAKPOINT,
     SLICE_WISE_PROCESSING_TOOLTIP,
+    VippWidget,
+    _InspectorParameterFormLayout,
 )
 from napari_vipp.core.pipeline import (
     DEFAULT_SLICE_WISE_STACK_NOTICE,
@@ -156,6 +158,9 @@ def test_stacked_parameter_label_uses_full_row_before_wrapping(qtbot):
     control = widget._parameter_widgets["minimum_pixel_fraction"]
     label = widget.parameter_form.labelForField(control)
     assert isinstance(label, QLabel)
+    # Use a genuinely long label so this wrapping assertion is independent of
+    # the platform's default font and the operation's compact display wording.
+    label.setText("Minimum accepted pixel fraction (%)")
     natural_width = label.fontMetrics().horizontalAdvance(label.text())
 
     # This width uses stacked form rows, but still has ample room for the label.
@@ -178,3 +183,33 @@ def test_stacked_parameter_label_uses_full_row_before_wrapping(qtbot):
     form_margins = widget.parameter_form.contentsMargins()
     usable_form_width = form_width - form_margins.left() - form_margins.right()
     assert narrow_label_width >= usable_form_width - 2
+
+
+@pytest.mark.parametrize("font_pixels", [14, 20])
+def test_parameter_form_wraps_for_real_label_and_field_widths(qtbot, font_pixels):
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.setStyleSheet(f"QWidget {{ font-size: {font_pixels}px; }}")
+    form = _InspectorParameterFormLayout(host)
+    field = QLineEdit("120")
+    field.setMinimumWidth(350)
+    form.addRow("Minimum volume (pixels/voxels)", field)
+    host.setFixedWidth(457)
+    host.resize(457, 180)
+    host.show()
+    QApplication.processEvents()
+    VippWidget._set_inspector_form_stacked(form, False, available_width=457)
+    QApplication.processEvents()
+    label = form.labelForField(field)
+    assert form.rowWrapPolicy() == QFormLayout.WrapLongRows
+    assert label.width() >= label.minimumSizeHint().width() > 0
+    assert label.geometry().bottom() < field.geometry().top()
+    assert host.rect().contains(label.geometry())
+
+    host.setFixedWidth(1000)
+    host.resize(1000, 180)
+    VippWidget._set_inspector_form_stacked(form, False, available_width=1000)
+    QApplication.processEvents()
+    assert form.rowWrapPolicy() == QFormLayout.DontWrapRows
+    assert label.width() >= label.minimumSizeHint().width() > 0
+    assert label.geometry().right() < field.geometry().left()

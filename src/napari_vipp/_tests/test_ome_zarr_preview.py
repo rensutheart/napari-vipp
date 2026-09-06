@@ -513,7 +513,9 @@ def test_multiscale_label_preview_preserves_label_semantics(tmp_path):
             {"name": "y", "type": "space"},
             {"name": "x", "type": "space"},
         ),
-        scale_factors=(2, 4),
+        # Declare the 8x level explicitly: current ome-zarr writers honor these
+        # factors instead of generating the legacy default label pyramid.
+        scale_factors=(2, 4, 8),
         label_metadata={"source": {"image": "../../"}},
     )
 
@@ -526,6 +528,8 @@ def test_multiscale_label_preview_preserves_label_semantics(tmp_path):
 
     np.testing.assert_array_equal(result.data, expected)
     assert result.preview_level == 3
+    assert result.data.shape == (8, 10)
+    assert set(np.unique(result.data)) == {0, 7}
     assert result.image_state.kind == "label image"
     assert result.image_state.value_range == "not computed for label preview"
     assert result.preserves_label_semantics

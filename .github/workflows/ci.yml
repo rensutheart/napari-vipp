@@ -59,6 +59,37 @@ jobs:
       - name: Canonicalize source distribution
         run: python scripts/canonicalize_sdist.py dist/*.tar.gz
 
+      - name: Verify an independent clean-source distribution build
+        run: |
+          replica_source=$(mktemp -d "$RUNNER_TEMP/vipp-repro-source-XXXXXX")
+          replica_dist=$(mktemp -d "$RUNNER_TEMP/vipp-repro-dist-XXXXXX")
+          git archive HEAD | tar -x -C "$replica_source"
+          python -m build --no-isolation "$replica_source" --outdir "$replica_dist"
+          python "$replica_source/scripts/canonicalize_sdist.py" "$replica_dist"/*.tar.gz
+          python -m twine check "$replica_dist"/*
+          REPLICA_DIST="$replica_dist" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          def inventory(directory):
+              paths = sorted(Path(directory).iterdir())
+              assert len(paths) == 2, paths
+              assert sum(path.name.endswith('.whl') for path in paths) == 1, paths
+              assert sum(path.name.endswith('.tar.gz') for path in paths) == 1, paths
+              return {
+                  path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in paths
+              }
+
+          original = inventory('dist')
+          replica = inventory(os.environ['REPLICA_DIST'])
+          assert original == replica, {'original': original, 'replica': replica}
+          print('Independent wheel and canonical source archive are byte-identical:')
+          print(json.dumps(original, indent=2, sort_keys=True))
+          PY
+
       - name: Reject retired provider files in release archives
         run: |
           python -c "import pathlib; from scripts.package_windows_installer import retired_provider_paths_in_release_archive as retired; wheels = list(pathlib.Path('dist').glob('*.whl')); sdists = list(pathlib.Path('dist').glob('*.tar.gz')); assert len(wheels) == len(sdists) == 1, (wheels, sdists); assert not retired(wheels[0]), retired(wheels[0]); assert not retired(sdists[0]), retired(sdists[0])"
@@ -305,6 +336,8 @@ jobs:
           src/napari_vipp/_tests/test_napari_compat.py
           src/napari_vipp/_tests/test_napari_runtime_compatibility.py
           src/napari_vipp/_tests/test_graph_clipboard_ui.py
+          src/napari_vipp/_tests/test_batch_footer_layout.py
+          src/napari_vipp/_tests/test_ui_toolbar_controls.py
           src/napari_vipp/_tests/test_widget.py::test_hidden_source_preview_cannot_replace_active_viewer_axis_labels
           src/napari_vipp/_tests/test_widget.py::test_label_pipeline_inspects_and_pins_integer_labels
           src/napari_vipp/_tests/test_widget.py::test_generated_rgb_and_rgba_hide_only_the_component_axis

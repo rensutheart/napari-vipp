@@ -3499,7 +3499,10 @@ def _raise_batch_scientific_preflight_error(
     generic_undeclared: list[tuple[str, str, str, str]],
     pipeline: PrototypePipeline | None = None,
 ) -> None:
-    if isinstance(exc, BatchScientificPreflightError):
+    # A changed immutable source is not an image-axis mismatch. Preserve the
+    # typed revision error so callers can require Refresh and explicit review,
+    # including when fixed sources are verified during metadata preflight.
+    if isinstance(exc, (BatchScientificPreflightError, SourceChangedError)):
         raise exc
     source_summary = "; ".join(summaries) or "unavailable"
     guidance = ""

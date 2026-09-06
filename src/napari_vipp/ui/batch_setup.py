@@ -5,6 +5,7 @@ from __future__ import annotations
 from qtpy.QtCore import QPointF, QSize, Qt
 from qtpy.QtGui import QPainter, QPalette, QPen
 from qtpy.QtWidgets import (
+    QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -148,7 +149,7 @@ class BatchSetupPresentation:
         self.destination_group.setLayout(output_form)
         output_form.setContentsMargins(10, 10, 10, 10)
         output_form.setVerticalSpacing(7)
-        output_form.setRowWrapPolicy(output_form.WrapAllRows)
+        output_form.setRowWrapPolicy(QFormLayout.WrapAllRows)
         (
             self.destination_heading,
             self.destination_section_icon,

@@ -447,8 +447,18 @@ def test_narrow_measurement_booleans_keep_wrapped_labels_beside_checkboxes(
     assert long_label.heightForWidth(90) > long_label.fontMetrics().lineSpacing()
     compact_control = controls["include_axis_descriptors"]
     assert compact_control.hasHeightForWidth()
+    margins = compact_control.layout().contentsMargins()
+    # Use the label width already proven to wrap. A fixed outer width of 120
+    # can leave 100px for text, which fits on one line with smaller host fonts.
+    wrapped_width = (
+        90
+        + compact_control.checkbox.sizeHint().width()
+        + compact_control.layout().spacing()
+        + margins.left()
+        + margins.right()
+    )
     assert (
-        compact_control.heightForWidth(120)
+        compact_control.heightForWidth(wrapped_width)
         > compact_control.checkbox.sizeHint().height()
     )
     assert changed.value() is True

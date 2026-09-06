@@ -10058,7 +10058,7 @@ def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
 
     assert "threshold_scope" not in widget._parameter_widgets
     assert not widget._parameter_widgets
-    assert not widget.parameter_group.isHidden()
+    assert widget.parameter_group.isHidden()
     assert not widget.rescale_input_histogram_group.isHidden()
     assert not widget.rescale_input_histogram_scope_row.isHidden()
     assert not widget.histogram_scope_combo.isEnabled()
@@ -10073,14 +10073,17 @@ def test_global_threshold_scope_remains_visible_for_shape_only_2d_input(qtbot):
     widget.graph_view.select_node(node.id)
 
     assert "threshold_scope" in widget._parameter_widgets
-    notes = []
-    for row in range(widget.parameter_form.rowCount()):
-        item = widget.parameter_form.itemAt(row, QFormLayout.SpanningRole)
-        if item is not None:
-            notes.append(item.widget())
-    assert any(
-        isinstance(note, QLabel) and "unresolved" in note.text().casefold()
-        for note in notes
+    assert not widget.parameter_group.isHidden()
+    scope = widget._parameter_widgets["threshold_scope"]
+    assert widget.parameter_form.labelForField(scope).text() == "Histogram scope"
+    assert [scope.combo.itemText(index) for index in range(scope.combo.count())] == [
+        "Stack histogram",
+        "Slice histogram",
+    ]
+    assert "complete input" in scope.toolTip()
+    assert all(
+        axis.confidence == "shape-inferred"
+        for axis in widget.pipeline.input_state_for_node(node.id).axes
     )
 
 
@@ -10745,6 +10748,9 @@ def test_large_threshold_histogram_is_backgrounded_and_cached(qtbot, monkeypatch
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
     widget.graph_view.select_node("threshold")
+    # A stack distribution is independent of the displayed Z slice. The
+    # inspector's default slice distribution correctly changes when Z changes.
+    widget.histogram_scope_combo.setCurrentText("Stack histogram")
 
     monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
     monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
@@ -10796,7 +10802,7 @@ def test_large_threshold_histogram_is_backgrounded_and_cached(qtbot, monkeypatch
     widget._update_histogram()
     viewer.dims.set_current_step(0, 1)
 
-    assert calls["count"] == 1
+    assert calls["count"] == 1, calls
 
 
 @pytest.mark.parametrize(
@@ -16133,7 +16139,7 @@ def test_graph_focus_button_recenters_canvas_and_preserves_zoom(qtbot):
     qtbot.mouseClick(widget.graph_focus_button, Qt.LeftButton)
 
     focused_center = _graph_view_center(widget.graph_view)
-    assert widget.graph_focus_button.text() == "Focus"
+    assert widget.graph_focus_button.accessibleName() == "Focus workflow graph"
     assert "without changing zoom" in widget.graph_focus_button.toolTip()
     assert abs(focused_center.x() - graph_center.x()) <= 1.0
     assert abs(focused_center.y() - graph_center.y()) <= 1.0
@@ -23181,11 +23187,19 @@ def test_batch_dialog_load_precedes_save_and_activity(qtbot):
     qtbot.addWidget(dialog)
     config_layout = dialog.load_config_button.parentWidget().layout()
     assert (
-        config_layout.indexOf(dialog.load_config_button)
+        0 <= config_layout.indexOf(dialog.load_config_button)
         < config_layout.indexOf(dialog.save_config_button)
-        < config_layout.indexOf(dialog.demo_config_button)
-        < config_layout.indexOf(dialog.batch_activity_strip)
+        < config_layout.indexOf(dialog.more_button)
     )
+    outer_layout = dialog.layout()
+    assert (
+        0 <= outer_layout.indexOf(dialog.config_row)
+        < outer_layout.indexOf(dialog.tabs)
+        < outer_layout.indexOf(dialog.footer)
+    )
+    assert dialog.footer.layout().indexOf(dialog.batch_activity_strip) >= 0
+    assert dialog.demo_config_button.isHidden()
+    assert dialog.demo_action in dialog.more_menu.actions()
 
 
 @pytest.mark.parametrize("width", (1400, 900, 640))
@@ -23366,12 +23380,16 @@ def test_toolbar_live_content_compacts_without_clipping(qtbot, width):
 )
 def test_toolbar_custom_keeps_find_fastest_directly_available_at_every_width(
     qtbot,
+    monkeypatch,
     width,
     expected_text,
     compute_hidden,
 ):
     widget = VippWidget(_Viewer(), defer_initial_run=True)
     qtbot.addWidget(widget)
+    # This layout test authors a compute policy on a shown editor. Discard that
+    # test-only change when qtbot closes it, instead of blocking on a save prompt.
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Discard)
     widget.run_pipeline = lambda *args, **kwargs: None
     with QSignalBlocker(widget.compute_mode_combo):
         widget.compute_mode_combo.setCurrentIndex(
@@ -25232,7 +25250,7 @@ def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
 
     widget.run_pipeline(force_sync=True)
 
-    assert widget.calculate_all_button.text() == "Calculate all"
+    assert widget.calculate_all_button.accessibleName() == "Calculate all"
     assert widget.pipeline.node_execution_states[measurements.id] == (
         EXECUTION_NOT_CALCULATED
     )
@@ -25975,6 +25993,14 @@ def test_leave_batch_mode_clears_representative_source_overrides(qtbot, tmp_path
     qtbot.addWidget(widget)
     demo = widget._create_collection_batch_demo(tmp_path / "demo")
     widget._batch_collection_dialog(config_path=demo.config_path)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and not widget._debounce_timer.isActive()
+        ),
+        timeout=5_000,
+    )
 
     assert widget._interactive_collection_batch_items
     assert widget._interactive_collection_source_paths
@@ -26565,9 +26591,9 @@ def test_collection_batch_dialog_defaults(qtbot):
     assert not dialog.workflow_checkbox.isEnabled()
     assert values["save_python_script"] is True
     assert values["continue_on_error"] is True
-    assert dialog.load_config_button.text() == "Load..."
+    assert dialog.load_config_button.text() == "Open config"
     assert not dialog.load_config_button.isEnabled()
-    assert dialog.save_config_button.text() == "Save..."
+    assert dialog.save_config_button.text() == "Save config"
     assert not dialog.save_config_button.isEnabled()
     assert dialog.demo_config_button.text() == "Demo..."
     assert not dialog.demo_config_button.isEnabled()
@@ -27346,6 +27372,20 @@ def test_async_batch_navigation_commits_only_the_latest_requested_item(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    qtbot.waitUntil(
+        lambda: (
+            dialog._preview_result is not None
+            and widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and not widget._debounce_timer.isActive()
+        ),
+        timeout=5_000,
+    )
+    assert widget._interactive_collection_batch_index == 0, (
+        widget._interactive_collection_batch_index,
+        widget._interactive_collection_batch_requested_index,
+        widget.status_label.text(),
+    )
     monkeypatch.setattr(
         widget,
         "_file_source_should_load_async",
@@ -27804,6 +27844,21 @@ def test_loaded_batch_compute_request_wins_until_toolbar_changes(qtbot, tmp_path
     assert dialog._loaded_compute_request is None
 
 
+def _wait_for_collection_batch_graph_idle(qtbot, widget):
+    """Finish optional graph work before exercising full-batch run controls."""
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_source_load_id is None
+            and widget._active_pipeline_run_id is None
+            and not widget._source_load_pending
+            and not widget._pipeline_run_pending
+            and not widget._debounce_timer.isActive()
+            and widget._interactive_collection_batch_requested_index < 0
+        ),
+        timeout=10_000,
+    )
+
+
 def test_edited_batch_settings_run_on_first_click_without_repreview(
     qtbot,
     monkeypatch,
@@ -27815,7 +27870,7 @@ def test_edited_batch_settings_run_on_first_click_without_repreview(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
-    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     edited_output = tmp_path / "edited-results"
 
     dialog.output_edit.setText(str(edited_output))
@@ -27826,9 +27881,22 @@ def test_edited_batch_settings_run_on_first_click_without_repreview(
         "_preview_batch",
         lambda: pytest.fail("Run must not force an optional preview."),
     )
-
+    # Edited settings require the explicit metadata-only Check action. The
+    # first subsequent Run must succeed without an optional graph preview.
+    assert dialog._check_batch()
+    qtbot.waitUntil(lambda: not dialog._checking_plan, timeout=5_000)
+    assert dialog._preview_result is not None
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+    qtbot.waitUntil(
+        lambda: (
+            not dialog._run_preparing
+            and not widget._collection_batch_running
+            and (edited_output / BATCH_MANIFEST_FILENAME).is_file()
+        ),
+        timeout=10_000,
+    )
 
     assert (edited_output / BATCH_MANIFEST_FILENAME).is_file()
     assert "3 completed" in dialog.run_progress_label.text()
@@ -27977,15 +28045,22 @@ def test_run_stops_when_reviewed_fixed_batch_source_changes(qtbot, tmp_path):
     dialog.output_edit.setText(str(tmp_path / "outputs"))
     dialog.format_combo.setCurrentText("npy")
     assert dialog._preview_batch()
-    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     reviewed = np.array(widget.pipeline.outputs[output.id], copy=True)
 
     np.save(fixed_path, np.full((4, 5), 99, dtype=np.uint16))
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+    qtbot.waitUntil(
+        lambda: not dialog._run_preparing and dialog._preview_result is None,
+        timeout=10_000,
+    )
 
     assert dialog._preview_result is None
-    assert "Press Refresh" in dialog.preview_status.text()
+    assert "Press Refresh" in dialog.preview_status.text(), (
+        dialog.preview_status.text(), dialog.preview_status.toolTip()
+    )
     assert not (tmp_path / "outputs" / BATCH_MANIFEST_FILENAME).exists()
     np.testing.assert_array_equal(widget.pipeline.outputs[output.id], reviewed)
 
@@ -28001,6 +28076,7 @@ def test_source_refresh_blocks_batch_until_representative_is_recalculated(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     previous = np.array(widget.pipeline.outputs["batch_output_1"], copy=True)
     source_path = demo.root / "inputs" / "primary" / "01_shifted.npy"
     np.save(source_path, np.full(previous.shape, 41, dtype=np.uint16))
@@ -28020,13 +28096,18 @@ def test_source_refresh_blocks_batch_until_representative_is_recalculated(
     qtbot.waitUntil(
         lambda: (
             widget._interactive_collection_batch_requested_index == -1
-            and dialog.run_button.isEnabled()
+            and not dialog._representative_pending
         ),
         timeout=5_000,
     )
 
     assert dialog._preview_result is None
     assert not np.array_equal(widget.pipeline.outputs["batch_output_1"], previous)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    assert dialog._check_batch()
+    qtbot.waitUntil(lambda: not dialog._checking_plan, timeout=5_000)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
     manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
     qtbot.waitUntil(
@@ -28052,6 +28133,9 @@ def test_batch_continues_in_origin_tab_while_new_workflow_is_edited(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     origin = widget._workflow_tabs.current
     assert origin is not None
     started = threading.Event()
@@ -28129,6 +28213,9 @@ def test_inactive_batch_failure_is_presented_when_origin_tab_is_reactivated(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     origin = widget._workflow_tabs.current
     assert origin is not None
     started = threading.Event()
@@ -28244,7 +28331,9 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
     assert dialog.preview_table.rowCount() == 3
-    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
 
     np.save(
         demo.root / "inputs" / "primary" / "04_added.npy",
@@ -28255,7 +28344,7 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
         np.zeros((8, 8), dtype=np.uint16),
     )
     preview_calls = 0
-    original_preview = widget._collection_batch_controller.preview
+    original_preview = widget._collection_batch_controller.prepare_preview
 
     def tracked_preview(**kwargs):
         nonlocal preview_calls
@@ -28264,7 +28353,7 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
 
     monkeypatch.setattr(
         widget._collection_batch_controller,
-        "preview",
+        "prepare_preview",
         tracked_preview,
     )
     monkeypatch.setattr(
@@ -28273,6 +28362,14 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
         lambda: pytest.fail("Run-plan refresh must not calculate a representative."),
     )
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(
+        lambda: (
+            not dialog._run_preparing
+            and dialog._preview_result is not None
+            and dialog.preview_table.rowCount() == 4
+        ),
+        timeout=10_000,
+    )
 
     assert preview_calls == 1
     assert dialog.preview_table.rowCount() == 4
@@ -28280,6 +28377,8 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
     assert "review it" in dialog.preview_status.text().lower()
     assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
 
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
     manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
     qtbot.waitUntil(
@@ -28519,12 +28618,17 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
     assert dialog.isVisible()
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     assert dialog.preview_table.rowCount() == 3
 
+    dialog.tabs.setCurrentIndex(1)
     assert dialog.select_preview_item(1)
     qtbot.mouseClick(dialog.preview_item_button, Qt.LeftButton)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     assert widget.batch_navigator.current_index == 1
     widget.batch_navigator.slider.setValue(2)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     assert widget.batch_navigator.current_index == 2
     assert dialog.preview_table.currentRow() == 2
     qtbot.waitUntil(
@@ -28535,12 +28639,15 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
         timeout=5_000,
     )
 
+    dialog.tabs.setCurrentIndex(3)
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
     manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
     qtbot.waitUntil(
         lambda: (
             widget._pending_collection_batch_start is None
             and not widget._collection_batch_running
+            and not dialog._run_in_progress
+            and not dialog._run_preparing
             and manifest_path.is_file()
         ),
         timeout=15_000,
@@ -28548,7 +28655,7 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
 
     assert dialog.isVisible()
     assert dialog.run_progress_bar.value() == 3
-    assert [dialog.preview_table.item(row, 4).text() for row in range(3)] == [
+    assert [dialog.preview_table.item(row, 5).text() for row in range(3)] == [
         "Completed",
         "Completed",
         "Completed",
@@ -28558,8 +28665,9 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     assert widget.batch_navigator.progress_bar.value() == 3
     assert manifest_path.is_file()
     assert dialog._preview_result is None
-    assert "Historical preflight" in dialog.preview_status.text()
-    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=1_000)
+    assert dialog.results_panel.has_run_report
+    assert not dialog.run_button.isEnabled()
+    assert dialog.next_button.text() == "View run report"
 
     qtbot.mouseClick(dialog.close_button, Qt.LeftButton)
     assert dialog.isHidden()
@@ -28573,8 +28681,10 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     assert len(widget._interactive_collection_batch_items) == 3
     assert not widget.batch_navigator.isHidden()
     assert widget.batch_navigator.slider.isEnabled()
-    assert "previous plan" in widget.batch_navigator.representative_label.text()
-    assert dialog.run_button.text() == "Run batch"
+    assert widget._interactive_collection_batch_plan_stale
+    assert not widget.batch_navigator.representative_label.isHidden()
+    assert "Settings changed" in dialog.preview_status.text()
+    assert not dialog.run_button.isEnabled()
     assert dialog.demo_guide_label.isHidden()
     assert widget._active_collection_batch_dialog is dialog
 
@@ -28601,7 +28711,7 @@ def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
         lambda *_args, **_kwargs: QMessageBox.Yes,
     )
 
-    qtbot.mouseClick(dialog.demo_config_button, Qt.LeftButton)
+    dialog.demo_action.trigger()
 
     demo_root = tmp_path / SYNTHETIC_BATCH_DEMO_DIRNAME
     assert (demo_root / BATCH_WORKFLOW_FILENAME).is_file()
@@ -28623,17 +28733,15 @@ def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
         demo_root / "inputs" / "reference"
     )
     assert dialog.output_edit.text() == str(demo_root / "results")
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
     assert dialog.preview_table.rowCount() == 3
-    assert dialog.preview_table.item(0, 2).text().count("\n") == 2
-    assert dialog.preview_table.item(0, 3).text().splitlines() == [
-        "new",
-        "new",
-        "new",
-    ]
+    assert dialog.preview_table.item(0, 2).text() == "2 paired"
+    assert dialog.preview_table.item(0, 3).text() == "3 to create"
+    assert dialog.preview_table.item(0, 4).text() == "Ready"
     assert not dialog.demo_guide_label.isHidden()
     assert "Ready-to-run batch demo" in dialog.demo_guide_label.text()
     assert dialog.demo_path_edit.text() == str(demo_root)
-    assert dialog.run_button.text() == "Run demo batch"
+    assert dialog.run_button.text() == "Run 3 items"
     assert "Demo ready" in dialog.preview_status.text()
     assert "3 paired items" in dialog.preview_status.text()
     assert "9 outputs" in dialog.preview_status.text()
@@ -28762,13 +28870,12 @@ def test_open_batch_example_builds_a_ready_to_run_workspace(
     assert dialog is not None
     assert dialog.isVisible()
     assert dialog._demo == SyntheticBatchDemo.from_root(demo_root)
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
     assert dialog.preview_table.rowCount() == 3
-    assert dialog.preview_table.item(0, 3).text().splitlines() == [
-        "new",
-        "new",
-        "new",
-    ]
-    assert dialog.run_button.text() == "Run demo batch"
+    assert dialog.preview_table.item(0, 2).text() == "2 paired"
+    assert dialog.preview_table.item(0, 3).text() == "3 to create"
+    assert dialog.preview_table.item(0, 4).text() == "Ready"
+    assert dialog.run_button.text() == "Run 3 items"
     assert "Demo ready" in dialog.preview_status.text()
 
 
@@ -29167,9 +29274,13 @@ def test_collection_batch_preview_reports_new_collision_and_terminal_fallback(
     dialog.format_combo.setCurrentText("npy")
     dialog._preview_batch()
 
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
     assert dialog.preview_table.rowCount() == 1
-    assert "exists; collision" in dialog.preview_table.item(0, 3).text()
-    assert "collision" in dialog.preview_status.text().lower()
+    assert dialog.preview_table.item(0, 3).text() == "1 existing"
+    assert dialog.preview_table.item(0, 4).text() == "Review"
+    assert dialog.preview_table.item(0, 5).text() == "Needs decision"
+    assert dialog._preview_result.collision_count == 1
+    assert existing_path.read_bytes() == b"already here"
     assert "save the final graph results" in dialog.preview_status.text()
 
 

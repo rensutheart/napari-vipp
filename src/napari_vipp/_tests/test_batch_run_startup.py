@@ -17,7 +17,10 @@ from napari_vipp.core.batch import (
     BatchPreflightProgress,
 )
 from napari_vipp.core.compute import ComputeRequest
-from napari_vipp.core.source_identity import capture_local_source_identity
+from napari_vipp.core.source_identity import (
+    SourceChangedError,
+    capture_local_source_identity,
+)
 from napari_vipp.ui import batch_workers
 from napari_vipp.ui.batch_workers import (
     CollectionBatchRunRequest,
@@ -213,6 +216,21 @@ def test_reviewed_source_changed_during_preparation_requires_refresh(qtbot, batc
     assert host._interactive_collection_batch_plan_stale
     assert "Press Refresh" in failures[-1]
     assert not batch_case[1]["output_dir"].exists()
+
+
+@pytest.mark.parametrize("ambiguous_axes", [False, True])
+def test_source_change_is_not_reclassified_as_scientific_axis_failure(ambiguous_axes):
+    from napari_vipp.core.batch import _raise_batch_scientific_preflight_error
+
+    error = SourceChangedError("The fixed source changed; refresh its revision.")
+    generic_sources = (
+        [("fixed", "Fixed reference", "QYX", "npy")] if ambiguous_axes else []
+    )
+    with pytest.raises(SourceChangedError) as caught:
+        _raise_batch_scientific_preflight_error(
+            error, ["Fixed reference: raw YX"], generic_sources
+        )
+    assert caught.value is error
 
 
 def test_byte_progress_is_throttled_but_new_stages_and_final_bytes_are_delivered(

@@ -115,6 +115,35 @@ def test_reorder_lists_forward_one_gesture_pair(control_kind, qtbot):
     assert events == ["started", "finished"]
 
 
+@pytest.mark.parametrize("width", [260, 420, 700])
+@pytest.mark.parametrize("font_pixels", [14, 20])
+def test_table_column_actions_wrap_without_clipping(qtbot, width, font_pixels):
+    control = SelectTableColumnsControl(["label", "area", "mean"])
+    qtbot.addWidget(control)
+    control.setStyleSheet(
+        f"QWidget {{ font-size: {font_pixels}px; }}"
+        "QPushButton { padding: 5px 10px; }"
+    )
+    control.resize(width, 620)
+    control.show()
+    qtbot.waitExposed(control)
+    buttons = (
+        control.select_all_button,
+        control.deselect_all_button,
+        control.move_up_button,
+        control.move_down_button,
+        control.reset_button,
+    )
+    for button in buttons:
+        assert button.width() >= button.minimumSizeHint().width()
+        assert control.rect().contains(button.geometry())
+    for index, button in enumerate(buttons):
+        for other in buttons[index + 1:]:
+            assert not button.geometry().intersects(other.geometry())
+    if width == 260:
+        assert buttons[-1].y() > buttons[0].y()
+
+
 def test_image_source_choosers_share_recent_input_directory(
     qtbot,
     monkeypatch,

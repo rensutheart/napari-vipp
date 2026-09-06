@@ -57,3 +57,23 @@ def test_qualified_wheel_uses_the_native_builders_pinned_backend():
         assert f"{conda_name}={pin.split('==')[1]}" in macos["dependencies"]
         assert pin in build
     assert "python -m build --no-isolation" in build
+
+
+def test_ci_compares_the_complete_independent_distribution_pair():
+    root = Path(__file__).resolve().parents[3]
+    workflow = yaml.safe_load(
+        (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    script = next(
+        step["run"] for step in workflow["jobs"]["quality"]["steps"]
+        if step["name"] == "Verify an independent clean-source distribution build"
+    )
+    assert "git archive HEAD" in script
+    assert "python -m build --no-isolation" in script
+    assert "scripts/canonicalize_sdist.py" in script
+    assert "python -m twine check" in script
+    verification = script.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    compile(verification, "ci-distribution-reproducibility", "exec")
+    assert "hashlib.sha256(path.read_bytes())" in verification
+    assert "assert original == replica" in verification
+    assert "len(paths) == 2" in verification

@@ -197,7 +197,14 @@ def test_right_click_changes_only_clicked_row_not_checked_selection(
         picked.append(actions[0].text())
         actions[0].trigger()
 
-    monkeypatch.setattr(QMenu, "exec", choose)
+    class ChoosingMenu(QMenu):
+        def exec(self, point):
+            return choose(self, point)
+
+    # PySide's instance-level native exec descriptor ignores a monkeypatch on
+    # QMenu.exec. Override it on the constructed subclass so no real modal menu
+    # can open and stall the headless test.
+    monkeypatch.setattr("napari_vipp.ui.batch_workspace.QMenu", ChoosingMenu)
     point = dialog.preview_table.visualItemRect(
         dialog.preview_table.item(1, 1)
     ).center()

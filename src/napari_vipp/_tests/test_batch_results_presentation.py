@@ -16,7 +16,9 @@ def _cell_font(table, row, column):
     # QAbstractItemView supplies the view font before invoking its delegate.
     option.font = table.font()
     table.itemDelegate().initStyleOption(option, table.model().index(row, column))
-    return option.font
+    # PySide exposes this property as a borrowed wrapper owned by the option.
+    # Copy the value before the temporary style option is released.
+    return QFont(option.font)
 
 
 @pytest.mark.parametrize("dark", [True, False])
