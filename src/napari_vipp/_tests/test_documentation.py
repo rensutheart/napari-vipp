@@ -21,21 +21,25 @@ RELEASE_NOTE_BLOCK_START = re.compile(
 )
 
 
-def test_014a3_release_version_contract_is_consistent() -> None:
+def test_release_version_contract_is_consistent() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     citation = (REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8")
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     release_notes = (REPO_ROOT / "release-notes.md").read_text(encoding="utf-8")
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert project["project"]["version"] == "0.14.0a3"
-    assert 'version: "0.14.0a3"' in citation
-    assert 'date-released: "2026-08-29"' in citation
-    assert changelog.startswith("# Changelog\n\n## 0.14.0a3 - 2026-08-29")
-    assert release_notes.startswith("# VIPP 0.14.0a3\n")
+    version = project["project"]["version"]
+    release_date_match = re.search(
+        r'^date-released: "(\d{4}-\d{2}-\d{2})"$', citation, re.MULTILINE
+    )
+    assert release_date_match is not None
+    release_date = release_date_match.group(1)
+    assert f'version: "{version}"' in citation
+    assert changelog.startswith(f"# Changelog\n\n## {version} - {release_date}")
+    assert release_notes.startswith(f"# VIPP {version}\n")
     assert "release candidate" not in release_notes.casefold()
-    assert "The current published release is" in readme
-    assert "[`v0.14.0a3`]" in readme
+    assert f"releases/tag/v{version}" in readme
+    assert f"napari-vipp=={version}" in readme
 
 
 def test_release_notes_do_not_hard_wrap_prose() -> None:
@@ -156,6 +160,8 @@ def test_measurement_workflow_guide_links_reference_examples():
 
 
 def test_windows_installer_quick_start_is_primary_and_truthful():
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = project["project"]["version"]
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     quick_start = (REPO_ROOT / "docs" / "quick-start.md").read_text(
         encoding="utf-8"
@@ -178,9 +184,9 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     )
     assert (
         "https://github.com/rensutheart/napari-vipp/releases/download/"
-        "v0.14.0a3/VIPP-Setup-0.14.0a3-Windows-x86_64-UNSIGNED.exe"
+        f"v{version}/VIPP-Setup-{version}-Windows-x86_64-UNSIGNED.exe"
     ) in quick_start
-    assert "SHA256SUMS-Windows-0.14.0a3.txt" in quick_start
+    assert f"SHA256SUMS-Windows-{version}.txt" in quick_start
     assert "**Unknown publisher**" in quick_start
     assert "**More info**, confirm" in quick_start
     assert "**Run anyway**" in quick_start
@@ -194,7 +200,7 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
     assert "rerun that version's VIPP setup `.exe`" in quick_start
     assert "A supported 64-bit Python is a separate prerequisite" in readme
     assert "separately installed supported 64-bit Python" in packaging_readme
-    assert "VIPP-Setup-0.14.0a3-Windows-x86_64-UNSIGNED.exe" in readme
+    assert f"VIPP-Setup-{version}-Windows-x86_64-UNSIGNED.exe" in readme
     assert "[Quick Start](docs/quick-start.md)" in readme
     normalized = " ".join(quick_start.split())
     assert "15 GiB" in normalized
@@ -223,17 +229,19 @@ def test_windows_installer_quick_start_is_primary_and_truthful():
 
 
 def test_macos_installer_quick_start_is_primary_and_truthful():
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = project["project"]["version"]
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     quick_start = (REPO_ROOT / "docs" / "quick-start.md").read_text(
         encoding="utf-8"
     )
 
     for architecture in ("arm64", "x86_64"):
-        package = f"VIPP-0.14.0a3-macOS-{architecture}-UNSIGNED.pkg"
-        checksum = f"SHA256SUMS-macOS-{architecture}-0.14.0a3.txt"
+        package = f"VIPP-{version}-macOS-{architecture}-UNSIGNED.pkg"
+        checksum = f"SHA256SUMS-macOS-{architecture}-{version}.txt"
         assert (
             "https://github.com/rensutheart/napari-vipp/releases/download/"
-            f"v0.14.0a3/{package}"
+            f"v{version}/{package}"
         ) in quick_start
         assert checksum in quick_start
 
@@ -246,8 +254,8 @@ def test_macos_installer_quick_start_is_primary_and_truthful():
     assert readme.index("| macOS Apple Silicon |") < readme.index(
         'python -m pip install "napari[pyqt6]>=0.6"'
     )
-    assert "VIPP-0.14.0a3-macOS-arm64-UNSIGNED.pkg" in readme
-    assert "VIPP-0.14.0a3-macOS-x86_64-UNSIGNED.pkg" in readme
+    assert f"VIPP-{version}-macOS-arm64-UNSIGNED.pkg" in readme
+    assert f"VIPP-{version}-macOS-x86_64-UNSIGNED.pkg" in readme
 
 
 def test_product_tagline_is_consistent_across_primary_surfaces():

@@ -279,3 +279,133 @@ def test_unexpected_pax_metadata_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(SdistCanonicalizationError, match="unsupported PAX"):
         canonicalize_sdist(source, source_date_epoch=123)
+
+
+@pytest.mark.parametrize(
+    "member_path",
+    (
+        "napari_vipp-0.15.0a1/docs/figures/assets/"
+        "portable-gpu-segmentation-bridge/04-remove-small-objects.png",
+        "example-1.0/images/μm-calibrated.png",
+        "example-1.0/" + "long-directory-" * 8 + "/figure.png",
+    ),
+)
+def test_long_and_unicode_paths_canonicalize_reproducibly(
+    tmp_path: Path, member_path: str
+) -> None:
+    sources = (tmp_path / "first.tar.gz", tmp_path / "second.tar.gz")
+    payload = b"unchanged figure payload"
+    epoch = 1_725_000_123
+    for variant, source in enumerate(sources, start=1):
+        members = [
+            _member(
+                member_path.split("/")[0],
+                variant=variant,
+                member_type=tarfile.DIRTYPE,
+            ),
+            _member(member_path, variant=variant, content=payload),
+        ]
+        _write_sdist(source, variant=variant, members=members)
+        with tarfile.open(source, "r:gz") as archive:
+            assert archive.getmember(member_path).pax_headers["path"] == member_path
+        canonicalize_sdist(source, source_date_epoch=epoch)
+
+    assert sources[0].read_bytes() == sources[1].read_bytes()
+    canonical_bytes = sources[0].read_bytes()
+    canonicalize_sdist(sources[0], source_date_epoch=epoch)
+    assert sources[0].read_bytes() == canonical_bytes
+    with tarfile.open(sources[0], "r:gz") as archive:
+        member = archive.getmember(member_path)
+        assert member.pax_headers == {"path": member_path}
+        assert member.mtime == epoch
+        assert archive.extractfile(member).read() == payload
+
+
+def test_long_directory_path_is_preserved(tmp_path: Path) -> None:
+    source = tmp_path / "long-directory.tar.gz"
+    directory = "example-1.0/" + "long-directory-" * 8
+    _write_sdist(
+        source,
+        variant=1,
+        members=[
+            _member("example-1.0", variant=1, member_type=tarfile.DIRTYPE),
+            _member(directory, variant=1, member_type=tarfile.DIRTYPE),
+            _member(directory + "/file", variant=1, content=b"payload"),
+        ],
+    )
+    canonicalize_sdist(source, source_date_epoch=123)
+    with tarfile.open(source, "r:gz") as archive:
+        assert archive.getmember(directory).isdir()
+        assert archive.getmember(directory).pax_headers == {"path": directory + "/"}
+        assert archive.extractfile(directory + "/file").read() == b"payload"
+
+
+@pytest.mark.parametrize(
+    "override",
+    (
+        "../escape",
+        "/absolute",
+        "example-1.0/../escape",
+        "example-1.0/./alias",
+        "example-1.0//alias",
+        "C:/absolute",
+        "example-1.0/CON.txt",
+        "example-1.0/file:stream",
+    ),
+)
+def test_unsafe_pax_path_is_rejected_without_replacing_archive(
+    tmp_path: Path, override: str
+) -> None:
+    source = tmp_path / "unsafe-pax-path.tar.gz"
+    member = _member("example-1.0/safe-header-name", variant=1, content=b"payload")
+    member[0].pax_headers["path"] = override
+    _write_sdist(
+        source,
+        variant=1,
+        members=[
+            _member("example-1.0", variant=1, member_type=tarfile.DIRTYPE),
+            member,
+        ],
+    )
+    original = source.read_bytes()
+    with pytest.raises(SdistCanonicalizationError, match="path"):
+        canonicalize_sdist(source, source_date_epoch=123)
+    assert source.read_bytes() == original
+
+
+def test_pax_path_cannot_hide_a_case_collision(tmp_path: Path) -> None:
+    source = tmp_path / "colliding-pax-path.tar.gz"
+    alias = _member("example-1.0/other", variant=1, content=b"second")
+    alias[0].pax_headers["path"] = "example-1.0/FILE"
+    _write_sdist(
+        source,
+        variant=1,
+        members=[
+            _member("example-1.0", variant=1, member_type=tarfile.DIRTYPE),
+            _member("example-1.0/file", variant=1, content=b"first"),
+            alias,
+        ],
+    )
+    with pytest.raises(SdistCanonicalizationError, match="case-colliding"):
+        canonicalize_sdist(source, source_date_epoch=123)
+
+
+def test_redundant_safe_pax_path_is_rebuilt_from_resolved_name(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "redundant-pax-path.tar.gz"
+    member = _member("example-1.0/short-header", variant=1, content=b"payload")
+    member[0].pax_headers["path"] = "example-1.0/actual-name"
+    _write_sdist(
+        source,
+        variant=1,
+        members=[
+            _member("example-1.0", variant=1, member_type=tarfile.DIRTYPE),
+            member,
+        ],
+    )
+    canonicalize_sdist(source, source_date_epoch=123)
+    with tarfile.open(source, "r:gz") as archive:
+        actual = archive.getmember("example-1.0/actual-name")
+        assert actual.pax_headers == {}
+        assert archive.extractfile(actual).read() == b"payload"

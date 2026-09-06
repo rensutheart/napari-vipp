@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from qtpy.QtCore import QItemSelectionModel, QRect, Qt
 from qtpy.QtGui import QColor, QImage, QPainter, QPalette
-from qtpy.QtWidgets import QFileDialog, QStyle, QStyleOption
+from qtpy.QtWidgets import QFileDialog, QStyle, QStyleOption, QWidget
 
 import napari_vipp.ui.result_table_dialog as result_table_dialog_module
 from napari_vipp.core.tables import TableData
@@ -38,6 +38,23 @@ def _palette(*, dark: bool) -> QPalette:
     palette.setColor(QPalette.Highlight, highlight)
     palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
     return palette
+
+
+def test_result_table_can_be_constructed_with_a_styled_parent(qtbot):
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    parent.setPalette(_palette(dark=True))
+    parent.setStyleSheet("QWidget { color: #e5e7eb; background: #20252d; }")
+    parent.ensurePolished()
+
+    with qtbot.captureExceptions() as errors:
+        dialog = ResultTableDialog(parent)
+        qtbot.addWidget(dialog)
+        dialog.show()
+    assert not errors
+    assert not dialog._theme_refresh_in_progress
+    assert "QTableView" in dialog.styleSheet()
+    assert dialog.table_view.model() is dialog.model
 
 
 def test_result_table_model_sorts_numbers_and_keeps_missing_values_last():

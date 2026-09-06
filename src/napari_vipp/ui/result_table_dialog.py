@@ -804,7 +804,10 @@ class ResultTableDialog(QDialog):
         )
 
     def refresh_theme(self, palette: QPalette | None = None) -> None:
-        if self._theme_refresh_in_progress:
+        # Inheriting a styled owner can emit Palette/StyleChange from inside
+        # QDialog construction, before our child widgets have been created.
+        # The explicit refresh at the end of __init__ applies the final theme.
+        if getattr(self, "_theme_refresh_in_progress", True):
             return
         self._theme_refresh_in_progress = True
         try:

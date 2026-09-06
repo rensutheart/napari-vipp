@@ -574,7 +574,9 @@ class HistogramDialog(QDialog):
     def refresh_theme(self, palette: QPalette | None = None) -> None:
         """Apply the current napari palette to this top-level window."""
 
-        if getattr(self, "_theme_refresh_in_progress", False):
+        # Styled parents can propagate a change before __init__ creates the
+        # plot. Defer until its explicit, fully initialized theme refresh.
+        if getattr(self, "_theme_refresh_in_progress", True):
             return
         self._theme_refresh_in_progress = True
         try:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from qtpy.QtCore import QSize
 from qtpy.QtGui import QColor, QIcon, QPalette
+from qtpy.QtWidgets import QPushButton
 
 from napari_vipp.ui.toolbar_controls import (
     ToolbarCommandButton,
@@ -153,3 +154,20 @@ def test_main_toolbar_preserves_shared_helper_aliases(qapp):
     assert _ToolbarCommandButton is ToolbarCommandButton
     assert _toolbar_icon is toolbar_icon
     assert issubclass(_ToolbarChevronButton, ToolbarCommandButton)
+
+
+@pytest.mark.parametrize("text", ["Review items", "View run report", "Open"])
+@pytest.mark.parametrize("bold", [False, True])
+def test_command_button_sizes_the_same_text_it_paints(qtbot, text, bold):
+    button = ToolbarCommandButton(text)
+    reference = QPushButton(ToolbarCommandButton._ICON_TEXT_SPACER + text)
+    for widget in (button, reference):
+        qtbot.addWidget(widget)
+        widget.setIcon(toolbar_icon("activity"))
+        widget.setStyleSheet(
+            "QPushButton {padding: 6px 12px; font-size: 12pt; "
+            f"font-weight: {'bold' if bold else 'normal'};}}"
+        )
+        widget.ensurePolished()
+    assert button.sizeHint().width() >= reference.sizeHint().width()
+    assert button.minimumSizeHint().width() >= reference.minimumSizeHint().width()

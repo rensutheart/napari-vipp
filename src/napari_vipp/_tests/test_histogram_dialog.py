@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import tifffile
 from qtpy.QtGui import QColor, QFont, QFontMetrics, QImage, QPalette
+from qtpy.QtWidgets import QWidget
 
 from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID
 from napari_vipp.core.tables import HistogramResultMetadata, TableData
@@ -30,6 +31,22 @@ Y_VALUE_LABELS = (
     "Cumulative count",
     "Cumulative fraction",
 )
+
+
+def test_histogram_can_be_constructed_with_a_styled_parent(qtbot):
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    parent.setStyleSheet("QWidget { color: #e5e7eb; background: #20252d; }")
+    parent.ensurePolished()
+
+    with qtbot.captureExceptions() as errors:
+        dialog = HistogramDialog(parent)
+        qtbot.addWidget(dialog)
+        dialog.show()
+    assert not errors
+    assert not dialog._theme_refresh_in_progress
+    assert dialog.plot.isVisible()
+    assert "QDialog#VippHistogramDialog" in dialog.styleSheet()
 
 
 def _histogram_table() -> TableData:

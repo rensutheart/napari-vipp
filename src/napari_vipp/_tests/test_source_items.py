@@ -520,13 +520,18 @@ def _source_item_batch_config(item: SourceItem) -> BatchConfig:
     )
 
 
-def test_batch_config_v5_roundtrips_canonical_source_items() -> None:
+@pytest.mark.parametrize("document_version", (4, 5, BATCH_CONFIG_VERSION))
+def test_supported_batch_configs_roundtrip_canonical_source_items(
+    document_version: int,
+) -> None:
     item = _source_item()
     config = _source_item_batch_config(item)
     document = config.to_dict()
+    assert document["version"] == BATCH_CONFIG_VERSION
+    document["version"] = document_version
     restored = BatchConfig.from_dict(document)
 
-    assert document["version"] == BATCH_CONFIG_VERSION == 5
+    assert restored.to_dict()["version"] == BATCH_CONFIG_VERSION
     assert document["sources"][0]["source_items"] == [item.to_dict()]
     assert restored.sources[0].source_items == (item,)
     assert restored.sources[0].source_item_documents == (item.to_dict(),)
@@ -545,7 +550,7 @@ def test_legacy_batch_configs_read_without_inventing_source_items(
     restored = BatchConfig.from_dict(document)
 
     assert restored.sources[0].source_items == ()
-    assert restored.to_dict()["version"] == BATCH_CONFIG_VERSION == 5
+    assert restored.to_dict()["version"] == BATCH_CONFIG_VERSION
 
 
 def test_legacy_batch_config_cannot_claim_v4_sourceitem_evidence() -> None:

@@ -356,6 +356,10 @@ def test_repeated_embedded_label_switch_keeps_parameter_rows_and_height_stable(
     widget._sync_inspector_responsive_layout()
     assert widget.inspector_viewport.width() >= 350
     expected_geometry = {}
+    expected_parameters = {
+        "filter_labels_by_volume": {"min_volume", "max_volume", "spatial_mode"},
+        "label_connected_components": {"spatial_mode", "connectivity"},
+    }
 
     for _cycle in range(3):
         for node in (label_filter, labels):
@@ -373,6 +377,9 @@ def test_repeated_embedded_label_switch_keeps_parameter_rows_and_height_stable(
             )
             assert form_widgets
             assert all(not control.isHidden() for control in form_widgets)
+            assert expected_parameters[node.operation_id] <= set(
+                widget._parameter_widgets
+            )
             immediate = (
                 widget.parameter_form.rowCount(),
                 widget.parameter_group.height(),
@@ -390,8 +397,10 @@ def test_repeated_embedded_label_switch_keeps_parameter_rows_and_height_stable(
             )
             assert settled == immediate
 
-    assert expected_geometry["filter_labels_by_volume"][0] == 4
-    assert expected_geometry["label_connected_components"][0] == 3
+    # Guard the scientific controls rather than an obsolete extra guidance row.
+    # Every row and both frame heights must still remain stable on each switch.
+    for operation_id, parameter_names in expected_parameters.items():
+        assert expected_geometry[operation_id][0] >= len(parameter_names)
 
 
 def test_embedded_label_switch_prioritizes_parameters_while_distribution_loads(

@@ -351,3 +351,15 @@ class ToolbarCommandButton(QPushButton):
         del event
         painter = QStylePainter(self)
         painter.drawControl(QStyle.CE_PushButton, self._toolbar_style_option())
+
+    def sizeHint(self):  # noqa: N802
+        """Reserve the extra text we paint, without changing the action label."""
+        hint = super().sizeHint()
+        if self.text() and not self.icon().isNull():
+            metrics = self._toolbar_style_option().fontMetrics
+            hint.setWidth(
+                hint.width()
+                + metrics.horizontalAdvance(self._ICON_TEXT_SPACER + self.text())
+                - metrics.horizontalAdvance(self.text())
+            )
+        return hint

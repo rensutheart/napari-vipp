@@ -50,7 +50,11 @@ jobs:
         run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
 
       - name: Build distributions
-        run: python -m build
+        run: |
+          # Match both native installer builders. Their clean-tag verification
+          # compares metadata too, not only the application source files.
+          python -m pip install "build==1.5.0" "setuptools==82.0.1" "wheel==0.47.0"
+          python -m build --no-isolation
 
       - name: Canonicalize source distribution
         run: python scripts/canonicalize_sdist.py dist/*.tar.gz
@@ -168,6 +172,9 @@ jobs:
     env:
       PYTEST_QT_API: pyqt6
       QT_QPA_PLATFORM: offscreen
+      # The offscreen plugin does not discover native Windows/macOS fonts.
+      # Without this, layout tests measure placeholder boxes, not rendered text.
+      QT_QPA_FONTDIR: ${{ matrix.os == 'windows-latest' && 'C:/Windows/Fonts' || matrix.os == 'macos-latest' && '/System/Library/Fonts' || '/usr/share/fonts/truetype/dejavu' }}
 
     steps:
       - name: Check out repository
@@ -192,7 +199,9 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Run tests
-        run: python -m pytest
+        run: |
+          python -c "from qtpy.QtWidgets import QApplication; from qtpy.QtGui import QFontDatabase; app = QApplication([]); families = QFontDatabase.families(); assert families, 'Headless Qt has no real fonts; rendered layout checks would be invalid'; print(f'Headless Qt: {len(families)} font families available')"
+          python -m pytest -o faulthandler_timeout=120 --durations=25
 
   napari-compatibility:
     name: >-
@@ -240,6 +249,7 @@ jobs:
       QT_API: ${{ matrix.qt-api }}
       PYTEST_QT_API: ${{ matrix.qt-api }}
       QT_QPA_PLATFORM: offscreen
+      QT_QPA_FONTDIR: ${{ matrix.os == 'windows-latest' && 'C:/Windows/Fonts' || matrix.os == 'macos-latest' && '/System/Library/Fonts' || '/usr/share/fonts/truetype/dejavu' }}
       VIPP_EXPECTED_NAPARI: ${{ matrix.expected-napari }}
       VIPP_EXPECTED_QT_API: ${{ matrix.qt-api }}
 
