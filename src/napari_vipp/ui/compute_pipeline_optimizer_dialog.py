@@ -5,10 +5,11 @@ from __future__ import annotations
 import html
 import statistics
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from qtpy.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, Signal
+from qtpy.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from qtpy.QtGui import QBrush, QColor, QKeySequence, QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -286,6 +287,12 @@ class PipelineOptimizerDialog(QDialog):
         self._outcome: PipelineOptimizerWorkerOutcome | None = None
         self._running = False
         self._shutdown = False
+        self._analysis_started_at: float | None = None
+        self._stage_started_at: float | None = None
+        self._stage_key: tuple[str, ...] | None = None
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(250)
+        self._elapsed_timer.timeout.connect(self._refresh_elapsed_time)
         self._result_tone: str | None = None
         self._result_bold = False
         self._applying_result_style = False
@@ -327,7 +334,9 @@ class PipelineOptimizerDialog(QDialog):
         ):
             self.time_limit_combo.addItem(label, seconds)
         self.time_limit_combo.setToolTip(
-            "Maximum wall-clock analysis time. This is not a RAM or VRAM "
+            "Analysis wall-clock budget, checked at safe stopping points. "
+            "An in-progress CPU or GPU call may need to finish before the "
+            "limit or cancellation takes effect. This is not a RAM or VRAM "
             "limit. Completed exact node evidence is reused on a later retry."
         )
         time_limit_label = QLabel("Time limit")
@@ -340,6 +349,29 @@ class PipelineOptimizerDialog(QDialog):
         time_limit_row.addWidget(time_limit_label)
         time_limit_row.addWidget(self.time_limit_combo)
         time_limit_row.addWidget(time_limit_note, 1)
+
+        self.elapsed_label = QLabel("Elapsed 00:00:00")
+        self.elapsed_label.setAccessibleName("Pipeline analysis elapsed time")
+        self.stage_elapsed_label = QLabel("Current stage 00:00:00")
+        self.stage_elapsed_label.setAccessibleName(
+            "Current benchmark stage elapsed time"
+        )
+        elapsed_row = QHBoxLayout()
+        for label in (self.elapsed_label, self.stage_elapsed_label):
+            label.setMinimumWidth(label.fontMetrics().horizontalAdvance(label.text()))
+            label.setToolTip(
+                "Wall time updates independently of benchmark progress. "
+                "It is not a completion estimate or proof that the current "
+                "CPU or GPU call is making progress."
+            )
+            label.setVisible(False)
+            elapsed_row.addWidget(label)
+        elapsed_row.addStretch(1)
+        self.elapsed_note_label = QLabel(
+            "Some CPU calls report progress only when they finish."
+        )
+        self.elapsed_note_label.setWordWrap(True)
+        self.elapsed_note_label.setVisible(False)
 
         self.overall_progress_label = QLabel(
             f"Ready. {locked_node_count} explicitly locked {locked_node_label} "
@@ -435,6 +467,7 @@ class PipelineOptimizerDialog(QDialog):
         self.cancel_button = QPushButton("Cancel analysis")
         self.cancel_button.setVisible(False)
         self.close_button = QPushButton("Close")
+        self._progress_spacer = QWidget()
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -445,6 +478,8 @@ class PipelineOptimizerDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary_label)
         layout.addLayout(time_limit_row)
+        layout.addLayout(elapsed_row)
+        layout.addWidget(self.elapsed_note_label)
         layout.addWidget(self.overall_progress_label)
         layout.addWidget(self.overall_progress_bar)
         layout.addWidget(self.operation_progress_label)
@@ -453,6 +488,10 @@ class PipelineOptimizerDialog(QDialog):
         layout.addWidget(self.details_button, 0, Qt.AlignLeft)
         layout.addWidget(self.result_table, 1)
         layout.addWidget(self.parity_review_checkbox)
+        # Keep the status lines and bars together while the results table is
+        # hidden. Otherwise Qt distributes a tall dialog's spare height
+        # between every label, separating the clock from its explanation.
+        layout.addWidget(self._progress_spacer, 1)
         layout.addLayout(buttons)
 
         self.analyze_button.clicked.connect(self._request_analysis)
@@ -516,6 +555,14 @@ class PipelineOptimizerDialog(QDialog):
         self.operation_progress_label.setText(
             "Current operation: waiting for the first benchmark stage."
         )
+        self._analysis_started_at = time.monotonic()
+        self._stage_started_at = self._analysis_started_at
+        self._stage_key = None
+        self.elapsed_label.setVisible(True)
+        self.stage_elapsed_label.setVisible(True)
+        self.elapsed_note_label.setVisible(True)
+        self._refresh_elapsed_time()
+        self._elapsed_timer.start()
         worker.signals.progress.connect(self._on_progress)
         worker.signals.finished.connect(self._on_finished)
         try:
@@ -530,7 +577,10 @@ class PipelineOptimizerDialog(QDialog):
                 except (RuntimeError, TypeError):
                     pass
             self._worker = None
+            self._stop_elapsed_timer()
             self._running = False
+            self._analysis_started_at = None
+            self.elapsed_label.setVisible(False)
             self.analyze_button.setEnabled(True)
             self.close_button.setEnabled(True)
             self.time_limit_combo.setEnabled(True)
@@ -578,6 +628,7 @@ class PipelineOptimizerDialog(QDialog):
                 except (RuntimeError, TypeError):
                     pass
         self._worker = None
+        self._stop_elapsed_timer()
         self._running = False
         self.analyze_button.setEnabled(False)
         self.apply_button.setEnabled(False)
@@ -643,6 +694,7 @@ class PipelineOptimizerDialog(QDialog):
             self.overall_progress_bar,
             self.operation_progress_label,
             self.operation_progress_bar,
+            self._progress_spacer,
         ):
             widget.setVisible(not reviewing)
 
@@ -678,9 +730,44 @@ class PipelineOptimizerDialog(QDialog):
         if self.result_table.isVisible():
             self.result_table.resizeRowsToContents()
 
+    def _refresh_elapsed_time(self) -> None:
+        """Show wall time even while a worker makes one long, silent call."""
+
+        if not self._running or self._analysis_started_at is None:
+            return
+        now = time.monotonic()
+        self.elapsed_label.setText(
+            f"Elapsed {_format_elapsed_clock(now - self._analysis_started_at)}"
+        )
+        if self._stage_started_at is not None:
+            self.stage_elapsed_label.setText(
+                f"Current stage {_format_elapsed_clock(now - self._stage_started_at)}"
+            )
+
+    def _stop_elapsed_timer(self) -> None:
+        self._refresh_elapsed_time()
+        self._elapsed_timer.stop()
+        self.stage_elapsed_label.setVisible(False)
+        self.elapsed_note_label.setVisible(False)
+
     def _on_progress(self, progress: PipelineOptimizerProgress) -> None:
         if self._shutdown:
             return
+        if self._running:
+            # Counter/message updates within the same measurement do not
+            # restart its clock. A node, implementation, or phase change does.
+            stage_key = (
+                progress.phase,
+                progress.node_id,
+                progress.implementation_id,
+                progress.measurement_phase,
+            )
+            if not any(stage_key):
+                stage_key = (progress.message,)
+            if stage_key != self._stage_key:
+                self._stage_key = stage_key
+                self._stage_started_at = time.monotonic()
+            self._refresh_elapsed_time()
         self.overall_progress_bar.setRange(0, progress.total)
         self.overall_progress_bar.setValue(progress.completed)
         self.overall_progress_bar.setFormat("Overall %p%")
@@ -703,6 +790,7 @@ class PipelineOptimizerDialog(QDialog):
     def _on_finished(self, outcome: PipelineOptimizerWorkerOutcome) -> None:
         if self._shutdown:
             return
+        self._stop_elapsed_timer()
         self._running = False
         self._outcome = outcome
         self._worker = None
@@ -1004,6 +1092,12 @@ class PipelineOptimizerDialog(QDialog):
             self.apply_requested.emit(request)
             return
         self.apply_requested.emit(result)
+
+
+def _format_elapsed_clock(value: float) -> str:
+    hours, remainder = divmod(max(0, int(value)), 3_600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def _format_seconds(value: float) -> str:

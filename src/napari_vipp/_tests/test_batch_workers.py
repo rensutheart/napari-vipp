@@ -161,7 +161,7 @@ def test_workspace_preview_worker_preserves_the_verification_error(
     outcomes = []
     worker.signals.finished.connect(outcomes.append)
 
-    def fail(_prepared):
+    def fail(_prepared, **_kwargs):
         raise ValueError("source revision changed")
 
     monkeypatch.setattr(

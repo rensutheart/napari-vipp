@@ -41,14 +41,11 @@ from qtpy.QtGui import (
     QBrush,
     QColor,
     QFont,
-    QIcon,
     QImage,
     QKeySequence,
     QPainter,
-    QPainterPath,
     QPalette,
     QPen,
-    QPixmap,
     QSyntaxHighlighter,
     QTextCharFormat,
 )
@@ -82,9 +79,7 @@ from qtpy.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
-    QStyle,
     QStyleOptionButton,
-    QStylePainter,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -109,21 +104,20 @@ from napari_vipp.core.batch import (
     DEFAULT_BATCH_SOURCE_PATTERN,
     BatchConfig,
     BatchExecutionProgress,
+    BatchItemFilePolicy,
     BatchItemPlan,
     BatchParameterOverride,
+    BatchPlan,
     BatchRunResult,
     BatchScientificPreflightError,
     BatchSourceParameterOverrides,
     ExistingFilePolicy,
-    atomic_write_json,
-    atomic_write_text,
     bind_batch_plan_source_items,
     load_batch_config,
     plan_batch,
     preflight_batch,
     run_batch,
     safe_batch_filename,
-    save_batch_config,
     scientific_workflow_hash,
     validate_batch_config,
 )
@@ -217,7 +211,6 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.execution import _processing_scientific_context_fingerprint
 from napari_vipp.core.execution_telemetry import DeviceExecutionTelemetryConfig
 from napari_vipp.core.export import (
-    export_batch_runner_to_python,
     export_pipeline_to_python,
 )
 from napari_vipp.core.file_sources import (
@@ -462,15 +455,20 @@ from napari_vipp.ui.batch import BatchPreviewRow as BatchPreviewRow
 from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
 from napari_vipp.ui.batch_controller import CollectionBatchController
 from napari_vipp.ui.batch_navigator import BatchNavigator
+from napari_vipp.ui.batch_progress import operation_progress_text
 from napari_vipp.ui.batch_workers import (
+    BatchWorkspacePreviewProgress,
     BatchWorkspacePreviewWorker,
     BatchWorkspacePreviewWorkerOutcome,
     BatchWorkspacePreviewWorkerSpec,
     CollectionBatchOperationProgress,
+    CollectionBatchPreparationProgress,
     CollectionBatchProgress,
+    CollectionBatchRunRequest,
     CollectionBatchWorker,
     CollectionBatchWorkerOutcome,
     PreparedCollectionBatchRun,
+    prepare_collection_batch_run,
 )
 from napari_vipp.ui.colocalization_scatter_dialog import (
     ColocalizationScatterDialog,
@@ -718,6 +716,10 @@ from napari_vipp.ui.source_preview import (
     SourcePreviewWorkerSpec,
 )
 from napari_vipp.ui.status import MessageSeverity, StatusMessageStrip
+from napari_vipp.ui.toolbar_controls import (
+    ToolbarCommandButton as _ToolbarCommandButton,
+)
+from napari_vipp.ui.toolbar_controls import toolbar_icon as _toolbar_icon
 from napari_vipp.ui.view_dims import ViewDimAxis as ViewDimAxis
 from napari_vipp.ui.view_dims import ViewDimAxisControl as ViewDimAxisControl
 from napari_vipp.ui.view_dims import ViewDimsBar as ViewDimsBar
@@ -867,13 +869,20 @@ class _CollectionBatchJobContext:
 
 @dataclass(frozen=True, slots=True)
 class _BatchWorkspacePreviewContext:
-    """GUI ownership for one automatic saved-workspace source check."""
+    """GUI ownership for one read-only, generation-bound source check."""
 
     request_id: int
     origin_session_id: str
     dialog: CollectionBatchDialog
     expected_workflow_sha256: str
     override_count: int
+    purpose: str = "restore"
+    expected_config: BatchConfig | None = None
+    attempt: int = 0
+    recheck_indices: tuple[int, ...] = ()
+    reviewed_result: BatchPreviewResult | None = None
+    run_values: dict | None = None
+    fresh_result: BatchPreviewResult | None = None
 
 
 RESCALE_VALUE_PARAMETERS = {"in_low_value", "in_high_value"}
@@ -1213,200 +1222,6 @@ def _thumbnail_fallback_status_summary(reason_code: str) -> str:
     return "Thumbnail contrast used CPU after the GPU statistics attempt failed."
 
 
-def _toolbar_icon(kind: str, palette: QPalette | None = None) -> QIcon:
-    if palette is None:
-        application = QApplication.instance()
-        palette = application.palette() if application is not None else QPalette()
-    icon = QIcon()
-    icon.addPixmap(
-        _toolbar_icon_pixmap(kind, palette.color(QPalette.ButtonText).name()),
-        QIcon.Normal,
-        QIcon.Off,
-    )
-    icon.addPixmap(
-        _toolbar_icon_pixmap(
-            kind,
-            palette.color(QPalette.Disabled, QPalette.ButtonText).name(),
-        ),
-        QIcon.Disabled,
-        QIcon.Off,
-    )
-    return icon
-
-
-def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
-    size = 24
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-
-    pen = QPen(QColor(foreground), 2.2)
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(Qt.NoBrush)
-    path = QPainterPath()
-    arrow = QPainterPath()
-    if kind == "redo":
-        path.moveTo(16, 8)
-        path.cubicTo(13, 5.5, 5, 6.5, 5, 13)
-        path.cubicTo(5, 18, 9.5, 20, 16, 20)
-        arrow.moveTo(20.5, 8)
-        arrow.lineTo(15, 4)
-        arrow.lineTo(15, 12)
-        arrow.closeSubpath()
-    elif kind in {"reset", "refresh"}:
-        path.moveTo(18.5, 8)
-        path.cubicTo(15.8, 4.5, 9.8, 3.8, 6.5, 8)
-        path.cubicTo(3.2, 12.2, 5.6, 19.5, 12.5, 19.5)
-        path.cubicTo(16, 19.5, 18.8, 17.4, 19.8, 14.4)
-        arrow.moveTo(20.4, 7.3)
-        arrow.lineTo(15, 7.1)
-        arrow.lineTo(18.4, 11.7)
-        arrow.closeSubpath()
-    elif kind == "undo":
-        path.moveTo(8, 8)
-        path.cubicTo(11, 5.5, 19, 6.5, 19, 13)
-        path.cubicTo(19, 18, 14.5, 20, 8, 20)
-        arrow.moveTo(3.5, 8)
-        arrow.lineTo(9, 4)
-        arrow.lineTo(9, 12)
-        arrow.closeSubpath()
-    elif kind == "new":
-        path.moveTo(6, 3)
-        path.lineTo(14, 3)
-        path.lineTo(19, 8)
-        path.lineTo(19, 21)
-        path.lineTo(6, 21)
-        path.closeSubpath()
-        path.moveTo(14, 3)
-        path.lineTo(14, 8)
-        path.lineTo(19, 8)
-        painter.drawPath(path)
-        painter.drawLine(9, 14, 16, 14)
-        painter.drawLine(13, 11, 13, 18)
-    elif kind == "open":
-        path.moveTo(3, 7)
-        path.lineTo(10, 7)
-        path.lineTo(12, 9)
-        path.lineTo(21, 9)
-        path.lineTo(18, 20)
-        path.lineTo(4, 20)
-        path.closeSubpath()
-        painter.drawPath(path)
-        painter.drawLine(4, 7, 4, 5)
-        painter.drawLine(4, 5, 11, 5)
-        painter.drawLine(11, 5, 13, 7)
-    elif kind == "save":
-        painter.drawRect(4, 3, 16, 18)
-        painter.drawRect(8, 4, 8, 6)
-        painter.drawRect(8, 14, 8, 7)
-    elif kind == "batch":
-        painter.drawRect(3, 4, 18, 16)
-        painter.drawLine(3, 10, 21, 10)
-        painter.drawLine(3, 15, 21, 15)
-        painter.drawLine(9, 4, 9, 20)
-        painter.drawLine(15, 4, 15, 20)
-    elif kind == "preview":
-        path.moveTo(2.5, 12)
-        path.cubicTo(6, 6.5, 9, 5, 12, 5)
-        path.cubicTo(15, 5, 18, 6.5, 21.5, 12)
-        path.cubicTo(18, 17.5, 15, 19, 12, 19)
-        path.cubicTo(9, 19, 6, 17.5, 2.5, 12)
-        path.closeSubpath()
-        painter.drawPath(path)
-        painter.drawEllipse(9, 9, 6, 6)
-    elif kind == "calculate":
-        arrow.moveTo(7, 4)
-        arrow.lineTo(20, 12)
-        arrow.lineTo(7, 20)
-        arrow.closeSubpath()
-    elif kind == "optimize":
-        # A compact speedometer remains recognizable when the responsive
-        # toolbar removes the Find-fastest label.
-        painter.drawArc(QRect(4, 4, 16, 16), 0, 180 * 16)
-        painter.drawLine(12, 13, 17, 9)
-        painter.drawEllipse(10, 11, 4, 4)
-    elif kind == "settings":
-        # Use one connected eight-tooth outline rather than radial spokes.  At
-        # toolbar size, detached spokes read as a star or brightness control.
-        gear = QPainterPath()
-        gear_points: list[QPointF] = []
-        tooth_step = math.tau / 8.0
-        for tooth in range(8):
-            center_angle = tooth * tooth_step - math.pi / 2.0
-            for offset, radius in (
-                (-0.50, 7.8),
-                (-0.34, 7.8),
-                (-0.27, 10.0),
-                (0.27, 10.0),
-                (0.34, 7.8),
-                (0.50, 7.8),
-            ):
-                angle = center_angle + offset * tooth_step
-                gear_points.append(
-                    QPointF(
-                        12.0 + math.cos(angle) * radius,
-                        12.0 + math.sin(angle) * radius,
-                    )
-                )
-        gear.moveTo(gear_points[0])
-        for point in gear_points[1:]:
-            gear.lineTo(point)
-        gear.closeSubpath()
-        painter.drawPath(gear)
-        painter.drawEllipse(QPointF(12.0, 12.0), 3.0, 3.0)
-    elif kind == "focus":
-        for points in (
-            ((4, 9), (4, 4), (9, 4)),
-            ((15, 4), (20, 4), (20, 9)),
-            ((20, 15), (20, 20), (15, 20)),
-            ((9, 20), (4, 20), (4, 15)),
-        ):
-            path.moveTo(*points[0])
-            path.lineTo(*points[1])
-            path.lineTo(*points[2])
-        painter.drawPath(path)
-        painter.drawEllipse(9, 9, 6, 6)
-    elif kind == "arrange":
-        painter.drawLine(7, 7, 17, 12)
-        painter.drawLine(7, 17, 17, 12)
-        painter.drawEllipse(3, 3, 7, 7)
-        painter.drawEllipse(3, 14, 7, 7)
-        painter.drawEllipse(14, 9, 7, 7)
-    elif kind == "tunnels":
-        painter.drawEllipse(3, 5, 6, 6)
-        painter.drawEllipse(15, 13, 6, 6)
-        painter.drawLine(9, 8, 14, 8)
-        painter.drawLine(14, 8, 14, 16)
-        painter.drawLine(14, 16, 15, 16)
-        painter.drawLine(10, 16, 14, 16)
-    elif kind == "activity":
-        path.moveTo(2, 13)
-        path.lineTo(7, 13)
-        path.lineTo(10, 5)
-        path.lineTo(14, 19)
-        path.lineTo(17, 10)
-        path.lineTo(22, 10)
-        painter.drawPath(path)
-    elif kind == "stop":
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(foreground))
-        painter.drawRect(6, 6, 12, 12)
-    else:
-        painter.drawEllipse(5, 5, 14, 14)
-
-    if not path.isEmpty() and kind in {"undo", "redo", "reset", "refresh"}:
-        painter.drawPath(path)
-    if not arrow.isEmpty():
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(foreground))
-        painter.drawPath(arrow)
-    painter.end()
-    return pixmap
-
-
 def _set_palette_text_tone(
     widget: QWidget,
     tone: str,
@@ -1632,25 +1447,6 @@ class _ToolbarChevronIndicator(QWidget):
         painter.drawLine(QPointF(2.5, 4.5), QPointF(6.0, 8.0))
         painter.drawLine(QPointF(6.0, 8.0), QPointF(9.5, 4.5))
         painter.end()
-
-
-class _ToolbarCommandButton(QPushButton):
-    """Toolbar push button with a little extra icon-to-label breathing room."""
-
-    _ICON_TEXT_SPACER = "\u2009"
-
-    def _toolbar_style_option(self) -> QStyleOptionButton:
-        """Return the native button option with VIPP's icon/text spacing."""
-        option = QStyleOptionButton()
-        self.initStyleOption(option)
-        if option.text and not option.icon.isNull():
-            option.text = f"{self._ICON_TEXT_SPACER}{option.text}"
-        return option
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        del event
-        painter = QStylePainter(self)
-        painter.drawControl(QStyle.CE_PushButton, self._toolbar_style_option())
 
 
 class _ToolbarChevronButton(_ToolbarCommandButton):
@@ -6689,6 +6485,7 @@ class VippWidget(QWidget):
         self.batch_navigator.itemSelected.connect(
             self._preview_interactive_collection_batch_item
         )
+        self.batch_navigator.inspectRequested.connect(self._inspect_batch_sample)
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.tunnel_manager_button.clicked.connect(self._show_tunnel_manager)
         self.pipeline_cancel_button.clicked.connect(self._cancel_active_toolbar_work)
@@ -9808,6 +9605,9 @@ class VippWidget(QWidget):
         )
         if hasattr(self, "main_toolbar_layout"):
             self._sync_toolbar_responsive_mode()
+        batch_dialog = self._active_collection_batch_dialog
+        if batch_dialog is not None:
+            batch_dialog._refresh_compute_summary()
 
     def _compute_update_in_progress(self) -> bool:
         debounce_timer = getattr(self, "_debounce_timer", None)
@@ -14876,6 +14676,7 @@ class VippWidget(QWidget):
                 prepared=prepared,
             )
         )
+        worker.signals.progress.connect(self._on_batch_workspace_preview_progress)
         worker.signals.finished.connect(
             self._on_attached_batch_workspace_preview_finished
         )
@@ -14890,7 +14691,7 @@ class VippWidget(QWidget):
         *,
         review_after_cancel: bool = False,
     ) -> None:
-        """Supersede only automatic source checks owned by one workspace."""
+        """Supersede only read-only source checks owned by one workspace."""
 
         matching = [
             request_id
@@ -14898,10 +14699,12 @@ class VippWidget(QWidget):
             if context.dialog is dialog
         ]
         for request_id in matching:
-            self._batch_workspace_preview_contexts.pop(request_id, None)
+            context = self._batch_workspace_preview_contexts.pop(request_id, None)
             worker = self._batch_workspace_preview_workers.get(request_id)
             if worker is not None:
                 worker.cancel()
+            if context is not None and context.purpose.startswith("run"):
+                dialog.end_background_run_preparation()
         if matching and review_after_cancel:
             if dialog._pending_parameter_overrides:
                 message = (
@@ -14915,7 +14718,29 @@ class VippWidget(QWidget):
             else:
                 message = "Batch settings changed before sample detection finished."
             dialog.cancel_saved_workspace_discovery(
-                message + " Use Preview batch to verify the edited settings."
+                message + " Use Check batch to verify the edited settings."
+            )
+
+    def _on_batch_workspace_preview_progress(
+        self,
+        update: BatchWorkspacePreviewProgress,
+    ) -> None:
+        """Publish provisional check status only to its still-current owner."""
+        context = self._batch_workspace_preview_contexts.get(update.request_id)
+        if (
+            context is None
+            or self._closing
+            or update.origin_session_id != context.origin_session_id
+            or context.dialog is not self._active_collection_batch_dialog
+            or self._workflow_tab_session(context.origin_session_id) is None
+            or not self._workflow_tab_is_active(context.origin_session_id)
+        ):
+            return
+        if context.purpose.startswith("run"):
+            context.dialog.show_run_preparation_progress(update.progress)
+        else:
+            context.dialog.show_check_progress(
+                update.progress, reveal_items=context.purpose == "check"
             )
 
     def _on_attached_batch_workspace_preview_finished(
@@ -14935,6 +14760,13 @@ class VippWidget(QWidget):
         if origin is None:
             return
         if not self._workflow_tab_is_active(context.origin_session_id):
+            if context.purpose.startswith("run"):
+                context.dialog.end_background_run_preparation()
+                context.dialog.show_plan_refresh_required(
+                    "Run preparation stopped because the active workflow tab changed. "
+                    "Return to this workflow and click Run again."
+                )
+                return
             origin.runtime_cache["_batch_workspace_preview_outcome"] = (
                 context,
                 outcome,
@@ -14952,6 +14784,10 @@ class VippWidget(QWidget):
         dialog = context.dialog
         if dialog is not self._active_collection_batch_dialog:
             return False
+        if context.purpose.startswith("run"):
+            return self._present_batch_run_preflight(context, outcome)
+        if context.purpose != "restore":
+            return self._present_collection_batch_check(context, outcome)
         current_sha256 = scientific_workflow_hash(self._batch_workflow_document())
         if current_sha256 != context.expected_workflow_sha256:
             self._show_attached_batch_workspace_preview_failure(
@@ -15103,6 +14939,13 @@ class VippWidget(QWidget):
             f"Pipeline exported to {target.name}.",
             severity=MessageSeverity.SUCCESS,
         )
+
+    def _inspect_batch_sample(self, index: int) -> None:
+        """Return to the batch item without triggering another calculation."""
+        dialog = self._batch_collection_dialog(preview_config=False)
+        if dialog is not None:
+            dialog.select_preview_item(index)
+            dialog.tabs.setCurrentIndex(1)
 
     def _batch_collection_dialog(
         self,
@@ -15326,6 +15169,9 @@ class VippWidget(QWidget):
         self,
         dialog: CollectionBatchDialog,
         values: object,
+        *,
+        _fresh_preview: BatchPreviewResult | None = None,
+        _overwrite_preview: BatchPreviewResult | None = None,
     ) -> None:
         """Execute a full batch while retaining its workspace and progress."""
         self._commit_crop_draft(schedule_run=False)
@@ -15385,20 +15231,9 @@ class VippWidget(QWidget):
                 progress_text="Graph",
             )
             return
-        if self._interactive_collection_batch_items and (
-            self._interactive_collection_batch_index < 0
-            or self._interactive_collection_batch_failed_index >= 0
-        ):
-            dialog.show_plan_refresh_required(
-                "The representative graph preview is unavailable or failed. "
-                "Retry it or select another sample and wait for a successful "
-                "calculation before running the full batch."
-            )
-            dialog.show_workspace_activity(
-                "Needs attention · representative preview is unavailable.",
-                state="warning",
-            )
-            return
+        # A graph preview is optional. Its absence or failure does not invalidate
+        # a checked batch plan; active work above and runtime quarantine still
+        # guard actual execution.
         if self._active_thumbnail_contrast_run_id is not None:
             self._pending_collection_batch_start = (dialog, dict(values))
             self._discard_pending_thumbnail_contrast_limit_requests()
@@ -15430,71 +15265,14 @@ class VippWidget(QWidget):
             self._sync_compute_policy_editability()
             return
         preview = dialog._preview_result
-        if preview is not None:
-            source_change = self._reviewed_batch_source_change(preview.items)
-            if source_change:
-                # Check the revisions the user actually reviewed before asking
-                # the planner to resolve them again.  A changed pinned source is
-                # expected to make that fresh preflight fail, but the UI must
-                # still discard the reviewed plan and direct the user to the
-                # explicit Refresh path.
-                dialog.invalidate_for_source_change(
-                    source_change,
-                    before_run_started=True,
-                )
-                self._interactive_collection_batch_plan_stale = True
-                self.batch_navigator.set_session_stale(
-                    True,
-                    message=(
-                        "A reviewed source changed on disk. The graph keeps its "
-                        "pinned earlier revision; press Refresh and wait for it "
-                        "to recalculate before running."
-                    ),
-                )
-                self.status_label.setText(
-                    "Batch stopped because a reviewed source changed. Press "
-                    "Refresh and wait for recalculation before running."
-                )
-                return
-
-        fresh_preview = None
-        for attempt in range(2):
+        if _fresh_preview is None:
             try:
-                fresh_preview = self._collection_batch_controller.preview(
-                    **values,
-                    preview_limit=25,
-                    compute_request=self._compute_request_for_batch_dialog(dialog),
-                )
-                break
-            except BatchScientificPreflightError as exc:
-                if attempt == 0 and dialog.apply_axis_suggestion(exc):
-                    values = dialog.values()
-                    continue
-                dialog.show_preflight_error(
-                    exc.user_message,
-                    technical_detail=exc.technical_detail,
-                )
-                self._set_status(
-                    exc.user_message,
-                    severity=MessageSeverity.ERROR,
-                    actionable=True,
-                )
-                return
+                self._start_batch_run_preflight(dialog, values)
             except Exception as exc:
                 message = f"Batch could not be prepared: {exc}"
                 dialog.show_preflight_error(message)
-                self._set_status(
-                    message,
-                    severity=MessageSeverity.ERROR,
-                    actionable=True,
-                )
-                return
-        if fresh_preview is None:
-            dialog.show_preflight_error(
-                "Batch preflight returned no plan. Review the source settings "
-                "and try again."
-            )
             return
+        fresh_preview = _fresh_preview
 
         if preview is None:
             # Run owns path planning plus a metadata-only scientific preflight.
@@ -15543,32 +15321,13 @@ class VippWidget(QWidget):
             overwrite_values["existing_file_policy"] = (
                 ExistingFilePolicy.OVERWRITE.value
             )
-            try:
-                overwrite_preview = self._collection_batch_controller.preview(
-                    **overwrite_values,
-                    preview_limit=25,
-                    compute_request=self._compute_request_for_batch_dialog(dialog),
-                )
-            except BatchScientificPreflightError as exc:
-                dialog.show_preflight_error(
-                    exc.user_message,
-                    technical_detail=exc.technical_detail,
-                )
-                self._set_status(
-                    exc.user_message,
-                    severity=MessageSeverity.ERROR,
-                    actionable=True,
-                )
-                return
-            except Exception as exc:
-                message = f"Batch overwrite preflight could not be prepared: {exc}"
-                dialog.show_preflight_error(message)
-                self._set_status(
-                    message,
-                    severity=MessageSeverity.ERROR,
-                    actionable=True,
-                )
-                return
+            # Only output policy changes here. The just-verified sources,
+            # pairing, and paths are identical; do not scan them again.
+            from napari_vipp.ui.batch_output_policy import with_existing_file_policy
+
+            overwrite_preview = _overwrite_preview or with_existing_file_policy(
+                preview, ExistingFilePolicy.OVERWRITE,
+            )
 
             unresolved_paths = tuple(
                 dict.fromkeys(
@@ -15679,6 +15438,10 @@ class VippWidget(QWidget):
                 dialog,
                 total=total,
                 expected_items=preview.items,
+                preflight_plan=BatchPlan(
+                    preview.config, preview.items,
+                    preview.config.resolve_path(preview.config.output_dir),
+                ),
                 **values,
             )
         except BatchScientificPreflightError as exc:
@@ -15702,6 +15465,103 @@ class VippWidget(QWidget):
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
+
+    def _start_batch_run_preflight(
+        self, dialog, values, *, fresh_result=None, attempt=0,
+    ) -> None:
+        """Freeze GUI state, then verify source bytes without blocking Qt."""
+        session = self._workflow_tabs.current
+        if session is None:
+            raise RuntimeError("No workflow tab is available for this batch.")
+        self._cancel_attached_batch_workspace_preview(dialog)
+        arguments = dict(values)
+        if fresh_result is not None:
+            arguments["existing_file_policy"] = ExistingFilePolicy.OVERWRITE.value
+        prepared = self._collection_batch_controller.prepare_preview(
+            **arguments, preview_limit=25,
+            compute_request=self._compute_request_for_batch_dialog(dialog),
+        )
+        reviewed = dialog._preview_result
+        if reviewed is not None:
+            prepared = replace(
+                prepared,
+                reviewed_identities=self._reviewed_batch_source_identities(reviewed.items),
+            )
+        self._batch_workspace_preview_serial += 1
+        request_id = self._batch_workspace_preview_serial
+        context = _BatchWorkspacePreviewContext(
+            request_id, session.session_id, dialog, prepared.config.workflow_sha256,
+            len(prepared.config.parameter_overrides),
+            purpose="run-overwrite" if fresh_result is not None else "run",
+            expected_config=prepared.config, attempt=attempt,
+            run_values=dict(values), fresh_result=fresh_result,
+        )
+        worker = BatchWorkspacePreviewWorker(
+            BatchWorkspacePreviewWorkerSpec(request_id, session.session_id, prepared)
+        )
+        worker.signals.progress.connect(self._on_batch_workspace_preview_progress)
+        worker.signals.finished.connect(self._on_attached_batch_workspace_preview_finished)
+        self._batch_workspace_preview_contexts[request_id] = context
+        self._batch_workspace_preview_workers[request_id] = worker
+        dialog.begin_background_run_preparation()
+        self._batch_workspace_preview_thread_pool.start(worker)
+
+    def _present_batch_run_preflight(self, context, outcome) -> bool:
+        dialog = context.dialog
+        dialog.end_background_run_preparation()
+        # A background result is never permission to run a different graph or
+        # edited configuration, nor to resume silently after changing tabs.
+        if (
+            scientific_workflow_hash(self._batch_workflow_document())
+            != context.expected_workflow_sha256
+            or dialog.values() != context.run_values
+            or self._compute_request_for_batch_dialog(dialog)
+            != context.expected_config.compute_request
+        ):
+            dialog.show_plan_refresh_required(
+                "Settings changed during run preparation. Check the current batch "
+                "and click Run again. No items were started."
+            )
+            return True
+        error = outcome.error
+        if isinstance(error, SourceChangedError):
+            dialog.invalidate_for_source_change(str(error), before_run_started=True)
+            self._interactive_collection_batch_plan_stale = True
+            self.batch_navigator.set_session_stale(
+                True, message=(
+                    "A reviewed source changed. Refresh its graph preview "
+                    "before running."
+                ),
+            )
+            self.status_label.setText(
+                "Batch stopped because a reviewed source changed. Press Refresh "
+                "and wait for recalculation before running."
+            )
+            return True
+        if isinstance(error, BatchScientificPreflightError):
+            if context.attempt == 0 and dialog.apply_axis_suggestion(error):
+                self._start_batch_run_preflight(
+                    dialog, dialog.values(),
+                    fresh_result=context.fresh_result, attempt=1,
+                )
+            else:
+                dialog.show_preflight_error(
+                    error.user_message, technical_detail=error.technical_detail,
+                )
+            return True
+        if error is not None or outcome.result is None:
+            dialog.show_preflight_error(
+                f"Batch could not be prepared: {error or 'No plan returned.'}"
+            )
+            return True
+        self._run_collection_batch_from_workspace(
+            dialog, context.run_values,
+            _fresh_preview=context.fresh_result or outcome.result,
+            _overwrite_preview=(
+                outcome.result if context.fresh_result is not None else None
+            ),
+        )
+        return True
 
     def _confirm_collection_batch_overwrite(
         self,
@@ -15763,6 +15623,7 @@ class VippWidget(QWidget):
         *,
         total: int,
         expected_items: tuple[BatchItemPlan, ...],
+        preflight_plan: BatchPlan | None = None,
         **values,
     ) -> None:
         """Freeze the active tab's batch request and start one headless worker."""
@@ -15790,7 +15651,9 @@ class VippWidget(QWidget):
             job_id=job_id,
             origin_session_id=session.session_id,
             expected_items=expected_items,
+            preflight_plan=preflight_plan,
             compute_request=self._compute_request_for_batch_dialog(dialog),
+            defer_io=True,
             **values,
         )
         context = _CollectionBatchJobContext(
@@ -15805,6 +15668,9 @@ class VippWidget(QWidget):
         worker.signals.operation_progress.connect(
             self._on_collection_batch_worker_operation_progress
         )
+        worker.signals.preparation_progress.connect(
+            self._on_collection_batch_worker_preparation_progress
+        )
         worker.signals.finished.connect(self._on_collection_batch_worker_finished)
 
         self._active_collection_batch_job = context
@@ -15818,6 +15684,17 @@ class VippWidget(QWidget):
             "Preparing full batch run...",
         )
         self._collection_batch_thread_pool.start(worker)
+
+    def _on_collection_batch_worker_preparation_progress(
+        self, update: CollectionBatchPreparationProgress,
+    ) -> None:
+        context = self._active_collection_batch_job
+        if context is None or update.job_id != context.job_id:
+            return
+        worker = self._collection_batch_workers.get(context.job_id)
+        if worker is not None and worker.cancellation_requested:
+            return
+        context.dialog.show_run_preparation_progress(update.progress)
 
     def _on_collection_batch_worker_progress(
         self,
@@ -15865,6 +15742,9 @@ class VippWidget(QWidget):
                 progress.current,
                 progress.total,
                 progress.message,
+                node_title=progress.node_title,
+                node_current=progress.node_current,
+                node_total=progress.node_total,
             )
 
     def _cancel_collection_batch_worker(
@@ -15872,6 +15752,14 @@ class VippWidget(QWidget):
         dialog: CollectionBatchDialog,
     ) -> None:
         """Route a dialog request to only its currently active worker."""
+
+        if getattr(dialog, "_run_preparing", False):
+            self._cancel_attached_batch_workspace_preview(dialog)
+            dialog.end_background_run_preparation()
+            dialog.show_workspace_activity(
+                "Run preparation cancelled · no items started.", state="info",
+            )
+            return
 
         if self._cancel_pending_collection_batch_start(dialog):
             return
@@ -15983,6 +15871,24 @@ class VippWidget(QWidget):
         self._sync_compute_policy_editability()
         origin_active = self._workflow_tab_is_active(context.origin_session_id)
         origin_session = self._workflow_tab_session(context.origin_session_id)
+
+        if getattr(outcome, "cancelled_before_start", False):
+            context.dialog._finish_run_interaction(defer_control_restore=False)
+            context.dialog._reset_run_display()
+            context.dialog.results_panel.cancel_before_first_item()
+            context.dialog._workspace_run_finished()
+            context.dialog.show_workspace_activity(
+                "Run preparation cancelled · no items started.", state="info",
+            )
+            if origin_active:
+                self.batch_navigator.set_navigation_enabled(True)
+                self.batch_navigator.fail_batch_progress("Run preparation cancelled.")
+            self._resume_origin_graph_after_batch(context, origin_session)
+            self._resume_thumbnail_statistics_after_batch(
+                origin_active=origin_active,
+                graph_refresh_pending=context.graph_refresh_pending,
+            )
+            return
 
         if outcome.error or outcome.result is None:
             message = outcome.error or "The batch worker returned no result."
@@ -16176,6 +16082,15 @@ class VippWidget(QWidget):
         items: Iterable[BatchItemPlan],
     ) -> str:
         """Return a message when any pinned batch source changed in place."""
+        for path, expected in self._reviewed_batch_source_identities(items):
+            try:
+                verify_local_source_identity(path, expected)
+            except SourceChangedError as exc:
+                return str(exc)
+        return ""
+
+    def _reviewed_batch_source_identities(self, items):
+        """Capture pinned identities without touching source contents on the GUI."""
         planned_items = tuple(items)
         reviewed_paths = {
             Path(raw_path).expanduser().resolve()
@@ -16191,22 +16106,18 @@ class VippWidget(QWidget):
             fixed_path = self._file_source_path_for_node(node)
             if fixed_path is not None:
                 reviewed_paths.add(fixed_path)
-        checked: set[str] = set()
-        for path in reviewed_paths:
+        identities = []
+        for path in sorted(reviewed_paths):
             path_text = str(path)
-            if path_text in checked:
-                continue
-            checked.add(path_text)
             expected = self._file_source_path_identities.get(path_text)
             if expected is None:
                 continue
-            try:
-                verify_local_source_identity(path, expected)
-            except SourceChangedError as exc:
-                return str(exc)
-        return ""
+            identities.append((path, expected))
+        return tuple(identities)
 
     def _collection_batch_dialog_actions(self) -> CollectionBatchActions:
+        session = self._workflow_tabs.current
+        origin_session_id = "" if session is None else session.session_id
         return CollectionBatchActions(
             preview_batch=lambda values, preview_limit: self._preview_collection_batch(
                 **values,
@@ -16221,17 +16132,263 @@ class VippWidget(QWidget):
                 path, **values
             ),
             preview_item=self._preview_collection_batch_plan_item,
+            check_batch=self._check_collection_batch,
+            check_items=self._recheck_collection_batch_items,
+            compute_summary=self._collection_batch_compute_summary,
+            workflow_summary=lambda: self._collection_batch_workflow_summary(
+                origin_session_id
+            ),
         )
+
+    def _check_collection_batch(
+        self,
+        values: dict[str, object],
+        preview_limit: int = 25,
+        *,
+        attempt: int = 0,
+        recheck_indices: tuple[int, ...] = (),
+    ) -> bool:
+        """Schedule a metadata-only check; never calculate a representative."""
+
+        dialog = self._active_collection_batch_dialog
+        session = self._workflow_tabs.current
+        if dialog is None or session is None:
+            return False
+        if self._collection_batch_running or self._pending_collection_batch_start:
+            raise RuntimeError("Wait for the active batch before checking settings.")
+        self._commit_crop_draft(schedule_run=False)
+        self._cancel_attached_batch_workspace_preview(dialog)
+        arguments = dict(values)
+        arguments["preview_limit"] = int(preview_limit)
+        arguments["compute_request"] = self._compute_request_for_batch_dialog(dialog)
+        if recheck_indices:
+            reviewed = dialog._preview_result
+            if reviewed is None:
+                raise ValueError("Check the full batch before rechecking items.")
+            prepared = self._collection_batch_controller.prepare_item_recheck(
+                reviewed,
+                recheck_indices,
+                **arguments,
+            )
+        else:
+            prepared = self._collection_batch_controller.prepare_preview(**arguments)
+        self._batch_workspace_preview_serial += 1
+        request_id = self._batch_workspace_preview_serial
+        context = _BatchWorkspacePreviewContext(
+            request_id=request_id,
+            origin_session_id=session.session_id,
+            dialog=dialog,
+            expected_workflow_sha256=prepared.config.workflow_sha256,
+            override_count=len(prepared.config.parameter_overrides),
+            purpose="items" if recheck_indices else "check",
+            expected_config=prepared.config,
+            attempt=attempt,
+            recheck_indices=prepared.recheck_indices,
+            reviewed_result=prepared.reviewed_result,
+        )
+        worker = BatchWorkspacePreviewWorker(
+            BatchWorkspacePreviewWorkerSpec(request_id, session.session_id, prepared)
+        )
+        worker.signals.progress.connect(self._on_batch_workspace_preview_progress)
+        worker.signals.finished.connect(
+            self._on_attached_batch_workspace_preview_finished
+        )
+        self._batch_workspace_preview_contexts[request_id] = context
+        self._batch_workspace_preview_workers[request_id] = worker
+        dialog._checking_plan = True
+        dialog.show_workspace_activity(
+            "Rechecking selected source revisions and output presence…"
+            if recheck_indices
+            else "Checking batch inputs, outputs, and parameters…",
+            state="working",
+            indeterminate=True,
+            progress_text="Checking",
+        )
+        dialog._sync_workspace()
+        self._engage_collection_batch_workspace(dialog)
+        self._batch_workspace_preview_thread_pool.start(worker)
+        return True
+
+    def _recheck_collection_batch_items(self, indices: tuple[int, ...]) -> bool:
+        """Recheck selected exact revisions without making a partial run plan."""
+
+        dialog = self._active_collection_batch_dialog
+        if dialog is None:
+            return False
+        return self._check_collection_batch(
+            dialog.values(),
+            recheck_indices=tuple(indices),
+        )
+
+    def _present_collection_batch_check(
+        self,
+        context: _BatchWorkspacePreviewContext,
+        outcome: BatchWorkspacePreviewWorkerOutcome,
+    ) -> bool:
+        """Publish only a still-current explicit check on its owning GUI tab."""
+
+        dialog = context.dialog
+        error = outcome.error
+        try:
+            current = self._collection_batch_controller.build_config(
+                **dialog.values(),
+                compute_request=self._compute_request_for_batch_dialog(dialog),
+            )
+            if current != context.expected_config:
+                raise ValueError(
+                    "Batch settings or the workflow changed during checking. "
+                    "Check the full batch again."
+                )
+            if context.purpose == "items" and (
+                dialog._preview_result is not context.reviewed_result
+            ):
+                raise ValueError(
+                    "The reviewed plan changed. Check the full batch again."
+                )
+        except Exception as exc:
+            error = exc
+        if context.purpose == "items":
+            unchanged = error is None and outcome.result is context.reviewed_result
+            message = (
+                "Selected source revisions and output presence are unchanged. "
+                "Run batch will still check the full batch."
+                if unchanged
+                else "Selected-item recheck needs attention: "
+                f"{error or 'No result returned.'}"
+            )
+            dialog.show_item_recheck_result(
+                context.recheck_indices, message, unchanged=unchanged
+            )
+            self._sync_current_workflow_tab_state()
+            return True
+        if isinstance(error, BatchScientificPreflightError):
+            if context.attempt == 0 and dialog.apply_axis_suggestion(error):
+                try:
+                    return self._check_collection_batch(dialog.values(), attempt=1)
+                except Exception as exc:
+                    error = exc
+        if error is not None:
+            if isinstance(error, BatchScientificPreflightError):
+                dialog._show_preview_failure(
+                    error.user_message, technical_detail=error.technical_detail
+                )
+            else:
+                dialog._show_preview_failure(f"Batch check could not finish: {error}")
+            return True
+        result = outcome.result
+        if result is None:
+            dialog._show_preview_failure("Batch check returned no plan.")
+            return True
+        configured = self._configure_batch_parameter_overrides(dialog, result)
+        if not configured and (
+            result.config.parameter_overrides or dialog._pending_parameter_overrides
+        ):
+            dialog._show_preview_failure(
+                dialog.parameter_override_editor.error_message
+                or "Saved per-sample values could not be verified."
+            )
+            return True
+        if self._interactive_collection_batch_items and (
+            self._interactive_collection_batch_items != result.items
+            or self._interactive_collection_batch_config != result.config
+        ):
+            self._mark_interactive_collection_batch_stale(dialog)
+        dialog.apply_preview_result(result, preview_representative=False)
+        self._set_status(
+            f"Checked {result.total_items} batch item(s). "
+            "Nothing was calculated or saved.",
+            severity=(
+                MessageSeverity.WARNING
+                if result.collision_count
+                else MessageSeverity.SUCCESS
+            ),
+        )
+        self._sync_current_workflow_tab_state()
+        return True
+
+    def _collection_batch_workflow_summary(
+        self,
+        session_id: str | None = None,
+    ) -> tuple[str, str]:
+        """Describe the owning live workflow without changing editor state."""
+
+        session = (
+            self._workflow_tabs.current
+            if session_id is None
+            else self._workflow_tab_session(session_id)
+        )
+        if session is None:
+            return (
+                "Workflow unavailable",
+                "The workflow tab that owns this batch workspace is no longer open.",
+            )
+        label = session.title + (" · modified" if session.dirty else "")
+        details = [
+            f"Workflow file: {session.path}"
+            if session.path is not None
+            else "Unsaved workflow: no workflow file path.",
+            "Uses this tab's current live workflow, including any unsaved changes; "
+            "it does not reload an older saved file.",
+        ]
+        if session.dirty:
+            details.append("This workflow has unsaved changes.")
+        return label, "\n".join(details)
+
+    def _collection_batch_compute_summary(self) -> tuple[str, str]:
+        """Describe captured compute intent without claiming a selected backend."""
+
+        dialog = self._active_collection_batch_dialog
+        request = self._compute_request_for_batch_dialog(dialog)
+        saved = dialog is not None and isinstance(
+            getattr(dialog, "_loaded_compute_request", None), ComputeRequest
+        )
+        origin = "saved batch" if saved else "inherited"
+        label = f"{compute_mode_label(request.mode)} · {origin}"
+        details = [
+            f"Compute mode: {compute_mode_label(request.mode)}.",
+            "Settings loaded from the saved batch configuration. Changing Compute "
+            "in the main workflow toolbar replaces these saved settings."
+            if saved
+            else "Settings inherited from the main workflow toolbar. "
+            "Use its Compute controls to change them.",
+            "This is requested compute, not a claim about actual GPU use. "
+            "The run record reports the implementations actually used.",
+            f"Fallback policy: {request.fallback_policy.value}.",
+        ]
+        if request.runtime_id or request.device_id:
+            details.append(
+                f"Requested runtime: {request.runtime_id or 'automatic'}; "
+                f"device: {request.device_id or 'automatic'}."
+            )
+        if request.node_preferences:
+            details.append(f"Per-node preferences: {len(request.node_preferences)}.")
+        if request.accelerator_memory_cap_bytes is not None:
+            details.append(
+                "Accelerator memory cap: "
+                f"{request.accelerator_memory_cap_bytes:,} bytes."
+            )
+        if request.accelerator_safety_reserve_bytes is not None:
+            details.append(
+                "Accelerator safety reserve: "
+                f"{request.accelerator_safety_reserve_bytes:,} bytes."
+            )
+        if request.allow_experimental:
+            details.append("Experimental implementations are allowed by this request.")
+        return label, "\n".join(details)
 
     def _preview_collection_batch_plan_item(self, index: int) -> bool:
         """Install a plan-only restore before explicitly calculating one row."""
 
-        if self._interactive_collection_batch_items:
-            return self._preview_interactive_collection_batch_item(index)
         dialog = self._active_collection_batch_dialog
         result = None if dialog is None else dialog._preview_result
         if result is None or not 0 <= int(index) < len(result.items):
             return False
+        if (
+            self._interactive_collection_batch_items == result.items
+            and self._interactive_collection_batch_config == result.config
+            and not self._interactive_collection_batch_plan_stale
+        ):
+            return self._preview_interactive_collection_batch_item(index)
         self._activate_interactive_collection_batch(
             result.items,
             result.config,
@@ -16346,6 +16503,7 @@ class VippWidget(QWidget):
         )
         reuse_representative = bool(
             self._interactive_collection_batch_items
+            and not self._interactive_collection_batch_plan_stale
             and self._interactive_collection_batch_index >= 0
             and self._interactive_collection_batch_requested_index < 0
             and self._interactive_collection_batch_failed_index < 0
@@ -16358,6 +16516,9 @@ class VippWidget(QWidget):
             and previous_declarations == current_declarations
             and previous_override_signature == requested_override_signature
             and previous_execution_signature == requested_execution_signature
+            and previous_item is not None
+            and previous_item.source_item_documents
+            == planned_items[index].source_item_documents
             and scientific_workflow_hash(self._batch_workflow_document())
             == config.workflow_sha256
         )
@@ -16864,12 +17025,9 @@ class VippWidget(QWidget):
         dialog = self._active_collection_batch_dialog
         if dialog is not None:
             dialog.show_graph_preview_error(failed_index, message)
-            representative_ready = bool(
-                items
-                and 0 <= self._interactive_collection_batch_index < len(items)
-                and self._interactive_collection_batch_failed_index < 0
-            )
-            dialog.set_representative_pending(not representative_ready)
+            # This worker has finished, unsuccessfully. Keep the preview error,
+            # but do not leave a nonexistent calculation blocking a checked run.
+            dialog.set_representative_pending(False)
         prefix = (
             self._compute_runtime_quarantined_reason + " "
             if self._compute_runtime_quarantined_reason
@@ -16921,20 +17079,22 @@ class VippWidget(QWidget):
         self.batch_navigator.set_session_stale(
             True,
             message=(
-                "Per-sample parameters changed. Preview the batch again to bind "
-                "the exact primary SourceItems and calculate a matching "
-                "representative before running."
+                "Per-sample parameters changed. Check batch again to validate "
+                "the updated values. Use Preview selected if you want to inspect "
+                "the updated image."
             ),
         )
-        dialog.set_representative_pending(True)
+        # The previous preview is stale, not a pending calculation. An explicit
+        # check must remain available without requiring a new image preview.
+        dialog.set_representative_pending(False)
         dialog.show_plan_refresh_required(
-            "Per-sample parameters changed. Preview batch again before running "
-            "so the representative uses the exact per-item workflow."
+            "Per-sample parameters changed. Check batch again to validate "
+            "the updated values before running."
         )
         if overrides is None:
             self._set_status(
                 "A per-sample parameter value is invalid. Correct it, then "
-                "preview the batch again.",
+                "check the batch again.",
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
@@ -16965,20 +17125,20 @@ class VippWidget(QWidget):
         self.batch_navigator.set_session_stale(
             True,
             message=(
-                "Whole-batch node behavior changed. Preview the batch again "
-                "to calculate a representative with the exact Run/Bypass "
-                "profile before running."
+                "Whole-batch node behavior changed. Check batch again to validate "
+                "the updated Run/Bypass settings. Use Preview selected if you "
+                "want to inspect the updated image."
             ),
         )
-        dialog.set_representative_pending(True)
+        dialog.set_representative_pending(False)
         dialog.show_plan_refresh_required(
-            "Whole-batch node behavior changed. Preview batch again before "
-            "running so the representative uses the exact profile."
+            "Whole-batch node behavior changed. Check batch again to validate "
+            "the updated Run/Bypass settings before running."
         )
         if overrides is None:
             self._set_status(
                 "A whole-batch node behavior value is invalid. Correct it, "
-                "then preview the batch again.",
+                "then check the batch again.",
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
@@ -17165,13 +17325,16 @@ class VippWidget(QWidget):
         continue_on_error: bool = True,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
+        item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
         expected_items: tuple[BatchItemPlan, ...] | None = None,
         *,
         job_id: int,
         origin_session_id: str,
         compute_request: ComputeRequest | None = None,
-    ) -> PreparedCollectionBatchRun:
-        """Create and persist immutable inputs before any worker starts."""
+        defer_io: bool = False,
+        preflight_plan: BatchPlan | None = None,
+    ) -> PreparedCollectionBatchRun | CollectionBatchRunRequest:
+        """Freeze GUI state; desktop runs defer reads/writes to their worker."""
         self._commit_crop_draft(schedule_run=False)
         del save_workflow_snapshot
         if compute_request is None:
@@ -17193,6 +17356,7 @@ class VippWidget(QWidget):
             continue_on_error=continue_on_error,
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
+            item_file_policies=item_file_policies,
             workflow=workflow,
             compute_request=compute_request,
         )
@@ -17200,35 +17364,19 @@ class VippWidget(QWidget):
         config_path = output_path / BATCH_CONFIG_FILENAME
         workflow_path = output_path / BATCH_WORKFLOW_FILENAME
         script_path = output_path / BATCH_SCRIPT_FILENAME
-        plan = preflight_batch(workflow, config, workflow_path=workflow_path)
-        if expected_items is not None and plan.items != tuple(expected_items):
-            raise RuntimeError(
-                "The batch plan changed during run startup. No batch item was "
-                "run; click Run batch to refresh the displayed plan, review it, "
-                "then run again."
-            )
-        config = bind_batch_plan_source_items(config, plan)
-        plan = replace(plan, config=config)
-        output_path.mkdir(parents=True, exist_ok=True)
-        artifact_paths: list[Path] = [atomic_write_json(workflow_path, workflow)]
-        if save_python_script:
-            atomic_write_text(
-                script_path,
-                export_batch_runner_to_python(),
-            )
-            artifact_paths.append(script_path)
-        save_batch_config(config_path, config)
-        return PreparedCollectionBatchRun(
+        request = CollectionBatchRunRequest(
             job_id=job_id,
             origin_session_id=origin_session_id,
             workflow=workflow,
             config=config,
             workflow_path=workflow_path,
             config_path=config_path,
-            plan=plan,
-            artifact_paths=tuple(artifact_paths),
+            script_path=script_path,
+            expected_items=None if expected_items is None else tuple(expected_items),
             performance_history_path=default_pipeline_timing_history_path(),
+            preflight_plan=preflight_plan,
         )
+        return request if defer_io else prepare_collection_batch_run(request)
 
     def _run_collection_batch(
         self,
@@ -17243,6 +17391,7 @@ class VippWidget(QWidget):
         continue_on_error: bool = True,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
+        item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
         expected_items: tuple[BatchItemPlan, ...] | None = None,
     ) -> BatchRunResult:
         """Run a batch synchronously for the public API and focused tests."""
@@ -17260,6 +17409,7 @@ class VippWidget(QWidget):
             continue_on_error=continue_on_error,
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
+            item_file_policies=item_file_policies,
             expected_items=expected_items,
             job_id=0,
             origin_session_id=(session.session_id if session is not None else ""),
@@ -17333,15 +17483,11 @@ class VippWidget(QWidget):
         else:
             self.pipeline_busy_bar.setRange(0, 0)
             self.pipeline_busy_bar.setFormat("Working")
-        operation = (
-            str(progress.operation_id).strip()
-            or str(progress.node_id).strip()
-            or "operation"
+        operation = operation_progress_text(
+            progress.operation_id, progress.message, node_title=progress.node_title,
         )
-        detail = str(progress.message).strip()
-        suffix = f": {detail}" if detail else ""
         self.pipeline_busy_label.setText(
-            f"Batch {progress.item_index}/{progress.item_total}: {operation}{suffix}"
+            f"Batch {progress.item_index}/{progress.item_total}: {operation}"
         )
         if dialog is None:
             dialog = self._active_collection_batch_dialog
@@ -17355,6 +17501,9 @@ class VippWidget(QWidget):
                 current,
                 total,
                 progress.message,
+                node_title=progress.node_title,
+                node_current=progress.node_current,
+                node_total=progress.node_total,
             )
 
     def _batch_workflow_document(
@@ -17398,6 +17547,7 @@ class VippWidget(QWidget):
         continue_on_error: bool = True,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
+        item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
         workflow: dict | None = None,
         compute_request: ComputeRequest | None = None,
     ) -> BatchConfig:
@@ -17413,6 +17563,7 @@ class VippWidget(QWidget):
             continue_on_error=continue_on_error,
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
+            item_file_policies=item_file_policies,
             workflow=workflow,
             compute_request=compute_request,
         )
@@ -17479,6 +17630,7 @@ class VippWidget(QWidget):
         continue_on_error: bool = True,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
+        item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
     ) -> BatchPreviewResult:
         self._commit_crop_draft(schedule_run=False)
         dialog = self._active_collection_batch_dialog
@@ -17497,6 +17649,7 @@ class VippWidget(QWidget):
             continue_on_error=continue_on_error,
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
+            item_file_policies=item_file_policies,
             compute_request=self._compute_request_for_batch_dialog(
                 self._active_collection_batch_dialog
             ),

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 
-from qtpy.QtCore import QEvent, Qt, QTimer, Signal
+from qtpy.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -24,7 +25,6 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -56,11 +56,18 @@ from napari_vipp.ui.batch_overrides import (
     BatchOverrideSourceItem,
     BatchParameterOverrideEditor,
 )
+from napari_vipp.ui.batch_progress import (
+    BatchProgressLabel,
+    operation_progress_text,
+    preparation_stage,
+)
+from napari_vipp.ui.batch_workspace import BatchActivityLabel, BatchWorkflowWorkspace
 from napari_vipp.ui.palette_roles import (
     blend_colors,
     custom_paint_colors,
     palette_is_dark,
 )
+from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
 
 
 def _batch_state_text_color(palette, state: str) -> str:
@@ -143,9 +150,13 @@ class CollectionBatchActions:
     load_config: LoadBatchConfigAction
     save_config: SaveBatchConfigAction
     preview_item: PreviewBatchItemAction | None = None
+    check_batch: Callable[[BatchDialogValues, int], bool | None] | None = None
+    check_items: Callable[[tuple[int, ...]], bool] | None = None
+    compute_summary: Callable[[], tuple[str, str]] | None = None
+    workflow_summary: Callable[[], tuple[str, str]] | None = None
 
 
-class CollectionBatchDialog(QDialog):
+class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
     """Front door for running a workflow over one or more local collections."""
 
     runRequested = Signal(object)
@@ -163,7 +174,7 @@ class CollectionBatchDialog(QDialog):
         execution_nodes: tuple[BatchNodeExecutionSpec, ...] = (),
     ):
         super().__init__(parent)
-        self.setWindowTitle("Batch workspace")
+        self.setWindowTitle("Batch workflow")
         self.setMinimumSize(520, 360)
         self._actions = actions
         self._source_rows: list[dict[str, object]] = []
@@ -180,7 +191,9 @@ class CollectionBatchDialog(QDialog):
         ] = ()
         self._run_control_enabled_states: dict[QWidget, bool] | None = None
         self._run_in_progress = False
+        self._run_preparing = False
         self._representative_pending = False
+        self._item_file_policies = ()
         self._activity_run_total = 0
         self._activity_run_index = 0
         self._activity_run_completed = 0
@@ -237,7 +250,7 @@ class CollectionBatchDialog(QDialog):
         self.script_checkbox.setChecked(True)
         self.continue_checkbox = QCheckBox("Continue after item failures")
         self.continue_checkbox.setChecked(True)
-        self.preview_button = QPushButton("Preview batch")
+        self.preview_button = ToolbarCommandButton("Preview batch")
         self.preview_button.setToolTip(
             "Optionally inspect every planned batch item and destination, then "
             "calculate the first item as a graph representative without saving "
@@ -266,7 +279,7 @@ class CollectionBatchDialog(QDialog):
         activity_layout = QHBoxLayout(self.batch_activity_strip)
         activity_layout.setContentsMargins(8, 0, 0, 0)
         activity_layout.setSpacing(8)
-        self.batch_activity_status = QLabel(
+        self.batch_activity_status = BatchActivityLabel(
             "Not checked · Preview or run to inspect batch items."
         )
         self.batch_activity_status.setObjectName("BatchWorkspaceActivityStatus")
@@ -292,13 +305,13 @@ class CollectionBatchDialog(QDialog):
         self.source_detection_progress.setAccessibleDescription(
             "Summarizes Batch workspace planning and item progress. Main VIPP "
             "reports representative graph calculation; detailed batch run bars "
-            "appear lower in this window."
+            "appear in Run & results."
         )
         self._batch_activity_tooltip = (
-            "This toolbar status summarizes Batch workspace activity. The main "
+            "This footer summarizes Batch workspace activity. The main "
             "VIPP progress bar reports representative scientific graph "
             "calculation. During a full batch, detailed item and node progress "
-            "is retained in the Batch run section below."
+            "is retained in Run & results."
         )
         self.batch_activity_strip.setToolTip(self._batch_activity_tooltip)
         self.batch_activity_status.setToolTip(self._batch_activity_tooltip)
@@ -325,7 +338,7 @@ class CollectionBatchDialog(QDialog):
             self._preview_table_item_double_clicked
         )
 
-        self.preview_item_button = QPushButton("Preview selected in graph")
+        self.preview_item_button = ToolbarCommandButton("Preview selected")
         self.preview_item_button.setToolTip(
             "Load one representative planned item into the graph. This does not "
             "execute or save the full batch."
@@ -347,11 +360,15 @@ class CollectionBatchDialog(QDialog):
         self.source_layout = QVBoxLayout(self.source_group)
         self._set_source_nodes(source_nodes)
 
-        self.node_execution_group = QGroupBox(
-            "Node behavior for all samples (optional)"
-        )
+        self.node_execution_group = QGroupBox("Run or bypass nodes")
         node_execution_layout = QFormLayout(self.node_execution_group)
         node_execution_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        node_help = QLabel(
+            "Applies to every item in this batch. Bypass passes the input onward "
+            "without applying the operation. Your original workflow is unchanged."
+        )
+        node_help.setWordWrap(True)
+        node_execution_layout.addRow(node_help)
         for spec in self._node_execution_specs:
             combo = QComboBox()
             workflow_label = spec.workflow_mode.value.capitalize()
@@ -369,7 +386,9 @@ class CollectionBatchDialog(QDialog):
             combo.setToolTip(description)
             combo.setAccessibleDescription(description)
             combo.currentIndexChanged.connect(self._node_execution_overrides_changed)
-            label = f"{spec.title} ({spec.node_id})"
+            label = QLabel(f"<b>{escape(spec.title)}</b><br>{escape(spec.node_id)}")
+            label.setAccessibleName(f"{spec.title} ({spec.node_id})")
+            label.setToolTip(f"{spec.title} ({spec.node_id})")
             node_execution_layout.addRow(label, combo)
             self._node_execution_combos[spec.node_id] = combo
         self.node_execution_group.setVisible(bool(self._node_execution_specs))
@@ -386,7 +405,10 @@ class CollectionBatchDialog(QDialog):
             self._sync_parameter_override_validity
         )
 
-        self.output_button = QPushButton("Folder...")
+        self.output_button = ToolbarCommandButton()
+        self.output_button.setFixedWidth(30)
+        self.output_button.setToolTip("Choose the output folder")
+        self.output_button.setAccessibleName("Choose output folder")
         self.output_button.clicked.connect(self._browse_output)
         output_row = QWidget()
         output_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -400,14 +422,12 @@ class CollectionBatchDialog(QDialog):
         form.addRow("Output folder", output_row)
         form.addRow("Default image format", self.format_combo)
         form.addRow("Existing files", self.existing_policy_combo)
-        form.addRow("", self.workflow_checkbox)
-        form.addRow("", self.script_checkbox)
-        form.addRow("", self.continue_checkbox)
+        form.addRow(self.continue_checkbox)
 
-        self.load_config_button = QPushButton("Load...")
+        self.load_config_button = ToolbarCommandButton("Open config")
         self.load_config_button.setToolTip("Load a saved Batch workspace config.")
         self.load_config_button.clicked.connect(self._load_config)
-        self.save_config_button = QPushButton("Save...")
+        self.save_config_button = ToolbarCommandButton("Save config")
         self.save_config_button.setToolTip("Save this Batch workspace config.")
         self.save_config_button.clicked.connect(self._save_config)
         self.demo_config_button = QPushButton("Demo...")
@@ -479,7 +499,7 @@ class CollectionBatchDialog(QDialog):
         self.run_progress_bar.setValue(0)
         self.run_progress_bar.setFormat("Not run")
         self.run_progress_bar.setTextVisible(True)
-        self.run_progress_label = QLabel("No batch run is active.")
+        self.run_progress_label = BatchProgressLabel("No batch run is active.")
         self.run_progress_label.setWordWrap(True)
         self.run_progress_label.setMinimumWidth(0)
         self.run_progress_label.setSizePolicy(
@@ -491,7 +511,9 @@ class CollectionBatchDialog(QDialog):
         self.operation_progress_bar.setValue(0)
         self.operation_progress_bar.setFormat("Not run")
         self.operation_progress_bar.setTextVisible(True)
-        self.operation_progress_label = QLabel("No node operation is active.")
+        self.operation_progress_label = BatchProgressLabel(
+            "No node operation is active."
+        )
         self.operation_progress_label.setWordWrap(True)
         self.operation_progress_label.setMinimumWidth(0)
         self.operation_progress_label.setSizePolicy(
@@ -515,14 +537,12 @@ class CollectionBatchDialog(QDialog):
         run_layout.addWidget(self.run_result_label)
         self.run_group.hide()
 
-        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Close)
-        self.run_button = self.button_box.button(QDialogButtonBox.Ok)
-        self.run_button.setText("Run batch")
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        self.run_button = ToolbarCommandButton("Run batch")
+        self.button_box.addButton(self.run_button, QDialogButtonBox.AcceptRole)
         self.run_button.clicked.connect(self._request_run)
-        self.cancel_run_button = self.button_box.addButton(
-            "Cancel run",
-            QDialogButtonBox.ActionRole,
-        )
+        self.cancel_run_button = ToolbarCommandButton("Cancel run")
+        self.button_box.addButton(self.cancel_run_button, QDialogButtonBox.ActionRole)
         self.cancel_run_button.setToolTip(
             "Request cooperative cancellation. The active CPU/GPU operation "
             "stops at its next safe checkpoint; completed outputs and the final "
@@ -533,68 +553,34 @@ class CollectionBatchDialog(QDialog):
         self.close_button = self.button_box.button(QDialogButtonBox.Close)
         self.button_box.rejected.connect(self.reject)
 
-        self.content_widget = QWidget()
-        self.content_widget.setSizePolicy(
-            QSizePolicy.Ignored,
-            QSizePolicy.Preferred,
-        )
-        content_layout = QVBoxLayout(self.content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.addWidget(self.demo_guide_label)
-        content_layout.addWidget(self.demo_path_row)
-        content_layout.addWidget(self.source_group)
-        content_layout.addWidget(self.node_execution_group)
-        content_layout.addWidget(self.parameter_override_group)
-        content_layout.addLayout(form)
-        content_layout.addWidget(self.help_label)
-        content_layout.addWidget(preview_row)
-        content_layout.addWidget(self.preview_table)
-        content_layout.addWidget(graph_preview_row)
-        content_layout.addWidget(self.run_group)
-
-        self.content_scroll = QScrollArea()
-        self.content_scroll.setObjectName("BatchWorkspaceScroll")
-        self.content_scroll.setWidgetResizable(True)
-        self.content_scroll.setFrameShape(QFrame.NoFrame)
-        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.content_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.content_scroll.setMinimumHeight(0)
-        self.content_scroll.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Expanding,
-        )
-        self.content_scroll.setWidget(self.content_widget)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.config_row)
-        layout.addWidget(self.content_scroll, 1)
-        layout.addWidget(self.button_box)
+        self._build_workspace(form)
 
         self.output_edit.textChanged.connect(self._output_path_changed)
         self.format_combo.currentIndexChanged.connect(self._invalidate_preview_plan)
         self.existing_policy_combo.currentIndexChanged.connect(
-            self._invalidate_preview_plan
+            self._existing_file_policy_changed
         )
         self.script_checkbox.toggled.connect(self._invalidate_preview_plan)
         self.continue_checkbox.toggled.connect(self._invalidate_preview_plan)
         self.preview_status.setText(
-            "Ready. Preview checks one sample; Run batch checks again before saving."
+            "Specify sources and an output folder, then choose Check batch."
         )
         self.show_workspace_activity(
-            "Not checked · Preview or run to inspect batch items.",
+            "Not checked · specify paths, then Check batch.",
             state="info",
         )
         self._apply_palette_styles()
+        self._sync_workspace()
 
         screen = self.screen()
         if screen is not None:
             available = screen.availableGeometry()
             self.resize(
-                min(840, max(self.minimumWidth(), available.width() - 80)),
+                min(1080, max(self.minimumWidth(), available.width() - 80)),
                 min(720, max(self.minimumHeight(), available.height() - 80)),
             )
         else:
-            self.resize(840, 720)
+            self.resize(1080, 720)
 
     def eventFilter(self, watched, event):
         if watched is self.output_edit:
@@ -610,7 +596,12 @@ class CollectionBatchDialog(QDialog):
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)
-        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.StyleChange,
+            QEvent.FontChange,
+        ):
             self._apply_palette_styles()
 
     def _apply_palette_styles(self) -> None:
@@ -645,8 +636,13 @@ class CollectionBatchDialog(QDialog):
             row_style = self._source_row_style()
             for row in self._source_rows:
                 row["widget"].setStyleSheet(row_style)
+                row["browse_button"].setIcon(toolbar_icon("open", self.palette()))
+                row["title_icon"].setPixmap(
+                    toolbar_icon("image", self.palette()).pixmap(16, 16)
+                )
             self._refresh_output_path_style()
             self._apply_activity_status_style()
+            self._apply_workspace_theme()
         finally:
             self._applying_palette_styles = False
 
@@ -654,17 +650,16 @@ class CollectionBatchDialog(QDialog):
         colors = custom_paint_colors(self.palette())
         dark = palette_is_dark(self.palette())
         border = "#334155" if dark else colors.border.name()
-        field_border = "#475569" if dark else colors.axis.name()
         return (
-            f"QFrame {{ border: 1px solid {border}; "
+            f"QFrame#batchSourceCard {{ border: 1px solid {border}; "
             "border-radius: 4px; }"
-            "QLabel { border: none; }"
-            f"QLineEdit {{ border: 1px solid {field_border}; }}"
         )
 
     def _apply_activity_status_style(self) -> None:
         color = _batch_state_text_color(self.palette(), self._batch_activity_state)
         self.batch_activity_status.setStyleSheet(f"color: {color};")
+        if getattr(self, "_workspace_ready", False):
+            self._style_review_banner()
 
     def set_demo_context(self, demo: SyntheticBatchDemo) -> None:
         """Present a generated bundle as a ready-to-run example workspace."""
@@ -744,16 +739,37 @@ class CollectionBatchDialog(QDialog):
         index: int,
     ) -> QWidget:
         folder_edit = QLineEdit()
+        folder_edit.setMinimumWidth(0)
+        folder_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         pattern_edit = QLineEdit(DEFAULT_BATCH_SOURCE_PATTERN)
+        pattern_edit.setMinimumWidth(0)
+        pattern_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         pattern_edit.setToolTip(
             "* discovers all supported image files and top-level OME-Zarr "
             "stores in this folder. Use semicolon-separated globs only when "
             "you want to narrow the collection."
         )
         axis_declaration_edit = AxisInterpretationControl()
+        axis_declaration_edit.setMinimumWidth(0)
+        axis_declaration_edit.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred
+        )
+        axis_declaration_edit.mode_combo.setMinimumWidth(0)
+        axis_declaration_edit.mode_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        axis_declaration_edit.mode_combo.setMinimumContentsLength(12)
+        axis_declaration_edit.advanced_edit.setMinimumWidth(0)
         if axis_declaration is not None:
             axis_declaration_edit.setText(axis_declaration)
-        browse_button = QPushButton("Folder...")
+        browse_button = ToolbarCommandButton()
+        browse_button.setAutoDefault(False)
+        browse_button.setIcon(toolbar_icon("open", self.palette()))
+        browse_button.setIconSize(QSize(18, 18))
+        browse_button.setFixedWidth(30)
+        browse_button.setStyleSheet("QPushButton { padding: 2px 5px; }")
+        browse_button.setAccessibleName(f"Choose folder for {title}")
+        browse_button.setToolTip(f"Choose the source folder for {title}")
         browse_button.clicked.connect(
             lambda _checked=False, edit=folder_edit: self._browse_source_input(edit)
         )
@@ -774,42 +790,73 @@ class CollectionBatchDialog(QDialog):
         title_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         title_label.setToolTip(f"Workflow source: {title} ({node_id})")
         title_label.setStyleSheet("font-weight: 650;")
+        title_icon = QLabel()
+        title_icon.setFixedSize(16, 16)
+        title_icon.setPixmap(toolbar_icon("image", self.palette()).pixmap(16, 16))
+        title_icon.setAccessibleName("Image source")
+        count_label = QLabel("Not checked")
+        count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        count_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        count_label.setToolTip("Check batch to review the matching source files.")
+        title_row = QHBoxLayout()
+        title_row.setSpacing(6)
+        title_row.addWidget(title_icon)
+        title_row.addWidget(title_label, 1)
+        title_row.addWidget(count_label)
 
         folder_row = QWidget()
         folder_layout = QHBoxLayout(folder_row)
         folder_layout.setContentsMargins(0, 0, 0, 0)
-        folder_layout.addWidget(QLabel("Folder"))
+        folder_layout.setSpacing(6)
         folder_layout.addWidget(folder_edit, 1)
         folder_layout.addWidget(browse_button)
+        folder_label = QLabel("Folder")
+        folder_label.setBuddy(folder_edit)
 
         pattern_row = QWidget()
-        pattern_layout = QHBoxLayout(pattern_row)
+        pattern_row.setMinimumWidth(0)
+        pattern_layout = QVBoxLayout(pattern_row)
         pattern_layout.setContentsMargins(0, 0, 0, 0)
+        pattern_layout.setSpacing(4)
         pattern_label = QLabel("Pattern")
+        pattern_label.setBuddy(pattern_edit)
         pattern_label.setToolTip(pattern_edit.toolTip())
         pattern_layout.addWidget(pattern_label)
-        pattern_layout.addWidget(pattern_edit, 1)
+        pattern_layout.addWidget(pattern_edit)
+        pattern_layout.addStretch()
 
         declaration_row = QWidget()
-        declaration_layout = QHBoxLayout(declaration_row)
+        declaration_row.setMinimumWidth(0)
+        declaration_layout = QVBoxLayout(declaration_row)
         declaration_layout.setContentsMargins(0, 0, 0, 0)
-        declaration_label = QLabel("Image stack")
+        declaration_layout.setSpacing(4)
+        declaration_label = QLabel("Image axes")
+        declaration_label.setBuddy(axis_declaration_edit.mode_combo)
         declaration_label.setToolTip(
             "VIPP normally trusts the file and visibly suggests Z stack only "
             "when this workflow proves that it needs one."
         )
         declaration_layout.addWidget(declaration_label)
-        declaration_layout.addWidget(axis_declaration_edit, 1)
+        declaration_layout.addWidget(axis_declaration_edit)
+        declaration_layout.addStretch()
+        options_row = QHBoxLayout()
+        options_row.setSpacing(8)
+        options_row.addWidget(pattern_row, 1)
+        options_row.addWidget(declaration_row, 2)
 
         row = QFrame()
+        row.setObjectName("batchSourceCard")
         row.setFrameShape(QFrame.StyledPanel)
+        row.setMinimumWidth(0)
+        row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         row.setStyleSheet(self._source_row_style())
         row_layout = QVBoxLayout(row)
-        row_layout.setContentsMargins(8, 6, 8, 6)
-        row_layout.addWidget(title_label)
+        row_layout.setContentsMargins(10, 10, 10, 10)
+        row_layout.setSpacing(6)
+        row_layout.addLayout(title_row)
+        row_layout.addWidget(folder_label)
         row_layout.addWidget(folder_row)
-        row_layout.addWidget(pattern_row)
-        row_layout.addWidget(declaration_row)
+        row_layout.addLayout(options_row)
         self._source_rows.append(
             {
                 "node_id": node_id,
@@ -821,6 +868,11 @@ class CollectionBatchDialog(QDialog):
                 "index": index,
                 "widget": row,
                 "title_label": title_label,
+                "title_icon": title_icon,
+                "count_label": count_label,
+                "folder_label": folder_label,
+                "pattern_label": pattern_label,
+                "axis_label": declaration_label,
                 "binding_mode": binding_mode,
             }
         )
@@ -934,6 +986,8 @@ class CollectionBatchDialog(QDialog):
         execution_overrides = self.node_execution_overrides()
         if execution_overrides:
             values["node_execution_overrides"] = execution_overrides
+        if self._item_file_policies:
+            values["item_file_policies"] = self._item_file_policies
         return values
 
     def node_execution_overrides(
@@ -977,7 +1031,9 @@ class CollectionBatchDialog(QDialog):
         )
         if configured:
             self._pending_parameter_overrides = ()
+            self._sync_override_checked_items()
         self._sync_parameter_override_validity(configured)
+        self._sync_workspace()
         return configured
 
     def parameter_overrides(self) -> tuple[BatchSourceParameterOverrides, ...]:
@@ -1003,6 +1059,7 @@ class CollectionBatchDialog(QDialog):
             overrides = None
         self.parameterOverridesChanged.emit(overrides)
         self._sync_parameter_override_validity()
+        self._sync_workspace()
 
     def _sync_parameter_override_validity(self, *_args) -> None:
         if not hasattr(self, "parameter_override_editor"):
@@ -1016,10 +1073,11 @@ class CollectionBatchDialog(QDialog):
                 self._actions is not None and not self._representative_pending
             )
             self.run_button.setToolTip("")
+        self._sync_workspace()
 
     def _request_run(self) -> None:
         """Request execution without accepting or hiding this workspace."""
-        if self._run_in_progress:
+        if self._run_in_progress or getattr(self, "_run_preparing", False):
             return
         self.begin_run_preflight()
         self.runRequested.emit(self.values())
@@ -1037,6 +1095,33 @@ class CollectionBatchDialog(QDialog):
             progress_text="Checking",
         )
         self.batch_activity_strip.repaint()
+
+    def begin_background_run_preparation(self) -> None:
+        self._run_preparing = True
+        self._checking_plan = True
+        self.results_panel.begin_preparation(
+            self._preview_result.total_items if self._preview_result else 0
+        )
+        self._sync_workspace()
+        self.tabs.setCurrentIndex(3)
+        self.cancel_run_button.setText("Cancel preparation")
+        self.cancel_run_button.setEnabled(True)
+        self.cancel_run_button.show()
+
+    def end_background_run_preparation(self) -> None:
+        self._run_preparing = False
+        self._checking_plan = False
+        self.cancel_run_button.hide()
+        self.results_panel.end_preparation()
+        self._sync_workspace()
+
+    def show_run_preparation_progress(self, event) -> None:
+        self.results_panel.update_preparation(event)
+        title, detail = preparation_stage(event)
+        self.show_workspace_activity(
+            f"Preparing run · {title.lower()}…", state="working",
+            indeterminate=True, progress_text="Preparing", tooltip=detail,
+        )
 
     def _invalidate_preview_plan(self, *_args) -> None:
         """Discard a plan as soon as any setting that produced it changes."""
@@ -1064,6 +1149,7 @@ class CollectionBatchDialog(QDialog):
         if run_button is not None:
             run_button.setEnabled(self._actions is not None)
         self._sync_parameter_override_validity()
+        self._workspace_plan_invalidated()
         self.previewInvalidated.emit()
 
     def invalidate_for_workflow_change(self) -> None:
@@ -1149,14 +1235,21 @@ class CollectionBatchDialog(QDialog):
     def show_plan_refresh_required(self, message: str) -> None:
         """Explain why a newly refreshed plan must be reviewed before running."""
         self.preview_status.setText(str(message))
+        needs_check = self._preview_result is None
+        if needs_check:
+            self.graph_preview_status.setText(
+                "Check the batch first. Preview selected is optional after checks pass."
+            )
         self.show_workspace_activity(
-            "Needs attention · review the refreshed batch plan.",
+            "Needs attention · check batch again."
+            if needs_check
+            else "Needs attention · review the refreshed batch plan.",
             state="warning",
             tooltip=str(message),
         )
 
     def set_representative_pending(self, pending: bool) -> None:
-        """Keep full execution unavailable until graph preview is trustworthy."""
+        """Keep full execution unavailable while optional graph work is active."""
         if self._run_in_progress:
             return
         self._representative_pending = bool(pending)
@@ -1167,10 +1260,11 @@ class CollectionBatchDialog(QDialog):
         self._preview_result = None
         self.preview_item_button.setEnabled(False)
         self.preview_status.setText(
-            "Historical preflight: the column above records the completed "
-            "run's plan. Run batch will preflight current inputs and destinations "
-            "again; Preview batch remains available for inspection."
+            "Historical run results. View run report summarizes the finished batch. "
+            "To process again, return to Setup, review the settings, then choose "
+            "Check batch. Nothing runs until you confirm Run."
         )
+        self._sync_workspace()
 
     def _sync_preview_item_button(self) -> None:
         action_available = bool(
@@ -1183,6 +1277,7 @@ class CollectionBatchDialog(QDialog):
             and has_selection
             and not self._run_in_progress
         )
+        self._sync_workspace()
 
     def select_preview_item(self, position: int) -> bool:
         """Select a zero-based full-plan position without previewing it again."""
@@ -1196,9 +1291,10 @@ class CollectionBatchDialog(QDialog):
             return False
         table_row = self._preview_table_rows.get(position + 1)
         if table_row is None:
-            self.preview_table.clearSelection()
-            self._set_graph_preview_status(position)
-            return True
+            self._review_result_item(position)
+            table_row = self._preview_table_rows.get(position + 1)
+            if table_row is None:
+                return False
         self.preview_table.selectRow(table_row)
         item = self.preview_table.item(table_row, 0)
         if item is not None:
@@ -1208,6 +1304,8 @@ class CollectionBatchDialog(QDialog):
 
     def _preview_selected_item(self) -> bool:
         """Load the selected full-plan position into the representative graph."""
+        if self._checking_plan or self._representative_pending:
+            return False
         if self._run_in_progress:
             self.graph_preview_status.setText(
                 "Representative graph preview is disabled while the full batch "
@@ -1395,6 +1493,8 @@ class CollectionBatchDialog(QDialog):
         technical_detail: str = "",
     ) -> None:
         """Show one actionable issue while retaining detail in a tooltip."""
+        self._checking_plan = False
+        self._finish_check_progress_failure()
         self._hide_source_detection_progress()
         self.clear_demo_context()
         self._preview_result = None
@@ -1404,16 +1504,21 @@ class CollectionBatchDialog(QDialog):
         self.preview_status.setText(concise)
         self.preview_status.setToolTip(str(technical_detail).strip())
         self.show_workspace_activity(
-            "Needs attention · batch preview could not be prepared.",
+            "Needs attention · batch checks did not pass.",
             state="error",
             tooltip=str(technical_detail).strip() or concise,
         )
         self.graph_preview_status.setText(
-            "Change the highlighted setting, then preview again."
+            "Correct the setting above, then choose Check batch again."
         )
         self.preview_item_button.setEnabled(False)
         self.run_button.setEnabled(False)
         self.previewInvalidated.emit()
+        self._render_items()
+        self.results_panel.invalidate_plan(concise)
+        self.tabs.setTabEnabled(1, True)
+        self.tabs.setCurrentIndex(1)
+        self._sync_workspace()
 
     def show_workspace_activity(
         self,
@@ -1435,9 +1540,14 @@ class CollectionBatchDialog(QDialog):
         normalized_state = str(state).strip().lower()
         self._batch_activity_state = normalized_state
         self.batch_activity_status.setText(str(message).strip() or "Not checked")
+        self.batch_activity_status.setAccessibleDescription(
+            self.batch_activity_status.text()
+        )
         self._apply_activity_status_style()
         activity_tooltip = str(tooltip).strip() or self._batch_activity_tooltip
-        self.batch_activity_status.setToolTip(activity_tooltip)
+        self.batch_activity_status.setToolTip(
+            f"{self.batch_activity_status.text()}\n\n{activity_tooltip}"
+        )
         self.source_detection_progress.setToolTip(activity_tooltip)
         if indeterminate:
             self.source_detection_progress.setRange(0, 0)
@@ -1478,7 +1588,8 @@ class CollectionBatchDialog(QDialog):
 
     def begin_saved_workspace_discovery(self, override_count: int = 0) -> None:
         """Present automatic metadata-only discovery for a saved workspace."""
-
+        self._clear_check_progress()
+        self._checking_plan = True
         self._preview_result = None
         self._preview_table_rows.clear()
         self.preview_table.setRowCount(0)
@@ -1502,6 +1613,7 @@ class CollectionBatchDialog(QDialog):
             "identities are checked."
         )
         self.run_button.setEnabled(False)
+        self._sync_workspace()
 
     def show_saved_workspace_discovery_failure(
         self,
@@ -1510,7 +1622,8 @@ class CollectionBatchDialog(QDialog):
         technical_detail: str = "",
     ) -> None:
         """End discovery while explaining any source or override discrepancy."""
-
+        self._checking_plan = False
+        self._finish_check_progress_failure()
         self._hide_source_detection_progress()
         self._preview_result = None
         self._preview_table_rows.clear()
@@ -1543,6 +1656,8 @@ class CollectionBatchDialog(QDialog):
             "No representative image was loaded from the unverified collection."
         )
         self.run_button.setEnabled(False)
+        self._render_items()
+        self._sync_workspace()
 
     def show_saved_workspace_discovery_success(
         self,
@@ -1551,7 +1666,7 @@ class CollectionBatchDialog(QDialog):
         override_count: int,
     ) -> None:
         """Confirm automatic discovery while leaving pixel preview optional."""
-
+        self._checking_plan = False
         self._hide_source_detection_progress()
         self.preview_button.setEnabled(self._actions is not None)
         if int(override_count) > 0:
@@ -1577,20 +1692,23 @@ class CollectionBatchDialog(QDialog):
             "No representative image was calculated. Select a row and use "
             "Preview selected in graph only when you want to inspect pixels."
         )
+        self._sync_workspace()
 
     def cancel_saved_workspace_discovery(
         self,
         message: str = (
             "Batch settings changed before sample detection finished. Use "
-            "Preview batch to detect the current samples."
+            "Check batch to detect the current samples."
         ),
     ) -> None:
         """End automatic discovery after a settings change or cancellation."""
+        self._checking_plan = False
+        self._clear_check_progress()
 
         self._hide_source_detection_progress()
         self.preview_button.setEnabled(self._actions is not None)
         concise = str(message).strip() or (
-            "Batch sample detection was cancelled. Use Preview batch to try again."
+            "Batch sample detection was cancelled. Use Check batch to try again."
         )
         if self._pending_parameter_overrides:
             self.parameter_override_group.show()
@@ -1613,6 +1731,7 @@ class CollectionBatchDialog(QDialog):
         self.graph_preview_status.setText(
             "No representative image was loaded from the cancelled collection check."
         )
+        self._sync_workspace()
 
     def begin_saved_workspace_verification(self, override_count: int = 0) -> None:
         """Compatibility alias for saved-workspace discovery."""
@@ -1686,55 +1805,12 @@ class CollectionBatchDialog(QDialog):
         self._hide_source_detection_progress()
         self._preview_result = result
         self._reset_run_display()
-        self._preview_table_rows = {
-            item.batch_index: row_index for row_index, item in enumerate(result.rows)
-        }
-        self.preview_table.setRowCount(len(result))
-        for row_index, item in enumerate(result):
-            index_item = QTableWidgetItem(str(item.batch_index))
-            index_item.setData(Qt.UserRole, item.batch_index - 1)
-            self.preview_table.setItem(row_index, 0, index_item)
-            source_text = "\n".join(
-                f"{node_id}: {item.source_labels.get(node_id, path.name)}"
-                for node_id, path in item.sources.items()
-            )
-            source_item = QTableWidgetItem(f"{item.batch_id}\n{source_text}")
-            source_item.setToolTip(
-                "\n".join(
-                    f"{node_id}: {path}"
-                    + (
-                        f"\n  {item.source_labels[node_id]}"
-                        if node_id in item.source_labels
-                        else ""
-                    )
-                    for node_id, path in item.sources.items()
-                )
-            )
-            self.preview_table.setItem(row_index, 1, source_item)
-            output_paths = [Path(path) for path in item.outputs]
-            output_labels: list[str] = []
-            for path in output_paths:
-                try:
-                    output_labels.append(
-                        str(path.relative_to(result.config.output_dir))
-                    )
-                except ValueError:
-                    output_labels.append(path.name)
-            output_item = QTableWidgetItem("\n".join(output_labels))
-            output_item.setToolTip("\n".join(str(path) for path in output_paths))
-            self.preview_table.setItem(row_index, 2, output_item)
-            status_text = "\n".join(item.output_statuses)
-            self.preview_table.setItem(row_index, 3, QTableWidgetItem(status_text))
-            self.preview_table.setItem(row_index, 4, QTableWidgetItem("Not run"))
-        self.preview_table.resizeRowsToContents()
         total_items = result.total_items
         collision_count = result.collision_count
         explicit_outputs = result.explicit_outputs
-        messages = [f"Ready: {total_items} batch item(s) checked. Nothing was saved."]
-        if collision_count:
-            messages.append(
-                f"{collision_count} existing output collision(s) need attention."
-            )
+        from napari_vipp.ui.batch_output_policy import checked_output_message
+
+        messages = [checked_output_message(result)]
         if not explicit_outputs:
             messages.append(
                 "VIPP will save the final graph results because no Batch Output "
@@ -1750,10 +1826,9 @@ class CollectionBatchDialog(QDialog):
         self.preview_status.setToolTip("")
         item_word = "item" if int(total_items) == 1 else "items"
         if collision_count:
-            collision_word = "collision" if collision_count == 1 else "collisions"
             self.show_workspace_activity(
                 f"Needs attention · {total_items} batch {item_word}, "
-                f"{collision_count} output {collision_word}.",
+                f"{collision_count} output decisions.",
                 state="warning",
             )
         elif total_items:
@@ -1766,8 +1841,9 @@ class CollectionBatchDialog(QDialog):
                 "Needs attention · no matching batch items.",
                 state="warning",
             )
-        if result.rows:
-            self.select_preview_item(0)
+        self._workspace_plan_applied(result)
+        if result.items:
+            self.select_preview_item(self._current_item)
             if (
                 preview_representative
                 and self._actions is not None
@@ -1781,8 +1857,8 @@ class CollectionBatchDialog(QDialog):
                 )
             else:
                 self.graph_preview_status.setText(
-                    "Run preflight is ready. No representative was loaded into "
-                    "the graph; use Preview selected in graph later if desired."
+                    "Checks passed. No image was calculated. Use Preview selected "
+                    "to inspect an item in the main workflow graph."
                 )
         else:
             self.graph_preview_status.setText(
@@ -1828,6 +1904,7 @@ class CollectionBatchDialog(QDialog):
         self.run_result_label.clear()
         for table_row in range(self.preview_table.rowCount()):
             self._set_table_run_status(table_row, "Pending")
+        self._workspace_run_started(total)
 
     def _reset_run_display(self) -> None:
         """Clear an earlier result when a fresh batch plan becomes current."""
@@ -1857,6 +1934,7 @@ class CollectionBatchDialog(QDialog):
         index = max(int(index), 1)
         total = max(int(total), 0)
         normalized_status = str(status).strip().lower() or "running"
+        self._item_run_states[index] = normalized_status.replace("_", " ").title()
         completed = index - 1 if normalized_status == "running" else index
         completed = max(min(completed, total), 0)
         self._activity_run_total = total
@@ -1885,6 +1963,9 @@ class CollectionBatchDialog(QDialog):
             self.preview_table.scrollToItem(self.preview_table.item(table_row, 0))
         else:
             self.preview_table.clearSelection()
+        self.results_panel.update_item(index, total, batch_id, status)
+        self.run_progress_label.setText(self.results_panel.run_progress_label.text())
+        self.run_group.hide()
 
     def update_operation_progress(
         self,
@@ -1896,6 +1977,10 @@ class CollectionBatchDialog(QDialog):
         current: int,
         total: int,
         message: str = "",
+        *,
+        node_title: str = "",
+        node_current: int = 0,
+        node_total: int = 0,
     ) -> None:
         """Show nested progress for the currently executing CPU/GPU node."""
         item_index = max(int(item_index), 1)
@@ -1910,19 +1995,38 @@ class CollectionBatchDialog(QDialog):
         else:
             self.operation_progress_bar.setRange(0, 0)
             self.operation_progress_bar.setFormat("Working")
-        operation = str(operation_id).strip() or str(node_id).strip() or "operation"
-        detail = str(message).strip()
-        suffix = f" — {detail}" if detail else ""
         self.operation_progress_label.setText(
-            f"Item {item_index} of {item_total}: {batch_id}; "
-            f"{operation} ({node_id}){suffix}."
+            operation_progress_text(operation_id, message, node_title=node_title)
         )
+        self.operation_progress_label.setToolTip(
+            f"Item {item_index} of {item_total} · {batch_id}\n"
+            f"Node: {node_id} · operation: {operation_id}"
+        )
+        self.results_panel.update_operation_progress(
+            item_index,
+            item_total,
+            batch_id,
+            node_id,
+            operation_id,
+            current,
+            total,
+            message,
+            node_title=node_title,
+            node_current=node_current,
+            node_total=node_total,
+        )
+        self.run_progress_label.setText(self.results_panel.run_progress_label.text())
 
     def _request_cancel(self) -> None:
+        if getattr(self, "_run_preparing", False):
+            self.cancel_run_button.setEnabled(False)
+            self.cancelRequested.emit()
+            return
         if not self._run_in_progress or not self.cancel_run_button.isEnabled():
             return
         self.cancel_run_button.setEnabled(False)
-        self.cancel_run_button.setText("Cancelling...")
+        self.cancel_run_button.setText("Stopping…")
+        self.results_panel.set_stopping()
         self.operation_progress_label.setText(
             "Cancellation requested; waiting for the active operation's next "
             "safe checkpoint..."
@@ -1945,6 +2049,11 @@ class CollectionBatchDialog(QDialog):
         """Retain the final manifest summary and reconcile every visible row."""
         manifest_items = tuple(result.manifest.items)
         for item in manifest_items:
+            self._item_run_states[int(item.index)] = (
+                str(getattr(item.status, "value", item.status))
+                .replace("_", " ")
+                .title()
+            )
             table_row = self._preview_table_rows.get(int(item.index))
             if table_row is None:
                 continue
@@ -1956,18 +2065,20 @@ class CollectionBatchDialog(QDialog):
         total = len(manifest_items)
         self.run_group.show()
         self.run_progress_bar.setRange(0, max(total, 1))
-        self.run_progress_bar.setValue(total)
-        self.run_progress_bar.setFormat(f"{total} / {total}")
         summary = result.summary
         cancelled = bool(getattr(result, "cancelled", False))
         failed = int(summary.get("failed", 0))
         partial = int(summary.get("partial", 0))
         completed = int(summary.get("completed", 0))
+        processed = completed + partial + failed + int(summary.get("skipped", 0))
+        progress = min(processed, total) if cancelled else total
+        self.run_progress_bar.setValue(progress)
+        self.run_progress_bar.setFormat(f"{progress} / {total}")
         if cancelled:
             self.show_workspace_activity(
                 f"Cancelled · {completed} of {total} completed.",
                 state="warning",
-                current=total,
+                current=progress,
                 total=total,
             )
         elif failed or partial:
@@ -2012,7 +2123,9 @@ class CollectionBatchDialog(QDialog):
         if validation_text:
             details.append(str(validation_text))
         self.run_result_label.setText("\n".join(details))
+        self.results_panel.finish_run(result, validation_text)
         self._finish_run_interaction(defer_control_restore)
+        self._workspace_run_finished()
 
     def show_run_error(
         self,
@@ -2046,16 +2159,16 @@ class CollectionBatchDialog(QDialog):
         self.operation_progress_label.setText(
             "The active operation stopped before the batch could finish."
         )
-        for table_row in range(self.preview_table.rowCount()):
-            item = self.preview_table.item(table_row, 4)
-            if item is None:
-                continue
-            prior_status = item.text().strip().lower()
+        for index, status in tuple(self._item_run_states.items()):
+            prior_status = status.strip().lower()
             if prior_status == "running":
-                item.setText("Failed")
+                self._item_run_states[index] = "Failed"
             elif prior_status == "pending":
-                item.setText("Not run")
+                self._item_run_states[index] = "Not run"
+        self._render_items()
         self._finish_run_interaction(defer_control_restore)
+        self.results_panel.show_error(message)
+        self._workspace_run_finished()
 
     def show_preflight_error(
         self,
@@ -2064,6 +2177,7 @@ class CollectionBatchDialog(QDialog):
         technical_detail: str = "",
     ) -> None:
         """Show one deterministic setup issue without runtime-failure noise."""
+        self._preview_result = None
         concise = str(message).strip() or "The batch needs one setting changed."
         self.show_workspace_activity(
             "Needs attention · batch preflight did not pass.",
@@ -2087,6 +2201,10 @@ class CollectionBatchDialog(QDialog):
         self.preview_status.setText(concise)
         self.preview_status.setToolTip(str(technical_detail).strip())
         self.run_button.setEnabled(False)
+        self.results_panel.show_error(concise)
+        self._checking_plan = False
+        self._render_items()
+        self._sync_workspace()
 
     def show_overwrite_cancelled(self, collision_count: int) -> None:
         """Retain a reviewed collision plan after the user declines replacement."""
@@ -2121,6 +2239,7 @@ class CollectionBatchDialog(QDialog):
         self._run_in_progress = False
         self._restore_run_controls()
         self._sync_preview_item_button()
+        self._sync_workspace()
 
     def _run_controls(self) -> tuple[QWidget, ...]:
         controls: list[QWidget] = [
@@ -2140,6 +2259,11 @@ class CollectionBatchDialog(QDialog):
             self.node_execution_group,
             self.parameter_override_group,
             self.run_button,
+            self.next_button,
+            self.footer_overrides_button,
+            self.load_overrides_button,
+            self.recheck_item_button,
+            self.more_button,
         ]
         return tuple(dict.fromkeys(controls))
 
@@ -2152,10 +2276,10 @@ class CollectionBatchDialog(QDialog):
             control.setEnabled(enabled)
 
     def _set_table_run_status(self, table_row: int, status: str) -> None:
-        item = self.preview_table.item(table_row, 4)
+        item = self.preview_table.item(table_row, 5)
         if item is None:
             item = QTableWidgetItem()
-            self.preview_table.setItem(table_row, 4, item)
+            self.preview_table.setItem(table_row, 5, item)
         item.setText(str(status))
 
     def _create_demo(self) -> None:
@@ -2205,6 +2329,7 @@ class CollectionBatchDialog(QDialog):
             f"Loaded {Path(path).name}. Its saved compute settings will be "
             "used unless you change the compute toolbar."
         )
+        self._sync_workspace()
 
     def _save_config(self) -> None:
         if self._actions is None:
@@ -2236,10 +2361,12 @@ class CollectionBatchDialog(QDialog):
         self._loaded_config_path = Path(path)
         names = ", ".join(item.name for item in saved)
         self.preview_status.setText(f"Saved {names}.")
+        self._sync_workspace()
 
     def _apply_config(self, config: BatchConfig) -> None:
         self._hide_source_detection_progress()
         self._loaded_compute_request = config.compute_request
+        self._item_file_policies = config.item_file_policies
         self._pending_parameter_overrides = tuple(config.parameter_overrides)
         configured_execution = {
             override.node_id: override.mode.value
@@ -2298,6 +2425,10 @@ class CollectionBatchDialog(QDialog):
             row["title_label"].setText(f"{source.title}{suffix}")
             row["title_label"].setToolTip(
                 f"Workflow source: {source.title} ({source.node_id})"
+            )
+            row["browse_button"].setAccessibleName(f"Choose folder for {source.title}")
+            row["browse_button"].setToolTip(
+                f"Choose the source folder for {source.title}"
             )
             row["folder"].setText(str(config.resolve_path(source.input_dir)))
             row["pattern"].setText(source.pattern)

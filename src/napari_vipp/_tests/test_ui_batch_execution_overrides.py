@@ -57,6 +57,9 @@ def test_batch_node_behavior_is_dynamic_and_use_workflow_is_omitted(qtbot):
     qtbot.addWidget(dialog)
     combo = dialog._node_execution_combos["crop_stack_1"]
 
+    assert not dialog.node_behavior_card.isHidden()
+    assert dialog.node_execution_group.isHidden()
+    dialog.node_behavior_toggle.setChecked(True)
     assert not dialog.node_execution_group.isHidden()
     assert combo.itemText(0) == "Use workflow (currently Run)"
     assert "node_execution_overrides" not in dialog.values()

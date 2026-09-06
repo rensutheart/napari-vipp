@@ -1,6 +1,6 @@
 # VIPP User Guide
 
-Last reviewed: 2026-09-04
+Last reviewed: 2026-09-05
 
 This guide is written for people building visual image-processing workflows in
 VIPP. It focuses on how to use the graph, how to choose the right controls, and
@@ -1086,6 +1086,83 @@ between the durable batch runner and the generated folder convenience.
 
 ### Batch Output Basics
 
+Open `Batch workflow` in the command bar to configure and run a collection.
+The retained window has four tabs:
+
+| Tab | Use |
+| --- | --- |
+| `Setup` | Bind source folders and patterns, review pairing and image axes, and choose the destination, format, and existing-file/error policies. |
+| `Items & outputs` | Search or filter the checked plan, browse 50 items per page, inspect exact source paths and planned outputs, and optionally preview an item in the graph. |
+| `Overrides` | Edit supported per-sample numeric values, or expand the whole-batch Run/Bypass controls. |
+| `Run & results` | Review the current run plan, start processing, follow progress, and inspect recorded item/output outcomes and run artifacts. |
+
+Start with `Check batch`. It checks source revisions and metadata, pairing,
+output paths, and the representative scientific contract in a background
+worker. It does not calculate a graph representative or save batch outputs.
+The discovered file list appears in `Items & outputs` before the slower checks
+finish. Pending rows, a busy indicator on the active file, and a checked-file
+counter show progress. These are provisional source files, not a runnable plan:
+one microscope container may expand into multiple samples, so the final sample
+count is established after metadata inspection. Exact source fingerprints read
+the file contents (without calculating the workflow), which can take time for
+large images or slow storage. Superseded checks stop their fingerprint reads
+cooperatively instead of continuing to occupy the check worker.
+After checking, review the resolved samples and outputs, then continue to
+`Run & results`.
+The footer keeps the current activity and next action visible in every tab.
+
+In `Overrides`, parameter values are centered beneath headers with a bold node
+name and regular-weight parameter, unit, and workflow-value details. Blank cells
+still inherit the workflow. `Reset selected…` restores all parameters for the
+checked samples, including hidden columns and samples on other pages; `Deselect`
+only unchecks samples. The page-level `Reset all overrides…` restores every
+sample parameter and every Run/Bypass choice to the workflow settings. Each
+reset asks for confirmation, preserves the original workflow, and requires a
+fresh Check before running. The Run/Bypass section remains collapsible.
+
+`Preview selected` is a separate, optional action: it calculates the selected
+item through the graph without running or saving the full collection. It is
+also available as `Preview in graph` in an item's context menu. Check is not a
+pixel-quality assessment; use a graph preview when you need to judge the
+scientific result before processing the collection.
+
+The window requires a current checked plan before enabling Run. Changes to
+sources, destinations, overrides, or the scientific workflow invalidate that
+plan; the previous table remains labelled as needing a recheck and cannot
+authorize execution. Use `Check batch` or `Recheck all` after an edit. Run still
+performs one final validation of the complete collection and pauses for review if inputs or
+destinations unexpectedly differ from the displayed plan. Invalid overrides
+and an unfinished graph representative also prevent starting the full batch.
+
+The final validation is needed because files can change on disk after Check.
+It reads exact source-content fingerprints, not just names, sizes, or timestamps;
+large image containers can therefore take time even without decoding any pixels.
+The execution worker reuses this fresh plan instead of scanning the collection
+again, and overwrite approval changes only the output policy, without another
+source scan. Destination presence is checked at the handoff, and each item's
+exact source contents are still verified when used so later file changes cannot
+silently affect a result. Progress labels reserve two lines and align text just
+above their bars, avoiding movement when ordinary status messages wrap.
+The upper label shows `Running (node 12/32)` as graph nodes are processed for
+each sample. Its total uses the runnable graph for the batch outputs, excluding
+disconnected or inactive branches; nodes passed through in Bypass still count
+as graph steps. The counter resets for each sample and retains its final value
+while output files are saved. The lower bar continues to report progress within
+the current operation, such as tiles, iterations, or files saved.
+
+`Recheck selected` (or `Recheck this item` in the context menu) has a narrower
+scope: it verifies the selected items' recorded source revisions and whether
+their planned output files are present. It does not revalidate unselected
+pairing, fixed sources, or scientific contracts, and it does not create a
+partial runnable plan. Any discrepancy requires a full recheck. Run always
+performs its complete preflight even after a successful selected-item recheck.
+
+Source details and result-file actions can locate an exact existing file with
+`Find in File Explorer` on Windows or `Find in Finder` on macOS. On Linux the
+action is explicitly `Open containing folder`; it does not claim to select the
+file. Missing files cannot be revealed, and availability is checked again when
+the action is used. `Output folder` opens the result directory separately.
+
 For a deterministic end-to-end check, choose `Open example…` from the gear
 menu, select `Deterministic Batch & Provenance`, and click `Open batch demo...`.
 VIPP explains that the
@@ -1095,14 +1172,15 @@ workspace opens with the bundled two-source workflow and portable config
 already loaded. The interactive graph automatically calculates and displays
 the first paired 8 x 8 field, while the workspace shows a collision-aware plan
 for all three pairs. Use the persistent `Batch representative` slider, its
-Previous/Next buttons, or `Preview selected in graph` on a table row to inspect
+Previous/Next buttons, or `Preview selected` on a table row to inspect
 each paired field through every node. This changes both collection Image Source
 paths together but does not run or save the full batch. A highlighted guide
-summarizes the demonstrated features and the next step is explicit: click `Run
-demo batch` to write nine outputs and validate the scientific results and
+summarizes the demonstrated features. Review `Run & results` and click `Run 3
+items` to write nine outputs and validate the scientific results and
 provenance. The workspace retains item progress, final statuses, validation,
 and the manifest path and can be reopened with `Batch workflow`. The same
-example remains available there through `Demo...`.
+example remains available in the batch window's `⋯` menu under
+`Load demo configuration…`.
 
 The graph commits a new representative label only after its matching source
 load and calculation succeed. If batch settings or scientific graph parameters
@@ -1112,11 +1190,11 @@ the same source-axis declarations and scientific axis contract used by
 execution. When an exact `QYX` TIFF reaches a 3D operation that requires `ZYX`,
 the Batch workspace can visibly select `Stack planes are depth slices (Z stack)` and
 retry with that guarded interpretation. Other deterministic mismatches stop
-before output directories, run artifacts, or GPU setup are created. Run
-executes immediately when no reviewed plan is current, but
-refreshes and stops for review when files or destinations unexpectedly diverge
-from an already displayed plan. Completed preflight rows remain visible as
-historical evidence until the next plan or run.
+before output directories, run artifacts, or GPU setup are created. The window
+requires a checked plan before Run; execution then refreshes and stops for
+review when files or destinations unexpectedly diverge from that plan.
+Completed preflight rows remain visible as historical evidence until the next
+check replaces the plan.
 
 Loading the demo replaces the current graph, so VIPP asks for confirmation
 first; save any graph changes you want to keep. The working copy is kept in the
@@ -1166,31 +1244,55 @@ same suggestion from being reapplied to that source. Uncommon manual mappings
 remain under `Something else (advanced)...` rather than in the normal setup
 path.
 
-`Preview batch` is optional: it metadata-inspects the matched containers, plans
-their SourceItems and outputs without saving batch outputs, then calculates one
-selected item as the graph representative. `Run batch` performs the same fresh
-inventory planning plus a representative scientific-contract preflight and
-starts the full collection directly when no reviewed plan is current. Source
-discovery covers every matched supported container; the full graph calculation
-and scientific-contract preflight remain representative-only. Each later item
+`Check batch` and Run use fresh inventory planning plus a representative
+scientific-contract preflight. Source discovery covers every matched supported
+container; it does not calculate every image or scientifically validate every
+item's pixels in advance. The optional graph preview calculates only the
+selected representative. Each later item
 must still match the saved SourceItem and declaration exactly when its pixels
 are read. An unreadable item remains governed by the continuation policy, while
 a changed SourceItem inventory, invalid saved selector/metadata contract, or
 deterministic axis-contract failure blocks the run regardless of `Continue
 after item failures`.
 
+In `Overrides`, each blank cell inherits the node's authored workflow value;
+clear a value to return to inheritance. Overrides are bound to the exact
+primary SourceItem, not merely a filename or row position. The table shows 50
+samples per page and supports sample search, changed/inherited-value filters,
+parameter search, and `Show columns…` to keep relevant node/parameter columns
+visible. Selection is separate from the highlighted row: use sample checkboxes,
+`This page`, or `Select all matching` for multi-sample changes. The selection
+count includes selected samples hidden by filters.
+
+Use `Edit selected…` to choose exactly which parameters to change. Each chosen
+parameter can receive a numeric `Set value` or `Use workflow value`; parameters
+not chosen retain their existing overrides. `Apply to selected samples` commits
+the validated draft together, while `Discard edits` changes nothing. A blank
+numeric field in this bulk-edit draft is not an instruction to clear an
+override: choose `Use workflow value` explicitly. `Load overrides` in the
+items tab opens this editing surface for the selected samples; it does not
+import another file. Recheck the batch after applying changes.
+
+Only eligible public numeric parameters are currently available for per-sample
+editing. Choice-valued settings, such as a direction selector, remain shared
+workflow settings; this window does not offer a per-sample direction control.
+Unsupported parameters and values on effectively bypassed nodes cannot be
+silently applied: unsupported parameter types are not exposed, and an override
+targeting an effectively bypassed node is rejected by batch validation.
+
 The command bar places the single `Batch workflow` action after the grouped
-`New`/`Open`/`Save` commands and beside the `Preview` menu. `Save...` writes a
-versioned `vipp_batch_config.json`. Current config version 5 retains version 4's
-canonical SourceItem inventories and typed per-sample parameter overrides, then
-adds the typed whole-batch node-behavior profile. Version 3 introduced the
+`New`/`Open`/`Save` commands and beside the `Preview` menu. `Save config` writes a
+versioned `vipp_batch_config.json`. Current config version 6 adds per-item
+existing-output choices. It retains version 4's canonical SourceItem inventories
+and typed per-sample parameter overrides, and version 5's typed whole-batch
+node-behavior profile. Version 3 introduced the
 complete effective compute request and guarded source-axis declarations.
 Version 1 loads as explicit CPU because it predates accelerator execution;
 version 2 retains its saved compute request; version 3 retains its source
 declarations and acquires SourceItems when the collection resolves. Older
-versions contain no node-behavior profile and become version 5 only when
+versions before 5 contain no node-behavior profile and become version 6 only when
 reviewed and saved. Their blank declarations are shown as `Use the file's labels
-unchanged`, not the automatic policy used for a new unsaved row. `Load...`
+unchanged`, not the automatic policy used for a new unsaved row. `Open config`
 restores source bindings, output folder, default format, existing-file policy,
 continuation behavior, required workflow companion, optional runner choice, and
 reviewed per-sample values, and validates the resolved output declarations
@@ -1200,9 +1302,10 @@ are planned. A workflow-hash or SourceItem-revision mismatch is reported rather
 than silently running a different graph or collection under an old
 configuration.
 
-For every node with a reviewed Safe Node Bypass contract, **Node behavior for
-all samples** offers **Use workflow**, **Run for all samples**, and **Bypass for
-all samples**. Use workflow displays and inherits the authored state. The other
+In `Overrides`, expand `Run or bypass nodes · all samples`. For every node with
+a reviewed Safe Node Bypass contract, it offers **Use workflow**, **Run for all
+samples**, and **Bypass for all samples**. Use workflow displays and inherits
+the authored state. The other
 choices apply only to a detached effective batch workflow; they do not edit the
 open graph. Changing the profile invalidates representative pixels, and preview,
 preflight, full execution, saved config, and the generated batch runner all use
@@ -1221,7 +1324,9 @@ A loaded config's compute request remains selected while the command-bar
 compute request is unchanged from load time. Changing any command-bar compute
 setting makes the complete current request effective for the next preview,
 save, or run; VIPP does not merge half of a loaded request with half of the
-command bar.
+command bar. The window's compute summary identifies the request as inherited
+or saved batch intent; it does not assert that a GPU is available or that every
+node will use it. Actual implementation choices belong to the run record.
 Headless replay uses the saved config request unless an explicit run/CLI
 override is supplied. The manifest records both configured and effective
 requests and hashes the effective override separately.
@@ -1235,19 +1340,45 @@ Choose the existing-file policy deliberately:
 
 | Policy | Behavior |
 | --- | --- |
-| `Ask before overwrite (recommended)` | The Batch workspace lists the exact existing outputs and asks whether to replace them for this run. Cancel is the safe default. Headless runs retain the corresponding fail-closed `error` policy. |
+| `Ask before overwrite (recommended)` | When you press Run, the Batch workspace lists the exact existing outputs and asks whether to replace them for this run. Cancel is the safe default. Headless runs retain the corresponding fail-closed `error` policy. |
 | `Skip existing` | Leave the existing file unchanged and record the output as skipped. |
 | `Overwrite without asking` | Replace the existing destination without a per-run question. |
 
+When checked outputs already exist, **Items & outputs** and **Run & results**
+offer an **Existing files · batch default** choice, mirrored to Setup. It applies
+to items without an individual choice, not just checked rows. Changing only this
+policy immediately updates the checked output decisions without rereading source
+images. Other settings or source changes still require a new check, and Run
+revalidates disk contents before writing.
+
+Right-click a row in **Items & outputs** to choose **Keep existing outputs** or
+**Rerun and overwrite outputs** for that item alone. The checkbox selection does
+not change the scope of this menu. **Use batch default** removes that item's
+choice; **Reset item choices** removes all individual file decisions without
+changing parameter overrides or node behavior. The tables update immediately,
+with explicit item decisions shown in bold. These choices are saved in the batch
+configuration and retained when changing the batch default. They are bound to
+the exact checked sources, workflow, and output paths, not row numbers; changing
+those identities requires resetting unmatched choices and checking again.
+Selecting overwrite authorizes replacement when you press Run, not immediately.
+
+With Skip, the tables show **Keep existing** and distinguish existing outputs
+from outputs **to create**. Presence alone is not evidence of a successful prior
+workflow run. The Run button counts items that still need processing; if all
+outputs exist, **Keep existing files** records the skips without calculating
+images. Items with both existing and missing outputs keep the former and create
+the latter.
+
 An explicit overwrite choice on a `Batch Output` node takes precedence over
-the batch default. Duplicate destinations, source overlaps, and explicitly
-protected outputs remain hard errors and are never offered as safe overwrite
-choices. `Preview batch` uses the same deterministic pairing and
+the batch default. An individual **Keep existing outputs** choice can still
+preserve a file that its output node would normally overwrite. Individual
+overwrite cannot override a node's explicit protection. Duplicate destinations,
+source overlaps, and explicitly protected outputs remain hard errors and are never offered as safe overwrite
+choices. `Check batch` uses the same deterministic pairing and
 output-planning rules as execution and shows existing-path collisions before
-expensive processing starts. `Run` performs planning and its representative
-scientific preflight itself, so Preview is not a prerequisite. If a displayed
-plan exists, Run detects unexpected changes since it was reviewed before
-processing starts.
+expensive processing starts. Run repeats planning and its representative
+scientific preflight against the checked plan before processing starts.
+Calculating a graph preview is not a prerequisite.
 
 A dialog-started run writes `vipp_batch_config.json` beside the outputs; a
 headless replay uses its existing config and workflow paths. Every execution
@@ -1274,12 +1405,68 @@ discarding successful outputs from the same or earlier items, and later items
 continue to run by default. The final summary separates completed, partial,
 skipped, cancelled, and failed items.
 
-During a run the workspace shows two progress bars. Overall progress advances
-across collection items; current-operation progress names the active item,
-node/operation, and truthful checkpoint. Iterative and tiled operations update
+After clicking Run, `Run & results` first shows **Preparing run**. Source revision
+checks and workflow preparation run in the background, with file counts,
+file-reading progress where available, and the current preparation stage. No
+items are counted as started until processing actually begins. Large image files
+can take time to verify because VIPP checks their contents, not just filenames.
+Use `Cancel preparation` to stop the initial read-only checks. Once the run worker
+takes over, `Stop safely` requests cancellation at its next safe checkpoint.
+
+During a run, `Run & results` shows overall and current-operation progress. Both
+progress labels reserve two lines so ordinary wrapping does not move the bars;
+longer messages can expand instead of being clipped.
+Overall progress advances
+across collection items and identifies the current sample. The second bar uses
+the node's formatted display name and its current checkpoint, without repeating
+the sample name. Technical node and operation IDs remain in its tooltip.
+Iterative and tiled operations update
 between synchronized checkpoints. A monolithic library call or file writer may
 finish its current call before either progress or cancellation can advance.
-VIPP does not invent percentages inside work the library cannot expose.
+VIPP does not invent percentages inside work the library cannot expose. Elapsed
+time is measured, with final item/run timestamps used when the run report
+provides them; unavailable timing is shown as unavailable, not as a guessed
+duration. Inspect a result item for each output's recorded status and actual
+file presence. `Refresh file status` refreshes presence only; it neither reruns an
+item nor changes its recorded scientific outcome. When a run finishes or stops,
+`Run & results` shows a readable run report: item outcomes, outputs saved or kept,
+elapsed time, destination, and any issues. Failed items and failed output files
+are counted separately. Failure reasons appear directly in the report; expand
+`Show all details` for longer reports, or select an item to see its output errors.
+The footer's `View run report` action returns to this summary without checking or
+processing anything. To prepare a new run, return to `Setup`, review your settings,
+then explicitly choose `Check batch`. Opening Setup alone does not start a check.
+A successful check replaces the on-screen report, while its saved technical
+record remains on disk. `Find manifest JSON`
+locates that run's archived machine-readable record of inputs, settings and
+results for reproducibility and troubleshooting. The on-screen summary remains
+readable even if that JSON file is no longer available.
+
+Use `Stop safely` to request cooperative cancellation, then wait for the active
+operation to reach a safe checkpoint and release its resources. Already saved
+outputs are retained, and final statuses distinguish cancellation, partial
+success, failure, and skipped files. Hiding the window during a run does not
+stop it; reopen it with `Batch workflow` to review progress.
+Cancellation during source checks or host-side bookkeeping retains the known
+cleanup state; stopping alone does not require a restart. An actual cleanup
+failure, or device cleanup that cannot be verified, still requires a restart.
+
+Per-item retry and resume-from-checkpoint controls are not currently available.
+After resolving an error or stopping a run, check the full batch again and
+review its existing-file policy before starting another full run. `Skip
+existing` preserves existing files but does not mean resume, and `Overwrite
+without asking` can recalculate and replace them. The overwrite-approval policy
+still asks before eligible replacements. A fresh check replaces the previous
+run view; saved manifests and their archives remain the durable evidence for
+earlier runs.
+
+When the run plan is out of date, use `Check batch again` inside the warning
+banner in `Items & outputs` or `Run & results`. This checks inputs, overrides,
+and destinations and opens the updated `Items & outputs` list without calculating
+images or saving outputs. `Refresh file status` only updates whether the recorded files exist;
+it does not validate the batch for another run.
+After per-sample or Run/Bypass overrides change, checking remains available;
+recalculating a representative image with `Preview selected` is optional.
 
 If a retryable GPU out-of-memory failure occurs under `visible` fallback, VIPP
 cleans the complete device segment and retries it once on CPU. `strict` records

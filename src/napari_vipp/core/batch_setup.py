@@ -15,6 +15,7 @@ from napari_vipp.core.batch import (
     BATCH_WORKFLOW_FILENAME,
     DEFAULT_BATCH_SOURCE_PATTERN,
     BatchConfig,
+    BatchItemFilePolicy,
     BatchOutputConfig,
     BatchSourceConfig,
     ExistingFilePolicy,
@@ -44,6 +45,7 @@ def build_collection_batch_config(
     compute_request: ComputeRequest | None = None,
     parameter_overrides: Sequence[BatchSourceParameterOverrides] | None = None,
     node_execution_overrides: Sequence[BatchNodeExecutionOverride] | None = None,
+    item_file_policies: Sequence[BatchItemFilePolicy] | None = None,
 ) -> BatchConfig:
     """Translate one workflow and collection form into a validated config."""
     output_text = str(output_dir).strip()
@@ -91,6 +93,7 @@ def build_collection_batch_config(
         compute_request=effective_compute_request,
         parameter_overrides=tuple(parameter_overrides or ()),
         node_execution_overrides=tuple(node_execution_overrides or ()),
+        item_file_policies=tuple(item_file_policies or ()),
     )
     validate_batch_config(
         workflow,

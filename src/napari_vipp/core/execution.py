@@ -1090,6 +1090,9 @@ def execute_pipeline_request(
     observer_seconds = 0.0
     pipeline: PrototypePipeline | None = None
     execution_report: ExecutionReport | None = None
+    # Host preparation does not own a device transaction. Once entered, only
+    # explicit execution/cleanup evidence can establish whether reuse is safe.
+    known_cleanup: bool | None = True
     timing_store: JsonPipelineTimingStore | None = None
     timing_workload_fingerprint = ""
     timing_host_environment_fingerprint = ""
@@ -1480,6 +1483,7 @@ def execute_pipeline_request(
                 actual_decisions=actual_decisions,
             )
         else:
+            known_cleanup = None
             (
                 execution_report,
                 device_execution_telemetry,
@@ -1510,6 +1514,7 @@ def execute_pipeline_request(
                 resident_thumbnail_statistics=resident_thumbnail_statistics,
                 resident_observer_seconds=resident_thumbnail_observer_seconds,
             )
+            known_cleanup = execution_report.cleanup_succeeded
             observer_seconds += resident_thumbnail_observer_seconds[0]
         for shadow_node_id in pipeline.topological_order():
             if shadow_node_id in request.presentation_shadow_node_ids:
@@ -1519,6 +1524,7 @@ def execute_pipeline_request(
             exc,
             cancelled=True,
             cpu_only=request.compute_request.mode is ComputeMode.CPU,
+            known_cleanup=known_cleanup,
         )
         if raise_errors:
             _attach_pipeline_execution_failure(exc, failure)
@@ -1538,7 +1544,10 @@ def execute_pipeline_request(
             ),
         )
     except Exception as exc:
-        failure = _pipeline_execution_failure(exc)
+        failure = _pipeline_execution_failure(
+            exc,
+            known_cleanup=known_cleanup,
+        )
         if raise_errors:
             _attach_pipeline_execution_failure(exc, failure)
             raise
@@ -1815,6 +1824,7 @@ def _pipeline_execution_failure(
     *,
     cancelled: bool = False,
     cpu_only: bool = False,
+    known_cleanup: bool | None = None,
 ) -> PipelineExecutionFailure:
     """Detach stable terminal facts without importing an optional provider."""
 
@@ -1823,6 +1833,12 @@ def _pipeline_execution_failure(
     cleanup = getattr(exc, "cleanup_succeeded", None)
     if cleanup is not None:
         cleanup = bool(cleanup)
+    # Host preparation has not entered an accelerator transaction. Likewise,
+    # post-execution host work may reuse the returned transaction's cleanup
+    # proof. Never infer success solely from a missing report or cancel flag,
+    # and never replace explicit failed cleanup with successful evidence.
+    if known_cleanup is False or cleanup is None:
+        cleanup = known_cleanup
     fallback_records = tuple(
         getattr(exc, "fallback_records", ())
         or getattr(exc, "vipp_fallback_records", ())
@@ -1994,6 +2010,7 @@ def _execute_accelerated_pipeline(
     registry = compute_registry
     closed_cleanly = True
     active_error: BaseException | None = None
+    known_cleanup: bool | None = True
     history_warnings: list[str] = []
     try:
         with _observed_pipeline_preparation_phase(
@@ -2471,6 +2488,7 @@ def _execute_accelerated_pipeline(
             completed=True,
         )
         try:
+            known_cleanup = None
             device_result = execute_device_plan(
                 device_plan,
                 pipeline,
@@ -2485,6 +2503,7 @@ def _execute_accelerated_pipeline(
                 ),
                 telemetry=request.device_execution_telemetry,
             )
+            known_cleanup = device_result.cleanup_succeeded
         except BaseException:
             if resident_cleanup_failure_message is not None:
                 raise ResidentThumbnailStatisticsCleanupError(
@@ -2603,6 +2622,16 @@ def _execute_accelerated_pipeline(
         )
     except BaseException as exc:
         active_error = exc
+        if known_cleanup is False or (
+            known_cleanup is True and getattr(exc, "cleanup_succeeded", None) is None
+        ):
+            # Propagate proof for cancellation during host-side fact scanning
+            # or finalization. The finally block below still wraps any owned
+            # registry close failure as AcceleratorCleanupError (False).
+            try:
+                exc.cleanup_succeeded = known_cleanup
+            except (AttributeError, TypeError):
+                pass
         _finish_pipeline_preparation_telemetry(
             preparation_telemetry,
             completed=False,

@@ -38,7 +38,7 @@ def test_batch_navigator_starts_hidden_and_presents_a_session(qtbot):
     assert navigator.item_count == 3
     assert navigator.current_index == 1
     assert navigator.item_label.text() == "Item 2 of 3"
-    assert navigator.batch_id_label.text() == "Batch ID: 0002_field_b"
+    assert navigator.batch_id_label.text() == "<b>Sample</b>&nbsp;&nbsp; 0002_field_b"
     assert "Primary signal: 02_field_b.npy" in navigator.sources_label.text()
     assert "Reference: beta_reference.npy" in navigator.sources_label.text()
     assert "per-sample overrides" in navigator.representative_label.text()
@@ -296,3 +296,17 @@ def test_batch_navigator_stacks_long_details_in_a_narrow_dock(qtbot):
     assert navigator.batch_id_label.width() > 0
     assert navigator.sources_label.width() > 0
     assert "extremely_long" in navigator.batch_id_label.toolTip()
+def test_inspect_action_and_compact_single_source_summary(qtbot):
+    navigator = BatchNavigator()
+    qtbot.addWidget(navigator)
+    navigator.set_session(3, 1, "sample_b", {"Image source": "sample_b.czi"})
+    assert navigator.sources_label.isHidden()
+    assert "sample_b.czi" in navigator.batch_id_label.toolTip()
+    assert navigator.representative_label.isHidden()
+    with qtbot.waitSignal(navigator.inspectRequested) as signal:
+        navigator.inspect_button.click()
+    assert signal.args == [1]
+    navigator.set_session_stale(True)
+    assert not navigator.representative_label.isHidden()
+    navigator.set_session_stale(False)
+    assert navigator.representative_label.isHidden()

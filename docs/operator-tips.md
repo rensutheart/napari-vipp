@@ -1,6 +1,6 @@
 # VIPP Operator Tips and Performance
 
-Last reviewed: 2026-09-04
+Last reviewed: 2026-09-05
 
 This guide is for day-to-day operation of larger or more complex workflows.
 It focuses on responsiveness, stability, and practical tuning.
@@ -108,6 +108,99 @@ all finite pixels in that scope; VIPP does not introduce hidden sampling.
 - Prefer a stable input layer during intensive tuning to keep cache reuse high.
 - Use pinned outputs for side-by-side checks without reconfiguring the graph.
 - Save workflow snapshots before major parameter sweeps.
+
+## Working Through A Batch
+
+Use the four `Batch workflow` tabs in order: `Setup` for sources and destination,
+`Items & outputs` for checking the exact pairing and planned files, `Overrides`
+for supported per-sample values, and `Run & results` for execution and evidence.
+The footer keeps the current activity and next action visible while changing
+tabs; source and destination controls reflow vertically in a narrower window.
+
+- Start with `Check batch`. Source revision, metadata, pairing, and output
+  planning run in the background without calculating a graph representative or
+  writing batch outputs. `Preview selected` is optional and calculates one
+  item through the live graph; it does not run the full collection.
+- The first Check stage only lists files; the list appears before metadata and
+  exact-content fingerprint checks finish. Follow the active-row indicator and
+  checked-file count. Fingerprinting reads all source bytes, so large CZI/TIFF
+  files can take much longer than directory listing. File counts are not sample
+  counts when a container has multiple images; wait for the checked plan before
+  previewing, loading overrides, or running.
+- Keep the distinction between an old table and a current checked plan. Source,
+  destination, workflow, or override edits require `Check batch`/`Recheck all`
+  before Run is available. Run then verifies the entire batch again and stops
+  for review if inputs or destinations changed unexpectedly.
+- `Recheck selected` only verifies the chosen source revisions and output-file
+  presence. It does not recheck the other items or replace full scientific
+  preflight. A failed selected check requires a full recheck.
+- Both the item browser and override table use 50-row pages. Search and filter
+  first; in `Overrides`, choose relevant parameters with `Show columns…` and
+  use sample checkboxes, `This page`, or `Select all matching` for multi-sample
+  selection. Check the selected count: samples hidden by a filter may still be
+  selected.
+- Blank override cells inherit the workflow value. In `Edit selected…`, choose
+  only the parameters to change, then use `Set value` or `Use workflow value`.
+  `Apply to selected samples` commits the validated draft; `Discard edits`
+  leaves existing values untouched. Unchosen parameters are preserved.
+- `Reset selected…` restores every parameter for the checked samples, including
+  hidden columns and selections on other pages. `Deselect` only unchecks samples.
+  `Reset all overrides…` at the top restores all sample parameters and all
+  Run/Bypass choices. Both resets ask for confirmation; neither changes the
+  original workflow. Check the batch again after resetting values.
+
+The per-sample editor currently supports eligible public numeric parameters
+only. Choice settings such as a direction selector must be changed in the
+shared workflow; they are not available as per-sample controls. `Load overrides`
+opens the selected samples in this editor, not a file import. Recheck after
+editing, and use an optional representative to judge the result before a large
+run.
+
+The compute summary describes the inherited or saved request, not actual GPU
+use. Check run evidence for the implementations that really executed. Progress
+reports real item and operation checkpoints; a long library call can remain
+indeterminate. Elapsed time comes from captured timing or reported timestamps,
+and unavailable timings are not filled with estimates.
+
+Use `Stop safely` and wait for cleanup before starting new work. Saved outputs
+are retained, and the final result distinguishes failed, partial, cancelled,
+skipped, and completed items. Hiding the window does not stop an active batch.
+There is no automatic resume control: resolve the cause, recheck the full batch,
+and deliberately retain or change the existing-file policy before a new run.
+`Skip existing` is file preservation, not a
+guarantee that an earlier item's unfinished work resumes. Overwrite and
+overwrite-approval rules still apply.
+
+After checking, use **Existing files · batch default** directly in Items &
+outputs or Run & results to choose the default Skip or Overwrite policy. Right-click
+an individual row in Items & outputs to **Keep existing outputs** or **Rerun and
+overwrite outputs** for that item only, independent of the checkbox selection.
+**Use batch default** resets one item; **Reset item choices** resets all file
+choices, not parameter or node overrides. Individual choices survive save/load
+and batch-default changes, and are bound to exact samples and destination paths.
+A policy-only
+change retains the source checks; it does not need another manual recheck. Ask
+before overwrite prompts when you press Run. **Keep existing** means preservation,
+not proof that an earlier workflow completed; the Run count excludes items whose
+outputs are all being kept. Run still revalidates current disk contents.
+
+Run performs one final collection validation to catch disk changes since Check;
+the worker reuses that plan, including individual keep/overwrite decisions.
+This validation hashes full source contents, which can take time for large
+containers. Per-item verification and guarded output publication remain active
+during execution; reusing the plan is not permission to use changed inputs.
+
+Use a source or output's `Find in File Explorer`/`Find in Finder` action to
+locate that exact existing file. Linux explicitly opens its containing folder
+instead. Missing files cannot be revealed. In `Run & results`, `Refresh file status`
+updates presence without rerunning analysis, `Output folder` opens the
+directory. The readable run summary appears directly on the page; the footer's
+`View run report` returns to it after browsing. To prepare another run, return to
+`Setup` and explicitly choose `Check batch` after reviewing settings. The summary
+separates saved, kept, failed and cancelled outputs, and shows failure reasons.
+Expand `Show all details` to read longer reasons without opening a JSON file.
+`Find manifest JSON` locates the archived technical record. Keep that record when
+comparing runs: a successful fresh check replaces the previous run view.
 
 ## Deconvolution Tuning Order
 

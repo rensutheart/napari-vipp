@@ -41,6 +41,7 @@ class ThemeColors:
     muted_text: QColor
     info: SemanticToneColors
     active_mode: SemanticToneColors
+    bypass: SemanticToneColors
     success: SemanticToneColors
     warning: SemanticToneColors
     error: SemanticToneColors
@@ -135,6 +136,13 @@ def theme_colors(palette: QPalette) -> ThemeColors:
             accent="#8b5cf6",
             dark_foreground="#ede9fe",
             light_foreground="#4c1d95",
+        ),
+        # Cyan is also used by bypass outlines and badges on the workflow canvas.
+        bypass=_semantic_tone(
+            palette,
+            accent="#06b6d4",
+            dark_foreground="#cffafe",
+            light_foreground="#155e75",
         ),
         success=_semantic_tone(
             palette,

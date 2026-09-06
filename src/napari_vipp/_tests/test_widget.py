@@ -26239,10 +26239,10 @@ def test_batch_setting_edit_cancels_zero_override_sample_detection(
     started = threading.Event()
     release = threading.Event()
 
-    def delayed_execute(prepared):
+    def delayed_execute(prepared, **kwargs):
         started.set()
         release.wait(timeout=5)
-        return original_execute(prepared)
+        return original_execute(prepared, **kwargs)
 
     monkeypatch.setattr(
         batch_workers,
@@ -26262,8 +26262,13 @@ def test_batch_setting_edit_cancels_zero_override_sample_detection(
 
         assert not restored._batch_workspace_preview_contexts
         assert restored_dialog.source_detection_progress.isHidden()
-        assert restored_dialog.preview_button.isEnabled()
-        assert restored_dialog.run_button.isEnabled()
+        # The empty Items tab is disabled. Retry through Setup's Check action,
+        # not the old Preview button (now Recheck all inside that disabled tab).
+        assert restored_dialog.next_button.isEnabled()
+        assert restored_dialog.next_button.text() == "Check batch"
+        assert not restored_dialog._checking_plan
+        # Settings changed: Run needs a new checked plan.
+        assert not restored_dialog.run_button.isEnabled()
         assert "not checked" in restored_dialog.batch_activity_status.text().lower()
         assert "settings changed" in restored_dialog.preview_status.text().lower()
     finally:
@@ -26349,7 +26354,8 @@ def test_workflow_load_rebinds_saved_overrides_to_unchanged_sources(
         ),
         timeout=10_000,
     )
-    qtbot.mouseClick(restored_dialog.run_button, Qt.LeftButton)
+    restored_dialog._request_run()
+    qtbot.waitUntil(lambda: bool(starts), timeout=10_000)
     assert len(starts) == 1
     assert starts[0][0] is restored_dialog
     assert starts[0][1]["expected_items"] == restored_dialog._preview_result.items
@@ -27382,6 +27388,7 @@ def test_partial_representative_failure_keeps_failed_item_selected(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
     failed_primary = np.load(demo.root / "inputs" / "primary" / "02_two_objects.npy")
     calls = 0
 
@@ -27390,18 +27397,30 @@ def test_partial_representative_failure_keeps_failed_item_selected(
         calls += 1
         widget.pipeline.outputs["input"] = failed_primary
         widget.pipeline.outputs["batch_output_1"] = None
-        raise RuntimeError("downstream representative failure")
+        widget._show_interactive_collection_batch_preview_error(
+            1, "downstream representative failure", graph_may_be_partial=True,
+        )
 
-    monkeypatch.setattr(widget.pipeline, "run", fail_after_source)
+    # Simulate a partial failure at the dispatcher boundary; execution may use
+    # a detached pipeline, so patching the live pipeline.run misses that path.
+    monkeypatch.setattr(widget, "run_pipeline", fail_after_source)
 
     assert widget._preview_interactive_collection_batch_item(1, force_sync=True)
+
+    qtbot.waitUntil(
+        lambda: widget._interactive_collection_batch_requested_index == -1,
+        timeout=5_000,
+    )
 
     assert widget._interactive_collection_batch_index == 1
     assert widget._interactive_collection_batch_failed_index == 1
     assert widget.batch_navigator.current_index == 1
     assert "02_two_objects.npy" in widget.batch_navigator.sources_label.text()
     assert "preview failed" in widget.batch_navigator.representative_label.text()
-    assert not dialog.run_button.isEnabled()
+    # The failed optional preview stays visible, but is no longer active work.
+    # A separately checked batch can run through its detached execution path.
+    assert not dialog._representative_pending
+    assert dialog.run_button.isEnabled()
     np.testing.assert_array_equal(widget.pipeline.outputs["input"], failed_primary)
     assert widget.pipeline.outputs["batch_output_1"] is None
 
@@ -27416,17 +27435,27 @@ def test_run_stops_when_reviewed_source_changes_in_place(qtbot, tmp_path):
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    qtbot.waitUntil(
+        lambda: dialog._preview_result is not None and dialog.run_button.isEnabled(),
+        timeout=5_000,
+    )
     reviewed = np.array(widget.pipeline.outputs["input"], copy=True)
     source_path = demo.root / "inputs" / "primary" / "01_shifted.npy"
     np.save(source_path, np.full(reviewed.shape, 65535, dtype=np.uint16))
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isEnabled(), (
+        dialog._representative_pending, dialog._checking_plan,
+        dialog.preview_status.text(), widget.status_label.text(),
+    )
+    dialog._request_run()
+    qtbot.waitUntil(lambda: dialog._preview_result is None, timeout=10_000)
 
     assert dialog._preview_result is None
     assert "Press Refresh" in dialog.preview_status.text()
     assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
     np.testing.assert_array_equal(widget.pipeline.outputs["input"], reviewed)
-    assert "pinned earlier revision" in (
+    assert "A reviewed source changed" in (
         widget.batch_navigator.representative_label.text()
     )
 
@@ -27454,11 +27483,13 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
     assert "Loaded" in dialog.preview_status.text()
     plan_calls = []
     expected_plans = []
-    original_preview = widget._collection_batch_controller.preview
+    from napari_vipp.ui import batch_workers
+
+    original_preview = batch_workers.execute_prepared_collection_batch_preview
     original_prepare = widget._prepare_collection_batch_run
 
-    def tracked_preview(**kwargs):
-        result = original_preview(**kwargs)
+    def tracked_preview(prepared, **kwargs):
+        result = original_preview(prepared, **kwargs)
         plan_calls.append(result)
         return result
 
@@ -27467,8 +27498,8 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
         return original_prepare(**kwargs)
 
     monkeypatch.setattr(
-        widget._collection_batch_controller,
-        "preview",
+        batch_workers,
+        "execute_prepared_collection_batch_preview",
         tracked_preview,
     )
     monkeypatch.setattr(
@@ -27489,8 +27520,11 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
         ),
     )
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+    dialog._request_run()
+    qtbot.waitUntil(
+        lambda: not dialog._run_preparing and not widget._collection_batch_running,
+        timeout=10_000,
+    )
 
     assert len(plan_calls) == 1
     assert expected_plans == [plan_calls[0].items]
@@ -27558,15 +27592,15 @@ def test_direct_run_applies_qyx_z_stack_suggestion_and_retries_once(
     )
     preview_calls: list[dict[str, object]] = []
 
-    def suggested_preview(**values):
-        preview_calls.append(values)
+    def suggested_preview(prepared, **_kwargs):
+        preview_calls.append(prepared.config)
         binding = next(
-            item for item in values["source_bindings"] if item["node_id"] == source_id
+            item for item in prepared.config.sources if item.node_id == source_id
         )
         if len(preview_calls) == 1:
-            assert binding["axis_declaration"] == ""
+            assert binding.axis_declaration is None
             raise error
-        assert binding["axis_declaration"] == "QYX -> ZYX"
+        assert binding.axis_declaration == declaration
         return successful_preview
 
     started: list[tuple[CollectionBatchDialog, dict[str, object]]] = []
@@ -27575,8 +27609,7 @@ def test_direct_run_applies_qyx_z_stack_suggestion_and_retries_once(
         started.append((active_dialog, values))
 
     monkeypatch.setattr(
-        widget._collection_batch_controller,
-        "preview",
+        "napari_vipp.ui.batch_workers.execute_prepared_collection_batch_preview",
         suggested_preview,
     )
     monkeypatch.setattr(widget, "_start_collection_batch_worker", record_start)
@@ -27609,8 +27642,9 @@ def test_direct_run_applies_qyx_z_stack_suggestion_and_retries_once(
         lambda: pytest.fail("Direct Run must not invoke Preview batch."),
     )
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
 
+    qtbot.waitUntil(lambda: bool(started), timeout=10_000)
     assert suggestion_applications == [(("automatic", False, ""), True)]
     assert len(preview_calls) == 2
     control = next(
@@ -27678,8 +27712,25 @@ def test_batch_worker_nested_progress_and_safe_cancel_reach_retained_dialog(
 
     monkeypatch.setattr(batch_workers, "run_batch", wait_for_cancel)
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(started.is_set, timeout=5_000)
+    qtbot.waitUntil(
+        lambda: not dialog._checking_plan
+        and widget._active_source_load_id is None
+        and widget._active_pipeline_run_id is None
+        and not widget._source_load_pending
+        and not widget._pipeline_run_pending
+        and not widget._debounce_timer.isActive(),
+        timeout=10_000,
+    )
+    dialog._request_run()
+    qtbot.waitUntil(
+        lambda: started.is_set() or (
+            not dialog._run_preparing and not widget._collection_batch_running
+        ), timeout=5_000,
+    )
+    assert started.is_set(), (
+        dialog.preview_status.text(), dialog.batch_activity_status.text(),
+        widget.status_label.text(),
+    )
     qtbot.waitUntil(
         lambda: "GPU tile 2 of 5" in dialog.operation_progress_label.text(),
         timeout=5_000,
@@ -28257,7 +28308,7 @@ def test_error_policy_collision_cancel_preserves_existing_output(
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
     qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
-    collision_path = Path(dialog.preview_table.item(0, 2).toolTip().splitlines()[0])
+    collision_path = dialog._preview_result.items[0].outputs[0].path
     collision_path.parent.mkdir(parents=True, exist_ok=True)
     collision_path.write_bytes(b"collision")
     prompts: list[tuple[tuple[Path, ...], Path]] = []
@@ -28272,9 +28323,11 @@ def test_error_policy_collision_cancel_preserves_existing_output(
     # The first click safely refreshes a newly changed destination plan. The
     # second asks about the now-reviewed collision instead of reporting a run
     # failure.
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
+    qtbot.waitUntil(lambda: not dialog._run_preparing, timeout=5_000)
     assert prompts == []
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
+    qtbot.waitUntil(lambda: bool(prompts), timeout=5_000)
 
     assert len(prompts) == 1
     assert collision_path.resolve() in {path.resolve() for path in prompts[0][0]}
@@ -28289,10 +28342,12 @@ def test_error_policy_collision_cancel_preserves_existing_output(
     assert dialog.values()["existing_file_policy"] == ExistingFilePolicy.ERROR.value
 
 
+@pytest.mark.parametrize("keep_other_item", [False, True])
 def test_error_policy_collision_confirmation_overwrites_for_one_run(
     qtbot,
     tmp_path,
     monkeypatch,
+    keep_other_item,
 ):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
@@ -28301,9 +28356,14 @@ def test_error_policy_collision_confirmation_overwrites_for_one_run(
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
     qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
-    collision_path = Path(dialog.preview_table.item(0, 2).toolTip().splitlines()[0])
+    collision_path = dialog._preview_result.items[0].outputs[0].path
     collision_path.parent.mkdir(parents=True, exist_ok=True)
     collision_path.write_bytes(b"collision")
+    kept_path = None
+    if keep_other_item:
+        kept_path = dialog._preview_result.items[1].outputs[0].path
+        kept_path.write_bytes(b"item choice must be retained")
+        dialog._set_item_file_policy(1, "skip")
     prompts: list[tuple[tuple[Path, ...], Path]] = []
     monkeypatch.setattr(
         widget,
@@ -28313,9 +28373,10 @@ def test_error_policy_collision_confirmation_overwrites_for_one_run(
         ),
     )
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
+    qtbot.waitUntil(lambda: not dialog._run_preparing, timeout=5_000)
     assert prompts == []
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
     manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
     qtbot.waitUntil(
         lambda: not widget._collection_batch_running and manifest_path.is_file(),
@@ -28325,6 +28386,9 @@ def test_error_policy_collision_confirmation_overwrites_for_one_run(
     assert len(prompts) == 1
     assert collision_path.resolve() in {path.resolve() for path in prompts[0][0]}
     assert collision_path.read_bytes() != b"collision"
+    if kept_path is not None:
+        assert kept_path.read_bytes() == b"item choice must be retained"
+        assert kept_path.resolve() not in {path.resolve() for path in prompts[0][0]}
     assert dialog.values()["existing_file_policy"] == ExistingFilePolicy.ERROR.value
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert (

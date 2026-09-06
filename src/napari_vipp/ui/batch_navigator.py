@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from html import escape
 
 from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtWidgets import (
@@ -19,6 +20,7 @@ from qtpy.QtWidgets import (
 
 from napari_vipp.ui.palette_roles import custom_paint_colors, palette_is_dark
 from napari_vipp.ui.sliders import VippSlider
+from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
 
 
 class _WrappingLabel(QLabel):
@@ -52,6 +54,7 @@ class BatchNavigator(QFrame):
     """
 
     itemSelected = Signal(int)
+    inspectRequested = Signal(int)
 
     REPRESENTATIVE_MESSAGE = (
         "This selected item is calculated for preview with its effective "
@@ -75,7 +78,15 @@ class BatchNavigator(QFrame):
         self._navigation_enabled = True
         self._compact_layout: bool | None = None
 
-        self.title_label = QLabel("Batch representative")
+        self.title_label = QLabel("Batch sample preview")
+        self.inspect_button = ToolbarCommandButton("Inspect in batch")
+        self.inspect_button.setToolTip(
+            "Open this sample in Items & outputs to inspect its files "
+            "or load overrides."
+        )
+        self.inspect_button.clicked.connect(
+            lambda: self.inspectRequested.emit(self._current_index)
+        )
         self.title_label.setStyleSheet("font-weight: 650;")
         self.title_label.setMinimumWidth(0)
         self.title_label.setSizePolicy(
@@ -117,6 +128,7 @@ class BatchNavigator(QFrame):
         )
 
         self.representative_label = _WrappingLabel(self.REPRESENTATIVE_MESSAGE)
+        self.representative_label.hide()
         self.representative_label.setToolTip(
             "Changing the representative recalculates that item through the "
             "graph using inherited workflow values plus any per-sample "
@@ -137,6 +149,7 @@ class BatchNavigator(QFrame):
 
         self._header_layout = QGridLayout()
         self._header_layout.setContentsMargins(0, 0, 0, 0)
+        self._header_layout.addWidget(self.inspect_button, 0, 2)
 
         navigation_layout = QHBoxLayout()
         navigation_layout.setContentsMargins(0, 0, 0, 0)
@@ -179,6 +192,8 @@ class BatchNavigator(QFrame):
         colors = custom_paint_colors(self.palette())
         info = "#bfdbfe" if palette_is_dark(self.palette()) else "#1d4ed8"
         self.title_label.setStyleSheet("font-weight: 650;")
+        self.inspect_button.setIcon(toolbar_icon("batch", self.palette()))
+        self.inspect_button.setIconSize(QSize(18, 18))
         self.effective_overrides_label.setStyleSheet(f"color: {info};")
         self.representative_label.setStyleSheet(
             f"color: {colors.muted_text.name()};"
@@ -220,11 +235,16 @@ class BatchNavigator(QFrame):
             self.slider.setRange(0, item_count - 1)
             self.slider.setValue(current_index)
         batch_id_text = f"Batch ID: {batch_id or '-'}"
-        self.batch_id_label.setText(self._soft_wrap_long_tokens(batch_id_text))
+        self.batch_id_label.setText(
+            "<b>Sample</b>&nbsp;&nbsp; "
+            + escape(self._soft_wrap_long_tokens(batch_id or "-"))
+        )
         self.batch_id_label.setToolTip(batch_id_text)
         source_text = self._source_filename_text(source_filenames)
         self.sources_label.setText(self._soft_wrap_long_tokens(source_text))
         self.sources_label.setToolTip(source_text)
+        self.sources_label.setVisible(len(source_filenames) > 1)
+        self.batch_id_label.setToolTip(f"{batch_id_text}\n{source_text}")
         self.set_effective_overrides_summary(effective_overrides_summary)
         self._sync_navigation_controls()
         self.show()
@@ -294,11 +314,13 @@ class BatchNavigator(QFrame):
             if stale
             else self.REPRESENTATIVE_MESSAGE
         )
+        self.representative_label.setVisible(stale)
         self._sync_navigation_controls()
 
     def show_representative_loading(self, message: str = "") -> None:
         """Describe an item request that has not finished calculating yet."""
         detail = str(message).strip()
+        self.representative_label.show()
         self.representative_label.setText(
             detail
             or "Loading and calculating this representative through the graph..."
@@ -306,6 +328,7 @@ class BatchNavigator(QFrame):
 
     def show_representative_error(self, message: str) -> None:
         """Retain the session while making a representative failure explicit."""
+        self.representative_label.show()
         self.representative_label.setText(
             f"Representative preview failed: {str(message).strip()}"
         )
@@ -396,6 +419,7 @@ class BatchNavigator(QFrame):
 
     def _sync_navigation_controls(self) -> None:
         has_session = self._item_count > 0
+        self.inspect_button.setEnabled(has_session and self._navigation_enabled)
         self.item_label.setText(
             f"Item {self._current_index + 1} of {self._item_count}"
             if has_session
