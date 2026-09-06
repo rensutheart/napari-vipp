@@ -52,6 +52,18 @@ class BatchProgressLabel(QLabel):
         self._height_probe.setTextFormat(Qt.PlainText)
         self._reserve_lines()
 
+    def setText(self, text):  # noqa: N802
+        super().setText(text)
+        # A parent widget is itself a cached layout item. Invalidate its
+        # height-for-width hint too when a status grows or shrinks; invalidating
+        # only the label's immediate layout can retain the previous line count.
+        self._update_parent_geometry()
+
+    def _update_parent_geometry(self):
+        parent = self.parentWidget()
+        if parent is not None:
+            parent.updateGeometry()
+
     def _reserve_lines(self):
         if not hasattr(self, "_height_probe") or getattr(self, "_measuring", False):
             return
@@ -75,7 +87,10 @@ class BatchProgressLabel(QLabel):
             probe.ensurePolished()
             probe.setFont(self.font())
             probe.setContentsMargins(self.contentsMargins())
-            self.setMinimumHeight(probe.sizeHint().height())
+            height = probe.sizeHint().height()
+            if self.minimumHeight() != height:
+                self.setMinimumHeight(height)
+                self._update_parent_geometry()
         finally:
             self._measuring = False
 

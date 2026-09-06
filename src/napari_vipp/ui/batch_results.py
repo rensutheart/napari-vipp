@@ -182,6 +182,10 @@ class BatchResultsPanel(QWidget):
         layout.addWidget(self.run_report)
 
         self.elapsed_label = self._label("Elapsed —")
+        # The compact clock uses its natural single-line size, independently of
+        # the two-line reservation for the changing status messages below it.
+        self.elapsed_label.setWordWrap(False)
+        self.elapsed_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.run_progress_label = BatchProgressLabel("No batch run is active.")
         self.run_progress_bar = QProgressBar()
         self.run_progress_bar.setRange(0, 1)

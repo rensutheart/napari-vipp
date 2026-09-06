@@ -190,3 +190,34 @@ def test_item_commands_refresh_minimums_after_inherited_style_changes(qtbot):
         widths.append(buttons[0].minimumWidth())
     assert widths[1] > widths[0]
     assert widths[2] == widths[0]
+
+
+def test_item_filter_reserves_native_width_and_shrinks_after_style_changes(
+    qtbot, tmp_path
+):
+    plan = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(plan, []))
+    qtbot.addWidget(dialog)
+    dialog._check_batch()
+    dialog.tabs.setCurrentIndex(1)
+    dialog.resize(1080, 800)
+    dialog.show()
+    widths = []
+    for points in (10, 16, 10):
+        dialog.setStyleSheet(
+            f"QComboBox {{ font-size: {points}pt; padding: 5px 22px; }}"
+        )
+        for _ in range(3):
+            dialog._layout_item_commands()
+            qtbot.wait(10)
+            combo = dialog.item_filter
+            native_width = combo.minimumSizeHint().width()
+            assert native_width > 120
+            assert combo.minimumWidth() == max(120, native_width)
+            assert combo.maximumWidth() == max(180, native_width)
+            assert combo.isVisible()
+            assert combo.width() >= native_width
+            assert dialog.items_page.rect().contains(_rect_in(combo, dialog.items_page))
+        widths.append(combo.minimumWidth())
+    assert widths[1] > widths[0]
+    assert widths[2] == widths[0]

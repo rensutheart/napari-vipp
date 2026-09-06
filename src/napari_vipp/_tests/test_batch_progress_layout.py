@@ -13,6 +13,48 @@ from napari_vipp.ui.batch_progress import BatchProgressLabel
 from napari_vipp.ui.batch_results import BatchResultsPanel
 
 
+def test_progress_text_invalidates_the_outer_height_for_width_cache(qtbot):
+    panel = BatchResultsPanel()
+    qtbot.addWidget(panel)
+    panel.begin_run(14)
+    panel.resize(560, 900)
+    panel.show()
+    qtbot.wait(5)
+    group = panel.progress_group
+    outer_item = panel.layout().itemAt(panel.layout().indexOf(group))
+    label = panel.run_progress_label
+    width = group.width()
+
+    label.setText("First\nSecond\nThird")
+    group.layout().activate()
+    three_lines = outer_item.heightForWidth(width)
+    label.setText("Short status")
+    # No event-loop wait: the surrounding layout must not reuse the previous
+    # three-line height while the inner group is already measuring two lines.
+    two_lines = outer_item.heightForWidth(width)
+    assert two_lines == group.layout().totalHeightForWidth(width)
+    assert two_lines < three_lines
+
+
+def test_elapsed_clock_contributes_one_unwrapped_line_to_intrinsic_layout(qtbot):
+    panel = BatchResultsPanel()
+    qtbot.addWidget(panel)
+    panel.begin_run(14)
+    panel.elapsed_label.setText("Elapsed 123:45:56")
+    panel.run_progress_label.setText("Sample")
+    panel.operation_progress_label.setText("Node")
+    panel.resize(560, 900)
+    panel.show()
+    qtbot.wait(5)
+
+    clock = panel.elapsed_label
+    group = panel.progress_group
+    assert not clock.wordWrap()
+    assert group.sizeHint().width() >= clock.sizeHint().width()
+    assert group.sizeHint().height() == group.layout().sizeHint().height()
+    assert clock.height() == clock.sizeHint().height()
+
+
 def test_progress_reserve_matches_native_two_lines_after_style_polishing(qtbot):
     host = QWidget()
     qtbot.addWidget(host)

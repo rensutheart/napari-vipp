@@ -511,6 +511,13 @@ class BatchWorkflowWorkspace(
         for button in self._item_command_widgets[:4]:
             button.ensurePolished()
             button.setMinimumSize(button.sizeHint())
+        self.item_filter.ensurePolished()
+        # An explicit 120px floor otherwise replaces Qt's larger native minimum
+        # on some fonts/platforms. Measure the hint, not our previous constraint,
+        # so both limits can shrink again after a font or stylesheet change.
+        filter_width = max(120, self.item_filter.minimumSizeHint().width())
+        self.item_filter.setMaximumWidth(max(180, filter_width))
+        self.item_filter.setMinimumWidth(filter_width)
         for group in (selection, collection):
             group.layout().invalidate()
         available = max(0, self.width() - 40)
@@ -544,6 +551,15 @@ class BatchWorkflowWorkspace(
             return
         first = next(iter(self._node_execution_combos.values()), None)
         if first is not None:
+            # Both cards can still have a pending height-for-width relayout,
+            # especially when the scrollbar narrows a small page and wraps
+            # the parameter editor's commands above the first node row.
+            # Reveal the settled row, not its pre-expansion cached position.
+            self.parameter_override_editor.layout().activate()
+            self.parameter_override_group.layout().activate()
+            self.node_execution_group.layout().activate()
+            self.node_behavior_card.layout().activate()
+            self.overrides_page.layout().activate()
             self.overrides_scroll.ensureWidgetVisible(first, 0, 24)
 
     def _apply_workspace_theme(self) -> None:

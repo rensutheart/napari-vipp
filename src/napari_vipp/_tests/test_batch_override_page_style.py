@@ -46,7 +46,9 @@ def _override_dialog(qtbot, tmp_path, *, pending=False, node_count=1):
         "blur", "Gaussian Blur", "gaussian_blur", BatchNodeExecutionMode.RUN
     )
     dialog = CollectionBatchDialog(
-        actions=_actions(plan, []), execution_nodes=(execution,) + tuple(
+        actions=_actions(plan, []),
+        execution_nodes=(execution,)
+        + tuple(
             replace(execution, node_id=f"blur_{i}", title=f"Gaussian Blur {i}")
             for i in range(1, node_count)
         ),
@@ -272,6 +274,36 @@ def test_expanded_nodes_scroll_with_page_and_footer_stays_fixed(
     qtbot.wait(10)
     assert dialog.node_execution_group.isHidden()
     assert scroll.maximum() < 500
+
+
+@pytest.mark.parametrize(
+    "pending_section", ["node_form", "parameter_editor", "parameter_card"]
+)
+def test_reveal_settles_pending_form_geometry_before_scrolling(
+    qtbot, tmp_path, pending_section
+):
+    dialog, _plan, _parameters, _overrides = _override_dialog(
+        qtbot, tmp_path, node_count=30
+    )
+    dialog.resize(560, 700)
+    dialog.node_behavior_toggle.click()
+    qtbot.wait(30)
+    viewport = dialog.overrides_scroll.viewport()
+    first = next(iter(dialog._node_execution_combos.values()))
+
+    # A newly wrapped node form or preceding parameter card can move the first
+    # row after scrolling. Keep that relayout pending when requesting reveal.
+    pending = {
+        "node_form": dialog.node_execution_group,
+        "parameter_editor": dialog.parameter_override_editor,
+        "parameter_card": dialog.parameter_override_group,
+    }[pending_section]
+    pending.layout().setContentsMargins(0, 120, 0, 0)
+    dialog._reveal_node_behavior()
+    qtbot.wait(30)
+
+    position = first.mapTo(viewport, QPoint(0, 0))
+    assert 0 <= position.y() <= viewport.height() - first.height()
 
 
 @pytest.mark.parametrize("busy_flag", ["_checking_plan", "_run_in_progress"])
