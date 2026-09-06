@@ -8,23 +8,6 @@ from napari_vipp._tests.test_ui_batch import _actions, _preview_result
 from napari_vipp.ui.batch import CollectionBatchDialog
 
 
-@pytest.fixture
-def make_batch_dialog(qtbot):
-    # The real host retains its batch dialog. Mirror that ownership through
-    # pytest-qt's post-call event flush: addWidget itself stores only a weakref,
-    # so a test-local dialog can otherwise be collected inside a child paint.
-    dialogs = []
-
-    def create(**kwargs):
-        dialog = CollectionBatchDialog(**kwargs)
-        dialogs.append(dialog)
-        qtbot.addWidget(dialog)
-        return dialog
-
-    yield create
-    dialogs.clear()
-
-
 def _assert_compute_location(dialog, *, in_toolbar):
     assert dialog.compute_summary_label.isVisible() == in_toolbar
     assert dialog.compute_icon_label.isVisible() == in_toolbar
@@ -38,10 +21,9 @@ def _assert_compute_location(dialog, *, in_toolbar):
 
 
 @pytest.mark.parametrize("width", [560, 679, 680, 1080])
-def test_compute_details_only_appear_in_menu_without_toolbar_summary(
-    qtbot, make_batch_dialog, width
-):
-    dialog = make_batch_dialog()
+def test_compute_details_only_appear_in_menu_without_toolbar_summary(qtbot, width):
+    dialog = CollectionBatchDialog()
+    qtbot.addWidget(dialog)
     dialog.resize(width, 800)
     dialog.show()
     qtbot.waitUntil(lambda: dialog.width() == width)
@@ -49,8 +31,9 @@ def test_compute_details_only_appear_in_menu_without_toolbar_summary(
     _assert_compute_location(dialog, in_toolbar=width >= 680)
 
 
-def test_compute_menu_and_separator_follow_repeated_resize(qtbot, make_batch_dialog):
-    dialog = make_batch_dialog()
+def test_compute_menu_and_separator_follow_repeated_resize(qtbot):
+    dialog = CollectionBatchDialog()
+    qtbot.addWidget(dialog)
     dialog.show()
     for width in (1080, 560, 680, 679, 1080):
         dialog.resize(width, 800)
@@ -59,9 +42,7 @@ def test_compute_menu_and_separator_follow_repeated_resize(qtbot, make_batch_dia
     assert dialog.more_menu.actions().count(dialog.compute_info_action) == 1
 
 
-def test_compute_refresh_keeps_current_details_and_constant_menu_title(
-    make_batch_dialog, tmp_path
-):
+def test_compute_refresh_keeps_current_details_and_constant_menu_title(qtbot, tmp_path):
     summary = [
         "Custom · saved batch",
         "Custom compute settings came from this saved batch configuration.",
@@ -70,7 +51,8 @@ def test_compute_refresh_keeps_current_details_and_constant_menu_title(
         _actions(_preview_result(tmp_path), []),
         compute_summary=lambda: tuple(summary),
     )
-    dialog = make_batch_dialog(actions=actions)
+    dialog = CollectionBatchDialog(actions=actions)
+    qtbot.addWidget(dialog)
     dialog.resize(560, 800)
     dialog.show()
 
@@ -95,10 +77,9 @@ def test_compute_refresh_keeps_current_details_and_constant_menu_title(
     assert dialog.more_menu.actions().count(dialog.compute_info_action) == 1
 
 
-def test_default_compute_details_remain_available_without_host_callback(
-    make_batch_dialog,
-):
-    dialog = make_batch_dialog()
+def test_default_compute_details_remain_available_without_host_callback(qtbot):
+    dialog = CollectionBatchDialog()
+    qtbot.addWidget(dialog)
     dialog.resize(560, 800)
     dialog.show()
 

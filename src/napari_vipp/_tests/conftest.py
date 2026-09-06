@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from qtpy.compat import isalive
 
 from napari_vipp.core.compute_history import PIPELINE_TIMING_HISTORY_PATH_ENV
 from napari_vipp.ui import (
@@ -8,6 +9,41 @@ from napari_vipp.ui import (
     recent_paths,
     workflow_save_settings,
 )
+
+
+@pytest.fixture
+def qtbot(qtbot, monkeypatch):
+    """Keep registered test windows owned until pytest-qt closes them."""
+    registered_widgets = []
+    add_widget = qtbot.addWidget
+
+    def register_widget(widget, *, before_close_func=None):
+        add_widget(widget, before_close_func=before_close_func)
+        registered_widgets.append(widget)
+        registrations = qtbot._request.node.qt_widgets
+        reference, before_close = registrations[-1]
+
+        def live_reference():
+            registered = reference()
+            if registered is not None and isalive(registered):
+                return registered
+            return None
+
+        # pytest-qt's close pass checks only whether its reference returns None.
+        # Treat explicit native deletion as gone, even while we retain the Python
+        # wrapper. Release wrappers only after teardown, never from a C++
+        # destroyed signal while the native destructor may still be active.
+        registrations[-1] = (live_reference, before_close)
+
+    # pytest-qt stores weakrefs and dispatches events after the test returns.
+    # Without an owner, GC can collect a window cycle inside a child's native
+    # paint/layout call. The real application retains these windows. Match that
+    # lifetime until pytest-qt's normal close/delete pass, which runs before
+    # fixture teardown. Explicit deleteLater/parent destruction still work.
+    monkeypatch.setattr(qtbot, "addWidget", register_widget)
+    monkeypatch.setattr(qtbot, "add_widget", register_widget)
+    yield qtbot
+    registered_widgets.clear()
 
 
 class _MemorySettings:
@@ -40,9 +76,5 @@ def _isolate_pipeline_timing_history(monkeypatch, tmp_path):
 
     monkeypatch.setenv(
         PIPELINE_TIMING_HISTORY_PATH_ENV,
-        str(
-            tmp_path
-            / ".napari-vipp-test-state"
-            / "pipeline-timing-history-v2.json"
-        ),
+        str(tmp_path / ".napari-vipp-test-state" / "pipeline-timing-history-v2.json"),
     )
