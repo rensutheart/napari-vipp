@@ -300,5 +300,5 @@ jobs:
           src/napari_vipp/_tests/test_widget.py::test_generated_rgb_and_rgba_hide_only_the_component_axis
           src/napari_vipp/_tests/test_widget.py::test_pasted_qimage_becomes_unique_rgb_layer_bound_to_source
           src/napari_vipp/_tests/test_widget.py::test_pasted_qimage_does_not_autobind_other_empty_sources
-          src/napari_vipp/_tests/test_widget.py::test_split_channels_presentation_follows_distinct_used_output_ports
+          src/napari_vipp/_tests/test_widget.py::test_split_channels_presentation_selection_is_independent_of_used_ports
           src/napari_vipp/_tests/test_widget.py::test_reorder_axes_updates_metadata_axes

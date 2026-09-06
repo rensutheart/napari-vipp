@@ -1,6 +1,6 @@
 # VIPP User Guide
 
-Last reviewed: 2026-09-05
+Last reviewed: 2026-09-06
 
 This guide is written for people building visual image-processing workflows in
 VIPP. It focuses on how to use the graph, how to choose the right controls, and
@@ -13,7 +13,7 @@ your data and acquisition settings.
 ## Start VIPP
 
 Begin with the [installer-first quick start](quick-start.md). The official
-`0.14.0a3` prerelease and checksum sidecars are public. Its explicitly unsigned
+`0.15.0a1` prerelease provides checksum sidecars. Its explicitly unsigned
 Windows `.exe` and architecture-specific macOS `.pkg` files are the recommended
 ordinary-user routes. Always verify the published SHA-256 before accepting
 Windows' **Unknown publisher** warning or macOS's **Open Anyway** override.
@@ -238,8 +238,16 @@ the measured difference was not both large and certain enough to justify a
 change; it does not mean that a GPU implementation was ineligible or failed to
 run.
 
-The dialog's time limit is a wall-clock limit for the whole analysis; it is not
-a RAM or VRAM allocation. If the limit is reached, VIPP has **not** established
+The dialog shows total `Elapsed` time and `Current stage` time independently of
+worker progress reports. The stage clock resets when the node, implementation,
+or measurement phase changes, not for an ordinary within-stage progress update.
+Some CPU library calls report only when they finish. A ticking clock is not an
+estimate of completion or proof of numerical progress inside that call.
+
+The time limit is a wall-clock budget checked at safe stopping points; it is not
+a RAM or VRAM allocation. An in-progress CPU/GPU call may need to finish before
+the limit or `Cancel analysis` takes effect. Total elapsed time includes that
+wait. If the limit is reached, VIPP has **not** established
 that the current pipeline is fastest and it changes no settings. The result
 names the stage and node where analysis stopped. Complete records from earlier
 nodes can be reused when the next run has the exact same workload, software,

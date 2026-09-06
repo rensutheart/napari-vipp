@@ -24,7 +24,6 @@ from napari_vipp.core.operations import (
     remove_small_objects,
 )
 
-
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "assets" / "portable-gpu-segmentation-bridge"
 THRESHOLD = 18_180.26953125
@@ -77,7 +76,9 @@ def _save_binary_crop(name: str, values: np.ndarray) -> None:
     image.save(OUTPUT_DIR / name, optimize=True)
 
 
-def _load_font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _load_font(
+    size: int, *, bold: bool = False
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Load a portable sans-serif font for labels inside composite evidence panels."""
 
     candidates = (
@@ -163,7 +164,9 @@ def _save_orthogonal_cavity_panel(
     panel_w, panel_h = 340, 170
     for row, (plane_name, before_view, after_view, added_view) in enumerate(planes):
         top = 78 + row * 188
-        draw.text((35, top + 70), plane_name, fill=(50, 70, 99), font=label_font, anchor="lm")
+        draw.text(
+            (35, top + 70), plane_name, fill=(50, 70, 99), font=label_font, anchor="lm"
+        )
         before_image = _orthogonal_rgb(
             before_view,
             np.zeros_like(before_view, dtype=bool),
@@ -178,8 +181,12 @@ def _save_orthogonal_cavity_panel(
         )
         canvas.paste(before_image, (105, top))
         canvas.paste(after_image, (525, top))
-        draw.rounded_rectangle((103, top - 2, 447, top + 172), radius=8, outline=(101, 115, 138), width=3)
-        draw.rounded_rectangle((523, top - 2, 867, top + 172), radius=8, outline=(182, 62, 114), width=3)
+        draw.rounded_rectangle(
+            (103, top - 2, 447, top + 172), radius=8, outline=(101, 115, 138), width=3
+        )
+        draw.rounded_rectangle(
+            (523, top - 2, 867, top + 172), radius=8, outline=(182, 62, 114), width=3
+        )
 
     draw.text(
         (450, 668),
@@ -225,7 +232,9 @@ def main() -> None:
         "after_remove_small_objects_voxels": int(np.count_nonzero(cleaned)),
         "after_fill_holes_voxels": int(np.count_nonzero(filled)),
         "removed_speck_voxels": int(np.count_nonzero(mask) - np.count_nonzero(cleaned)),
-        "filled_cavity_voxels": int(np.count_nonzero(filled) - np.count_nonzero(cleaned)),
+        "filled_cavity_voxels": int(
+            np.count_nonzero(filled) - np.count_nonzero(cleaned)
+        ),
         "label_count": int(np.max(labels)),
         "component_volumes_voxels": sorted(
             [int(value) for value in np.bincount(labels.ravel())[1:]],
@@ -243,7 +252,9 @@ def main() -> None:
         "component_volumes_voxels": [685, 599, 595, 561],
     }
     if counts != expected:
-        raise RuntimeError(f"Worked-example evidence changed: {counts!r} != {expected!r}")
+        raise RuntimeError(
+            f"Worked-example evidence changed: {counts!r} != {expected!r}"
+        )
 
     _save_grayscale(
         "01-selected-channel.png",

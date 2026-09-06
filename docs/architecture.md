@@ -3,9 +3,9 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-08-29
+Last reviewed: 2026-09-06
 
-It reflects the live codebase through VIPP `0.14.0a3`. The durable SourceItems,
+It reflects the live codebase through VIPP `0.15.0a1`. The durable SourceItems,
 optional microscope-reader routing, local OME-Zarr presentation preview,
 per-sample batch parameters, reproducible collection execution, graph restore
 hardening, unified CPU/GPU execution contract, and graph-fragment authoring
@@ -14,8 +14,15 @@ cross-Qt desktop integration and native, offline, CPU-only macOS packages for
 both Apple Silicon (`arm64`) and Intel (`x86_64`). `0.14.0a3` adds exact direct
 Crop source-window pushdown, safe node bypass, responsive volume cropping, and
 feature-detected napari 0.9 viewer compatibility while retaining the
-declared `napari>=0.6` boundary; it does not change workflow or scientific
-contracts.
+declared `napari>=0.6` boundary. The viewer-compatibility seams themselves do
+not change scientific calculations.
+
+`0.15.0a1` adds the task-based batch window and inline run report, exact per-item
+existing-file policies in batch configuration version 6, responsive inspector
+and table/plot presentation, the Intensity Histogram node, and GPU-assisted
+mesh/skeleton measurement providers. Workflow schema 6 and batch manifest
+schema 5 remain unchanged. The shared execution and measurement changes require
+their own affected-domain qualification; they are not presentation-only.
 
 For product framing and longer-range ideas, see [README.md](../README.md) and
 [planning.md](planning.md). The accepted OME I/O architecture is documented in

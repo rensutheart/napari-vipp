@@ -13,9 +13,8 @@ import binascii
 import re
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
-
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
@@ -214,9 +213,7 @@ def check_markers(root: ET.Element) -> list[str]:
                 continue
             marker_id = fragment_match.group(1)
             if marker_id not in marker_ids:
-                issues.append(
-                    f"{location} references missing marker id {marker_id!r}"
-                )
+                issues.append(f"{location} references missing marker id {marker_id!r}")
     return issues
 
 

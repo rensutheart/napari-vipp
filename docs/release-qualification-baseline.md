@@ -1,6 +1,60 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-08-29
+Last reviewed: 2026-09-06
+
+## 0.15.0a1 qualification declaration
+
+This is an iterative alpha. The declaration covers all changes since the
+public `v0.14.0a3` tag, including the inspector/measurement work and the batch
+workflow redesign, not only the final version commit.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  workflow_schema_provenance: true
+  gpu_scientific_shared_execution: true
+  windows_installer_runtime: false
+  macos_installer_runtime: false
+  dependencies_toolchain: false
+  packaging_release: true
+  documentation: true
+carried_forward:
+  windows_transactional_lifecycle: v0.13.0a8
+  macos_native_lifecycle: v0.14.0a2
+  supported_napari_qt_runtime: v0.14.0a3
+  unchanged_source_reader_corpus: v0.14.0a1
+```
+
+- Core/UI includes the four-stage batch window, saved item-level file
+  decisions, cancellation cleanup, run reports, background checking, inspector
+  and plot presentation, source drop/paste, and optimizer elapsed clocks.
+- Batch configuration version 6 adds exact-item file-policy choices and reads
+  earlier supported versions. Workflow version 6 and manifest version 5 are
+  unchanged. Current round trips and generated execution remain release gates;
+  compatibility with older applications reading a newly saved batch config is
+  not claimed.
+- Shared execution, metadata/axes, and new hybrid mesh and skeleton measurement
+  providers invalidate the affected GPU evidence. Real-hardware provider
+  parity, cancellation, cleanup/reuse and full public-catalogue admission are
+  required; unchanged kernels do not by themselves justify carrying all shared
+  execution evidence forward.
+- Installer engines and dependency pins are unchanged. Release packaging now
+  downloads the successful exact-main CI distributions for every installer,
+  instead of rebuilding a potentially different wheel on each platform.
+  Exact artifact integrity, embedded wheel identity, independent distribution
+  reproducibility, and native architecture checks remain required.
+- Documentation includes refreshed screenshots from synthetic examples, a
+  rewritten batch walkthrough, inspector/plot/measurement instructions, and
+  explicit limits around source checking and cooperative cancellation.
+- ImageJ Default remains experimental and source-aligned; independent
+  ImageJ-generated golden parity is not claimed by this alpha.
+
+Exact final commit, CI runs, GPU evidence, artifact hashes, publication and
+companion-manual deployment are retained with the release evidence. Publication
+requires all changed-domain gates and exact-main CI to pass.
+
+## Earlier qualification records
 
 > **0.14.0a3 candidate declaration (2026-08-29):** This iterative alpha changes core/UI behavior, workflow schema and provenance, source I/O and memory planning, shared CPU/GPU execution coordination, Windows and macOS runtime compatibility, dependencies/toolchain, packaging/release metadata, and documentation. The release candidate must pass exact-main CI, Windows installer smoke, both native macOS architecture smokes, independent exact-tag distribution comparison, exact-tag three-platform installer qualification, and public-byte verification. Safe Node Bypass invalidates the shared GPU execution baseline, so the full RTX 5090 measurements artifact was regenerated and validated on the release candidate (`measurements-cupy-windows-rtx5090.json` SHA-256 `46015e3752e9818bdcc53819328f0fc33b5806607876186c156b61ca12ad8783`); the provider kernels and admitted scientific regions are unchanged and retain their reviewed catalogue baseline. Exact commits, runs, distribution and installer hashes, assets, and companion-documentation evidence will be recorded after publication without moving the immutable tag.
 
